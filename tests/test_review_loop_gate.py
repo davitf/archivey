@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -94,26 +95,44 @@ def test_each_round_advances_one() -> None:
     assert scan(candidate(labels=["loop:round-2"])).round == 3
 
 
-def test_the_cap_is_three_rounds() -> None:
-    decision = scan(candidate(labels=["loop:round-3"]))
+def test_the_cap_stops_the_scan() -> None:
+    spent = [f"loop:round-{gate.MAX_ROUNDS}"]
+    decision = scan(candidate(labels=spent))
     assert not decision.run
     # Nothing was eligible, so the scan reports on the tick rather than on one PR.
     assert decision.reason == "no pull request is waiting for a round"
 
     # The PR-level answer is the one that carries the cap.
     parked = gate._scheduled(
-        candidate(labels=["loop:round-3"]), gate.parse_time(NOW), gate.timedelta(0)
+        candidate(labels=spent), gate.parse_time(NOW), gate.timedelta(0)
     )
     assert not parked.run
     assert parked.cap_reached
-    # The round stays at what was actually done, so the hand-back message can say "3".
-    assert parked.round == 3
+    # The round stays at what was actually done, so the hand-back can name the number.
+    assert parked.round == gate.MAX_ROUNDS
+
+    # And the round before it still runs, so the cap is off by nothing.
+    assert scan(candidate(labels=[f"loop:round-{gate.MAX_ROUNDS - 1}"])).run
+
+
+def test_the_cap_is_five_rounds() -> None:
+    """The number itself, pinned where moving it has to be deliberate.
+
+    It was three until 2026-09-21, when it turned out to be the only thing ever
+    stopping the loop: every pull request the loop finished carried `loop:round-3`.
+    Five is safe because the verdict now stops the loop first — see `VERDICT_STOPS`
+    and the tests below it — so this is the backstop rather than the mechanism.
+    """
+    assert gate.MAX_ROUNDS == 5
+    # A ceiling that grows with the cap would have gone to ten. Three spare rounds is
+    # what puts it out of reach of a person buying one more, and that is a constant.
+    assert gate.MAX_FORCED_ROUNDS == 8
 
 
 def test_the_round_before_the_cap_announces_itself_as_the_last() -> None:
-    # Round 3 has to say so as it posts: there is no round 4 to discover it later.
-    assert scan(candidate(labels=["loop:round-2"])).final
-    assert not scan(candidate(labels=["loop:round-1"])).final
+    # The last round has to say so as it posts: nothing after it notices.
+    assert scan(candidate(labels=[f"loop:round-{gate.MAX_ROUNDS - 1}"])).final
+    assert not scan(candidate(labels=[f"loop:round-{gate.MAX_ROUNDS - 2}"])).final
 
 
 # --- the quiet period ----------------------------------------------------------------
@@ -321,18 +340,18 @@ def test_a_collaborator_can_restart_a_parked_loop() -> None:
     assert decision.round == 2
 
 
-def test_a_comment_can_buy_a_fourth_round() -> None:
+def test_a_comment_can_buy_a_round_past_the_cap() -> None:
     decision = gate.decide(
         event(
             event_name="issue_comment",
-            labels=["loop:round-3", "loop:done"],
+            labels=[f"loop:round-{gate.MAX_ROUNDS}", "loop:done"],
             is_pull_request=True,
             comment_body="@claude review",
             comment_author_association="OWNER",
         )
     )
     assert decision.run
-    assert decision.round == 4
+    assert decision.round == gate.MAX_ROUNDS + 1
     # And it is still past the automatic cap. This assertion used to read `not final`,
     # on the reasoning that whoever asked could ask again — true, and beside the point:
     # `final` is what puts `loop:done` back after the verdict step clears the stale
@@ -370,7 +389,7 @@ def test_the_implementing_agent_can_say_it_has_finished(login: str) -> None:
 @pytest.mark.parametrize(
     ("labels", "why"),
     [
-        (["loop:round-3"], "the cap"),
+        ([f"loop:round-{gate.MAX_ROUNDS}"], "the cap"),
         (["loop:round-1", "loop:decision"], "a maintainer decision"),
         (["loop:round-1", "loop:hold"], "a hold"),
         ([], "never having been enrolled, on a branch that predates the loop"),
@@ -531,15 +550,16 @@ def test_no_comment_runs_forever_however_entitled_the_commenter() -> None:
         "comment_author_association": "OWNER",
         "comment_author_login": "davitf",
     }
-    assert gate.decide(event(labels=["loop:round-5"], **owner)).run  # round 6: fine
-    spent = gate.decide(event(labels=["loop:round-6"], **owner))
+    last = gate.MAX_FORCED_ROUNDS
+    assert gate.decide(event(labels=[f"loop:round-{last - 1}"], **owner)).run
+    spent = gate.decide(event(labels=[f"loop:round-{last}"], **owner))
     assert not spent.run
     assert spent.cap_reached
 
     # A bot is bounded long before this, by the ordinary cap.
     assert not gate.decide(
         event(
-            labels=["loop:round-5"],
+            labels=[f"loop:round-{gate.MAX_ROUNDS}"],
             **(
                 owner
                 | {
@@ -553,7 +573,11 @@ def test_no_comment_runs_forever_however_entitled_the_commenter() -> None:
     # The deliberate override survives, because a button in the GitHub UI is not
     # something an agent presses.
     assert gate.decide(
-        event(event_name="workflow_dispatch", labels=["loop:round-9"], force=True)
+        event(
+            event_name="workflow_dispatch",
+            labels=[f"loop:round-{gate.MAX_FORCED_ROUNDS + 4}"],
+            force=True,
+        )
     ).run
 
 
@@ -680,7 +704,9 @@ def test_asking_for_a_round_still_works_at_the_top_of_a_comment() -> None:
 
 
 def test_manual_dispatch_respects_the_cap_unless_forced() -> None:
-    spent = event(event_name="workflow_dispatch", labels=["loop:round-3"])
+    spent = event(
+        event_name="workflow_dispatch", labels=[f"loop:round-{gate.MAX_ROUNDS}"]
+    )
     assert not gate.decide(spent).run
     assert gate.decide(spent | {"force": True}).run
 
@@ -721,6 +747,8 @@ def test_the_script_reads_stdin_and_writes_json() -> None:
         "forced",
         "enrol",
         "final",
+        "max_rounds",
+        "max_forced_rounds",
     }
     assert payload["run"] is True
     assert payload["round"] == 2
@@ -747,12 +775,12 @@ def test_a_bought_round_past_the_cap_is_still_the_last_automatic_one() -> None:
                 event_name=event_name,
                 is_pull_request=True,
                 comment_body="@claude review",
-                labels=["loop:round-3", "loop:done"],
+                labels=[f"loop:round-{gate.MAX_ROUNDS}", "loop:done"],
                 **extra,
             )
         )
         assert decision.run, event_name
-        assert decision.round == 4, event_name
+        assert decision.round == gate.MAX_ROUNDS + 1, event_name
         assert decision.forced, event_name
         assert decision.final, event_name
 
@@ -782,7 +810,7 @@ def test_a_stranger_cannot_move_the_labels_by_naming_the_ceiling() -> None:
             event_name="issue_comment",
             is_pull_request=True,
             comment_body="@claude review",
-            labels=["loop:round-6"],
+            labels=[f"loop:round-{gate.MAX_FORCED_ROUNDS}"],
             comment_author_association="NONE",
             comment_author_login="dependabot[bot]",
         )
@@ -937,3 +965,262 @@ def test_both_surfaces_get_the_same_ping_text() -> None:
     assert linear.startswith("@cursor Please work through")
     assert "@cursoragent" not in linear
     assert github.split("\n", 1)[1] == linear.split("\n", 1)[1]
+
+
+# --- the verdict a round ends with ---------------------------------------------------
+
+
+def verdict(**overrides) -> gate.Verdict:
+    payload = {"verdict": "findings", "summary": "s", "question": ""} | overrides
+    return gate.read_verdict(payload)
+
+
+def test_a_review_that_does_not_ask_to_see_the_fix_ends_the_loop() -> None:
+    """The stopping rule the cap used to stand in for.
+
+    `code-review-skill`'s addendum §0 already gives the reviewer four verdicts, two of
+    which mean "I do not need to see the result". The loop read every round that posted
+    anything as "findings" and scheduled the next one, so the only thing that ever
+    stopped it was the counter — which is why raising the cap needed this first.
+    """
+    assert verdict(verdict="clean").stop
+    assert verdict(verdict="approved").stop
+
+    # A round that asks for another look is what buys one.
+    assert not verdict(verdict="findings").stop
+    # A decision parks rather than stops: the round counter is untouched, so answering
+    # it resumes where this round left off.
+    assert not verdict(verdict="decision").stop
+
+
+def test_a_verdict_the_loop_cannot_read_still_gets_an_answer() -> None:
+    """Every input here is written by an agent in prose, so nothing may fall through.
+
+    The shell `case` this replaced had no way to tell "the reviewer asked for another
+    round" from "the reviewer wrote something unexpected": both landed in the findings
+    arm, silently. Unrecognised is still treated as `findings` — a reviewer whose
+    verdict cannot be read has not said it is finished — but the reason says so, and
+    the cap still bounds what it costs.
+    """
+    for payload in ["approve", "APPROVED?", "", None, 3]:
+        answer = gate.read_verdict({"verdict": payload})
+        assert answer.verdict == gate.DEFAULT_VERDICT, payload
+        assert not answer.stop, payload
+        assert "not one this loop knows" in answer.reason, payload
+
+    for payload in [[], "not an object", None]:
+        answer = gate.read_verdict(payload)
+        assert answer.verdict == gate.DEFAULT_VERDICT
+        assert "not a JSON object" in answer.reason
+
+    # Spelling and spacing are the reviewer's, not a contract.
+    assert gate.read_verdict({"verdict": "  Approved\n"}).verdict == "approved"
+
+
+def test_a_question_belongs_to_a_decision_and_to_nothing_else() -> None:
+    """A question on any other verdict reads as though something waits on the maintainer.
+
+    The status comment prints `question` under "**The question:**" and says nothing
+    further happens until it is answered. On a pull request that is not parked, that is
+    a sentence nobody can act on and that contradicts the round it appears in.
+    """
+    assert verdict(verdict="decision", question="Fix here or file it?").question
+    for name in ["clean", "approved", "findings"]:
+        assert not verdict(verdict=name, question="Fix here or file it?").question
+
+
+def test_the_verdict_mode_reads_stdin_and_writes_json() -> None:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--verdict"],
+        input=json.dumps({"verdict": "approved", "summary": "Two nits left."}),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(result.stdout)
+    # The workflow reads exactly these keys out with `jq`.
+    assert payload.keys() == {"verdict", "stop", "summary", "question", "reason"}
+    assert payload["stop"] is True
+    assert payload["summary"] == "Two nits left."
+
+
+def test_an_unreadable_verdict_file_does_not_fail_the_round() -> None:
+    """The findings are already on the pull request by the time this runs.
+
+    Exiting non-zero here would fail a round that had done its work, and the step that
+    parks a pull request whose review died is upstream of this one — so the run would
+    go red with the loop's state saying a round is still in flight.
+    """
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--verdict"],
+        input="{not json at all",
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["verdict"] == gate.DEFAULT_VERDICT
+    assert not payload["stop"]
+    assert "unreadable verdict" in payload["reason"]
+
+
+# --- what the workflow has to keep in step with the gate ------------------------------
+
+
+def test_the_workflow_asks_the_gate_what_the_verdict_means() -> None:
+    """The verdict is decided in one place, and it is the tested one."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "scripts/review_loop_gate.py --verdict" in text
+    # Not read straight out of the reviewer's own file any more: that is what let an
+    # unrecognised spelling become another round with nothing saying so.
+    assert "jq -r .verdict /tmp/loop-verdict.json" not in text
+
+
+def test_the_workflow_takes_the_cap_from_the_gate() -> None:
+    """Moving `MAX_ROUNDS` must move the labels and the prose with it.
+
+    The label list used to name rounds 1 to 3 one line each, and three sentences said
+    "three rounds" in their own words. Each is a copy that a later change to the number
+    leaves behind: a round with no label cannot be counted, and a status comment that
+    promises the wrong number is read by whoever is deciding whether to merge.
+    """
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "max_rounds=$(jq -r .max_rounds /tmp/gate.json)" in text
+    assert "max_forced_rounds=$(jq -r .max_forced_rounds /tmp/gate.json)" in text
+    assert 'for n in $(seq 1 "$MAX_LABELLED_ROUND"); do' in text
+    # The list is bounded by the ceiling a comment can reach, not by the cap; the
+    # unbounded route is covered by the ensure in the verdict step, above.
+    assert "MAX_LABELLED_ROUND: ${{ steps.gate.outputs.max_forced_rounds }}" in text
+    for stale in ['ensure "loop:round-1"', "Three review rounds", "Up to three rounds"]:
+        assert stale not in text, stale
+
+
+def test_the_round_label_is_ensured_before_it_is_applied() -> None:
+    """A round whose label does not exist takes the rest of the verdict step with it.
+
+    `loop:round-$ROUND` is the step's first write and the only one with no fallback —
+    the removals under it all carry `|| true` — so under `set -e` a missing label ends
+    the step there, losing the `loop:on` removal, the stale parks and the status
+    comment, with the review already posted and nothing saying the round did not
+    finish. Confirmed live on 2026-09-21: three runs died on `'loop:round-4' not
+    found`, each after its review had been written.
+
+    Pre-creating a list of labels cannot be the guarantee, because a forced
+    `workflow_dispatch` is deliberately unbounded — `test_no_comment_runs_forever…`
+    pins a round well past the ceiling — so no list anticipates every round. The step
+    ensures its own label instead, which covers every route including ones added later.
+    """
+    text = WORKFLOW.read_text(encoding="utf-8")
+    ensure = text.index('.github/scripts/ensure-label.sh "loop:round-$ROUND"')
+    apply = text.index('--add-label "loop:round-$ROUND"')
+    assert ensure < apply, "the label is applied before it is ensured"
+    assert Path(".github/scripts/ensure-label.sh").exists()
+
+    # The unbounded route, which the list above cannot cover.
+    far_past_every_bound = gate.decide(
+        event(
+            event_name="workflow_dispatch",
+            force=True,
+            labels=[f"loop:round-{gate.MAX_FORCED_ROUNDS + 4}"],
+        )
+    )
+    assert far_past_every_bound.run
+    assert far_past_every_bound.round > far_past_every_bound.max_forced_rounds
+
+
+@pytest.mark.parametrize(
+    ("over", "expected", "forbidden"),
+    [
+        ("false", "up to 5 run", "last round"),
+        ("true", "last round", "@claude review"),
+    ],
+)
+def test_the_ping_promises_a_round_only_when_one_is_coming(
+    over: str, expected: str, forbidden: str
+) -> None:
+    """A ping that asks for the next round after the last one asks for nothing.
+
+    It read "This is round 3 of 3 … that starts round 4 straight away" on every final
+    round: the agent does as it is told, comments, and the gate refuses the round the
+    comment was for — a runner woken to say no, and an implementer told the opposite of
+    what the status comment on the same pull request says.
+    """
+    # Anchored on the comment rather than on the `if`, because the status comment a
+    # few lines up branches on `$over` too and `_shell_between` takes the first match.
+    fragment = _shell_between(
+        '# What the ping promises has to be what happens. It said "that starts', "}"
+    )
+    body = _bash(f'over={over}\nMAX_ROUNDS=5\n{fragment}\nping_body "@claude"')
+    assert expected in body
+    assert forbidden not in body
+    # Whatever it says about rounds, it still asks for the findings to be fixed and it
+    # still carries the footer that marks it as an agent's comment.
+    assert body.startswith("@claude Please work through")
+    assert "_Generated by [Claude Code](https://claude.ai/code)_" in body
+
+
+# --- the status comments, as the shell will actually render them ----------------------
+#
+# Asserting on the YAML source cannot see what bash is going to do to it. Two of these
+# heredocs became unquoted in the change that made the cap a variable, which is the one
+# edit that makes their contents executable, and one of them carried a backtick pair
+# that bash then ran as a command — deleting from the cap-spent comment the single
+# sentence telling a maintainer how to buy another round, with the step still exiting 0.
+# So these run instead of being read.
+
+
+def _status_heredocs() -> list[tuple[int, str, bool]]:
+    """Every `cat > /tmp/status.md <<…` block: its line, its body, and whether quoted."""
+    lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
+    blocks: list[tuple[int, str, bool]] = []
+    start: tuple[int, bool] | None = None
+    for number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if stripped.startswith("cat > /tmp/status.md <<"):
+            start = (number, "<<'EOF'" in stripped)
+        elif stripped == "EOF" and start is not None:
+            first, quoted = start
+            body = "\n".join(
+                raw[len(_BLOCK_INDENT) :] if raw.startswith(_BLOCK_INDENT) else raw
+                for raw in lines[first : number - 1]
+            )
+            blocks.append((first, body, quoted))
+            start = None
+    assert blocks, "no status heredocs found — the extraction has drifted"
+    return blocks
+
+
+@pytest.mark.parametrize(
+    ("line", "body", "quoted"), _status_heredocs(), ids=lambda value: str(value)[:12]
+)
+def test_a_status_comment_survives_the_shell(
+    line: int, body: str, quoted: bool
+) -> None:
+    """Whatever the workflow writes, a maintainer has to be able to read.
+
+    The check is every backticked phrase in the source, because that is what bash eats:
+    in an unquoted heredoc a bare pair runs as a command substitution, the failure does
+    not set `cat`'s exit status, and `set -e` never fires. A quoted heredoc is safe by
+    construction and is exercised anyway, so the test does not have to know which is
+    which.
+    """
+    rendered = _bash(
+        "\n".join(
+            [
+                "MAX_ROUNDS=5",
+                "ROUND=2",
+                "next=3",
+                "summary='Two nits left.'",
+                "question='Fix here or file it?'",
+                "who=Claude",
+                "ended='the review does not need to see the result'",
+                "cat <<" + ("'EOF'" if quoted else "EOF"),
+                body,
+                "EOF",
+            ]
+        )
+    )
+    for phrase in re.findall(r"`([^`\n]+)`", body):
+        # The source escapes a backtick it wants to keep; the reader sees it bare.
+        assert phrase.replace("\\", "") in rendered, f"line {line}: lost `{phrase}`"
+    assert "$MAX_ROUNDS" not in rendered

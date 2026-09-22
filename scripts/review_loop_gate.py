@@ -15,6 +15,14 @@ Two shapes go in. A single event (`pull_request`, `issue_comment`,
 `schedule` shape carries `candidates`, every pull request currently in the loop,
 and `now`; the answer names which one to review, or none.
 
+With ``--verdict`` it reads the other end of a round instead: the verdict file the
+reviewing agent wrote, answering whether that verdict ends the loop.
+
+    {"verdict": "approved", "stop": true, "summary": "…", "question": "", "reason": "…"}
+
+That is the loop's real stopping rule — the round cap behind it is the backstop, not
+the mechanism. See `VERDICT_STOPS`.
+
 Round state lives in ``loop:round-N`` labels on the pull request rather than in this
 script: the workflow that runs round N applies the label, so the next event can read
 the count back. Labels are also the only piece of loop state a human can see and
@@ -30,7 +38,25 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 #: How many automated review rounds run before the loop hands the PR back to a human.
-MAX_ROUNDS = 3
+#:
+#: Five rather than three (davitf, 2026-09-21), because the cap had become the only
+#: thing that ever stopped the loop. Every pull request the loop has finished carries
+#: `loop:round-3`: not one reached a clean review, or any other stop, before the
+#: counter ran out. A number doing all the stopping is a number that has to be right,
+#: and it is not: on #380 round 3 approved with two nits left, while on #392 and #394
+#: round 3 still had real work in front of it and both had to wait for a person.
+#:
+#: What makes five safe is that the count is no longer the mechanism. A round whose
+#: verdict does not ask to see the fix ends the loop where it stands
+#: (`VERDICT_STOPS`), so the extra rounds are spent only while the reviewer is still
+#: asking for another look. On the two pull requests whose rounds are recorded in
+#: full — #380 (nine findings, then three, then two) and #389 (five, three, two) —
+#: the verdict rule stops both at round 3 exactly as today, and spends nothing more.
+#:
+#: This is a ceiling, not a target, and it stays a hard one: an agent cannot raise it
+#: (`TRUSTED_BOTS` stops here), and past it a comment buys rounds only up to
+#: `MAX_FORCED_ROUNDS`.
+MAX_ROUNDS = 5
 
 #: The round past which no *comment* starts anything, however entitled the commenter.
 #:
@@ -39,11 +65,18 @@ MAX_ROUNDS = 3
 #: two are indistinguishable here: `address-review-findings` tells the fixing agent to
 #: send that phrase after every round, and an agent posting through the maintainer's
 #: account (which the review addendum allows) is `OWNER` like the maintainer. Without a
-#: ceiling, fix-comment-fix-comment reviews forever at full cost. Six is twice the
-#: automatic cap: enough that a person who genuinely wants another round gets it without
-#: noticing this exists. Past it `workflow_dispatch` with `force` is the override, and it
-#: stays unbounded because a button in the GitHub UI is not something an agent presses.
-MAX_FORCED_ROUNDS = 2 * MAX_ROUNDS
+#: ceiling, fix-comment-fix-comment reviews forever at full cost. Three rounds past the
+#: automatic cap is enough that a person who genuinely wants another round gets it
+#: without noticing this exists. Past it `workflow_dispatch` with `force` is the
+#: override, and it stays unbounded because a button in the GitHub UI is not something
+#: an agent presses.
+#:
+#: It was twice the cap while the cap was three, and moving the cap to five kept the
+#: spare rounds rather than the multiplier (davitf, 2026-09-21): doubling would have
+#: made the worst case an agent can reach ten rounds instead of six, which is the
+#: opposite of what raising the cap was asked for. What this number has to be is out of
+#: reach of a person buying one more round, and that is a constant, not a ratio.
+MAX_FORCED_ROUNDS = MAX_ROUNDS + 3
 
 #: How long a pull request's head commit must sit untouched before a round starts.
 #:
@@ -58,8 +91,9 @@ MAX_FORCED_ROUNDS = 2 * MAX_ROUNDS
 #: so the timer is there for the agent that died mid-task. Ten minutes was short
 #: enough that an ordinary pause — a long test run, a slow tool call, a session
 #: waiting on a person — read as "finished" and spent a round on half-written code.
-#: The cost of being wrong is asymmetric: a premature round burns one of three, while
-#: a late one only delays a branch nobody is watching anyway.
+#: The cost of being wrong is asymmetric: a premature round burns one of the cap's
+#: rounds on half-written code, while a late one only delays a branch nobody is
+#: watching anyway.
 #:
 #: **It is measured from the committer's clock, not from the push.** The scan reads
 #: `.commit.committer.date`, which is when the commit was made; GitHub does not carry a
@@ -79,7 +113,7 @@ LABEL_OFF = "loop:off"
 #: How a pull request joins the loop. Removed once a round has run, because
 #: ``loop:round-N`` carries the enrolment from then on — the scan matches either.
 LABEL_ON = "loop:on"
-#: The loop finished: clean review, or the round cap is spent.
+#: The loop finished: a review that did not ask to see the fix, or the round cap spent.
 LABEL_DONE = "loop:done"
 #: Parked on a maintainer decision. Cleared by whoever answers it.
 LABEL_DECISION = "loop:decision"
@@ -134,6 +168,50 @@ TRUSTED_BOTS = frozenset({"cursor[bot]", "cursor", "claude[bot]", "claude"})
 #: Labels that park the loop. A pull request carrying one is skipped by the scan.
 PARKED_LABELS = (LABEL_DONE, LABEL_DECISION, LABEL_HOLD)
 
+#: What a round's verdict says about whether the loop spends another round.
+#:
+#: The round cap is a backstop; this is the mechanism. The reviewer already decides the
+#: question — `code-review-skill`'s addendum §0 gives it four verdicts, and three of
+#: them mean "I do not need to see the result": a plain approval, a conditional
+#: approval whose only open findings are nits with an obvious fix, and a comment. Only
+#: "request changes" says a 🔴 stands or a fix wants another look. That judgement used
+#: to die in the review's prose: the loop read every round that posted anything as
+#: "findings" and scheduled the next one, so what stopped it was the counter reaching
+#: three.
+#:
+#: The addendum's own round budget says the same thing from the other side, on measured
+#: evidence: in the two weeks to 2026-09-19 every 🔴 in this repository was raised in
+#: round 1 or 2, late rounds produced almost only wording findings, and seven findings
+#: existed *only* because an earlier fix on the same pull request created them. A loop
+#: that keeps going while the reviewer has stopped asking for another look is exactly
+#: the back-and-forth that costs credits and finds nothing.
+#:
+#: A verdict this does not recognise counts as `findings`. A reviewer whose verdict
+#: cannot be read has not said it is finished, and the cap still bounds what that costs.
+VERDICT_STOPS = {
+    # Nothing was found at all.
+    "clean": True,
+    # Findings were posted and the reviewer does not need to see them fixed: addendum
+    # §0's "✅ Approve, conditional on the listed fixes" and "💬 Comment". The findings
+    # are still posted in full and the implementer is still asked to fix them — what
+    # ends is the re-reading, not the work.
+    "approved": True,
+    # 🔄 Request Changes. Another round, if the cap has one left.
+    "findings": False,
+    # A maintainer decision. The loop parks rather than stopping, so answering the
+    # question and asking for a round carries on where this left off rather than
+    # needing the loop restarted. The round itself still counts: the workflow applies
+    # `loop:round-$ROUND` unconditionally, above the branch that acts on the verdict,
+    # so a round that ends in a question has spent one of the cap's. That is
+    # deliberate — a round that read the
+    # diff and found something worth asking about is a round that was spent — and it
+    # is why parking is not free.
+    "decision": False,
+}
+
+#: What an unreadable or unrecognised verdict is treated as. See `VERDICT_STOPS`.
+DEFAULT_VERDICT = "findings"
+
 
 @dataclass(frozen=True)
 class Decision:
@@ -152,6 +230,13 @@ class Decision:
     enrol: bool = False
     #: The round about to run is the last automatic one, so say so when it finishes.
     final: bool = False
+    #: The cap, so the workflow's prose and its label list have one source for it
+    #: rather than a copy that drifts the next time the number moves.
+    max_rounds: int = MAX_ROUNDS
+    #: The highest round any route can reach. The workflow creates a `loop:round-N`
+    #: label for each one: the round it is running is the label it then applies, and a
+    #: forced round reaches past `max_rounds`.
+    max_forced_rounds: int = MAX_FORCED_ROUNDS
 
 
 def current_round(labels: list[str]) -> int:
@@ -437,7 +522,82 @@ def _choose(event: dict) -> Decision:
     return ready[0][2]
 
 
+# --- the verdict a round ends with ---------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """What the round's own verdict file says, once it has been made safe to act on."""
+
+    verdict: str
+    #: The automatic loop ends here, whatever the round counter still allows.
+    stop: bool
+    summary: str
+    #: Only a `decision` carries one; anything else is dropped rather than shown.
+    question: str
+    reason: str
+
+
+def read_verdict(payload: object) -> Verdict:
+    """The reviewer's verdict file, normalised.
+
+    The reviewing agent writes this file, so it is the one input to the loop that is
+    prose rather than GitHub state, and the failure to guard against is a quiet one: a
+    verdict the workflow does not recognise falling through a shell `case` into
+    "findings" with nothing saying it happened. Every answer here names what it read.
+    """
+    if not isinstance(payload, dict):
+        return Verdict(
+            DEFAULT_VERDICT,
+            False,
+            "",
+            "",
+            "the verdict file is not a JSON object",
+        )
+
+    raw = payload.get("verdict")
+    name = raw.strip().lower() if isinstance(raw, str) else ""
+    summary = payload.get("summary")
+    question = payload.get("question")
+
+    if name not in VERDICT_STOPS:
+        return Verdict(
+            DEFAULT_VERDICT,
+            False,
+            summary if isinstance(summary, str) else "",
+            "",
+            f"verdict {raw!r} is not one this loop knows; treating it as "
+            f"{DEFAULT_VERDICT!r}",
+        )
+
+    return Verdict(
+        name,
+        VERDICT_STOPS[name],
+        summary if isinstance(summary, str) else "",
+        # A question belongs to a decision. Carrying one on any other verdict would put
+        # an unanswerable question in the status comment of a pull request that is not
+        # parked, which reads as though something is waiting on the maintainer.
+        question if name == "decision" and isinstance(question, str) else "",
+        f"verdict {name!r}",
+    )
+
+
 def main() -> int:
+    if "--verdict" in sys.argv[1:]:
+        try:
+            answer = read_verdict(json.load(sys.stdin))
+        except json.JSONDecodeError as exc:
+            # Not an error exit: the workflow has to act on every round it starts, and
+            # a round whose verdict file is unreadable still posted its findings. The
+            # parser's own complaint is the reason, because "it is not JSON" on its own
+            # sends whoever reads the run to the wrong place.
+            answer = Verdict(
+                DEFAULT_VERDICT, False, "", "", f"unreadable verdict: {exc}"
+            )
+        json.dump(asdict(answer), sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+
     event = json.load(sys.stdin)
     json.dump(asdict(decide(event)), sys.stdout)
     sys.stdout.write("\n")
