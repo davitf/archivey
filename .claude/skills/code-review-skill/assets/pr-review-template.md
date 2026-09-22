@@ -2,152 +2,156 @@
 
 The fill-in form for a review in this repo. **The rules are not here** — they are in
 [addendum §0](../reference/archivey-review-addendum.md) (output shape, verdicts, round
-budget, severity × confidence) and §10 (posting, IDs, re-reviews). This file is a shape to
-copy, and is deliberately not a second copy of §0.
+budget, severity × confidence) and §10 (posting, IDs, headers, re-reviews). This file is a
+shape to copy, and is deliberately not a second copy of §0.
+
+Two things about the shape, because they are what people get wrong:
+
+- **The review body is a summary.** It carries the briefing, an index of the findings, and
+  the decisions. Each finding's full text goes in **its own inline thread**, not here.
+- **No tables in anything you post**, and every comment opens with a header. The maintainer
+  reads these on a phone.
 
 ---
 
-## 1. Maintainer briefing (read this first)
+## A. The review body (blocks 1 and 3)
 
-**What this change is** — *once per PR, not once per round and not once per reviewer (§0)*
+```markdown
+## Round [N] · [✅ Approve | ✅ Approve, conditional on K7, K9 | 💬 Comment | 🔄 Request Changes]
 
-[2–4 sentences: intent, areas touched, behaviour delta — readable without the diff]
+**Claude Code** · `code-review-skill` · `[head-sha]` · scope `[main...HEAD | last..HEAD]`
 
-**Snapshot**
+[One sentence on where the PR stands. What a reader needs before the list.]
+```
 
-- **PR size:** [Small/Medium/Large] (~X lines)
-- **Review scope:** [`main...HEAD`, or `<last-reviewed-sha>..HEAD` from round 2 on]
-- **Gates (CI status, not re-run):** [ruff / pyrefly / ty / pytest — or `CI pending`]
-- **Verdict:** [✅ Approve / ✅ Approve conditional on <your-prefix><n>, … / 💬 Comment / 🔄 Request Changes]
+### Round 1 only — what this change is
 
-**Main points**
+```markdown
+### What this change is
 
-- 🔴/🟡 [one-sentence gist]
-- …
+[2–4 sentences: intent, areas touched, behaviour delta — readable without the diff.
+Once per PR, not once per round and not once per reviewer (§0).]
+```
 
-**What’s fine** (optional)
+### Round 2+ — what happened to the last round
 
-- [Load-bearing thing that looked correct]
+One bullet per previous ID. A line each; anything longer is a reply on that finding's own
+thread.
 
----
+```markdown
+### Round [N-1] — [K1…K5]
 
-## 2. Implementor handoff (goes on the PR)
+All re-derived at `[head]` rather than taken from the replies.
 
-**Context:** [PR # / branch / scope — so this block stands alone once §10 splits it]
+- **K1** 🔴 fixed in `[sha]` — [what is true now, one clause]
+- **K4** 🟡 **still open** — [what is still missing]
+- **K5** 🟢 superseded by [K8] — [why]
+```
 
-### Required changes
+### The findings index
 
-🔴 **[blocking]** `CONFIRMED|PLAUSIBLE` — [Title]
+The only list of findings in the body. Ranked by severity, then confidence. 🟢 and 💡
+included.
 
-**Location:** `path/to/file.py:123`
+```markdown
+### Findings
 
-[What’s wrong and why it matters]
+- **[K6]** 🔴 `CONFIRMED` — [gist in one sentence] · [`path/to/file.py:123`]([thread url])
+- **[K7]** 🟡 `PLAUSIBLE` — [gist] · [`path/to/other.py:45`]([thread url])
+- **[K8]** 🟢 `[nit]` — [gist] · [`path/to/third.py:9`]([thread url])
+```
 
-**Suggested fix:** [concrete direction]
+A finding with **no** location has no thread to link to, so it is written out in full here,
+under the index, still with its ID.
 
-**Trigger:** [input/state → failure], or needs-repro
+### Snapshot
 
-### Important suggestions
+```markdown
+### Snapshot
 
-🟡 **[important]** `CONFIRMED|PLAUSIBLE` — [Title]
+~[X] added / [Y] removed, [small|medium|large]. Gates: [green | CI pending | what is red
+and whether it is in scope] — glanced, not re-run.
+```
 
-**Location:** `path/to/file.py:123`
+### Block 3 — maintainer decisions
 
-[Why this matters]
+Items that need a **human call** only, each decidable without reading the diff. The six
+fields are [`dev-docs/pair-workflow.md`](../../../../dev-docs/pair-workflow.md) §Decision
+packet — do not invent a shorter parallel list. If none: `None.`
 
-**Consider:**
-- Option A: [description]
-- Option B: [description]
+```markdown
+### For you
 
-### Minor / suggestions
+**1. Question.** [yes/no, or A vs B]
 
-🟢 **[nit]** [Suggestion — small, and fixed on this PR]
+**2. Why it matters.** […]
 
-💡 **[suggestion]** [Alternative approach]
+**3. Options.** (a) […consequence]; (b) […consequence]
 
-📚 **[learning]** [Educational note — no action needed]
+**4. Evidence.** […]
 
-🎉 **[praise]** [Specific strength worth keeping]
+**5. Recommendation.** […]
 
-**Verdict:** [as above]
+**6. Default if you ignore this.** [what ships]
 
-### Measured this round
+Addressing these: `.claude/skills/address-review-findings/SKILL.md`.
+```
 
-One line per command you ran, with its result, so the next round inherits it instead of
-re-deriving it (§10). Ran nothing? `None.`
+### The collapsed block, last
+
+Written for the next round, not for the maintainer. Blank lines inside the tags are
+required or GitHub will not render the markdown.
+
+```markdown
+<details><summary>Measured this round · what's fine · outward trace</summary>
+
+**Measured this round.** One line per command with its result, so the next round inherits
+it instead of re-deriving it (§10). Ran nothing? `None.`
 
 - `[command]` → [result]
 
----
+**What's fine.** [1–3 load-bearing things that looked correct.]
 
-## 3. Maintainer decisions (your attention)
+**Outward trace.** [Which fixes moved a signature, contract, default or lifetime, and what
+the callers said — or that none of them moved one.]
 
-Numbered items that need a **human call** only. Each must be decidable without reading the
-briefing, handoff, or diff. If none: `None.`
-
-1. **[Decision]** — [yes/no or A vs B]
-   - **Why you:** [spec/VISION conflict, product trade-off, pause-and-ask, …]
-   - **Options:** A — [consequence]; B — [consequence]
-   - **Recommendation (optional):** […]
+</details>
+```
 
 ---
 
-## Quick copy blocks
+## B. An inline finding (block 2)
 
-### Blocking issue
-```
-🔴 **[blocking]** `CONFIRMED` — [Title]
+One per finding, anchored on the line it concerns. Written to be read months later by
+someone who has only this thread open: no "see the briefing", no "as in K3".
 
-**Location:** `path/to/file.py:123`
+```markdown
+### [K6] · 🔴 `[blocking]` · `CONFIRMED`
 
-[Description of the issue]
+**Claude Code** · `code-review-skill` · round [N] · `[head-sha]`
 
-**Suggested fix:**
-\`\`\`python
-# suggested code
-\`\`\`
+[What is wrong and why it matters.]
 
-**Trigger:** [input/state → failure]
-```
+**Fix:** [concrete direction]
 
-### Important suggestion
-```
-🟡 **[important]** `PLAUSIBLE` — [Title]
-
-**Location:** `path/to/file.py:123`
-
-[Why this is important]
-
-**Consider:**
-- Option A: [description]
-- Option B: [description]
+**Trigger:** [input/state → failure], or `needs-repro`
 ```
 
-### Minor suggestion
-```
-🟢 **[nit]** [Suggestion]
+Severity line for the other tiers: `🟡 [important]`, `🟢 [nit]`, `💡 [suggestion]`,
+`📚 [learning]`, `🎉 [praise]`. The last three carry no `CONFIRMED` / `PLAUSIBLE` tag —
+they ask for nothing.
 
-Small, but please fix on this PR: [improvement].
-```
+A suggested patch goes in a fenced block under **Fix:**, or as a GitHub `suggestion` block
+where it is a whole-line replacement.
 
-### Praise
-```
-🎉 **[praise]** Great work on [specific thing]!
+---
 
-[Why this is good]
-```
+## C. A reply on a thread
 
-### Learning
-```
-📚 **[learning]** [Educational note]
+```markdown
+### [K6] · [still open | fixed in `[sha]` | disproven]
 
-For context, [X] works this way because [Y]. No action needed — just sharing.
-```
+**Claude Code** · `code-review-skill` · round [N] · `[head-sha]`
 
-### Maintainer decision
-```
-1. **[Decision title]** — choose A or B
-   - **Why you:** [conflict / trade-off]
-   - **Options:** A — [consequence]; B — [consequence]
-   - **Recommendation (optional):** [A because …]
+[What changed, or why the fix does not close it.]
 ```
