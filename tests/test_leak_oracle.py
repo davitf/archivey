@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -383,3 +384,68 @@ def test_pid_alive_does_not_terminate_on_windows(
     monkeypatch.setattr(lo.os, "name", "nt")
     monkeypatch.setattr(lo.os, "kill", _kill)
     assert lo._pid_alive(1) is True
+
+
+def test_an_unpin_inside_a_locked_section_does_not_deadlock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A GC finalizer can reenter the oracle's lock on the thread already holding it.
+
+    An unclosed ``DelegatingStream`` is closed by ``io.IOBase.__del__``, and the
+    oracle's ``close`` wrapper unpins. A collection can fire inside any allocation,
+    including the one a locked section makes when it snapshots a pinned map, so the
+    unpin can land on a thread that is already inside ``_lock`` and cannot leave until
+    it returns. With a non-reentrant lock that is a permanent self-deadlock, which is
+    what a macOS CI job hit at teardown.
+
+    Run in a worker thread, against a stand-in lock of the same type, so a regression
+    fails this test instead of hanging the session: the thread stays blocked forever on
+    a lock nothing else uses, and the real one is never held.
+    """
+    import leak_oracle as lo
+
+    try:
+        stand_in = type(lo._lock)()
+    except TypeError:
+        # ``type(threading.Lock())`` is ``_thread.lock``, which cannot be instantiated;
+        # only the reentrant one round-trips. Build the non-reentrant kind directly so
+        # a regression reaches the deadlock this test is about rather than dying here.
+        stand_in = threading.Lock()
+    monkeypatch.setattr(lo, "_lock", stand_in)
+    done = threading.Event()
+
+    def _reenter() -> None:
+        with lo._lock:
+            lo._unpin_stream(object())
+        done.set()
+
+    worker = threading.Thread(target=_reenter, daemon=True)
+    worker.start()
+    assert done.wait(timeout=10), (
+        "an unpin from inside a locked section never returned: the oracle's lock is "
+        "not reentrant"
+    )
+
+
+def test_a_snapshot_retries_when_a_finalizer_mutates_mid_iteration() -> None:
+    """The other half of the same hazard: the reentrant unpin lands during the copy.
+
+    ``dict`` raises ``RuntimeError`` rather than returning a torn list, so the retry is
+    what keeps a teardown from failing on a stream that was genuinely closed.
+    """
+    import leak_oracle as lo
+
+    class _MutatesOnce(dict):  # type: ignore[type-arg]  # values() is all _snapshot uses
+        def __init__(self) -> None:
+            super().__init__({1: "pinned"})
+            self.calls = 0
+
+        def values(self):  # type: ignore[no-untyped-def]  # returns dict's own view
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("dictionary changed size during iteration")
+            return super().values()
+
+    pinned = _MutatesOnce()
+    assert lo._snapshot(pinned) == ["pinned"]
+    assert pinned.calls == 2
