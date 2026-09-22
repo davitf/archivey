@@ -17,7 +17,7 @@ volume_count)`, and what `open_source` is depends on what the caller passed:
 
 After that, `core.open_archive` may replace a non-seekable stream with a
 `PeekableStream` so detection's prefix is replayed, and each backend adds its own layer:
-the ISO backend (once the bounded-header work lands) puts `_ImageBoundedStream` in front
+the ISO backend puts `_ImageBoundedStream` in front
 of whatever it got so pycdlib's header-sized reads cannot allocate past the image; the
 TAR backend's `_EofProbeStream` bounds the same way for `tarfile`; measurement adds
 `SeekCountingStream`.
@@ -125,7 +125,7 @@ A directory is an `ArchiveSource` with a path and no stream; reading it raises.
 pycdlib and `tarfile` call `read(n)` with a size taken from the archive; they will not
 call an archivey method. So `read` itself never asks the inner for more than the source
 can still supply: clamped when the remaining length is a fact, stepped when it is not
-(`read_within_reach`, the rule the bounded-header work introduces). The size is measured
+(`read_within_reach`, the rule the ISO and TAR bounds already use). The size is measured
 once at construction together with whether it is a **fact** — `stat` on a path, a
 `BytesIO`'s buffer, `fstat` on a regular file — as distinct from a duck-typed `size`
 attribute on a caller's object, which is a hint. Only a fact clamps; a hint still steps.

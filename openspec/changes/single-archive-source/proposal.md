@@ -2,13 +2,13 @@
 
 A caller's source reaches a backend through a stack of single-purpose wrappers, each
 added for one guarantee: `BorrowedStream` so archivey never closes the caller's object,
-`FullCountStream` or a non-closing `io.BufferedReader` so a short `read(n)` cannot break a
-header parser, and — once the bounded-header work lands — `_ImageBoundedStream` in the ISO
-backend so a size field in the image cannot drive a 4 GiB allocation. Each is correct on
-its own, but which of them is present depends on the source's type, the backend, and
-whether detection ran, and every backend still branches on `isinstance(source, Path)`
-and keeps its own `_owned_fp` / `_owned_stream` bookkeeping for the handle it opened.
-The guarantees are real; where they live is hard to see and easy to break.
+`FullCountStream` or a non-closing `io.BufferedReader` so a short `read(n)` cannot break
+a header parser, and `_ImageBoundedStream` in the ISO backend so a size field in the
+image cannot drive a 4 GiB allocation. Each is correct on its own, but which of them is
+present depends on the source's type, the backend, and whether detection ran, and every
+backend still branches on `isinstance(source, Path)` and keeps its own `_owned_fp` /
+`_owned_stream` bookkeeping for the handle it opened. The guarantees are real; where
+they live is hard to see and easy to break.
 
 ## What Changes
 
@@ -59,8 +59,8 @@ The guarantees are real; where they live is hard to see and easy to break.
   `streams/streamtools/shared.py` (`SharedSource` takes the source's ownership answer
   instead of deciding its own), and every backend that opens its source: ZIP, TAR, ISO,
   RAR, 7z, single-file, directory.
-- Depends on the borrowed-source-streams work and on the bounded-header-allocations
-  work both being on `main` first: it consolidates what those two add.
+- Depends on the borrowed-source-streams work reaching `main` first; the
+  bounded-header-allocations work it also consolidates is already there.
 - Tests: the full-count, ownership and short-read suites retarget `ArchiveSource`;
   `tests/test_stream_bases.py`'s close inventory loses three classes; the leak oracle
   and the caller-stream parity tests must pass unchanged, which is the refactor's proof.

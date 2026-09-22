@@ -1,7 +1,7 @@
 # Tasks — one source object at the boundary
 
 > **Proposal only. Nothing here is implemented.** It starts once the borrowed-source
-> streams work and the bounded-header-allocations work are both on `main`: this change
+> streams work is on `main` (the bounded-header-allocations work already is): this change
 > consolidates what those two add. Each backend moves in its own task, so a failure in the
 > leak oracle or the caller-stream ownership suite names the backend that broke it.
 
@@ -47,7 +47,7 @@
 - [ ] 4.3 TAR: drop the source half of `_owned_stream`; the stream-capability answer reads
       the source; the EOF-probe wrapper keeps bounding decoded input only.
 - [ ] 4.4 ISO: drop `_owned_fp` and remove `_ImageBoundedStream`; the ISO header-length
-      tests from the bounded-header work must pass unchanged, on path and stream sources.
+      header-length tests must pass unchanged, on path and stream sources.
 - [ ] 4.5 RAR: the disk-copy cost note and sibling discovery read `.path` /
       `.volume_paths`; drop `_owned_concat` where the source now owns the joined set.
 - [ ] 4.6 7z and single-file: through `SharedSource` as in 3.3; single-file hands
