@@ -13,10 +13,9 @@ they live is hard to see and easy to break.
 ## What Changes
 
 - One internal class, `ArchiveSource`, is what `resolve_source` builds from a path, a
-  caller stream, or a volume list, and the only source object detection and every
-  backend receive. It **is** a read-only binary stream (third-party parsers — `zipfile`,
-  `tarfile`, `pycdlib` — are handed it directly) and carries every source-level
-  guarantee itself:
+  caller stream, or a volume list, and the source object detection and every backend
+  receive. It **is** a read-only binary stream (third-party parsers such as `tarfile` and
+  `pycdlib` are handed it directly) and carries every source-level guarantee itself:
   - **full-count** `read(n)`, choosing internally between passing through an
     already-buffered source, a fixed-size read buffer over a seekable raw one, and
     gathering over a non-seekable one;
@@ -42,6 +41,10 @@ they live is hard to see and easy to break.
   decompressors, verifiers), measurement (`SeekCountingStream` stays an optional wrapper
   put on from outside), and the bound on reads of *decoded* bytes (the TAR backend's
   wrapper over a decompressor keeps its own).
+- Three wrappers stay above `ArchiveSource`, each preserving its guarantees: measurement,
+  ZIP's start offset, and the zero-origin `SlicingStream` that `fix_stream_start_position`
+  puts over a mid-positioned seekable stream. ZIP and the single-file codecs keep handing
+  their parser the path when they need no handle of archivey's.
 - No public API change. `open_archive`, `open_stream` and `detect_format` accept the same
   sources and behave the same way.
 
@@ -66,7 +69,9 @@ they live is hard to see and easy to break.
 
 - New `src/archivey/internal/source.py`; `volumes.py` (`resolve_source`,
   `ResolvedSource`, volume items), `core.py` (dispatch, `open_stream`), `detection.py`,
-  `detection_workspace.py`, `streams/peekable.py` (removed), `streams/streamtools/full_count.py` (removed),
+  `detection_workspace.py`, `streams/peekable.py` (removed, or reduced to whatever
+  non-source call site survives the migration), `streams/streamtools/full_count.py`
+  (removed),
   `streams/streamtools/shared.py` (`SharedSource` takes the source's ownership answer
   instead of deciding its own), and every backend that opens its source: ZIP, TAR, ISO,
   RAR, 7z, single-file, directory.
@@ -78,5 +83,6 @@ they live is hard to see and easy to break.
 - Docs: `dev-docs/topics/stream-ownership.md`, the source rows of
   `dev-docs/threat-model.md`.
 - Performance: one Python-level `read` call is added in front of the seekable-raw case,
-  which today reaches the C buffer directly; measured with
-  `benchmarks/caller_stream_probe.py` before and after, and reported on the PR.
+  which today reaches the C buffer directly, and in front of streaming TAR over a path;
+  measured with `benchmarks/caller_stream_probe.py` before and after, with path sources
+  as a treatment rather than the control, and reported on the PR.

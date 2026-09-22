@@ -12,8 +12,8 @@ depends on the source, the backend, and whether detection ran, and every backend
 decides for itself whether it opened the source and must close it.
 
 **What it does:** One internal class, ArchiveSource, is what the boundary builds from a
-path, a stream or a volume list. It is itself the stream every backend and third-party
-parser reads, and it carries full-count reads, ownership, bounded reads and the cheap
+path, a stream or a volume list. It is itself the stream backends and third-party
+parsers read, and it carries full-count reads, ownership, bounded reads and the cheap
 facts about the source. The three wrapper classes and the ISO guard go away.
 
 **Decided:** It closes only what archivey opened or built. A path opens its file lazily
@@ -21,7 +21,9 @@ and keeps its path, for unrar and volume discovery. Bounding is built into ordin
 reads, since third-party parsers will never call a special method, and only a size that
 is a fact clamps a read. Member streams, measurement, and the bound on decoded bytes
 stay outside. You decided the replay buffer detection reads from a non-seekable source
-moves in as well, so the backend always receives the same object.
+moves in as well, so the backend always receives the same object. A parser that opens a
+path itself, as the ZIP reader's does, keeps getting the path, so a plain ZIP open costs
+nothing new.
 
 **Your call later:** None. The design is settled.
 

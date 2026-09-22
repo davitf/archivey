@@ -10,8 +10,11 @@
 - [ ] 1.1 Run `benchmarks/caller_stream_probe.py` on `main` (alternating runs, shared
       `ARCHIVEY_BENCH_CACHE`) and keep the JSON as the before side.
 - [ ] 1.2 Add a seekable **raw** stream shape to the probe (a `RawIOBase` over the file
-      with no buffer), since that is the case this change adds a Python frame to and the
+      with no buffer), since that is a case this change adds a Python frame to and the
       probe's `file` and `bytesio` shapes are both already buffered.
+- [ ] 1.3 Make `path` a treatment shape in the probe's `--compare`, and take the noise
+      control from the odd/even split of each side's own runs instead: this change
+      touches path sources, so `path` can no longer be the untouched control.
 
 ## 2. `ArchiveSource`
 
@@ -24,8 +27,10 @@
       (decision 4).
 - [ ] 2.4 Size and name measured once at construction; `size` exposed only when it is a
       fact, with the fact/hint distinction recorded (decisions 5 and 6).
-- [ ] 2.5 Bounded `read` and `readinto` through `read_within_reach`, clamping only on a
-      fact (decision 5).
+- [ ] 2.5 Bounded `read` and `readinto`: `read_within_reach` decides how many bytes may be
+      requested and runs over the full-count strategy, never over the raw inner; clamp
+      only on a fact (decision 5). Test that a one-byte-chunk non-seekable source still
+      returns `n` through the bound.
 - [ ] 2.6 Move the full-count, borrow and short-read tests onto `ArchiveSource`,
       including the refusal cases and the non-seekable axis pair; add tests for lazy
       opening, the fact/hint clamp (an understating `size` attribute must not truncate),
@@ -34,16 +39,22 @@
 ## 3. The boundary
 
 - [ ] 3.1 `resolve_source` returns an `ArchiveSource` in `ResolvedSource`, building each
-      caller stream in a volume list as a borrowed `ArchiveSource` inside the joined set.
-- [ ] 3.2 `open_stream` and detection take the same object; `core.py`'s three
-      `isinstance(source, Path)` branches read `.path` instead.
+      caller stream in a volume list as a borrowed `ArchiveSource` inside the joined set;
+      the parts do not bound, the outer source does, and the joined size is a fact when
+      every part's is (decision 7a).
+- [ ] 3.2 `open_stream` and detection take the same object; detection over a path opens
+      and closes its own handle from `.path`; `core.py`'s three `isinstance(source, Path)`
+      branches read `.path` instead. Standalone `detect_format` is unchanged.
+- [ ] 3.4 The zero-origin view stays a `SlicingStream` over the `ArchiveSource`
+      (decision 7); check it clamps and borrows as the spec's wrapper rule requires.
 - [ ] 3.3 `SharedSource` accepts the `ArchiveSource` and stops deciding ownership itself.
 
 ## 4. Backends, one at a time
 
 - [ ] 4.1 Directory: read `.path`; the type check becomes a check for the directory form.
-- [ ] 4.2 ZIP: drop `_owned_fp`; wrap the `ArchiveSource` for measurement and the start
-      offset.
+- [ ] 4.2 ZIP: hand `zipfile` `.path` as today when neither measurement nor a start offset
+      needs a handle (decision 4); otherwise the `ArchiveSource`, wrapped for measurement
+      and the start offset. Drop `_owned_fp`.
 - [ ] 4.3 TAR: drop the source half of `_owned_stream`; the stream-capability answer reads
       the source; the EOF-probe wrapper keeps bounding decoded input only.
 - [ ] 4.4 ISO: drop `_owned_fp` and remove `_ImageBoundedStream`; the ISO header-length
@@ -84,6 +95,7 @@
 ## 8. Verify
 
 - [ ] 8.1 `./scripts/check.sh --fix` and `./scripts/test.sh --all-configs`.
-- [ ] 8.2 Re-run the probe against 1.1's before side; put the table on the PR, and if the
-      seekable-raw row shows, apply the bound-method fallback from design §Risks.
+- [ ] 8.2 Re-run the probe against 1.1's before side; put the table on the PR, with the
+      path rows read as treatment. If the seekable-raw row shows, apply the bound-method
+      fallback from design §Risks; if a path row shows, say which backend and why.
 - [ ] 8.3 `openspec validate --strict single-archive-source`.

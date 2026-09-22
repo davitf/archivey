@@ -47,7 +47,7 @@ and views that no boundary buffer sits in front of.
 | `parse_rar_archive` driven directly from a short-returning source | `header_offset` / `header_size` / `data_offset` / `compress_size` identical — a coalescing layer must report the logical position, not a buffer position |
 | Healthy archive, short-returning source | Never `CorruptionError` / `TruncatedError` |
 | Each streaming-capable format, `ShortReadNonSeekable(max_chunk=1)`, detected and with explicit `format=` | Both match the full-count open; the explicit-`format=` case does not depend on a replay prefix having been read |
-| `ArchiveSource` over a non-seekable short-returning source, `read(n)` | Returns exactly `n` bytes short of EOF, and consumes exactly `n` bytes from the source |
-| `ArchiveSource` over a non-seekable raw source | `seekable()` is `False`; no read-ahead is buffered |
+| `ArchiveSource` over a non-seekable short-returning source, constructed directly (no detection prefix), `read(n)` | Returns exactly `n` bytes short of EOF, and consumes exactly `n` bytes from the source |
+| `ArchiveSource` over a non-seekable raw source, constructed directly | `seekable()` is `False`; no read-ahead is buffered |
 | `ArchiveSource` over an already-buffered non-seekable source (`io.BufferedReader`) | Reads through that buffer with no second buffer in front of it |
 | `read(-1)` / `readall()` on the `ArchiveSource` over a non-seekable short-returning source | Returns every remaining byte, and keeps doing so when the inner also returns short on `read(-1)` — the drain must not depend on the inner's `readall()` |
