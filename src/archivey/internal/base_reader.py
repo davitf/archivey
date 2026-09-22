@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.diagnostics import (
+    Diagnostic,
     DiagnosticCode,
     DiagnosticDisposition,
     DiagnosticSummary,
@@ -411,6 +412,11 @@ class BaseArchiveReader(ArchiveReader):
         # second listing pass over fresh ArchiveMember objects for the same members does
         # not re-emit their diagnostics (see ``_register_member``).
         self._presentation_checked: set[int] = set()
+        # Link reports already delivered, by the member's position in the listing, so a
+        # repeat sighting re-attaches the same one instead of emitting another (see
+        # ``_emit_link_target_unavailable``). Bounded by the collector's retention
+        # budget: only a diagnostic that actually attached is kept here.
+        self._link_reports: dict[int, Diagnostic] = {}
         # Set by open_archive on the reader it is about to return; read only by the
         # empty-listing check in _publish_materialized. None for a reader built directly.
         self._format_provenance: FormatProvenance | None = None
@@ -1270,22 +1276,7 @@ class BaseArchiveReader(ArchiveReader):
         diagnostic again — which would count one targetless link twice in
         ``DiagnosticSummary.counts``, and under a ``RAISE`` disposition would raise at
         whatever later access happened to touch the member rather than during listing.
-
-        It is also where a diagnostic held back at typing time is delivered. A backend
-        that settles the question from the header alone does so while the member is
-        still being built: before it has an id to name in the report, and — because
-        each listing pass builds fresh ``ArchiveMember`` objects for the same members,
-        and ``extract_all`` walks an indexed archive twice — potentially more than once
-        per archive. Link finalization runs once, over the objects the caller will
-        actually hold, so that is where the report belongs.
         """
-        pending = member._pending_link_target_unavailable
-        if pending is not None:
-            member._pending_link_target_unavailable = None
-            reason, message = pending
-            self._emit_link_target_unavailable_now(
-                member, reason=reason, message=message
-            )
         if member.link_target is not None or member._link_target_resolved:
             return
         self._ensure_link_target(member)
@@ -1304,6 +1295,7 @@ class BaseArchiveReader(ArchiveReader):
         reason: str,
         message: str,
         target_in_archive: bool,
+        report_key: int | None = None,
     ) -> None:
         """Report that a link's target could not be read, and why.
 
@@ -1324,38 +1316,59 @@ class BaseArchiveReader(ArchiveReader):
         knows; inferring it downstream from "the lookup finished" is what this
         parameter replaced.
 
-        A caller that settles the question while the member is still being *typed* gets
-        the answer recorded on the member immediately and the report held back until
-        :meth:`_resolve_link_target` runs — see there for why. The answer is what the
-        write decision needs and it must not wait; the report is what the caller reads
-        afterwards and belongs on the member the caller keeps.
+        ``report_key`` is for a backend calling this while the member is still being
+        *typed*, before :meth:`_register_member` has given it an id: it is the member's
+        position in the archive's listing, which is the id that registration will
+        stamp. One member reported once is what the caller's ``counts``, retention
+        budget and callback all assume, and an indexed backend is listed more than once
+        per ``extract_all`` — ZIP building fresh ``ArchiveMember`` objects each time, 7z
+        handing back the same ones. So a repeat sighting re-attaches the report the
+        first one produced rather than making a second, and the caller finds it on
+        whichever object its own pass handed back.
+
+        Typing time is also the only moment every path shares. Link finalization does
+        not run in a progressive pass a caller abandons early, and registration does not
+        run at all in a 7z one, which streams straight off its cached member list — so
+        anything held back for either loses the report on exactly the archives this
+        outcome exists for.
         """
         member._link_target_absent = not target_in_archive
-        if member._member_id is None:
-            member._pending_link_target_unavailable = (reason, message)
-            return
-        self._emit_link_target_unavailable_now(member, reason=reason, message=message)
-
-    def _emit_link_target_unavailable_now(
-        self, member: ArchiveMember, *, reason: str, message: str
-    ) -> None:
-        """Put the report on the channel. Callers decide *when*; this decides nothing."""
-        self._diagnostics_collector.emit(
+        key = member._member_id if member._member_id is not None else report_key
+        if key is not None:
+            reported = self._link_reports.get(key)
+            if reported is not None:
+                self._diagnostics_collector.reattach_to_member(member, reported)
+                return
+        diagnostic = self._diagnostics_collector.emit(
             code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
             message=message,
             context=SymlinkTargetContext(
                 archive_name=self._archive_name,
                 member_name=member.name,
-                member_id=member._member_id,
+                member_id=key,
                 reason=reason,
             ),
             member=member,
             attach_to_member=True,
             logger=logger,
         )
+        # Only a report that actually landed on the member is worth carrying forward.
+        # Under an IGNORE disposition, or once the retention budget is spent, the
+        # emission attaches nothing, and re-attaching then would hand a later object a
+        # record the first one never got — besides growing this map past the budget
+        # that is meant to bound it.
+        if key is not None and any(
+            attached is diagnostic for attached in member._diagnostics
+        ):
+            self._link_reports[key] = diagnostic
 
     def _apply_reparse_data(
-        self, member: ArchiveMember, data: bytes, *, fallback_type: MemberType
+        self,
+        member: ArchiveMember,
+        data: bytes,
+        *,
+        fallback_type: MemberType,
+        report_key: int | None = None,
     ) -> None:
         """Set ``link_target`` (and ``is_junction``) from a Windows reparse buffer.
 
@@ -1435,7 +1448,11 @@ class BaseArchiveReader(ArchiveReader):
         # names nothing, or bytes that are not a link buffer at all. None of them is a
         # target this reader merely failed to reach.
         self._emit_link_target_unavailable(
-            member, reason=reason, message=message, target_in_archive=False
+            member,
+            reason=reason,
+            message=message,
+            target_in_archive=False,
+            report_key=report_key,
         )
 
     @staticmethod

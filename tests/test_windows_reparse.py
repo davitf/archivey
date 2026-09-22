@@ -591,8 +591,12 @@ def test_the_reparse_bit_is_read_only_from_a_dos_creator(tmp_path: Path) -> None
         pytest.param("junction_7zip_snl.7z", id="7z"),
     ],
 )
+@pytest.mark.parametrize(
+    "streaming",
+    [pytest.param(False, id="seekable"), pytest.param(True, id="streaming")],
+)
 def test_a_missing_target_is_reported_once_per_member(
-    fixture: str, tmp_path: Path
+    fixture: str, streaming: bool, tmp_path: Path
 ) -> None:
     """Looking for a target that is not there must not repeat on every access.
 
@@ -600,12 +604,19 @@ def test_a_missing_target_is_reported_once_per_member(
     re-reads the member and emits the same diagnostic again — counting one targetless
     link as two in `DiagnosticSummary.counts`.
 
-    The extraction leg is the other half, and it is a different mechanism: a member the
-    header alone settles is settled once per listing *pass*, and `extract_all` walks a
-    ZIP twice — once for the progress totals and the selector, once to drive the pass,
-    building fresh `ArchiveMember` objects each time. So the report is held on the
-    member and delivered at link finalization, which only the second of those runs; the
-    member ids pin that it is also the pass whose members the caller gets back.
+    Once per member is not once per pass. `extract_all` lists an indexed archive twice —
+    once for the progress totals and the selector, once to drive the extraction — so a
+    member the header alone settles is settled twice, and ZIP builds a fresh
+    `ArchiveMember` object for it each time while 7z hands back the same one. The report
+    therefore has to be recognised as one already made, and then follow the member onto
+    whichever object this pass produced: the caller holds that one, and an empty
+    `member.diagnostics` on the member it can see is no report at all.
+
+    Parametrised over both read modes because the two backends lose it in different
+    places. A progressive 7z pass streams off its cached member list, registering
+    nothing and finalizing nothing, so anything that waits for either is never delivered
+    at all — the archive comes back with two anomalies and a silent diagnostics channel,
+    and a strict policy stops refusing it.
     """
     code = DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
     with open_archive(_JUNCTION_DIR / fixture) as archive:
@@ -617,22 +628,23 @@ def test_a_missing_target_is_reported_once_per_member(
                     archive.open(member)
         assert archive.diagnostics.counts.get(code) == 2
 
-    with open_archive(_JUNCTION_DIR / fixture) as archive:
-        archive.extract_all(tmp_path)
+    with open_archive(_JUNCTION_DIR / fixture, streaming=streaming) as archive:
+        report = archive.extract_all(tmp_path, on_error=OnError.CONTINUE)
         assert archive.diagnostics.counts.get(code) == 2
-        reported = [
-            diagnostic
-            for member in archive.members()
-            for diagnostic in member.diagnostics
-            if diagnostic.code is code
+        # The archive's own omissions, which is narrower than "no target came back":
+        # in streaming `tree/symlink_file` also arrives without one, because its target
+        # is in data this pass has gone past, and that stays a per-member failure.
+        targetless = [
+            result.member
+            for result in report.results
+            if result.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
         ]
-        # Held back until the member had an identity, rather than emitted while it was
-        # still being typed: a diagnostic naming no member is not much of a report.
-        assert [diagnostic.context.member_id for diagnostic in reported] == [
-            member._member_id
-            for member in archive.members()
-            if member.link_target is None and member.is_link
-        ]
+        assert len(targetless) == 2
+        for member in targetless:
+            reported = [d for d in member.diagnostics if d.code is code]
+            assert len(reported) == 1
+            # The member the report names is the member the caller is holding.
+            assert reported[0].context.member_id == member._member_id
 
 
 def test_a_tar_symlink_spelled_as_a_directory_is_still_reported(tmp_path: Path) -> None:

@@ -638,8 +638,13 @@ class ZipReader(BaseArchiveReader):
         return None
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
-        for info in self._archive.infolist():
-            yield self._to_member(info)
+        # The position is passed down because this runs more than once per archive --
+        # `extract_all` lists an indexed backend twice -- and a member typed on the
+        # second pass is a different `ArchiveMember` object for the same member. It is
+        # the id `_register_member` stamps, so a diagnostic raised here can name the
+        # member and be recognised as one already reported.
+        for index, info in enumerate(self._archive.infolist()):
+            yield self._to_member(info, index)
 
     def _sniff_unflagged_name(
         self, raw_name: bytes, cp437_decoded: str
@@ -673,7 +678,7 @@ class ZipReader(BaseArchiveReader):
             return utf8_decoded, None
         return utf8_decoded, "utf-8"
 
-    def _to_member(self, info: zipfile.ZipInfo) -> ArchiveMember:
+    def _to_member(self, info: zipfile.ZipInfo, index: int) -> ArchiveMember:
         full_mode = info.external_attr >> 16
         is_unix = info.create_system == 3
         # Permission bits only; None when no usable Unix mode was stored.
@@ -832,7 +837,9 @@ class ZipReader(BaseArchiveReader):
             # the link-target hook is what makes streaming agree: that hook runs at EOF,
             # after extraction has already decided what to do with the member, which
             # left a 7-Zip junction raising instead of taking the recorded outcome.
-            self._apply_reparse_data(member, b"", fallback_type=fallback_type)
+            self._apply_reparse_data(
+                member, b"", fallback_type=fallback_type, report_key=index
+            )
         for issue in ts_issues:
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,

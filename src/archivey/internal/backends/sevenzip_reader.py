@@ -410,7 +410,10 @@ class SevenZipReader(BaseArchiveReader):
 
     def _build_members(self) -> list[ArchiveMember]:
         # is_current is stamped by BaseArchiveReader's shared last-entry-wins pass.
-        return [self._to_member(record) for record in self._archive.files]
+        return [
+            self._to_member(record, index)
+            for index, record in enumerate(self._archive.files)
+        ]
 
     def _members_by_folder(self) -> dict[int, list[ArchiveMember]]:
         grouped: dict[int, list[ArchiveMember]] = {}
@@ -474,7 +477,7 @@ class SevenZipReader(BaseArchiveReader):
             cleanup=_cleanup,
         )
 
-    def _to_member(self, record: SevenZipFileRecord) -> ArchiveMember:
+    def _to_member(self, record: SevenZipFileRecord, index: int) -> ArchiveMember:
         member_type = self._member_type(record)
         presented_name = record.filename
         if presented_name == "":
@@ -557,7 +560,10 @@ class SevenZipReader(BaseArchiveReader):
             # after extraction has already decided what to do with the member, which
             # left a 7-Zip junction raising instead of taking the recorded outcome.
             self._apply_reparse_data(
-                member, b"", fallback_type=self._member_type_ignoring_reparse(record)
+                member,
+                b"",
+                fallback_type=self._member_type_ignoring_reparse(record),
+                report_key=index,
             )
         for issue in ts_issues:
             self._diagnostics_collector.emit(
