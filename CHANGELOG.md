@@ -97,6 +97,11 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **A raw CD sector image is refused by name.** The `.bin` of a `.bin`/`.cue` pair
+  used to fail detection with "no magic-byte match", which reads like a corrupt file. It
+  is now recognised by its sector sync pattern and refused with
+  `UnsupportedFeatureError` naming the layout (Mode 1, Mode 2 Form 1 or 2, sector size).
+  Reading one, by stripping its sectors to the 2048-byte payload, is not implemented.
 - **`ArchiveReader.extract_all()` no longer takes `config=`.** It honoured only the
   extraction limits and silently dropped every other field, including a per-call
   diagnostic policy or callback. A reader runs under the config it was opened with;

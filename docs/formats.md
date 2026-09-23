@@ -187,8 +187,9 @@ behaviour. The complete list is on the two classes.
 - Needs `[recommended]` (`pycdlib`) and a seekable source.
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
-- Raw `.bin` Mode 1 sector images may be stripped to 2048-byte payloads; unsupported
-  layouts raise rather than mis-read.
+- Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
+  with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
+  one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).
 
 ## Directory
 

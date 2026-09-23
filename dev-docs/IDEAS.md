@@ -14,6 +14,17 @@
 
 ## Backends & format coverage
 
+- **Read raw CD sector images (`.bin`) by stripping sectors** — 0.2.0 recognises a raw
+  image and refuses it by name (`iso_reader._refuse_raw_sector_image`); davitf deferred
+  reading one past the release (#315, S22-K6 thread, 2026-09-21). The layout was
+  prototyped on that thread and is all in the file: byte 15 is the mode, the submode's
+  `0x20` bit splits Mode 2 Form 1 from Form 2, and the sector size is where the second
+  sync lands (2352, or 2448 with subchannel data). Mode 1 and Mode 2 Form 1 strip to a
+  byte-identical `.iso` (payload at 16 and 24), as a slicing stream rather than a copy;
+  the sector walk also yields the image's valid length, which is the bound
+  `_ImageBoundedStream` wants. Two non-goals recorded there: multi-track images that need
+  the `.cue` (track 1 audio has no sync at offset 0), and EDC/ECC verification — the
+  trailing 288 bytes would be dropped unchecked, which the docs must then say.
 - **Port `unrar`'s member-mask matcher faithfully, instead of probing it** — a RAR member's
   stored name is handed to `unrar` as an include mask (`-n./<name>`), so archivey has to
   predict which *other* members that mask will also match in order to skip their bytes back
