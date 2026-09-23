@@ -57,9 +57,10 @@ promise with that line; treat `0.2.0` as the first release of this library.
   and the allocation happens on `open()` and `read()`, which `ExtractionLimits` does
   not cover, so it is a type of its own rather than another bomb guard. Default
   2 GiB, `DecoderLimits.UNLIMITED` to opt out, `ResourceLimitError` when exceeded.
-  Enforced so far on both PPMd paths, where the refusal is not optional: under a
-  memory cap a rejected allocation kills the interpreter from inside pyppmd instead
-  of raising.
+  Enforced on both PPMd paths, where the refusal is not optional (under a memory
+  cap a rejected allocation kills the interpreter from inside pyppmd instead of
+  raising), and on the LZMA dictionary of 7z, ZIP, xz, `.lzma` and lzip, where the
+  dictionary fills as output is written and so bounds how much of it stays resident.
 
 ### Fixed
 
