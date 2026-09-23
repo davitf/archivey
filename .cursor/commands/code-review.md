@@ -54,28 +54,25 @@ The implementing agent then works through it with `/address-review`
 ## When you approve, hand it to Claude for a pass from zero
 
 This matters when **you** are the reviewer and Claude implemented — the roles run both
-ways round. Once your verdict is ✅ Approve and you have posted the review, post one more
-comment on the pull request whose **first two words** are `@claude review`, then stop.
+ways round. Once your verdict is ✅ Approve and you have posted the review, add the
+`review` label to the pull request (`gh pr edit <number> --add-label review`), then stop.
 
 That starts a Claude round through the
 [review loop](../../dev-docs/review-loop.md). It reads the whole diff rather than a
-fix-diff, because the round counter only counts rounds the loop itself ran and Claude has
-not reviewed this pull request — a second reviewer's first look is not a re-review
-(addendum §10). A pass from zero after an approval is the point: two reviewers who have
-read the same tree cold are worth more than one that read it twice.
+fix-diff, because Claude has not reviewed this pull request — a second reviewer's first
+look is not a re-review (addendum §10). A pass from zero after an approval is the point:
+two reviewers who have read the same tree cold are worth more than one that read it
+twice.
 
-Three things to get right:
+Two things to get right:
 
-- **The phrase only counts at the top of a comment.** Quoting it mid-sentence does
-  nothing, which is deliberate — see
-  [Why the phrase has to come first](../../dev-docs/review-loop.md#why-the-phrase-has-to-come-first).
 - **Last action, after everything else is posted.** The round reviews the pull request as
-  it stands when the comment lands.
+  it stands when it starts.
 - **Only on approve.** A verdict of 🔄 Request Changes goes back to the implementer;
   there is nothing for a second reviewer to confirm yet.
 
 If Claude's pass finds something real, that is the ordinary loop and not an escalation:
-the implementer is pinged, rounds continue under the same cap
+the implementer fixes it, and rounds continue under the same cap
 (maintainer decision, davitf, 2026-09-19). An approval that a second reviewer disagrees
 with is not evidence of anything, and stopping for a human would cost a round trip for
 what is usually a nit.

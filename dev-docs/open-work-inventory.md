@@ -77,7 +77,7 @@ PR is, not whether it is ready — read the PR.
 
 | PR | What | Where it sits |
 | --- | --- | --- |
-| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge.** Head *is* `main` (base is an orphan `empty-base`), so it re-renders against current `main` automatically — there is nothing to merge into it. 208 threads, 140 open. Carries `loop:off` so it can never enrol in the review loop. **It was closed by accident on 2026-09-21 and reopened the same day** — see the note below |
+| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge.** Head *is* `main` (base is an orphan `empty-base`), so it re-renders against current `main` automatically — there is nothing to merge into it. 208 threads, 140 open. Carries `no-review` so no review round can run on it. **It was closed by accident on 2026-09-21 and reopened the same day** — see the note below |
 | [#385](https://github.com/davitf/archivey/pull/385) | Keep `type:` off the start of a comment line in `volumes.py` | One round, `loop:on`. A one-line hazard: a comment beginning `type:` reads as a type comment |
 | [#386](https://github.com/davitf/archivey/pull/386) | ZIP and 7z: read Windows reparse points instead of guessing at them | Draft, `loop:decision`. Answers #315 S20-K9, the `is_junction` cross-format promise |
 | [#387](https://github.com/davitf/archivey/pull/387) | Drop the `unrar x` tempdir strategy the reader never had | Draft, spec-only |
@@ -86,14 +86,59 @@ PR is, not whether it is ready — read the PR.
 | [#390](https://github.com/davitf/archivey/pull/390) | The three-config gate is the author's judgement, except at release | Draft. The non-normative half; **merge #385 first**, which carries the statement it defers to |
 | [#391](https://github.com/davitf/archivey/pull/391) | Commission the public API review for the 0.2.0 freeze | Draft, docs only. Found that the real public surface is 120 importable names, not the 89 in `__all__` |
 
-**A merge commit closed the hub by accident, and the keyword is the lesson.** #365's squash
-body ends *"Closes #315 thread 56 / ARC-12."* GitHub reads `Closes #315` and stops at the
-number, so merging #365 at `11:10:27Z` closed #315 two seconds later — `closed_at`
-`2026-09-21T11:10:29Z`, `merged_at` null, the `closed` event carrying `0454c54`, which is
-#365's own merge commit. The hub held 142 open threads at the time. It was reopened the same
-day; `empty-base` was never touched. **Never write a closing keyword in front of `#315` in a
-commit message or a PR body** — write "#315 thread 56" without `Closes`, or name the thread
-by its URL, because the hub is the one PR in this repo that must never close.
+**A closing keyword closed the hub by accident — twice in one afternoon, the second time
+from the text explaining the first.** Both were GitHub's ordinary documented form: the
+keyword immediately before the hub's number.
+
+PR 365's squash body ended with one, and merging it at `11:10:27Z` closed the hub two
+seconds later: `closed_at` `2026-09-21T11:10:29Z`, `merged_at` null, the `closed` event
+carrying `0454c54`, PR 365's own merge commit. 142 threads were open. Reopened at
+`11:16:47Z`.
+
+Then the revision of this page that recorded incident 1 did it again, and **the mechanism is
+the quotation.** Explaining what PR 365 had written meant reproducing the phrase, and PR
+388's *pull request body* reproduced it verbatim, twice. GitHub parses a pull request body on
+merge, so the hub closed at `12:45:29Z`. The squash body is innocent here and its `closed`
+event proves it: that event carries **no commit at all**, where incident 1's carries
+`0454c54`. A closure driven by a commit message records its commit.
+
+**So the rule is about reproduction, not about proximity: when you write down what a closing
+phrase said, do not reproduce it.** Describe it — "PR 365's squash body ended with a closing
+keyword and the hub's number" — or break the string. §10 of the review addendum
+carried this exact shape for the old review loop's trigger phrase, which was a command rather
+than a quotable string; the hub's number is the same hazard with a different parser. Ordinary
+sentences that merely contain both a keyword and the number are fine: this page has eight of
+them and neither closure came from that shape.
+
+**Two surfaces, not one.** GitHub prefills the squash body from the pull request body, so
+they normally match — but whoever merges can edit the squash body, and PR 388's was edited,
+which is exactly why reading it alone gave the wrong answer here. Both are parsed. Check
+both.
+
+**And a closure fails silently**, which is why the rule has to be mechanical rather than
+watchful. A closed hub still serves every thread over the `ccr/review_threads` route,
+`scripts/sweep_coverage.py` keeps returning the same coverage, and the review workflow never
+touches it anyway (`no-review`). Nothing in the repository degrades; the hub simply stops
+being a pull request. `empty-base` was untouched both times, so reopening restored everything
+and cost nothing.
+
+**There is now a net.** [`.github/workflows/review-hub-watchdog.yml`](../.github/workflows/review-hub-watchdog.yml)
+reopens the hub when it finds it closed and comments saying which surface did it, reading the
+last `closed` event's `commit_id` exactly as the diagnosis above does. It runs on every push to
+`main`, which is what a closing keyword needs to fire whether it arrives as a squash, a merge
+commit or a commit pushed straight to the branch, with a six-hourly schedule behind it for a
+close by hand or an event GitHub drops. It is recovery rather than prevention: a pull request
+body could be checked before the merge, but a squash body could not — it is editable at merge
+time and what GitHub parses is what was actually merged — so a pre-merge check would cover one
+surface and miss the other. The escape hatch is the `hub:closed-on-purpose` label, which the
+job honours and which was created on the repository when this landed.
+
+The decision — open, merged, labelled, or reopen and which surface did it — lives in
+[`scripts/review_hub_watchdog_gate.py`](../scripts/review_hub_watchdog_gate.py) and is unit
+tested, the way `review_loop_gate.py` already splits the review loop. That split earns more
+here than it does there: everything past "is the hub open" runs only during an incident, so a
+break in it is invisible until the moment it is needed, which is exactly how the first version
+shipped with the surface query broken by pagination.
 
 **#382 and #380 were two halves of one sweep and they collided; #380 merged on 2026-09-21 and
 resolved it.** Both refuse or coerce wrong-typed public arguments — #382 the object and numeric
@@ -106,9 +151,12 @@ picking one side of such a conflict deletes the other branch's validation with n
 at import.
 
 **Fourteen PRs merged on 2026-09-20 and 2026-09-21** — #365, #370, #371, #372, #373, #374,
-#375, #376, #377, #378, #380, #382 and #383/#384 — and between them they closed fifteen #315
-threads. #371, #373, #374 and #375 were the first three decided S15/S16 findings plus the RAR
-mask fix, each turned around in about seven minutes; #370 removed the `pybcj` dependency
+#375, #376, #377, #378, #380, #382 and #383/#384 — and between them they account for
+seventeen threads resolved on the hub, counted from the `ccr/review_threads` route on
+2026-09-21 at 12:40Z. (Fifteen of those were the figure before #380 merged and closed S19-K6
+and S19-K8; PR 388's own description still says fifteen.) #371, #373, #374 and #375 were the
+first three decided S15/S16 findings plus the RAR mask fix, each turned around in about
+seven minutes; #370 removed the `pybcj` dependency
 outright; #382, #384 and #380 are the public-API argument, `extra`-typing and enum-coercion
 changes; #372 deleted `formats/rar.md` §10; #376, #377 and #378 are three waves of the typing
 escape-hatch inventory.
@@ -956,7 +1004,7 @@ Ordered by what unblocks the most, then by what is cheapest to verify.
    prose conclusions became a runnable script, which was the objection against it)*.
 3. Close **#101** *(done, 2026-09-11)*, **#243** *(done)*, **#187** *(done — but see the
    native-stress section: the criterion it needed was not recorded)*.
-4. **Resolve the five #315 threads whose fixes merged in #349 and #350** — S1-F1, S1-F2,
+4. **Mark the five hub threads whose fixes merged in #349 and #350** — S1-F1, S1-F2,
    S1-F3, S2-F1, S2-F2. *Done 2026-09-19*, each verified against `main` first; see the #315
    section above. The ten remaining S1/S2 threads are tracked internally as one batch.
 

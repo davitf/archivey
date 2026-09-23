@@ -203,6 +203,34 @@ The absent RAR3 check value is why a wrong header password used to surface as
 `CorruptionError` and abort a whole candidate list on the first wrong entry
 (F1, fixed — candidate iteration works on RAR3 today, §8).
 
+Storing the target as data also means a RAR3/4 symlink can arrive with its target out
+of reach, where a RAR5 redirect never can — the redirect is in the header, which the
+reader has already parsed by the time anyone asks. The reader reads those bytes
+directly out of the archive (no `unrar` hop, even in a solid archive) and declines when
+it cannot, emitting `SYMLINK_TARGET_UNAVAILABLE` with the reason rather than leaving
+`link_target` silently unset:
+
+| `reason` | When | Archive records a target |
+| --- | --- | --- |
+| `target_data_encrypted` | the member is encrypted, and this direct read does not decrypt | yes |
+| `target_data_split_across_volumes` | the target's bytes straddle a volume boundary | yes |
+| `target_data_compressed` | the target is LZ-compressed rather than stored M0 | yes |
+| `no_target_data` | the member declares no data at all | no |
+
+The code is in `ARCHIVE_INTEGRITY_CODES`, so a strict `DiagnosticPolicy` refuses such
+an archive; a lenient one lists the member as a link with no target. The last column is
+what extraction does with it: only `no_target_data` is the archive's own omission and
+reports `ExtractionStatus.LINK_TARGET_UNAVAILABLE` (`docs/extracting.md`); the other
+three are targets the archive carries and this read could not reach, so they stay
+per-member failures governed by `OnError`. That is why the encrypted row is not called
+`password_required` as the ZIP and 7z readers' equivalent is — those two open the
+member and catch the failure, so a password really is what is missing, whereas this
+path never decrypts and a correct password does not change its answer.
+
+The RARLAB writer produces only the encrypted case in practice — it stores every
+symlink target M0, which is why `target_data_compressed` has no fixture (§8) and the
+four rows are pinned by patching the parsed header instead.
+
 **Solidity is archive-wide and its blocks are invisible.** RAR exposes no per-solid-block
 boundaries, so `ArchiveInfo.is_solid` is one flag and `CostReceipt.solid_block_count` is
 `None` by construction rather than by omission. Consequences: a whole streaming pass is
@@ -332,13 +360,13 @@ between to blame or to defer to.
 | `accessed` / `created` | RAR5 `0x03` time extra (`HAS_ATIME` / `HAS_CTIME`); RAR3 EXTTIME after mtime (ctime then atime; arctime is unused). Same tz convention as that generation's `modified`. No ZIP-style extra-field precedence. The RARLAB writer emits one time extra; a later extra without `HAS_CTIME` / `HAS_ATIME` does not wipe earlier values. A Unix RARLAB writer fills the creation slot from `st_ctime` (inode-change), not birth time — those members set `extra["rar.created_is_ctime"]` (`EXTRA_RAR_CREATED_IS_CTIME`) to `True`; Win32 (and other non-Unix hosts) set it to `False`. The key is omitted when `created` is `None` or `host_os` is unknown. Do not infer this from `create_system` | The extra or slot is absent |
 | `mode` | Unix host: `S_IMODE` of the stored attributes, masked before the C helper so a hostile vint cannot raise `OverflowError` mid-listing | Non-Unix host. A Win32 host puts its attribute word in `windows_attrs`; a FAT, OS/2, Macintosh or BeOS host gets **neither** field |
 | `create_system` | RAR3 `host_os` 0–5 → FAT / OS2 / Win32 / Unix / Mac / BeOS. RAR5 stores only Windows or Unix and the parser maps those to Win32 / Unix | Never — unknown `host_os` is `CreateSystem.UNKNOWN`. Unix-vs-Win32 creation-time meaning is `rar.created_is_ctime`, not this field |
-| `type` | Directory flag; RAR5 `file_redir` gives `HARDLINK` for hard links and file copies, `SYMLINK` for Unix/Windows symlinks and junctions (a junction also sets `extra["is_junction"]`) | — |
+| `type` | Directory flag; RAR5 `file_redir` gives `HARDLINK` for hard links and file copies, `SYMLINK` for Unix/Windows symlinks and junctions (a Windows one also sets `extra["is_reparse_point"]`, and a junction `extra["is_junction"]`) | — |
 | `link_target` | RAR5: the redirect's target string, at list time. RAR4: the member's **data**, read directly when it is stored and unencrypted | An encrypted or compressed RAR4 target with no direct bytes — left unset; listing still succeeds |
 | `compression` | Method id → `CompressionMethod`. Stored members report `STORED`; M1–M5 report `CompressionAlgorithm.RAR` with `level` 1–5 (method byte − 0x30). A method byte outside M0–M5 stays `UNKNOWN` with `level` omitted. Unpack version is `extra["rar.extract_version"]`, not `level` | — |
 | `hashes` | `crc32` and/or `blake2sp` as bytes | A RAR5 **redirect** (see below), or an encrypted member whose digests are tweaked |
 | `is_encrypted` | Per-member encryption flag | — |
 | `is_current` | `False` for a file-version history row, `True` for the live revision | — |
-| `extra` | `is_junction` on a Windows junction; `rar.file_version` on a history row; `rar.tweaked_crc32` / `rar.tweaked_blake2sp` on a tweaked-digest member; `rar.created_is_ctime` when `created` is present (see that row); `rar.extract_version` when the FILE header recorded one (stored and compressed) — RAR3 `UNP_VER` as stored (unvalidated), RAR5 reports 50 | — |
+| `extra` | `is_junction` on a Windows junction, `is_reparse_point` on a Windows symlink or junction (redirect types 2 and 3) — RAR is the one format that names the kind in a header field, so both are set while listing with nothing read; `rar.file_version` on a history row; `rar.tweaked_crc32` / `rar.tweaked_blake2sp` on a tweaked-digest member; `rar.created_is_ctime` when `created` is present (see that row); `rar.extract_version` when the FILE header recorded one (stored and compressed) — RAR3 `UNP_VER` as stored (unvalidated), RAR5 reports 50 | — |
 | `comment` | RAR3 CMT SERVICE when the solid flag is set (attaches to the preceding member) and RAR 1.5 / 2.x FILE COMMENT subblocks. Stored old-style comments decode natively; compressed old-style comments decode through RARLAB `unrar` when available | No member comment block, a RAR5 `CMT` (archive-only, below), or a compressed old-style comment without `unrar` / with an invalid CRC16 |
 
 **Archive comments are `ArchiveInfo.comment`.** RAR5 `CMT` is archive-only — it never

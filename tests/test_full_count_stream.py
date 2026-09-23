@@ -1,15 +1,20 @@
-"""Full-count reads at the source boundary for non-seekable sources.
+"""What the source boundary does to a caller's stream.
 
 ``ensure_full_count_reads`` used to return a non-seekable source unchanged, so a
 legal short ``read(n)`` looked like EOF to every header parser downstream. These
 tests pin the wrapper that closes that gap: full-count, zero read-ahead, still
 non-seekable, transparent to the metadata probes.
+
+The boundary also decides ownership. A source needing no full-count layer still gets
+:class:`BorrowedStream`, so no owning wrapper downstream has the caller's object as its
+inner; the tests for that live here too.
 """
 
 from __future__ import annotations
 
 import io
 import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -18,13 +23,14 @@ import pytest
 
 from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.streamtools import (
+    BorrowedStream,
     FullCountStream,
     ensure_bufferedio,
     ensure_full_count_reads,
     source_byte_size,
     source_name,
 )
-from tests.streams_util import ShortReadNonSeekable
+from tests.streams_util import ShortReadBytesIO, ShortReadNonSeekable
 
 # Larger than BufferedReader's default so the over-read contrast is a partial
 # fill, not EOF. 3.14 raised DEFAULT_BUFFER_SIZE from 8 KiB to 128 KiB (gh-117151);
@@ -67,11 +73,48 @@ def test_ensure_full_count_reads_does_not_read_ahead() -> None:
     assert source.consumed == 20
 
 
-def test_ensure_full_count_reads_leaves_existing_buffer() -> None:
-    """A caller's ``BufferedReader`` is already full-count; wrapping it drops ``fileno()``."""
+def test_ensure_full_count_reads_borrows_an_existing_buffer() -> None:
+    """A caller's ``BufferedReader`` needs no full-count layer, only the borrow one.
+
+    Returned as itself, a caller's stream could end up inside an owning wrapper
+    downstream. The buffer is still the thing that reads — nothing is stacked in front
+    of it — and ``fileno`` still forwards.
+    """
     source = ShortReadNonSeekable(DATA, max_chunk=len(DATA))
     buffered = io.BufferedReader(source)
-    assert ensure_full_count_reads(buffered) is buffered
+    wrapped = ensure_full_count_reads(buffered)
+    assert isinstance(wrapped, BorrowedStream)
+    assert wrapped._inner is buffered
+    assert wrapped.read(20) == DATA[:20]
+    assert (
+        source.consumed == io.DEFAULT_BUFFER_SIZE
+    )  # the buffer's read-ahead, not ours
+    wrapped.close()
+    assert not buffered.closed
+
+
+def test_ensure_full_count_reads_borrows_a_bytesio() -> None:
+    """The commonest caller shape of all, and the one the ZIP close bug rode in on."""
+    source = io.BytesIO(DATA)
+    wrapped = ensure_full_count_reads(source)
+    assert isinstance(wrapped, BorrowedStream)
+    assert wrapped.read(20) == DATA[:20]
+    assert wrapped.seekable() and wrapped.tell() == 20
+    wrapped.close()
+    assert not source.closed
+
+
+def test_ensure_full_count_reads_is_idempotent_on_a_borrowed_stream() -> None:
+    wrapped = ensure_full_count_reads(io.BytesIO(DATA))
+    assert ensure_full_count_reads(wrapped) is wrapped
+
+
+def test_a_borrowed_stream_forwards_fileno(tmp_path: Path) -> None:
+    path = tmp_path / "f.bin"
+    path.write_bytes(DATA)
+    with open(path, "rb") as handle:
+        wrapped = ensure_full_count_reads(handle)
+        assert wrapped.fileno() == handle.fileno()
 
 
 def test_buffered_reader_over_non_seekable_over_reads() -> None:
@@ -215,10 +258,10 @@ def _open_named_fifo(path: Path, payload: bytes) -> io.BufferedReader:
 def test_full_count_wrapper_preserves_real_fifo_name(tmp_path: Path) -> None:
     """``open(fifo, "rb")`` is a non-seekable ``BufferedReader`` that carries ``.name``.
 
-    The seekable branch keeps that name for free (``BufferedReader.name`` forwards
-    at C level). The non-seekable branch returns the same buffer unchanged, so
-    ``fileno()`` stays intact too — wrapping it would make the two halves of one
-    function disagree about the same source.
+    Both branches of the boundary hand the caller's buffer on as it is — no
+    full-count layer on top of one that is already full-count — under a
+    :class:`BorrowedStream` that forwards ``name``, ``fileno`` and ``seekable``.
+    What it does not forward is ``close``, which is the whole reason it is there.
     """
     fifo = tmp_path / "pipe-ish.tar"
     payload = b"hello from a named fifo"
@@ -226,7 +269,8 @@ def test_full_count_wrapper_preserves_real_fifo_name(tmp_path: Path) -> None:
         assert raw.seekable() is False
         assert raw.name == str(fifo)
         wrapped = ensure_full_count_reads(raw)
-        assert wrapped is raw
+        assert isinstance(wrapped, BorrowedStream)
+        assert wrapped._inner is raw
         assert source_name(wrapped) == str(fifo)
         assert wrapped.name == str(fifo)
         assert wrapped.seekable() is False
@@ -234,3 +278,55 @@ def test_full_count_wrapper_preserves_real_fifo_name(tmp_path: Path) -> None:
         peek = PeekableStream(wrapped)
         assert peek.name == str(fifo)
         assert wrapped.read(len(payload)) == payload
+        wrapped.close()
+        assert not raw.closed
+
+
+def test_a_borrowed_stream_refuses_an_inner_that_is_not_full_count() -> None:
+    """``ensure_full_count_reads`` returns any ``BorrowedStream`` unchanged, as full-count.
+
+    So full-count has to hold for every instance, not only for the two call sites that
+    build one today. The constructor enforces it: a short-returning raw source is
+    refused, and the shapes the boundary actually wraps are accepted.
+    """
+    with pytest.raises(TypeError, match="FullCountStream"):
+        BorrowedStream(ShortReadBytesIO(DATA, max_chunk=3))  # type: ignore[arg-type]  # RawIOBase double for a BinaryIO
+
+    for inner in (
+        io.BytesIO(DATA),
+        io.BufferedReader(ShortReadBytesIO(DATA, max_chunk=3)),
+    ):
+        wrapped = BorrowedStream(inner)  # type: ignore[arg-type]  # CPython buffers are BinaryIO at runtime
+        assert wrapped.read(len(DATA)) == DATA
+
+
+def test_a_refused_borrowed_stream_leaves_nothing_to_finalize() -> None:
+    """Refusing an inner must not leave a half-built instance behind.
+
+    A refusal raised from ``__init__`` leaves an instance whose ``IOBase`` finalizer
+    calls ``close()`` on attributes that were never set. Outside dev mode CPython
+    discards that error, so it is checked in a child interpreter under ``-X dev``,
+    where the finalizer reports it on stderr.
+    """
+    code = (
+        "import io\n"
+        "from archivey.internal.streams.streamtools.full_count import BorrowedStream\n"
+        "class Raw(io.RawIOBase):\n"
+        "    def readable(self):\n"
+        "        return True\n"
+        "try:\n"
+        "    BorrowedStream(Raw())\n"
+        "except TypeError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise SystemExit('not refused')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-X", "dev", "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""

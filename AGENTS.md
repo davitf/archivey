@@ -64,17 +64,85 @@ that one is the code map.
 - `CONTRIBUTING.md` — coding/testing standards (type-checking, exception translation,
   behaviour-focused tests, red-green TDD, the pause-and-ask-on-discrepancies rule).
 
-## Communicating with the maintainer (unslop)
+## Writing English (unslop + ASD-STE100)
 
-**Standing rule for every agent session:** apply
-[`.claude/skills/unslop/SKILL.md`](.claude/skills/unslop/SKILL.md) to **all
-maintainer-facing prose** — chat replies, decision packets, PR comments, and thin
-briefs. Cut puffery, throat-clearing, stacked ornaments, and default LLM filler;
-prefer specific claims.
+**Standing rule for every agent session.** Two skills shape prose here. They cut
+different things, and where both apply, both run:
 
-That skill is the checklist only. Do **not** load `/technical-writing` for everyday
-chat — use it when you need Diátaxis + sentence craft on a docs or handbook page
-(and still apply `unslop` to the same prose).
+- [`unslop`](.claude/skills/unslop/SKILL.md) cuts **AI tells** — puffery,
+  throat-clearing, decorative ornaments, vague claims. It applies to maintainer-facing
+  prose: chat replies, decision packets, PR comments, thin briefs.
+- [`asd-ste100`](.claude/skills/asd-ste100/SKILL.md) cuts **ambiguity** — sentences a
+  reader can parse two ways. It applies to every piece of English an agent writes here:
+  chat with the maintainer, user-visible text (exception messages, CLI output, `docs/`),
+  pull request titles and descriptions, review and inline comments, commit messages, and
+  code comments in `src/` and `tests/`.
+
+`technical-writing` is separate and is still opened only for Diátaxis structure and
+sentence craft on a published docs or handbook page.
+
+### Advice, not a gate
+
+**Maintainer decision (davitf, 2026-09-22): the scope is broad and the rules are advisory
+only, and the tree gets rewritten as it is touched rather than in a sweep** — *"broad, and
+advisory only. we'll rewrite as we go, let's see if it improves readability."* The point
+is to find out whether this makes prose here easier to read, and a bulk rewrite would not
+answer that.
+
+What that means in practice:
+
+- A semicolon or a long sentence is **not a defect**. A review that reports one as a
+  finding is wrong, and so would a gate that failed on one be.
+- Nothing in the tree is in violation, because there is nothing to violate. Improve the
+  prose in a file you are already editing and leave the rest alone.
+- `ste-lint.py` is a tool to point at your own draft. It is not a bar to clear, and
+  `scripts/check.sh` does not call it.
+
+### Which mode
+
+The skill has two modes and tells you to pick one. Both are advice under the ruling above.
+Pick by the text, and lean hardest where a second reading costs the most:
+
+- **Strict** — short text someone meets once and out of context, where a second reading
+  is expensive or impossible: exception and diagnostic messages, CLI `--help` text, code
+  comments, and a short instruction written for another agent. A code comment belongs
+  here for that reason and not because a machine parses it — the developer reading it has
+  the code in front of them and not the change that produced it, which is the same
+  argument `CONTRIBUTING.md` makes for writing comments at all.
+- **STE-flavored** — everything else, which is most of it: chat, pull request
+  descriptions and comments, commit messages, `docs/`, `dev-docs/`, `CONTRIBUTING.md`,
+  and the pages under `.claude/skills/`. Structural rules as written. The lexical rules
+  are a direction of travel everywhere, for the reason the skill gives: without ASD's
+  dictionary they are a preference for plain words rather than a checkable standard.
+
+### What it does not override
+
+- **`CONTRIBUTING.md` wins on code comments.** Comments explain *why*, not *what*, and
+  they match the density and style of the file around them. STE decides the shape of the
+  sentence you write. It does not ask for more comments, shorter comments, or a comment
+  where the rule says none.
+- **Never trade a hedge for a shorter sentence.** "May have failed" is not "failed", and
+  `PLAUSIBLE` is not `CONFIRMED`. The whole review vocabulary here is calibrated
+  confidence, so a rewrite that firms one up has changed the finding.
+- **It is style, not substance.** A rewrite that supplies a cause, a frequency or a
+  mechanism the source did not state is no longer a rewrite.
+- **Quoted text stays as it was quoted** — an error string under test, a commit message
+  being cited, a maintainer's own words.
+
+`ste-lint.py` is stdlib-only and takes a file or stdin. `--baseline N` tolerates what is
+already there, and `--disable` silences named rules.
+
+**Read a clean run for what it is.** The linter splits on newlines, not on sentences, so
+a sentence spanning a hard-wrapped line is measured as two short ones and the
+sentence-length rule does not fire on it: the same 28-word sentence scores one hard
+violation on a single line and zero when wrapped. Most prose here is hard-wrapped near 90
+columns, so on those files that rule is close to unreachable and you judge sentence
+length yourself. It does work, and is worth reading, wherever a line carries a whole
+sentence — an exception message, CLI help text, an unwrapped chat draft, or a file like
+the vendored `asd-ste100/SKILL.md`, whose paragraphs are one line each. What a clean run
+always tells you is that the checks reading a whole line came back empty: semicolons,
+phrasal verbs, nominalization, marketing adjectives. The script is vendored verbatim so
+an upstream fix can be re-copied, which is why this caveat lives here and not in it.
 
 ## Session setup (`unrar`, `7z`, `openspec`, deps)
 
@@ -372,8 +440,10 @@ in the wrong place.
    rules live in `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`
    and only there: **§0** is the output shape and the verdicts, **§3–§5** are what to check
    (against `CONTRIBUTING.md`, which holds the rules themselves), and **§10** is posting —
-   stable finding IDs carrying the reviewer's own initial, inline comments, and a status
-   table over the previous IDs when re-reviewing.
+   stable finding IDs carrying the reviewer's own initial, a header on every comment
+   carrying the round and the verdict, the findings themselves in inline threads with the
+   body carrying only an index, no tables in anything posted, and one status bullet per
+   previous ID when re-reviewing.
 2. **The implementing agent works through them** with `address-review-findings`
    (Cursor: `/address-review`). Every finding gets an explicit disposition — fixed,
    disproven, escalated, or deferred-with-a-written-home. Nothing is dropped silently, and
@@ -397,14 +467,13 @@ in the wrong place.
 
 4. **Linear issues** use `.claude/skills/address-linear-issue/SKILL.md` (Cursor:
    `/address-linear-issue`). Same two skills, sequenced: the implementing agent reads
-   the ticket, fixes it, opens the PR and enrols it in the
+   the ticket, fixes it, opens the PR and hands it to the
    [review loop](dev-docs/review-loop.md), which runs `code-review-skill` in a separate
    Claude session and posts to the PR; whoever holds the branch then runs
-   `address-review-findings`. **Say when you have finished** — take the PR out of draft
-   after implementing, and post a comment *starting* with `@claude review` after
-   addressing a round — as the last action, after the final push; that is what starts
-   each round. The phrase counts only at the top of a comment, so writing about it
-   elsewhere starts nothing. Do not review your own
+   `address-review-findings`. **Add the `review` label when you have finished** — after
+   implementing, and again after addressing a round whose closing comment asked to see
+   the fixes — as the last action, after the final push; adding the label is what starts
+   each round. Do not review your own
    diff, and do not spawn a reviewer of your own — the loop is the second opinion. Maintainer decision (davitf,
    2026-09-19): Claude reviews PRs started from a Linear issue, replacing the fresh
    Cursor Grok subagent this step used to spawn.
@@ -445,6 +514,25 @@ Two things about this repo make the handoff sharper than it looks:
   one is the human. Make your own PR comments identifiable the same way, and read inline
   threads carefully: the maintainer's own questions arrive that way and carry more weight
   than an automated finding.
+- **Never reproduce a closing phrase next to the review hub's number.** The hub
+  ([#315](https://github.com/davitf/archivey/pull/315)) is the one pull request here that
+  must never close, and a commit message or a pull request body carrying `Closes` (or
+  `Fixes`, or `Resolves`) immediately before its number closes it. Both surfaces are
+  parsed: GitHub prefills the squash body from the pull request body, but the squash body
+  can be edited at merge time, so check each. The trap is *quoting* — writing down what
+  such a phrase said reproduces it, which closed the hub a second time on 2026-09-21 from
+  the text explaining the first. Describe the phrase instead, or break the string. The
+  failure is silent: threads still serve, `sweep_coverage.py` is unaffected, nothing goes
+  red. [`dev-docs/open-work-inventory.md`](dev-docs/open-work-inventory.md) has both
+  incidents. There is a net under this —
+  [`review-hub-watchdog.yml`](.github/workflows/review-hub-watchdog.yml) reopens the hub
+  and says which surface closed it — but it is recovery, not prevention. A pull request
+  body could be checked before the merge; a squash body could not, because whoever merges
+  can edit it at merge time and GitHub parses what was actually merged. So a pre-merge
+  check would cover one surface and miss the other, and the watchdog covers both after.
+  Its decision is in
+  [`scripts/review_hub_watchdog_gate.py`](scripts/review_hub_watchdog_gate.py), unit tested,
+  because the branch that names the surface only ever runs during an incident.
 - **Escalate one decision packet at a time.** Shape and fields:
   [`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet (canonical).
   Do not dump the full finding list into chat — that stays on the PR. A batched list of

@@ -114,8 +114,9 @@ severity × confidence, (3) maintainer decisions. Addendum §10 has the mechanic
   location-less findings.
 - **Do not hold the findings until the end.** Post file by file, in scope-table order, so a
   run that stops early still leaves everything it found behind.
-- Open every comment with the one-line agent marker (addendum §"A short marker at the top");
-  the `SWEPT` line already carries it for marker comments. Attribution per §10 — add your own
+- Open every comment with its header and the agent line (addendum §"Open every comment
+  with a header"). A `SWEPT` marker comment is the exception: the marker line is its
+  opener, and already carries the reviewer and the head. Attribution per §10 — add your own
   footer if your host does not.
 - End the top-level comment with:
   `Addressing these: .claude/skills/address-review-findings/SKILL.md`.

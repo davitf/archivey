@@ -410,6 +410,82 @@ def _under_buffer(stream: object) -> object:
     return stream
 
 
+#: What one ``read`` may ask for when the source's length is unknown, and the default
+#: every caller of :func:`read_within_reach` in archivey passes. It lives here rather
+#: than beside either backend's wrapper because the backends held the same number for
+#: the same reason, each documented by pointing at the other.
+#:
+#: A request past this is split and rejoined, which is the *normal* case for a read
+#: larger than the step on such a source, not an exception — stdlib ``tarfile`` asks for
+#: a whole member in one call, so a 40 MiB member is two and a half steps. That costs no
+#: more than the single unsplit read it replaces: measured on a 40 MiB member of a
+#: ``.tar.gz``, ``tracemalloc`` peaks at 84 MB through the split against 168 MB without
+#: it, because the unsplit form commits to the entire request inside the
+#: ``BufferedReader`` before anything else happens. The join copy is real, and it
+#: replaces a larger allocation rather than adding to one.
+#:
+#: 16 MiB is chosen as the granularity of the worst-case overshoot — what a hostile
+#: header can make the process hold before the short read stops it — not to keep
+#: ordinary reads under it. Raising it raises that overshoot one for one. ``step`` stays
+#: an explicit argument so a backend whose overshoot profile differs can hold its own.
+DEFAULT_UNKNOWN_LENGTH_READ_STEP = 16 * 2**20
+
+
+def read_within_reach(
+    inner: BinaryIO, size: int, *, remaining: int | None, step: int
+) -> bytes:
+    """``inner.read(size)`` without committing to an allocation ``size`` alone asked for.
+
+    A parser that reads a length out of the file it is parsing will hand that number
+    straight to ``read``, and ``BufferedReader.read(n)`` allocates ``n`` up front — so
+    the allocation lands before the short read reveals the file is three kilobytes.
+    Backends bounding such a read call this instead.
+
+    ``remaining`` is how many bytes the source can still supply, where that is known
+    cheaply (see :func:`source_byte_size`); the read is then simply clamped to it.
+    Where it is not — a decompressor, or any stream that advertises no length — the
+    request is served in ``step``-sized pieces and joined, stopping at the first short
+    read, so the peak tracks the bytes the stream really has rather than the number a
+    header claimed. ``None`` must mean *unknown*, never *unlimited*: an unbounded
+    branch here is the whole bug this function exists to close.
+
+    A short result is the intended outcome, not a loss. The caller's parser gets fewer
+    bytes than the header promised and raises its own error on the spot, which the
+    backend translates; the alternative is a ``MemoryError`` from outside the
+    ``ArchiveyError`` hierarchy, or a multi-gigabyte allocation that succeeds.
+
+    What ``remaining`` promises is therefore stricter than what a cost estimate needs.
+    Everywhere a source's length was consulted before, a wrong answer degraded a
+    guess — bomb accounting, a cost signal, whether a cheap path was available. Here a
+    length that *understates* the stream silently clamps a legitimate read, and the
+    archive surfaces as truncated rather than as a bad length. Pass ``None`` for
+    anything short of a fact: :func:`source_byte_size`'s probe 2 trusts any integer
+    ``size`` attribute a source carries (the fsspec convention, duck-typed and
+    unverified), so a caller-supplied stream is the one population with no floor under
+    it. Stepping an unknown length costs a join copy; guessing one costs correctness.
+    """
+    if size <= 0:
+        # Negative is read-to-EOF, which allocates as the data arrives; zero must not
+        # consume a byte. Neither is sized from the archive.
+        return inner.read(size)
+    if remaining is not None:
+        return inner.read(min(size, max(remaining, 0)))
+    data = inner.read(min(size, step))
+    if len(data) == size or len(data) < step:
+        # Satisfied in full, or the stream ran out. The first case is every read that
+        # fits in one step, which is why a small read costs no copy.
+        return data
+    parts = [data]
+    taken = len(data)
+    while taken < size:
+        part = inner.read(min(size - taken, step))
+        if not part:
+            break
+        parts.append(part)
+        taken += len(part)
+    return b"".join(parts)
+
+
 def source_byte_size(source: Any) -> int | None:
     """Total byte size of a path or stream source when **cheaply** knowable, else ``None``.
 

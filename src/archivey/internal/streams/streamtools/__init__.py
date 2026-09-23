@@ -20,7 +20,8 @@ Module map:
 - :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` (wrapper bases)
 - :mod:`.binaryio` — classify/coerce sources (``is_seekable``, ``ensure_binaryio``, …)
   plus ``ask_resume_offset`` (duck-typed resume query; see the named exception above)
-- :mod:`.full_count` — ``FullCountStream`` / ``ensure_full_count_reads`` (source-boundary full-count)
+- :mod:`.full_count` — ``FullCountStream`` / ``BorrowedStream`` / ``ensure_full_count_reads``
+  (the source boundary: full-count reads, and a wrapper so nothing closes the caller's stream)
 - :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``
 - :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
 - :mod:`.locked` — ``LockedStream`` / ``CloseLockedStream`` (whole-op lock wrappers)
@@ -44,6 +45,7 @@ from archivey.internal.streams.streamtools.base import (
     ReadOnlyIOStream,
 )
 from archivey.internal.streams.streamtools.binaryio import (
+    DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     BinaryIOWrapper,
     ReadableStream,
     ensure_binaryio,
@@ -53,6 +55,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     is_stream,
     raise_if_text_stream,
     read_exact,
+    read_within_reach,
     readinto_via_read,
     reject_source,
     require_source,
@@ -60,6 +63,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     source_name,
 )
 from archivey.internal.streams.streamtools.full_count import (
+    BorrowedStream,
     FullCountStream,
     ensure_full_count_reads,
 )
@@ -77,6 +81,7 @@ from archivey.internal.streams.streamtools.solid import (
 
 __all__ = [
     "BinaryIOWrapper",
+    "BorrowedStream",
     "CloseLockedStream",
     "DelegatingStream",
     "FullCountStream",
@@ -100,6 +105,8 @@ __all__ = [
     "read_exact",
     "readinto_via_read",
     "skip_forward",
+    "read_within_reach",
+    "DEFAULT_UNKNOWN_LENGTH_READ_STEP",
     "source_byte_size",
     "source_name",
 ]

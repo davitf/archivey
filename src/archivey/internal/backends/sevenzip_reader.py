@@ -33,6 +33,7 @@ from typing import BinaryIO
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode, DigestContext, MemberTimestampContext
+from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -94,6 +95,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.types import (
+    EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -103,12 +105,30 @@ from archivey.types import (
     CreateSystem,
     HashAlgorithm,
     MagicSignature,
+    MemberExtra,
     MemberStreams,
     MemberType,
     crc32_digest,
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _is_windows_reparse_point(attrs: int | None) -> bool:
+    """True when 7z's attribute word flags this entry as a Windows reparse point.
+
+    A Unix-written member carries its mode in the high word, and a POSIX symlink is not
+    a reparse point, so the low word's `0x400` is only read when the high word does not
+    already say `S_IFLNK`. "Flagged as" is the whole claim: the reparse *tag*, which
+    separates a junction from a Windows symlink, is in the member's data, not here.
+    """
+    return (
+        attrs is not None
+        and not stat.S_ISLNK(attrs >> 16)
+        and bool(attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT)
+    )
+
+
 _SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
 # Drain/CRC step for encrypted-folder password confirm. 7z AES has no check
 # value, so a candidate is judged by decoding and CRCing; this keeps peak
@@ -390,7 +410,10 @@ class SevenZipReader(BaseArchiveReader):
 
     def _build_members(self) -> list[ArchiveMember]:
         # is_current is stamped by BaseArchiveReader's shared last-entry-wins pass.
-        return [self._to_member(record) for record in self._archive.files]
+        return [
+            self._to_member(record, index)
+            for index, record in enumerate(self._archive.files)
+        ]
 
     def _members_by_folder(self) -> dict[int, list[ArchiveMember]]:
         grouped: dict[int, list[ArchiveMember]] = {}
@@ -454,7 +477,7 @@ class SevenZipReader(BaseArchiveReader):
             cleanup=_cleanup,
         )
 
-    def _to_member(self, record: SevenZipFileRecord) -> ArchiveMember:
+    def _to_member(self, record: SevenZipFileRecord, index: int) -> ArchiveMember:
         member_type = self._member_type(record)
         presented_name = record.filename
         if presented_name == "":
@@ -473,6 +496,7 @@ class SevenZipReader(BaseArchiveReader):
         if record.crc32 is not None:
             hashes[HashAlgorithm.CRC32] = crc32_digest(record.crc32)
         attrs = record.attributes
+        is_reparse_point = _is_windows_reparse_point(attrs)
         unix_mode = (attrs >> 16) if attrs is not None and attrs >> 16 else None
         mode = stat.S_IMODE(unix_mode) if unix_mode is not None else None
         # Folder/substream indices live on ``_raw``; skip the unused public extra
@@ -517,6 +541,9 @@ class SevenZipReader(BaseArchiveReader):
             else CreateSystem.WINDOWS_NTFS,
             windows_attrs=attrs & 0xFFFF if attrs is not None else None,
             hashes=hashes,
+            extra=MemberExtra({EXTRA_IS_REPARSE_POINT: True})
+            if is_reparse_point
+            else MemberExtra(),
             _raw=_MemberRaw(record, folder_index, record.file_in_folder),
         )
         emit_member_name_normalized(
@@ -525,6 +552,19 @@ class SevenZipReader(BaseArchiveReader):
             presented_name=presented_name,
             archive_name=self._archive_name,
         )
+        if is_reparse_point and member.size == 0:
+            # A writer that stores no data for a reparse point has recorded no target
+            # for it, and that is knowable from the header alone — no read, and so no
+            # dependence on this being a seekable pass. Deciding it here rather than in
+            # the link-target hook is what makes streaming agree: that hook runs at EOF,
+            # after extraction has already decided what to do with the member, which
+            # left a 7-Zip junction raising instead of taking the recorded outcome.
+            self._apply_reparse_data(
+                member,
+                b"",
+                fallback_type=self._member_type_ignoring_reparse(record),
+                report_key=index,
+            )
         for issue in ts_issues:
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
@@ -583,10 +623,16 @@ class SevenZipReader(BaseArchiveReader):
                 if stat.S_ISDIR(unix_mode):
                     return MemberType.DIRECTORY
             if attrs & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
+                # Provisional. The bit says the entry was a reparse point on the source
+                # filesystem, not that the tag named a link — the tag is in the member's
+                # data, so `_ensure_link_target` reads it and reverts to the type below
+                # when the data turns out not to be a link buffer.
                 return MemberType.SYMLINK
-        if record.is_directory:
-            return MemberType.DIRECTORY
-        return MemberType.FILE
+        return self._member_type_ignoring_reparse(record)
+
+    def _member_type_ignoring_reparse(self, record: SevenZipFileRecord) -> MemberType:
+        """What the entry is by everything except the reparse-point attribute bit."""
+        return MemberType.DIRECTORY if record.is_directory else MemberType.FILE
 
     def _folder_pack_view(self, folder_index: int) -> BinaryIO:
         folder = self._archive.folders[folder_index]
@@ -757,13 +803,45 @@ class SevenZipReader(BaseArchiveReader):
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         if member.type != MemberType.SYMLINK or member.link_target is not None:
             return
+        raw = member._raw
+        assert isinstance(raw, _MemberRaw)
+        # Two kinds of member reach this point. A Unix symlink (S_ISLNK in the high
+        # word of `attributes`) stores its target as plain bytes. A Windows reparse
+        # point stores a REPARSE_DATA_BUFFER, whose first field is the tag that
+        # separates a junction from a symlink; decoding that as UTF-8 reports the
+        # buffer itself as the target, which is what this used to do.
+        is_reparse_point = _is_windows_reparse_point(raw.record.attributes)
+        # What the member would be if its data turns out not to be a link buffer: the
+        # attribute bit is set for deduplication stubs and cloud placeholders too, and
+        # those hold ordinary content that a caller should still be able to read.
+        fallback_type = self._member_type_ignoring_reparse(raw.record)
+        # The zero-data case does not appear here: `_to_member` settles it while the
+        # member is being typed, so this hook is never reached for one.
         try:
             with self._open_member(member) as stream:
-                member.link_target = stream.read().decode(
-                    "utf-8", errors="surrogateescape"
-                )
+                data = stream.read()
         except EncryptionError:
+            # A 7z symlink's target is its file data, so without the password there is
+            # nothing to decode. Listing has to stay usable without one, so the member
+            # keeps its type and the reason travels on the diagnostics channel instead
+            # — silence here would make extraction skip the link with no explanation.
+            self._emit_link_target_unavailable(
+                member,
+                reason="password_required",
+                message=(
+                    f"Cannot read the symlink target of {quoted(member.name)} without the "
+                    f"correct password; leaving link_target unset."
+                ),
+                # The archive does carry the target; it is locked, not missing. So this
+                # member fails the way the encrypted file next to it does, rather than
+                # disappearing from the output under a status that reads as success.
+                target_in_archive=True,
+            )
             return
+        if is_reparse_point:
+            self._apply_reparse_data(member, data, fallback_type=fallback_type)
+        else:
+            member.link_target = data.decode("utf-8", errors="surrogateescape")
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         raw = member._raw

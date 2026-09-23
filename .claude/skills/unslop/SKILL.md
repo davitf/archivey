@@ -11,7 +11,9 @@ description: |
 
 Condensed from poteto/pstack `unslop` (MIT). Checklist only — no Diátaxis.
 
-Standing rule: [`AGENTS.md`](../../../AGENTS.md) §Communicating with the maintainer.  
+Standing rule: [`AGENTS.md`](../../../AGENTS.md) §Writing English, which also says
+where [`asd-ste100`](../asd-ste100/SKILL.md) applies. That skill cuts ambiguity; this
+one cuts AI tells. Run both on maintainer-facing prose.  
 Docs/handbook structure + craft: [`../technical-writing/SKILL.md`](../technical-writing/SKILL.md).
 
 Rewrite until nothing reads like default LLM filler:

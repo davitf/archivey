@@ -37,6 +37,46 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#389 K7 — `p7zip 16.02` is a mislabelled writer version in two active changes.**
+  `scripts/setup-dev-env.sh` installs `p7zip-full`, which on a current Debian or Ubuntu
+  base is `16.02+transitional.1` and ships no binary of its own: the `7z` it pulls in is
+  7-Zip **23.01** from the `7zip` package. An agent reading the version out of the package
+  list or the setup log records 16.02 for a binary that reports 23.01. `#389` corrected
+  its own docstring; the same citation is still on six lines in three documents, across
+  two changes:
+  [`sevenzip-aes-tail-key-check/design.md`](../openspec/changes/sevenzip-aes-tail-key-check/design.md)
+  (`:4`, `:25`, `:75`, `:126`), that change's
+  [`proposal.md`](../openspec/changes/sevenzip-aes-tail-key-check/proposal.md) (`:47`) and
+  [`bounded-password-confirmation/design.md`](../openspec/changes/bounded-password-confirmation/design.md)
+  (`:4`). `.github/workflows/ci.yml` already states the transitional relationship
+  correctly, so the tree is inconsistent with itself rather than uniformly wrong;
+  `AGENTS.md`'s "`7z` (system binary, from `p7zip-full`)" is accurate as an install
+  instruction and misleading as provenance.
+
+  **The question the follow-up has to answer**, beyond the citations: the
+  `sevenzip-aes-tail-key-check` design records an Open item asking for "Fixtures from
+  Windows 7-Zip >= 21" to widen a premise that closes threat-model **O12**. If the writer
+  behind its 14-archive matrix was 23.01 — upstream 7-Zip, not the p7zip fork — that gap
+  may already be closed by the change's own fixtures. A premise recorded as narrower than
+  it is misdirects whoever picks it up. Tracked internally.
+
+- **#387 — `safe-extraction`'s "avoid wasted passes" `SHALL` contradicts `extraction.py` in writing.**
+  `openspec/specs/safe-extraction/spec.md:349-351` says the coordinator "SHALL avoid wasted
+  passes: if a free member list exists (`members_report_if_available()`), recovery is planned
+  in one forward pass; otherwise a seekable source may use one conditional second pass".
+  `src/archivey/internal/extraction.py:16-18` says the opposite in as many words: "The optional
+  *planned single pass* optimization (staging an excluded source during the first pass when a
+  free member list exists) is deliberately not implemented here — it is an optimization over
+  this core, not a correctness requirement." Both sides are deliberate and written down, which
+  is what makes it a contradiction rather than an oversight.
+
+  It matters most for the backends with a free member list. On a solid RAR the planned pass is
+  the branch that would stop the orphan recovery from being a second whole-archive decode.
+  The first question is which side moves: revise the `SHALL` to permit the second pass where
+  the spec currently requires planning, or build the planning. Out of scope for #387, which
+  edits no code and a different capability. Raised by the reviewer on that PR; tracked
+  internally.
+
 - **#384 K17 — ZIP (and 7z) junction detection, `extra["is_junction"]`.**
   **Maintainer decision (davitf, 2026-09-21, [K17](https://github.com/davitf/archivey/pull/384#discussion_r4058819322)):** option B — implement ZIP junction detection; the `archive-data-model` matrix row at `:79` stands. Not this typing PR: the published register ("directory, RAR") is true of the tree today and moves when the producers do. Tracked internally.
 

@@ -244,6 +244,10 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   complex decision, a comment **may point** at a spec, `dev-docs/decisions/`, architecture
   note, exploration, or OpenSpec change — but **summarize the reason inline whenever
   possible** so the pointer is optional depth, not the only explanation.
+- **Write the comment so it has one reading.** Sentence shape for comments, like all
+  prose here, follows [`AGENTS.md`](AGENTS.md) §Writing English. It decides how you
+  write a comment; the two rules above decide whether to write one and what it says,
+  and they win where the two ever pull apart.
 - **Comments describe the code as it is, not how it got there.** A comment in `src/` is
   read by someone who never saw the change that produced it, so it must not depend on
   that change being remembered. Three things this rules out:
@@ -433,8 +437,8 @@ Five questions, in order. The first `yes` wins.
 1. **Would someone who only *uses* the library need it?** → `docs/`, **and add it to
    `mkdocs.yml`'s nav in the same commit**. Curated "why we chose X" one-liners for
    curious users belong inline on the page that raises the question, not as a new
-   page per decision. Use `/technical-writing` for structure/craft and `/unslop`
-   for strip-AI-tells on the prose.
+   page per decision. Use `/technical-writing` for structure and craft. The standing
+   prose rules that apply to the result are [`AGENTS.md`](AGENTS.md) §Writing English.
 2. **Is it current maintainer truth about a format or cross-cutting topic?** → a
    living handbook page `dev-docs/formats/<format>.md` or `dev-docs/topics/<topic>.md`
    (rewrite in place; light decision bullets, not a new ADR). **Create the file in the

@@ -383,6 +383,13 @@ def _report_extraction(
             # Overwrite-skips change outcomes under --overwrite skip; always note.
             where = _escaped_where(result, target)
             print(f"not overwritten: {where}", file=err)
+        elif status is ExtractionStatus.LINK_TARGET_UNAVAILABLE:
+            skipped += 1
+            # The archive described a link it never recorded a target for, so there was
+            # nothing to write. Always reported: the tree the user gets is missing an
+            # entry the listing showed them.
+            where = _escaped_where(result, target)
+            print(f"link target unavailable: {where}", file=err)
         elif status is ExtractionStatus.SUPERSEDED:
             skipped += 1  # count superseded entries alongside skipped in summary
             if verbose:

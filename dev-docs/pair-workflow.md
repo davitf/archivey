@@ -31,9 +31,11 @@ live in
 7. User docs if needed      Diátaxis mode + unslop (published `docs/` only)
 ```
 
-Steps 4–6 can run without a driver: Cursor implements, Claude reviews, Cursor addresses,
-up to three rounds, stopping the moment a decision packet appears.
-[`review-loop.md`](review-loop.md) has the wiring and the `loop:*` labels that stop it.
+Steps 4–6 run through one label: the implementer adds `review` to the pull request, a
+Claude session that did not write the diff reviews it, and the implementer addresses the
+findings and adds the label again when the review asked to see the fixes. An agent gets
+five rounds at most, and a decision packet stops the rounds until it is answered.
+[`review-loop.md`](review-loop.md) has the wiring.
 
 | Phase | Human sees | Agents may also use |
 | --- | --- | --- |
@@ -171,8 +173,11 @@ review block 3.
 
 If an agent cannot fill these, it is not ready to ask — it should measure first.
 
-**Voice:** apply [`unslop`](../.claude/skills/unslop/SKILL.md) to the packet and any
-chat around it ([`AGENTS.md`](../AGENTS.md) §Communicating with the maintainer).
+**Voice:** apply [`unslop`](../.claude/skills/unslop/SKILL.md) and
+[`asd-ste100`](../.claude/skills/asd-ste100/SKILL.md) to the packet and any chat around
+it ([`AGENTS.md`](../AGENTS.md) §Writing English). A packet is a decision the
+maintainer makes from the text alone, so the options and the default must each have one
+reading.
 
 Review quality does **not** drop: the implementor still gets the full finding list on the
 PR. The maintainer is not the audience for that list unless they ask.
@@ -200,8 +205,9 @@ means a decision was never recorded on the handbook page.
 | --- | --- |
 | Pair investigation + decisions on handbook | `/grill-with-handbook` |
 | Explore without implementing | `/openspec-explore` stance; don’t open a verbose change by default |
-| Unslop chat / packets / PR comments (default) | `/unslop` — standing rule in [`AGENTS.md`](../AGENTS.md); thin skill, not technical-writing |
-| User-facing or handbook prose craft | `/technical-writing` (then `/unslop` on the same prose) |
+| Unslop chat / packets / PR comments (default) | `/unslop` — standing rule in [`AGENTS.md`](../AGENTS.md) §Writing English; thin skill, not technical-writing |
+| Remove ambiguity from any English you write (default) | `/asd-ste100` — same standing rule, advice rather than a gate. STE-flavored unless the text is short and met once out of context |
+| User-facing or handbook prose craft | `/technical-writing`, then the two standing prose skills on the same prose ([`AGENTS.md`](../AGENTS.md) §Writing English) |
 | Review (other agent) | Cursor: `/code-review` (project command → archivey skill). Elsewhere: **`/code-review-skill`** — never bare `/code-review` (that is a host builtin). Full PR handoff; packets to maintainer |
 | Address review | Cursor: `/address-review`. Elsewhere: **`address-review-findings`** / ask for that skill by name |
 | Linear issue (read → fix → other-agent review → address) | Cursor: `/address-linear-issue`. Elsewhere: **`address-linear-issue`** / ask for that skill by name |

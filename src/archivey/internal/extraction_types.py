@@ -184,6 +184,14 @@ class ExtractionStatus(str, Enum):
     OVERWRITTEN = "overwritten"
     BLOCKED = "blocked"  # blocked by a safety filter (universal or policy check)
     FAILED = "failed"  # error while extracting (corrupt data, ratio bomb, write error)
+    # The archive describes a member it does not carry enough information to write: a
+    # symlink whose target it never recorded. Not an error, so — like NOT_OVERWRITTEN —
+    # it is recorded and the run continues regardless of OnError. The member is not a
+    # failure of this extraction: nothing went wrong here, the writer left something
+    # out, and that loss is reported through the diagnostics channel
+    # (SYMLINK_TARGET_UNAVAILABLE, an archive-integrity code, so a strict
+    # DiagnosticPolicy still refuses such an archive outright).
+    LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
 
 
 @dataclass

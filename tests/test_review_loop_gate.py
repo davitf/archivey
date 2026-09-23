@@ -1,14 +1,10 @@
-"""The review loop's gate, exercised without GitHub.
+"""The review workflow's gate, exercised without GitHub.
 
-`scripts/review_loop_gate.py` decides whether an automated review round runs, on which
-pull request, and which round number it is. Everything it needs arrives as JSON, so the
-interesting cases — the round cap, the quiet period, the parked labels, a fork, a
-stranger asking for a review — are testable here instead of by pushing to a pull request
-and watching what happens.
-
-The cases that matter most are the ones where the answer must be *no*: a gate that
-over-fires spends review credits on pull requests nobody enrolled, and one that ignores
-a parked label reopens a question the maintainer was still answering.
+`scripts/review_loop_gate.py` decides whether adding the `review` label runs a round,
+counts the round, and writes the comment that closes it. Everything it needs arrives as
+JSON, so the cases that matter — the round cap, a person buying a round past it, a
+review that died, a verdict nobody expected — are testable here instead of by labelling
+a pull request and watching what happens.
 """
 
 from __future__ import annotations
@@ -23,7 +19,9 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "review_loop_gate.py"
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "review_loop_gate.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "review-loop.yml"
 
 _spec = importlib.util.spec_from_file_location("review_loop_gate", SCRIPT)
 assert _spec is not None and _spec.loader is not None
@@ -33,907 +31,556 @@ gate = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = gate
 _spec.loader.exec_module(gate)
 
-NOW = "2026-09-19T12:00:00Z"
-LONG_AGO = "2026-09-19T11:00:00Z"  # an hour before NOW: quiet
-JUST_NOW = "2026-09-19T11:59:00Z"  # a minute before NOW: still being pushed to
+REPO = "davitf/archivey"
+SHA = "a" * 40
 
 
-def event(**overrides) -> dict:
-    """A pull request being marked ready for review — the common single event."""
+def rounds(*verdicts: str, sha: str = "b" * 40) -> list[str]:
+    """The first lines of closing comments for rounds that ended in these verdicts."""
+    return [
+        f"{gate.ROUND_MARKER} n={n} sha={sha} verdict={v} -->"
+        for n, v in enumerate(verdicts, start=1)
+    ]
+
+
+def decide(**overrides) -> gate.Decision:
+    """An agent labelling a pull request that has had no round yet."""
     base = {
-        "event_name": "pull_request",
-        "action": "ready_for_review",
-        "number": 365,
-        "head_sha": "a" * 40,
-        "labels": ["loop:round-1"],
-        "head_ref": "cursor/some-fix-1234",
-        "cross_repository": False,
-        "comment_body": "",
-        "comment_author_association": "",
-        "comment_author_login": "",
-        "is_pull_request": False,
-        "force": False,
+        "labels": [gate.REVIEW_LABEL],
+        "markers": [],
+        "head_sha": SHA,
+        "sender_type": "Bot",
+        "sender_login": "claude[bot]",
+        "label_since": NOW,
+        "label_events": [labeled("claude[bot]", "claude")],
+        "repository": REPO,
     }
-    return base | overrides
+    return gate.decide(base | overrides)
 
 
-def candidate(**overrides) -> dict:
-    """An enrolled pull request that has gone quiet — the common scan candidate."""
+#: When this run's label was added, as the webhook's ``updated_at`` says.
+NOW = "2026-09-23T01:40:00Z"
+
+
+def labeled(actor: str, app: str, at: str = NOW) -> dict:
+    """One ``review`` labeled event, as the workflow extracts it."""
+    return {"at": at, "actor": actor, "app": app}
+
+
+#: What a person clicking the label in GitHub's own interface looks like.
+PERSON = {
+    "sender_type": "User",
+    "sender_login": "davitf",
+    "label_events": [labeled("davitf", "")],
+}
+
+
+def finish(verdict: object, **overrides) -> gate.Finish:
     base = {
-        "number": 365,
-        "labels": ["loop:round-1"],
-        "head_ref": "cursor/some-fix-1234",
-        "cross_repository": False,
-        "head_sha": "a" * 40,
-        "head_committed_at": LONG_AGO,
-        "last_reviewed_sha": "b" * 40,
+        "round": 2,
+        "final": False,
+        "head_sha": SHA,
+        "repository": REPO,
+        "verdict": verdict,
     }
-    return base | overrides
+    return gate.finish(base | overrides)
 
 
-def scan(*candidates: dict, now: str = NOW) -> gate.Decision:
-    return gate.decide(
-        {"event_name": "schedule", "now": now, "candidates": list(candidates)}
-    )
+def verdict_file(**overrides) -> dict:
+    return {
+        "verdict": "findings",
+        "summary": "Two nits left.",
+        "question": "",
+    } | overrides
 
 
-# --- counting rounds ---------------------------------------------------------------
+# --- deciding whether a round runs ----------------------------------------------------
 
 
-def test_round_label_is_the_only_state() -> None:
-    assert gate.current_round([]) == 0
-    assert gate.current_round(["loop:on", "bug"]) == 0
-    assert gate.current_round(["loop:round-2"]) == 2
-    # Labels are not ordered, and a stale one may linger: take the highest, not the last.
-    assert gate.current_round(["loop:round-3", "loop:round-1"]) == 3
-    assert gate.current_round(["loop:round-x", "loop:roundup"]) == 0
+def test_the_label_runs_the_next_round() -> None:
+    first = decide()
+    assert first.run
+    assert first.round == 1
+    assert not first.final
+
+    third = decide(markers=rounds("findings", "findings"))
+    assert third.run
+    assert third.round == 3
 
 
-def test_each_round_advances_one() -> None:
-    assert scan(candidate(labels=["loop:round-1"])).round == 2
-    assert scan(candidate(labels=["loop:round-2"])).round == 3
+def test_a_label_that_has_come_off_again_runs_nothing() -> None:
+    """A round that started meanwhile took the label, or a person changed their mind.
 
-
-def test_the_cap_is_three_rounds() -> None:
-    decision = scan(candidate(labels=["loop:round-3"]))
-    assert not decision.run
-    # Nothing was eligible, so the scan reports on the tick rather than on one PR.
-    assert decision.reason == "no pull request is waiting for a round"
-
-    # The PR-level answer is the one that carries the cap.
-    parked = gate._scheduled(
-        candidate(labels=["loop:round-3"]), gate.parse_time(NOW), gate.timedelta(0)
-    )
-    assert not parked.run
-    assert parked.cap_reached
-    # The round stays at what was actually done, so the hand-back message can say "3".
-    assert parked.round == 3
-
-
-def test_the_round_before_the_cap_announces_itself_as_the_last() -> None:
-    # Round 3 has to say so as it posts: there is no round 4 to discover it later.
-    assert scan(candidate(labels=["loop:round-2"])).final
-    assert not scan(candidate(labels=["loop:round-1"])).final
-
-
-# --- the quiet period ----------------------------------------------------------------
-
-
-def test_a_branch_still_being_pushed_to_is_left_alone() -> None:
-    """The reason the loop is scheduled rather than push-driven.
-
-    Four commits landed on the first pull request the loop saw inside thirteen minutes.
-    A round per push would have spent the whole cap on half-written work.
+    The workflow reads the labels when the run starts, not from the event, so a request
+    queued behind a round that already served it is dropped here.
     """
-    decision = scan(candidate(head_committed_at=JUST_NOW))
-    assert not decision.run
-
-    per_pr = gate._scheduled(
-        candidate(head_committed_at=JUST_NOW),
-        gate.parse_time(NOW),
-        gate.timedelta(minutes=gate.QUIET_MINUTES),
-    )
-    assert not per_pr.run
-    assert "quiet" in per_pr.reason
+    answer = decide(labels=["documentation"])
+    assert not answer.run
+    assert not answer.comment
 
 
-def test_the_quiet_period_is_measured_from_the_last_commit() -> None:
-    """Pin the boundary to `QUIET_MINUTES` itself, so raising it cannot drift silently.
-
-    The threshold moved from ten minutes to thirty on 2026-09-19 because ten was short
-    enough that an ordinary pause mid-task — a long test run, a slow tool call — read
-    as "the implementer has finished" and spent a round on half-written code. The two
-    cases below are a minute either side of whatever the constant now says.
-    """
-    now = gate.parse_time(NOW)
-    quiet = gate.timedelta(minutes=gate.QUIET_MINUTES)
-
-    def at(minutes_ago: int) -> str:
-        return (now - gate.timedelta(minutes=minutes_ago)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
-
-    just_short = gate._scheduled(
-        candidate(head_committed_at=at(gate.QUIET_MINUTES - 1)), now, quiet
-    )
-    assert not just_short.run
-    assert "quiet" in just_short.reason
-
-    assert gate._scheduled(
-        candidate(head_committed_at=at(gate.QUIET_MINUTES + 1)), now, quiet
-    ).run
+def test_the_last_round_an_agent_can_ask_for_says_so() -> None:
+    answer = decide(markers=rounds(*["findings"] * (gate.MAX_ROUNDS - 1)))
+    assert answer.run
+    assert answer.round == gate.MAX_ROUNDS
+    assert answer.final
 
 
-def test_the_same_commit_is_not_reviewed_twice() -> None:
-    """The scan runs every few minutes; without this it would re-review on every tick."""
-    decision = scan(candidate(last_reviewed_sha="a" * 40))
-    assert not decision.run
-
-    # A push moves the head, and the round is due again.
-    assert scan(candidate(head_sha="c" * 40, last_reviewed_sha="a" * 40)).run
-
-
-def test_a_commit_with_no_timestamp_is_skipped_rather_than_reviewed() -> None:
-    assert not scan(candidate(head_committed_at="")).run
-    assert not scan(candidate(head_committed_at="not a date")).run
-
-
-def test_an_unknown_scan_time_fails_closed() -> None:
-    """Not knowing the time is not the same as knowing the branch is quiet.
-
-    The workflow always passes `date -u`, so this is about which way the gate falls
-    over when it does not: the wrong direction spends a review on a branch that is
-    still being written.
-    """
-    assert not scan(candidate(), now="").run
-    assert not scan(candidate(), now="not a date").run
-
-
-def test_one_pull_request_per_tick_longest_waiting_first() -> None:
-    decision = scan(
-        candidate(number=400, head_committed_at="2026-09-19T11:50:00Z"),
-        candidate(number=365, head_committed_at="2026-09-19T09:00:00Z"),
-        candidate(number=380, head_committed_at="2026-09-19T10:00:00Z"),
-    )
-    assert decision.run
-    assert decision.pr == 365
-
-
-def test_ties_break_on_the_pull_request_number() -> None:
-    # Two agents finishing in the same second must not make the choice arbitrary: a
-    # retried tick has to pick the same pull request as the one it is retrying.
-    decision = scan(candidate(number=400), candidate(number=365))
-    assert decision.pr == 365
-
-
-def test_an_empty_scan_says_so_without_naming_a_pull_request() -> None:
-    decision = scan()
-    assert not decision.run
-    assert decision.pr == 0
-
-
-# --- stopping ----------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("label", ["loop:decision", "loop:hold", "loop:done"])
-def test_parked_labels_stop_an_automatic_round(label: str) -> None:
-    assert not scan(candidate(labels=["loop:round-1", label])).run
-
-    per_pr = gate._scheduled(
-        candidate(labels=["loop:round-1", label]),
-        gate.parse_time(NOW),
-        gate.timedelta(0),
-    )
-    assert label in per_pr.reason
-    assert (
-        not per_pr.cap_reached
-    )  # not the cap — a different "no", and a different message
-
-
-def test_loop_off_beats_even_an_explicit_request() -> None:
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            labels=["loop:round-1", "loop:off"],
-            is_pull_request=True,
-            comment_body="@claude review",
-            comment_author_association="OWNER",
-        )
-    )
-    assert not decision.run
-    assert not scan(candidate(labels=["loop:round-1", "loop:off"])).run
-
-
-def test_a_fork_never_runs() -> None:
-    # A fork's `pull_request` run has no secrets, so this would fail rather than review.
-    assert not gate.decide(event(cross_repository=True)).run
-    assert not scan(candidate(cross_repository=True)).run
-
-
-# --- enrolment ---------------------------------------------------------------------
-
-
-def test_opening_a_cursor_branch_enrols_it_without_reviewing_it() -> None:
-    decision = gate.decide(
-        event(action="opened", labels=[], head_ref="cursor/fix-1234")
-    )
-    # Nothing to review yet: the agent that opened it is still pushing.
-    assert not decision.run
-    assert decision.enrol
-
-
-def test_any_other_new_branch_needs_the_opt_in_label() -> None:
-    assert not gate.decide(
-        event(action="opened", labels=[], head_ref="claude/some-work")
-    ).enrol
-    assert gate.decide(
-        event(action="opened", labels=["loop:on"], head_ref="claude/some-work")
-    ).enrol
-
-
-def test_ready_for_review_does_not_wait_for_the_quiet_period() -> None:
-    """An explicit "this is finished" is the signal the quiet period exists to infer."""
-    decision = gate.decide(event(action="ready_for_review", labels=[]))
-    assert decision.run
-    assert decision.round == 1
-    assert decision.enrol  # and it joins the loop, so later rounds are scanned for
-
-
-def test_a_push_is_not_an_event_the_loop_acts_on() -> None:
-    decision = gate.decide(event(action="synchronize"))
-    assert not decision.run
-    assert not decision.enrol
-
-
-def test_pull_requests_that_predate_the_loop_stay_out_of_it() -> None:
-    """The guard that keeps this from firing on every `cursor/*` pull request.
-
-    The branch prefix enrols a pull request once, when it opens. The scan reads only
-    the label, so a pull request that was already open when the loop landed is never
-    picked up until someone adds `loop:on` deliberately.
-    """
-    decision = gate._scheduled(
-        candidate(labels=[], head_ref="cursor/old"),
-        gate.parse_time(NOW),
-        gate.timedelta(0),
-    )
-    assert not decision.run
-    assert "not enrolled" in decision.reason
-
-    assert scan(candidate(labels=["loop:on"], head_ref="cursor/old")).run
-
-
-# --- asking for a round by hand -----------------------------------------------------
-
-
-def test_a_collaborator_can_restart_a_parked_loop() -> None:
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            labels=["loop:round-1", "loop:decision"],
-            is_pull_request=True,
-            comment_body="@claude review please\n\nAnswered below — option B.",
-            comment_author_association="OWNER",
-        )
-    )
-    assert decision.run
-    assert decision.forced
-    assert decision.round == 2
-
-
-def test_a_comment_can_buy_a_fourth_round() -> None:
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            labels=["loop:round-3", "loop:done"],
-            is_pull_request=True,
-            comment_body="@claude review",
-            comment_author_association="OWNER",
-        )
-    )
-    assert decision.run
-    assert decision.round == 4
-    # And it is still past the automatic cap. This assertion used to read `not final`,
-    # on the reasoning that whoever asked could ask again — true, and beside the point:
-    # `final` is what puts `loop:done` back after the verdict step clears the stale
-    # parks, so leaving it false took the label off a pull request the scan and the
-    # bots both refuse. `test_a_bought_round_past_the_cap_is_still_the_last_automatic_one`
-    # covers the consequence.
-    assert decision.final
-
-
-@pytest.mark.parametrize("login", ["cursor[bot]", "claude[bot]"])
-def test_the_implementing_agent_can_say_it_has_finished(login: str) -> None:
-    """The explicit signal, preferred over waiting out the quiet period.
-
-    Neither bot is a repository collaborator — GitHub reports `NONE` — so they get
-    here on their login rather than on their association. Both hosts matter:
-    `address-review-findings` §7 tells whichever of them holds the branch to send
-    this, so a gate that knew only one would make the instruction a lie on the other.
-    """
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            labels=["loop:round-1"],
-            is_pull_request=True,
-            comment_body="@claude review\n\nFindings addressed and pushed.",
-            comment_author_association="NONE",
-            comment_author_login=login,
-        )
-    )
-    assert decision.run
-    assert decision.round == 2
-    # Not forced: an agent saying it is done cannot reach past a park or the cap.
-    assert not decision.forced
+def test_an_agent_cannot_ask_for_a_round_past_the_cap() -> None:
+    """The cap is what stops two agents going back and forth on one pull request."""
+    answer = decide(markers=rounds(*["findings"] * gate.MAX_ROUNDS))
+    assert not answer.run
+    assert answer.round == gate.MAX_ROUNDS
+    # The refusal is announced, because nothing else on the pull request would say why
+    # the label came off without a review.
+    assert "needs a person" in answer.comment
+    assert f"`{gate.REVIEW_LABEL}`" in answer.comment
+    # It is bookkeeping, so it carries no marker and does not count as anything.
+    assert "archivey-review-" not in answer.comment
 
 
 @pytest.mark.parametrize(
-    ("labels", "why"),
+    "who",
     [
-        (["loop:round-3"], "the cap"),
-        (["loop:round-1", "loop:decision"], "a maintainer decision"),
-        (["loop:round-1", "loop:hold"], "a hold"),
-        ([], "never having been enrolled, on a branch that predates the loop"),
+        {"sender_type": "Bot", "label_events": [labeled("claude[bot]", "")]},
+        # An agent acting through the maintainer's account: #384 recorded exactly this.
+        {
+            "sender_login": "davitf",
+            "sender_type": "User",
+            "label_events": [labeled("davitf", "claude")],
+        },
+        # The event could not be found, so nobody can say it was a person.
+        {"sender_login": "davitf", "sender_type": "User", "label_events": []},
+        {"sender_login": "davitf", "sender_type": "User", "label_events": None},
+        {
+            "sender_login": "davitf",
+            "sender_type": None,
+            "label_events": [labeled("davitf", "")],
+        },
+        # The events API had not listed this run's event yet, and the latest one it
+        # did list was the maintainer's own click, a while ago.
+        {
+            "sender_login": "davitf",
+            "sender_type": "User",
+            "label_events": [labeled("davitf", "", at="2026-09-23T01:20:00Z")],
+        },
+        # Someone else's click is not this run's event.
+        {
+            "sender_login": "davitf",
+            "sender_type": "User",
+            "label_events": [labeled("someone", "")],
+        },
+        {
+            "sender_login": "davitf",
+            "sender_type": "User",
+            "label_since": "",
+            "label_events": [labeled("davitf", "")],
+        },
+    ],
+    ids=[
+        "bot",
+        "user-via-app",
+        "user-no-event",
+        "user-events-none",
+        "no-sender",
+        "stale-person-event",
+        "other-actor",
+        "no-since",
     ],
 )
-def test_the_agent_cannot_talk_its_way_past_a_stop(labels: list[str], why: str) -> None:
-    """The whole difference between the bot path and the human one.
+def test_only_a_person_buys_a_round_past_the_cap(who: dict) -> None:
+    past_cap = rounds(*["findings"] * (gate.MAX_ROUNDS + 1))
+    refused = decide(markers=past_cap, **who)
+    assert not refused.run
+    assert not refused.person
 
-    A person asking for a round is asking past the cap and past the park they set
-    themselves. An agent reporting that it has stopped pushing is not asking for
-    anything, so every stop still holds — otherwise an agent that fixes, comments,
-    fixes and comments could run the loop indefinitely.
-    """
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            labels=labels,
-            is_pull_request=True,
-            comment_body="@claude review",
-            comment_author_association="NONE",
-            comment_author_login="cursor[bot]",
-        )
-    )
-    assert not decision.run, why
+    person = decide(markers=past_cap, **PERSON)
+    assert person.run
+    assert person.person
+    assert person.final
+    assert person.round == gate.MAX_ROUNDS + 2
 
 
-def test_the_reviewers_hand_back_enrols_a_branch_that_never_did() -> None:
-    """Cursor approving a Claude branch has to be able to start the pass from zero.
-
-    Only `cursor/*` auto-enrols, so a `claude/*` pull request reaches this comment
-    with no loop label at all and the hand-back used to be refused with nothing
-    posted to say so. The request itself is the enrolment signal here; the branch
-    prefix is what enrols the other direction.
-    """
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            labels=[],
-            head_ref="claude/project-thread-blk7eo",
-            is_pull_request=True,
-            comment_body="@claude review",
-            comment_author_association="NONE",
-            comment_author_login="cursor[bot]",
-        )
-    )
-    assert decision.run
-    assert decision.enrol
-    assert decision.round == 1
-    # Enrolling is not the same as forcing: the cap and the parks still apply.
-    assert not decision.forced
+def test_the_latest_matching_event_decides_and_skew_is_allowed() -> None:
+    """A click a few seconds before ``updated_at`` still counts; the newest one wins."""
+    slightly_early = "2026-09-23T01:39:45Z"
+    events = [labeled("davitf", "", at=slightly_early)]
+    assert decide(**(PERSON | {"label_events": events})).person
+    events.append(labeled("davitf", "claude", at="2026-09-23T01:40:02Z"))
+    assert not decide(**(PERSON | {"label_events": events})).person
 
 
-def test_a_park_stops_the_hand_back_before_it_can_enrol() -> None:
-    """Order matters in the bot branch, and nothing else pins it.
-
-    Enrolment now has an escape hatch, so the parks have to be read first — a
-    pull request parked on a maintainer decision must not be restarted by an
-    agent's comment just because it carries no `loop:on`.
-    """
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            labels=["loop:decision"],
-            head_ref="claude/project-thread-blk7eo",
-            is_pull_request=True,
-            comment_body="@claude review",
-            comment_author_association="NONE",
-            comment_author_login="cursor[bot]",
-        )
-    )
-    assert not decision.run
-    assert not decision.enrol
+def test_the_workflow_retries_with_the_gates_skew() -> None:
+    step = (ROOT / ".github/workflows/review-loop.yml").read_text(encoding="utf-8")
+    seconds = int(gate.LABEL_EVENT_SKEW.total_seconds())
+    assert f"($since | fromdateiso8601) - {seconds})" in step
 
 
-def test_a_fork_cannot_buy_a_round_by_commenting() -> None:
-    """The comment path is the only one where a fork round would really start.
-
-    `pull_request` and the scan both refuse a fork earlier, and the recorded reason
-    for the `pull_request` guard — a fork run has no secrets, so the review fails
-    anyway — is not true here: an `issue_comment` run is on the base repository.
-    """
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            labels=["loop:on"],
-            cross_repository=True,
-            is_pull_request=True,
-            comment_body="@claude review",
-            comment_author_association="OWNER",
-        )
-    )
-    assert not decision.run
-    assert "fork" in decision.reason
-
-
-def test_marking_a_parked_pull_request_ready_leaves_its_status_alone() -> None:
-    """`enrol` is what runs the step that rewrites the status comment.
-
-    On a parked pull request that comment is the only thing saying why nothing is
-    happening — the maintainer's question, or why a round died. Setting `enrol` on a
-    refusal replaced it with "a review starts by itself once the branch goes quiet",
-    a promise nothing would honour. A parked pull request is already enrolled anyway.
-    """
-    for park in ("loop:decision", "loop:hold", "loop:done"):
-        decision = gate.decide(event(labels=["loop:round-1", park]))
-        assert not decision.run
-        assert not decision.enrol, park
-
-
-def test_a_refusal_names_the_threshold_that_produced_it() -> None:
-    """The reason strings interpolated the constant while the rule used the argument.
-
-    Nothing asserted on them, so the two could drift into a message that described a
-    rule it was not produced by.
-    """
-    decision = gate._scheduled(
-        candidate(head_committed_at=JUST_NOW),
-        gate.parse_time(NOW),
-        gate.timedelta(minutes=5),
-    )
-    assert not decision.run
-    assert "under 5m" in decision.reason
-
-    ran = gate._scheduled(
-        candidate(head_committed_at=JUST_NOW),
-        gate.parse_time(NOW),
-        gate.timedelta(0),
-    )
-    assert ran.run
-    assert "for 0 minutes" in ran.reason
-
-
-def test_an_unknown_bot_is_still_a_stranger() -> None:
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            labels=["loop:round-1"],
-            is_pull_request=True,
-            comment_body="@claude review",
-            comment_author_association="NONE",
-            comment_author_login="dependabot[bot]",
-        )
-    )
-    assert not decision.run
-
-
-def test_no_comment_runs_forever_however_entitled_the_commenter() -> None:
-    """The ceiling the forced path needs because a forced round ignores every stop.
-
-    An agent posting through the maintainer's account is `OWNER` like the maintainer,
-    and `address-review-findings` §7 tells it to send this phrase after every round.
-    Without a ceiling that is fix-comment-fix-comment at full review cost, forever.
-    """
-    owner = {
-        "event_name": "issue_comment",
-        "is_pull_request": True,
-        "comment_body": "@claude review",
-        "comment_author_association": "OWNER",
-        "comment_author_login": "davitf",
-    }
-    assert gate.decide(event(labels=["loop:round-5"], **owner)).run  # round 6: fine
-    spent = gate.decide(event(labels=["loop:round-6"], **owner))
-    assert not spent.run
-    assert spent.cap_reached
-
-    # A bot is bounded long before this, by the ordinary cap.
-    assert not gate.decide(
-        event(
-            labels=["loop:round-5"],
-            **(
-                owner
-                | {
-                    "comment_author_login": "cursor[bot]",
-                    "comment_author_association": "NONE",
-                }
-            ),
-        )
-    ).run
-
-    # The deliberate override survives, because a button in the GitHub UI is not
-    # something an agent presses.
-    assert gate.decide(
-        event(event_name="workflow_dispatch", labels=["loop:round-9"], force=True)
-    ).run
-
-
-def test_a_stranger_cannot_spend_review_credits() -> None:
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            is_pull_request=True,
-            comment_body="@claude review",
-            comment_author_association="NONE",
-        )
-    )
-    assert not decision.run
+def test_nothing_runs_past_the_ceiling_whoever_asks() -> None:
+    """A misread person check must not remove the bound altogether."""
+    answer = decide(markers=rounds(*["findings"] * gate.MAX_FORCED_ROUNDS), **PERSON)
+    assert not answer.run
+    assert "most this workflow runs" in answer.comment
 
 
 @pytest.mark.parametrize(
-    "body",
+    "verdict", ["clean", "approved", "findings", "decision", "not-a-verdict"]
+)
+def test_an_agent_can_ask_for_another_round_whatever_the_verdict(verdict: str) -> None:
+    """The verdict advises; the implementer judges when a change has grown enough to need
+    another look (davitf, 2026-09-23). Only the cap bounds an agent's rounds."""
+    assert decide(markers=rounds("findings", verdict)).run
+
+
+def test_an_agent_cannot_retry_a_commit_a_review_already_failed_on() -> None:
+    """A failure that repeats every time would otherwise loop without end.
+
+    `claude-code-action` skips when the branch's copy of the workflow differs from
+    `main`'s, so retrying the same commit fails the same way, and each closing comment
+    asks for another retry.
+    """
+    failed = [f"{gate.ATTEMPT_MARKER} n=1 sha={SHA} -->"]
+    refused = decide(markers=failed)
+    assert not refused.run
+    assert "merge `main`" in refused.comment
+
+    # A new commit, or a person, retries.
+    assert decide(markers=failed, head_sha="c" * 40).run
+    assert decide(markers=failed, **PERSON).run
+    # A failed attempt is not a round.
+    assert decide(markers=failed, head_sha="c" * 40).round == 1
+
+
+def test_no_review_keeps_a_pull_request_out_whoever_asks() -> None:
+    """The review hub's diff is the whole repository; one label must not review it."""
+    labels = [gate.REVIEW_LABEL, gate.NO_REVIEW_LABEL]
+    for who in [{}, PERSON]:
+        answer = decide(labels=labels, **who)
+        assert not answer.run
+        assert f"`{gate.NO_REVIEW_LABEL}`" in answer.comment
+
+
+@pytest.mark.parametrize("value", [None, "", "three", 4, [1, None, "<!-- other -->"]])
+def test_markers_that_cannot_be_read_count_for_nothing(value: object) -> None:
+    assert decide(markers=value).round == 1
+
+
+# --- the verdict a round ends with ---------------------------------------------------
+
+
+def test_a_review_that_does_not_ask_to_see_the_fix_ends_the_rounds() -> None:
+    assert gate.read_verdict(verdict_file(verdict="clean")).stop
+    assert gate.read_verdict(verdict_file(verdict="approved")).stop
+    assert gate.read_verdict(verdict_file(verdict="conditional")).stop
+    assert not gate.read_verdict(verdict_file(verdict="findings")).stop
+    assert not gate.read_verdict(verdict_file(verdict="decision")).stop
+
+
+def test_a_verdict_nobody_expected_still_gets_an_answer() -> None:
+    """The verdict is prose an agent wrote, so nothing may fall through silently."""
+    for payload in ["approve", "APPROVED?", "", None, 3]:
+        answer = gate.read_verdict({"verdict": payload})
+        assert answer.verdict == gate.DEFAULT_VERDICT, payload
+        assert not answer.stop, payload
+        assert "not one this loop knows" in answer.reason, payload
+
+    for payload in [[], "unreadable", None]:
+        answer = gate.read_verdict(payload)
+        assert answer.verdict == gate.DEFAULT_VERDICT
+        assert "not a JSON object" in answer.reason
+
+    # Spelling and spacing are the reviewer's, not a contract.
+    assert gate.read_verdict({"verdict": "  Approved\n"}).verdict == "approved"
+
+
+def test_a_question_belongs_to_a_decision_and_to_nothing_else() -> None:
+    assert gate.read_verdict(verdict_file(verdict="decision", question="Q?")).question
+    for name in ["clean", "approved", "conditional", "findings"]:
+        assert not gate.read_verdict(verdict_file(verdict=name, question="Q?")).question
+
+
+# --- the comment that closes a round ---------------------------------------------------
+
+
+def test_a_review_that_did_not_finish_is_not_counted() -> None:
+    """No verdict file means the review died, and a round that died is free to retry."""
+    answer = finish(None)
+    assert not answer.counted
+    assert gate.ROUND_MARKER not in answer.comment
+    assert "did not finish" in answer.comment
+    # It records the commit, which is what stops an agent retrying it forever.
+    first_line = answer.comment.splitlines()[0]
+    assert first_line == f"{gate.ATTEMPT_MARKER} n=2 sha={SHA} -->"
+    assert gate.read_history([first_line]).failed_shas == {SHA}
+    assert f"`{gate.REVIEW_LABEL}`" in answer.comment
+    # The outcome label stays whatever the last finished round left.
+    assert (answer.label, answer.unlabel) == ("", ())
+
+
+@pytest.mark.parametrize(
+    ("name", "label"),
     [
-        "thanks @claude",
-        "the review loop is great",
-        "",
+        ("clean", "approved"),
+        ("approved", "approved"),
+        ("conditional", "approved-with-fixes"),
+        ("findings", "changes-requested"),
+        ("decision", "needs-decision"),
     ],
 )
-def test_only_the_trigger_phrase_starts_a_round(body: str) -> None:
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            is_pull_request=True,
-            comment_body=body,
-            comment_author_association="OWNER",
-        )
-    )
-    assert not decision.run
+def test_every_verdict_leaves_one_outcome_label(name: str, label: str) -> None:
+    answer = finish(verdict_file(verdict=name, question="Q?"))
+    assert answer.label == label
+    assert set(answer.unlabel) == set(gate.OUTCOME_LABELS.values()) - {label}
 
 
-def test_a_comment_on_an_issue_is_not_a_pull_request() -> None:
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            is_pull_request=False,
-            comment_body="@claude review",
-            comment_author_association="OWNER",
-        )
-    )
-    assert not decision.run
+def test_every_verdict_has_an_outcome_label() -> None:
+    assert gate.OUTCOME_LABELS.keys() == gate.VERDICT_STOPS.keys()
+    assert gate.OUTCOME_LABELS[gate.DEFAULT_VERDICT] == "changes-requested"
 
 
-def test_the_trigger_phrase_never_fires_both_workflows() -> None:
-    """The two `issue_comment` workflows must partition comments, not overlap.
-
-    `.github/workflows/claude.yml` runs the general-purpose assistant on any comment
-    containing `@claude`, and skips the ones containing `@claude review` so this loop
-    can have them. That skip is a GitHub `contains()` — a case-insensitive substring
-    test, with no regex available — so the gate must never accept a comment that
-    `contains()` would let through to the assistant. The gate being the stricter of
-    the two is fine and deliberate: a comment that merely writes about the phrase
-    then runs neither workflow, which is the outcome this loop wants.
-    """
-
-    def github_contains(body: str) -> bool:
-        """What `contains(github.event.comment.body, '@claude review')` does."""
-        return "@claude review" in body.lower()
-
-    for body in [
-        "@claude review",
-        "@Claude Review please",
-        "\n@claude review",
-        "answered — option B. @claude review",
-        "@claude  review",  # two spaces: contains() says no, so the gate must too
-        "@claude reviewer",
-        "@claude what do you think?",
-        "thanks @claude",
-        "nothing to see here",
-        "",
-    ]:
-        if gate.COMMENT_TRIGGER.match(body):
-            assert github_contains(body), body
-
-
-def test_writing_about_the_trigger_is_not_asking_for_a_round() -> None:
-    """The loop's own paperwork quotes its trigger phrase, and must not trip on it.
-
-    All four bodies below are real shapes: the workflow's hand-back comments, a
-    reviewer's maintainer question, a dispositions comment, and this module's own
-    docstrings. The first three are posted on the pull request the loop is running
-    on, by accounts the gate trusts. Before the phrase was anchored, a dispositions
-    comment on #369 spent a forced round on the pull request that was fixing the loop.
-    """
-
-    for body in [
-        "Round 3 of 3 is spent. Comment `@claude review` to buy another round.",
-        "Options\n - A — treat a comment carrying `@claude review` as ordinary.",
-        "C3 — fixed in 3f24fa8. The gate now accepts `@claude review` from claude[bot].",
-        "I answered above; no need to re-run. (Not writing the trigger phrase here.)",
-    ]:
-        assert not gate.decide(
-            event(
-                event_name="issue_comment",
-                is_pull_request=True,
-                comment_body=body,
-                comment_author_association="OWNER",
+@pytest.mark.parametrize("present", sorted(set(gate.OUTCOME_LABELS.values())))
+def test_the_gate_never_reads_an_outcome_label(present: str) -> None:
+    """The labels only report; the round markers stay the only state."""
+    for history in [[], rounds("findings"), rounds(*["findings"] * gate.MAX_ROUNDS)]:
+        for who in [{}, PERSON]:
+            bare = decide(markers=history, **who)
+            labelled = decide(
+                markers=history, labels=[gate.REVIEW_LABEL, present], **who
             )
-        ).run, body
+            assert bare == labelled
 
 
-def test_asking_for_a_round_still_works_at_the_top_of_a_comment() -> None:
-    """The anchor must not cost the escape hatch it is guarding."""
-
-    for body in [
-        "@claude review",
-        "  @claude review\n\nanswered option B above.",
-        "@Claude Review — the decision is settled, carry on.",
-    ]:
-        decision = gate.decide(
-            event(
-                event_name="issue_comment",
-                is_pull_request=True,
-                comment_body=body,
-                comment_author_association="OWNER",
-            )
-        )
-        assert decision.run, body
-        assert decision.forced, body
-
-
-def test_manual_dispatch_respects_the_cap_unless_forced() -> None:
-    spent = event(event_name="workflow_dispatch", labels=["loop:round-3"])
-    assert not gate.decide(spent).run
-    assert gate.decide(spent | {"force": True}).run
+@pytest.mark.parametrize(
+    "name", ["clean", "approved", "conditional", "findings", "decision"]
+)
+def test_every_finished_round_counts_and_records_what_it_read(name: str) -> None:
+    answer = finish(verdict_file(verdict=name, question="Fix here or file it?"))
+    assert answer.counted
+    assert answer.verdict == name
+    # The marker is the first line, because the workflow counts `startswith`.
+    first_line = answer.comment.splitlines()[0]
+    assert first_line == f"{gate.ROUND_MARKER} n=2 sha={SHA} verdict={name} -->"
+    # What the gate reads back is what this wrote.
+    history = gate.read_history([first_line])
+    assert history.rounds == 1
+    assert "Two nits left." in answer.comment
+    assert "https://github.com/davitf/archivey/blob/main/dev-docs/review-loop.md" in (
+        answer.comment
+    )
 
 
-# --- the wiring the workflow depends on ---------------------------------------------
+def test_a_garbled_verdict_file_still_counts() -> None:
+    """The findings were posted; only the verdict could not be read."""
+    answer = finish("unreadable")
+    assert answer.counted
+    assert answer.verdict == gate.DEFAULT_VERDICT
+    assert "round 3" in answer.comment
 
 
-def test_every_answer_names_the_pull_request_it_is_about() -> None:
-    """The workflow reads the pull request number back off the gate, not off the event.
-
-    A scheduled tick has no pull request in its event payload at all, so the gate is
-    the only thing that knows which one the rest of the job is acting on.
-    """
-    assert gate.decide(event(number=365)).pr == 365
-    assert gate.decide(event(number=365)).head_sha == "a" * 40
-    assert scan(candidate(number=380, head_sha="d" * 40)).pr == 380
-    assert scan(candidate(number=380, head_sha="d" * 40)).head_sha == "d" * 40
+def test_findings_ask_for_the_label_back_for_the_next_round() -> None:
+    answer = finish(verdict_file(verdict="findings"))
+    assert not answer.stop
+    assert "add the `review` label again for round 3" in answer.comment
 
 
-def test_the_script_reads_stdin_and_writes_json() -> None:
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT)],
-        input=json.dumps(event(labels=["loop:round-1"])),
+def test_the_last_round_does_not_ask_an_agent_for_another() -> None:
+    """A comment that asks for a round the cap will refuse wakes a runner to say no."""
+    answer = finish(verdict_file(verdict="findings"), round=5, final=True)
+    assert "again for round" not in answer.comment
+    assert "unless a person adds" in answer.comment
+
+
+@pytest.mark.parametrize("name", ["findings", "approved", "decision"])
+def test_the_ceiling_round_does_not_offer_another(name: str) -> None:
+    """At the ceiling nothing runs again, so no comment may say a label would."""
+    answer = finish(
+        verdict_file(verdict=name, question="Q?"),
+        round=gate.MAX_FORCED_ROUNDS,
+        final=True,
+    )
+    assert "last round this workflow runs" in answer.comment
+    assert "label again" not in answer.comment
+    assert "a person adds" not in answer.comment
+    assert "person adding" not in answer.comment
+
+
+@pytest.mark.parametrize("name", ["approved", "decision"])
+def test_past_the_cap_only_a_person_starts_another(name: str) -> None:
+    answer = finish(
+        verdict_file(verdict=name, question="Q?"), round=gate.MAX_ROUNDS, final=True
+    )
+    assert "only a person adding the `review` label" in answer.comment
+    assert "label again" not in answer.comment
+
+
+def test_a_round_that_does_not_need_another_look_says_so() -> None:
+    approved = finish(verdict_file(verdict="approved"))
+    assert approved.stop
+    assert "No further round is needed" in approved.comment
+    assert "again for round" not in approved.comment
+    assert "grow into a larger change" in approved.comment
+
+    clean = finish(verdict_file(verdict="clean"))
+    assert "ready for a person to look at and merge" in clean.comment
+
+
+def test_a_decision_carries_its_question() -> None:
+    answer = finish(verdict_file(verdict="decision", question="Fix here or file it?"))
+    assert "**The question:** Fix here or file it?" in answer.comment
+    assert "Once it is answered, add the `review` label again" in answer.comment
+
+
+# --- the command line the workflow calls ----------------------------------------------
+
+
+def _run(stdin: str, *args: str) -> dict:
+    result = subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, str(SCRIPT), *args],
+        input=stdin,
         capture_output=True,
         text=True,
         check=True,
     )
-    payload = json.loads(result.stdout)
-    # The workflow reads exactly these keys out with `jq`.
-    assert payload.keys() == {
-        "run",
-        "round",
-        "reason",
-        "pr",
-        "head_sha",
-        "head_ref",
-        "cap_reached",
-        "forced",
-        "enrol",
-        "final",
-    }
+    return json.loads(result.stdout)
+
+
+def test_decide_mode_writes_the_keys_the_workflow_reads() -> None:
+    payload = _run(json.dumps({"labels": ["review"], "markers": []}))
+    for key in ["run", "round", "final", "person", "max_rounds", "comment"]:
+        assert key in payload, key
     assert payload["run"] is True
-    assert payload["round"] == 2
-    assert payload["pr"] == 365
 
 
-def test_a_bought_round_past_the_cap_is_still_the_last_automatic_one() -> None:
-    """`final` means the automatic loop is spent, not that nobody can buy another.
+def test_finish_mode_writes_the_keys_the_workflow_reads() -> None:
+    payload = _run(json.dumps({"round": 1, "verdict": verdict_file()}), "--finish")
+    assert payload.keys() == {
+        "verdict",
+        "stop",
+        "counted",
+        "comment",
+        "reason",
+        "label",
+        "unlabel",
+    }
 
-    A forced round used to leave `final` false on the reasoning that whoever bought it
-    could buy another. But the workflow clears every stale park as a round runs and
-    re-adds `loop:done` only when `final` is set, so a bought round 4 with findings took
-    `loop:done` off and never put it back: the scan refuses it (`nxt > MAX_ROUNDS`), a
-    bot's comment refuses it, and the status comment promised a round that could not
-    come. `loop:done` marks the end of the *automatic* loop, which round 4 is past by
-    definition however it was bought.
+
+def test_neither_mode_fails_on_input_it_cannot_parse() -> None:
+    """By the time `--finish` runs, the findings are on the pull request already."""
+    assert _run("{not json", "--finish")["comment"] == ""
+    assert _run("{not json")["run"] is False
+
+
+# --- what the workflow has to keep in step with the gate ------------------------------
+
+
+def test_the_workflow_counts_the_marker_the_gate_writes() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    prefix = "<!-- archivey-review-"
+    assert gate.ROUND_MARKER.startswith(prefix)
+    assert gate.ATTEMPT_MARKER.startswith(prefix)
+    assert f'startswith("{prefix}")' in text
+    # Only the workflow's own comments count, so quoting the marker changes nothing.
+    assert 'select(.user.login == "github-actions[bot]")' in text
+
+
+def test_the_workflow_listens_for_the_gate_s_label() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert f"github.event.label.name == '{gate.REVIEW_LABEL}'" in text
+    assert f"/labels/{gate.REVIEW_LABEL}" in text
+
+
+def test_the_label_comes_off_before_the_review_runs() -> None:
+    """A request made during a round must queue a new round, not be deleted by this one.
+
+    Adding a label that is already present raises no event, so the label has to be off
+    for the next request to exist at all — and taking it off at the end would delete a
+    request made while the review ran.
     """
-    for event_name, extra in [
-        ("issue_comment", {"comment_author_association": "OWNER"}),
-        ("workflow_dispatch", {"force": True}),
-    ]:
-        decision = gate.decide(
-            event(
-                event_name=event_name,
-                is_pull_request=True,
-                comment_body="@claude review",
-                labels=["loop:round-3", "loop:done"],
-                **extra,
-            )
-        )
-        assert decision.run, event_name
-        assert decision.round == 4, event_name
-        assert decision.forced, event_name
-        assert decision.final, event_name
-
-    # Below the cap a bought round is genuinely not the last one.
-    early = gate.decide(
-        event(
-            event_name="issue_comment",
-            is_pull_request=True,
-            comment_body="@claude review",
-            labels=["loop:round-1"],
-            comment_author_association="OWNER",
-        )
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert text.index("- name: Take the label off") < text.index(
+        "- name: Claude review"
     )
-    assert early.run and early.forced and not early.final
+    step = text[text.index("- name: Take the label off") :]
+    assert step.splitlines()[1].strip() == "if: always()"
 
 
-def test_a_stranger_cannot_move_the_labels_by_naming_the_ceiling() -> None:
-    """The forced ceiling binds the forced path only, and nothing before it.
-
-    `cap_reached` is not an inert field: the workflow's hand-back step keys on it, adds
-    `loop:done` and rewrites the status comment. Checking the ceiling ahead of the trust
-    tests handed that write to anyone who could comment. A stranger has to fall through
-    to the same refusal they get at every other round.
-    """
-    decision = gate.decide(
-        event(
-            event_name="issue_comment",
-            is_pull_request=True,
-            comment_body="@claude review",
-            labels=["loop:round-6"],
-            comment_author_association="NONE",
-            comment_author_login="dependabot[bot]",
-        )
-    )
-    assert not decision.run
-    assert not decision.cap_reached
-    assert "collaborator" in decision.reason
-
-    # The ceiling still binds the path it was written for.
-    spent = gate.decide(
-        event(
-            event_name="issue_comment",
-            is_pull_request=True,
-            comment_body="@claude review",
-            labels=[f"loop:round-{gate.MAX_FORCED_ROUNDS}"],
-            comment_author_association="OWNER",
-        )
-    )
-    assert not spent.run
-    assert spent.cap_reached
-    assert "ceiling" in spent.reason
-
-
-def test_the_trigger_is_anchored_in_the_pattern_not_only_in_the_call() -> None:
-    """The anchor must survive someone swapping `.match` for `.search`.
-
-    Relying on the call site made the paperwork-quoting bug one substitution away from
-    returning, and nothing at the call site says so.
-    """
-    quoting = "C3 fixed. Use @claude review from bots."
-    assert not gate.COMMENT_TRIGGER.search(quoting)
-    assert not gate.COMMENT_TRIGGER.match(quoting)
-    assert gate.COMMENT_TRIGGER.search("@claude review")
-
-
-def test_the_head_branch_comes_back_so_the_ping_can_be_addressed() -> None:
-    """The workflow asks the branch who is fixing, and reads it off the gate.
-
-    A Cursor mention used to be hardcoded in the findings ping, which is right only while
-    Cursor is the implementer. When Claude implements and Cursor reviews, that comment
-    handed the fixes to the agent that had just written them up. The branch prefix is
-    the same signal the gate already uses to enrol a new pull request, so it comes out
-    of the gate rather than being fetched again in bash.
-    """
-    ready = gate.decide(
-        event(
-            event_name="pull_request",
-            action="ready_for_review",
-            head_ref="cursor/delegating-stream-flags-8161",
-            labels=["loop:on"],
-        )
-    )
-    assert ready.run
-    assert ready.head_ref == "cursor/delegating-stream-flags-8161"
-
-    # The scan carries it too, since a scheduled round posts the same ping.
-    assert (
-        scan(candidate(head_ref="claude/project-thread-blk7eo")).head_ref
-        == "claude/project-thread-blk7eo"
-    )
-
-    # Absent from the payload is the empty string, never None: the workflow interpolates
-    # it into a `case`, where a null would read as the literal "null".
-    bare = event(labels=["loop:round-1"])
-    del bare["head_ref"]
-    assert gate.decide(bare).head_ref == ""
-
-
-# --- the findings ping's two addressees ---------------------------------------------
-#
-# These read the workflow file rather than a copy of it, because the thing being
-# pinned is one shell block in `.github/workflows/review-loop.yml` and a copy would
-# drift silently — which is the exact failure they exist to catch.
-
-WORKFLOW = (
-    Path(__file__).resolve().parents[1] / ".github" / "workflows" / "review-loop.yml"
-)
-
-#: `run: |` blocks in this file are indented ten spaces, so stripping that gives the
-#: shell back verbatim, heredoc bodies included.
+#: `run: |` blocks in the workflow are indented ten spaces.
 _BLOCK_INDENT = " " * 10
 
 
-def _shell_between(first: str, last: str) -> str:
-    """Lift one shell fragment out of the workflow, dedented enough to run."""
+def _close_step() -> str:
     lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == first)
-    end = next(i for i in range(start, len(lines)) if lines[i].strip() == last)
-    return "\n".join(
-        line[len(_BLOCK_INDENT) :] if line.startswith(_BLOCK_INDENT) else line
-        for line in lines[start : end + 1]
-    )
+    start = next(i for i, line in enumerate(lines) if "- name: Close the round" in line)
+    body = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
+    out = []
+    for line in lines[body + 1 :]:
+        if line.strip() and not line.startswith(_BLOCK_INDENT):
+            break
+        out.append(line[len(_BLOCK_INDENT) :])
+    return "\n".join(out)
 
 
-def _bash(script: str) -> str:
-    bash = shutil.which("bash")
-    if bash is None:  # pragma: no cover - Windows runners without a shell
-        pytest.skip("no bash to run the workflow fragment with")
-    result = subprocess.run(  # noqa: S603 - fixed argv, fragment comes from the repo
-        [bash, "-c", script],
-        text=True,
-        capture_output=True,
-        env={
-            "PATH": os.environ.get("PATH", ""),
-            "entry": "the `/address-review` command",
-            "ROUND": "1",
-            "next": "2",
-        },
-    )
-    assert result.returncode == 0, result.stderr
-    return result.stdout
-
-
+# The step runs only on `ubuntu-latest`. Under Git Bash on Windows the substituted
+# paths are backslashed and unquoted in the step, so bash would read a different path
+# than the one the test wrote — a failure of the harness, not of the step.
+@pytest.mark.skipif(sys.platform == "win32", reason="the step runs on ubuntu-latest")
 @pytest.mark.parametrize(
-    ("head_ref", "github_handle", "linear_handle"),
+    ("verdict_text", "counted", "label"),
     [
-        ("cursor/delegating-stream-flags-8161", "@cursoragent", "@cursor"),
-        ("claude/project-thread-o03uuf", "@claude", "@claude"),
+        (None, False, ""),
+        (json.dumps(verdict_file(verdict="conditional")), True, "approved-with-fixes"),
+        ("this is not json", True, "changes-requested"),
+        ("[1, 2]", True, "changes-requested"),
     ],
+    ids=["missing", "conditional", "garbled", "not-an-object"],
 )
-def test_the_ping_is_addressed_differently_on_the_two_surfaces(
-    head_ref: str, github_handle: str, linear_handle: str
+def test_the_close_step_runs_as_written(
+    tmp_path: Path, verdict_text: str | None, counted: bool, label: str
 ) -> None:
-    """Cursor answers to `@cursoragent` on GitHub and `@cursor` on Linear.
+    """Run the step's own shell, with `gh` stubbed, against each shape of verdict file."""
+    bash, jq = shutil.which("bash"), shutil.which("jq")
+    if bash is None or jq is None:  # pragma: no cover - minimal runners
+        pytest.skip("needs bash and jq")
 
-    Neither spelling works on the other surface: on GitHub `cursor` is the company's
-    organization account, so the ping notified an org and woke no agent for as long as
-    it said that, and `@cursoragent` on Linear mentions nobody at all. One handle used
-    twice is wrong whichever one is picked, which is why there are two variables.
-    """
-    picked = _bash(
-        f"HEAD_REF={head_ref!r}\n"
-        + _shell_between('case "$HEAD_REF" in', "esac")
-        + '\nprintf "%s %s" "$fixer" "$linear_fixer"'
-    )
-    assert picked == f"{github_handle} {linear_handle}"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "gh"
+    stub.write_text(f'#!/bin/sh\necho "$@" >> {tmp_path}/gh.log\n', encoding="utf-8")
+    stub.chmod(0o755)
 
+    work = tmp_path / "work"
+    work.mkdir()
+    if verdict_text is not None:
+        (work / "loop-verdict.json").write_text(verdict_text, encoding="utf-8")
 
-def test_both_surfaces_get_the_same_ping_text() -> None:
-    """The bodies must differ in the handle and in nothing else.
+    script = _close_step().replace("/tmp/", f"{work}/")
+    env = os.environ | {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "ROUND": "2",
+        "FINAL": "false",
+        "HEAD_SHA": SHA,
+        "PR": "7",
+        "GITHUB_REPOSITORY": REPO,
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+    }
+    subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)  # noqa: S603
 
-    They were one file copied to both surfaces until the GitHub handle was corrected,
-    at which point the Linear copy silently started mentioning nobody. Emitting the
-    heredoc twice would let the texts drift instead; one function, called twice, is
-    what stops both.
-    """
-    func = _shell_between("ping_body() {", "}")
-    github = _bash(f'{func}\nping_body "@cursoragent"')
-    linear = _bash(f'{func}\nping_body "@cursor"')
+    result = json.loads((work / "finish.json").read_text(encoding="utf-8"))
+    assert result["counted"] is counted
+    calls = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "pr comment 7" in calls
+    posted = (work / "comment.md").read_text(encoding="utf-8")
+    assert posted.startswith(gate.ROUND_MARKER) is counted
 
-    assert github.startswith("@cursoragent Please work through")
-    assert linear.startswith("@cursor Please work through")
-    assert "@cursoragent" not in linear
-    assert github.split("\n", 1)[1] == linear.split("\n", 1)[1]
+    # One outcome label on, the other three off; none touched when nothing counted.
+    added = [line for line in calls.splitlines() if "--method POST" in line]
+    removed = [line for line in calls.splitlines() if "--method DELETE" in line]
+    if label:
+        assert added == [
+            f"api --method POST repos/{REPO}/issues/7/labels "
+            f"-f labels[]={label} --silent"
+        ]
+        assert len(removed) == len(set(gate.OUTCOME_LABELS.values())) - 1
+        assert not any(line.endswith(f"/labels/{label} --silent") for line in removed)
+    else:
+        assert added == removed == []

@@ -1286,6 +1286,72 @@ def _stored_zip(name_bytes: bytes, *, utf8_flag: bool) -> bytes:
     return lfh + cdh + eocd
 
 
+def test_a_member_typed_twice_is_one_finding(tmp_path: Path) -> None:
+    """Listing the same ZIP twice must not report the same member's anomalies twice.
+
+    `extract_all` lists an indexed archive twice — once for the progress totals and the
+    selector, once to drive the extraction — and this backend rebuilds its
+    `ArchiveMember` objects from the central directory each time. Every diagnostic
+    raised while a member is typed therefore runs again on the second pass, and
+    `DiagnosticSummary.counts` is documented as exact: one member with one deceptive
+    name is one finding, whether the caller listed it once or extracted it.
+
+    This covers two of the four codes raised from that point: a rewritten name and two
+    invalid timestamp fields, three findings on one member. The name-encoding inference
+    has its own test below, and the link report has its own in
+    `tests/test_windows_reparse.py`.
+
+    The two timestamps are deliberately both invalid: they are separate findings on one
+    member, so the deduplication has to key on the field as well as the member, not
+    collapse them into one.
+    """
+    archive = tmp_path / "typed-twice.zip"
+    # An NTFS extra field (0x000A): 4 reserved bytes, then attribute tag 1 carrying the
+    # three FILETIMEs. Modification and access are far past what a datetime can hold;
+    # creation is left at the "not set" zero, so the member carries two bad fields.
+    ntfs = struct.pack("<IHHQQQ", 0, 0x0001, 24, 2**64 - 1, 2**64 - 1, 0)
+    extra = struct.pack("<HH", 0x000A, len(ntfs)) + ntfs
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("dir//normalized.txt")
+        info.extra = extra
+        zf.writestr(info, b"x")
+
+    expected = {
+        DiagnosticCode.MEMBER_NAME_NORMALIZED: 1,
+        DiagnosticCode.MEMBER_TIMESTAMP_INVALID: 2,
+    }
+    with open_archive(archive) as opened:
+        listed = opened.members()
+        assert [member.name for member in listed] == ["dir/normalized.txt"]
+        assert {
+            code: opened.diagnostics.counts.get(code) for code in expected
+        } == expected
+
+    with open_archive(archive) as opened:
+        opened.extract_all(tmp_path / "out")
+        assert {
+            code: opened.diagnostics.counts.get(code) for code in expected
+        } == expected
+        # And the caller finds the reports on the objects its own pass handed back,
+        # rather than on the ones the first pass built and dropped, each naming the
+        # member it is about: the reports are raised before registration stamps the id,
+        # so they carry the position it will be stamped from.
+        (member,) = opened.members()
+        assert len(member.diagnostics) == 3
+        assert {d.context.member_id for d in member.diagnostics} == {member._member_id}
+
+
+def test_an_inferred_encoding_is_one_finding_per_member(tmp_path: Path) -> None:
+    """The same, for the name-encoding inference, which has its own emit."""
+    code = DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+    with open_archive(_EXTERNAL_DIR / "encoding_infozip_jules.zip") as opened:
+        opened.extract_all(tmp_path)
+        assert opened.diagnostics.counts.get(code) == 4
+        for member in opened.members():
+            (reported,) = [d for d in member.diagnostics if d.code is code]
+            assert reported.context.member_id == member._member_id
+
+
 def test_unflagged_utf8_name_is_sniffed() -> None:
     # Info-ZIP fixture: names are valid UTF-8 bytes with the UTF-8 flag NOT set. Decoding
     # them as cp437 (the APPNOTE default) would mojibake; the sniff recovers UTF-8.

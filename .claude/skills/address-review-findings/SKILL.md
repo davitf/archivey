@@ -288,26 +288,36 @@ agent starts cold.
 Once the round is done, the PR should record what happened to every finding.
 
 - **Reply in the thread the finding came from.** An inline finding gets an inline reply.
-  A top-level review gets a top-level reply with a status table keyed by the reviewer's
-  own numbering.
+  A top-level review gets a top-level reply listing one bullet per finding, keyed by the
+  reviewer's own numbering. **Bullets, not a table** — same rule and same reason as the
+  reviewer's side ([addendum §0](../code-review-skill/reference/archivey-review-addendum.md)):
+  the maintainer reads these on a phone. Keep each bullet to a line; anything longer is a
+  reply on that finding's own thread, where whoever cares is already looking.
 - **Resolve the threads you actually resolved** (`resolve_review_thread`). Leave open the
   ones that are still open — including anything escalated in §6 and not yet decided. A
   wall of stale unresolved threads is how a later round loses track of what was settled;
   #236 finished with four threads that had been answered and fixed but never resolved.
 - **Say what you did not do, and why.** Deferred and disproven findings get a line each.
-- **Attribute every settled decision to the maintainer** (§6). In the status table, a row
-  decided by a human reads `maintainer decision` in the column where the others read
-  `important` or `nit`, so the implementor can see at a glance which rows are not open to
-  argument.
+- **Attribute every settled decision to the maintainer** (§6). A bullet decided by a human
+  is tagged `maintainer decision` where the others carry `important` or `nit`, so the
+  implementor can see at a glance which ones are not open to argument.
 - **Report gates honestly.** Say which legs you ran and what they returned. If you skipped
   a leg, say that instead of implying it passed.
 - **Lead with what changed**, not with a recap of the review the maintainer already has.
-- **Make it identifiable as agent-authored**, and say so at the *top*, not only in a footer.
-  Open each posted comment with one short line naming the agent, the skill, and the HEAD:
+- **Open every posted comment with a header, then the attribution line.** The heading says
+  what the reader is looking at before they read anything; the line says an agent wrote it.
+  Same rule as the reviewer's side
+  ([addendum §10](../code-review-skill/reference/archivey-review-addendum.md) "Open every
+  comment with a header"), with the round's outcome in place of a verdict:
 
   ```
+  ## Round 2 · 7 fixed, 1 disproven, 1 for davitf
+
   **Claude Code** · `address-review-findings` · dispositions on `3060ac51`
   ```
+
+  A reply on one finding's thread is headed by that finding instead —
+  `### K6 · fixed in \`5afdbb5\``.
 
   On a PR whose threads mix maintainer questions, bot dispositions and an agent posting
   through the maintainer's account, that line is what makes a thread scannable — the avatar
@@ -322,25 +332,32 @@ Once the round is done, the PR should record what happened to every finding.
 
 Reply once per round, not once per fix.
 
-**Then say you have finished**, in a comment on the PR that *starts* with
-`@claude review`. That starts the next round of the
-[review loop](../../../dev-docs/review-loop.md) immediately. It is the last thing you
-do, after the final push — a commit pushed after it will not be in what gets reviewed.
+**Then ask for the next round, if the review asked to see the fixes.** The round's
+closing comment says which: when it asks for them, add the `review` label after your
+final push, which starts the next round of the
+[review loop](../../../dev-docs/review-loop.md). It is the last thing you do — a commit
+pushed after it may not be in what gets reviewed.
 
-The position is load-bearing: the gate reads the phrase only at the top of a comment,
-so that a dispositions comment quoting it does not start a round by itself. Post it as
-its own comment, phrase first, anything else after.
+```bash
+gh pr edit <number> --add-label review
+```
 
-Saying nothing is not a failure, only a slower path: the loop starts a round by
-itself once the branch has gone thirty minutes without a new commit. So the signal is
-worth sending and never worth faking. Do not send it before the work is pushed.
+Through the GitHub MCP instead, `issue_write` `update` replaces the whole label set:
+read the pull request's labels first and write them back with `review` appended.
 
-And do not send it to reach past a `loop:done`, `loop:decision` or `loop:hold`. From a
-bot account the gate simply refuses that. From the maintainer's account it does not:
-the phrase is *also* how a person restarts a parked loop, so posting through their
-account spends a round they did not ask for. Whether you can tell which account you are
-posting under is exactly the point — if you are not sure, do not send it on a parked
-pull request.
+Do not add it when a maintainer decision is still unanswered, or when the closing
+comment said the rounds an agent can ask for are spent; the workflow refuses the second
+anyway, including a label made through the maintainer's account.
+
+When the closing comment said no further round is needed, that is the default, not a
+lock. Add the label anyway only if a fix grew beyond what the review saw, such as a nit
+or a decision that turned into a new code path or a redesign, and say so in your
+disposition comment. The workflow lets that label through and trusts your judgement
+(davitf, 2026-09-23), so do not spend a round on fixes the review already described.
+
+If the label is still on the pull request a few minutes after you added it, no round
+started: resolve any merge conflict or merge `main`, then remove the label and add it
+again.
 
 ---
 

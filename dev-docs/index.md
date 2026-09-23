@@ -6,7 +6,7 @@ site: everything under `docs/` is for users, and everything here is not.
 | Doc | Role |
 | --- | --- |
 | [Pair workflow](pair-workflow.md) | **Preferred everyday loop**: investigate → grill into handbook → thin brief → implement → other-agent review → decision packets |
-| [Review loop](review-loop.md) | How steps 4–6 of the pair workflow run without a driver: what triggers each hop, the `loop:*` labels that hold the state, and the three-round cap |
+| [Review loop](review-loop.md) | How steps 4–6 of the pair workflow run: the `review` label that starts a round, how rounds are counted, and the five-round cap |
 | [Code map](code-map.md) | Where to start for a given change: tree shape, the path through a read, task→files, and which doc answers which kind of question |
 | Format / topic handbook | [`formats/zip.md`](formats/zip.md) — the first page, and the worked example for the shape (pair-workflow §Format page structure) · [`formats/rar.md`](formats/rar.md) — the only format whose read path crosses a process boundary · [`topics/prefixed-archives.md`](topics/prefixed-archives.md) — archives that do not start at byte 0 · [`topics/stream-ownership.md`](topics/stream-ownership.md) — which wrapper closes its inner. Create `formats/<format>.md` or `topics/<topic>.md` with the first change that needs it; do not add empty directories |
 | [Threat model](threat-model.md) | Trust boundaries, enforced guarantees, open security/compat gaps |

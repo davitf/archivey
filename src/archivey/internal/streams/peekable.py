@@ -46,8 +46,9 @@ class PeekableStream(ReadOnlyIOStream):
         # caller stream, which never went through resolve_source. Both src/
         # construction sites gate on ``not is_seekable``; a seekable raw would
         # take the buffering branch (read-ahead this class never unwinds and
-        # never closes). An already full-count inner (``FullCountStream``, or
-        # the caller's ``BufferedReader``) is returned unchanged.
+        # never closes). An already full-count inner comes back with no full-count
+        # layer added: a ``FullCountStream`` unchanged, the caller's
+        # ``BufferedReader`` under a ``BorrowedStream`` that only withholds close.
         self._underlying = ensure_full_count_reads(underlying)
         # Bytes read ahead from the underlying stream but not yet consumed by read().
         self._buffer = bytearray()

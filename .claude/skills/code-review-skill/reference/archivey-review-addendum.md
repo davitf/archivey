@@ -39,16 +39,31 @@ Output is markdown prose, never a host-specific findings tool (`SKILL.md`) — t
 
 ### Output shape — three blocks (required)
 
-Exactly three top-level sections, in this order. The maintainer often has **not** read the
-diff: design for that reader first, the implementor second. Do not lead with a findings
-dump — dense detail belongs in block 2. [`assets/pr-review-template.md`](../assets/pr-review-template.md)
+Three blocks, and **they do not all go in the same place.** Blocks 1 and 3 are the review
+body; block 2 is the inline threads, one per finding (§10). The body is therefore a
+summary with an index, and the detail sits on the line it concerns.
+
+That split is a maintainer decision (davitf, 2026-09-21): *"I'm finding PR review comments
+too long and hard to find the relevant info."* A body that also carries every finding in
+full is the thing being fixed here — the detail is not deleted, it moves to the thread
+where it can be replied to and resolved.
+
+The maintainer often has **not** read the diff: design the body for that reader, and the
+thread for the implementor. [`assets/pr-review-template.md`](../assets/pr-review-template.md)
 is the fill-in form.
+
+**Every posted comment opens with a header carrying the round and the verdict** — review
+body, inline finding and reply alike. Exact shapes: §10 "Open every comment with a header".
+
+**No tables in anything you post.** They wrap into unreadable columns on a phone, which is
+where the maintainer reads them. Bullets instead, one per row. This is about *posted*
+comments: the tables in this file and in the rest of the repo are unaffected.
 
 **Brevity fence.** Short form applies only to how blocks 1 and 3 are *presented*. It must
 not reduce review depth (the full §8 passes, and §9 where the change moves a contract;
 same tracing and checklists), finding
-discipline (over-report on existence; severity × confidence), **block 2** specificity, or
-real pause-and-ask items in block 3 — when unsure whether something needs a human call,
+discipline (over-report on existence; severity × confidence), the specificity of a finding
+**in its thread**, or real pause-and-ask items in block 3 — when unsure whether something needs a human call,
 include it and label confidence. If block 1 is short because the analysis was thin, that
 is a failed review, not compliance with this shape.
 
@@ -62,32 +77,47 @@ For the maintainer skimming without the code open. Half a screen unless the chan
   one yet. The maintainer has already read it otherwise, and that is true whether the
   previous review was yours or the other reviewer's — a second reviewer's first look is
   not a re-review under §10, but the description is just as redundant. Any later review
-  opens with the status table over whatever IDs already exist (§10) instead. The one
+  opens with the status bullets over whatever IDs already exist (§10) instead. The one
   exception is a rework that made the earlier description wrong: then give one line on
   what changed, not a fresh description.
 
   (Fix-diff scope, §10, stays per *reviewer* — a second reviewer has not read the tree
   and reads `main...HEAD`. It is only the description that is per PR.)
-- **Snapshot** — size (approx. lines / small|medium|large), gates (CI status, §10), and
-  **Verdict**: ✅ Approve / ✅ Approve conditional on the listed fixes / 💬 Comment /
-  🔄 Request Changes — meanings below, and “only nits left” is not an approval.
-- **Main points** — ranked one-liners, 🔴/🟡 only: severity + gist. No `file:line` essays.
+- **Findings** — the index, and the only list of findings in the body. One bullet each,
+  ranked by severity then confidence, including 🟢 and 💡: ID, severity, confidence, the
+  gist in one sentence, the location, and a link to the thread. Nothing else. The full
+  finding is in the thread, and a body that repeats it is the length problem this shape
+  exists to fix. **Post the inline comments first, then the body**, because a review
+  submitted in one call creates both at once and the body would have no URLs to link to
+  (`POST .../pulls/{n}/comments` returns each comment's `html_url`, and §10 records that
+  a review body cannot be edited afterwards through the MCP tools). A finding whose thread
+  URL you genuinely cannot get is listed with its `file:line` alone rather than held back.
+- **Snapshot** — one line: size (approx. lines / small|medium|large), the scope you
+  reviewed, and gates (CI status, §10). The verdict is already in the header, so the
+  Snapshot does not restate it.
 - **What's fine** (optional, 1–3 bullets) — load-bearing things that looked correct, so the
-  briefing isn't only negatives.
+  briefing isn't only negatives. Put it inside the collapsed block (§10) rather than in the
+  running text.
 
 Zero findings worth action? Say so here and keep blocks 2–3 minimal (`None.`).
 
 #### 2. Implementor handoff (goes on the PR)
 
-For whoever fixes or replies, **on the PR** — §10 splits it there: located findings become
-inline threads, the rest goes in the body. Write it to survive that split and to be read
-months later by someone who has only the thread in front of them: a one-line context header
-(PR / branch / scope), the full findings, then the Verdict line again so block 2 does not
-depend on block 1. No "as above" / "see briefing" — those break the moment the blocks are
-separated.
+For whoever fixes or replies. **This block is not text in the review body — it is the
+inline threads**, one per finding, anchored on the line it concerns (§10). The body carries
+only the index from block 1.
 
-Standing alone is about surviving §10, not about being carried elsewhere: the PR is the
-only destination, and nothing here is written for anyone to take away (the rule is under
+Write each thread to be read months later by someone who has only that thread in front of
+them: the finding's own header (§10), then what is wrong, why it matters, the fix
+direction, and the trigger. No "as above" / "see the briefing" / "see K3" — a thread that
+points at another comment is unreadable the moment someone opens it from a notification.
+
+**A finding with no location stays in the body**, under the index and in full, still with
+its ID: process, missing coverage, contract drift across documents. Those are the exception
+and they are usually few; when they are not, the body grows and that is correct.
+
+Standing alone is about surviving that split, not about being carried elsewhere: the PR is
+the only destination, and nothing here is written for anyone to take away (the rule is under
 block 3 below).
 
 **Evidence, not prose.** Each finding carries severity, confidence, location (`file:line`),
@@ -96,8 +126,8 @@ what's wrong, why it matters, fix direction, and a trigger / repro note where po
 process, or pad with transitions. Terse is not thin: cutting evidence to look brief
 violates the brevity fence, cutting prose does not.
 
-Rank by severity, then confidence. Include 🟢 nits and 💡 suggestions here, not in the
-briefing.
+Every finding gets a thread, 🟢 nits and 💡 suggestions included. Ranking happens in the
+index; a thread is ranked by where it sits in the file.
 
 #### 3. Maintainer decisions (your attention)
 
@@ -146,14 +176,14 @@ proposal or implements it later.
 
 ### Verdicts — what each one commits to
 
-The Snapshot verdict is a claim about whether the PR is ready to merge **as it stands**,
+The header's verdict is a claim about whether the PR is ready to merge **as it stands**,
 so use these meanings and no others:
 
 - **✅ Approve** — nothing left to change. Every finding is `DISPROVEN`, already fixed in a
   later commit, or a 💡 / 📚 / 🎉 annotation that carries no action.
 - **✅ Approve, conditional on the listed fixes** — the only remaining findings are 🟢 nits
   (or a 🟡 that small) whose fix is *obvious*, and you would not need to see the result. Say
-  which IDs the approval is conditioned on, in the verdict line itself. This is the one
+  which IDs the approval is conditioned on, in the heading itself. This is the one
   verdict that approves with work outstanding; the conditioned findings are still posted in
   full (block 2, inline threads, IDs) — approving is not shorthand for dropping them.
 - **💬 Comment** — findings the implementor should act on, but nothing the maintainer must
@@ -188,6 +218,16 @@ correction to wording a previous fix introduced).
 
 A round 3+ that finds a 🔴 or a 🟡 is a normal round — say so and keep going. The budget
 binds only the case where the remainder is nits.
+
+**Under the automated loop the verdict is what stops the loop**, not a suggestion it
+weighs — and unlike the budget above it, that is not a round-3 rule: a conditional
+approval at round 1 ends the loop at round 1. The round's verdict file maps 🔄 Request
+Changes to a closing comment that asks for another round, and the three "I do not need
+to see the result" verdicts — a plain approval, the conditional approval above, and
+💬 Comment — to one that asks for none, whatever rounds the cap has left
+([`dev-docs/review-loop.md`](../../../../dev-docs/review-loop.md) §Stopping it). So the
+verdict line is a decision about spending another review, and writing 🔄 to keep a round
+in hand spends one on wording you have already described.
 
 ### Two axes: severity ≠ confidence
 
@@ -236,8 +276,8 @@ suppression:
 
 - **Dedupe by root cause** — one finding per cause; cite one site, list the rest.
 - **Rank** by severity, then confidence within a tier.
-- Briefing (block 1) stays thin; detail lives in the handoff (block 2); decisions (block 3)
-  stay only what needs you.
+- Briefing (block 1) stays thin and carries the index; detail lives in each finding's own
+  thread (block 2); decisions (block 3) stay only what needs you.
 
 ---
 
@@ -548,7 +588,7 @@ cannot be dispositioned finding-by-finding costs the next round more than it sav
 ### Stable IDs, one thread per finding
 
 - **Give every block-2 finding a stable ID and keep it across re-reviews** — a re-review
-  of `F3` says `F3`, not `2`. The responder's status table and the maintainer's memory
+  of `F3` says `F3`, not `2`. The responder's status list and the maintainer's memory
   both key on them; renumbering between rounds silently breaks both.
 - **Prefix the ID with your own initial** (`C1`, `C2`, … from Cursor; `K1`, `K2`, … from
   Claude Code) rather than a bare `F`. Two reviewers work the same PR here, and a bare
@@ -560,8 +600,10 @@ cannot be dispositioned finding-by-finding costs the next round more than it sav
   resolved individually, which is what makes the state of a round visible later.
 - **Post blocks 1 and 3 as the review body** (or a top-level comment): the maintainer
   briefing and the decisions are about the change as a whole and have no line to anchor to.
+  The body's finding list is the **index only** — one bullet per finding, linking to its
+  thread (§0). Do not also paste the findings into it.
 - Findings without a location — process, missing coverage, contract drift across documents
-  — stay in the top-level body, still with IDs.
+  — stay in the top-level body, still with IDs, and there they are written in full.
 
 Where the host cannot post inline comments, one top-level comment is acceptable, but the
 IDs are not optional.
@@ -575,6 +617,11 @@ the file was read at all, **whether or not it found anything**:
 
 - **One top-level comment on #315 per file**, posted when you finish reading that file and
   before you start the next one. Not inline: a whole-file read has no line to anchor to.
+- **Writing about the hub elsewhere?** Never reproduce a closing phrase next to its number
+  in a commit message or a pull request body — it closes the hub, silently, and quoting one
+  counts. The rule lives in [`AGENTS.md`](../../../../AGENTS.md) §Review workflow; it bit
+  twice on 2026-09-21. Inline comments like the ones above are not parsed, so findings and
+  markers are unaffected.
 - **The marker is always its own comment, including for a file that produced findings.**
   Never put the `SWEPT` line in a review body, a finding, or a reply. A file with findings
   therefore gets its findings *and* a marker comment, which is the point: the marker says
@@ -643,7 +690,9 @@ threads also reached opposite conclusions about the same two files from the same
 Markers make "was this file swept?" answerable by looking rather than by inference.
 
 The marker line carries the reviewer and the head, so on this comment type it **replaces**
-the §"A short marker at the top" opener rather than sitting under it. Attribution and footer
+the §"Open every comment with a header" opener rather than sitting under it — a sweep
+marker comment has no round and no verdict, and the marker line already carries the
+reviewer and the head. Attribution and footer
 rules are unchanged.
 
 Coverage is counted from these markers, never from thread counts —
@@ -652,10 +701,25 @@ coverage is counted, and `scripts/sweep_coverage.py`, which does the counting.
 
 ### Re-reviews state what happened to the last round
 
-A second pass on the same PR opens with a **status table over the previous IDs** — fixed /
-still open / superseded — before any new findings. Say which HEAD you reviewed. If a rework
-made an earlier review obsolete, say so explicitly rather than leaving two contradictory
-reviews for the responder to reconcile.
+A second pass on the same PR opens, under the header, with **one bullet per previous ID** —
+fixed / still open / superseded — before any new findings. Not a table (§0): a four-column
+table of round-1 claims is the single worst thing to read on a phone, and the claim column
+is a copy of last round's body, which is one scroll away.
+
+One line each, and the line says what is true now, not what was claimed then:
+
+```
+**Round 1 — K1…K5.** All fixed at `f65b6d05`; I re-derived each rather than taking the replies.
+
+- **K1** 🔴 fixed in `5afdbb5` — the parser claim is gone from both files.
+- **K2** 🟡 fixed in `5afdbb5` — now "two surfaces, not one", carried into `AGENTS.md`.
+- **K7** 🟡 still open — the label does not exist yet.
+```
+
+Say which HEAD you reviewed. If a rework made an earlier review obsolete, say so explicitly
+rather than leaving two contradictory reviews for the responder to reconcile. Where a
+status needs more than a line, it needs a reply on that finding's own thread instead — that
+is where whoever fixed it is looking.
 
 **Review the fix-diff, not the PR again.** From round 2 on, the scope is
 `git diff <the-SHA-you-last-reviewed>..HEAD` plus the still-open threads — not
@@ -672,7 +736,7 @@ threads are also the wrong place to look for a complete picture, because a resol
 collapsed one drops out of the default view while the review body stays. Read every
 review you posted on this PR, including rounds whose findings are all closed. This does
 not reopen the cost rule above: the bodies are a few kilobytes, and you are fetching the
-PR's comments for the status table anyway.
+PR's comments for the status bullets anyway.
 
 **Then check what each fix reaches.** The narrow scope is safe for a fix that stays inside
 its own lines and unsafe for one that does not, and the difference is not visible from the
@@ -709,13 +773,23 @@ arithmetic was re-derived from scratch in three consecutive rounds (twice wrongl
 #349 and #353 rebuilt 70,000-file fixtures and re-timed both bombs in rounds 2, 3 and 4.
 
 So **close every review body with a `Measured this round` list** — one line per command,
-with its result:
+with its result. **It is written for the next round, not for the maintainer, so collapse
+it**, along with the other next-round material: "What's fine", and the outward-trace note.
+GitHub renders `<details>` as a one-line disclosure triangle, so the data survives at no
+cost to the reader who does not want it:
 
 ```
-### Measured this round
+<details><summary>Measured this round · what's fine · outward trace</summary>
+
 - `python scripts/make_7z_bomb.py --members 70000` → 2.1 s, 4.4 MB header
 - `pytest tests/test_sevenzip_limits.py -k bcj2` → 12 passed, RESTART BLOCKS SEEN: [0]
+
+</details>
 ```
+
+The blank lines inside the block are required — GitHub does not render markdown flush
+against the tags. Nothing a decision depends on goes in here: findings, the verdict and
+block 3 stay in the open text.
 
 The next round inherits that list and re-runs only what the new HEAD invalidates. When
 you do re-run something, say what changed to make it necessary. An empty list is a
@@ -743,7 +817,7 @@ So:
 - **Submit the review with `event: COMMENT`** (`pull_request_review_write`, method
   `submit_pending`). `REQUEST_CHANGES` is rejected on your own PR for the same reason —
   `COMMENT` is the only event that goes through.
-- **Carry the verdict in the text**, where the §0 Verdict line already puts it. The
+- **Carry the verdict in the text**, where the §10 header already puts it. The
   briefing's `✅ Approve` / `✅ Approve conditional on K4, C5` / `🔄 Request Changes` is the
   review's actual conclusion; the green check in GitHub's UI is not available to say it.
 - **Do not narrate the limitation** to the maintainer as a discovery each round, and do not
@@ -797,46 +871,57 @@ footer must still add its own** — the requirement is identifiability, and a co
 through the maintainer's account with no marker fails it. If you do not know whether your
 host appends one, post one comment without it and read the stored body back before assuming.
 
-### A short marker at the top, not only a footer
+### Open every comment with a header
 
-A footer is only visible once the reader reaches the end. Open **every** posted comment —
-review body, inline finding, reply — with one short line naming the agent, the skill, and
-the HEAD it reviewed:
+A footer is only visible once the reader reaches the end, and a comment that opens with
+prose gives the reader nothing to decide from until they have read it. So **every** posted
+comment — review body, inline finding, reply — opens with a markdown heading, then one
+attribution line.
+
+The heading answers "do I care about this one?" before anything else. On the review body
+it carries the **round and the verdict**; on a finding it carries the ID, severity and
+confidence, which are that finding's verdict. Maintainer decision (davitf, 2026-09-21).
+
+**Review body:**
 
 ```
-**Claude Code** · `code-review-skill` · review of `3060ac51`
+## Round 2 · 🔄 Request Changes
+
+**Claude Code** · `code-review-skill` · `3060ac51` · scope `9f21ab4..3060ac51`
 ```
+
+Conditional approval names what it is conditioned on in the heading itself:
+`## Round 3 · ✅ Approve, conditional on K7, K9`.
+
+**Inline finding:**
+
+```
+### K6 · 🟡 `[important]` · `CONFIRMED`
+
+**Claude Code** · `code-review-skill` · round 2 · `3060ac51`
+```
+
+**Reply on a thread:**
+
+```
+### K6 · still open
+
+**Claude Code** · `code-review-skill` · round 3 · `f65b6d05`
+```
+
+Use `## ` in a review body and `### ` in an inline comment or reply. The level is what
+keeps the raw markdown readable, and it nests a finding's heading under the body's.
 
 On a PR whose threads mix maintainer questions, `cursor[bot]` dispositions, and a reviewer
 posting through the maintainer's account, this is what makes a thread scannable — the
-author avatar says `davitf` for two of those three. Keep it to one line; the detail belongs
-in the finding.
+author avatar says `davitf` for two of those three. Keep the attribution to one line; the
+detail belongs under it.
 
-### The review trigger phrase is a command, not a quotable string
+### The `review` label is a command
 
-The automated loop starts a review round when a **top-level comment on a pull request**
-opens with the trigger phrase ([`review-loop.yml`](../../../../.github/workflows/review-loop.yml);
-[`review-loop.md`](../../../../dev-docs/review-loop.md) for what a round then does). **It is
-a command whoever wrote it.** An agent posting through the maintainer's account is
-indistinguishable from the maintainer, so a comment written to *explain* the phrase starts a
-real round on whatever pull request it was posted to — which has happened, on the PR that was
-fixing the loop.
-
-The exposure is exactly that one surface, and it is narrow: the guard sits on the
-`issue_comment` path and the gate refuses a comment that is not on a pull request, so an
-issue comment, a pull request body, an inline review comment and a review body cannot fire
-it, and neither can a file in the tree. That is why `review-loop.yml` and
-[`review-loop.md`](../../../../dev-docs/review-loop.md) can quote the phrase freely — and
-why this file can.
-
-So: **never open a comment with the phrase unless you mean to start a round.** Position is
-what carries the meaning — the match is anchored, so the phrase counts only at the start of a
-comment, leading whitespace aside, and quoting it mid-sentence asks for nothing. One
-side effect is worth knowing before you quote it: the general `@claude` assistant skips any
-comment holding the phrase anywhere, so a comment that mentions it mid-sentence gets no
-answer from the assistant either.
-[`review-loop.md`](../../../../dev-docs/review-loop.md) has the matching rules and the
-incident that produced them.
+Adding the `review` label to a pull request starts a review round
+([`review-loop.md`](../../../../dev-docs/review-loop.md)). A reviewer never adds it: whether
+another round is wanted is what your verdict says, and the implementer acts on it.
 
 ### Name the responder skill in the review body
 
