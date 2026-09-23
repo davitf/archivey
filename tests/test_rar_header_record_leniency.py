@@ -25,7 +25,7 @@ from archivey import (
     MemberHeaderRecordContext,
     open_archive,
 )
-from archivey.exceptions import CorruptionError, PackageNotInstalledError
+from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.backends import rar_unrar
 from archivey.internal.backends.rar_parser import (
     _MAX_SKIPPED_HEADER_RECORDS,
@@ -802,11 +802,13 @@ def test_a_cut_short_stored_member_with_no_checksum_left_is_refused(
     with open_archive(path) as archive:
         (member,) = [m for m in archive.members() if m.is_file]
         assert not member.hashes, "the cut took the only digest with it"
-        with pytest.raises(CorruptionError, match="no usable checksum survived"):
+        with pytest.raises(CorruptionError) as raised:
             archive.read(member)
-        # Not the package error: that is what this branch used to raise, and it
-        # is still the right answer for a member that genuinely needs ``unrar``.
-        assert not issubclass(CorruptionError, PackageNotInstalledError)
+        assert "no usable checksum survived" in str(raised.value)
+        # The cause, not a way out. This branch used to raise
+        # ``PackageNotInstalledError``, which named the package while the header
+        # was what went wrong; ``unrar`` must not appear in the message at all.
+        assert "unrar" not in str(raised.value).lower(), raised.value
 
 
 def test_a_checksum_this_install_cannot_compute_does_not_count_as_survival(
@@ -830,6 +832,121 @@ def test_a_checksum_this_install_cannot_compute_does_not_count_as_survival(
         assert HashAlgorithm.CRC32 in member.hashes, "the digest is there to be had"
         with pytest.raises(CorruptionError, match="no usable checksum survived"):
             archive.read(member)
+
+
+def test_a_truncated_member_is_truncated_whatever_its_header_said(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The confirmation pass interprets one verdict, and must not speak for the rest.
+
+    It reads the member to check a digest, so every verdict the verifier can reach
+    passes through it — including the short read that means the archive itself ends
+    early. Relabelling that as "these bytes are encrypted or corrupt" gave the same
+    physical damage two different answers depending on whether an unrelated header
+    record happened to be readable, and hid truncation from a caller who branches on
+    it to salvage what is there.
+    """
+    _no_rar_binaries(monkeypatch, tmp_path)
+    intact = (_FIXTURES / "stored_m0.rar").read_bytes()
+    cut = _prepend_extra_bytes(intact, b"\x00")
+
+    verdicts = {}
+    for label, data in (("intact header", intact), ("cut-short header", cut)):
+        path = tmp_path / f"{label.replace(' ', '_')}.rar"
+        # Drop the last 9 bytes: the member's data ends before its declared size.
+        path.write_bytes(data[:-9])
+        with open_archive(path) as archive:
+            (member,) = [m for m in archive.members() if m.is_file]
+            with pytest.raises(TruncatedError) as raised:
+                archive.read(member)
+        verdicts[label] = str(raised.value)
+
+    assert "13 of 14" in verdicts["cut-short header"], verdicts["cut-short header"]
+    assert "encrypted" not in verdicts["cut-short header"].lower()
+
+
+def _graft_service_extra_area(data: bytes, extra: bytes) -> bytes:
+    """Give the first SERVICE header an extra area holding ``extra``.
+
+    ``comment__.rar``'s ``CMT`` header has none, so the flag, the size vint and the
+    bytes are all added here and the header CRC recomputed. Note ``extra`` must be
+    at least two bytes: the walk allows one byte of trailing padding (as rarfile
+    does), so a one-byte area is never walked and grafting one changes nothing.
+    """
+    pos = 8  # past the RAR5 signature
+    while pos < len(data):
+        crc_at = pos
+        header_size, body_at = load_vint(data, pos + 4)
+        header_end = body_at + header_size
+        header_type, p = load_vint(data, body_at)
+        flags_at = p
+        header_flags, p = load_vint(data, p)
+        if header_type != 3:  # not SERVICE
+            if header_flags & 0x0001:
+                _extra_size, p = load_vint(data, p)
+            data_size = 0
+            if header_flags & 0x0002:
+                data_size, _ = load_vint(data, p)
+            pos = header_end + data_size
+            continue
+        assert not (header_flags & 0x0001), "this header already has an extra area"
+        body = data[body_at:header_end]
+        new_body = (
+            body[: flags_at - body_at]
+            + _vint(header_flags | 0x0001)
+            + _vint(len(extra))
+            + body[p - body_at :]
+            + extra
+        )
+        rebuilt = (
+            data[:crc_at]
+            + b"\x00\x00\x00\x00"
+            + _vint(len(new_body))
+            + new_body
+            + data[header_end:]
+        )
+        return fixup_rar_header_crcs(rebuilt, broken=False)
+    pytest.fail("fixture has no RAR5 SERVICE header")
+
+
+def test_a_cut_short_service_header_neither_speaks_nor_gets_sliced(
+    tmp_path: Path,
+) -> None:
+    """A SERVICE header is not a member, and both halves of the rule forgot it.
+
+    ``_parse_rar5_file_block`` parses ``CMT`` and ``QO`` headers too, so their
+    extra areas get the same leniency — but nothing lists them, so the per-member
+    diagnostics never ran for one, and the gates that slice their payload read the
+    *definite* encryption answer rather than the fail-closed one. A ``CMT`` header
+    whose walk stopped therefore had its bytes sliced and decoded straight into
+    ``ArchiveInfo.comment``, with nothing emitted and nothing for a strict policy
+    to refuse. Losing the comment is a missing answer; that was a wrong one.
+    """
+    data = _graft_service_extra_area(
+        (_FIXTURES / "comment__.rar").read_bytes(), b"\x00\x00"
+    )
+    path = tmp_path / "cut_short_comment.rar"
+    path.write_bytes(data)
+
+    with open_archive(path) as archive:
+        assert archive.info.comment is None, (
+            "the comment is decoded from bytes the header never finished "
+            "describing, so it must not be presented"
+        )
+        codes = [d.code for d in archive.diagnostics.retained]
+        assert codes.count(DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED) == 2, codes
+
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with pytest.raises(DiagnosticRaisedError):
+        with open_archive(path, config=strict) as archive:
+            archive.members()
+
+
+def test_an_undamaged_service_header_stays_quiet(tmp_path: Path) -> None:
+    """The guard above must not fire on every archive that has a comment."""
+    with open_archive(_FIXTURES / "comment__.rar") as archive:
+        assert archive.info.comment == "This is a\nmulti-line comment"
+        assert archive.diagnostics.total_count == 0
 
 
 @pytest.mark.parametrize(

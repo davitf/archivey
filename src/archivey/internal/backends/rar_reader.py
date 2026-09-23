@@ -734,6 +734,12 @@ class RarReader(BaseArchiveReader):
         for info in self._archive.members:
             info.comment = self._resolve_rar3_comment(info.comment)
         self._members = [self._to_member(info) for info in self._archive.members]
+        # SERVICE headers (``CMT``, ``QO``) are not members, so the walk above never
+        # reaches them, and a damaged one would otherwise report nothing under any
+        # policy. Emitted after the members so a strict collector refuses on the
+        # first fault in file order rather than on whichever kind of header it was.
+        for info in self._archive.damaged_service_headers:
+            self._emit_header_record_diagnostics(info, info.filename, None)
 
     def _open_shared_source(self, source: Path | BinaryIO) -> SharedSource:
         """Build SharedSource, discovering/materializing volumes as needed."""
@@ -1106,57 +1112,7 @@ class RarReader(BaseArchiveReader):
             presented_name=presented,
             archive_name=self._archive_name,
         )
-        for record, record_id, reason in info.skipped_header_records:
-            named = record if record_id is None else f"{record} ({record_id})"
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-                message=(
-                    f"RAR5 extra record {named} is malformed and was dropped "
-                    f"({reason}); the member is listed without what it carried."
-                ),
-                context=MemberHeaderRecordContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=member._member_id,
-                    record=record,
-                    record_id=record_id,
-                    reason=reason,
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
-            )
-        stop_reason = info.header_walk_stop_reason
-        if stop_reason is not None:
-            # One diagnostic saying the header was abandoned, rather than one per
-            # record past the cap — emitting per record is the cost the cap exists
-            # to avoid. Without this a caller sees the capped list and cannot tell
-            # it is the whole story. ``list_truncated`` is what they read.
-            #
-            # The reason comes from the walk because four different faults end it
-            # and only one of them is the cap. It is also the only thing that
-            # explains why the member may be reported encrypted when nothing in
-            # its listing says so, so naming a fault that did not happen costs
-            # more here than it would on an ordinary skip.
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-                message=(
-                    f"This RAR5 member's header was not read to the end because "
-                    f"{stop_reason}; it is listed from what was read before that."
-                ),
-                context=MemberHeaderRecordContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=member._member_id,
-                    record="",
-                    record_id=None,
-                    reason=stop_reason,
-                    list_truncated=True,
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
-            )
+        self._emit_header_record_diagnostics(info, member.name, member)
         # Pure; same predicate ``_rar_member_extra_and_link`` uses for extra keys.
         if not _crc_is_tweaked(info) or self._unrar_password is not None:
             return
@@ -1338,6 +1294,76 @@ class RarReader(BaseArchiveReader):
             return None
         return expected, transforms
 
+    def _emit_header_record_diagnostics(
+        self,
+        info: RarMemberInfo,
+        name: str,
+        member: ArchiveMember | None,
+    ) -> None:
+        """Report what a RAR5 extra-area walk dropped, and why it stopped.
+
+        ``member`` is ``None`` for a SERVICE header (``CMT``, ``QO``), which is not
+        a listed member and so has nothing to attach to. It still comes through
+        here: the same leniency applies to its header, and the argument for
+        dropping a record rather than refusing the archive is that the diagnostic
+        is emitted and ``ARCHIVE_INTEGRITY_CODES`` makes a strict policy refuse.
+        A service header that said nothing was the one place that argument did not
+        hold.
+        """
+        member_id = member._member_id if member is not None else None
+        attach = member is not None
+        for record, record_id, reason in info.skipped_header_records:
+            named = record if record_id is None else f"{record} ({record_id})"
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"RAR5 extra record {named} is malformed and was dropped "
+                    f"({reason}); the member is listed without what it carried."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=name,
+                    member_id=member_id,
+                    record=record,
+                    record_id=record_id,
+                    reason=reason,
+                ),
+                member=member,
+                attach_to_member=attach,
+                logger=logger,
+            )
+        stop_reason = info.header_walk_stop_reason
+        if stop_reason is not None:
+            # One diagnostic saying the header was abandoned, rather than one per
+            # record past the cap — emitting per record is the cost the cap exists
+            # to avoid. Without this a caller sees the capped list and cannot tell
+            # it is the whole story. ``list_truncated`` is what they read.
+            #
+            # The reason comes from the walk because four different faults end it
+            # and only one of them is the cap. It is also the only thing that
+            # explains why the member may be reported encrypted when nothing in
+            # its listing says so, so naming a fault that did not happen costs
+            # more here than it would on an ordinary skip.
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"This RAR5 member's header was not read to the end because "
+                    f"{stop_reason}; it is listed from what was read before that."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=name,
+                    member_id=member_id,
+                    record="",
+                    record_id=None,
+                    reason=stop_reason,
+                    list_truncated=True,
+                ),
+                member=member,
+                attach_to_member=attach,
+                logger=logger,
+            )
+
     def _payload_verify_args(
         self, member: ArchiveMember
     ) -> tuple[
@@ -1471,7 +1497,18 @@ class RarReader(BaseArchiveReader):
         try:
             while verifier.read(view, _CONFIRM_CHUNK_BYTES):
                 pass
-        except ArchiveyError as exc:
+        except TruncatedError:
+            # A member whose bytes end short of its declared size is a truncated
+            # member, whatever its header said, and relabelling that as a verdict
+            # about encryption would name a cause that did not happen. This pass
+            # is interpreting one outcome — the digest — and has nothing to add
+            # to the others, so they travel as they would on an ordinary read.
+            raise
+        except CorruptionError as exc:
+            # What is left is the digest verdict. The verifier's other
+            # ``CorruptionError`` is an over-run, which cannot happen here: the
+            # view is bounded to the member's declared size, so the probe past
+            # the end reads ``b""`` however much archive follows.
             raise CorruptionError(
                 "This RAR5 member's header stopped before its extra records were "
                 "read to the end, so whether the member is encrypted is unknown, "

@@ -646,6 +646,15 @@ wrong bytes incrementally, so a caller that stops reading early would never reac
 end-of-stream verdict. Its cost is one extra pass over an already-damaged member and none
 at all on an undamaged one.
 
+**Both paragraphs above are scoped to the member archivey reads by slicing the source** —
+stored, not solid, not split across volumes. Every other cut-short member is decoded by
+`unrar`, which is handed the whole member and cannot be asked to check a digest first;
+there any surviving digest is verified as it is for an undamaged member, at end of stream,
+and a member with none is read with nothing checking it. That is unchanged behaviour and
+not a guarantee this requirement makes. Such a member SHALL still be reported as encrypted
+and SHALL still carry the cut-short diagnostic, so a strict policy refuses it.
+
+
 The diagnostic reporting a cut-short header SHALL name the fault that ended the walk. Four
 different faults end it — the skip cap, a size that cannot be read, a size that overruns
 the area, and a size below the one-byte minimum — and they are not interchangeable: this
@@ -702,6 +711,33 @@ nothing else in its listing says so.
 - **WHEN** the archive is listed
 - **THEN** listing SHALL raise `CorruptionError`
 - **AND** the member SHALL NOT appear in any listing as an unencrypted member
+
+### Requirement: A cut-short SERVICE header SHALL be reported, and its payload SHALL NOT be sliced
+
+`CMT` and `QO` are SERVICE headers with the same extra area as a FILE header, so the same
+leniency applies to them. They are not members, so nothing lists them and no per-member
+diagnostic describes them.
+
+A SERVICE header whose extra-area walk dropped a record or gave up SHALL emit the same
+diagnostics a member's header does. The argument for dropping a record rather than refusing
+the archive is that the diagnostic is emitted and a strict policy can still refuse; a header
+that reported nothing was outside that argument.
+
+The gates that slice a SERVICE payload out of the archive — the stored-comment gate and the
+quick-open gate — SHALL refuse a header that stopped before it could rule encryption out,
+as they already refuse one known to be encrypted. The comment is decoded as text and the
+quick-open payload is parsed as a member table, so slicing unsettled bytes would put
+ciphertext in `ArchiveInfo.comment` or parse a member list out of it. Losing the comment, or
+falling back to the header walk, is a missing answer; the alternative is a wrong one.
+
+#### Scenario: A cut-short comment header is refused and reported
+
+- **GIVEN** a RAR5 archive whose `CMT` SERVICE header has an extra area whose walk stops
+- **WHEN** the archive is opened
+- **THEN** `ArchiveInfo.comment` SHALL NOT be taken from that header's payload
+- **AND** the walk's dropped record and its stop SHALL each emit
+  `MEMBER_HEADER_RECORD_SKIPPED`
+- **AND** a strict diagnostic policy SHALL refuse the archive
 
 ### Requirement: Refuse a glob member name whose mask also matches earlier members
 

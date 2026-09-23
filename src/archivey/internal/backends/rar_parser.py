@@ -41,7 +41,7 @@ import io
 import struct
 import zlib
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import pbkdf2_hmac
 from typing import BinaryIO, Protocol
@@ -350,6 +350,12 @@ class RarArchive:
     sfx_offset: int
     is_volume: bool
     needs_next_volume: bool = False
+    #: SERVICE headers (``CMT``, ``QO``) whose extra-area walk dropped a record or
+    #: gave up, in file order. They are not members, so nothing lists them and the
+    #: reader's per-member diagnostics never see them — yet the same leniency
+    #: applies to their headers, and the argument that leniency is not silent rests
+    #: on a diagnostic being emitted. The reader emits from this at open.
+    damaged_service_headers: list[RarMemberInfo] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1631,6 +1637,11 @@ def _rar5_locator_qopen_abs(
 
 
 def _is_stored_rar5_cmt(member: RarMemberInfo) -> bool:
+    # ``encryption_unknown`` refuses for the same reason ``is_encrypted`` does:
+    # this gate slices the payload straight out of the archive and decodes it as
+    # text, so a header that stopped before it could rule encryption out would
+    # put ciphertext in ``ArchiveInfo.comment``. Losing the comment is a missing
+    # answer; that would be a wrong one.
     return (
         member.filename == _RAR5_CMT_NAME
         and member.compress_type == _RAR3_M0
@@ -1638,6 +1649,7 @@ def _is_stored_rar5_cmt(member: RarMemberInfo) -> bool:
         and not member.split_after
         and member.compress_size > 0
         and not member.is_encrypted
+        and not member.encryption_unknown
     )
 
 
@@ -1792,6 +1804,11 @@ def _try_list_via_rar5_qo(
             member.filename != _RAR5_QO_NAME
             or member.compress_type != _RAR3_M0
             or member.is_encrypted
+            # Same slice-and-parse hazard as the CMT gate above: an unsettled
+            # header would have this parse a member table out of bytes that may
+            # be ciphertext. Refusing costs the quick open, and the FILE walk
+            # answers the same question from the headers themselves.
+            or member.encryption_unknown
             or member.split_before
             or member.split_after
             or member.file_size <= 0
@@ -1914,6 +1931,7 @@ def _parse_rar5(
     needs_next_volume = False
     seen_file_offsets: set[int] = set()
     qo_by_off: dict[int, RarMemberInfo] = {}
+    damaged_service_headers: list[RarMemberInfo] = []
 
     while True:
         header_fd: _Readable = source
@@ -2076,10 +2094,13 @@ def _parse_rar5(
                     if _emit_rar5_file_member(members, member, max_members=max_members):
                         needs_next_volume = True
                     seen_file_offsets.add(member.header_offset)
-            elif block_type == _RAR5_SERVICE and _is_stored_rar5_cmt(member):
-                source.seek(data_offset)
-                raw = _require_exact(source, member.file_size, "RAR5 comment")
-                comment = _decode_rar5_cmt_bytes(raw)
+            elif block_type == _RAR5_SERVICE:
+                if member.skipped_header_records or member.header_walk_stop_reason:
+                    damaged_service_headers.append(member)
+                if _is_stored_rar5_cmt(member):
+                    source.seek(data_offset)
+                    raw = _require_exact(source, member.file_size, "RAR5 comment")
+                    comment = _decode_rar5_cmt_bytes(raw)
             _seek_after_packed(source, data_offset, add_size)
             continue
 
@@ -2095,6 +2116,7 @@ def _parse_rar5(
         sfx_offset=sfx_offset,
         is_volume=is_volume,
         needs_next_volume=needs_next_volume,
+        damaged_service_headers=damaged_service_headers,
     )
 
 
