@@ -352,6 +352,10 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
 
     def __init__(self, sources: Sequence[Path | BinaryIO]) -> None:
         super().__init__()
+        # First, before anything that can raise: ``close()`` reads it, and
+        # ``IOBase.__del__`` calls ``close()`` on an instance whose ``__init__``
+        # refused its input.
+        self._path_handles: OrderedDict[int, _CachedPathHandle] = OrderedDict()
         if not sources:
             raise ArchiveyUsageError("at least one volume is required")
         # Retained so format-specific openers (RAR) can recover real volume paths —
@@ -403,7 +407,6 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         self.volume_count = len(sources)
         self._vol_index = 0
         self._vol_offset = 0
-        self._path_handles: OrderedDict[int, _CachedPathHandle] = OrderedDict()
         self._recompute_cursor()
 
     @property

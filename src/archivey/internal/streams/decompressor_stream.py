@@ -319,13 +319,6 @@ class DecompressorStream(ReadOnlyIOStream):
     ) -> None:
         super().__init__()
         self._owned_inner: BinaryIO | None = None
-        if isinstance(path, (str, os.PathLike)):
-            self._inner: BinaryIO = open(os.fspath(path), "rb")
-            self._owned_inner = self._inner
-        else:
-            self._inner = cast("BinaryIO", ensure_bufferedio(path))
-            if owns_inner:
-                self._owned_inner = path
         self._diagnostics_collector = collector
         self._codec_name = codec_name
         # Declared seek demand: without it, skip seek-point tables / index scans, but
@@ -336,7 +329,29 @@ class DecompressorStream(ReadOnlyIOStream):
         self._index_built = False
         self._index_build_attempted = False
         self._make_decoder = make_decoder
-        self._decoder: Decoder = make_decoder(self._seek_points[0], self._inner)
+        try:
+            if isinstance(path, (str, os.PathLike)):
+                self._inner: BinaryIO = open(os.fspath(path), "rb")
+                self._owned_inner = self._inner
+            else:
+                self._inner = cast("BinaryIO", ensure_bufferedio(path))
+                if owns_inner:
+                    self._owned_inner = path
+            self._decoder: Decoder = make_decoder(self._seek_points[0], self._inner)
+        except BaseException:
+            # ``close()`` needs a decoder, and ``IOBase.__del__`` calls it on any
+            # instance not marked closed, including one whose ``__init__`` raised.
+            # Release what this stream already owns and mark it closed here, so the
+            # finalizer has nothing left to do (a refused decoder, such as a
+            # ``DecoderLimits`` refusal, otherwise dies again as ``AttributeError``).
+            owned = self._owned_inner
+            self._owned_inner = None
+            try:
+                if owned is not None:
+                    owned.close()
+            finally:
+                super().close()
+            raise
         self._buffer = bytearray()
         self._eof = False
         self._pos = 0
