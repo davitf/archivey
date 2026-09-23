@@ -831,3 +831,143 @@ def test_archivey_ppmd7_requires_unpack_size() -> None:
             mem_size=_MEM,
             variant=7,
         )
+
+
+# ---------------------------------------------------------------------------
+# Overstated ``unpack_size`` (#315 thread K6). A 7z folder may declare more output
+# than its complete pack holds. pyppmd then returns short at native ``eof``, and
+# the next ``decode`` resumes a worker parked on empty input: on 1.3.1 that raised
+# a bare ``MemoryError`` that escaped the reader. The assertions are on the calls
+# made to pyppmd, not on what pyppmd does with them, so they hold on any build.
+# ---------------------------------------------------------------------------
+
+
+class _DecodeCallSpy:
+    """Wraps a pyppmd decoder, recording each call's shape and outcome."""
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+        # (len(data), length, len(returned), eof after the call)
+        self.calls: list[tuple[int, int, int, bool]] = []
+
+    def decode(self, data: bytes, length: int) -> bytes:
+        out: bytes = self._inner.decode(data, length)  # type: ignore[attr-defined]
+        self.calls.append((len(data), length, len(out), self.eof))
+        return out
+
+    @property
+    def eof(self) -> bool:
+        return self._inner.eof  # type: ignore[attr-defined]
+
+    @property
+    def needs_input(self) -> bool:
+        return self._inner.needs_input  # type: ignore[attr-defined]
+
+
+def _calls_after_payload_spent(calls: list[tuple[int, int, int, bool]]) -> list:
+    """The calls made after one that came back short at ``eof`` (payload spent)."""
+    for i, (_, length, got, eof) in enumerate(calls):
+        if eof and got < length:
+            return calls[i + 1 :]
+    return []
+
+
+# Short, not repetitive: PPMd may decode a few symbols past a payload's end from the
+# range coder's state alone (the container CRC catches those), and on this payload
+# it decodes none, so the stream ends short straight away.
+_K6_PAYLOAD = b"hello ppmd world, compress me a little bit more please\n"
+
+
+@pytest.mark.parametrize("overstate", [1, 1 << 40], ids=["plus-1", "plus-1TiB"])
+@pytest.mark.parametrize(
+    "reads",
+    ["readall", "exact-then-more", "one-byte-at-a-time", "one-3GB-read"],
+)
+def test_archivey_ppmd7_overstated_unpack_size_raises_truncated_error(
+    overstate: int, reads: str
+) -> None:
+    """A complete pack under an overstated ``unpack_size`` ends in ``TruncatedError``.
+
+    The payload itself comes back intact, and once pyppmd has returned short at
+    ``eof`` no further ``decode`` is issued while reading — that later call is the
+    one that raised ``MemoryError``. A single read larger than a C ``int`` reaches
+    pyppmd capped, where it used to raise ``OverflowError``.
+    """
+    _run_ppmd_child(
+        textwrap.dedent(
+            f"""\
+            import io
+            from archivey.exceptions import TruncatedError
+            from archivey.internal.streams.decompress import PpmdDecompressorStream
+            from tests.test_ppmd_raw_streams import (
+                _K6_PAYLOAD, _ORDER, _MEM, _DecodeCallSpy, _calls_after_payload_spent,
+                _encode_ppmd7,
+            )
+
+            packed = _encode_ppmd7(_K6_PAYLOAD)
+            stream = PpmdDecompressorStream(
+                io.BytesIO(packed),
+                order=_ORDER,
+                mem_size=_MEM,
+                variant=7,
+                unpack_size=len(_K6_PAYLOAD) + {overstate},
+                pack_size=len(packed),
+            )
+            spy = _DecodeCallSpy(stream._decoder._decomp)
+            stream._decoder._decomp = spy
+            reads = {reads!r}
+            got = bytearray()
+            try:
+                if reads == "readall":
+                    got += stream.read()
+                elif reads == "one-3GB-read":
+                    got += stream.read(3_000_000_000)
+                    got += stream.read(3_000_000_000)
+                else:
+                    step = 1 if reads == "one-byte-at-a-time" else 64
+                    if reads == "exact-then-more":
+                        got += stream.read(len(_K6_PAYLOAD))
+                    while True:
+                        got += stream.read(step)
+            except TruncatedError:
+                pass
+            else:
+                raise SystemExit("expected TruncatedError")
+            calls = list(spy.calls)
+            stream.close()
+            if reads != "readall":
+                # readall() drops a truncated stream's bytes by contract.
+                assert bytes(got) == _K6_PAYLOAD, bytes(got)
+            assert _calls_after_payload_spent(calls) == [], calls
+            assert all(length < 2**31 for _, length, _, _ in calls), calls
+            print("ok")
+            """
+        )
+    )
+
+
+def test_ppmd7_close_quiesces_worker_after_payload_spent() -> None:
+    """A spent payload reports ``eof`` with ``needs_input`` False even when its
+    worker is parked, so close() must quiesce it regardless of those flags."""
+    fake = _FakeDecomp(needs_input=False, eof=True, returns=[b"", b"x"])
+    dec = _ppmd7_with_fake(fake, produced=0)
+    dec._exhausted = True
+    dec.close()
+    assert fake.calls == [(b"\0", 1), (b"\0", 1)]
+
+
+def test_ppmd7_payload_spent_needs_complete_pack() -> None:
+    """A short return at ``eof`` mid-pack is not the end: more input may follow."""
+    fake = _FakeDecomp(needs_input=False, eof=True, returns=[b"ab"])
+    dec = _ppmd7_with_fake(fake, produced=0)  # pack_size=50
+    assert dec.feed(b"x" * 10, max_length=64).data == b"ab"
+    assert not dec._exhausted
+    fake._returns = [b"cd"]
+    assert dec.feed(b"x" * 40, max_length=64).data == b"cd"
+    assert dec._exhausted
+    # Spent: nothing more reaches the native decoder, and flush reports truncation.
+    before = len(fake.calls)
+    assert dec.feed(b"", max_length=64).data == b""
+    assert dec.flush().data == b""
+    assert len(fake.calls) == before
+    assert dec.pending_error is not None
