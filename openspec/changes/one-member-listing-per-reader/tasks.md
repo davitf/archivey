@@ -1,8 +1,10 @@
 ## 0. Gate
 
-- [ ] 0.1 Before archiving, check the `access-mode-and-cost` MODIFIED block against the live
-      requirement. A MODIFIED delta replaces the whole block, so anything the live
-      requirement gained after this change was written would be deleted silently. Dry-run
+- [ ] 0.1 Before archiving, check both MODIFIED blocks against the live requirements:
+      `access-mode-and-cost` "members_report_if_available() — a report peek" and
+      `archive-reading` "Bounded-memory sequential streaming via stream_members". A
+      MODIFIED delta replaces the whole block, so anything the live requirement gained
+      after this change was written would be deleted silently. Dry-run
       `openspec archive` on a scratch copy of `openspec/`, `diff -u` the result against the
       live specs, and confirm every removed line is one this change means to replace.
 
@@ -80,7 +82,7 @@
       Streaming pass: read each link member's bytes from the pass's own folder decoder
       when the cursor reaches it, keep them, and apply them at EOF finalization. Test
       relations, not constants, on the 4.5 fixture, with `io_stats().bytes_decompressed`
-      (see the `access-mode-and-cost` matrix):
+      (see the `format-7z` matrix):
       - `members()` decodes exactly to the folder's last-link end offset, not the sum of
         every link's end offset;
       - a streaming pass reading every stream decodes the folder size once and resolves
@@ -100,6 +102,12 @@
 - [ ] 4.6 D8: 7z, RAR and ISO pass the listing position into typing-time diagnostic
       contexts as `member_id` (7z and RAR: the index in their open-time list; ISO: an
       `enumerate` over its walk)
+- [ ] 4.7 D6c: a link the selector excluded never consults the password provider. On
+      ZIP and 7z, when the known-good and sequence candidates fail, leave `link_target`
+      unset and emit `SYMLINK_TARGET_UNAVAILABLE`. Test with an encrypted solid 7z
+      `[a.txt, link, b.txt]`, no password, and a provider that fails the test if it is
+      called: `stream_members(lambda m: False)` to the end. Add the same test on an
+      encrypted ZIP symlink. Mutation: let the excluded link reach the provider.
 
 ## 5. Delete the dedupe machinery (D7)
 

@@ -84,17 +84,21 @@ Everything reads the list by position and pulls when it reaches the end:
 **D1a. Last-entry-wins `is_current` is stamped once, when the walk ends**, by whichever
 consumer ended it, and nowhere else. The walk ends in one of two ways. It completes, or it
 stops on terminal damage (D2). With terminal damage, the stamp runs over the recovered
-prefix at the point the incomplete report is stored. That is what
-`_finalize_links(..., is_current_first=True)` does today in `_materialize_members`'
-damage branch (`base_reader.py:1173-1182`) and in `_finalize_pass_links`. Removing
-`is_current_first` must not remove this stamp: `ArchiveMember.is_current` defaults to
-`True`, so an unstamped prefix would make every shadowed duplicate read as current.
-Measured on `main`: a streaming pass over a TAR holding `a.txt` twice and truncated in a
-later member ends in `TruncatedError`, and its incomplete report reads `a.txt False`,
-`a.txt True`. Without the stamp, both would read `True`, and extracting that prefix would
-write the shadowed entry, then fail on the later one with the error described below. Link resolution never reads
-`is_current` (`_lookup_link_target_for_member` and `_resolve_link` do not touch it), so
-stamping before or after resolution gives the same links. The only visible difference
+prefix at the point the incomplete report is stored. Both of today's call sites stamp a
+damaged prefix, in opposite orders. `_materialize_members`' damage branch
+(`base_reader.py:1173-1182`) calls `_finalize_links(..., is_current_first=True)`, which
+stamps before link resolution. `_finalize_pass_links` passes `is_current_first=False`,
+which stamps after it (`:1137-1138`). Removing `is_current_first` must not remove either
+stamp: `ArchiveMember.is_current` defaults to `True`, so an unstamped prefix would make
+every shadowed duplicate read as current. Measured on `main`: a streaming pass over a TAR
+holding `a.txt` twice and truncated in a later member ends in `TruncatedError`, and its
+incomplete report reads `a.txt False`, `a.txt True`. Without the stamp, both would read
+`True`, and extracting that prefix would write the shadowed entry, then fail on the later
+one with the error described below.
+
+The two orders give the same links. Link resolution never reads `is_current`
+(`_lookup_link_target_for_member` and `_resolve_link` do not touch it), so stamping
+before or after resolution gives the same result. The only visible difference
 is *when* a held member shows its final value:
 
 - A streaming pass nobody peeks into completes the walk at EOF, so members keep today's
@@ -121,8 +125,12 @@ walk while the pass's cursor is still at member 0, so walk exhaustion is no long
 same event as the pass reaching the end. The pass finalizes (resolves links, publishes
 the complete report) when its cursor steps past the last member of a completed walk,
 exactly once. A walk drained by a peek, followed by an abandoned pass (`break`, no
-`scan_members()`), leaves `_materialized` unpublished and reads no link data. That is
-`archive-reading`'s "An abandoned pass … SHALL NOT finalize", unchanged.
+`scan_members()`), runs no finalization: it resolves no links and leaves `_materialized`
+unpublished. That is `archive-reading`'s "An abandoned pass … SHALL NOT finalize",
+unchanged. On ZIP and ISO, where link targets are read only at finalization, the
+abandoned pass therefore reads no link data. A 7z pass reads a link member's bytes as its
+cursor passes that member (D6b), so an abandoned 7z pass may already have read link data,
+and decoded its folder up to that link, for the members it passed.
 
 **Rejected: cache the peek's result and leave the other paths alone.** That is the smallest
 diff and fixes ZIP and ISO for `extract_all`. But the streaming pass and the 7z/RAR passes
@@ -325,6 +333,36 @@ does the same today. D6b only stops the folder from being decoded once per link.
 Rejected: resolving links on demand one at a time and accepting the re-decode. That is
 today's behaviour, and the measurements above show it is the expensive path on the most
 common writer defaults.
+
+#### D6c. Links the caller's selector excluded (awaiting davitf's ruling)
+
+`archive-reading` promises that `stream_members()` does not open, decompress or request a
+password for a member the selector excludes. Selection happens above the backend:
+`_iter_stream_members` filters after `_iter_with_data()` yields (`base_reader.py:2160`),
+so a backend never learns a member was excluded. EOF finalization resolves every link in
+the pass, excluded or not. ZIP already does this today: `_stamp_progressive_member`
+records a member before the selector runs, and `_finalize_pass_links` reads every link's
+data. Today's 7z pass does not finalize at all, so it reads no link data. After D6 it does,
+and on an encrypted folder it would consult the password provider for a link the caller
+excluded.
+
+Three contracts were put to davitf:
+
+- **Skip encrypted only** (recommended, and what the deltas say until he rules). Excluded
+  links are read, so the complete report matches random access. If an excluded link needs
+  a password, the pass tries the known-good and sequence candidates but never consults the
+  provider. If none opens it, `link_target` stays unset with `SYMLINK_TARGET_UNAVAILABLE`,
+  the diagnostic an unreadable target already gets. The cost of reading excluded links
+  stays within D6b's one-decode-per-folder budget.
+- **Read every link.** Every link is resolved in both modes, but an excluded link in an
+  encrypted folder triggers a password request the caller did not ask for.
+- **Selected links only.** The promise holds as written, but the selector must be passed
+  down into `_iter_with_data`. Excluded links then stay unresolved in streaming mode, on
+  ZIP as well as 7z, which splits `link_target` by mode.
+
+The first option carries a MODIFIED delta for "Bounded-memory sequential streaming via
+stream_members". The delta states the link-target exception and amends the two matrix
+rows that promised no decode for an excluded member.
 
 ### D7. What is deleted
 
