@@ -172,9 +172,15 @@ class DiagnosticCollector:
         Under COLLECT/RAISE, retains (budget permitting), logs, and callbacks.
         Under RAISE (or when ``escalate_as`` is set), raises after delivery.
 
-        ``escalate_as`` (e.g. :class:`~archivey.exceptions.TruncatedError` for strict
-        EOF) takes precedence over :class:`DiagnosticRaisedError` for the terminal
-        exception after the delivery steps that ran for the disposition.
+        ``escalate_as`` (e.g. :class:`~archivey.exceptions.CorruptionError` for a
+        rejected TAR header) takes precedence over :class:`DiagnosticRaisedError` for the
+        terminal exception after the delivery steps that ran for the disposition.
+
+        It also raises **whatever the disposition is, ``IGNORE`` included**: it marks a
+        condition the caller's policy cannot suppress, not merely a choice of exception
+        type. Under ``IGNORE`` that means an exception with no log line and no callback
+        behind it, only the count. A caller that wants the policy to decide should pass
+        ``escalate_as`` only when the disposition is already ``RAISE``.
         """
         validate_code_context(code, context)
         disposition = self._policy.resolve(code)

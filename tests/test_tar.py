@@ -1,6 +1,6 @@
 """TAR backend tests — random-access read, forward-only streaming on non-seekable
 sources, PAX/GNU/ustar member mapping, cost, corrupt/truncated handling, and
-``strict_archive_eof`` end-of-archive verification."""
+end-of-archive verification."""
 
 from __future__ import annotations
 
@@ -24,8 +24,14 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticDisposition,
+    DiagnosticPolicy,
+)
 from archivey.exceptions import (
     CorruptionError,
+    DiagnosticRaisedError,
     ReadError,
     StreamNotSeekableError,
     TruncatedError,
@@ -500,8 +506,18 @@ def test_compressed_source_size_generalized(plain_tar: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# strict_archive_eof / end-of-archive truncation detection
+# end-of-archive truncation detection
 # ---------------------------------------------------------------------------
+
+# A missing trailer is an ordinary diagnostic; a caller who wants it fatal sets the code
+# to RAISE and gets DiagnosticRaisedError.
+_RAISE_ON_MISSING_EOF = ArchiveyConfig(
+    diagnostic_policy=DiagnosticPolicy(
+        overrides={
+            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.RAISE
+        }
+    )
+)
 
 
 def _eof_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
@@ -536,57 +552,66 @@ def test_missing_eof_blocks_warns_by_default(
     assert "truncated" in warnings[0].lower()
 
 
-def test_missing_eof_blocks_strict_archive_eof_raises() -> None:
+def test_missing_eof_blocks_raise_disposition_raises() -> None:
     data = _tar_missing_eof_block()
-    with pytest.raises(TruncatedError):
+    with pytest.raises(DiagnosticRaisedError):
         with open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
-            config=ArchiveyConfig(strict_archive_eof=True),
+            config=_RAISE_ON_MISSING_EOF,
         ) as ar:
             ar.members()
 
 
-def test_members_report_recovers_prefix_on_strict_eof() -> None:
+def test_members_report_recovers_prefix_on_corrupt_header() -> None:
     """Q7: members_report returns prefix + error; members() raises; iter yields then raises."""
-    data = _tar_missing_eof_block()
-    config = ArchiveyConfig(strict_archive_eof=True)
-    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR, config=config) as ar:
+    data = _tar_corrupt_mid_header()
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         report = ar.members_report()
         assert report.error is not None
-        assert isinstance(report.error, TruncatedError)
+        assert isinstance(report.error, CorruptionError)
         names = [m.name for m in report.members]
-        assert names == ["hello.txt", "dir/nested.txt", "dir/", "link.txt"]
+        assert names == ["a.txt"]
         assert ar.members_report_if_available() is report
-        with pytest.raises(TruncatedError):
+        with pytest.raises(CorruptionError):
             ar.members()
         yielded: list[str] = []
-        with pytest.raises(TruncatedError):
+        with pytest.raises(CorruptionError):
             for member in ar:
                 yielded.append(member.name)
         assert yielded == names
         first = report.members[0]
         assert first in ar
-        assert ar.open(first).read() == b"hello world"
+        assert ar.open(first).read() == b"aaa"
 
 
-def test_members_report_streaming_strict_eof_yield_then_raise() -> None:
-    data = _tar_missing_eof_block()
-    config = ArchiveyConfig(strict_archive_eof=True)
+def test_members_report_streaming_corrupt_header_yield_then_raise() -> None:
+    data = _tar_corrupt_mid_header()
     with open_archive(
         NonSeekableBytesIO(data),
         format=ArchiveFormat.TAR,
         streaming=True,
-        config=config,
     ) as ar:
         yielded: list[str] = []
-        with pytest.raises(TruncatedError):
+        with pytest.raises(CorruptionError):
             for member, _stream in ar.stream_members():
                 yielded.append(member.name)
-        assert yielded == ["hello.txt", "dir/nested.txt", "dir/", "link.txt"]
+        assert yielded == ["a.txt"]
         report = ar.members_report()
-        assert isinstance(report.error, TruncatedError)
+        assert isinstance(report.error, CorruptionError)
         assert [m.name for m in report.members] == yielded
+
+
+def test_members_report_raises_a_raised_eof_diagnostic() -> None:
+    # A missing trailer set to RAISE is the caller's policy firing, not listing damage,
+    # so members_report() raises it rather than folding it into report.error. This was
+    # TruncatedError-as-report under the removed ``strict_archive_eof`` flag.
+    data = _tar_missing_eof_block()
+    with open_archive(
+        io.BytesIO(data), format=ArchiveFormat.TAR, config=_RAISE_ON_MISSING_EOF
+    ) as ar:
+        with pytest.raises(DiagnosticRaisedError):
+            ar.members_report()
 
 
 def test_missing_eof_blocks_streaming_warns(
@@ -601,14 +626,14 @@ def test_missing_eof_blocks_streaming_warns(
     assert len(_eof_warnings(caplog)) == 1
 
 
-def test_missing_eof_blocks_streaming_strict_raises() -> None:
+def test_missing_eof_blocks_streaming_raise_disposition_raises() -> None:
     data = _tar_missing_eof_block()
-    with pytest.raises(TruncatedError):
+    with pytest.raises(DiagnosticRaisedError):
         with open_archive(
             NonSeekableBytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=True,
-            config=ArchiveyConfig(strict_archive_eof=True),
+            config=_RAISE_ON_MISSING_EOF,
         ) as ar:
             list(ar.stream_members())
 
@@ -638,19 +663,21 @@ def test_minimal_eof_trailer_streaming_silent(
 
 
 def test_minimal_eof_trailer_strict_does_not_raise() -> None:
-    # strict_archive_eof must accept the minimal valid trailer on both access modes.
+    # DiagnosticPolicy.strict() must accept the minimal valid trailer on both access
+    # modes: it raises on both EOF codes, and neither is emitted here.
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
     data = _tar_minimal_eof()
     with open_archive(
         io.BytesIO(data),
         format=ArchiveFormat.TAR,
-        config=ArchiveyConfig(strict_archive_eof=True),
+        config=strict,
     ) as ar:
         assert [m.name for m in ar.members()]
     with open_archive(
         NonSeekableBytesIO(data),
         format=ArchiveFormat.TAR,
         streaming=True,
-        config=ArchiveyConfig(strict_archive_eof=True),
+        config=strict,
     ) as ar:
         assert [m for m, _ in ar.stream_members()]
 
@@ -746,14 +773,15 @@ def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:
             ar.members()
 
 
-def test_corrupt_mid_header_strict_still_corruption() -> None:
-    # strict_archive_eof escalates absent/short only; nonzero stays CorruptionError.
+def test_corrupt_mid_header_raise_disposition_still_corruption() -> None:
+    # A RAISE disposition does not change the type for a rejected header: the nonzero
+    # case escalates as CorruptionError, which outranks DiagnosticRaisedError.
     data = _tar_corrupt_mid_header()
     with pytest.raises(CorruptionError):
         with open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
-            config=ArchiveyConfig(strict_archive_eof=True),
+            config=_RAISE_ON_MISSING_EOF,
         ) as ar:
             ar.members()
 

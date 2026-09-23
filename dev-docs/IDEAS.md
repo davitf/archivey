@@ -518,7 +518,7 @@
   dictionary cap and the total KDF budget are both heading for this type. Adding a class
   attribute later is purely additive.
   **The name is open**, and davitf said so explicitly. `UNTRUSTED` is the suggestion on
-  the table: `STRICT` is taken in spirit by `strict_archive_eof` in the same file and by
+  the table: `STRICT` is taken in spirit by `DiagnosticPolicy.strict()` and by
   archivey's use of "strict" for how harshly corruption is treated, while `UNTRUSTED`
   names what the caller knows — the provenance of the input — rather than how tight the
   numbers are, and reads correctly beside `UNLIMITED`. It also happens to be the answer

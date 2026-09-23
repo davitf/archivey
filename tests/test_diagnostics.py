@@ -35,7 +35,6 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import (
     PathTraversalError,
-    TruncatedError,
     UnsupportedOperationError,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -517,29 +516,7 @@ def test_reading_diagnostic_raise_still_halts_extraction(tmp_path: Path) -> None
     assert ei.value.diagnostic.code is DiagnosticCode.MEMBER_TIMESTAMP_INVALID
 
 
-def test_strict_eof_precedence_over_raise() -> None:
-    from archivey.types import ArchiveFormat
-    from tests.test_tar import _tar_missing_eof_block
-
-    data = _tar_missing_eof_block()
-    policy = DiagnosticPolicy(
-        overrides={
-            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.RAISE
-        }
-    )
-    with pytest.raises(TruncatedError):
-        with open_archive(
-            io.BytesIO(data),
-            format=ArchiveFormat.TAR,
-            config=ArchiveyConfig(
-                strict_archive_eof=True,
-                diagnostic_policy=policy,
-            ),
-        ) as ar:
-            ar.members()
-
-
-def test_strict_eof_false_raise_yields_diagnostic_error() -> None:
+def test_eof_marker_raise_yields_diagnostic_error() -> None:
     from archivey.types import ArchiveFormat
     from tests.test_tar import _tar_missing_eof_block
 
@@ -553,16 +530,15 @@ def test_strict_eof_false_raise_yields_diagnostic_error() -> None:
         with open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
-            config=ArchiveyConfig(
-                strict_archive_eof=False,
-                diagnostic_policy=policy,
-            ),
+            config=ArchiveyConfig(diagnostic_policy=policy),
         ) as ar:
             ar.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
 
 
-def test_strict_eof_ignore_still_raises_truncated() -> None:
+def test_eof_marker_ignore_counts_without_raising() -> None:
+    # The missing trailer carries no escalation of its own, so IGNORE is honoured: the
+    # count moves and nothing is raised, retained or delivered.
     from archivey.types import ArchiveFormat
     from tests.test_tar import _tar_missing_eof_block
 
@@ -572,16 +548,15 @@ def test_strict_eof_ignore_still_raises_truncated() -> None:
             DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.IGNORE
         }
     )
-    with pytest.raises(TruncatedError):
-        with open_archive(
-            io.BytesIO(data),
-            format=ArchiveFormat.TAR,
-            config=ArchiveyConfig(
-                strict_archive_eof=True,
-                diagnostic_policy=policy,
-            ),
-        ) as ar:
-            ar.members()
+    with open_archive(
+        io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        config=ArchiveyConfig(diagnostic_policy=policy),
+    ) as ar:
+        assert len(ar.members()) == 4
+        summary = ar.diagnostics
+        assert summary.counts[DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING] == 1
+        assert summary.retained == ()
 
 
 def test_extraction_report_results_frozen(tmp_path: Path) -> None:

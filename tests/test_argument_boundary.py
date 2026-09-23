@@ -564,7 +564,6 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("open_archive", "concurrent_members"): "truthiness flag",
     ("open_stream", "seekable"): "truthiness flag",
     ("detect_format", "follow_stub_volumes"): "truthiness flag",
-    ("ArchiveyConfig", "strict_archive_eof"): "truthiness flag",
     (
         "ArchiveyConfig",
         "rar_allow_glob_member_concatenation",

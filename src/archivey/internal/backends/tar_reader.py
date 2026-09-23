@@ -17,10 +17,12 @@ via ``_iter_with_data()`` / ``stream_members()``.
 After a full scan or streaming pass, :meth:`_verify_tar_eof` checks the end:
 
 - A rejected (non-null) header where ``tarfile`` stopped → ``CorruptionError``.
-- A missing two-block null trailer → ``ARCHIVE_EOF_MARKER_MISSING`` unless
-  ``config.strict_archive_eof`` escalates to ``TruncatedError``.
-- Under ``config.strict_archive_eof``, a non-zero byte anywhere between a *complete*
-  trailer and EOF → ``ARCHIVE_TRAILING_DATA`` → ``CorruptionError``. Zero padding passes.
+- A missing two-block null trailer → ``ARCHIVE_EOF_MARKER_MISSING``.
+- A non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of a *complete* trailer →
+  ``ARCHIVE_TRAILING_DATA``. Zero padding passes.
+
+Both codes follow the diagnostic policy like any other: a caller who wants either to
+fail sets it to ``RAISE`` (``DiagnosticPolicy.strict()`` does so for both).
 
 Note: after ``getmembers()`` / a walk, ``tarfile`` has typically already consumed the
 *first* trailer zero-block; the EOF probe therefore inspects the *next* 512 bytes.
@@ -52,6 +54,7 @@ from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    ReadError,
     TruncatedError,
 )
 from archivey.internal.base_reader import (
@@ -96,10 +99,21 @@ from archivey.types import (
     StreamFormat,
 )
 
-# Read size for the strict trailing-bytes scan. The tail past the trailer is unbounded
-# (a concatenated archive, a padded record, arbitrary junk), so it is consumed in chunks
+# Read size for the trailing-bytes scan. The tail past the trailer is unbounded (a
+# concatenated archive, a padded record, arbitrary junk), so it is consumed in chunks
 # rather than with one read().
 _TRAILING_SCAN_CHUNK = 64 * 1024
+
+# How far past the trailer the trailing-bytes scan looks before it stops. An effort
+# bound, not a ceiling: nothing is refused when it is reached, the scan only stops
+# looking. `tar` pads to 10 KiB records by default, so a concatenated archive's header
+# lands within ~10 KiB of the trailer in the ordinary case; this is a hundred times
+# that. Measured on a gzipped tar with an all-zero tail (the worst case, since the scan
+# stops at the first non-zero byte), 1 MiB costs ~5 ms. A constant rather than a config
+# field: promoting it later is backward compatible, demoting a field is not, and on
+# ``ListingLimits`` a ``None`` would have to mean "scan to EOF", inverting what ``None``
+# means on every other field there.
+_MAX_TRAILING_SCAN = 1 * 2**20
 
 # Every compressed-tar combination the codec layer can decode: TAR composed with each
 # standalone stream codec (gz/bz2/xz/zst/lz4/lzip/lzma-alone/zlib/brotli/unix-compress).
@@ -570,7 +584,7 @@ class TarReader(BaseArchiveReader):
         tarfile stopped on. A full non-null block there means tarfile rejected a header —
         a corrupt member header after the first, treated as a silent early end, including
         when it is the archive's *final* block — which escalates to ``CorruptionError``
-        regardless of ``strict_archive_eof``.
+        whatever the diagnostic policy says.
 
         Otherwise (and for forward-only streaming, which has no probe) it inspects the
         block following tarfile's stop. ``tarfile`` has already consumed the *first* null
@@ -578,8 +592,8 @@ class TarReader(BaseArchiveReader):
         so we only confirm the *second*: reading two blocks here would demand a third
         block of trailing zeros and wrongly flag a minimal ``tar -b1`` trailer. Two null
         blocks are valid; a non-null block is corruption (a rejected trailer/header); a
-        short or empty read is a truncated or absent trailer, which stays a warning unless
-        ``strict_archive_eof`` escalates it to ``TruncatedError``.
+        short or empty read is a truncated or absent trailer, reported as
+        ``ARCHIVE_EOF_MARKER_MISSING`` under the ordinary diagnostic policy.
 
         Streaming cannot see a rejected *final* header (tarfile's ``_Stream`` hides the
         block and it cannot be recovered without re-reading), so that one case surfaces as
@@ -614,31 +628,40 @@ class TarReader(BaseArchiveReader):
         )
 
     def _verify_nothing_but_zeros_to_eof(self) -> None:
-        """Under ``strict_archive_eof``, require every byte past the trailer to be zero.
+        """Report a non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of the trailer.
 
-        The flag is documented as what you set for "a provably complete listing", and
-        without this it asserted only that the two trailer blocks were present — 4 KiB of
-        arbitrary appended bytes passed silently. Zeros still pass, deliberately: writers
-        pad to 10 KiB records routinely, so "nothing but zeros" is the strongest rule that
-        does not reject what ``tar(1)`` itself writes.
+        Without this, a complete trailer asserted only that the two trailer blocks were
+        present — 4 KiB of arbitrary appended bytes passed silently. Zeros still pass,
+        deliberately: writers pad to 10 KiB records routinely, so "nothing but zeros" is
+        the strongest rule that does not flag what ``tar(1)`` itself writes.
 
-        Concatenated archives fail here, which is the intended answer — they are two
-        archives and only the first was listed.
+        Concatenated archives are reported here, which is the intended answer — they are
+        two archives and only the first was listed.
 
-        **This is why the flag is opt-in.** The scan is O(tail length), and on a
-        compressed tar the tail must be decompressed to be inspected, so it cannot become
-        an unconditional advisory. Read in bounded chunks: the tail may be arbitrarily
-        long and must not be materialized.
+        The scan is bounded because it is not free: on a compressed tar the tail must be
+        decompressed to be inspected. Past the bound it stops looking and reports
+        nothing, so a second archive further out goes unseen; the bound is an effort
+        limit, not a claim that the rest is zero. Read in bounded chunks: the tail may be
+        arbitrarily long and must not be materialized.
+
+        A tail that fails to *decode* ends the scan quietly. On a compressed tar the
+        bytes past the trailer can be a truncated gzip footer or junk after the
+        compressed stream, and the codec refuses both. Every member was already read
+        whole, and before this scan ran unconditionally such an archive listed without
+        complaint, so a decode failure out here must not turn a good listing into an
+        error. It is not trailing tar data either, so it is not reported as that.
         """
-        if not self._config.strict_archive_eof:
-            return
         fileobj = self._tar.fileobj
         if fileobj is None:
             return
         offset = 0
-        while True:
-            with self._handle_guard():
-                chunk = fileobj.read(_TRAILING_SCAN_CHUNK)
+        while offset < _MAX_TRAILING_SCAN:
+            want = min(_TRAILING_SCAN_CHUNK, _MAX_TRAILING_SCAN - offset)
+            try:
+                with self._translated_errors(), self._handle_guard():
+                    chunk = fileobj.read(want)
+            except ReadError:
+                return
             if not chunk:
                 return
             stripped = chunk.lstrip(b"\x00")
@@ -655,8 +678,7 @@ class TarReader(BaseArchiveReader):
             message=(
                 "TAR archive continues past its end-of-archive marker: a non-zero byte "
                 f"appears {observed_bytes} bytes after the trailer. The listing does not "
-                "account for it (this file may be two archives concatenated). Reported "
-                "because strict_archive_eof=True asked for a provably complete listing."
+                "account for it (this file may be two archives concatenated)."
             ),
             context=ArchiveEofContext(
                 archive_name=self._archive_name,
@@ -667,11 +689,6 @@ class TarReader(BaseArchiveReader):
                 observed_kind="nonzero",
             ),
             logger=backends_logger,
-            escalate_as=CorruptionError,
-            escalate_kwargs={
-                "source_format": self._format,
-                "archive_name": self._archive_name,
-            },
         )
 
     def _emit_eof_marker(
@@ -694,7 +711,7 @@ class TarReader(BaseArchiveReader):
                 "TAR archive may be truncated: missing or short end-of-archive marker "
                 "block(s)."
             )
-            escalate_as = TruncatedError if self._config.strict_archive_eof else None
+            escalate_as = None
         escalate_kwargs: dict[str, object] | None = None
         if escalate_as is not None:
             escalate_kwargs = {

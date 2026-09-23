@@ -18,7 +18,7 @@ from archivey import (
     extract,
     open_archive,
 )
-from archivey.exceptions import ResourceLimitError, TruncatedError
+from archivey.exceptions import ResourceLimitError
 from archivey.internal.config import stream_config_from_archivey
 from archivey.types import ArchiveFormat
 
@@ -26,7 +26,7 @@ from archivey.types import ArchiveFormat
 def test_config_types_are_frozen() -> None:
     cfg = ArchiveyConfig()
     with pytest.raises(dataclasses.FrozenInstanceError):
-        cfg.strict_archive_eof = True  # type: ignore[misc]
+        cfg.rar_allow_glob_member_concatenation = True  # type: ignore[misc]
     limits = ExtractionLimits()
     with pytest.raises(dataclasses.FrozenInstanceError):
         limits.max_ratio = 1.0  # type: ignore[misc]
@@ -38,7 +38,6 @@ def test_config_types_are_frozen() -> None:
 def test_default_config_is_module_constant() -> None:
     assert DEFAULT_ARCHIVEY_CONFIG is archivey.DEFAULT_ARCHIVEY_CONFIG
     assert DEFAULT_ARCHIVEY_CONFIG.use_rapidgzip is AcceleratorMode.AUTO
-    assert DEFAULT_ARCHIVEY_CONFIG.strict_archive_eof is False
     assert DEFAULT_ARCHIVEY_CONFIG.extraction_limits == ExtractionLimits()
     assert DEFAULT_ARCHIVEY_CONFIG.listing_limits == ListingLimits()
     assert ListingLimits().max_members == ExtractionLimits().max_entries == 1_048_576
@@ -103,7 +102,17 @@ def test_accelerator_modes_honored_via_config(
     assert captured[0].use_indexed_bzip2 is AcceleratorMode.OFF
 
 
-def test_strict_archive_eof_default_warns(
+def test_strict_archive_eof_is_gone() -> None:
+    # Removed before 0.2.0: a missing TAR trailer is an ordinary diagnostic, made fatal
+    # by setting ARCHIVE_EOF_MARKER_MISSING to RAISE (tests/test_tar.py).
+    assert "strict_archive_eof" not in {
+        f.name for f in dataclasses.fields(ArchiveyConfig)
+    }
+    with pytest.raises(TypeError):
+        ArchiveyConfig(strict_archive_eof=True)  # type: ignore[call-arg]
+
+
+def test_missing_eof_marker_warns_by_default(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     from tests.test_tar import _tar_missing_eof_block
@@ -113,19 +122,6 @@ def test_strict_archive_eof_default_warns(
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.members()
     assert any("truncated" in r.getMessage().lower() for r in caplog.records)
-
-
-def test_strict_archive_eof_true_raises() -> None:
-    from tests.test_tar import _tar_missing_eof_block
-
-    data = _tar_missing_eof_block()
-    with pytest.raises(TruncatedError):
-        with open_archive(
-            io.BytesIO(data),
-            format=ArchiveFormat.TAR,
-            config=ArchiveyConfig(strict_archive_eof=True),
-        ) as ar:
-            ar.members()
 
 
 def test_extract_limits_from_config(tmp_path) -> None:
