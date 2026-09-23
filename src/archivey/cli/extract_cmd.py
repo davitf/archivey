@@ -28,10 +28,11 @@ from archivey.cli.filters import (
     unmatched_include_patterns,
     warn_unmatched_includes,
 )
-from archivey.cli.format import escape_member_name, format_error_detail
+from archivey.cli.format import escape_member_name, escape_path, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
+from archivey.escaping import display_path
 from archivey.exceptions import ArchiveyError
 from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.reader import ArchiveReader
@@ -203,8 +204,7 @@ def _merge_move(
         os.rename(src, free)
         result.renamed += 1
         print(
-            f"renamed: {escape_member_name(str(dest))} -> "
-            f"{escape_member_name(str(free))}",
+            f"renamed: {escape_path(dest)} -> {escape_path(free)}",
             file=err,
         )
         return
@@ -214,7 +214,7 @@ def _merge_move(
     if overwrite is OverwritePolicy.SKIP and not src_is_dir:
         src.unlink()
         result.skipped += 1
-        print(f"skipped: {escape_member_name(str(dest))}", file=err)
+        print(f"skipped: {escape_path(dest)}", file=err)
         return
     # ERROR policy — or a dir-vs-file shape that REPLACE/SKIP cannot express
     # without deleting pre-existing data. Stop; the caller keeps the remainder
@@ -270,21 +270,25 @@ def maybe_hoist_single_root(
             wrapper.rmdir()
     except _HoistConflict as conflict:
         print(
-            f"Destination already exists: {escape_member_name(str(conflict.dest))}",
+            f"Destination already exists: {escape_path(conflict.dest)}",
             file=err,
         )
-        print(f"hoist stopped; remaining files left in {wrapper}/", file=err)
+        print(
+            f"hoist stopped; remaining files left in {escape_path(wrapper)}/",
+            file=err,
+        )
         return _HoistResult(
             wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
         )
     except OSError as exc:
         print(f"hoist failed: {format_error_detail(exc)}", file=err)
-        print(f"files left in {wrapper}/", file=err)
+        print(f"files left in {escape_path(wrapper)}/", file=err)
         return _HoistResult(
             wrapper, ok=False, renamed=result.renamed, skipped=result.skipped
         )
     is_dir = result.target.is_dir() and not result.target.is_symlink()
-    label = f"{result.target}{'/' if is_dir else ''}"
+    # The target is the sole root's own name, which the archive chose.
+    label = f"{escape_path(result.target)}{'/' if is_dir else ''}"
     if result.target == wrapper:
         # In-place flatten (src.tar → src/ containing src/): name unchanged.
         print(f"removed wrapper; content at {label}", file=err)
@@ -294,11 +298,15 @@ def maybe_hoist_single_root(
 
 
 def _summary_dest_label(target: Path, report: ExtractionReport) -> str:
-    """Closing summary destination; prefer the single extracted top when dest is cwd."""
+    """Closing summary destination; prefer the single extracted top when dest is cwd.
+
+    Returned terminal-safe. The single top is a member's own name, and the target is
+    either the operator's ``-d`` or a wrapper named after the archive file — any of
+    which can carry control bytes, and this is the last line the operator reads."""
     if target != Path("."):
         if target.is_dir():
-            return f"{target}/"
-        return str(target)
+            return f"{escape_path(target)}/"
+        return escape_path(target)
     tops: set[str] = set()
     for result in report:
         if result.status is not ExtractionStatus.EXTRACTED:
@@ -310,8 +318,8 @@ def _summary_dest_label(target: Path, report: ExtractionReport) -> str:
         only = next(iter(tops))
         on_disk = Path(only)
         if on_disk.is_dir() and not on_disk.is_symlink():
-            return f"{only}/"
-        return only
+            return f"{escape_member_name(only)}/"
+        return escape_member_name(only)
     return "."
 
 
@@ -452,15 +460,15 @@ def _escaped_where(result: ExtractionResult, target: Path) -> str:
 def _relative_name(path: Path | None, target: Path) -> str:
     """The on-disk name relative to the extraction root, for reporting.
 
-    Falls back to the full path when the member landed outside ``target`` (the hoist
-    moves content after extraction, so the report's paths and the final target can
-    disagree) and to ``""`` when nothing was written."""
+    Falls back to the full path, still ``/``-separated, when the member landed outside
+    ``target`` (the hoist moves content after extraction, so the report's paths and the
+    final target can disagree) and to ``""`` when nothing was written."""
     if path is None:
         return ""
     try:
         return path.relative_to(target).as_posix()
     except ValueError:
-        return str(path)
+        return display_path(path)
 
 
 def _exit_for_outcomes(*, blocked: int, failed: int, hoist_ok: bool) -> int:
@@ -546,7 +554,7 @@ def run_extract(
             target = plan.target
             may_hoist = plan.may_hoist
             if target != Path("."):
-                print(f"extracting into {target}/", file=err)
+                print(f"extracting into {escape_path(target)}/", file=err)
 
         base_progress: ProgressCallback | None = make_progress_callback(
             hide_progress=hide_progress, stream=err
