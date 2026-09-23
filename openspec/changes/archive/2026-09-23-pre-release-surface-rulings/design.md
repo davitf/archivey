@@ -29,6 +29,14 @@ listing that succeeded into an error because of bytes outside every member. Repo
 `ARCHIVE_TRAILING_DATA` would misname it. So a `ReadError` from the tail read ends the scan
 quietly. The members themselves are unaffected, since each was read whole.
 
+**A forward-only source is read up to 1 MiB further than before.** On a pipe the scan
+waits for those bytes or for EOF. A pipe that closes when its writer finishes is
+unaffected; one held open after the tar ends (a socket kept alive by its sender) now
+blocks at the end of the listing until more data or EOF arrives, where before it returned
+once `tarfile` had its trailer. The ruling made the scan unconditional without singling
+out non-seekable sources, so this change does not either; a caller in that position can
+close the write side. Recorded so the choice is visible.
+
 ## Missing trailer under `RAISE` is not listing damage
 
 `strict_archive_eof` raised `TruncatedError`, which `members_report()` carries on
