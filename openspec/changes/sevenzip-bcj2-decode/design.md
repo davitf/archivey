@@ -53,12 +53,16 @@ force the coder with `-m0=BCJ2 -m1=LZMA2 -m2=LZMA -m3=LZMA -mb0s0:1 -mb0s1:2 -mb
 
 `prototype/bcj2.py` is a streaming `Bcj2DecoderStream(main, call, jump, rc,
 unpack_size=…)` on `ReadOnlyIOStream`. `prototype/check_against_7zip.py` writes
-archives with the `7z` CLI, resolves each BCJ2 folder's coder tree, decodes the three
-LZMA branches in memory, and runs the decoder with input block sizes of 64 KiB, 4 KiB,
-7 bytes and 1 byte, and with mixed read sizes. It covers a `-mx9` executable, a solid
-`-mx9` folder of three executables, forced BCJ2 on an executable whose last byte is
-`E8` and on one whose last byte is `0F`, and forced BCJ2 on 300 KB of random bytes.
-All 20 runs match the original bytes.
+archives with the `7z` CLI, resolves each BCJ2 folder's coder tree, decrypts and
+decodes the branches in memory, and runs the decoder with input block sizes of 64 KiB,
+4 KiB, 7 bytes and 1 byte, and with mixed read sizes. It covers a `-mx9` executable, a
+solid `-mx9` folder of three executables, an encrypted `-mx9 -mhe=on` folder (the
+eight-coder layout), forced BCJ2 on an executable whose last byte is `E8` and on one
+whose last byte is `0F`, and forced BCJ2 on 300 KB of random bytes. Each folder's
+output must equal its members' files joined in the archive's own file-table order.
+All 24 runs match. Three negative checks also pass: a `call` or a `main` stream one
+byte short raises `TruncatedError`, and a `main` stream with a 16 MiB tail raises
+`CorruptionError` without reading the tail past the block already buffered.
 
 ## Goals / Non-Goals
 
@@ -85,20 +89,42 @@ All 20 runs match the original bytes.
 
 ### D1. Plan a tree of linear chains
 
-`plan_folder` resolves the graph from the unbound output down:
+`plan_folder` resolves the graph from the unbound output down. Two error types, split
+the way the rest of this reader splits them: a graph that cannot be a valid folder is
+`CorruptionError`, and a valid graph shape the planner will not run is
+`UnsupportedFeatureError`.
 
-1. Exactly one coder output is unbound. That coder is the root. Zero or more than one
-   is `UnsupportedFeatureError`.
+1. The root is the coder whose output no bind pair consumes. None (every output is
+   consumed, so the graph has a cycle) is `CorruptionError`. More than one is
+   `UnsupportedFeatureError`: a folder with two final outputs is a shape no writer
+   produces, not a contradiction.
 2. For each input of a coder, in order, the input is either in `packed_indices` (a leaf
    reading pack stream `packed_indices.index(i)`), or bound to exactly one coder's
-   output (recurse there). An input that is neither, or an output bound twice, is
-   `CorruptionError`. A coder reached twice (a cycle, or two parents) is
-   `UnsupportedFeatureError`.
+   output (recurse there). Each of these is `CorruptionError`: an input that is neither,
+   an input in both, an output bound to two inputs (a coder with two consumers is the
+   same condition), and a coder reached again while resolving its own inputs (a cycle).
 3. A 1-in coder with a 1-in parent extends its parent's chain, so every branch is a
    linear run. The existing rules plan that run, including LZMA1+BCJ staging and the
-   COPY skip.
+   COPY skip, **with the run's own indices**. Today `plan_folder` takes a `SINGLE`
+   stage's input length from `folder.unpack_sizes[index - 1]`, the previous coder in
+   list order. That is only right while the folder is one chain. In a tree, the
+   previous coder in the list is usually a sibling branch's (in 7-Zip's layout, coder 1
+   is `call`'s LZMA and coder 2 is `main`'s LZMA2). So each branch is planned from its
+   own list of coder indices, and "the preceding coder" means the previous coder in
+   that branch. A `[7zAES, BZip2]` `main` branch is the case that would otherwise
+   read the wrong length.
 4. A multi-input coder is accepted only when it is BCJ2 with four inputs and one output.
    Any other multi-input coder is `UnsupportedFeatureError` naming its method ID.
+
+Planning errors must stay outside the password check's error mapping. Inside
+`_password_for_folder`, `confirm` turns any `ArchiveyError` other than
+`UnsupportedFeatureError` (and two others) into "Wrong password or corrupt 7z folder",
+and the password manager then tries the next candidate. A structural
+`CorruptionError` mapped that way would use up every candidate and still report a
+password problem. Today `plan_folder` runs inside `open_folder_pipeline`, which
+`confirm` calls *before* its `try`, so a planning error already reaches the caller as
+itself (`sevenzip_reader.py`, `_password_for_folder`). The tree planner keeps that
+property, and task 1.5 pins it with an encrypted malformed folder.
 
 A linear folder resolves to one branch and plans exactly as today, so every existing
 folder keeps its current plan. The result is a small tree: `_Bcj2Stage(branches=[4 ×
@@ -166,7 +192,14 @@ rewinding all four branches, but nothing needs it now.
 - After the last output byte, bytes left in `main`, `call` or `jump` raise
   `CorruptionError`. Their sizes follow from the same conversion decisions, so a
   leftover means the four streams disagree. Measured: 7-Zip 23.01 output leaves all
-  three at exactly zero in every folder the prototype decoded.
+  three at exactly zero in every folder the prototype decoded. **The check reads at
+  most one byte from each input**: it looks at what is left in the block buffer, and
+  when that is empty it calls `read(1)`. It never drains an input. `main` is an LZMA2
+  decoder whose own declared size comes from the header, and bytes decoded inside the
+  BCJ2 stage never reach the folder stream that `ExtractionLimits` counts, so a drain
+  would decompress a hostile branch in full with no limit watching it. The prototype
+  does this in `_check_inputs_finished`. `leftover()`, which drains, exists only for
+  the verification script.
 - `rc` leftovers and a non-zero final range-coder `code` are **not** checked in the
   first version. In 7-Zip 23.01 output both were zero every time. But the prototype
   normalizes lazily, and output from an older encoder (7-Zip 9.20 / p7zip 16.02)
@@ -190,8 +223,11 @@ The member CRC32 stays the integrity backstop, as for every other coder.
   (`LZMA2:22` + 2 × `LZMA:20` for git, up to `LZMA2:26` at `-mx9 -md=64m`).
   `DecoderLimits` guards PPMd only today. When the LZMA dictionary guard lands, which
   is its next planned consumer, a BCJ2 folder must count the sum of its branches.
-  This change does not add the LZMA guard. It leaves a task to check that the guard's
-  unit is the folder.
+  This change does not add the LZMA guard, so it roughly triples an unguarded,
+  header-declared allocation per BCJ2 folder until that guard exists. Two tasks record
+  it: a note on the `dev-docs/IDEAS.md` entry that tracks the LZMA guard ("Threat-model
+  row for archive-declared decoder memory") saying the unit is the folder, and a
+  threat-model row for this memory cost beside the CPU one.
 
 ### D7. The encoded header stays linear
 
@@ -235,6 +271,32 @@ BCJ2 cases.
 
 **Decision:** decode BCJ2 in Python, as in D3. Keep `pylzma` in mind as an optional
 accelerator for the BCJ2 stage only (open question 3).
+
+### D9. What `member.compression` says for a BCJ2 folder
+
+`_build_folder_compression` walks `folder.coders` in list order and flattens every
+coder into one tuple. For a tree, that puts sibling branches side by side. Measured on
+a 7-Zip `-mx9` archive of `/usr/bin/git`, which lists today because listing never
+reaches `plan_folder`: `(lzma, lzma, lzma2, bcj2)`. The two `lzma` entries are the
+`call` and `jump` branches, and nothing says so.
+
+The field's contract already answers this. `CompressionMethod`'s docstring
+(`types.py`) orders the tuple in the pack direction ("pre-filters first, packing codec
+last, closest to the stored bytes") with `7z (BCJ2, LZMA2)` as its example. The
+`archive-data-model` compression matrix pins the same case: "7z member uses BCJ2 +
+LZMA2 → `(CompressionMethod(BCJ2), CompressionMethod(LZMA2))`". So for a tree the
+tuple is **the root coder, then its `main` (first-input) branch, in the pack
+direction**. The `call`, `jump` and `rc` side streams are not listed. They are part of
+BCJ2, not codecs a member was packed with, and listing their LZMA coders would
+suggest two more compression passes that never happened. AES stays out, as it is today.
+The `format-7z` BCJ2 scenario pins `(BCJ2, LZMA2)` exactly.
+
+**Found alongside, and not this change's to fix:** today's 7z tuple for a *linear*
+folder is in the **decode** direction, the reverse of the docstring and the spec. A
+`-mf=BCJ` folder lists `(lzma2, bcj)`, and `-m0=Delta:4 -m1=LZMA2` lists `(lzma2, delta)`.
+That is a public-field bug on today's archives, independent of BCJ2, and it is tracked
+internally as its own fix. The rule above assumes that fix: a root-plus-main-branch tuple
+in the pack direction is the same ordering it restores for linear chains.
 
 ## Risks / Trade-offs
 

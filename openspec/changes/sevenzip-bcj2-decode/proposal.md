@@ -37,13 +37,19 @@ byte-for-byte at about 14 MB/s. The numbers are in design.md.
 - A new internal stream, `Bcj2DecoderStream` (`internal/streams/bcj2.py`), decodes BCJ2
   in pure Python on a core install. It is forward-only. The prototype in this change's
   `prototype/` directory is the starting point.
-- The password check, `member.compression`, solid-folder streaming and the member CRC
-  work for BCJ2 folders without changes of their own. An encrypted BCJ2 folder is four
+- The password check, solid-folder streaming and the member CRC work for BCJ2
+  folders without changes of their own. `member.compression` does need one: it
+  would otherwise flatten the sibling branches into `(lzma, lzma, lzma2, bcj2)`. For a
+  BCJ2 folder it becomes `(BCJ2, LZMA2)`: the root and its `main` branch, which is the
+  shape the `archive-data-model` spec and the `CompressionMethod` docstring already
+  give as their example (design D9). An encrypted BCJ2 folder is four
   branches, each with its own AES coder.
 - The encoded header stays linear-only. No writer puts BCJ2 on a header.
-- The refusal goes away from the specs, docs and handbook that promise it. These are
-  `format-7z`, `packaging-and-extras`, `error-handling`, `backend-registry`,
-  `testing-contract`, `docs/formats.md`, `7z.md`, `AGENTS.md` and `openspec/project.md`.
+- The refusal goes away from the specs, docs and handbook that promise it. The specs
+  are `format-7z`, `packaging-and-extras`, `error-handling`, `backend-registry` and
+  `testing-contract`. The docs are `docs/formats.md`, `7z.md`, `AGENTS.md`,
+  `openspec/project.md`, `dev-docs/PLAN.md`, `dev-docs/open-issues.md`,
+  `dev-docs/library-analysis.md` and ADR 0001 (the same list as task 3.2).
 - No public API change. No new extra, no new dependency.
 
 ## Capabilities

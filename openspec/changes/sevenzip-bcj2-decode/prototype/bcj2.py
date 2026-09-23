@@ -50,11 +50,11 @@ _JCC_CONTEXT = 257
 class _Bytes:
     """One BCJ2 input, pulled in blocks. ``take`` returns exactly what it is asked for."""
 
-    __slots__ = ("_stream", "_label", "_buf", "_pos")
+    __slots__ = ("_stream", "label", "_buf", "_pos")
 
     def __init__(self, stream: BinaryIO, label: str) -> None:
         self._stream = stream
-        self._label = label
+        self.label = label
         self._buf = b""
         self._pos = 0
 
@@ -65,7 +65,7 @@ class _Bytes:
             self._pos = 0
             end = n
             if end > len(self._buf):
-                raise TruncatedError(f"BCJ2 {self._label} stream ended early")
+                raise TruncatedError(f"BCJ2 {self.label} stream ended early")
         out = self._buf[self._pos : end]
         self._pos = end
         return out
@@ -75,10 +75,14 @@ class _Bytes:
             self._buf = self._stream.read(_BLOCK)
             self._pos = 0
             if not self._buf:
-                raise TruncatedError(f"BCJ2 {self._label} stream ended early")
+                raise TruncatedError(f"BCJ2 {self.label} stream ended early")
         b = self._buf[self._pos]
         self._pos += 1
         return b
+
+    def has_more(self) -> bool:
+        """True when any byte is left. Reads at most one byte from the stream."""
+        return self._pos < len(self._buf) or bool(self._stream.read(1))
 
     def unread_count(self) -> int:
         """Bytes left in this input. Drains it — only for the end-of-output check."""
@@ -119,6 +123,7 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         self._prev = 0
         self._range = 0xFFFFFFFF
         self._code: int | None = None  # read lazily: an empty output needs no rc bytes
+        self._finished = False
 
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
@@ -200,12 +205,35 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
             self._main, self._mpos, self._prev = main, mpos, prev
             self._range, self._code = rng, code
             self._produced = produced
+        if produced == size and not self._finished:
+            self._finished = True
+            self._check_inputs_finished()
+
+    def _check_inputs_finished(self) -> None:
+        """Refuse bytes left in ``main``, ``call`` or ``jump`` after the last output byte.
+
+        Their lengths follow from the same conversion decisions as the output, so a
+        leftover means the four streams disagree. Reads **at most one byte** from each
+        input and never drains one: ``main`` is a decoder whose declared size comes
+        from the archive, and bytes decoded here never reach the folder stream that
+        extraction limits count. ``rc`` is not checked (design D5, open question 1).
+        """
+        if self._mpos < len(self._main) or self._main_stream.read(1):
+            raise CorruptionError(
+                "BCJ2 main stream has bytes past the end of the output"
+            )
+        for source in (self._call, self._jump):
+            if source.has_more():
+                raise CorruptionError(
+                    f"BCJ2 {source.label} stream has bytes past the end of the output"
+                )
 
     def leftover(self) -> dict[str, int]:
-        """Unconsumed input per stream after the output is complete (drains inputs).
+        """Unconsumed input per stream after the output is complete. **Drains** inputs.
 
-        For the verification script, and the evidence for whether the real
-        implementation can treat trailing input as corruption.
+        For the verification script only: it is the evidence behind the
+        ``rc`` question in design D5. Not for the real implementation, which uses
+        :meth:`_check_inputs_finished`.
         """
         if self._produced < self._size:
             raise CorruptionError("BCJ2 output is not complete")

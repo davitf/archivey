@@ -41,8 +41,12 @@ Each input is decoded as its own branch — a linear chain planned by the rules
 above, ending at one packed stream — so a four-input BCJ2 coder over four
 branches, each with its own AES coder when the folder is encrypted, is one tree.
 Every packed stream SHALL be read through its own view of the archive, with its
-own position. A graph that is not a tree, and any multi-input coder other than
-BCJ2, SHALL raise `UnsupportedFeatureError`.
+own position. A graph that cannot be a valid folder SHALL raise `CorruptionError`:
+an input that is neither bound nor packed, an output bound to two inputs, or a
+cycle. A valid graph the reader does not run SHALL raise `UnsupportedFeatureError`:
+more than one unbound output, or a multi-input coder other than BCJ2. A branch's
+coders SHALL be planned with that branch's own sizes, so a coder's input length is
+the output length of the coder before it in the same branch.
 
 #### Scenario: coder-chain matrix
 
@@ -57,7 +61,9 @@ BCJ2, SHALL raise `UnsupportedFeatureError`.
 | LZ4 folder without `lz4` | `PackageNotInstalledError` names `lz4` and the `[recommended]` extra |
 | 7-Zip `-mx9` folder: `BCJ2` over `LZMA2`, `LZMA`, `LZMA` and one raw pack stream | Four branches over four packed streams return the original bytes |
 | Same folder, encrypted: an AES coder on each of the four branches | Each branch decrypts, then decodes; the original bytes return |
-| Coder output bound to two inputs, or a coder bound to itself | `UnsupportedFeatureError`; no output bytes |
+| Coder output bound to two inputs, or a coder bound to itself | `CorruptionError`; no output bytes |
+| Same malformed graph in an encrypted folder | `CorruptionError` on the first attempt; not reported as a wrong password |
+| BCJ2 folder whose `main` branch is `AES` then `BZip2` | The BZip2 stage's input length is the AES coder's output, not a sibling branch's |
 
 ### Requirement: Reject unsupported codecs without fallback
 
@@ -132,25 +138,30 @@ the big-endian absolute target from `call` (for `E8`) or `jump` (otherwise),
 converted to the little-endian relative form `target - (position + 4)`. No bit SHALL
 be decoded for a candidate that is the last output byte.
 
+A BCJ2 member's `compression` SHALL list the BCJ2 coder, then the coders of its
+`main` branch, in the pack direction the `CompressionMethod` contract states. The
+coders of the `call`, `jump` and `rc` branches SHALL NOT be listed.
+
 The BCJ2 folder stream SHALL be forward-only. A random-access `open()` of a member
 decodes from the folder start, and a sequential `stream_members()` pass decodes each
 folder once.
 
 The decoder SHALL raise `TruncatedError` when any input ends before the declared
 output is produced, and `CorruptionError` when `main`, `call` or `jump` still holds
-bytes after the last output byte. It SHALL NOT allocate from a declared size: output
+bytes after the last output byte. That check SHALL read at most one byte from each
+input and SHALL NOT drain an input. It SHALL NOT allocate from a declared size: output
 is produced in bounded blocks, and each input is read in bounded blocks.
 
 #### Scenario: BCJ2 decode matrix
 
 | Case | Expected |
 | --- | --- |
-| 7-Zip `-mx9` archive of an x86-64 executable | Bytes match the original file; `member.compression` lists BCJ2 |
+| 7-Zip `-mx9` archive of an x86-64 executable | Bytes match the original file; `member.compression` is `(BCJ2, LZMA2)`: the root, then its `main` branch in the pack direction, without the `call`, `jump` and `rc` side streams |
 | Solid `-mx9` folder of several executables | Every member's bytes match; `stream_members()` decodes the folder once |
 | Encrypted `-mx9` BCJ2 folder with the right password | Bytes match; the password check succeeds by folder decode and CRC |
 | Encrypted BCJ2 folder with a wrong password | Rejected by the password check; no bytes returned |
 | Output whose last byte is `E8`, or whose last byte is `0F` | Bytes match; no range-coder bit is read for the final opcode |
 | Forced BCJ2 over non-executable data | Bytes match |
 | `call` stream cut short | `TruncatedError` naming the stream |
-| `main` longer than the output consumes | `CorruptionError` |
+| `main` longer than the output consumes | `CorruptionError`, after reading one byte past the end, not the rest of `main` |
 | `open()` of the second member of a BCJ2 folder | Bytes match; decoded from the folder start |
