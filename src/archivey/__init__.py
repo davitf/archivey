@@ -264,8 +264,9 @@ def _pin_public_module() -> None:
       strings, evaluated against ``sys.modules[cls.__module__]``, where ``Path`` or
       ``DetectionCostReceipt`` are not names. So each class's own hints are resolved
       *before* the pin, and ``typing.get_type_hints`` keeps working. A hint that cannot
-      resolve here (a ``TYPE_CHECKING``-only name) is left as it was rather than
-      failing the import; ``tests/test_public_api.py`` catches it instead.
+      resolve here (a ``TYPE_CHECKING``-only name, or an attribute of such a module) is
+      left as it was rather than failing the import; ``tests/test_public_api.py``
+      catches it instead.
     - **Source.** ``inspect.getsource`` finds a class's file through its module, and
       there is no way to point it elsewhere. On a pinned class it raises ``OSError``;
       ``__firstlineno__`` is dropped so Python 3.13+ raises too, instead of returning
@@ -286,7 +287,7 @@ def _pin_public_module() -> None:
             if own:
                 try:
                     hints = typing.get_type_hints(obj, include_extras=True)
-                except NameError:
+                except (NameError, AttributeError):
                     pass
                 else:
                     obj.__annotations__ = {key: hints[key] for key in own}
