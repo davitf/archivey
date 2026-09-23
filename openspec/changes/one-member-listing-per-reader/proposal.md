@@ -52,6 +52,11 @@ objects.
   pass yields objects whose `is_current` is not stamped until EOF, so the shadowed entry
   is written and the later one fails with `ExtractionError: Destination already exists`.
   Random access on the same archive reports `SUPERSEDED` (design D1a).
+- Listing a solid 7z with symlinks stops re-decoding the folder once per link. Real 7-Zip
+  and py7zr output puts link data mid-folder, compressed with the files (measured in
+  design D6a). Today `members()` decodes 273 KB to read four link targets of 43 bytes
+  from a 111 KB folder. A per-folder sweep decodes each folder once, up to its last link
+  (design D6b).
 - Typing-time diagnostics carry the member's `member_id` on every backend. Only ZIP does
   today; 7z, RAR and ISO report `None` (design D8).
 

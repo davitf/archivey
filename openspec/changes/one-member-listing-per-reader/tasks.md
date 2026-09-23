@@ -71,11 +71,17 @@
 - [ ] 4.2 `rar_reader._iter_with_data` solid branch: the same
 - [ ] 4.3 ZIP and 7z: drop the `report_key=` arguments and emit directly. ZIP keeps the
       `index` parameter (D8 uses it).
-- [ ] 4.4 7z streaming pass: capture a symlink's target while the folder decode passes the
-      member, and let EOF resolution use it (D6). Test on a solid 7z symlink fixture,
-      counting folder decodes: one per folder. Mutation: remove the capture; the count
-      must rise.
-- [ ] 4.5 D8: 7z, RAR and ISO pass the listing position into typing-time diagnostic
+- [ ] 4.4 7z folder sweep (D6b): resolving any link in a folder decodes that folder once,
+      up to its last link member, and fills every link in it. Random-access listing and
+      the streaming pass's EOF finalization both use it, and the streaming pass feeds it
+      from the decode it is already doing. Pin the D6a numbers as tests on a solid 7-Zip
+      `-snl` fixture with links mid-folder: `members()` decodes up to the last link's end
+      offset (111 100 bytes on the D6a tree, not 273 278), and a streaming pass decodes
+      nothing beyond its own data. Mutation: resolve per link again; both counts must
+      rise.
+- [ ] 4.5 Commit that fixture: 7-Zip `-snl` output over a tree with links between
+      files, since the corpus's 7z fixtures come from py7zr and none has a link mid-folder
+- [ ] 4.6 D8: 7z, RAR and ISO pass the listing position into typing-time diagnostic
       contexts as `member_id` (7z and RAR: the index in their open-time list; ISO: an
       `enumerate` over its walk)
 

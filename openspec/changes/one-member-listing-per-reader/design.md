@@ -208,26 +208,86 @@ streaming pass that finalizes at EOF runs `_resolve_link_target` on its symlinks
   targets are read raw from the archive without `unrar`, so EOF resolution never touches
   the solid pipe.
 - **7z** stores a symlink's target as the member's data, and `_ensure_link_target` reads
-  it through `_open_member`, which on a solid folder decodes from the folder start. So
-  the pass **captures the target while its folder decode passes the member**, and EOF
-  resolution uses the captured bytes instead of re-reading. This costs the caller
-  nothing. `stream_members()` yields `None` as the stream for a non-file member
-  (`archive-reading`, "Non-file stream_members yield None"; `sevenzip_reader._open`
-  returns `None` unless `member.is_file`), so no caller-visible stream is consumed. The
-  pass reads bytes the solid reader would otherwise skip past.
-- **Memory bound.** The capture reads what `_ensure_link_target` already reads today: the
+  it through `_open_member`, which on a solid folder decodes from the folder start. How
+  much that costs depends on where writers put link data, so it was measured first
+  (D6a). The answer is D6b.
+- **Memory bound.** The sweep (D6b) keeps what `_ensure_link_target` already reads today: the
   whole member, with no size cap beyond the reader's decompression limits. The capture
   neither widens nor narrows that. A declared-huge symlink is a pre-existing gap: ZIP and
   7z read the whole decompressed member (`stream.read()`) with no cap of their own, while
   RAR reads only stored bytes straight from the archive. It is tracked as its own item,
-  and when it is capped, the capture takes the same cap.
+  and when it is capped, the sweep takes the same cap.
 - A member whose data turns out not to be a link buffer (the reparse-point fallback in
   `_apply_reparse_data`) reverts to a file type at resolution. Today's streaming pass
   already yields such a member as a symlink with a `None` stream, and this change keeps
   that.
 
-Task 4.4 checks the capture against a real solid 7z symlink fixture, counting folder
-decodes: one per folder, not one more per symlink.
+#### D6a. Where real 7z archives put symlink data (measured)
+
+A symlink's data is an ordinary content stream, treated like any file's. It sits
+**interleaved with file data inside the solid folder**, in the writer's file order, and
+it is **compressed with the folder's coder**. It is not stored raw, and it is not placed
+at the start of the folder.
+
+Measured with 7-Zip 23.01 (`7z a -snl`) on Linux over a tree of three 27 KB text files,
+a 30 KB binary, an x86 executable and four symlinks (targets of 7 to 14 bytes), and on
+the Windows junction probe's committed `tests/fixtures/external/junction/junction_7zip_snl.7z`:
+
+| Writer and switches | Where the links land | Coder on the link bytes |
+| --- | --- | --- |
+| 7-Zip, default (`-mx5`, solid) | Folder 0 at positions 0, 4, 5, 7 of 8, in path order between the text files and the binary. The executable gets its own BCJ folder. | LZMA2, shared with the files |
+| 7-Zip `-mx9` | Same positions | LZMA2 (the executable's folder is BCJ2) |
+| 7-Zip `-mqs=on` (sort by type) | The three extensionless links first (0, 1, 2), then `zlink.txt` among the `.txt` files at 7 of 8. It is grouped by extension, not by being a link. | LZMA2 |
+| 7-Zip `-ms=off` (non-solid) | One folder per member, links included | LZMA2 |
+| 7-Zip `-mx0` (store) | One folder per member | Stored |
+| 7-Zip on Windows (the junction fixture) | The file symlink's 92-byte reparse buffer at position 1 of 3, between two regular files. Directory links and junctions carry no data at all. | LZMA2 |
+| py7zr 1.1.3 (`writeall`) | One folder for everything, links at 0, 5, 6, 8 of 9 | LZMA2 + BCJ over the whole folder, links included |
+
+So the common case, a solid archive, puts link data anywhere in a folder, usually in the
+middle and often near the end. Stored or non-solid archives are the cheap exception.
+
+**What that costs today.** `_ensure_link_target` re-decodes the folder from its start up
+to the link, once per link. On the default archive above, `members()` decodes
+**273 278 bytes** to resolve four link targets totalling 43 bytes. That is exactly
+13 + 81 079 + 81 086 + 111 100, each link's end offset in a 111 100-byte folder, so the
+folder is decoded two and a half times. The py7zr archive decodes **700 214** bytes
+(13 + 223 391 + 223 398 + 253 412), almost three times its 253 412-byte content. The
+`-mqs` archive decodes 111 167 because three links happen to sort first. The non-solid
+archive decodes 43, only the link bytes. Listing cost therefore grows with
+links × folder size, and 7-Zip's defaults are the expensive layout. The bytes were
+counted with `io_stats().bytes_decompressed`, and the sums match to the byte.
+
+A streaming pass over the same archive decodes 253 398 bytes today and resolves no
+7z link at all. Finalizing it at EOF by re-reading would add the 273 278 again.
+
+#### D6b. One sweep per folder, shared by listing and the streaming pass
+
+Since link bytes sit mid-folder, compressed, the unit of work is the folder, not the
+link. A 7z link target is obtained by a **folder sweep**: decode the folder once from its
+start up to the end of its **last** link member, and keep every link member's bytes on the
+way. Everything after the last link is not decoded. Two callers use it:
+
+- **Random-access listing** (`members()` / `scan_members()`). The first link resolved in a
+  folder triggers the sweep, and the sweep fills every link in that folder. The default
+  archive above goes from 273 278 decoded bytes to 111 100, the end of its last link. The
+  py7zr one goes from 700 214 to 253 412. In the worst case, every folder ending in a link,
+  that is one full decode per folder instead of one per link. This changes how listing
+  reads link data, not when, so the Non-Goal on random-access timing stands.
+- **The streaming pass.** The pass is already decoding the folder, so it keeps a link
+  member's bytes as the folder reader passes them. `stream_members()` yields `None` for a
+  non-file member (`archive-reading`, "Non-file stream_members yield None";
+  `sevenzip_reader._open` returns `None` unless `member.is_file`), so these bytes were
+  being skipped, not handed to anyone. EOF finalization then uses the kept bytes and
+  decodes nothing more.
+
+What the sweep keeps is bounded by the memory bound above: link members' bytes only,
+never file members'. An encrypted folder without a password behaves as today: every link in it gets the
+same per-member `EncryptionError` handling and diagnostic that `_ensure_link_target`
+gives it now. The sweep only stops the folder from being decoded once per link.
+
+Rejected: resolving links on demand one at a time and accepting the re-decode. That is
+today's behaviour, and the measurements above show it is the expensive path on the most
+common writer defaults.
 
 ### D7. What is deleted
 

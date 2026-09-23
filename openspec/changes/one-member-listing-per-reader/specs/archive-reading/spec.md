@@ -21,6 +21,10 @@ Completing the walk SHALL NOT by itself finalize a streaming pass. The pass fina
 when its own consumer passes the last member, so a peek that drains the walk followed by
 an abandoned pass publishes no complete report and reads no link data.
 
+Resolving the link targets of a 7z folder SHALL decode that folder at most once per
+reader, from its start to the end of its last link member. A streaming pass SHALL
+resolve them from the decode it performs anyway.
+
 A backend's member walk SHALL run at most once per reader when it completes. A walk that
 fails before completing, without terminal archive damage, MAY be repeated on the next
 call only in random-access mode, and only when none of its members was handed out.
@@ -39,3 +43,5 @@ call only in random-access mode, and only when none of its members was handed ou
 | Streaming `extract_all()` over a ZIP holding `a.txt` twice | `SUPERSEDED`, then `EXTRACTED`, as in random access (today it raises `ExtractionError`) |
 | Streaming ZIP: peek inside the `stream_members()` loop, then `break` | No complete report published; no link-target reads |
 | Typing-time diagnostic on ZIP, 7z, RAR, ISO | Context `member_id` equals the member's `member_id` |
+| `members()` on a solid 7z whose symlinks sit mid-folder | Each folder is decoded at most once to read link targets, and only up to its last link member |
+| Streaming pass over the same 7z, to the end | Link targets are resolved with no decoding beyond the pass's own |
