@@ -59,6 +59,7 @@ from archivey.internal.backends.rar_parser import (
     DamagedServiceHeader,
     RarArchive,
     RarEncryptionInfo,
+    RarKdfCache,
     RarMemberInfo,
     _check_rar5_password,
     _decode_name,
@@ -324,7 +325,9 @@ def _rar_member_extra_and_link(
     return extra, link_target
 
 
-def _tweaked_hash_key(enc: RarEncryptionInfo, password: str) -> bytes | None:
+def _tweaked_hash_key(
+    enc: RarEncryptionInfo, password: str, kdf_cache: RarKdfCache
+) -> bytes | None:
     """Return HashKey for ``password``, or ``None`` when the password is provably wrong.
 
     A present PswCheck that rejects ``password`` returns ``None`` so callers skip
@@ -334,10 +337,16 @@ def _tweaked_hash_key(enc: RarEncryptionInfo, password: str) -> bytes | None:
     """
     if enc.check_value is not None:
         try:
-            _check_rar5_password(enc.check_value, enc.kdf_count, enc.salt, password)
+            _check_rar5_password(
+                enc.check_value,
+                enc.kdf_count,
+                enc.salt,
+                password,
+                kdf_cache=kdf_cache,
+            )
         except EncryptionError:
             return None
-    return rar5_hash_key(password, enc.salt, enc.kdf_count)
+    return rar5_hash_key(password, enc.salt, enc.kdf_count, kdf_cache=kdf_cache)
 
 
 def _psw_check_usable(enc: RarEncryptionInfo) -> bool:
@@ -716,9 +725,10 @@ class RarReader(BaseArchiveReader):
         # record's salt, KDF cost and check. RAR writes one salt per archiving run,
         # so this is usually one derivation per archive rather than one per member.
         self._checked_passwords: dict[tuple[bytes, int, bytes], bytes] = {}
-        # The tweaked-digest HashKey derived from that candidate, under the same key:
-        # a member's digest check is built more than once per open.
-        self._hash_keys: dict[tuple[bytes, int, bytes], bytes] = {}
+        # Every RAR key this reader derives: the header parse, each PswCheck and each
+        # tweaked-digest HashKey. An ``-hp`` archive's members repeat the header's
+        # salt, so their PswCheck is the header's own derivation.
+        self._kdf_cache = RarKdfCache()
         # The first member whose PswCheck can judge a candidate, found once on first
         # use; ``False`` until looked for, ``None`` when there is none.
         self._archive_check_member: ArchiveMember | None | Literal[False] = False
@@ -893,7 +903,10 @@ class RarReader(BaseArchiveReader):
                             handle.seek(self._volume0_parse_origin)
                         handles.append(handle)
                     return parse_rar_volumes(
-                        handles, password=password, max_members=max_members
+                        handles,
+                        password=password,
+                        max_members=max_members,
+                        kdf_cache=self._kdf_cache,
                     )
                 finally:
                     for handle in handles:
@@ -916,6 +929,7 @@ class RarReader(BaseArchiveReader):
                         views,
                         password=password,
                         max_members=max_members,
+                        kdf_cache=self._kdf_cache,
                     )
                 finally:
                     for view in views:
@@ -928,14 +942,20 @@ class RarReader(BaseArchiveReader):
                 with self._volume_paths[0].open("rb") as handle:
                     handle.seek(self._origin)
                     return parse_rar_archive(
-                        handle, password=password, max_members=max_members
+                        handle,
+                        password=password,
+                        max_members=max_members,
+                        kdf_cache=self._kdf_cache,
                     )
 
             view = self._shared.view(0)
             try:
                 view.seek(self._origin)
                 archive = parse_rar_archive(
-                    view, password=password, max_members=max_members
+                    view,
+                    password=password,
+                    max_members=max_members,
+                    kdf_cache=self._kdf_cache,
                 )
                 if archive.needs_next_volume or archive.is_volume:
                     raise TruncatedError(
@@ -1032,6 +1052,7 @@ class RarReader(BaseArchiveReader):
                     enc.kdf_count,
                     enc.salt,
                     _password_as_str(password) or "",
+                    kdf_cache=self._kdf_cache,
                 )
             except (EncryptionError, UnicodeError):
                 raise EncryptionError("Wrong password for this RAR member") from None
@@ -1443,19 +1464,17 @@ class RarReader(BaseArchiveReader):
             checked = self._checked_password(enc, None, ask_provider=False)
             if checked is None:
                 return None
-            assert enc.check_value is not None
-            cache_key = (enc.salt, enc.kdf_count, enc.check_value)
-            hash_key = self._hash_keys.get(cache_key)
-            if hash_key is None:
-                hash_key = rar5_hash_key(
-                    _password_as_str(checked) or "", enc.salt, enc.kdf_count
-                )
-                self._hash_keys[cache_key] = hash_key
+            hash_key = rar5_hash_key(
+                _password_as_str(checked) or "",
+                enc.salt,
+                enc.kdf_count,
+                kdf_cache=self._kdf_cache,
+            )
         else:
             password = self._unrar_password
             if password is None:
                 return None
-            hash_key = _tweaked_hash_key(enc, password)
+            hash_key = _tweaked_hash_key(enc, password, self._kdf_cache)
             if hash_key is None:
                 return None
         expected: dict[HashAlgorithm, bytes] = {}

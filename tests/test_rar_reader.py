@@ -738,6 +738,55 @@ def test_encrypted_data_requires_password(name: str) -> None:
         assert archive.read("also_secret.txt") == b"This is also secret"
 
 
+@requires("cryptography")
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    ("name", "password"),
+    [
+        # -p: members share one salt; PswCheck and HashKey once each, however
+        # often members are opened.
+        ("encryption__.rar", "password"),
+        # -hp: the members' PswCheck is the header parse's own derivation.
+        ("encrypted_header__.rar", "header_password"),
+        # -hp volume set: every part repeats the header's encryption record.
+        ("tinyvol_hp.part1.rar", "header_password"),
+    ],
+)
+def test_rar5_reader_derives_each_key_once(
+    name: str, password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One cache serves the header parse and every member read.
+
+    Before it, a member open derived four keys (PswCheck and HashKey, twice
+    each), an ``-hp`` archive re-derived its header PswCheck per member, and a
+    volume set re-derived the header keys per part. Each derivation costs up to
+    ``2**24`` PBKDF2 rounds, at the archive's choosing.
+    """
+    import archivey.internal.backends.rar_parser as rar_parser
+
+    derived: list[tuple[bytes, int]] = []
+    real = rar_parser.pbkdf2_hmac
+
+    def counting(
+        hash_name: str, secret: bytes, salt: bytes, iterations: int, dklen: int
+    ) -> bytes:
+        derived.append((salt, iterations))
+        return real(hash_name, secret, salt, iterations, dklen)
+
+    monkeypatch.setattr(rar_parser, "pbkdf2_hmac", counting)
+    with open_archive(_fixture(name), password=password) as archive:
+        files = [m for m in archive.members() if m.is_file]
+        assert files
+        for _ in range(2):
+            for member in files:
+                archive.read(member)
+        for _member, stream in archive.stream_members():
+            if stream is not None:
+                stream.read()
+    assert derived
+    assert len(derived) == len(set(derived)), derived
+
+
 @requires_binary("unrar")
 @pytest.mark.parametrize(
     ("name", "member_name", "payload"),
