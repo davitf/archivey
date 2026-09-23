@@ -17,7 +17,6 @@ import pytest
 
 from archivey import detect_format, extract, open_archive
 from archivey.exceptions import (
-    ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
     FormatDetectionError,
@@ -1231,11 +1230,9 @@ def test_numbered_volume_repeat_detection_does_not_rescan_per_part() -> None:
 def test_open_archive_survives_a_huge_numbered_sibling(tmp_path: Path) -> None:
     """End to end: the sibling is an ordinary filename anyone can drop in the directory."""
     (tmp_path / "foo.7z.001").write_bytes(b"")
-    (tmp_path / "foo.7z.005000000").write_bytes(b"")
+    (tmp_path / "foo.7z.999999").write_bytes(b"")
     start = time.monotonic()
-    with pytest.raises(
-        TruncatedError, match=r"missing parts 2, .*\(4999998 in total\)"
-    ):
+    with pytest.raises(TruncatedError, match=r"missing parts 2, .*\(999997 in total\)"):
         open_archive(tmp_path / "foo.7z.001")
     assert time.monotonic() - start < 5.0
 
@@ -1245,18 +1242,19 @@ def test_lone_numbered_volume_message_is_not_sized_by_its_part_number(
 ) -> None:
     """The lone-part message used to list every earlier part by name.
 
-    ``a.zip.9999999`` alone in a directory built a ~150 MB message over ~15 s from
-    the filename. The earlier parts are now capped like the sequence message's and
-    counted, so the message is the same size whatever the number.
+    ``a.zip.999999`` alone in a directory built a ~14 MB message over ~2 s from the
+    filename, and ``a.zip.9999999`` ~150 MB over ~15 s before part numbers were
+    capped at six digits. The earlier parts are now capped like the sequence
+    message's and counted, so the message is the same size whatever the number.
     """
-    path = tmp_path / "a.zip.9999999"
+    path = tmp_path / "a.zip.999999"
     path.write_bytes(b"PK")
     with pytest.raises(TruncatedError) as excinfo:
         open_archive(path)
     assert str(excinfo.value) == (
-        "Incomplete multi-volume set for a.zip: found part 9999999 only; missing "
+        "Incomplete multi-volume set for a.zip: found part 999999 only; missing "
         "a.zip.001, a.zip.002, a.zip.003, a.zip.004, a.zip.005, a.zip.006, "
-        "a.zip.007, a.zip.008, … (9999998 earlier parts in total), a.zip.10000000, …"
+        "a.zip.007, a.zip.008, … (999998 earlier parts in total), a.zip.1000000, …"
     )
 
 
@@ -1283,17 +1281,24 @@ def test_numbered_part_number_too_long_to_parse_is_not_a_volume_name(
     Python refuses to parse more than ``sys.get_int_max_str_digits()`` digits (4300
     by default) with a bare ``ValueError``. A stream's ``name`` and the paths of an
     explicit sequence are read before anything is opened, so both used to raise it
-    out of ``open_archive``. Past 64 digits the name is no longer a volume name.
+    out of ``open_archive``. Past six digits the lone-part refusal no longer applies:
+    a ``.7z`` name goes to ordinary detection, and a ``.zip`` name is still caught by
+    the separate spanned-ZIP name check.
     """
     digits = "1" * 5000
-    stream = io.BytesIO(b"PK\x03\x04" + b"\x00" * 60)
-    stream.name = f"x.zip.{digits}"
-    with pytest.raises(ArchiveyError) as excinfo:
+    zip_bytes = b"PK\x03\x04" + b"\x00" * 60
+    stream = io.BytesIO(zip_bytes)
+    stream.name = f"x.7z.{digits}"
+    with pytest.raises(CorruptionError, match="Could not open ZIP archive"):
         open_archive(stream)
-    assert not isinstance(excinfo.value, TruncatedError)
+    stream = io.BytesIO(zip_bytes)
+    stream.name = f"x.zip.{digits}"
+    with pytest.raises(UnsupportedFeatureError, match="spanned"):
+        open_archive(stream)
 
     assert volumes_mod.incomplete_lone_numbered_volume_error(f"x.zip.{digits}") is None
-    assert volumes_mod.incomplete_lone_numbered_volume_error(f"x.zip.{'1' * 64}")
+    assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip.999999")
+    assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip.1000000") is None
 
     # The explicit sequence: name validation used to raise before the open did.
     with pytest.raises(OpenError, match="Cannot open volume"):

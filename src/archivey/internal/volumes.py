@@ -61,21 +61,25 @@ SourceSequence = Sequence[SourceItem]
 # ``open_archive`` as an incomplete set, naming the missing parts — not as a ZIP
 # spanned-set error. Info-ZIP ``.zNN`` stays that ZIP refusal.
 #
-# The part number is capped at 64 digits. A name from a directory listing cannot
-# exceed the filesystem's name limit, but a stream's ``name`` and a path in an explicit
-# sequence are checked before any file is opened, and Python refuses to parse an
-# integer past ``sys.get_int_max_str_digits()`` digits (4300 by default, never below
-# 640) with a bare ``ValueError``. No real set comes near 64 digits, so a longer run is
-# not a part number and the name is not a volume name.
+# The part number is capped at six digits, 999 999 parts, which no real set comes near.
+# The cap keeps a part number read from a name small, and it keeps ``int()`` safe. A name
+# from a directory listing is bounded by the filesystem's name limit, but a stream's
+# ``name`` and a path in an explicit sequence are checked before any file is opened,
+# and Python refuses to parse an integer past ``sys.get_int_max_str_digits()`` digits
+# (4300 by default) with a bare ``ValueError``. A longer run is not a part number, so
+# the lone-part refusal below does not apply: a ``.7z`` or ``.exe`` name goes to
+# ordinary detection, while a ``.zip`` name still matches the uncapped
+# ``is_zip_split_segment_name`` and is refused as a spanned ZIP. The ``.partN``
+# pattern below has the same cap for the same reason.
 _NUMBERED_VOLUME_RE = re.compile(
-    r"^(?P<base>.+\.(?:7z|zip|exe))\.(?P<part>\d{3,64})$", re.IGNORECASE
+    r"^(?P<base>.+\.(?:7z|zip|exe))\.(?P<part>\d{3,6})$", re.IGNORECASE
 )
 # WinRAR ``-v`` writes ``name.partN.rar``. An SFX first volume keeps the ``partN``
 # marker and changes only the last extension: ``name.part1.sfx`` (Linux rar) or
 # ``name.part1.exe`` (Windows), with later volumes still ``.partN.rar``. The stem
 # before ``.part`` is the set's base, so mixed extensions on one stem are one set.
 _RAR_PART_RE = re.compile(
-    r"^(?P<base>.+)\.part(?P<part>\d+)\.(?:rar|sfx|exe)$", re.IGNORECASE
+    r"^(?P<base>.+)\.part(?P<part>\d{1,6})\.(?:rar|sfx|exe)$", re.IGNORECASE
 )
 _RAR_RNN_RE = re.compile(r"^(?P<base>.+)\.r(?P<part>\d{2})$", re.IGNORECASE)
 
@@ -612,8 +616,8 @@ def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
 
     Everything this builds is bounded by ``len(numbered)`` — the number of files on
     disk — never by the part numbers themselves. A part number comes from a filename
-    (``_NUMBERED_VOLUME_RE`` accepts three digits or more, unbounded), so sizing
-    anything by ``max(numbered)`` would let a sibling named ``foo.7z.9999999999``
+    (``_NUMBERED_VOLUME_RE`` accepts three to six digits), so sizing anything
+    by ``max(numbered)`` would let a sibling named ``foo.7z.999999``
     decide an allocation. The set is required to be exactly ``1..N``, so only a part
     at or below ``N`` can be described as missing; anything above it is out of range
     by construction.
