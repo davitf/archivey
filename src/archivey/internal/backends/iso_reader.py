@@ -720,9 +720,15 @@ def _describe_raw_sector_image(source: Path | BinaryIO) -> str | None:
     return layout
 
 
-def _refuse_raw_sector_image(
+def refuse_raw_sector_image(
     source: Path | BinaryIO, format: ArchiveFormat, archive_name: str | None
 ) -> None:
+    """Raise ``UnsupportedFeatureError`` if ``source`` is a raw CD sector image.
+
+    Called by ``open_archive`` for a source resolved as ISO, before the backend's
+    availability check, so the refusal does not depend on pycdlib being installed: a
+    caller without it would otherwise be told to install it, only to be refused after.
+    """
     layout = _describe_raw_sector_image(source)
     if layout is None:
         return
@@ -753,8 +759,8 @@ class IsoReadBackend(ReadBackend):
     # extended 32 774-byte window on demand to find it (see internal/detection.py).
     MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(32769, b"CD001", ArchiveFormat.ISO),
-        # A raw CD sector dump. Claimed as ISO so that open_read can refuse it by name
-        # (see _refuse_raw_sector_image) rather than fail detection.
+        # A raw CD sector dump. Claimed as ISO so that open_archive can refuse it by
+        # name (see refuse_raw_sector_image) rather than fail detection.
         MagicSignature(0, _RAW_SECTOR_SYNC, ArchiveFormat.ISO),
     )
     # SUPPORTS_STREAMING_NON_SEEKABLE stays False: pycdlib addresses the image by
@@ -780,8 +786,6 @@ class IsoReadBackend(ReadBackend):
         start_offset: int = 0,
     ) -> IsoReader:
         reject_start_offset(start_offset, format, archive_name)
-        # Before the reader, so the refusal does not depend on pycdlib being installed.
-        _refuse_raw_sector_image(source, format, archive_name)
         # `format` is always ISO here (single-format backend); accepted for the uniform
         # ReadBackend signature.
         return IsoReader(

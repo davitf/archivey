@@ -112,3 +112,18 @@ def test_the_probe_restores_the_stream_position() -> None:
     stream = io.BytesIO(b"\x00" * 4096)
     assert _describe_raw_sector_image(stream) is None
     assert stream.tell() == 0
+
+
+def test_the_refusal_does_not_need_pycdlib(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without this ordering a caller lacking pycdlib is told to install it, and only
+    # then learns the file cannot be read at all. The core-only CI leg has no pycdlib;
+    # this pins the same answer in every leg.
+    monkeypatch.setattr(
+        "archivey.internal.registry._optional", lambda name: None, raising=True
+    )
+    path = tmp_path / "disc.bin"
+    path.write_bytes(_image(mode=1))
+    with pytest.raises(UnsupportedFeatureError, match="raw CD sector image"):
+        open_archive(path)

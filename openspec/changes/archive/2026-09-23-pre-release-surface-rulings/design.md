@@ -49,8 +49,11 @@ change; this is its consequence for the report model.
 ## Raw sector images: magic at offset 0, probe before the reader
 
 The refusal needs the file to reach the ISO backend, so the sync pattern becomes a second
-ISO magic. The probe runs in `IsoReadBackend.open_read` before `IsoReader` is built, so it
-does not need `pycdlib`, and it leaves a stream at the position it was handed in at. The
+ISO magic. The probe lives in `iso_reader` but `open_archive` calls it before the
+backend's availability check: otherwise a caller without `pycdlib` is told to install it
+and only then learns the file cannot be read. It leaves a stream at the position it was
+handed in at, and is skipped for a non-seekable source, which the seekability refusal
+answers instead. The
 sector layout facts come from the S22-K6 thread's prototype: byte 15 is the mode, submode
 bit `0x20` splits Mode 2 Form 1 from Form 2, and the sector size is where the second sync
 lands. The implementation notes for reading them later are in `dev-docs/IDEAS.md`.
