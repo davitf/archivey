@@ -222,9 +222,9 @@ binds only the case where the remainder is nits.
 **Under the automated loop the verdict is what stops the loop**, not a suggestion it
 weighs — and unlike the budget above it, that is not a round-3 rule: a conditional
 approval at round 1 ends the loop at round 1. The round's verdict file maps 🔄 Request
-Changes to another round, and the three "I do not need to see the result" verdicts — a
-plain approval, the conditional approval above, and 💬 Comment — to the end of the
-loop, whatever rounds the cap has left
+Changes to a closing comment that asks for another round, and the three "I do not need
+to see the result" verdicts — a plain approval, the conditional approval above, and
+💬 Comment — to one that asks for none, whatever rounds the cap has left
 ([`dev-docs/review-loop.md`](../../../../dev-docs/review-loop.md) §Stopping it). So the
 verdict line is a decision about spending another review, and writing 🔄 to keep a round
 in hand spends one on wording you have already described.
@@ -917,31 +917,11 @@ posting through the maintainer's account, this is what makes a thread scannable 
 author avatar says `davitf` for two of those three. Keep the attribution to one line; the
 detail belongs under it.
 
-### The review trigger phrase is a command, not a quotable string
+### The `review` label is a command
 
-The automated loop starts a review round when a **top-level comment on a pull request**
-opens with the trigger phrase ([`review-loop.yml`](../../../../.github/workflows/review-loop.yml);
-[`review-loop.md`](../../../../dev-docs/review-loop.md) for what a round then does). **It is
-a command whoever wrote it.** An agent posting through the maintainer's account is
-indistinguishable from the maintainer, so a comment written to *explain* the phrase starts a
-real round on whatever pull request it was posted to — which has happened, on the PR that was
-fixing the loop.
-
-The exposure is exactly that one surface, and it is narrow: the guard sits on the
-`issue_comment` path and the gate refuses a comment that is not on a pull request, so an
-issue comment, a pull request body, an inline review comment and a review body cannot fire
-it, and neither can a file in the tree. That is why `review-loop.yml` and
-[`review-loop.md`](../../../../dev-docs/review-loop.md) can quote the phrase freely — and
-why this file can.
-
-So: **never open a comment with the phrase unless you mean to start a round.** Position is
-what carries the meaning — the match is anchored, so the phrase counts only at the start of a
-comment, leading whitespace aside, and quoting it mid-sentence asks for nothing. One
-side effect is worth knowing before you quote it: the general `@claude` assistant skips any
-comment holding the phrase anywhere, so a comment that mentions it mid-sentence gets no
-answer from the assistant either.
-[`review-loop.md`](../../../../dev-docs/review-loop.md) has the matching rules and the
-incident that produced them.
+Adding the `review` label to a pull request starts a review round
+([`review-loop.md`](../../../../dev-docs/review-loop.md)). A reviewer never adds it: whether
+another round is wanted is what your verdict says, and the implementer acts on it.
 
 ### Name the responder skill in the review body
 
