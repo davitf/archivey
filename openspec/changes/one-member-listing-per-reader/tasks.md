@@ -47,12 +47,16 @@
 - [ ] 2.4 Route `_begin_forward_pass` / `_ProgressivePassIterator` through the walk;
       fold `_pass_scanned` / `_pass_by_name_lists` into the base list. The pass keeps its
       own cursor and finalizes when that cursor passes the end of a completed walk (D1b).
-- [ ] 2.5 Stamp last-entry-wins `is_current` once, at walk completion (D1a). Drop
+- [ ] 2.5 Stamp last-entry-wins `is_current` once, when the walk ends (D1a). Drop
       `_finalize_links`' `is_current_first` parameter and its "preserve those orderings"
       docstring note.
 - [ ] 2.6 Failure handling per D2: discard and allow a retry in random access, poison in
-      streaming, store the incomplete report on terminal damage. One test per branch
-      that fails when a branch is routed to the wrong behaviour.
+      streaming, store the incomplete report on terminal damage and stamp last-entry-wins
+      over its prefix (D1a). One test per branch that fails when a branch is routed to the
+      wrong behaviour. The terminal-damage test streams a TAR holding `a.txt` twice,
+      truncated in a later member, and asserts the first `a.txt` reads
+      `is_current=False` in the incomplete report. It passes today; mutation: skip the
+      stamp on the damage branch, and it must go red.
 - [ ] 2.7 Listing limits per D4: account once at pull, enforce per caller, and run
       `assert_within_limits()` when an enforcing caller finds members already pulled.
       Remove the tracker `reset()` calls and `_register_member`'s "already stamped"
@@ -71,16 +75,28 @@
 - [ ] 4.2 `rar_reader._iter_with_data` solid branch: the same
 - [ ] 4.3 ZIP and 7z: drop the `report_key=` arguments and emit directly. ZIP keeps the
       `index` parameter (D8 uses it).
-- [ ] 4.4 7z folder sweep (D6b): resolving any link in a folder decodes that folder once,
-      up to its last link member, and fills every link in it. Random-access listing and
-      the streaming pass's EOF finalization both use it, and the streaming pass feeds it
-      from the decode it is already doing. Pin the D6a numbers as tests on a solid 7-Zip
-      `-snl` fixture with links mid-folder: `members()` decodes up to the last link's end
-      offset (111 100 bytes on the D6a tree, not 273 278), and a streaming pass decodes
-      nothing beyond its own data. Mutation: resolve per link again; both counts must
-      rise.
-- [ ] 4.5 Commit that fixture: 7-Zip `-snl` output over a tree with links between
-      files, since the corpus's 7z fixtures come from py7zr and none has a link mid-folder
+- [ ] 4.4 7z link reads (D6b). Random-access listing: resolving any link in a folder
+      decodes that folder once, up to its last link member, and fills every link in it.
+      Streaming pass: read each link member's bytes from the pass's own folder decoder
+      when the cursor reaches it, keep them, and apply them at EOF finalization. Test
+      relations, not constants, on the 4.5 fixture, with `io_stats().bytes_decompressed`
+      (see the `access-mode-and-cost` matrix):
+      - `members()` decodes exactly to the folder's last-link end offset, not the sum of
+        every link's end offset;
+      - a streaming pass reading every stream decodes the folder size once and resolves
+        every link, including the last member;
+      - a streaming pass reading no stream still resolves every link and decodes to the
+        last-link end offset;
+      - the non-solid case decodes each link's own folder once.
+      Mutations: resolve per link again (the `members()` count must rise); skip the
+      pass's own link read (the last-member link must stay unresolved, or be read by a
+      second decode that raises the count).
+- [ ] 4.5 Commit a small fixture made by 7-Zip `a -snl`, since the corpus's 7z fixtures
+      come from py7zr and none has a link mid-folder. One solid folder of a few KB of
+      text files, with links before the files, between them, and as the last member
+      with data. No executable, so no BCJ folder and nothing large in the repo. Add the
+      same tree with `-ms=off` for the non-solid row. Record the generating commands
+      next to the fixture.
 - [ ] 4.6 D8: 7z, RAR and ISO pass the listing position into typing-time diagnostic
       contexts as `member_id` (7z and RAR: the index in their open-time list; ISO: an
       `enumerate` over its walk)

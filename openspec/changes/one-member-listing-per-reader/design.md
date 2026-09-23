@@ -81,8 +81,18 @@ Everything reads the list by position and pulls when it reaches the end:
 | Streaming forward pass | Holds its own cursor (a position in the list); pulls when the cursor reaches the end of what has been walked; finalizes when the cursor passes the last member of a completed walk (D1b) |
 | 7z / solid-RAR data pass | Iterates the listed members by position (D6) |
 
-**D1a. Last-entry-wins `is_current` is stamped once, when the walk completes**, by
-whichever consumer completed it, and nowhere else. Link resolution never reads
+**D1a. Last-entry-wins `is_current` is stamped once, when the walk ends**, by whichever
+consumer ended it, and nowhere else. The walk ends in one of two ways. It completes, or it
+stops on terminal damage (D2). With terminal damage, the stamp runs over the recovered
+prefix at the point the incomplete report is stored. That is what
+`_finalize_links(..., is_current_first=True)` does today in `_materialize_members`'
+damage branch (`base_reader.py:1173-1182`) and in `_finalize_pass_links`. Removing
+`is_current_first` must not remove this stamp: `ArchiveMember.is_current` defaults to
+`True`, so an unstamped prefix would make every shadowed duplicate read as current.
+Measured on `main`: a streaming pass over a TAR holding `a.txt` twice and truncated in a
+later member ends in `TruncatedError`, and its incomplete report reads `a.txt False`,
+`a.txt True`. Without the stamp, both would read `True`, and extracting that prefix would
+write the shadowed entry, then fail on the later one with the error described below. Link resolution never reads
 `is_current` (`_lookup_link_target_for_member` and `_resolve_link` do not touch it), so
 stamping before or after resolution gives the same links. The only visible difference
 is *when* a held member shows its final value:
@@ -132,7 +142,8 @@ object sets.
   failed walk poisons the reader as `_ProgressivePassIterator` does today ("reopen the
   archive to retry").
 - **Terminal damage** (`CorruptionError` / `TruncatedError`) is a completed walk with an
-  error. The prefix and the error are stored once. `members_report()` and the peek return
+  error. The prefix and the error are stored once, and last-entry-wins is stamped over
+  the prefix at that point (D1a). `members_report()` and the peek return
   the incomplete report; `members()`, `scan_members()` and `get()` raise, as the spec
   already requires.
 
@@ -211,12 +222,12 @@ streaming pass that finalizes at EOF runs `_resolve_link_target` on its symlinks
   it through `_open_member`, which on a solid folder decodes from the folder start. How
   much that costs depends on where writers put link data, so it was measured first
   (D6a). The answer is D6b.
-- **Memory bound.** The sweep (D6b) keeps what `_ensure_link_target` already reads today: the
-  whole member, with no size cap beyond the reader's decompression limits. The capture
-  neither widens nor narrows that. A declared-huge symlink is a pre-existing gap: ZIP and
+- **Memory bound.** Reading link targets once per folder (D6b) keeps what
+  `_ensure_link_target` already reads today: the whole member, with no size cap beyond
+  the reader's decompression limits. D6b neither widens nor narrows that. A declared-huge symlink is a pre-existing gap: ZIP and
   7z read the whole decompressed member (`stream.read()`) with no cap of their own, while
   RAR reads only stored bytes straight from the archive. It is tracked as its own item,
-  and when it is capped, the sweep takes the same cap.
+  and when it is capped, both D6b callers take the same cap.
 - A member whose data turns out not to be a link buffer (the reparse-point fallback in
   `_apply_reparse_data`) reverts to a file type at resolution. Today's streaming pass
   already yields such a member as a symlink with a `None` stream, and this change keeps
@@ -260,12 +271,12 @@ counted with `io_stats().bytes_decompressed`, and the sums match to the byte.
 A streaming pass over the same archive decodes 253 398 bytes today and resolves no
 7z link at all. Finalizing it at EOF by re-reading would add the 273 278 again.
 
-#### D6b. One sweep per folder, shared by listing and the streaming pass
+#### D6b. Each folder decoded at most once for its links
 
 Since link bytes sit mid-folder, compressed, the unit of work is the folder, not the
-link. A 7z link target is obtained by a **folder sweep**: decode the folder once from its
-start up to the end of its **last** link member, and keep every link member's bytes on the
-way. Everything after the last link is not decoded. Two callers use it:
+link. Each folder is decoded at most once to read its link targets, from its start up to
+the end of its **last** link member, and every link member's bytes are kept along the
+way. Nothing after the last link is decoded for link targets. There are two callers:
 
 - **Random-access listing** (`members()` / `scan_members()`). The first link resolved in a
   folder triggers the sweep, and the sweep fills every link in that folder. The default
@@ -273,17 +284,43 @@ way. Everything after the last link is not decoded. Two callers use it:
   py7zr one goes from 700 214 to 253 412. In the worst case, every folder ending in a link,
   that is one full decode per folder instead of one per link. This changes how listing
   reads link data, not when, so the Non-Goal on random-access timing stands.
-- **The streaming pass.** The pass is already decoding the folder, so it keeps a link
-  member's bytes as the folder reader passes them. `stream_members()` yields `None` for a
-  non-file member (`archive-reading`, "Non-file stream_members yield None";
-  `sevenzip_reader._open` returns `None` unless `member.is_file`), so these bytes were
-  being skipped, not handed to anyone. EOF finalization then uses the kept bytes and
-  decodes nothing more.
+- **The streaming pass.** The pass reads each link member's bytes itself, from its own
+  folder decoder, when its cursor reaches that member, and keeps them for EOF
+  finalization. The consumer's reads alone are not enough, because link bytes are only
+  decoded as a side effect. `stream_members()` yields `None` for a non-file member
+  (`archive-reading`, "Non-file stream_members yield None"; `sevenzip_reader._open`
+  returns `None` unless `member.is_file`). `SolidBlockReader` also skips lazily: an
+  earlier member's bytes are decoded only when a later member of the same folder is opened
+  **and read** (`streamtools/solid.py`, class docstring). A folder whose members are all
+  skipped is never decoded (`_member_stream_from_solid`). Three cases in D6a would leave a
+  link uncaptured without this:
+  - a link that is the last member with data in its folder (the default 7-Zip archive's
+    fourth link ends at 111 100, the folder's size);
+  - a consumer that reads no data, such as `for m, s in reader.stream_members(): pass`, or
+    a selector that skips a whole folder;
+  - `-ms=off` and `-mx0`, where each link is alone in its folder.
 
-What the sweep keeps is bounded by the memory bound above: link members' bytes only,
+  Reading the link as the pass reaches it moves the pass's decode forward to that link's
+  end, through the same `SolidBlockReader`, so earlier unread members are skipped once
+  and never re-decoded. Per folder, the pass then decodes from the start to the later of
+  two points: where the consumer's reads end and where the last link member ends. This
+  happens once, and EOF finalization decodes nothing more. For a consumer that reads
+  every stream, the extra cost is only the link bytes after the last file it read. For a
+  consumer that reads nothing, the cost is the same as the random-access sweep, which it
+  would pay later anyway if it asked for `members()`. The captured bytes are applied at
+  EOF, so link fields keep today's streaming timing.
+
+  Rejected: extending the decode only when the pass leaves a folder. That costs the same
+  bytes but adds a folder-leave hook to `_iter_with_data`, and a link in the pass's last
+  folder would need a second path at EOF. Also rejected: re-sweeping at EOF. That decodes
+  the folder a second time, which is the cost D6b exists to remove.
+
+What D6b keeps is bounded by the memory bound above: link members' bytes only,
 never file members'. An encrypted folder without a password behaves as today: every link in it gets the
 same per-member `EncryptionError` handling and diagnostic that `_ensure_link_target`
-gives it now. The sweep only stops the folder from being decoded once per link.
+gives it now. That holds for the streaming pass too. Reading a link in a folder the
+consumer skipped decodes that folder, and so asks for its password. Random-access listing
+does the same today. D6b only stops the folder from being decoded once per link.
 
 Rejected: resolving links on demand one at a time and accepting the re-decode. That is
 today's behaviour, and the measurements above show it is the expensive path on the most

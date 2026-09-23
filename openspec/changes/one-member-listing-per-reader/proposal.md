@@ -55,8 +55,9 @@ objects.
 - Listing a solid 7z with symlinks stops re-decoding the folder once per link. Real 7-Zip
   and py7zr output puts link data mid-folder, compressed with the files (measured in
   design D6a). Today `members()` decodes 273 KB to read four link targets of 43 bytes
-  from a 111 KB folder. A per-folder sweep decodes each folder once, up to its last link
-  (design D6b).
+  from a 111 KB folder. Each folder is decoded at most once for its links, up to its last
+  link. A streaming pass reads link bytes from its own decode, including links a consumer
+  never reads past (design D6b).
 - Typing-time diagnostics carry the member's `member_id` on every backend. Only ZIP does
   today; 7z, RAR and ISO report `None` (design D8).
 
@@ -70,18 +71,29 @@ pass reaches EOF (design D1a).
 
 ### Modified Capabilities
 
-- `archive-reading` — adds the one-listing-per-reader requirement (object identity across
-  listing methods, exact per-member diagnostic counts).
+- `archive-reading` — adds three requirements. Each member is listed once per reader:
+  object identity across listing methods, exact per-member diagnostic counts, and
+  `member_id` on typing-time diagnostic contexts on every backend. Last-entry-wins
+  `is_current` is stamped once, when the walk completes or stops on terminal damage. A
+  streaming pass finalizes on its own cursor, not on walk completion.
 - `access-mode-and-cost` — the report peek returns the same member objects the resolved
-  list will, with data-stored link fields filled in place later.
+  list will, with data-stored link fields filled in place later. A new requirement bounds
+  7z link reads to one decode per folder, up to its last link member, in both modes.
 
 ## Impact
 
 - `src/archivey/internal/base_reader.py`: the listing paths collapse onto one walk
   (`_materialize_members`, `_get_members_index_only`, `_begin_forward_pass` /
   `_ProgressivePassIterator`, `_register_member`, `_report_member_diagnostic`).
-- `src/archivey/internal/backends/`: `zip_reader.py` emits directly again;
-  `sevenzip_reader.py` and `rar_reader.py` data passes iterate the base list.
+- `src/archivey/internal/backends/`:
+  - `zip_reader.py` emits directly again.
+  - `sevenzip_reader.py`: the data pass iterates the base list. Link targets are read
+    once per folder in random access, and from the pass's own decode when streaming.
+  - `rar_reader.py`: the solid data pass iterates the base list.
+  - `iso_reader.py` passes the listing position into typing-time diagnostics. This closes
+    its known issue.
 - `src/archivey/internal/diagnostics_collector.py`: `reattach_to_member` removed.
+- Tests: a new small 7-Zip `-snl` fixture with symlinks before, between and after file
+  members in one solid folder, plus its non-solid twin.
 - Docs: `dev-docs/known-issues.md` (ISO entry resolved), `dev-docs/IDEAS.md` (entry
   removed), `dev-docs/code-map.md` ("Listing can happen twice" bullet rewritten).
