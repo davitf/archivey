@@ -311,6 +311,18 @@ password and `cryptography` installed, with no `unrar` involved. Without a passw
 `EncryptionError`; with a password and no crypto backend, `PackageNotInstalledError`. A
 password *list* is iterated correctly on both generations.
 
+**Data encryption is `unrar`'s, and `unrar` takes one password.** A list is therefore
+resolved before the spawn. A RAR5 member's encryption record carries the same PswCheck
+the header block does, so the reader tries the candidates against it (known-good, then
+the list, then the provider, per `archive-reading`) and hands `unrar` the one it accepts.
+The winner is cached per salt, KDF cost and check; `rar` writes one salt per run, so an
+archive usually costs one key derivation per wrong candidate, not one per member. The
+tweaked-digest HashKey comes from the same winner. A pass (`stream_members`, one `unrar
+p` for the whole archive) and a plain member of a solid archive use the first RAR5
+member's winner. **RAR3/4 data has no check value**, so there is nothing to test a
+candidate against short of decoding: `unrar` gets the first candidate, and a list whose
+right password is not first still fails there.
+
 Each encrypted header is its own AES-CBC message (RAR3: 8-byte salt; RAR5: 16-byte IV)
 padded to a 16-byte block. `_HeaderDecryptStream.tell()` is the **ciphertext** cursor,
 including that padding — that is the correct `data_offset`, because packed data and the

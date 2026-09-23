@@ -63,6 +63,18 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A password list now works when the right password is not first**, on the two
+  formats where it did not: a header-encrypted 7z and RAR5 with encrypted data. On 7z, a
+  wrong key decodes the header to garbage, and that failure ended the attempt instead of
+  moving on to the next candidate; a password provider was not asked again either. On RAR5,
+  every `unrar` spawn was given the first candidate; the reader now tests each against the
+  member's password check and passes on the one that matches, and a provider is asked for
+  it when no listed password matches. RAR3/4 data carries no password check, so there the
+  first candidate is still the one used.
+- **Two threads that both need the password provider no longer fail.** Under
+  `MemberStreams.CONCURRENT`, a thread that needed the provider while another thread's call
+  was running got the `ArchiveyUsageError` meant for a provider that calls back into the
+  reader. It now waits for that call to finish; the reentry error stays for its real case.
 - **A Windows symlink in a ZIP or a 7z now reports its real target.** Both formats store
   such a link as a `REPARSE_DATA_BUFFER` — the Win32 structure, not a bare path — and
   neither backend parsed it. 7z decoded those ~92 binary bytes as UTF-8 and handed the
