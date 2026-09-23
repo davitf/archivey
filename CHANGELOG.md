@@ -102,6 +102,12 @@ promise with that line; treat `0.2.0` as the first release of this library.
   which now names which of four causes it was (encrypted, split across volumes, compressed
   rather than stored, or absent). Previously extraction raised `LinkTargetNotFoundError`
   for the member, which under the library default aborted the whole operation.
+- **A PPMd member whose data ends before its declared size raises `TruncatedError`.**
+  Reading one used to end in a bare `MemoryError` out of `pyppmd`, which reads as the
+  host running out of memory. Two ways reach it: a 7z folder that declares more output
+  than it holds, and a wrong password on an AES-encrypted PPMd folder, where the
+  `MemoryError` also stopped password iteration before the correct candidate was tried.
+  Reading a PPMd member larger than 2 GiB no longer raises `OverflowError` either.
 
 ### Changed
 

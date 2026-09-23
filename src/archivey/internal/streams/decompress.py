@@ -401,6 +401,14 @@ _PPMD_EXTRA_NUL_MAX_OUTPUT = 64
 # reach its 1-symbol budget and exit; 8 is a safe cushion over the observed need.
 _PPMD_QUIESCE_MAX_CALLS = 8
 
+# pyppmd parses ``decode``'s ``length`` as a C ``int``; anything larger raises a bare
+# ``OverflowError``. A request is capped here and the rest is asked for on the next
+# call. The oversized request comes from ``feed(chunk, -1)`` — what ``readall()`` /
+# ``read(-1)`` sends — whose limit is the whole remaining ``unpack_size``, and from
+# one large ``read(n)``; either reaches it on a member over 2 GiB, or on a header
+# that overstates ``unpack_size`` past that.
+_PPMD_MAX_REQUEST = (1 << 31) - 1
+
 
 class _PpmdNativeDecoder(Protocol):
     """The ``pyppmd.Ppmd7Decoder`` / ``Ppmd8Decoder`` methods this adapter calls.
@@ -504,6 +512,10 @@ class PpmdDecoder(BaseDecoder):
         self._fed_compressed = 0
         self._nul_injected = False
         self._compressed_eof = False
+        # Set once the payload is provably spent (see ``_note_decoded``); from then on
+        # nothing on the decode path calls the native decoder. Teardown still does:
+        # ``_quiesce_worker`` sends its bounded NUL in exactly this state.
+        self._exhausted = False
         # ``mem_size`` is bounded one layer up, by ``check_decoder_memory`` in
         # ``codecs.py``, against ``DecoderLimits.max_decoder_memory`` — not here,
         # because these two constructor calls are the allocation and there is no
@@ -542,6 +554,37 @@ class PpmdDecoder(BaseDecoder):
             return None
         return self._fed_compressed >= self._pack_size
 
+    def _note_decoded(self, out: bytes, requested: int) -> bytes:
+        """Record whether a sized native call proved the payload spent; return ``out``.
+
+        On pyppmd 1.3.1 a ``decode`` returns short of ``requested`` only when its
+        worker blocked on empty input or decoded the model's end. Short **and** at
+        ``eof`` **and** with every compressed byte already fed, no more input is
+        coming and the payload has nothing left: another decode-path call could only
+        resume a worker parked on empty input, which raises a spurious
+        ``MemoryError`` (it reads past the input buffer) rather than returning. So
+        ``feed`` and ``flush`` make no further call; ``_quiesce_worker`` still sends
+        its bounded NUL at teardown, which is what keeps the parked worker from
+        writing into freed memory when the decoder is freed. A valid member never gets
+        here, because its ``unpack_size`` matches the payload and every request is
+        met in full — premature ``eof`` (the ``Code == 0`` proxy) arrives on a *full*
+        return, which is why ``eof`` alone cannot be the stop. Reached when the
+        container overstates ``unpack_size``; ``flush`` then reports
+        ``TruncatedError``.
+
+        ``_decode_unsized`` (PPMd8 without ``unpack_size``) is deliberately not
+        wrapped: its end mark stops the worker on valid data, ``_decode`` refuses to
+        call it again once ``eof`` is set, and ``flush`` runs no post-eof drain without
+        a size, so it never reaches the parked-worker resume this guards against.
+        """
+        if (
+            len(out) < requested
+            and self._decomp.eof
+            and (self._compressed_eof or self._pack_complete() is True)
+        ):
+            self._exhausted = True
+        return out
+
     def _decode_unsized(self, data: bytes) -> bytes:
         # Unsized PPMd8 only (PPMd7 without a size is rejected in __init__). Never
         # hand pyppmd max_length=-1; request bounded chunks and drain the internally
@@ -566,12 +609,13 @@ class PpmdDecoder(BaseDecoder):
 
     def _inject_nul_once(self, max_length: int) -> bytes:
         """Documented single extra NUL (pyppmd / py7zr); never loop fabricated input."""
-        if self._nul_injected or self._decomp.eof:
+        if self._exhausted or self._nul_injected or self._decomp.eof:
             return b""
         if not getattr(self._decomp, "needs_input", False):
             return b""
         self._nul_injected = True
-        return self._decomp.decode(b"\0", self._nul_budget(max_length))
+        budget = self._nul_budget(max_length)
+        return self._note_decoded(self._decomp.decode(b"\0", budget), budget)
 
     def _drain_empty_chunked(self, max_length: int) -> bytes:
         """Pull remaining output in ``_PPMD_EXTRA_NUL_MAX_OUTPUT`` empty decodes.
@@ -580,7 +624,8 @@ class PpmdDecoder(BaseDecoder):
         ``eof`` after a small ``max_length`` can still leave legitimate symbols
         reachable via ``decode(b"", …)`` — so this intentionally continues past
         native ``eof`` (breaking on eof would defeat premature-eof recovery).
-        Stops on ``needs_input``, quiet empty, or budget exhaustion. Does **not**
+        Stops on ``needs_input``, a short return at ``eof`` (the payload is spent;
+        see :meth:`_note_decoded`), quiet empty, or budget exhaustion. Does **not**
         run when ``pack_size`` is unknown or short. Corrupt-but-declared-complete
         packs can still fill toward ``unpack_size`` here; container CRC is the
         backstop. Worst-case iteration count is ``remaining + 2`` at 64 bytes
@@ -598,19 +643,21 @@ class PpmdDecoder(BaseDecoder):
             if getattr(self._decomp, "needs_input", False):
                 break
             budget = min(_PPMD_EXTRA_NUL_MAX_OUTPUT, remaining)
-            chunk = self._decomp.decode(b"", budget)
+            chunk = self._note_decoded(self._decomp.decode(b"", budget), budget)
+            parts.append(chunk)
+            remaining -= len(chunk)
+            if self._exhausted:
+                break
             if not chunk:
                 quiet += 1
                 if quiet >= 2:
                     break
                 continue
             quiet = 0
-            parts.append(chunk)
-            remaining -= len(chunk)
         return b"".join(parts)
 
     def _decode(self, data: bytes, max_length: int) -> bytes:
-        if max_length == 0:
+        if max_length == 0 or self._exhausted:
             return b""
         # Decoding after native EOF is trailing garbage at best (and the crashy
         # runaway path on pyppmd 1.3.x when unbounded) — drop the input instead.
@@ -629,7 +676,8 @@ class PpmdDecoder(BaseDecoder):
             return self._inject_nul_once(max_length)
         if max_length < 0:
             return self._decode_unsized(data)
-        return self._decomp.decode(data, max_length)
+        max_length = min(max_length, _PPMD_MAX_REQUEST)
+        return self._note_decoded(self._decomp.decode(data, max_length), max_length)
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         if chunk:
@@ -673,7 +721,7 @@ class PpmdDecoder(BaseDecoder):
         # at its end mark, so any post-eof pull is trailing garbage (measured: +N bytes
         # on compressible payloads). Corrupt-but-declared-complete sized packs can still
         # fill toward ``unpack_size`` here — container CRC is the backstop.
-        if max_length > 0 and self._pack_complete() is True:
+        if max_length > 0 and self._pack_complete() is True and not self._exhausted:
             if not getattr(self._decomp, "needs_input", False):
                 drained = self._drain_empty_chunked(max_length)
                 out += drained
@@ -728,8 +776,16 @@ class PpmdDecoder(BaseDecoder):
                 # short-circuit is deliberately kept ahead of it: at native eof the
                 # worker is finished AND feeding a NUL here would be a decode-after-eof
                 # (the unbounded form of which is itself a crash path on 1.3.x), so
-                # never issue one — skip instead.
-                if decomp.eof or not getattr(decomp, "needs_input", False):
+                # never issue one — skip instead. The exception is a spent payload
+                # (``_exhausted``): its last call returned short at ``eof``, which
+                # pyppmd reports with ``needs_input`` False even when the worker is
+                # parked on empty input, so neither flag can be trusted and the NUL
+                # is sent anyway. Measured on an overstated ``unpack_size``: without
+                # it valgrind shows the Free-time invalid write and a later decoder
+                # in the same process can start from corrupted state.
+                if not self._exhausted and (
+                    decomp.eof or not getattr(decomp, "needs_input", False)
+                ):
                     return
                 # One-symbol budget: the worker resumes, consumes the NUL, and
                 # exits on budget (returns the byte), or blocks needing one more
