@@ -11,11 +11,13 @@ name: Review loop
 # Who adds the label is the implementing agent when its pull request is ready and again
 # after each round of fixes (`address-review-findings`), or a person at any time. Only
 # someone with triage access can label a pull request, so the label is also the
-# permission check. Past `MAX_ROUNDS` in the gate, only a person's label runs a round:
-# agents label as bot accounts, and GitHub reports who added it.
+# permission check. The gate refuses an agent's label past `MAX_ROUNDS`, after a round
+# that said no further round is needed, and at a commit a review already failed on; a
+# person's label still runs, up to `MAX_FORCED_ROUNDS`. `is_person` in the gate says how
+# the two are told apart.
 #
-# Rounds are counted from the closing comments this workflow posted, so there is no
-# round state to fall out of step, and nothing ever runs without a fresh label.
+# The first lines of this workflow's closing comments are the only state: which rounds
+# ran, with what verdict, and where a review failed. Nothing runs without a fresh label.
 #
 # `scripts/review_loop_gate.py` makes the decisions and writes the closing comment, and
 # is unit tested. `dev-docs/review-loop.md` is the prose version.
@@ -69,22 +71,33 @@ jobs:
           gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
             --json labels,headRefOid > /tmp/pr.json
 
-          # One line per round comment, then counted. `--jq` runs once per page, so a
-          # per-page `length` would print one number per page instead of a total.
-          rounds="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+          # The first line of each of this workflow's own closing comments: the rounds
+          # that ran, their verdicts, and the commits a review failed on. One line per
+          # comment, gathered afterwards, because `--jq` runs once per page.
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
             --jq '.[] | select(.user.login == "github-actions[bot]")
-                      | select(.body | startswith("<!-- archivey-review-round "))
-                      | .id' | wc -l)"
+                      | .body | select(startswith("<!-- archivey-review-"))
+                      | split("\n")[0]' > /tmp/markers.txt
+
+          # Which app, if any, added the label. An agent acting through the
+          # maintainer's account arrives as a `User` sender, and this is the field that
+          # tells it apart (`is_person` in the gate). The latest event is the one this
+          # run is for, or a newer one; either way it is who is asking now.
+          app="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/events" --paginate \
+            --jq '.[] | select(.event == "labeled" and .label.name == "review")
+                      | "app=" + (.performed_via_github_app.slug // "")' | tail -n 1)"
 
           jq -n \
             --slurpfile pr /tmp/pr.json \
-            --argjson rounds "$rounds" \
+            --rawfile markers /tmp/markers.txt \
             --arg sender_type "$SENDER_TYPE" \
             --arg sender_login "$SENDER_LOGIN" \
+            --arg label_app "$app" \
             --arg repository "$GITHUB_REPOSITORY" \
-            '{labels: [$pr[0].labels[].name], rounds_done: $rounds,
+            '{labels: [$pr[0].labels[].name], head_sha: $pr[0].headRefOid,
+              markers: ($markers | split("\n") | map(select(length > 0))),
               sender_type: $sender_type, sender_login: $sender_login,
-              repository: $repository}' > /tmp/gate-input.json
+              label_app: $label_app, repository: $repository}' > /tmp/gate-input.json
 
           python3 scripts/review_loop_gate.py < /tmp/gate-input.json > /tmp/gate.json
           cat /tmp/gate.json
@@ -92,7 +105,6 @@ jobs:
             echo "run=$(jq -r .run /tmp/gate.json)"
             echo "round=$(jq -r .round /tmp/gate.json)"
             echo "final=$(jq -r .final /tmp/gate.json)"
-            echo "cap_reached=$(jq -r .cap_reached /tmp/gate.json)"
             echo "max_rounds=$(jq -r .max_rounds /tmp/gate.json)"
             echo "head_sha=$(jq -r .headRefOid /tmp/pr.json)"
           } >> "$GITHUB_OUTPUT"
@@ -110,12 +122,22 @@ jobs:
           gh api --method DELETE \
             "repos/$GITHUB_REPOSITORY/issues/$PR/labels/review" --silent || true
 
-      - name: Say the cap is spent
-        if: steps.gate.outputs.cap_reached == 'true'
+      # Without this, a gate that failed would leave a pull request whose label came
+      # off with nothing on it saying why, and an agent waiting on a closing comment
+      # does not read the Actions tab.
+      - name: Say the round did not start
+        if: failure() && steps.gate.outcome == 'failure'
+        run: |
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "**The review round did not start.** The workflow failed before deciding whether to run, and nothing was counted. Add the \`review\` label again to retry."
+
+      - name: Say why no round runs
+        if: steps.gate.outputs.run == 'false'
         run: |
           set -euo pipefail
           jq -r .comment /tmp/gate.json > /tmp/comment.md
-          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
+          if [ -s /tmp/comment.md ]; then
+            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
+          fi
 
       - name: Claude review
         if: steps.gate.outputs.run == 'true'

@@ -35,16 +35,30 @@ REPO = "davitf/archivey"
 SHA = "a" * 40
 
 
+def rounds(*verdicts: str, sha: str = "b" * 40) -> list[str]:
+    """The first lines of closing comments for rounds that ended in these verdicts."""
+    return [
+        f"{gate.ROUND_MARKER} n={n} sha={sha} verdict={v} -->"
+        for n, v in enumerate(verdicts, start=1)
+    ]
+
+
 def decide(**overrides) -> gate.Decision:
     """An agent labelling a pull request that has had no round yet."""
     base = {
         "labels": [gate.REVIEW_LABEL],
-        "rounds_done": 0,
+        "markers": [],
+        "head_sha": SHA,
         "sender_type": "Bot",
         "sender_login": "claude[bot]",
+        "label_app": "app=claude",
         "repository": REPO,
     }
     return gate.decide(base | overrides)
+
+
+#: What a person clicking the label in GitHub's own interface looks like.
+PERSON = {"sender_type": "User", "sender_login": "davitf", "label_app": "app="}
 
 
 def finish(verdict: object, **overrides) -> gate.Finish:
@@ -75,7 +89,7 @@ def test_the_label_runs_the_next_round() -> None:
     assert first.round == 1
     assert not first.final
 
-    third = decide(rounds_done=2)
+    third = decide(markers=rounds("findings", "findings"))
     assert third.run
     assert third.round == 3
 
@@ -88,12 +102,11 @@ def test_a_label_that_has_come_off_again_runs_nothing() -> None:
     """
     answer = decide(labels=["documentation"])
     assert not answer.run
-    assert not answer.cap_reached
     assert not answer.comment
 
 
 def test_the_last_round_an_agent_can_ask_for_says_so() -> None:
-    answer = decide(rounds_done=gate.MAX_ROUNDS - 1)
+    answer = decide(markers=rounds(*["findings"] * (gate.MAX_ROUNDS - 1)))
     assert answer.run
     assert answer.round == gate.MAX_ROUNDS
     assert answer.final
@@ -101,34 +114,104 @@ def test_the_last_round_an_agent_can_ask_for_says_so() -> None:
 
 def test_an_agent_cannot_ask_for_a_round_past_the_cap() -> None:
     """The cap is what stops two agents going back and forth on one pull request."""
-    answer = decide(rounds_done=gate.MAX_ROUNDS)
+    answer = decide(markers=rounds(*["findings"] * gate.MAX_ROUNDS))
     assert not answer.run
-    assert answer.cap_reached
     assert answer.round == gate.MAX_ROUNDS
     # The refusal is announced, because nothing else on the pull request would say why
     # the label came off without a review.
     assert "needs a person" in answer.comment
     assert f"`{gate.REVIEW_LABEL}`" in answer.comment
-    # It is bookkeeping, so it carries no round marker and does not count as a round.
-    assert gate.ROUND_MARKER not in answer.comment
+    # It is bookkeeping, so it carries no marker and does not count as anything.
+    assert "archivey-review-" not in answer.comment
 
 
-@pytest.mark.parametrize("sender_type", ["Bot", "", None, "Organization"])
-def test_only_a_person_buys_a_round_past_the_cap(sender_type: object) -> None:
-    refused = decide(rounds_done=gate.MAX_ROUNDS + 2, sender_type=sender_type)
+@pytest.mark.parametrize(
+    "who",
+    [
+        {"sender_type": "Bot", "label_app": "app="},
+        # An agent acting through the maintainer's account: #384 recorded exactly this.
+        {"sender_type": "User", "label_app": "app=claude"},
+        # The event could not be found, so nobody can say it was a person.
+        {"sender_type": "User", "label_app": ""},
+        {"sender_type": "User", "label_app": None},
+        {"sender_type": None, "label_app": "app="},
+    ],
+    ids=["bot", "user-via-app", "user-no-event", "user-app-none", "no-sender"],
+)
+def test_only_a_person_buys_a_round_past_the_cap(who: dict) -> None:
+    past_cap = rounds(*["findings"] * (gate.MAX_ROUNDS + 1))
+    refused = decide(markers=past_cap, **who)
     assert not refused.run
-    assert refused.cap_reached
+    assert not refused.person
 
-    person = decide(rounds_done=gate.MAX_ROUNDS + 2, sender_type="User")
+    person = decide(markers=past_cap, **PERSON)
     assert person.run
-    assert person.forced
+    assert person.person
     assert person.final
-    assert person.round == gate.MAX_ROUNDS + 3
+    assert person.round == gate.MAX_ROUNDS + 2
 
 
-@pytest.mark.parametrize("value", [None, "", "three", -4, [1]])
-def test_an_unreadable_round_count_starts_from_zero(value: object) -> None:
-    assert decide(rounds_done=value).round == 1
+def test_nothing_runs_past_the_ceiling_whoever_asks() -> None:
+    """A misread person check must not remove the bound altogether."""
+    answer = decide(markers=rounds(*["findings"] * gate.MAX_FORCED_ROUNDS), **PERSON)
+    assert not answer.run
+    assert "most this workflow runs" in answer.comment
+
+
+@pytest.mark.parametrize("verdict", ["clean", "approved"])
+def test_a_round_that_needs_no_other_refuses_an_agent(verdict: str) -> None:
+    """The verdict is what ends the rounds, so it has to bind an agent that ignores it."""
+    history = rounds("findings", verdict)
+    refused = decide(markers=history)
+    assert not refused.run
+    assert "said no further round is needed" in refused.comment
+
+    assert decide(markers=history, **PERSON).run
+
+
+@pytest.mark.parametrize("verdict", ["findings", "decision", "not-a-verdict"])
+def test_a_round_that_asked_for_more_lets_an_agent_continue(verdict: str) -> None:
+    assert decide(markers=rounds(verdict)).run
+
+
+def test_the_latest_round_is_the_one_whose_verdict_counts() -> None:
+    """A person's round after an approval can reopen the rounds for the agent."""
+    # Listed out of order: comments arrive paginated, and the round number decides.
+    history = list(reversed(rounds("approved", "findings")))
+    assert decide(markers=history).run
+
+
+def test_an_agent_cannot_retry_a_commit_a_review_already_failed_on() -> None:
+    """A failure that repeats every time would otherwise loop without end.
+
+    `claude-code-action` skips when the branch's copy of the workflow differs from
+    `main`'s, so retrying the same commit fails the same way, and each closing comment
+    asks for another retry.
+    """
+    failed = [f"{gate.ATTEMPT_MARKER} n=1 sha={SHA} -->"]
+    refused = decide(markers=failed)
+    assert not refused.run
+    assert "merge `main`" in refused.comment
+
+    # A new commit, or a person, retries.
+    assert decide(markers=failed, head_sha="c" * 40).run
+    assert decide(markers=failed, **PERSON).run
+    # A failed attempt is not a round.
+    assert decide(markers=failed, head_sha="c" * 40).round == 1
+
+
+def test_no_review_keeps_a_pull_request_out_whoever_asks() -> None:
+    """The review hub's diff is the whole repository; one label must not review it."""
+    labels = [gate.REVIEW_LABEL, gate.NO_REVIEW_LABEL]
+    for who in [{}, PERSON]:
+        answer = decide(labels=labels, **who)
+        assert not answer.run
+        assert f"`{gate.NO_REVIEW_LABEL}`" in answer.comment
+
+
+@pytest.mark.parametrize("value", [None, "", "three", 4, [1, None, "<!-- other -->"]])
+def test_markers_that_cannot_be_read_count_for_nothing(value: object) -> None:
+    assert decide(markers=value).round == 1
 
 
 # --- the verdict a round ends with ---------------------------------------------------
@@ -173,6 +256,10 @@ def test_a_review_that_did_not_finish_is_not_counted() -> None:
     assert not answer.counted
     assert gate.ROUND_MARKER not in answer.comment
     assert "did not finish" in answer.comment
+    # It records the commit, which is what stops an agent retrying it forever.
+    first_line = answer.comment.splitlines()[0]
+    assert first_line == f"{gate.ATTEMPT_MARKER} n=2 sha={SHA} -->"
+    assert gate.read_history([first_line]).failed_shas == {SHA}
     assert f"`{gate.REVIEW_LABEL}`" in answer.comment
 
 
@@ -183,7 +270,10 @@ def test_every_finished_round_counts_and_records_what_it_read(name: str) -> None
     assert answer.verdict == name
     # The marker is the first line, because the workflow counts `startswith`.
     first_line = answer.comment.splitlines()[0]
-    assert first_line == f"{gate.ROUND_MARKER} n=2 sha={SHA} -->"
+    assert first_line == f"{gate.ROUND_MARKER} n=2 sha={SHA} verdict={name} -->"
+    # What the gate reads back is what this wrote.
+    history = gate.read_history([first_line])
+    assert (history.rounds, history.last_verdict) == (1, name)
     assert "Two nits left." in answer.comment
     assert "https://github.com/davitf/archivey/blob/main/dev-docs/review-loop.md" in (
         answer.comment
@@ -242,8 +332,8 @@ def _run(stdin: str, *args: str) -> dict:
 
 
 def test_decide_mode_writes_the_keys_the_workflow_reads() -> None:
-    payload = _run(json.dumps({"labels": ["review"], "rounds_done": 0}))
-    for key in ["run", "round", "final", "cap_reached", "max_rounds", "comment"]:
+    payload = _run(json.dumps({"labels": ["review"], "markers": []}))
+    for key in ["run", "round", "final", "person", "max_rounds", "comment"]:
         assert key in payload, key
     assert payload["run"] is True
 
@@ -264,7 +354,10 @@ def test_neither_mode_fails_on_input_it_cannot_parse() -> None:
 
 def test_the_workflow_counts_the_marker_the_gate_writes() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
-    assert f'startswith("{gate.ROUND_MARKER} ")' in text
+    prefix = "<!-- archivey-review-"
+    assert gate.ROUND_MARKER.startswith(prefix)
+    assert gate.ATTEMPT_MARKER.startswith(prefix)
+    assert f'startswith("{prefix}")' in text
     # Only the workflow's own comments count, so quoting the marker changes nothing.
     assert 'select(.user.login == "github-actions[bot]")' in text
 

@@ -342,11 +342,16 @@ pushed after it may not be in what gets reviewed.
 gh pr edit <number> --add-label review
 ```
 
+Through the GitHub MCP instead, `issue_write` `update` replaces the whole label set:
+read the pull request's labels first and write them back with `review` appended.
+
 Do not add it when the closing comment said no further round is needed, when a
 maintainer decision is still unanswered, or when it said the rounds an agent can ask
-for are spent. Past that cap the workflow refuses a bot's label anyway; a person's
-label still buys a round, so if you are posting through the maintainer's account, the
-cap will not stop you, and you must not use that to buy one.
+for are spent. The workflow refuses an agent's label in the first and last cases
+anyway, including one made through the maintainer's account; waiting for a decision's
+answer is yours to get right. If the label is still on the pull request a few minutes
+after you added it, no round started: resolve any merge conflict or merge `main`, then
+remove the label and add it again.
 
 ---
 

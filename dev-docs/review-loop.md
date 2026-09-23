@@ -36,21 +36,51 @@ implementer opens the pull request ──► adds `review`
 
 Only someone with triage access can label a pull request, so the label is also the
 permission check. A fork gets no round: its `pull_request` run has no secrets, and the
-job is skipped before a runner starts.
+job is skipped before a runner starts. A pull request carrying `no-review` gets no round
+either, whoever asks; the review hub carries it, because its diff is the whole
+repository.
+
+**Adding the label.** The `review` label exists in the repository, and has to: `gh pr edit
+--add-label` refuses a label name it cannot find. From a shell,
+`gh pr edit <number> --add-label review`. Through the GitHub MCP, whose `issue_write`
+`update` *replaces* the whole label set, read the pull request's labels first and write
+them back with `review` appended; passing `["review"]` alone removes every other label.
+
+**If the label is still on the pull request a few minutes later, no round started.**
+GitHub does not run `pull_request` workflows while a pull request has a merge conflict,
+and a merge ref that still carries an older copy of this workflow may not listen for the
+label. Adding a label that is already there raises no event, so every later request does
+nothing too. Resolve the conflict or merge `main`, then remove the label and add it
+again.
 
 ## Counting rounds
 
 Each finished round posts one closing comment from `github-actions[bot]` whose first line
-is a `<!-- archivey-review-round n=N sha=… -->` marker. The workflow counts those
-comments to number the next round. No other round state exists, so nothing can fall out
-of step with what actually ran:
+is a `<!-- archivey-review-round n=N sha=… verdict=… -->` marker. The workflow reads
+those first lines to number the next round and to see the last verdict. No other round
+state exists, so nothing can fall out of step with what actually ran:
 
-- A review that stops before writing its verdict posts "did not finish" without the
-  marker. It does not count, and adding the label again retries it.
-- A comment that quotes the marker changes nothing, because only the workflow's own
-  comments are counted.
+- A review that stops before writing its verdict posts "did not finish" with an
+  `<!-- archivey-review-attempt … -->` marker instead. It is not a round, but the commit
+  is remembered: an agent's retry at the same commit is refused, because a failure that
+  repeats every time (the workflow-file mismatch below) would otherwise loop. A new
+  commit or a person's label retries.
+- A comment that quotes a marker changes nothing, because only the workflow's own
+  comments are read.
+- If the workflow fails before deciding, it says so on the pull request, and nothing is
+  counted.
 - Nothing ever runs without a fresh label, so a failed step cannot make a round repeat
   by itself.
+
+## Who is asking
+
+Most refusals below apply to agents only, so the workflow has to tell an agent from a
+person. `sender.type` is not enough: an agent working from a Claude Code project thread
+sometimes lands its label as `davitf`, type `User` (#384's events, 2026-09-21), and
+sometimes as `claude[bot]`. The workflow reads the pull request's latest `review`
+labeled event instead. A person is a `User` sender whose event has no
+`performed_via_github_app`, which is what a click in GitHub's own interface records. An
+event that cannot be found counts as an agent. `is_person` in the gate holds the rule.
 
 ## Stopping it
 
@@ -61,19 +91,22 @@ of step with what actually ran:
   comment does not ask for another round. `findings` (🔄 Request Changes) asks for one.
   `decision` stops until the maintainer answers. `VERDICT_STOPS` in
   [`scripts/review_loop_gate.py`](../scripts/review_loop_gate.py) holds the mapping.
-- **Five rounds an agent can ask for, then a person.** Past `MAX_ROUNDS` a label added
-  by a bot account is refused, with a comment saying so. A label added by a person still
-  runs a round. GitHub reports who added a label, and agents working in this repository
-  label as bot accounts (`claude[bot]`), so the two cannot be confused. The cap is the
-  backstop against two agents going back and forth, not the mechanism: on the rounds
-  recorded in full (#380: nine findings, then three, then two; #389: five, three, two)
-  the verdict stopped both at round 3.
+- **After a verdict that needs no other round, an agent's label is refused**, with a
+  comment saying so; a person's label still runs one.
+- **Five rounds an agent can ask for, then a person.** Past `MAX_ROUNDS` an agent's
+  label is refused, with a comment saying so, and a person's label still runs a round.
+  Past `MAX_FORCED_ROUNDS` (eight) nothing runs, so the bound holds even if the person
+  check were ever misread. The cap is the backstop against two agents going back and
+  forth, not the mechanism: on the rounds recorded in full (#380: nine findings, then
+  three, then two; #389: five, three, two) the verdict stopped both at round 3.
 - **A decision.** If block 3 of the review holds a packet
   ([pair-workflow §Decision packet](pair-workflow.md#decision-packet-canonical-escalate-form)),
-  the verdict is `decision` and the closing comment carries the question. Answer it in
-  the review thread, then add `review` to carry on.
-- **To stop a pull request from being reviewed**, do not label it. Nothing else starts
-  a round.
+  the verdict is `decision` and the closing comment carries the question. Once it is
+  answered, the implementer acts on the answer and adds `review` to carry on. The
+  workflow cannot tell an answered question from an open one, so waiting for the answer
+  is the implementer's job.
+- **To stop a pull request from being reviewed**, do not label it, or add `no-review`
+  to keep it out for good. Nothing else starts a round.
 
 ## Bots must be named
 
@@ -104,14 +137,18 @@ Should it need redoing by hand: `claude setup-token`, then Settings → Secrets 
 variables → Actions. `ANTHROPIC_API_KEY` works in its place if per-token billing is
 preferred; swap the input name in the workflow.
 
-The `review` label is created implicitly the first time someone adds it.
+The `review` and `no-review` labels exist in the repository. `gh pr edit` cannot create
+a missing one, so recreate either by hand if it is ever deleted.
 
 ## Known rough edges
 
 - **It cannot review a change to its own workflow file.** `anthropics/claude-code-action`
   refuses to run when the calling workflow differs from the copy on the default branch,
   and a `pull_request` run uses the pull request's copy. Such a round ends "did not
-  finish", uncounted. A change to `review-loop.yml` needs a review from a Claude Code
+  finish", uncounted, and an agent's retry at the same commit is refused. Running on
+  `pull_request_target` instead would use `main`'s copy; it is untried with the action
+  and would hand secrets to a run that checks out the pull request's code, so it is not
+  done here. A change to `review-loop.yml` needs a review from a Claude Code
   session that did not write it, run by hand, so keep the workflow edit small and
   separable. Observed on #379 (2026-09-20).
 - **The review reads its own previous rounds from the pull request**, not from a

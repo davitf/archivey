@@ -104,6 +104,9 @@ starts the review, and everything pushed before it is what gets read:
 gh pr edit <number> --add-label review
 ```
 
+Through the GitHub MCP instead, `issue_write` `update` replaces the whole label set:
+read the pull request's labels first and write them back with `review` appended.
+
 That is the whole handoff. `code-review-skill` runs against the PR in a separate
 Claude session, posts the review there, and closes the round with a comment that
 says whether it wants to see the fixes.
@@ -116,6 +119,9 @@ Two consequences worth stating, because they change what this session does next:
 - **Stop pushing once you have added the label.** A push after it may land after
   the review has read the branch, and then nothing reviews it until someone adds
   the label again.
+- **Check the label came off.** If it is still on the pull request a few minutes
+  later, no round started: resolve any merge conflict or merge `main`, then remove
+  the label and add it again.
 
 If the loop is not available — no GitHub Actions, or a fork, where the workflow
 has no secrets — say so and stop rather than reviewing your own work. A review

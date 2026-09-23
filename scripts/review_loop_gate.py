@@ -3,22 +3,25 @@
 
 A round starts when someone adds the ``review`` label to a pull request, and the round
 takes the label off again as it starts, so the label can be added for the next one.
-`.github/workflows/review-loop.yml` is the wiring; this is the part worth testing. Stdlib only, no GitHub access: the workflow
-collects the facts and this makes the decisions.
+`.github/workflows/review-loop.yml` is the wiring; this is the part worth testing.
+Stdlib only, no GitHub access: the workflow collects the facts and this makes the
+decisions.
 
 Two modes, each reading one JSON object on stdin and writing one on stdout.
 
 **Decide** (the default)::
 
-    {"labels": ["review", ...], "rounds_done": 2, "sender_type": "Bot",
-     "sender_login": "claude[bot]", "repository": "davitf/archivey"}
-    -> {"run": true, "round": 3, "final": false, "forced": false,
-        "cap_reached": false, "reason": "...", "comment": "", "max_rounds": 5}
+    {"labels": ["review", ...], "markers": ["<!-- archivey-review-round n=1 ... -->"],
+     "head_sha": "abc...", "sender_type": "Bot", "sender_login": "claude[bot]",
+     "label_app": "app=claude", "repository": "davitf/archivey"}
+    -> {"run": true, "round": 2, "final": false, "person": false, "reason": "...",
+        "comment": "", "max_rounds": 5}
 
-``rounds_done`` is how many round comments (`ROUND_MARKER`) the workflow already
-posted on the pull request. Counting those, rather than keeping a counter somewhere,
-means there is no state to get out of step: a round that never posted its comment
-did not count, and nothing re-runs by itself either way.
+``markers`` are the first lines of the workflow's own earlier comments on the pull
+request (`ROUND_MARKER` and `ATTEMPT_MARKER`). They are the only state: which rounds ran,
+what each one's verdict was, and which commits a review already failed on.
+``label_app`` is what the pull request's latest ``review`` labeled event recorded as
+``performed_via_github_app``; see `is_person`.
 
 **Finish** (``--finish``)::
 
@@ -35,31 +38,47 @@ the marker that makes the round count.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import asdict, dataclass
 
 #: The label that asks for a round. Adding it is the whole trigger.
 REVIEW_LABEL = "review"
 
+#: The label that keeps a pull request out of review for good. The review hub carries
+#: it: its base is an orphan branch, so its diff is the whole repository, and one
+#: `review` label there would review everything.
+NO_REVIEW_LABEL = "no-review"
+
 #: How many rounds an agent can ask for before the pull request is a person's.
 #:
 #: Five (davitf, 2026-09-21): the cap is the backstop that stops two agents going back
 #: and forth on one pull request, not the mechanism that ends a review. A round whose
-#: verdict does not ask to see the fix already says "no further round", and the
-#: implementer does not add the label back (`VERDICT_STOPS`).
-#:
-#: Past the cap only a person's label runs a round. Who added the label is GitHub's
-#: ``sender``, and an agent working in this repository adds labels as a bot account,
-#: so a label is the one trigger that tells the two apart without guessing.
+#: verdict does not ask to see the fix already says "no further round", and an agent's
+#: label after it is refused (`VERDICT_STOPS`).
 MAX_ROUNDS = 5
 
-#: The first line of every round comment, and what `rounds_done` counts.
+#: The round past which nothing runs, whoever asks.
 #:
-#: The workflow counts only comments by ``github-actions[bot]`` that open with this,
-#: so a person quoting it cannot change the count.
+#: A person can buy rounds past `MAX_ROUNDS`, and telling a person from an agent rests
+#: on one field GitHub records (`is_person`). This ceiling keeps the bound if that field
+#: is ever misread: three spare rounds, as the loop this replaced had (davitf,
+#: 2026-09-21).
+MAX_FORCED_ROUNDS = MAX_ROUNDS + 3
+
+#: The first line of a closing comment for a round that ran, and what the count counts.
+#:
+#: The workflow reads only comments by ``github-actions[bot]``, so a person quoting a
+#: marker cannot change the count.
 ROUND_MARKER = "<!-- archivey-review-round"
 
-#: What a round's verdict says about whether the implementer asks for another one.
+#: The first line of a closing comment for a review that stopped before its verdict.
+#: Not a round, but the commit it failed on is remembered (see `decide`).
+ATTEMPT_MARKER = "<!-- archivey-review-attempt"
+
+_FIELD = re.compile(r"(\w+)=(\S+)")
+
+#: What a round's verdict says about whether another round is wanted.
 #:
 #: The reviewer decides this, per `code-review-skill`'s addendum §0: a plain approval,
 #: a conditional approval whose open findings have an obvious fix, and a comment all
@@ -78,7 +97,8 @@ VERDICT_STOPS = {
     "approved": True,
     # 🔄 Request Changes: the next round is the implementer's to ask for.
     "findings": False,
-    # A maintainer decision. Nobody asks for the next round until it is answered.
+    # A maintainer decision. Once it is answered and acted on, the implementer asks for
+    # the next round; the workflow cannot tell an answered question from an open one.
     "decision": False,
 }
 
@@ -96,6 +116,54 @@ def _footer(repository: str) -> str:
     )
 
 
+# --- what the earlier comments say ----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class History:
+    #: Rounds that reached a verdict.
+    rounds: int
+    #: The verdict of the latest of those, or "" when none ran.
+    last_verdict: str
+    #: Commits a review stopped on before reaching a verdict.
+    failed_shas: frozenset[str]
+
+
+def read_history(markers: object) -> History:
+    """What the workflow's own earlier comments record, from their first lines."""
+    rounds: list[tuple[int, str]] = []
+    failed: set[str] = set()
+    for line in markers if isinstance(markers, list) else []:
+        if not isinstance(line, str):
+            continue
+        fields = dict(_FIELD.findall(line))
+        if line.startswith(ROUND_MARKER + " "):
+            try:
+                number = int(fields.get("n", ""))
+            except ValueError:
+                number = 0
+            rounds.append((number, fields.get("verdict", "")))
+        elif line.startswith(ATTEMPT_MARKER + " ") and fields.get("sha"):
+            failed.add(fields["sha"])
+    latest = max(rounds, default=(0, ""))
+    return History(len(rounds), latest[1], frozenset(failed))
+
+
+def is_person(event: dict) -> bool:
+    """Did a person add the label, rather than an agent?
+
+    ``sender.type`` alone is not enough. An agent working from a Claude Code project
+    thread sometimes lands its label as ``davitf``, type ``User``: #384's events show
+    one at 2026-09-21T01:57:37Z, with ``performed_via_github_app: claude``, while the
+    same route landed as ``claude[bot]`` on #392 and #399. What separates the two is
+    that app field, which is empty only when someone acted without an app, in GitHub's
+    own interface. The workflow passes it as ``app=<slug>``, ``app=`` for none, and an
+    empty string when it could not find the event, which counts as an agent.
+    """
+    app = event.get("label_app")
+    return event.get("sender_type") == "User" and app == "app="
+
+
 # --- deciding whether a round runs ----------------------------------------------------
 
 
@@ -106,11 +174,9 @@ class Decision:
     reason: str
     #: The round about to run is the last one an agent can ask for.
     final: bool = False
-    #: A person asked for a round past the cap.
-    forced: bool = False
-    #: An agent asked for a round past the cap. The workflow posts `comment`.
-    cap_reached: bool = False
-    #: What to post when the answer is worth announcing, else empty.
+    #: A person asked, so the agent-only refusals did not apply.
+    person: bool = False
+    #: What to post when no round runs and the reason is worth announcing, else empty.
     comment: str = ""
     #: The cap, so the workflow's prompt has one source for it.
     max_rounds: int = MAX_ROUNDS
@@ -119,12 +185,15 @@ class Decision:
 def decide(event: dict) -> Decision:
     """Should adding the label run a round now, and which round is it?"""
     labels = list(event.get("labels") or [])
-    try:
-        done = max(int(event.get("rounds_done") or 0), 0)
-    except (TypeError, ValueError):
-        done = 0
+    history = read_history(event.get("markers"))
+    done = history.rounds
     nxt = done + 1
-    final = nxt >= MAX_ROUNDS
+    person = is_person(event)
+    footer = _footer(str(event.get("repository") or ""))
+    label = f"`{REVIEW_LABEL}`"
+
+    def refuse(reason: str, comment: str) -> Decision:
+        return Decision(False, done, reason, person=person, comment=comment + footer)
 
     if REVIEW_LABEL not in labels:
         # The label was on the pull request when the event fired and is gone now: a
@@ -132,30 +201,53 @@ def decide(event: dict) -> Decision:
         # way nobody is asking any more.
         return Decision(False, done, f"the {REVIEW_LABEL!r} label is no longer set")
 
-    if nxt <= MAX_ROUNDS:
-        return Decision(True, nxt, "requested by label", final=final)
-
-    if event.get("sender_type") == "User":
-        return Decision(
-            True,
-            nxt,
-            "a person asked for a round past the cap",
-            final=True,
-            forced=True,
+    if NO_REVIEW_LABEL in labels:
+        return refuse(
+            f"{NO_REVIEW_LABEL!r} is set",
+            f"**Not reviewed: this pull request carries `{NO_REVIEW_LABEL}`.** "
+            "Nothing reviews it while that label is on.",
         )
 
-    repository = str(event.get("repository") or "")
-    comment = (
-        f"**Not reviewed: all {MAX_ROUNDS} rounds an agent can ask for are spent.** "
-        "This pull request needs a person now. A person adding the "
-        f"`{REVIEW_LABEL}` label still buys another round." + _footer(repository)
-    )
+    if nxt > MAX_FORCED_ROUNDS:
+        return refuse(
+            "the ceiling is spent",
+            f"**Not reviewed: {MAX_FORCED_ROUNDS} rounds have run, which is the most "
+            "this workflow runs on one pull request.** Review the rest by hand.",
+        )
+
+    if not person:
+        if nxt > MAX_ROUNDS:
+            return refuse(
+                "round cap spent, and an agent asked",
+                f"**Not reviewed: all {MAX_ROUNDS} rounds an agent can ask for are "
+                "spent.** This pull request needs a person now. A person adding the "
+                f"{label} label still buys another round.",
+            )
+        if VERDICT_STOPS.get(history.last_verdict, False):
+            return refuse(
+                f"the last round's verdict was {history.last_verdict!r}, and an agent "
+                "asked",
+                f"**Not reviewed: round {done} said no further round is needed.** "
+                f"Work through its findings; a person adding the {label} label still "
+                "buys another round.",
+            )
+        head_sha = str(event.get("head_sha") or "")
+        if head_sha and head_sha in history.failed_shas:
+            return refuse(
+                "a review already failed at this commit, and an agent asked",
+                "**Not retried: a review already stopped before its verdict at this "
+                "commit.** Retrying the same commit usually fails the same way. If it "
+                "stopped within seconds, the likely cause is that this branch's copy "
+                "of the review workflow differs from `main`'s: merge `main` and add "
+                f"the {label} label again. A person adding the label retries as is.",
+            )
+
     return Decision(
-        False,
-        done,
-        f"round cap spent, and {event.get('sender_login') or 'the sender'} is not a person",
-        cap_reached=True,
-        comment=comment,
+        True,
+        nxt,
+        "requested by a person" if person else "requested by an agent",
+        final=nxt >= MAX_ROUNDS,
+        person=person,
     )
 
 
@@ -233,15 +325,20 @@ def finish(event: dict) -> Finish:
     label = f"`{REVIEW_LABEL}`"
 
     if event.get("verdict") is None:
-        # No marker, so nothing counts: the review did not reach a verdict, and a round
-        # that died early (one on #352 did, 481 ms in) has not spent the reviewer's time.
+        # Not a round: the review did not reach a verdict, and one that died early (one
+        # on #352 did, 481 ms in) has not spent the reviewer's time. The attempt marker
+        # records the commit, so an agent cannot retry it into a loop (`decide`).
+        marker = f"{ATTEMPT_MARKER} n={rnd}{f' sha={sha}' if sha else ''} -->"
         return Finish(
             DEFAULT_VERDICT,
             False,
             False,
-            f"**Round {rnd} did not finish.** The review stopped before it reached a "
-            f"verdict, so the round was not counted. Add the {label} label again to "
-            "retry." + footer,
+            f"{marker}\n\n**Round {rnd} did not finish.** The review stopped before it "
+            "reached a verdict, so the round was not counted. If it stopped within "
+            "seconds, the likely cause is that this branch's copy of the review "
+            "workflow differs from `main`'s: merge `main`, then add the "
+            f"{label} label again. An agent's retry at this same commit is refused; "
+            "a person's is not." + footer,
             "no verdict file",
         )
 
@@ -266,7 +363,8 @@ def finish(event: dict) -> Finish:
         body = (
             f"**Round {rnd}: the review does not need to see the result.**{summary}\n\n"
             "Work through any findings it posted with `address-review-findings`. No "
-            f"further round is needed; adding the {label} label buys one anyway."
+            f"further round is needed; a person adding the {label} label still buys "
+            "one."
         )
     elif final:
         body = (
@@ -283,7 +381,9 @@ def finish(event: dict) -> Finish:
             "this way."
         )
 
-    marker = f"{ROUND_MARKER} n={rnd}{f' sha={sha}' if sha else ''} -->"
+    marker = (
+        f"{ROUND_MARKER} n={rnd}{f' sha={sha}' if sha else ''} verdict={v.verdict} -->"
+    )
     return Finish(v.verdict, v.stop, True, f"{marker}\n\n{body}{footer}", v.reason)
 
 
