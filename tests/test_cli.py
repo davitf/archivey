@@ -896,6 +896,30 @@ def test_missing_archive_uses_prose_not_errno_repr(
     assert "[Errno" not in err
 
 
+@pytest.mark.parametrize("verb", ["list", "x"])
+def test_missing_archive_name_is_escaped_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], verb: str
+) -> None:
+    """The filename is escaped at the print site only — ``!r`` before it doubled it."""
+    missing = tmp_path / "ev\u2028il.zip"
+    assert main([verb, str(missing)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "\u2028" not in err
+    assert "ev\\u2028il.zip'" in err
+    assert "ev\\\\u2028il.zip" not in err
+
+
+def test_os_error_without_strerror_does_not_embed_a_repr() -> None:
+    import errno
+
+    from archivey.cli.main import _format_os_error
+
+    exc = OSError(errno.EACCES, None, "ev\x1bil.zip")
+    assert _format_os_error(exc) == (
+        "archivey: cannot open 'ev\x1bil.zip': Permission denied"
+    )
+
+
 def test_extract_missing_archive_only_requires_archive(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1536,6 +1560,365 @@ def test_report_lines_do_not_double_path_separators(
     lines = _report_lines(capsys.readouterr().err, "overwritten:")
     assert lines == ["overwritten: dir/README"]
     assert "\\\\" not in lines[0]
+
+
+def _summary_lines(err: str) -> list[str]:
+    """The closing ``N extracted, …`` line(s), split on ``\\n`` only (see _report_lines)."""
+    return [ln for ln in err.split("\n") if " extracted, " in ln]
+
+
+# The single-root forms of the two spoof names: a directory, not a file.
+_SPOOF_ANSI_ROOT = "ev\x1b[2Kil\rSUCCESS"
+_SPOOF_PORTABLE_ROOT = "ev\u2028il"
+
+
+@pytest.mark.parametrize(
+    "root,raw,escaped",
+    [
+        pytest.param(_SPOOF_PORTABLE_ROOT, "\u2028", "ev\\u2028il", id="portable"),
+        pytest.param(
+            _SPOOF_ANSI_ROOT,
+            "\x1b",
+            "ev\\x1b[2Kil\\rSUCCESS",
+            id="ansi",
+            marks=_ANSI_ONLY,
+        ),
+    ],
+)
+def test_extract_summary_escapes_the_single_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    root: str,
+    raw: str,
+    escaped: str,
+) -> None:
+    """The summary names the sole top-level entry — the member's own name.
+
+    It is the last line the operator reads, the one saying where the data went, so an
+    unescaped name there lets the archive write it.
+    """
+    monkeypatch.chdir(tmp_path)
+    archive = _zip(tmp_path / "one.zip", {f"{root}/a.txt": b"a", f"{root}/b.txt": b"b"})
+    assert main(["x", str(archive)]) == EXIT_OK
+    lines = _summary_lines(capsys.readouterr().err)
+    assert len(lines) == 1
+    assert raw not in lines[0]
+    assert "\r" not in lines[0]
+    assert lines[0].endswith(f"→ {escaped}/")
+
+
+@pytest.mark.parametrize(
+    "root,raw,escaped",
+    [
+        pytest.param(_SPOOF_PORTABLE_ROOT, "\u2028", "ev\\u2028il", id="portable"),
+        pytest.param(
+            _SPOOF_ANSI_ROOT,
+            "\x1b",
+            "ev\\x1b[2Kil\\rSUCCESS",
+            id="ansi",
+            marks=_ANSI_ONLY,
+        ),
+    ],
+)
+def test_extract_hoist_report_escapes_the_single_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    root: str,
+    raw: str,
+    escaped: str,
+) -> None:
+    """A plain tar has no index, so the CLI wraps, then hoists the sole root and says so.
+
+    Both the ``moved to`` line and the summary print that root's name.
+    """
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(
+        tmp_path / "bundle.tar", {f"{root}/a.txt": b"a", f"{root}/b.txt": b"b"}
+    )
+    assert main(["x", str(archive)]) == EXIT_OK
+    err = capsys.readouterr().err
+    moved = _report_lines(err, "moved to ")
+    assert moved == [f"moved to {escaped}/"]
+    summary = _summary_lines(err)
+    assert len(summary) == 1
+    assert raw not in summary[0]
+    assert summary[0].endswith(f"→ {escaped}/")
+
+
+def test_extract_escapes_a_wrapper_named_after_the_archive_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The wrapper directory is the archive's filename stem, which is not the CLI's.
+
+    An archive extracted out of another archive gets its filename from that one, and a
+    shell loop over ``*.tar`` hands it over without anyone typing it.
+    """
+    monkeypatch.chdir(tmp_path)
+    archive = _tar(
+        tmp_path / f"{_SPOOF_PORTABLE_ROOT}.tar", {"a.txt": b"a", "b.txt": b"b"}
+    )
+    assert main(["x", str(archive)]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert _report_lines(err, "extracting into ") == ["extracting into ev\\u2028il/"]
+    summary = _summary_lines(err)
+    assert len(summary) == 1
+    assert summary[0].endswith("→ ev\\u2028il/")
+    assert "\u2028" not in err
+
+
+def test_hoist_escapes_the_wrapper_it_flattens_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``ev<U+2028>il.tar`` holding ``ev<U+2028>il/``: the wrapper becomes the root."""
+    monkeypatch.chdir(tmp_path)
+    root = _SPOOF_PORTABLE_ROOT
+    archive = _tar(tmp_path / f"{root}.tar", {f"{root}/f.txt": b"data"})
+    assert main(["x", str(archive)]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert _report_lines(err, "removed wrapper; ") == [
+        "removed wrapper; content at ev\\u2028il/"
+    ]
+    assert "\u2028" not in err
+
+
+# A hostile single root colliding with an existing entry of the same name, so the hoist
+# has to resolve the collision itself and print the paths it chose.
+_HOSTILE_ROOT = f"root{_SPOOF_PORTABLE_ROOT}"
+
+
+def _hostile_collision_archive(tmp_path: Path, name: str = "bundle.tar") -> Path:
+    (tmp_path / _HOSTILE_ROOT).mkdir()
+    (tmp_path / _HOSTILE_ROOT / "clash.txt").write_bytes(b"MINE")
+    return _tar(tmp_path / name, {f"{_HOSTILE_ROOT}/clash.txt": b"ARCHIVE"})
+
+
+@pytest.mark.parametrize(
+    "overwrite,expected",
+    [
+        (
+            "rename",
+            "renamed: rootev\\u2028il/clash.txt -> rootev\\u2028il/clash (1).txt",
+        ),
+        ("skip", "skipped: rootev\\u2028il/clash.txt"),
+    ],
+)
+def test_hoist_escapes_the_collisions_it_resolves(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
+    expected: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    archive = _hostile_collision_archive(tmp_path)
+    assert main(["x", str(archive), "--overwrite", overwrite]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert _report_lines(err, expected.split(":", 1)[0] + ":") == [expected]
+    assert "\u2028" not in err
+
+
+def test_hoist_escapes_a_collision_it_stops_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Under ``error`` the hoist names the collision and the wrapper it left behind."""
+    monkeypatch.chdir(tmp_path)
+    archive = _hostile_collision_archive(tmp_path, name=f"w{_SPOOF_PORTABLE_ROOT}.tar")
+    assert main(["x", str(archive), "--overwrite", "error"]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert _report_lines(err, "Destination already exists: ") == [
+        "Destination already exists: rootev\\u2028il/clash.txt"
+    ]
+    assert _report_lines(err, "hoist stopped; ") == [
+        "hoist stopped; remaining files left in wev\\u2028il/"
+    ]
+    assert "\u2028" not in err
+
+
+def test_hoist_escapes_the_wrapper_when_the_move_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from archivey.cli import extract_cmd
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("refused")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(extract_cmd, "_merge_move", refuse)
+    archive = _tar(tmp_path / f"w{_SPOOF_PORTABLE_ROOT}.tar", {"root/a.txt": b"a"})
+    assert main(["x", str(archive)]) == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert _report_lines(err, "files left in ") == ["files left in wev\\u2028il/"]
+    assert "\u2028" not in err
+
+
+# --- the hoist reports where the root landed, not where it was headed -------------
+
+
+def test_hoist_names_the_free_name_a_rename_chose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The archive's sole file collides with the operator's ``a.txt``.
+
+    The content lands at ``a (1).txt``; ``a.txt`` is the operator's own file, so a
+    report naming it points at data the archive never wrote.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").write_bytes(b"MINE")
+    archive = _tar(tmp_path / "bundle.tar", {"a.txt": b"ARCHIVE"})
+    assert main(["x", str(archive)]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert (tmp_path / "a (1).txt").read_bytes() == b"ARCHIVE"
+    assert _report_lines(err, "moved to ") == ["moved to a (1).txt"]
+    assert _summary_lines(err)[0].endswith("→ a (1).txt")
+
+
+def test_hoist_names_no_destination_when_skip_discards_the_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Under ``skip`` nothing moves; ``moved to a.txt`` would name the operator's file."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").write_bytes(b"MINE")
+    archive = _tar(tmp_path / "bundle.tar", {"a.txt": b"ARCHIVE"})
+    assert main(["x", str(archive), "--overwrite", "skip"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert (tmp_path / "a.txt").read_bytes() == b"MINE"
+    assert _report_lines(err, "skipped: ") == ["skipped: a.txt"]
+    assert _report_lines(err, "moved to ") == []
+    # Nothing from the archive is on disk, so nothing counts as extracted — the same
+    # line a direct extraction hitting this collision prints.
+    assert _summary_lines(err) == ["0 extracted, 0 renamed, 1 skipped → ."]
+
+
+def test_hoist_skip_inside_a_merged_root_is_not_counted_as_extracted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One skip per colliding child: only the file that moved counts as extracted."""
+    monkeypatch.chdir(tmp_path)
+    archive = _hoist_collision_archive(tmp_path)
+    _seed_existing_root(tmp_path)
+    assert main(["x", str(archive), "--overwrite", "skip"]) == EXIT_OK
+    assert _summary_lines(capsys.readouterr().err) == [
+        "1 extracted, 0 renamed, 1 skipped → root/"
+    ]
+
+
+def test_hoist_does_not_mark_a_file_root_as_a_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A sole file root against an operator *directory* of the same name.
+
+    The trailing ``/`` was read off the pre-existing entry, so the report pointed at
+    the operator's directory as if it were where the file went.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").mkdir()
+    archive = _tar(tmp_path / "bundle.tar", {"a.txt": b"ARCHIVE"})
+    assert main(["x", str(archive)]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert (tmp_path / "a (1).txt").read_bytes() == b"ARCHIVE"
+    assert _report_lines(err, "moved to ") == ["moved to a (1).txt"]
+    assert _summary_lines(err)[0].endswith("→ a (1).txt")
+
+
+def test_relative_name_falls_back_to_forward_slashes() -> None:
+    """A path outside the root is reported whole — ``/``-separated, never native.
+
+    Pinned with a Windows-flavoured path so the check has teeth on a POSIX runner,
+    where ``str()`` of a native path already has forward slashes.
+    """
+    from pathlib import PureWindowsPath
+
+    from archivey.cli.extract_cmd import _relative_name
+
+    landed = PureWindowsPath("C:/out/elsewhere/a.txt")
+    assert _relative_name(landed, PureWindowsPath("D:/target")) == (
+        "C:/out/elsewhere/a.txt"
+    )
+
+
+def test_unmatched_pattern_hint_escapes_the_suggested_dest(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The ``-d`` hint repeats the pattern; it is escaped like the ``!r`` form beside it."""
+    assert main(["x", str(sample_zip), "ev\x1bil/"]) == EXIT_FAIL
+    lines = _report_lines(capsys.readouterr().err, "warning: pattern matched")
+    assert lines == [
+        "warning: pattern matched no members: 'ev\\x1bil/' (did you mean -d ev\\x1bil?)"
+    ]
+
+
+def test_escape_path_renders_forward_slashes() -> None:
+    """A native path is ``/``-separated before escaping, so separators never double."""
+    from archivey.cli.format import escape_path
+
+    assert escape_path(Path("dir") / "sub" / "a.txt") == "dir/sub/a.txt"
+    assert escape_path(Path("dir") / "ev\x1bil") == "dir/ev\\x1bil"
+
+
+def _write_zip_with_comment(path: Path, comment: bytes) -> Path:
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("a.txt", b"hi")
+        zf.comment = comment
+    return path
+
+
+def test_info_escapes_the_archive_comment_on_stdout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The comment reaches **stdout**, so ``2>/dev/null`` hides nothing.
+
+    A ZIP comment is arbitrary bytes and ``info`` is the verb an operator runs to learn
+    what a file is before touching it; printed raw, the archive picks that answer.
+    """
+    archive = _write_zip_with_comment(
+        tmp_path / "cmt.zip", b"ev\x1b[2Kil\rSAFE ARCHIVE\nsecond line"
+    )
+    assert main(["info", str(archive)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "\x1b" not in out
+    assert "\r" not in out
+    lines = [ln for ln in out.split("\n") if ln.startswith("comment:")]
+    assert lines == ["comment:     ev\\x1b[2Kil\\rSAFE ARCHIVE\\nsecond line"]
+
+
+def test_info_leaves_an_ordinary_comment_alone(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    archive = _write_zip_with_comment(tmp_path / "cmt.zip", "Café release".encode())
+    assert main(["info", str(archive)]) == EXIT_OK
+    assert "comment:     Café release\n" in capsys.readouterr().out
+
+
+def test_info_escapes_every_value_it_prints() -> None:
+    """Not only the comment: version strings and ``extra`` entries come from backends.
+
+    Pinned on the line helper because no fixture carries a hostile version or ``extra``
+    value today; the point is that a new one cannot reach the terminal raw.
+    """
+    from archivey.cli.info_cmd import _line
+
+    out = io.StringIO()
+    _line("extra.x\x1bkey", "v\x1b[2K\rspoof", out)
+    _line("solid", True, out)
+    assert out.getvalue() == (
+        "extra.x\\x1bkey: v\\x1b[2K\\rspoof\n" + "solid:       True\n"
+    )
+
+
+def test_info_open_failure_is_not_escaped_twice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An archivey exception has escaped its own message; ``info`` must not redo it."""
+    bad = tmp_path / f"{_SPOOF_PORTABLE_ROOT}.zip"
+    bad.write_bytes(b"PK\x03\x04" + b"\x00" * 40)
+    assert main(["info", str(bad)]) != EXIT_OK
+    err = capsys.readouterr().err
+    open_lines = _report_lines(err, "open:")
+    assert len(open_lines) == 1
+    assert "ev\\u2028il.zip" in open_lines[0]  # escaped once, by the exception
+    assert "ev\\\\u2028il.zip" not in open_lines[0]  # …and not again
 
 
 # --- O9: archive-derived text on the LOG path, not just the print path -------------
