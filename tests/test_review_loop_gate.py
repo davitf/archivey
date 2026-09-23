@@ -306,6 +306,10 @@ def _close_step() -> str:
     return "\n".join(out)
 
 
+# The step runs only on `ubuntu-latest`. Under Git Bash on Windows the substituted
+# paths are backslashed and unquoted in the step, so bash would read a different path
+# than the one the test wrote — a failure of the harness, not of the step.
+@pytest.mark.skipif(sys.platform == "win32", reason="the step runs on ubuntu-latest")
 @pytest.mark.parametrize(
     ("verdict_text", "counted"),
     [
