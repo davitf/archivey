@@ -227,9 +227,10 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` on `Archive
   RAR. That parse bound is a member count, not a byte budget:
   `max_metadata_bytes` still fires when the list is materialized.
 - **Decoder memory** — the working set a codec allocates because the *archive's* header
-  said to, such as a 7z PPMd window (`DecoderLimits`, default 2 GiB). Checked before the
-  allocation, on `open()` / `read()` as much as on `extract()`, so it is neither a
-  listing nor an extraction cap. Trips raise `ResourceLimitError`.
+  said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
+  2 GiB). Checked before the allocation, on `open()` / `read()` as much as on
+  `extract()`, so it is neither a listing nor an extraction cap. Trips raise
+  `ResourceLimitError`.
 
 Loosen per call with `limits=` (extraction only), raise `listing_limits` or
 `decoder_limits` at `open_archive(config=…)`, or use `ExtractionLimits.UNLIMITED` /

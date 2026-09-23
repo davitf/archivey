@@ -10,6 +10,7 @@ from archivey.config import (
     ArchiveyConfig,
     DecoderLimits,
 )
+from archivey.exceptions import ResourceLimitError
 
 # Only the names other modules import from here. ``ArchiveyConfig`` and
 # ``DEFAULT_ARCHIVEY_CONFIG`` are imported for use below, not re-exported —
@@ -19,6 +20,7 @@ __all__ = [
     "DEFAULT_STREAM_CONFIG",
     "DecoderLimits",
     "StreamConfig",
+    "check_decoder_memory",
     "stream_config_from_archivey",
 ]
 
@@ -75,3 +77,33 @@ def stream_config_from_archivey(
 DEFAULT_STREAM_CONFIG = stream_config_from_archivey(
     DEFAULT_ARCHIVEY_CONFIG, streaming=False, seekable=False
 )
+
+
+def check_decoder_memory(declared: int, *, limits: DecoderLimits, what: str) -> None:
+    """Refuse an archive-declared decoder allocation above ``max_decoder_memory``.
+
+    ``declared`` is the number the *archive* asked for, read out of a header field —
+    not a measurement of anything, and not bounded by the file's own size. ``what``
+    names the field for the message, so a caller who raised the cap on purpose can
+    tell which archive is asking and for how much.
+
+    Callers run this before the decoder object is constructed, because the
+    allocation it guards is made inside a C extension, and what a refused native
+    allocation does differs by extension. pyppmd 1.3.1's failure path is unsound —
+    measured, ``Ppmd7Decoder(6, 0xFFFFFFFF)`` under a 2 GiB ``RLIMIT_AS`` aborts on
+    ``double free or corruption`` with SIGABRT, leaving nothing to catch. liblzma
+    does return ``MemoryError`` when the reservation itself fails, but a reservation
+    that succeeds is the worse case there: the dictionary is touched as output is
+    written, so a 151 KB stream declaring 4 GiB holds 1.1 GiB resident after
+    producing 1 GiB of zeros, where the same stream declaring 1 MiB holds 59 MB.
+
+    Lives here rather than in ``codecs.py`` so the xz and lzip decoders, which
+    ``codecs.py`` imports, can call it without an import cycle.
+    """
+    cap = limits.max_decoder_memory
+    if cap is not None and declared > cap:
+        raise ResourceLimitError(
+            f"Decoder limit reached: max_decoder_memory={cap} "
+            f"({what} declares {declared} bytes). The archive chose this number; "
+            f"raise DecoderLimits.max_decoder_memory if the archive is trusted."
+        )

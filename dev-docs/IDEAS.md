@@ -514,9 +514,10 @@
   ordinary archives and refuses a deliberate `mem=2g`. **Recommended for a later change,
   not the one that added the type**: with a single field on `DecoderLimits` the preset is
   an alias for `DecoderLimits(max_decoder_memory=256 * 2**20)`, which a caller can already
-  write, and a name that promises a tuned bundle should arrive with a bundle — the LZMA
-  dictionary cap and the total KDF budget are both heading for this type. Adding a class
-  attribute later is purely additive.
+  write, and a name that promises a tuned bundle should arrive with a bundle — the total
+  KDF budget is heading for this type. (The LZMA dictionary cap landed on the same field
+  rather than a new one, and 256 MiB also covers it: xz `-9` and 7-Zip's presets declare
+  64 MiB at most.) Adding a class attribute later is purely additive.
   **The name is open**, and davitf said so explicitly. `UNTRUSTED` is the suggestion on
   the table: `STRICT` is taken in spirit by `strict_archive_eof` in the same file and by
   archivey's use of "strict" for how harshly corruption is treated, while `UNTRUSTED`
@@ -529,12 +530,12 @@
   working set from a number in the archive's own header (7z PPMd var.H's 32-bit window,
   ZIP method 98's megabyte count, the LZMA dictionary size) has no row of its own in
   `dev-docs/threat-model.md`; O11 is the nearest and is about detection-time decode work,
-  which is a different mechanism. `DecoderLimits` closes the PPMd half of it, so the row
-  should read "mitigated for PPMd, open for LZMA". Not written with the guard because
-  `threat-model.md` was owned by another open pull request at the time and an `O`-numbered
-  row cannot be appended without knowing what numbers that one takes. Write it once that
-  lands; the measurements are in the `DecoderLimits` docstring and
-  `tests/test_decoder_limits.py`.
+  which is a different mechanism. `DecoderLimits` now covers both halves (PPMd, then the
+  LZMA dictionary on every container that declares one), so the row should read
+  "mitigated". Not written with either guard because `threat-model.md` was owned by
+  another open pull request each time, and an `O`-numbered row cannot be appended without
+  knowing what numbers that one takes. Write it once that lands; the measurements are in
+  the `DecoderLimits` docstring and `tests/test_decoder_limits.py`.
 
 - **Detection budget / receipt public surface** — deferred by `detection-prefix-workspace`
   Decision 3A. Types live in `archivey.detection_cost` but are omitted from

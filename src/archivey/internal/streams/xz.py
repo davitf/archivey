@@ -30,7 +30,13 @@ from dataclasses import dataclass
 from typing import BinaryIO, Callable
 
 from archivey.diagnostics import DiagnosticCode, SeekIndexContext
-from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    ResourceLimitError,
+    TruncatedError,
+)
+from archivey.internal.config import DecoderLimits
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     resolve_collector,
@@ -275,13 +281,63 @@ def _read_xz_index_backwards(
     return flat
 
 
+# liblzma's ``memlimit`` counts a decoder's whole working set: the dictionary the
+# block header declares plus the decoder's own overhead, measured on liblzma 5.4.5 at
+# 65 592 bytes for a lone LZMA2 filter and 67 992 for the longest chain xz allows
+# (four filters). The allowance, about twice that, keeps a dictionary exactly at
+# ``max_decoder_memory`` readable, as it is on the raw LZMA and .lzma paths, which
+# compare the declared dictionary itself. It is kept small because it is also slack:
+# a cap set 128 KiB or less below one of the sizes an xz header can declare (2^n or
+# 3 * 2^(n-1)) admits that size on xz alone.
+_LIBLZMA_OVERHEAD_ALLOWANCE = 128 * 1024
+
+
+def _new_decompressor(limits: DecoderLimits) -> lzma.LZMADecompressor:
+    """An xz decompressor that refuses a block whose filters need more than the cap.
+
+    xz is the one LZMA path archivey does not read the dictionary size off itself:
+    each block header declares its own, and ``_XzState`` hands liblzma whole streams
+    without walking their blocks. liblzma compares ``memlimit`` against the block's
+    filter chain after decoding the block header and before allocating anything for
+    it, which is the same guarantee :func:`~archivey.internal.config.check_decoder_memory`
+    gives the other paths.
+    """
+    cap = limits.max_decoder_memory
+    if cap is None:
+        return lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
+    return lzma.LZMADecompressor(
+        format=lzma.FORMAT_XZ, memlimit=cap + _LIBLZMA_OVERHEAD_ALLOWANCE
+    )
+
+
+def _lzma_failure(
+    exc: lzma.LZMAError, context: str, limits: DecoderLimits
+) -> ArchiveyError:
+    """Map a liblzma error to archivey's, telling a memlimit refusal from corruption.
+
+    CPython reports ``LZMA_MEMLIMIT_ERROR`` only as message text, "Memory usage limit
+    exceeded" on every version from 3.10 to 3.14, so the text is what there is to
+    match on. Only a decompressor built with a ``memlimit`` can raise it.
+    """
+    cap = limits.max_decoder_memory
+    if cap is not None and str(exc).startswith("Memory usage limit"):
+        return ResourceLimitError(
+            f"Decoder limit reached: max_decoder_memory={cap} (an xz block's "
+            f"declared dictionary needs more than that; liblzma refused it before "
+            f"allocating). The archive chose this number; raise "
+            f"DecoderLimits.max_decoder_memory if the archive is trusted."
+        )
+    return CorruptionError(f"{context}: {exc}")
+
+
 class _XzState:
     """Streaming state machine for multi-stream XZ decompression."""
 
     _NEED_HEADER = 0
     _IN_STREAM = 1
 
-    def __init__(self) -> None:
+    def __init__(self, limits: DecoderLimits) -> None:
+        self._limits = limits
         self._state = self._NEED_HEADER
         self._buf = bytearray()
         self._dec: lzma.LZMADecompressor | None = None
@@ -364,11 +420,13 @@ class _XzState:
                     break
                 del self._buf[:_STREAM_HEADER_SIZE]
                 try:
-                    self._dec = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
+                    self._dec = _new_decompressor(self._limits)
                     remaining = max_length - len(output) if max_length >= 0 else -1
                     plain = self._dec.decompress(header, remaining)
                 except lzma.LZMAError as e:
-                    raise CorruptionError(f"XZ stream header error: {e}") from e
+                    raise _lzma_failure(
+                        e, "XZ stream header error", self._limits
+                    ) from e
                 self._bytes_fed = _STREAM_HEADER_SIZE
                 self._stream_decomp_bytes = len(plain)
                 output.extend(plain)
@@ -384,7 +442,9 @@ class _XzState:
                     remaining = max_length - len(output) if max_length >= 0 else -1
                     plain = self._dec.decompress(chunk, remaining)
                 except lzma.LZMAError as e:
-                    raise CorruptionError(f"XZ decompression error: {e}") from e
+                    raise _lzma_failure(
+                        e, "XZ decompression error", self._limits
+                    ) from e
                 self._bytes_fed += len(chunk)
                 self._stream_decomp_bytes += len(plain)
                 output.extend(plain)
@@ -416,7 +476,10 @@ class _XzBlockChain:
     interface as ``_XzState``.
     """
 
-    def __init__(self, blocks: list[_XzBlockBounds], inner: BinaryIO) -> None:
+    def __init__(
+        self, blocks: list[_XzBlockBounds], inner: BinaryIO, limits: DecoderLimits
+    ) -> None:
+        self._limits = limits
         self._blocks = blocks
         self._inner = inner
         self._block_idx = 0
@@ -432,7 +495,7 @@ class _XzBlockChain:
         self._block_idx = idx
         block = self._blocks[idx]
         self._inner.seek(block.compressed_start)
-        self._dec = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
+        self._dec = _new_decompressor(self._limits)
         self._block_bytes_fed = 0
         stream_flags = bytes([0x00, block.check])
         header_crc = zlib.crc32(stream_flags) & 0xFFFFFFFF
@@ -484,7 +547,9 @@ class _XzBlockChain:
                 remaining_out = max_length - len(output) if max_length >= 0 else -1
                 plain = self._dec.decompress(chunk, remaining_out)
             except lzma.LZMAError as e:
-                raise CorruptionError(f"XZ block decompression error: {e}") from e
+                raise _lzma_failure(
+                    e, "XZ block decompression error", self._limits
+                ) from e
             output.extend(plain)
             if self._block_bytes_fed >= _round_up_4(block.unpadded_size):
                 # Drain any retained output before the synthetic footer.
@@ -571,8 +636,10 @@ class XzDecoder(BaseDecoder):
         collector: DiagnosticCollector | None,
         get_seek_points: Callable[[], list[SeekPoint]],
         index_built: Callable[[], bool],
+        limits: DecoderLimits,
     ) -> None:
         self._engine = engine
+        self._limits = limits
         self._inner = inner
         self._comp_cursor = comp_cursor
         self._decomp_cursor = decomp_cursor
@@ -591,9 +658,10 @@ class XzDecoder(BaseDecoder):
         collector: DiagnosticCollector | None,
         get_seek_points: Callable[[], list[SeekPoint]],
         index_built: Callable[[], bool],
+        limits: DecoderLimits,
     ) -> XzDecoder:
         if point.state is None:
-            engine: _XzState | _XzBlockChain = _XzState()
+            engine: _XzState | _XzBlockChain = _XzState(limits)
         else:
             start_block: _XzBlockBounds = point.state
             subsequent = [
@@ -602,7 +670,7 @@ class XzDecoder(BaseDecoder):
                 if sp.decompressed_offset > point.decompressed_offset
                 and sp.state is not None
             ]
-            engine = _XzBlockChain([start_block, *subsequent], inner)
+            engine = _XzBlockChain([start_block, *subsequent], inner, limits)
         return cls(
             engine,
             inner=inner,
@@ -612,6 +680,7 @@ class XzDecoder(BaseDecoder):
             collector=collector,
             get_seek_points=get_seek_points,
             index_built=index_built,
+            limits=limits,
         )
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> XzDecoder:
@@ -622,6 +691,7 @@ class XzDecoder(BaseDecoder):
             collector=self._collector,
             get_seek_points=self._get_seek_points,
             index_built=self._index_built,
+            limits=self._limits,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -753,8 +823,12 @@ def XzDecompressorStream(
     *,
     collector: DiagnosticCollector | None = None,
     seekable: bool = True,
+    decoder_limits: DecoderLimits = DecoderLimits(),
 ) -> DecompressorStream:
     """Seekable XZ decompressor backed by stdlib ``lzma``.
+
+    ``decoder_limits`` caps the dictionary each block header declares (see
+    :func:`_new_decompressor`); it defaults to the public default, not to no cap.
 
     ``stream_cell`` late-binds the constructed stream so ``XzDecoder.recreate`` can
     read subsequent block ``SeekPoint``s / ``_index_built`` — the same coupling the
@@ -783,6 +857,7 @@ def XzDecompressorStream(
             collector=collector,
             get_seek_points=get_seek_points,
             index_built=index_built,
+            limits=decoder_limits,
         )
 
     stream = DecompressorStream(

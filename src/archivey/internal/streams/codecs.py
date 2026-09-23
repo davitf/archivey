@@ -42,14 +42,15 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
-    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
 )
 from archivey.internal.config import (
     DEFAULT_STREAM_CONFIG,
     AcceleratorMode,
+    DecoderLimits,
     StreamConfig,
+    check_decoder_memory,
 )
 from archivey.internal.streams.archive_stream import (
     ArchiveStream,
@@ -68,12 +69,14 @@ from archivey.internal.streams.decompress import (
     ZlibDecompressorStream,
 )
 from archivey.internal.streams.lzip import LzipDecompressorStream
+from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     ensure_binaryio,
     fix_stream_start_position,
     is_seekable,
+    read_exact,
     source_byte_size,
 )
 from archivey.internal.streams.streamtools.shared import SharedSource
@@ -888,6 +891,17 @@ class MetadataContext:
 # --- the codec descriptors -------------------------------------------------------------
 
 
+# Detection probes decode a bounded sample, so what a header declares cannot make
+# them hold more than that sample's output: liblzma touches its dictionary only as
+# output is written. Capping the probe as well would make detection answer "not this
+# format" for a stream whose dictionary is over the cap, and a caller who opened it
+# with ``DecoderLimits.UNLIMITED`` would then get the wrong format rather than the
+# read they asked for. The open that follows detection applies the caller's limits.
+_PROBE_STREAM_CONFIG = replace(
+    DEFAULT_STREAM_CONFIG, decoder_limits=DecoderLimits.UNLIMITED
+)
+
+
 class StreamCodec:
     """One single-stream codec: its behavior, detection signals, and requirement.
 
@@ -1077,7 +1091,9 @@ class StreamCodec:
             else max(len(sample), _PROBE_PREFIX)
         )
         try:
-            with open_codec_stream(self.codec, io.BytesIO(sample)) as stream:
+            with open_codec_stream(
+                self.codec, io.BytesIO(sample), config=_PROBE_STREAM_CONFIG
+            ) as stream:
                 if fully_visible:
                     # Drain up to the budget in chunks. A truncated high-ratio stream
                     # often yields its whole expansion on the first large read without
@@ -1364,7 +1380,9 @@ class XzCodec(_SizedLzmaCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        return XzDecompressorStream(source, seekable=config.seekable)
+        return XzDecompressorStream(
+            source, seekable=config.seekable, decoder_limits=config.decoder_limits
+        )
 
 
 class LzipCodec(_SizedLzmaCodec):
@@ -1375,7 +1393,9 @@ class LzipCodec(_SizedLzmaCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        return LzipDecompressorStream(source, seekable=config.seekable)
+        return LzipDecompressorStream(
+            source, seekable=config.seekable, decoder_limits=config.decoder_limits
+        )
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         """Surface decompressed size and whole-member CRC-32 from one seekable index scan.
@@ -1437,6 +1457,30 @@ def _alone_header_plausible(prefix: bytes) -> bool:
     return int.from_bytes(prefix[5:13], "little") != 0
 
 
+def _peek_alone_header(source: CodecSource) -> tuple[CodecSource, bytes]:
+    """Read an Alone stream's 13-byte header without consuming it from ``source``.
+
+    ``lzma.LZMAFile`` takes no ``memlimit``, so the dictionary size has to be read
+    before it is built. Returns the source to decode from, which is ``source``
+    itself unless it could neither seek nor peek, in which case it is wrapped in a
+    :class:`PeekableStream` that replays the header — nothing is lost, since such a
+    source could not have been rewound anyway.
+    """
+    if isinstance(source, (str, os.PathLike)):
+        with open(os.fspath(source), "rb") as f:
+            return source, read_exact(f, _ALONE_HEADER_SIZE)
+    if isinstance(source, PeekableStream):
+        return source, source.peek(_ALONE_HEADER_SIZE)
+    if is_seekable(source):
+        pos = source.tell()
+        try:
+            return source, read_exact(source, _ALONE_HEADER_SIZE)
+        finally:
+            source.seek(pos)
+    peekable = PeekableStream(source)
+    return peekable, peekable.peek(_ALONE_HEADER_SIZE)
+
+
 class LzmaAloneCodec(_LzmaErrorCodec):
     """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW."""
 
@@ -1447,6 +1491,14 @@ class LzmaAloneCodec(_LzmaErrorCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
+        source, header = _peek_alone_header(source)
+        if len(header) == _ALONE_HEADER_SIZE:
+            # A shorter header is left for liblzma to call truncated.
+            check_decoder_memory(
+                int.from_bytes(header[1:5], "little"),
+                limits=config.decoder_limits,
+                what="LZMA Alone dictionary size",
+            )
         # stdlib LZMAFile seeks by re-decompressing from the start; the outer ArchiveStream
         # warns on rewind (see rewind_warning).
         return ensure_binaryio(
@@ -1489,6 +1541,12 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         )
 
 
+_LZMA_DICTIONARY_FILTERS: dict[int, str] = {
+    lzma.FILTER_LZMA1: "LZMA",
+    lzma.FILTER_LZMA2: "LZMA2",
+}
+
+
 class _RawLzmaCodec(_LzmaErrorCodec):
     """Raw LZMA1/LZMA2 (FORMAT_RAW + properties); container-only (no standalone stream)."""
 
@@ -1499,6 +1557,17 @@ class _RawLzmaCodec(_LzmaErrorCodec):
             raise ValueError(
                 "raw LZMA decoding requires filter properties (CodecParams.filters)"
             )
+        # The 7z coder properties and the ZIP method-14 header both arrive here as
+        # decoded filter dicts, so this one check covers both containers. A filter
+        # with no ``dict_size`` (7z LZMA without properties) gets liblzma's preset
+        # default, which the archive did not choose.
+        for spec in params.filters:
+            if spec.get("id") in _LZMA_DICTIONARY_FILTERS and "dict_size" in spec:
+                check_decoder_memory(
+                    spec["dict_size"],
+                    limits=config.decoder_limits,
+                    what=f"{_LZMA_DICTIONARY_FILTERS[spec['id']]} dictionary size",
+                )
         return ensure_binaryio(
             lzma.LZMAFile(
                 source, mode="rb", format=lzma.FORMAT_RAW, filters=params.filters
@@ -1772,32 +1841,6 @@ class UnixCompressCodec(StreamCodec):
         return None
 
 
-def check_decoder_memory(declared: int, *, config: StreamConfig, what: str) -> None:
-    """Refuse an archive-declared decoder allocation above ``max_decoder_memory``.
-
-    ``declared`` is the number the *archive* asked for, read out of a header field —
-    not a measurement of anything, and not bounded by the file's own size. ``what``
-    names the field for the message, so a caller who raised the cap on purpose can
-    tell which archive is asking and for how much.
-
-    The check has to happen here, before the decoder object is constructed, because
-    the allocation it guards is made inside a C extension. When the request is merely
-    large the process swaps or is OOM-killed; when it is large enough to be refused,
-    the extension's own error handling is what runs, and pyppmd 1.3.1's is unsound —
-    measured, ``Ppmd7Decoder(6, 0xFFFFFFFF)`` under a 2 GiB ``RLIMIT_AS`` aborts on
-    ``double free or corruption`` with SIGABRT. There is no ``MemoryError`` to catch
-    and no frame left to catch it in, so a guard downstream of the constructor would
-    guard nothing.
-    """
-    cap = config.decoder_limits.max_decoder_memory
-    if cap is not None and declared > cap:
-        raise ResourceLimitError(
-            f"Decoder limit reached: max_decoder_memory={cap} "
-            f"({what} declares {declared} bytes). The archive chose this number; "
-            f"raise DecoderLimits.max_decoder_memory if the archive is trusted."
-        )
-
-
 def _parse_ppmd_var_h_properties(properties: bytes | None) -> tuple[int, int]:
     """Parse 7z PPMd var.H coder properties → ``(order, mem_size)``."""
 
@@ -1839,7 +1882,9 @@ class PpmdCodec(StreamCodec):
             if params.ppmd_mem_size is None:
                 raise ValueError("ZIP PPMd requires ppmd_order and ppmd_mem_size")
             check_decoder_memory(
-                params.ppmd_mem_size, config=config, what="ZIP PPMd8 memory size"
+                params.ppmd_mem_size,
+                limits=config.decoder_limits,
+                what="ZIP PPMd8 memory size",
             )
             return PpmdDecompressorStream(
                 source,
@@ -1851,7 +1896,9 @@ class PpmdCodec(StreamCodec):
                 pack_size=pack_size,
             )
         order, mem_size = _parse_ppmd_var_h_properties(params.properties)
-        check_decoder_memory(mem_size, config=config, what="7z PPMd var.H memory size")
+        check_decoder_memory(
+            mem_size, limits=config.decoder_limits, what="7z PPMd var.H memory size"
+        )
         return PpmdDecompressorStream(
             source,
             order=order,

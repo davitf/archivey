@@ -250,11 +250,15 @@ class DecoderLimits:
     single byte of member data is, and the allocation that follows is not
     proportional to the archive's size — a 153-byte 7z can ask for 4 GiB.
 
-    **What is capped today: both PPMd paths, and nothing else.** The LZMA
-    dictionary size is the same shape and is next; until it lands, setting this
-    field does not bound an LZMA member. PPMd came first because it is the
-    sharper hazard rather than the larger one — a refused allocation inside
-    pyppmd takes the process down, where liblzma has an error path.
+    **What is capped today:** both PPMd paths, and the LZMA dictionary size
+    wherever an archive declares one — 7z LZMA and LZMA2, ZIP method 14, each xz
+    block, ``.lzma`` and each lzip member. The two hazards differ. A refused
+    allocation inside pyppmd takes the process down. liblzma does raise
+    ``MemoryError`` when it cannot reserve the dictionary, but a reservation
+    that succeeds is its real cost: the dictionary fills as output is written,
+    so a 151 KB stream declaring 4 GiB held 1.1 GiB resident after producing
+    1 GiB, where the same stream declaring 1 MiB held 59 MB. The dictionary
+    bounds how much of the output the decoder keeps, and the archive picks it.
 
     This is not an :class:`ExtractionLimits` field, and the difference is not
     cosmetic. The bomb guards there measure *output*: they count bytes as an
@@ -303,6 +307,19 @@ class DecoderLimits:
             Reading archives written with ``mem=3g`` or above means raising it
             or passing :attr:`UNLIMITED`.
 
+            The LZMA dictionary sits further under it. xz Utils refuses to
+            write a dictionary over 1.5 GiB, and its ``-9`` preset writes
+            64 MiB whatever the input. 7-Zip 23.01 shrinks the dictionary it
+            declares to about the member's size (4 KiB for a 25-byte member,
+            7 MiB for 6.7 MB, 96 MiB for 100 MB, all asked for with
+            ``-md=1536m``), so declaring more than 2 GiB takes a member over
+            2 GiB *and* an explicit ``-md`` above 2g. lzip's field cannot say
+            more than 512 MiB. The same number serves both codecs because it
+            answers the same question, and xz is checked through liblzma's own
+            memory limit, which also counts about 64 KiB of the decoder's
+            overhead; a 128 KiB allowance keeps a dictionary exactly at the
+            cap readable there as on every other path.
+
             What the default is *not* is a promise about the machine. The cap
             bounds what an archive may ask for; whether an allocation succeeds
             is a property of the host, and the two are independent. A process
@@ -314,7 +331,7 @@ class DecoderLimits:
             limit it runs with rather than on anything 7-Zip writes. Code that
             opens files it did not choose — an upload endpoint, a mail scanner —
             wants the same move for a different reason: 256 MiB still takes
-            everything the presets produce.
+            everything the PPMd and LZMA presets produce.
     """
 
     max_decoder_memory: int | None = 2 * 2**30
