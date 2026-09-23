@@ -105,6 +105,19 @@ class ListingLimitTracker:
         self.member_count = next_count
         self.metadata_bytes = next_bytes
 
+    def account_link_target(self, target: str, *, enforce: bool = True) -> None:
+        """Add a link target that was resolved after its member was registered.
+
+        ZIP, 7z and RAR4 keep a symlink's target in the member's data, which is read
+        only once every member is registered, so :meth:`account_member` saw ``None``
+        for it. Weighing it here is what makes ``max_metadata_bytes`` hold for the
+        ``link_target`` field the spec names.
+        """
+        next_bytes = self.metadata_bytes + _str_retained_bytes(target)
+        if enforce:
+            self._check_metadata(next_bytes)
+        self.metadata_bytes = next_bytes
+
     def assert_within_limits(self) -> None:
         """Re-check accumulated totals (e.g. when returning a previously built cache)."""
         self._check_members(self.member_count)

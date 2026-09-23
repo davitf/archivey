@@ -228,6 +228,16 @@ promise with that line; treat `0.2.0` as the first release of this library.
   When a link cannot be made because the destination spans two filesystems, archivey
   copies the content instead; those copies were not counted, so a fan-out of links could
   write many times the cap.
+- **A symlink target stored as member data is capped at 4096 bytes.** ZIP, 7z and
+  RAR3/4 keep a symlink's target in the member's data, and listing read it whole: a
+  398 KiB ZIP whose one "target" was 400 MiB of deflated zeros peaked at 2 400 MiB
+  inside `members()` with every listing cap set. A member declaring more than 4096
+  bytes is not opened, a Windows reparse buffer is read only as far as its own header
+  says it runs, and an over-long target is left unset (never truncated) with
+  `SYMLINK_TARGET_UNAVAILABLE`, `reason="target_too_long"` — so
+  `DiagnosticPolicy.strict()` refuses the archive and extraction fails that link. A
+  target read this way now also counts toward `ListingLimits.max_metadata_bytes`,
+  which used to weigh it before it was read. Threat-model O19.
 - **7z `NumUnpackStreams` no longer allocates an unbounded list.** `kNumUnPackStream`
   was not bounded by remaining header bytes: with no `kSize`/`kCRC`, the parser did
   `[None] * N` (and `[True] * N` on the CRC all-defined path) from a few header

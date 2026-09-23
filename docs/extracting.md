@@ -68,6 +68,14 @@ archivey.extract("archive.zip", "out/")
   encrypted, compressed, split across volumes, or simply not read yet in streaming mode
   — is a per-member failure instead, because recording it as an outcome would drop a
   member the archive describes in full while reporting success.
+- **A link target longer than 4096 bytes** is treated as corrupt or malicious when it is
+  stored as the member's data (ZIP, 7z, RAR4). No filesystem path that long exists on
+  Linux or macOS, and the data can be compressed, so reading it whole would let a small
+  archive allocate gigabytes while you only listed it. The target is left unset — never
+  truncated, which would point the link somewhere the archive did not say — and reported
+  as `SYMLINK_TARGET_UNAVAILABLE` with `reason="target_too_long"`. Like the unreachable
+  targets above, the link is a per-member failure, and `DiagnosticPolicy.strict()`
+  refuses the archive.
 - **Deceptive names:** a member name (or link target) containing a Unicode bidi
   **override or isolate** — U+202A–202E, U+2066–2069 — is rejected with
   `DeceptiveNameError` under `STRICT` (the default) and `STANDARD`. Those characters

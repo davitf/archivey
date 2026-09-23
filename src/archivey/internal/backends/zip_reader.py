@@ -1530,9 +1530,16 @@ class ZipReader(BaseArchiveReader):
         # usable without a password, so a missing/wrong password leaves link_target
         # unset (following the link later fails with LinkTargetNotFoundError); other
         # errors surface translated like any member-read error.
+        # The read is capped (`_read_link_target_data`): the data is compressed, so an
+        # uncapped read let a few hundred KiB of archive decode to gigabytes here.
         try:
-            with self._open_member(member) as f:
-                data = f.read()
+            data = self._read_link_target_data(
+                member,
+                lambda: self._open_member(member),
+                is_reparse_point=is_reparse_point,
+            )
+            if data is None:
+                return
             if is_reparse_point:
                 self._apply_reparse_data(member, data, fallback_type=fallback_type)
             else:

@@ -14,7 +14,9 @@ import struct
 import subprocess
 import tarfile
 import tempfile
+import tracemalloc
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +34,8 @@ from archivey.exceptions import LinkTargetNotFoundError
 from archivey.internal.backends import directory_reader
 from archivey.internal.backends.rar_parser import RarMemberInfo
 from archivey.internal.backends.rar_reader import _rar_member_extra_and_link
+from archivey.internal.backends.zip_reader import ZipReader
+from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.extraction_types import OnError
 from archivey.internal.windows_reparse import (
     FILE_ATTRIBUTE_REPARSE_POINT,
@@ -520,6 +524,115 @@ def test_a_reparse_member_whose_data_is_not_a_link_keeps_its_content(
         assert not member.is_junction
         with opened.open(member) as stream:
             assert stream.read() == b"not a reparse buffer"
+
+
+def test_a_reparse_target_over_the_link_cap_is_refused(tmp_path: Path) -> None:
+    """A reparse buffer's target is held to the cap every data-stored target is.
+
+    The cap is on the target, measured in UTF-8 like the other formats' targets, not
+    on the UTF-16 buffer, whose byte count is roughly twice the path's.
+    """
+    at_cap = "a" * MAX_LINK_TARGET_BYTES
+    over = "b" * (MAX_LINK_TARGET_BYTES + 1)
+    archive = tmp_path / "long_reparse.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name, target in (("at_cap", at_cap), ("over", over)):
+            info = zipfile.ZipInfo(name)
+            info.create_system = 0
+            info.external_attr = 0x20 | FILE_ATTRIBUTE_REPARSE_POINT
+            zf.writestr(info, _reparse_buffer(IO_REPARSE_TAG_SYMLINK, target, target))
+    with open_archive(archive) as opened:
+        by_name = {m.name: m for m in opened.members()}
+        assert by_name["at_cap"].link_target == at_cap
+        assert by_name["over"].type is MemberType.SYMLINK
+        assert by_name["over"].link_target is None
+        assert _unavailable_reasons(opened) == ["target_too_long"]
+
+
+def _peak_traced_bytes(action: Callable[[], object]) -> int:
+    """The tracemalloc peak while ``action`` runs, in bytes."""
+    tracemalloc.start()
+    try:
+        action()
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+# Deflated zeros: a ~64 KiB member that decodes to 64 MiB.
+_LARGE_CONTENT = b"\0" * (64 << 20)
+
+
+def test_a_large_non_link_reparse_member_keeps_all_its_content(
+    tmp_path: Path,
+) -> None:
+    """Deciding reads the buffer's header only, and the content is not cut to it.
+
+    A deduplication stub or cloud placeholder keeps its whole file in this data, so the
+    decision must not refuse it for its size, must not decode the whole of it while
+    listing, and its diagnostic must name the size the archive declares rather than the
+    few bytes the decision read.
+    """
+    archive = tmp_path / "big_odd_reparse.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        info = zipfile.ZipInfo("tree/weird")
+        info.create_system = 0
+        info.external_attr = 0x20 | FILE_ATTRIBUTE_REPARSE_POINT
+        info.compress_type = zipfile.ZIP_DEFLATED
+        zf.writestr(info, _LARGE_CONTENT)
+    with open_archive(archive) as opened:
+        assert _peak_traced_bytes(opened.members) < 8 << 20
+        (member,) = opened.members()
+        assert member.type is MemberType.FILE
+        with opened.open(member) as stream:
+            assert stream.read() == _LARGE_CONTENT
+        (reported,) = [
+            d
+            for d in opened.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+        assert f"{len(_LARGE_CONTENT)} bytes" in reported.message
+
+
+def test_a_link_buffer_is_read_only_as_far_as_it_declares(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The flag that routes a member here is the archive's to set, so the read is sized
+    by the buffer's own header, not by the most a buffer could ever declare (65 543
+    bytes, which across many members is hundreds of times the archive).
+
+    Trailing data past the declared buffer changes no parse, so it is never decoded:
+    the read stops one byte past the buffer.
+    """
+    delivered: list[int] = []
+    original_open = ZipReader._open_member
+
+    def counting_open(self: ZipReader, member: ArchiveMember) -> object:
+        stream = original_open(self, member)
+        original_read = stream.read
+
+        def read(n: int = -1) -> bytes:
+            data = original_read(n)
+            delivered.append(len(data))
+            return data
+
+        stream.read = read  # type: ignore[method-assign]
+        return stream
+
+    monkeypatch.setattr(ZipReader, "_open_member", counting_open)
+
+    buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "C:\\target", "C:\\target")
+    archive = tmp_path / "padded_reparse.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("link")
+        info.create_system = 0
+        info.external_attr = 0x20 | FILE_ATTRIBUTE_REPARSE_POINT
+        info.compress_type = zipfile.ZIP_DEFLATED
+        zf.writestr(info, buffer + _LARGE_CONTENT)
+    with open_archive(archive) as opened:
+        (member,) = opened.members()
+        assert member.link_target == "C:/target"
+    assert sum(delivered) == len(buffer) + 1
 
 
 def test_a_directory_shaped_reparse_point_with_odd_data_stays_a_link(
