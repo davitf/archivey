@@ -24,12 +24,47 @@ parse failure, attached to the member. Because that code is in `ARCHIVE_INTEGRIT
 a caller who wants the archive refused instead SHALL get that from
 `DiagnosticPolicy.strict()`.
 
-A crafted extra area SHALL NOT retain one skipped record per attacker byte. The number of
-dropped records retained per member is a structural cap (a handful of extras is every
-well-formed FILE; more cannot be useful diagnostics). After the cap the extra-area walk
-for that member stops, and stopping SHALL be reported: a caller SHALL be able to tell a
-member whose records were all read from one whose header was abandoned part-way, because
-how far to trust that member's metadata turns on it.
+A crafted extra area SHALL NOT retain one skipped record per attacker byte, nor cost one
+parse per attacker byte. The number of dropped records retained per member is a structural
+cap (a handful of extras is every well-formed FILE; more cannot be useful diagnostics).
+After the cap the extra-area walk for that member stops, and stopping SHALL be reported: a
+caller SHALL be able to tell a member whose records were all read from one whose header
+was abandoned part-way, because how far to trust that member's metadata turns on it.
+
+The line SHALL fall between a record's *framing* and its *body*, because that is where the
+information is. A body the reader cannot parse costs one record and leaves the next
+record's offset known, so the walk continues. A size vint the reader cannot use costs every
+later record, so the walk stops and reports that it stopped. A size is unusable when it
+cannot be read at all, when it runs past the header, or when it is below the minimum a
+record can have: a record's body opens with its type vint, so **one byte is the smallest
+legal record** — a type with no payload, which is what an unimplemented record looks like —
+and a declared size of zero names nothing while still advancing the cursor, which is what
+made one attacker byte cost one retained record.
+
+`unrar` 7.00 does continue past a zero-size record, and is wrong for it: one such record in
+front of an encrypted member's records makes `unrar l` lose both the encryption record and
+the timestamp and list the member as plaintext. The oracle that justifies the leniency
+above SHALL NOT be read as justifying this.
+
+#### Scenario: A record whose size cannot be used stops the walk
+
+- **GIVEN** a RAR5 FILE extra area whose first record declares a size of zero, or a size
+  larger than what remains of the header, or whose size vint has no terminating byte, with
+  a valid enclosing header CRC
+- **WHEN** the archive is listed under the default diagnostic policy
+- **THEN** the walk SHALL stop at that record rather than trying to resynchronise
+- **AND** the member SHALL be reported as having had its header cut short, not listed as
+  though its extra area had been read to the end
+
+#### Scenario: A record whose body cannot name its type is dropped, not fatal
+
+- **GIVEN** a RAR5 FILE extra record declaring a one-byte body that holds only a vint
+  continuation byte, sitting in front of the member's `FHEXTRA_CRYPT` record
+- **WHEN** the archive is listed under the default diagnostic policy
+- **THEN** the member SHALL be listed with one `MEMBER_HEADER_RECORD_SKIPPED`
+- **AND** the member SHALL still be reported as encrypted, because the record's size is
+  usable and the walk goes on to reach the encryption record
+- **AND** nothing SHALL report the header as cut short
 
 #### Scenario: A one-byte-short checksum record lists the member without a digest
 
@@ -72,9 +107,154 @@ A member whose encryption record cannot be parsed SHALL therefore raise, as it d
 today. It SHALL NOT be listed as unencrypted, and it SHALL NOT be listed as encrypted
 with absent parameters.
 
+A member whose extra-area walk stopped before the end of the area SHALL be reported as
+**encrypted**, whether or not an encryption record was read. The walk may have stopped in
+front of one, so reporting such a member as unencrypted is the same wrong answer reached
+by omission rather than by dropping anything, and the diagnostic saying the header was cut
+short does not change what the field says. This is the one place the sentence above gives
+way and the member carries no parameters.
+
+"Encrypted" and "we could not tell" SHALL nonetheless remain distinguishable inside the
+backend, because they are acted on differently. The cut-short answer SHALL apply to the
+member's own reported flag and SHALL NOT reach the archive-level one: `ArchiveInfo`
+reports header-level encryption and the aggregate of members *known* to be encrypted, so
+one damaged member SHALL NOT make a wholly plaintext archive report as encrypted, hand the
+caller's password to `unrar`, or relabel an empty read as a wrong password.
+
+The cost of failing closed falls on the member's direct read. A stored member is otherwise
+sliced straight from the source; one whose header was cut short SHALL NOT be handed back
+unchecked, because those bytes are ciphertext if the record the walk never reached was the
+encryption record.
+
+A checksum that survived the damage SHALL settle it. RAR5 keeps CRC32 in the fixed FILE
+header and BLAKE2sp in the extra area, so which digest a cut leaves behind is the writer's
+choice, not archivey's. Where one survives, the member's stored bytes SHALL be verified
+against it **before** any byte is returned, and the member SHALL be readable when they
+match — on any installation, with or without `unrar`. Where none survives, the member SHALL
+NOT be readable. The refusal SHALL name the cut-short header rather than the missing
+package: installing `unrar` is a way out, not the cause, and it is not a better-informed
+one — measured on unrar 7.00 it reads the same damaged header and reaches the same wrong
+conclusion, applying that same digest test and returning the bytes unverified when no
+digest survived.
+
+The check SHALL run before the first byte is returned rather than at end of stream, for the
+reason the ZIP ZipCrypto stored path gives: nothing in a stored member's framing can reject
+wrong bytes incrementally, so a caller that stops reading early would never reach an
+end-of-stream verdict. Its cost is one extra pass over an already-damaged member and none
+at all on an undamaged one.
+
+**Both paragraphs above are scoped to the member archivey reads by slicing the source** —
+stored, not solid, not split across volumes. Every other cut-short member is decoded by
+`unrar`, which is handed the whole member and cannot be asked to check a digest first;
+there any surviving digest is verified as it is for an undamaged member, at end of stream,
+and a member with none is read with nothing checking it. That is unchanged behaviour and
+not a guarantee this requirement makes. Such a member SHALL still be reported as encrypted
+and SHALL still carry the cut-short diagnostic, so a strict policy refuses it.
+
+
+The diagnostic reporting a cut-short header SHALL name the fault that ended the walk. Four
+different faults end it — the skip cap, a size that cannot be read, a size that overruns
+the area, and a size below the one-byte minimum — and they are not interchangeable: this
+message is the only thing that explains why a member may be reported encrypted when
+nothing else in its listing says so.
+
+#### Scenario: A cut-short header never reports an encrypted member as plaintext
+
+- **GIVEN** a RAR5 member whose `FHEXTRA_CRYPT` record is preceded by enough records to
+  stop the walk — past the skip cap, or one whose size cannot be used
+- **WHEN** the archive is listed under the default diagnostic policy
+- **THEN** the member SHALL be reported as encrypted
+- **AND** a member whose extra area *was* read to the end SHALL NOT be reported as
+  encrypted merely for having dropped a record, because that question was asked and
+  answered
+
+#### Scenario: One cut-short member does not report the archive as encrypted
+
+- **GIVEN** a RAR5 archive with nothing encrypted in it, one of whose members has a
+  cut-short extra area
+- **WHEN** the archive is listed
+- **THEN** that member SHALL be reported as encrypted
+- **AND** the archive SHALL NOT be reported as encrypted
+
+#### Scenario: A surviving checksum settles a cut-short stored member
+
+- **GIVEN** a stored, unencrypted RAR5 member whose extra-area walk stopped early, whose
+  CRC32 is in the fixed FILE header and so survived the damage
+- **WHEN** it is read on an installation with no RARLAB `unrar` or `rar` available
+- **THEN** the member SHALL be read and its content returned
+- **AND** the member SHALL still be reported as encrypted, its header having never settled
+  the question
+
+#### Scenario: A cut-short stored member whose bytes fail the surviving checksum
+
+- **GIVEN** a stored, *encrypted* RAR5 member whose extra-area walk stopped before its
+  `FHEXTRA_CRYPT` record, whose CRC32 survived the damage
+- **WHEN** it is read
+- **THEN** the read SHALL raise `CorruptionError` reporting that the stored bytes do not
+  match the surviving checksum
+- **AND** no ciphertext SHALL be returned as member content
+
+#### Scenario: A cut-short stored member names the header, not the missing package
+
+- **GIVEN** a stored RAR5 member whose extra-area walk stopped early and whose only digest
+  was BLAKE2sp, which the same cut destroyed
+- **WHEN** it is read on an installation with no RARLAB `unrar` or `rar` available
+- **THEN** the read SHALL raise `CorruptionError` naming the cut-short header and the
+  absence of a surviving checksum
+
 #### Scenario: An unparseable encryption record refuses the archive
 
 - **GIVEN** a RAR5 member whose `FHEXTRA_CRYPT` record is truncated
 - **WHEN** the archive is listed
 - **THEN** listing SHALL raise `CorruptionError`
 - **AND** the member SHALL NOT appear in any listing as an unencrypted member
+
+### Requirement: A cut-short SERVICE header SHALL be reported, and its payload SHALL NOT be sliced
+
+`CMT` and `QO` are SERVICE headers with the same extra area as a FILE header, so the same
+leniency applies to them. They are not members, so nothing lists them and no per-member
+diagnostic describes them.
+
+A SERVICE header whose extra-area walk dropped a record or gave up SHALL emit the same
+diagnostics a member's header does, in every volume of a multi-volume set. The argument for
+dropping a record rather than refusing the archive is that the diagnostic is emitted and a
+strict policy can still refuse; a header that reported nothing was outside that argument.
+
+Those diagnostics SHALL NOT describe the header as a member. It is in no listing, so naming
+it as one sends the caller looking for something that is not there; the message SHALL name
+the header and what the archive therefore does without — the comment, or the quick-open
+index — and SHALL carry no member name.
+
+How many such headers one archive retains SHALL be bounded, and the bound SHALL NOT depend
+on the archive. A SERVICE header is not a member, so the listing bound never counts one, and
+a small archive of nothing but damaged SERVICE headers would otherwise retain without limit.
+Past the bound the headers SHALL be counted and the count reported, so reaching it is not
+itself silent. Counting them against the listing bound instead is rejected: that refuses an
+archive `unrar` lists, over headers that are optional metadata.
+
+The gates that slice a SERVICE payload out of the archive — the stored-comment gate and the
+quick-open gate — SHALL refuse a header that stopped before it could rule encryption out,
+as they already refuse one known to be encrypted. The comment is decoded as text and the
+quick-open payload is parsed as a member table, so slicing unsettled bytes would put
+ciphertext in `ArchiveInfo.comment` or parse a member list out of it. Losing the comment, or
+falling back to the header walk, is a missing answer; the alternative is a wrong one.
+
+#### Scenario: A cut-short comment header is refused and reported
+
+- **GIVEN** a RAR5 archive whose `CMT` SERVICE header has an extra area whose walk stops
+- **WHEN** the archive is opened
+- **THEN** `ArchiveInfo.comment` SHALL NOT be taken from that header's payload
+- **AND** the walk's dropped record and its stop SHALL each emit
+  `MEMBER_HEADER_RECORD_SKIPPED`
+- **AND** a strict diagnostic policy SHALL refuse the archive
+- **AND** the diagnostics SHALL carry no member name and SHALL say the archive comment was
+  not used
+
+#### Scenario: An archive of damaged service headers is reported under a bound
+
+- **GIVEN** a RAR5 archive holding more damaged SERVICE headers than the bound retains
+- **WHEN** the archive is opened
+- **THEN** the number retained SHALL be the bound, whatever the archive holds
+- **AND** one further `MEMBER_HEADER_RECORD_SKIPPED` SHALL report how many were not
+  described individually
+

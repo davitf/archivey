@@ -41,7 +41,7 @@ import io
 import struct
 import zlib
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import pbkdf2_hmac
 from typing import BinaryIO, Protocol
@@ -94,6 +94,14 @@ _RAR5_MAX_HEADER = 2 * 1024 * 1024
 # field: listing limits stay out of this parser, and a caller cannot usefully
 # raise a "more skipped extras" budget.
 _MAX_SKIPPED_HEADER_RECORDS = 16
+# SERVICE headers (``CMT``, ``QO``) are not members, so ``max_members`` never
+# counts them and a damaged one is retained for the reader to report. Both halves
+# of that are attacker-controlled: a 3.4 MB archive of nothing but damaged SERVICE
+# headers retained 80 MB before this cap. Counting them as members instead would
+# refuse an archive ``unrar`` lists, which is the opposite of this walk's posture,
+# so they get their own cap and the overflow is reported as a count. Structural
+# for the same reason as the cap above.
+_MAX_DAMAGED_SERVICE_HEADERS = 16
 # BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
 _MAX_SEEK = (1 << 63) - 1
 # Same default as ListingLimits.max_members. None is the explicit UNLIMITED opt-out.
@@ -302,10 +310,31 @@ class RarMemberInfo:
     # area cannot retain one tuple per attacker byte. The reader turns each entry
     # into a ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic.
     skipped_header_records: tuple[tuple[str, int | None, str], ...] = ()
-    # True when the cap stopped the walk with extra area still unread, so the list
-    # above is what was read rather than all there was. There is no count of the
-    # rest: counting it would mean walking it, which is the cost the cap avoids.
-    skipped_header_records_truncated: bool = False
+    # Why the extra-area walk gave up with area still unread, in the words the
+    # diagnostic uses, or ``None`` when the header was read to the end. The list
+    # above is then what was read rather than all there was. There is no count of
+    # the rest: counting it would mean walking it, which is the cost the cap avoids.
+    header_walk_stop_reason: str | None = None
+
+    @property
+    def skipped_header_records_truncated(self) -> bool:
+        """True when the extra-area walk gave up with area still unread."""
+        return self.header_walk_stop_reason is not None
+
+    @property
+    def encryption_unknown(self) -> bool:
+        """True when the header stopped before encryption could be ruled out.
+
+        The extra-area walk gave up with area still unread, and no encryption
+        record had been seen — so an unread record may be the one that says this
+        member is ciphertext. Distinct from :attr:`is_encrypted`, which is what
+        the header actually said, because the two are acted on differently: a
+        member that is *known* encrypted is presented with its parameters and
+        needs a password, while one that is merely unknown is presented as
+        encrypted (a wrong answer here is worse than a missing one) but asserts
+        nothing about the archive it sits in.
+        """
+        return self.skipped_header_records_truncated and not self.is_encrypted
 
     def needs_password(self) -> bool:
         return self.is_encrypted
@@ -319,6 +348,21 @@ class RarMemberInfo:
         return self.file_version is not None and self.file_version != 0
 
 
+@dataclass(slots=True, frozen=True)
+class DamagedServiceHeader:
+    """A SERVICE header whose extra-area walk dropped a record or gave up.
+
+    Not a :class:`RarMemberInfo`: a service header is not a member, nothing lists
+    it, and keeping the whole parse of one both says otherwise and retains far more
+    than the reader reads. These three fields are what the reader reports.
+    """
+
+    #: ``CMT``, ``QO`` — the header's own name, not a member name.
+    name: str
+    skipped_header_records: tuple[tuple[str, int | None, str], ...]
+    header_walk_stop_reason: str | None
+
+
 @dataclass(slots=True)
 class RarArchive:
     version: int  # 4 = RAR3-on-disk family (1.5/2/3); 5 = RAR5 (not "RAR 4.x")
@@ -329,6 +373,16 @@ class RarArchive:
     sfx_offset: int
     is_volume: bool
     needs_next_volume: bool = False
+    #: SERVICE headers (``CMT``, ``QO``) whose extra-area walk dropped a record or
+    #: gave up, in file order, at most ``_MAX_DAMAGED_SERVICE_HEADERS`` of them.
+    #: They are not members, so nothing lists them and the reader's per-member
+    #: diagnostics never see them — yet the same leniency applies to their headers,
+    #: and the argument that leniency is not silent rests on a diagnostic being
+    #: emitted. The reader emits from this at open.
+    damaged_service_headers: list[DamagedServiceHeader] = field(default_factory=list)
+    #: How many damaged SERVICE headers the cap above kept out of that list. The
+    #: reader reports the count, so hitting the cap is itself never silent.
+    damaged_service_headers_omitted: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +477,19 @@ def parse_rar_volumes(
             if part.comment and not merged.comment:
                 merged.comment = part.comment
             merged.is_volume = True
+            # Damaged SERVICE headers are per volume and the merge is field by
+            # field, so leaving this out made a damaged header past volume 1
+            # silent — the archive opened clean and nothing said a header could
+            # not be finished. The cap applies to the merged list for the same
+            # reason it applies to one volume's.
+            for damaged in part.damaged_service_headers:
+                if not _append_damaged_service_header(
+                    merged.damaged_service_headers, damaged
+                ):
+                    merged.damaged_service_headers_omitted += 1
+            merged.damaged_service_headers_omitted += (
+                part.damaged_service_headers_omitted
+            )
             for member in part.members:
                 if member.split_before and merged.members:
                     _merge_split_member(merged.members[-1], member)
@@ -452,6 +519,32 @@ def parse_rar_volumes(
             "Incomplete RAR multi-volume set: end of archive expects another volume"
         )
     return merged
+
+
+def _append_damaged_service_header(
+    headers: list[DamagedServiceHeader],
+    source: RarMemberInfo | DamagedServiceHeader,
+) -> bool:
+    """Retain a damaged SERVICE header, or report that the cap turned it away.
+
+    Takes the parsed header from the walk or the already-narrowed record from
+    another volume, and narrows it here rather than at the call sites, so nothing
+    is built for a header the cap is about to turn away. The caller counts what
+    this refuses: nothing is dropped silently, because the reader reports the
+    count alongside the headers it does describe.
+    """
+    if len(headers) >= _MAX_DAMAGED_SERVICE_HEADERS:
+        return False
+    headers.append(
+        source
+        if isinstance(source, DamagedServiceHeader)
+        else DamagedServiceHeader(
+            name=source.filename,
+            skipped_header_records=source.skipped_header_records,
+            header_walk_stop_reason=source.header_walk_stop_reason,
+        )
+    )
+    return True
 
 
 def _append_member(
@@ -1577,7 +1670,14 @@ def _rar5_locator_qopen_abs(
             xsize, pos = load_vint(hdata, pos)
         except CorruptionError:
             break
-        if xsize < 0 or pos + xsize > len(hdata):
+        if xsize < 1 or pos + xsize > len(hdata):
+            # Same rule as the FILE extra walk: one byte is the smallest legal
+            # record, so a declared size of zero is a broken size rather than an
+            # empty record. Stopping matters here for cost rather than
+            # correctness — a zero-size record advances one byte and raises, so
+            # falling through would walk a crafted MAIN extra one byte and one
+            # exception at a time. Giving up costs only quick open, which is what
+            # every other exit from this walk costs too.
             break
         xdata, pos = _load_bytes(hdata, xsize, pos)
         try:
@@ -1603,6 +1703,11 @@ def _rar5_locator_qopen_abs(
 
 
 def _is_stored_rar5_cmt(member: RarMemberInfo) -> bool:
+    # ``encryption_unknown`` refuses for the same reason ``is_encrypted`` does:
+    # this gate slices the payload straight out of the archive and decodes it as
+    # text, so a header that stopped before it could rule encryption out would
+    # put ciphertext in ``ArchiveInfo.comment``. Losing the comment is a missing
+    # answer; that would be a wrong one.
     return (
         member.filename == _RAR5_CMT_NAME
         and member.compress_type == _RAR3_M0
@@ -1610,6 +1715,7 @@ def _is_stored_rar5_cmt(member: RarMemberInfo) -> bool:
         and not member.split_after
         and member.compress_size > 0
         and not member.is_encrypted
+        and not member.encryption_unknown
     )
 
 
@@ -1764,6 +1870,11 @@ def _try_list_via_rar5_qo(
             member.filename != _RAR5_QO_NAME
             or member.compress_type != _RAR3_M0
             or member.is_encrypted
+            # Same slice-and-parse hazard as the CMT gate above: an unsettled
+            # header would have this parse a member table out of bytes that may
+            # be ciphertext. Refusing costs the quick open, and the FILE walk
+            # answers the same question from the headers themselves.
+            or member.encryption_unknown
             or member.split_before
             or member.split_after
             or member.file_size <= 0
@@ -1886,6 +1997,8 @@ def _parse_rar5(
     needs_next_volume = False
     seen_file_offsets: set[int] = set()
     qo_by_off: dict[int, RarMemberInfo] = {}
+    damaged_service_headers: list[DamagedServiceHeader] = []
+    damaged_service_headers_omitted = 0
 
     while True:
         header_fd: _Readable = source
@@ -2048,10 +2161,16 @@ def _parse_rar5(
                     if _emit_rar5_file_member(members, member, max_members=max_members):
                         needs_next_volume = True
                     seen_file_offsets.add(member.header_offset)
-            elif block_type == _RAR5_SERVICE and _is_stored_rar5_cmt(member):
-                source.seek(data_offset)
-                raw = _require_exact(source, member.file_size, "RAR5 comment")
-                comment = _decode_rar5_cmt_bytes(raw)
+            elif block_type == _RAR5_SERVICE:
+                if member.skipped_header_records or member.header_walk_stop_reason:
+                    if not _append_damaged_service_header(
+                        damaged_service_headers, member
+                    ):
+                        damaged_service_headers_omitted += 1
+                if _is_stored_rar5_cmt(member):
+                    source.seek(data_offset)
+                    raw = _require_exact(source, member.file_size, "RAR5 comment")
+                    comment = _decode_rar5_cmt_bytes(raw)
             _seek_after_packed(source, data_offset, add_size)
             continue
 
@@ -2067,6 +2186,8 @@ def _parse_rar5(
         sfx_offset=sfx_offset,
         is_volume=is_volume,
         needs_next_volume=needs_next_volume,
+        damaged_service_headers=damaged_service_headers,
+        damaged_service_headers_omitted=damaged_service_headers_omitted,
     )
 
 
@@ -2224,7 +2345,10 @@ def _parse_rar5_file_block(
     ctime: datetime | None = None
     atime: datetime | None = None
     skipped_records: list[tuple[str, int | None, str]] = []
-    skipped_truncated = False
+    # Why the walk stopped, or ``None`` if it ran to the end. Four exits reach it
+    # and they are not the same fault, so the diagnostic must not name one of them
+    # for all four: a single zero-size record is not "more than sixteen malformed".
+    stop_reason: str | None = None
 
     if extra_size:
         # Walk extras until near end (allow 1 byte of padding like rarfile).
@@ -2232,7 +2356,10 @@ def _parse_rar5_file_block(
             if len(skipped_records) >= _MAX_SKIPPED_HEADER_RECORDS:
                 # Still inside the loop, so bytes remain; a member whose last
                 # skipped record is also its last extra never gets here.
-                skipped_truncated = True
+                stop_reason = (
+                    f"more than {_MAX_SKIPPED_HEADER_RECORDS} of its extra "
+                    f"records were malformed"
+                )
                 break
             try:
                 xsize, pos = load_vint(hdata, pos)
@@ -2240,21 +2367,40 @@ def _parse_rar5_file_block(
                 # ``load_vint`` does not advance ``pos`` on failure, so the
                 # next record has no boundary. Stop, and say so.
                 skipped_records.append(("unknown", None, raw_message_of(exc)))
-                skipped_truncated = True
+                stop_reason = "an extra record's size could not be read"
+                break
+            if xsize < 1:
+                # A record's body opens with its type vint, so one byte is the
+                # smallest legal record: a type with no payload, which is what an
+                # unimplemented record looks like. A declared size of zero names
+                # nothing, so the size vint is wrong and the offset it puts the
+                # next record at is wrong with it. It is also one attacker byte
+                # per record, which is what made a crafted extra area expensive
+                # rather than merely damaged. ``unrar`` 7.00 does carry on here
+                # and gets a wrong answer for it — one such record in front of an
+                # encrypted member and ``unrar l`` reports it as plaintext — so
+                # the oracle that justifies the leniency above does not reach
+                # this case.
+                skipped_records.append(
+                    ("unknown", None, "extra record declares a size of zero")
+                )
+                stop_reason = "an extra record declared a size of zero"
                 break
             if pos + xsize > len(hdata):
                 skipped_records.append(
                     ("unknown", None, "extra record overruns the extra area")
                 )
-                skipped_truncated = True
+                stop_reason = "an extra record overran the extra area"
                 break
             xdata, pos = _load_bytes(hdata, xsize, pos)
             try:
                 xtype, xpos = load_vint(xdata, 0)
             except CorruptionError as exc:
-                # A record too short to name itself. ``xsize == 0`` is one
-                # attacker byte per skip; the cap at the loop head is what
-                # stops that becoming one retained tuple per extra byte.
+                # A body of the declared length whose type vint has no terminating
+                # byte. The framing is intact — the next record's offset is known —
+                # so this is a dropped record like any other, not a reason to stop.
+                # Two attacker bytes apiece, which is what the cap at the loop head
+                # keeps from becoming one retained tuple per extra byte.
                 skipped_records.append(("unknown", None, raw_message_of(exc)))
                 continue
             try:
@@ -2344,13 +2490,18 @@ def _parse_rar5_file_block(
         is_directory=is_directory and not is_symlink,
         is_symlink=is_symlink,
         is_hardlink_or_copy=is_hardlink_or_copy,
+        # What the header actually said, and only that. A member whose walk
+        # stopped before the encryption record could be ruled out is not
+        # "not encrypted" — it is *unknown*, which is ``encryption_unknown``
+        # rather than this flag. Keeping the two apart is what stops one
+        # damaged member from reporting a whole plaintext archive as encrypted.
         is_encrypted=file_encryption is not None,
         volume_index=volume_index,
         split_before=split_before,
         split_after=split_after,
         file_version=file_version,
         skipped_header_records=tuple(skipped_records),
-        skipped_header_records_truncated=skipped_truncated,
+        header_walk_stop_reason=stop_reason,
     )
 
 

@@ -52,9 +52,9 @@ from archivey.exceptions import (
     UnsupportedOperationError,
 )
 from archivey.internal.backends.rar_parser import (
-    _MAX_SKIPPED_HEADER_RECORDS,
     RAR5_ID,
     RAR_ID,
+    DamagedServiceHeader,
     RarArchive,
     RarEncryptionInfo,
     RarMemberInfo,
@@ -98,6 +98,7 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     skip_forward,
 )
+from archivey.internal.streams.verify import build_member_verifier
 from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -173,6 +174,11 @@ _RAR5_XREDIR_WINDOWS_JUNCTION = 3
 _RAR5_XREDIR_REPARSE_POINTS = frozenset(
     {_RAR5_XREDIR_WINDOWS_SYMLINK, _RAR5_XREDIR_WINDOWS_JUNCTION}
 )
+
+# Read step for the confirmation pass over a cut-short member's stored bytes
+# (``RarReader._confirm_unsettled_plaintext``). Matches the verifier's own drain
+# step; the pass is bounded by the member, which is bounded by the source.
+_CONFIRM_CHUNK_BYTES = 64 * 1024
 
 # Shared CompressionMethod tuples — many-member listing hits the same method byte
 # (typically store / M1–M5) thousands of times; avoid per-member allocations.
@@ -644,6 +650,15 @@ def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO
         raise
 
 
+# What a service header's payload would have answered, for the diagnostic that
+# reports one whose walk stopped: the payload is then refused, because a header
+# nobody finished reading may be hiding the record that says it is ciphertext.
+_SERVICE_PAYLOAD_LOST = {
+    "CMT": "the archive comment",
+    "QO": "the quick-open index",
+}
+
+
 class RarReader(BaseArchiveReader):
     """Reads RAR archives: native metadata parse + RARLAB ``unrar`` for data."""
 
@@ -723,6 +738,13 @@ class RarReader(BaseArchiveReader):
         # and handing a secret to a subprocess that ignores it buys nothing. This is
         # also what ``get_archive_info`` reports as ``is_encrypted``: one predicate,
         # so what the caller is told and what reaches the subprocess cannot drift.
+        #
+        # ``info.is_encrypted`` here is the definite answer, not the fail-closed one
+        # the member is presented with: a member whose header was cut short says
+        # nothing about the archive around it. Reading the presented flag instead
+        # would let one damaged member report a wholly plaintext archive as
+        # encrypted, hand the caller's password to every ``unrar`` spawn for it, and
+        # relabel an ordinary empty read as a wrong password.
         self._archive_has_encryption = self._archive.has_header_encryption or any(
             info.is_encrypted for info in self._archive.members
         )
@@ -732,6 +754,10 @@ class RarReader(BaseArchiveReader):
         for info in self._archive.members:
             info.comment = self._resolve_rar3_comment(info.comment)
         self._members = [self._to_member(info) for info in self._archive.members]
+        # SERVICE headers (``CMT``, ``QO``) are not members, so the walk above never
+        # reaches them, and a damaged one would otherwise report nothing under any
+        # policy.
+        self._emit_service_header_diagnostics()
 
     def _open_shared_source(self, source: Path | BinaryIO) -> SharedSource:
         """Build SharedSource, discovering/materializing volumes as needed."""
@@ -1071,7 +1097,13 @@ class RarReader(BaseArchiveReader):
             created=info.ctime,
             mode=mode,
             compression=_compression_for(info),
-            is_encrypted=info.is_encrypted,
+            # Fails closed: a member whose header stopped before the encryption
+            # record could be ruled out is presented as encrypted. Answering
+            # "not encrypted" from a header nobody finished reading is a wrong
+            # answer rather than a missing one, which is the class this library
+            # ranks worst. ``ArchiveInfo.is_encrypted`` deliberately does *not*
+            # follow: see ``_archive_has_encryption``.
+            is_encrypted=info.is_encrypted or info.encryption_unknown,
             is_current=not version_history,
             create_system=create_system,
             windows_attrs=windows_attrs,
@@ -1098,54 +1130,7 @@ class RarReader(BaseArchiveReader):
             presented_name=presented,
             archive_name=self._archive_name,
         )
-        for record, record_id, reason in info.skipped_header_records:
-            named = record if record_id is None else f"{record} ({record_id})"
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-                message=(
-                    f"RAR5 extra record {named} is malformed and was dropped "
-                    f"({reason}); the member is listed without what it carried."
-                ),
-                context=MemberHeaderRecordContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=member._member_id,
-                    record=record,
-                    record_id=record_id,
-                    reason=reason,
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
-            )
-        if info.skipped_header_records_truncated:
-            # One diagnostic saying the header was abandoned, rather than one per
-            # record past the cap — emitting per record is the cost the cap exists
-            # to avoid. Without this a caller sees the capped list and cannot tell
-            # it is the whole story. ``list_truncated`` is what they read.
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-                message=(
-                    f"More than {_MAX_SKIPPED_HEADER_RECORDS} RAR5 extra records of "
-                    f"this member were malformed, so the rest of its header was not "
-                    f"read; it is listed from what was read before that."
-                ),
-                context=MemberHeaderRecordContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=member._member_id,
-                    record="",
-                    record_id=None,
-                    reason=(
-                        f"more than {_MAX_SKIPPED_HEADER_RECORDS} malformed records; "
-                        f"the rest of the header was not read"
-                    ),
-                    list_truncated=True,
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
-            )
+        self._emit_header_record_diagnostics(info, member.name, member)
         # Pure; same predicate ``_rar_member_extra_and_link`` uses for extra keys.
         if not _crc_is_tweaked(info) or self._unrar_password is not None:
             return
@@ -1327,6 +1312,135 @@ class RarReader(BaseArchiveReader):
             return None
         return expected, transforms
 
+    def _emit_header_record_diagnostics(
+        self,
+        info: RarMemberInfo | DamagedServiceHeader,
+        name: str,
+        member: ArchiveMember | None,
+    ) -> None:
+        """Report what a RAR5 extra-area walk dropped, and why it stopped.
+
+        ``member`` is ``None`` for a SERVICE header (``CMT``, ``QO``), which is not
+        a listed member and so has nothing to attach to. It still comes through
+        here: the same leniency applies to its header, and the argument for
+        dropping a record rather than refusing the archive is that the diagnostic
+        is emitted and ``ARCHIVE_INTEGRITY_CODES`` makes a strict policy refuse.
+        A service header that said nothing was the one place that argument did not
+        hold.
+
+        The two cases do not get the same words. A member's is about a member that
+        was listed; a service header's is about a header that is in no listing, and
+        what a reader wants to know is which of the archive's own answers went
+        missing with it. Sharing the wording named ``CMT`` as a member the caller
+        could then not find, and never mentioned the comment it had withheld. The
+        context follows the same split: ``member_name`` is empty and ``member_id``
+        is ``None`` for a service header, because there is no member to name.
+        """
+        member_id = member._member_id if member is not None else None
+        attach = member is not None
+        context_name = name if member is not None else ""
+        for record, record_id, reason in info.skipped_header_records:
+            named = record if record_id is None else f"{record} ({record_id})"
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"RAR5 extra record {named} is malformed and was dropped "
+                    f"({reason}); the member is listed without what it carried."
+                    if member is not None
+                    else f"RAR5 extra record {named} in this archive's {name} "
+                    f"service header is malformed and was dropped ({reason}); "
+                    f"the header was read without what it carried."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=context_name,
+                    member_id=member_id,
+                    record=record,
+                    record_id=record_id,
+                    reason=reason,
+                ),
+                member=member,
+                attach_to_member=attach,
+                logger=logger,
+            )
+        stop_reason = info.header_walk_stop_reason
+        if stop_reason is not None:
+            # One diagnostic saying the header was abandoned, rather than one per
+            # record past the cap — emitting per record is the cost the cap exists
+            # to avoid. Without this a caller sees the capped list and cannot tell
+            # it is the whole story. ``list_truncated`` is what they read.
+            #
+            # The reason comes from the walk because four different faults end it
+            # and only one of them is the cap. It is also the only thing that
+            # explains why the member may be reported encrypted when nothing in
+            # its listing says so, so naming a fault that did not happen costs
+            # more here than it would on an ordinary skip.
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"This RAR5 member's header was not read to the end because "
+                    f"{stop_reason}; it is listed from what was read before that."
+                    if member is not None
+                    else f"This archive's {name} service header was not read to "
+                    f"the end because {stop_reason}, so {_SERVICE_PAYLOAD_LOST.get(name, 'its payload')} "
+                    f"was not used."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=context_name,
+                    member_id=member_id,
+                    record="",
+                    record_id=None,
+                    reason=stop_reason,
+                    list_truncated=True,
+                ),
+                member=member,
+                attach_to_member=attach,
+                logger=logger,
+            )
+
+    def _emit_service_header_diagnostics(self) -> None:
+        """Report the SERVICE headers (``CMT``, ``QO``) whose walk did not finish.
+
+        Emitted after the members, so the two kinds are not interleaved in file
+        order: a strict policy raises at emit time, so it refuses on a member's
+        fault first even where the damaged service header came earlier in the file
+        — a ``CMT`` sits right after MAIN, so that is the usual layout. Real file
+        order would need each header's offset, which ``DamagedServiceHeader``
+        deliberately does not keep.
+
+        The parser caps how many it keeps, so the count of the rest is reported
+        too: a cap that silently swallowed the remainder would reopen the hole this
+        reporting exists to close.
+        """
+        for damaged in self._archive.damaged_service_headers:
+            self._emit_header_record_diagnostics(damaged, damaged.name, None)
+        omitted = self._archive.damaged_service_headers_omitted
+        if omitted:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"{omitted} further RAR5 service header(s) in this archive "
+                    f"were not read to the end and are not described "
+                    f"individually; an archive with this many damaged service "
+                    f"headers is crafted rather than merely damaged."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name="",
+                    member_id=None,
+                    record="",
+                    record_id=None,
+                    reason="too many damaged service headers to describe",
+                    # Not ``list_truncated``: that flag marks the diagnostic
+                    # reporting that one header's own record list was cut short,
+                    # and this one is behind no header at all. What was cut short
+                    # here is the list of headers, which the message says.
+                    list_truncated=False,
+                ),
+                logger=logger,
+            )
+
     def _payload_verify_args(
         self, member: ArchiveMember
     ) -> tuple[
@@ -1373,15 +1487,123 @@ class RarReader(BaseArchiveReader):
             rewind_warning=rewind_warning,
         )
 
-    def _can_direct_read(self, info: RarMemberInfo) -> bool:
+    def _is_directly_sliceable(self, info: RarMemberInfo) -> bool:
+        """Everything the direct read needs except an answer about encryption.
+
+        Split out so ``_open_member`` can tell a member that genuinely needs
+        ``unrar`` from one whose bytes are sitting right there and are held back
+        only because the header never settled whether they are ciphertext.
+        """
         return (
             info.compress_type == _RAR_METHOD_STORED
-            and not info.is_encrypted
             and not info.file_solid
             and not info.split_after
             and not info.split_before
             and not info.spanned_volumes
         )
+
+    def _can_direct_read(self, info: RarMemberInfo) -> bool:
+        # ``encryption_unknown`` is excluded here rather than refused: slicing the
+        # stored bytes and handing them straight back would present ciphertext as
+        # plaintext if the unread record was the encryption record, so that member
+        # goes through ``_confirm_unsettled_plaintext`` first (see ``_open_member``).
+        return (
+            self._is_directly_sliceable(info)
+            and not info.is_encrypted
+            and not info.encryption_unknown
+        )
+
+    def _confirm_unsettled_plaintext(
+        self, info: RarMemberInfo, member: ArchiveMember
+    ) -> None:
+        """Prove a cut-short member's stored bytes are plaintext, or raise.
+
+        The member's header stopped before its extra records were read to the end,
+        so nothing in it says whether the data is encrypted — and routing to
+        ``unrar`` would not settle it either. Measured on unrar 7.00, it reads the
+        same damaged header and reaches the same wrong conclusion (``unrar l`` drops
+        the encrypted marker); what it actually does is refuse when a digest that
+        survived the damage fails against the bytes, and hand them back unverified
+        when none survived. Archivey applies the same digest test and refuses the
+        second case, which is the maintainer's ruling (see ``format-rar``).
+
+        Which digest survives is the writer's choice, not ours: RAR5 keeps CRC32 in
+        the fixed FILE header and BLAKE2sp in the extra area, so a cut area destroys
+        one and leaves the other. A surviving digest is a real discriminator because
+        an encrypted member's stored digests are key-tweaked (``ConvertHashToMAC``)
+        whenever the writer sets that flag, and are the *plaintext* digest when it
+        does not — ciphertext matches neither.
+
+        The check runs **before** any byte is handed back, like the ZIP ZipCrypto
+        stored path (``_open_stored_confirmed``): both face a member whose framing
+        cannot reject wrong bytes incrementally, and a caller that stops reading
+        early would otherwise never reach the end-of-stream verdict. The extra pass
+        costs one read of an already-damaged member and never touches the happy path.
+        """
+        hashes, size, transforms, _ = self._payload_verify_args(member)
+        # ``member=`` is deliberately omitted: this is a confirmation pass, and any
+        # diagnostic it emitted would be attached to the member a second time by the
+        # real read that follows.
+        verifier = (
+            build_member_verifier(
+                hashes,
+                expected_size=size,
+                collector=self._diagnostics_collector,
+                archive_name=self._archive_name,
+                digest_transforms=transforms,
+            )
+            if hashes
+            else None
+        )
+        # Two ways to have nothing to go on, and they end the same: the cut took the
+        # only digest with it, or the one it left is an algorithm this installation
+        # cannot compute. The second matters because such a verifier is dropped
+        # silently and would then confirm the member by finding no fault at all.
+        if verifier is None or not verifier.expected_algorithms:
+            raise CorruptionError(
+                "This RAR5 member's header stopped before its extra records were "
+                "read to the end, so whether the member is encrypted is unknown, "
+                "and no usable checksum survived the damage to tell its stored "
+                "bytes from ciphertext. Reading it would risk returning encrypted "
+                "bytes as file content.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
+        view = self._direct_view(info)
+        try:
+            while verifier.read(view, _CONFIRM_CHUNK_BYTES):
+                pass
+        except TruncatedError as exc:
+            # A member whose bytes end short of its declared size is a truncated
+            # member, whatever its header said, and relabelling that as a verdict
+            # about encryption would name a cause that did not happen. This pass
+            # is interpreting one outcome — the digest — and has nothing to add
+            # to the others, so they travel as they would on an ordinary read.
+            #
+            # Stamped because this pass raises from the open path rather than from
+            # a member read, which is where the reader's own boundary would have
+            # filled these in: without it the same truncation named the archive
+            # and the member on an intact header and named neither on a cut-short
+            # one.
+            self._stamp_error_context(exc, member.name)
+            raise
+        except CorruptionError as exc:
+            # What is left is the digest verdict. The verifier's other
+            # ``CorruptionError`` is an over-run, which cannot happen here: the
+            # view is bounded to the member's declared size, so the probe past
+            # the end reads ``b""`` however much archive follows.
+            raise CorruptionError(
+                "This RAR5 member's header stopped before its extra records were "
+                "read to the end, so whether the member is encrypted is unknown, "
+                "and its stored bytes do not match the checksum that survived the "
+                "damage: they are either encrypted or corrupt.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            ) from exc
+        finally:
+            view.close()
 
     def _direct_view(self, info: RarMemberInfo, length: int | None = None) -> BinaryIO:
         size = info.file_size if length is None else length
@@ -1399,6 +1621,7 @@ class RarReader(BaseArchiveReader):
         if (
             raw.compress_type == _RAR_METHOD_STORED
             and not raw.is_encrypted
+            and not raw.encryption_unknown
             and raw.file_size > 0
             and not raw.split_before
             and not raw.split_after
@@ -1523,6 +1746,15 @@ class RarReader(BaseArchiveReader):
         if self._can_direct_read(raw):
             inner: BinaryIO = self._direct_view(raw)
             return self._wrap_payload_stream(inner, member)
+
+        if raw.encryption_unknown and self._is_directly_sliceable(raw):
+            # This member's bytes are stored and sitting right there; the only thing
+            # holding back the slice is that its header stopped before the encryption
+            # record, so nothing read so far says whether they are plaintext. A digest
+            # that survived the damage can still say, and needs no ``unrar``; when none
+            # did, this raises. See ``_confirm_unsettled_plaintext``.
+            self._confirm_unsettled_plaintext(raw, member)
+            return self._wrap_payload_stream(self._direct_view(raw), member)
 
         # unrar addresses the member by its presented name (``path`` or ``path;n``) via a
         # ``-n`` include mask (see open_unrar_p); a history row needs ``-ver``. Do not use

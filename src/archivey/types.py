@@ -561,7 +561,15 @@ class ArchiveMember:
     """Codec chain in compress order — pre-filters first, packing codec last."""
 
     is_encrypted: bool = False
-    """Whether this member's data is encrypted."""
+    """Whether this member's data is encrypted.
+
+    ``True`` also when the backend could not rule encryption out. A RAR5 member
+    whose header stopped part-way through its optional records is reported this
+    way, because answering "not encrypted" from a header nobody finished reading
+    would be a wrong answer rather than a missing one; the member then carries a
+    ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic saying the header was cut short.
+    A member with no such diagnostic is a definite answer.
+    """
 
     is_current: bool = True
     """Last-entry-wins: ``True`` for the live final state of this path.
