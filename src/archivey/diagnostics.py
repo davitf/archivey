@@ -269,7 +269,10 @@ class MemberHeaderRecordContext(_JsonSafeContext):
     A RAR5 archive's own ``CMT`` and ``QO`` service headers carry the same records
     and are reported the same way, and they are not members: those diagnostics
     carry an empty ``member_name`` and a ``member_id`` of ``None``, and the message
-    names the header and what the archive therefore does without.
+    names the header and what the archive therefore does without. How many such
+    headers one archive describes is bounded, so there is one further shape: a
+    single diagnostic, in the same empty-``member_name`` shape but naming no header
+    and with ``list_truncated`` false, saying how many were left undescribed.
     """
 
     kind: Literal["member_header_record"] = "member_header_record"

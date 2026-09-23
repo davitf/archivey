@@ -1103,12 +1103,25 @@ def test_damaged_service_headers_are_retained_under_a_bound(tmp_path: Path) -> N
         _archive_of_damaged_service_headers(_MAX_DAMAGED_SERVICE_HEADERS + 3)
     )
     with open_archive(path) as archive:
-        messages = [
-            d.message
+        emitted = [
+            d
             for d in archive.diagnostics.retained
             if d.code == DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
         ]
-    assert any("3 further RAR5 service header(s)" in m for m in messages), messages
+    overflow = [d for d in emitted if "3 further RAR5 service header(s)" in d.message]
+    assert len(overflow) == 1, [d.message for d in emitted]
+
+    # This one is behind no header, so it must not carry the flag that marks a
+    # header whose own record list was cut short — a caller counting damaged
+    # headers by that flag would otherwise get one too many.
+    assert isinstance(overflow[0].context, MemberHeaderRecordContext)
+    assert not overflow[0].context.list_truncated, overflow[0].context
+    flagged = [
+        d
+        for d in emitted
+        if isinstance(d.context, MemberHeaderRecordContext) and d.context.list_truncated
+    ]
+    assert len(flagged) == _MAX_DAMAGED_SERVICE_HEADERS, len(flagged)
 
 
 def test_a_damaged_service_header_past_the_first_volume_is_reported(

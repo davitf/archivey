@@ -1392,11 +1392,16 @@ class RarReader(BaseArchiveReader):
     def _emit_service_header_diagnostics(self) -> None:
         """Report the SERVICE headers (``CMT``, ``QO``) whose walk did not finish.
 
-        Emitted after the members so a strict collector refuses on the first fault
-        in file order rather than on whichever kind of header it was. The parser
-        caps how many it keeps, so the count of the rest is reported too: a cap
-        that silently swallowed the remainder would reopen the hole this reporting
-        exists to close.
+        Emitted after the members, so the two kinds are not interleaved in file
+        order: a strict policy raises at emit time, so it refuses on a member's
+        fault first even where the damaged service header came earlier in the file
+        — a ``CMT`` sits right after MAIN, so that is the usual layout. Real file
+        order would need each header's offset, which ``DamagedServiceHeader``
+        deliberately does not keep.
+
+        The parser caps how many it keeps, so the count of the rest is reported
+        too: a cap that silently swallowed the remainder would reopen the hole this
+        reporting exists to close.
         """
         for damaged in self._archive.damaged_service_headers:
             self._emit_header_record_diagnostics(damaged, damaged.name, None)
@@ -1417,7 +1422,11 @@ class RarReader(BaseArchiveReader):
                     record="",
                     record_id=None,
                     reason="too many damaged service headers to describe",
-                    list_truncated=True,
+                    # Not ``list_truncated``: that flag marks the diagnostic
+                    # reporting that one header's own record list was cut short,
+                    # and this one is behind no header at all. What was cut short
+                    # here is the list of headers, which the message says.
+                    list_truncated=False,
                 ),
                 logger=logger,
             )
@@ -1567,9 +1576,7 @@ class RarReader(BaseArchiveReader):
             # filled these in: without it the same truncation named the archive
             # and the member on an intact header and named neither on a cut-short
             # one.
-            exc.source_format = exc.source_format or ArchiveFormat.RAR
-            exc.archive_name = exc.archive_name or self._archive_name
-            exc.member_name = exc.member_name or member.name
+            self._stamp_error_context(exc, member.name)
             raise
         except CorruptionError as exc:
             # What is left is the digest verdict. The verifier's other
