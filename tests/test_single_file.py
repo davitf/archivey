@@ -37,7 +37,13 @@ from archivey.exceptions import (
 )
 from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires, requires_zstd, zstd_backend
-from tests.streams_util import NonSeekableBytesIO, make_lzip_member, make_unix_compress
+from tests.streams_util import (
+    NonSeekableBytesIO,
+    make_lzip_member,
+    make_multiblock_xz,
+    make_unix_compress,
+    xz_cli_available,
+)
 
 
 def _gzip_bytes(
@@ -760,3 +766,24 @@ def test_read_after_reader_and_source_close_raises_typed_error() -> None:
         stream.close()
     with contextlib.suppress(Exception):
         ar.close()
+
+
+@pytest.mark.skipif(
+    not xz_cli_available(),
+    reason="the xz CLI is needed to build a multi-block (single-stream) XZ fixture",
+)
+def test_xz_seek_across_blocks_through_open_archive(tmp_path: Path) -> None:
+    # The shape threaded `xz -T0` writes: one stream, many blocks. With the block
+    # index built by a first read, a seek resumes mid-file and the read crosses block
+    # boundaries; every byte must match and a read to the end must not raise.
+    payload = random.Random(1).randbytes(1_000_000)
+    path = tmp_path / "rand.bin.xz"
+    path.write_bytes(make_multiblock_xz(payload, block_size=131072))
+    with open_archive(path, streaming=False, seekable_members=True) as ar:
+        (member,) = ar.members()
+        with ar.open(member) as f:
+            assert f.read() == payload
+            f.seek(300_000)
+            assert f.read(300_000) == payload[300_000:600_000]
+            f.seek(300_000)
+            assert f.read() == payload[300_000:]

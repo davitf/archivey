@@ -581,6 +581,58 @@ catch-and-continue loop holds it, one descriptor per refused image. The open is
 wrapped so the handle is closed before the exception leaves. Found on PR #315
 (S22-K1); tracked internally.
 
+### O17. A seek trusts the format's own index, so a crafted `.xz` or `.lz` can misplace bytes — accepted
+
+Random access into a single-file `.xz` or `.lz` resolves the target offset from the file's
+own index without decompressing what comes before it: the XZ stream index (block
+unpadded and uncompressed sizes), or the lzip member trailers (`data_size`,
+`member_size`). Both are attacker-controlled. An index that is consistent with itself
+but describes different unit boundaries than a forward decode would passes every check
+that does not decompress. A seek straight to an offset, with no full read before it,
+then serves bytes from another unit, and `try_get_size()` / `member.size` report the
+index's total. Nothing raises.
+
+Measured on PR #407 against both formats, with a forward read of the same bytes raising
+`CorruptionError` in each case:
+
+- **lzip**, three 256-byte members `A`/`B`/`C`: member 1's trailer `member_size` set to
+  cover members 0 and 1. The backward trailer walk lands on member 0's real `LZIP`
+  magic and succeeds with two members; `seek(256)` serves `C`, size reads 512 of 768.
+- **xz**, four 64 KiB blocks: index records 0 and 1 merged into one (unpadded
+  `round_up_4(u0) + u1`, uncompressed `d0`, CRCs recomputed). The stream-header
+  arithmetic still lands on the real header; `seek(65536)` serves block `C`, size reads
+  196 608 of 262 144.
+
+*Accepted, ruled by davi on 2026-09-23 (PR #407 review round 1).* No cheap check can
+close it: where a unit really ends is known only by decompressing it, and not having to
+do that is the reason the index exists. The alternative, decoding from the start before
+the first cold seek trusts the index, would remove fast random access for every honest
+file. xz's and lzip's own tools trust their indexes the same way.
+
+What does hold: a forward read never trusts the index. It verifies every lzip trailer
+field (CRC-32, `data_size` and, since PR #407, `member_size`) and lets liblzma check
+every XZ block against its stream index, so a full read of a crafted file raises. Seek
+points a forward read records are ones the decode has already checked: lzip's come from
+validated trailers, and an XZ stream's block points are read only after liblzma has
+accepted that stream's index.
+
+A seek that lands *inside* the misdescribed region resumes from a point before the lie
+and decodes through it, so it raises once the decode reaches the end of the lying unit,
+and not before. The bytes returned up to then are the right ones for their offsets. For
+lzip that end is the lying member's trailer: on the file above, `seek(100)` then
+`read(16)` raises, because the 256-byte members decode within the first feed. For xz it
+is the end of the whole stream, where liblzma checks the index: `seek(1000)` then
+`read(70000)` returns correct bytes with no error, and `read()` to the end raises.
+
+A seek *past* the lie followed by a read to the end is not caught. Every unit after the
+target is genuine and passes its own checks, and the decode reaches the file's last byte
+exactly where the index says it should; only the numbering of offsets is wrong. On the
+two files above, `read()` after the seek ends cleanly at 512 and 196 608. A consumer
+that must not act on misplaced bytes should read the stream through once, or verify a
+digest, before seeking into it. A heuristic diagnostic for an ambiguous trailer walk
+(an `LZIP` magic at a member start the walk skipped) was considered and not taken: an
+attacker who controls the trailers can avoid it.
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed
