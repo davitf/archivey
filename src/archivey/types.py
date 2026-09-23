@@ -350,6 +350,19 @@ class CreateSystem(Enum):
 # to the ``str → object`` fallback.
 EXTRA_IS_JUNCTION: Final = "is_junction"
 
+# Key in ArchiveMember.extra marking a member that the archive recorded as a Windows
+# reparse point — a Windows symlink or a junction, as opposed to a POSIX symlink. Set
+# whenever the archive says so: the FILE_ATTRIBUTE_REPARSE_POINT bit for ZIP and 7z,
+# the redirect type for RAR5, and the live entry for a directory scan on Windows. Not
+# namespaced, for the same reason as EXTRA_IS_JUNCTION.
+#
+# Every junction is a reparse point, but not every reparse point is a junction, and the
+# two keys answer different questions from different places: this one comes off metadata
+# the archive always carries, while EXTRA_IS_JUNCTION needs the reparse *tag*, which
+# lives in the member's data and which 7-Zip does not store for a directory reparse
+# point. So a junction written by 7-Zip carries this key and not that one.
+EXTRA_IS_REPARSE_POINT = "is_reparse_point"
+
 # Key in ArchiveMember.extra: True when this RAR member's ``created`` is Unix
 # ``st_ctime`` (inode-change), False when the writer OS stores a birth time
 # (Win32, and RAR3 FAT/OS2/Mac/BeOS). Derived from ``host_os``; omitted when
@@ -382,6 +395,9 @@ class MemberExtra(dict[str, object]):
 
     * ``is_junction`` (``bool``) — directory, RAR. Cross-format by design (ZIP
       and 7z can carry junctions); other backends may start setting it.
+    * ``is_reparse_point`` (``bool``) — ZIP, 7z, RAR, directory. The weaker,
+      metadata-only sibling of ``is_junction``: a Windows symlink or junction
+      rather than a POSIX one.
     * ``rar.created_is_ctime`` (``bool``)
     * ``rar.extract_version`` (``int``)
     * ``rar.file_version`` (``int``)
@@ -412,6 +428,8 @@ class MemberExtra(dict[str, object]):
 
     @overload
     def __getitem__(self, key: Literal["is_junction"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["is_reparse_point"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["rar.created_is_ctime"], /) -> bool: ...
     @overload
@@ -592,6 +610,21 @@ class ArchiveMember:
         default=(), repr=False, compare=False
     )
     """Library-retained diagnostic attachments (bounded by the collector budget)."""
+    _link_target_resolved: bool = field(default=False, repr=False, compare=False)
+    """Set once a backend has looked for this link's target, found or not.
+
+    ``link_target is None`` alone cannot say whether the target is missing or merely
+    not looked for yet, so without this the lookup repeats on every access — re-reading
+    the member's data and re-emitting its diagnostic. Not part of the public contract."""
+    _link_target_absent: bool = field(default=False, repr=False, compare=False)
+    """Set when the archive itself records no target for this link.
+
+    A lookup that came back empty has two causes that look identical from here. The
+    archive may carry no target at all — a writer that stored none, a reparse buffer
+    naming nothing — or it may carry one this reader could not reach, because the bytes
+    are compressed, split across volumes or encrypted. Only the first is the archive's
+    omission, and only the first is an extraction outcome rather than a failure, so the
+    backend that knows which it is says so here. Not part of the public contract."""
 
     # Mutable members are intentionally unhashable. Annotated `-> int` (the call
     # always raises) so the override stays compatible with object.__hash__.
@@ -662,6 +695,17 @@ class ArchiveMember:
         return self.type == MemberType.SYMLINK and bool(
             self.extra.get(EXTRA_IS_JUNCTION)
         )
+
+    @property
+    def is_reparse_point(self) -> bool:
+        """The archive recorded this entry as a Windows symlink or junction.
+
+        Deliberately not gated on :attr:`type` the way :attr:`is_junction` is: a member
+        the archive flags as a reparse point whose data turns out not to be a link
+        buffer is presented as an ordinary file or directory, and the flag still records
+        what the archive said about it.
+        """
+        return bool(self.extra.get(EXTRA_IS_REPARSE_POINT))
 
     def replace(self, **kwargs: object) -> "ArchiveMember":
         """Return a copy with the given fields changed; never mutates self.

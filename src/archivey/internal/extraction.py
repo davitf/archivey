@@ -1006,16 +1006,37 @@ class ExtractionCoordinator:
         dest_root: Path,
         dest_path: Path,
     ) -> ExtractionResult:
-        if not self._prepare_destination(transformed, dest_path):
+        target = transformed.link_target
+        if target is None and original._link_target_absent:
+            # The archive says this is a link and records nowhere for it to point — a
+            # 7-Zip-written directory symlink or junction, or a reparse buffer naming
+            # nothing. There is nothing to write, and nothing here went wrong, so this
+            # is a LINK_TARGET_UNAVAILABLE result rather than a per-member failure that
+            # OnError.STOP would turn into an aborted extraction.
+            # Checked before _prepare_destination so a member we are not going to
+            # write cannot unlink an existing destination under OverwritePolicy.REPLACE.
             return ExtractionResult(
-                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+                original, None, ExtractionStatus.LINK_TARGET_UNAVAILABLE, None
             )
 
-        target = transformed.link_target
         if target is None:
+            # Unset for any other reason, which always means the archive records a
+            # target this read could not produce: not looked for yet (a ZIP or 7z
+            # symlink in streaming mode carries its target in data the pass has already
+            # gone by), or looked for and out of reach (compressed, split across
+            # volumes, encrypted). Reporting those as the status above would claim
+            # success while dropping a member the archive describes in full, so they
+            # stay the per-member failure they were before that status existed. Which
+            # of the two it is comes from the backend that knows — see
+            # `BaseArchiveReader._emit_link_target_unavailable`.
             raise LinkTargetNotFoundError(
                 "Symlink has no target",
                 member_name=transformed.name,
+            )
+
+        if not self._prepare_destination(transformed, dest_path):
+            return ExtractionResult(
+                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
 
         os.makedirs(dest_path.parent, exist_ok=True)

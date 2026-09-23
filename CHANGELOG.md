@@ -40,6 +40,50 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `StreamNotSeekableError` to catch. `StreamCapability` is now ordered
   (`FORWARD_ONLY < SEEKABLE`), so the test is
   `availability.required_source <= reader.cost.stream_capability`.
+- **`extra["is_reparse_point"]`** and the matching `ArchiveMember.is_reparse_point`, true
+  when the archive recorded a member as a Windows symlink or junction rather than a POSIX
+  symlink. Set from metadata the archive always carries — the
+  `FILE_ATTRIBUTE_REPARSE_POINT` bit for ZIP and 7z, the redirect type for RAR5, the live
+  entry for a directory scan on Windows — so unlike `extra["is_junction"]` it needs
+  nothing read from the member's data. Every junction is a reparse point, but a junction
+  written by 7-Zip carries only this key, because the tag that would identify it as a
+  junction is in data that writer does not store. Not gated on the member's type: an entry
+  the archive flags whose data turns out not to be a link buffer is presented as an
+  ordinary file, and the flag still records what the archive said.
+
+### Fixed
+
+- **A Windows symlink in a ZIP or a 7z now reports its real target.** Both formats store
+  such a link as a `REPARSE_DATA_BUFFER` — the Win32 structure, not a bare path — and
+  neither backend parsed it. 7z decoded those ~92 binary bytes as UTF-8 and handed the
+  result back as `link_target`, which extraction would then have used as a path; ZIP did
+  not recognise the member as a link at all and presented the buffer as its file content.
+  Both now decode it, which also yields `extra["is_junction"]` from the reparse tag.
+  A directory reparse point — an NTFS junction, or a directory symlink — is surfaced as a
+  link with `link_target` unset and a `SYMLINK_TARGET_UNAVAILABLE` diagnostic, because
+  7-Zip stores no reparse data for those at all: measured, not assumed, against archives
+  built on Windows (`tests/fixtures/external/README.md`). For the same reason
+  `is_junction` stays unset for a junction written by 7-Zip — the tag that would identify
+  it is in the data the writer discarded. That diagnostic is in
+  `ARCHIVE_INTEGRITY_CODES`, so a strict policy refuses such an archive rather than
+  reading a link whose target is gone; previously 7z reported an empty target for it and
+  ZIP reported a directory, and neither said anything.
+- **A link for which the archive records no target no longer fails extraction.** It is
+  recorded as the new `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still
+  extracts, under either `OnError` value — nothing can be written for such a member, and
+  nothing about the extraction went wrong. It also no longer disturbs an existing
+  destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
+  does not unlink an entry for a member that is not going to be written. A link whose
+  target the archive *does* carry but the reader could not reach — encrypted, compressed,
+  split across volumes, or, in a streaming read, stored in data the pass has gone past —
+  stays the per-member failure it was, because dropping it under a
+  non-failure status would report success while losing a member the archive describes in
+  full. Either way the loss is reported as `SYMLINK_TARGET_UNAVAILABLE`, which a strict
+  `DiagnosticPolicy` refuses. Only ZIP used to report it: 7z returned quietly on an
+  encrypted link, and RAR3/4 did the same whenever the target's bytes were out of reach,
+  which now names which of four causes it was (encrypted, split across volumes, compressed
+  rather than stored, or absent). Previously extraction raised `LinkTargetNotFoundError`
+  for the member, which under the library default aborted the whole operation.
 
 ### Changed
 

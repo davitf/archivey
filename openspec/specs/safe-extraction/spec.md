@@ -446,6 +446,7 @@ name-safety requirement.
 | --- | --- |
 | Existing path under `ERROR` | `ExtractionError`; existing entry unmodified |
 | Existing path under `SKIP` | `ExtractionResult.status == NOT_OVERWRITTEN`, `path=None`, no exception |
+| Symlink for which the archive records no target | `ExtractionResult.status == LINK_TARGET_UNAVAILABLE`, `path=None`, no exception, under either `OnError` |
 | Existing file under `REPLACE` | Fresh file is written via temp file + `os.replace()` |
 | Existing entry replaced by a HARDLINK under `REPLACE` | Link is built at a temp sibling and `os.replace()`d in; a failure leaves the existing entry intact |
 | Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
@@ -620,6 +621,7 @@ class ExtractionStatus(str, Enum):
     OVERWRITTEN = "overwritten"
     BLOCKED = "blocked"
     FAILED = "failed"
+    LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
 ```
 
 `ExtractionReport.results` SHALL be the **sole authoritative record** of per-member
@@ -634,8 +636,50 @@ non-current duplicate skipped by the hardwired last-entry-wins rule (`path=None`
 later member under `OverwritePolicy.REPLACE` (`path=None`, `error=None`);
 `BLOCKED` is a continued `FilterRejectionError` (a universal path-safety check or a
 policy filter blocked the member); `FAILED` is a continued non-rejection per-member
-`ArchiveyError` or permitted filesystem `OSError`. `NOT_OVERWRITTEN`, `SUPERSEDED`
-and `OVERWRITTEN` are not failures.
+`ArchiveyError` or permitted filesystem `OSError`; `LINK_TARGET_UNAVAILABLE` is a member the archive
+describes but does not carry enough information to write — a symlink for which it
+records no target at all (`path=None`, `error=None`, `requested_path` set). `NOT_OVERWRITTEN`,
+`SUPERSEDED`, `OVERWRITTEN` and `LINK_TARGET_UNAVAILABLE` are not failures.
+
+A symlink for which **the archive records no target** SHALL be recorded
+`LINK_TARGET_UNAVAILABLE` rather than raised as a per-member failure, under either `OnError`
+value, and SHALL NOT disturb an existing destination: the check happens before overwrite resolution, so `OverwritePolicy.REPLACE`
+does not unlink an entry for a member that is not going to be written. The archive's
+omission is reported through the diagnostics channel
+(`SYMLINK_TARGET_UNAVAILABLE`, an archive-integrity code), which is where an anomaly in
+the archive's own metadata belongs; the extraction result records only what extraction
+did about it. This is not confined to one cause: a writer that discarded the target
+(7-Zip records none for a directory reparse point), a reparse buffer that names nothing
+and a member carrying no data at all leave extraction with the same nothing to write.
+
+What the archive records is the condition, not whether this read produced a target.
+An unset `link_target` has two other causes, and in both the archive carries a target
+this read could not produce: **not resolved yet** — a ZIP or 7z link read in streaming
+mode carries its target in the member's data, which that mode has already passed — and
+**resolved but out of reach**, where the reader looked and the bytes were compressed,
+split across volumes or encrypted. Recording either `LINK_TARGET_UNAVAILABLE` would
+report success while dropping a member the archive describes in full, so both SHALL
+stay a per-member failure. The reader SHALL therefore report which of the two an empty
+lookup was, rather than leaving extraction to infer it from the lookup having run.
+
+"Not resolved yet" is about the target's *bytes*, so it SHALL NOT be reached for a
+member whose absent target the header already states. Where a reader can tell from
+metadata alone that the archive records no target — a reparse point a writer stored no
+data for is the case that exists — it SHALL settle that while typing the member, not in
+a lookup that reads data. Otherwise the two paragraphs above disagree in a streaming
+pass, whose lookup runs at EOF: the member the first one names would take the second
+one's per-member failure, and the library default would abort the archive on exactly
+the entry this outcome was added for.
+
+That is also the bound on the read modes. `LINK_TARGET_UNAVAILABLE` holds in a
+streaming pass exactly for the members a reader settles from metadata; where the
+archive's omission is legible only in the member's *data* — a reparse buffer that names
+nothing, bytes that are not a link buffer at all, a RAR3/4 link carrying none — a
+streaming pass does not learn it until EOF, by which time the member has already been
+written or not. Those SHALL take the per-member failure that an unresolved target
+takes, and the library default aborts the archive there. Settling them in a streaming
+pass would mean holding a reparse point's data until the member is written, which is a
+different guarantee and is not required here.
 
 `requested_path` carries the destination the coordinator intended before
 overwrite/rename resolution; it equals `path` for an ordinary write, and

@@ -101,6 +101,7 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
 from archivey.types import (
     EXTRA_IS_JUNCTION,
+    EXTRA_IS_REPARSE_POINT,
     EXTRA_RAR_CREATED_IS_CTIME,
     EXTRA_RAR_EXTRACT_VERSION,
     ArchiveFormat,
@@ -164,7 +165,14 @@ _RAR_HOST_OS_UNIX = 3
 _RAR_METHOD_STORED = 0x30
 _RAR_METHOD_MAX = 0x35  # RAR M5
 _RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS = 0x02
+_RAR5_XREDIR_WINDOWS_SYMLINK = 2
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
+# The two RAR5 redirect types that are Windows reparse points. RAR is the one format
+# that records the kind in a header field rather than in the member's data, which is
+# why it can flag both while listing and never has to read anything.
+_RAR5_XREDIR_REPARSE_POINTS = frozenset(
+    {_RAR5_XREDIR_WINDOWS_SYMLINK, _RAR5_XREDIR_WINDOWS_JUNCTION}
+)
 
 # Shared CompressionMethod tuples — many-member listing hits the same method byte
 # (typically store / M1–M5) thousands of times; avoid per-member allocations.
@@ -279,6 +287,8 @@ def _rar_member_extra_and_link(
     link_target: str | None = None
     if info.file_redir is not None:
         link_target = info.file_redir[2]
+        if info.file_redir[0] in _RAR5_XREDIR_REPARSE_POINTS:
+            extra[EXTRA_IS_REPARSE_POINT] = True
         if info.file_redir[0] == _RAR5_XREDIR_WINDOWS_JUNCTION:
             extra[EXTRA_IS_JUNCTION] = True
     # Pure; re-derived here rather than threaded through the ``_to_member`` split
@@ -1400,7 +1410,45 @@ class RarReader(BaseArchiveReader):
                 view.close()
             member.link_target = data.decode("utf-8", errors="surrogateescape")
             return
-        # Encrypted / compressed target without usable direct bytes: leave unset.
+        # Encrypted / compressed target without usable direct bytes: leave unset. The
+        # reason still has to reach the caller — `SYMLINK_TARGET_UNAVAILABLE` is in
+        # `ARCHIVE_INTEGRITY_CODES`, so a strict policy refuses the archive, and a
+        # lenient one gets a diagnostic instead of a link whose absence is unexplained.
+        #
+        # Only the last of these is the archive recording no target; the other three
+        # are targets this direct read cannot reach, and the member keeps the
+        # per-member failure it had before `LINK_TARGET_UNAVAILABLE` existed. The
+        # encrypted one is a limit of reading the bytes straight out of the archive
+        # rather than a missing password: this path never decrypts, so a correct
+        # password does not change its answer, and claiming one was needed would name
+        # a fix that does not work.
+        if raw.is_encrypted:
+            reason = "target_data_encrypted"
+            detail = (
+                "its data is encrypted and this reader does not decrypt it in place"
+            )
+            in_archive = True
+        elif raw.split_before or raw.split_after:
+            reason = "target_data_split_across_volumes"
+            detail = "its data is split across volumes"
+            in_archive = True
+        elif raw.compress_type != _RAR_METHOD_STORED:
+            reason = "target_data_compressed"
+            detail = "its data is compressed rather than stored"
+            in_archive = True
+        else:
+            reason = "no_target_data"
+            detail = "it carries no data"
+            in_archive = False
+        self._emit_link_target_unavailable(
+            member,
+            reason=reason,
+            message=(
+                f"Cannot read the symlink target of {quoted(member.name)} because {detail}; "
+                f"leaving link_target unset."
+            ),
+            target_in_archive=in_archive,
+        )
         return
 
     def _unrar_glob_prefix(

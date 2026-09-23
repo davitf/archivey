@@ -238,6 +238,24 @@ class DiagnosticCollector:
 
         return diagnostic
 
+    def reattach_to_member(self, member: ArchiveMember, diagnostic: Diagnostic) -> None:
+        """Attach an already-emitted diagnostic to another object for the same member.
+
+        A backend that rebuilds its member list hands a second listing pass different
+        :class:`~archivey.types.ArchiveMember` objects for the same members, and the
+        caller ends up holding whichever pass produced its result. Re-emitting would
+        double ``counts``, fire the callback twice and spend a second retention slot on
+        one finding; not attaching at all leaves ``member.diagnostics`` empty on exactly
+        the object the caller can see. So the emission stays single and the attachment
+        follows the member.
+
+        No retention slot is charged. The budget already paid for this ``Diagnostic``,
+        and the object it was first attached to is on its way out — this is the same
+        finding changing hands, not a second one.
+        """
+        with self._lock:
+            _attach_diagnostic(member, diagnostic)
+
     def escalate_only(
         self,
         *,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 import uuid
@@ -31,12 +32,15 @@ if TYPE_CHECKING:
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.diagnostics import (
+    Diagnostic,
     DiagnosticCode,
+    DiagnosticContext,
     DiagnosticDisposition,
     DiagnosticSummary,
     EmptyArchiveContext,
     ExtractionReport,
     MemberListReport,
+    SymlinkTargetContext,
     UnconfirmedFormatContext,
 )
 from archivey.escaping import escape_control_chars, quoted
@@ -80,6 +84,7 @@ from archivey.internal.extraction_types import (
 )
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
+from archivey.internal.logs import backends as logger
 from archivey.internal.measurement import (
     ByteCounter,
     SeekCounter,
@@ -104,8 +109,10 @@ from archivey.internal.streams.streamtools import (
     is_stream,
     source_byte_size,
 )
+from archivey.internal.windows_reparse import parse_reparse_data
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
+    EXTRA_IS_JUNCTION,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -407,6 +414,17 @@ class BaseArchiveReader(ArchiveReader):
         # second listing pass over fresh ArchiveMember objects for the same members does
         # not re-emit their diagnostics (see ``_register_member``).
         self._presentation_checked: set[int] = set()
+        # Diagnostics already reported for a member while it was being typed, keyed by
+        # the member's position in the listing and the code, so a backend that types the
+        # same member again re-attaches the first report instead of emitting a second
+        # (see ``_report_member_diagnostic``). The value is None for a report that never
+        # attached, which still has to be remembered: under an IGNORE disposition, or
+        # once the retention budget is spent, nothing attaches, and forgetting it there
+        # would count the member twice in exactly the configuration where ``counts`` is
+        # the only channel left.
+        self._member_reports: dict[
+            tuple[object, DiagnosticCode], Diagnostic | None
+        ] = {}
         # Set by open_archive on the reader it is about to return; read only by the
         # empty-listing check in _publish_materialized. None for a reader built directly.
         self._format_provenance: FormatProvenance | None = None
@@ -1087,7 +1105,7 @@ class BaseArchiveReader(ArchiveReader):
         def _resolve() -> None:
             for member in members:
                 if member.is_link:
-                    self._ensure_link_target(member)
+                    self._resolve_link_target(member)
             for member in members:
                 if member.is_link and member.link_target:
                     self._resolve_link(member, by_name_lists)
@@ -1256,6 +1274,243 @@ class BaseArchiveReader(ArchiveReader):
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         """Populate ``link_target`` from member data when needed. Base is a no-op."""
         return
+
+    def _resolve_link_target(self, member: ArchiveMember) -> None:
+        """Run the backend's link-target hook at most once per member.
+
+        Nothing the hook can learn changes between two calls on the same member: the
+        archive's bytes are fixed and a password is reader-level, never per-open. So a
+        second call only re-opens and re-decompresses the member and emits the same
+        diagnostic again — which would count one targetless link twice in
+        ``DiagnosticSummary.counts``, and under a ``RAISE`` disposition would raise at
+        whatever later access happened to touch the member rather than during listing.
+        """
+        if member.link_target is not None or member._link_target_resolved:
+            return
+        self._ensure_link_target(member)
+        # After, not before: a hook that raised did not look and come back empty, it
+        # never finished. `_finalize_links` swallows CorruptionError / TruncatedError on
+        # an already-damaged listing, so marking it resolved on the way out would trade
+        # the real fault for a generic "Link target is unknown" at the next access.
+        # A backend that catches EncryptionError returns normally, so the repeated-read
+        # case this memo exists for is still covered.
+        member._link_target_resolved = True
+
+    def _report_member_diagnostic(
+        self,
+        *,
+        code: DiagnosticCode,
+        message: str,
+        context: DiagnosticContext,
+        member: ArchiveMember,
+        report_key: object | None,
+        diagnostic_logger: logging.Logger | None = None,
+    ) -> None:
+        """Emit one diagnostic about one member, at most once however often it is typed.
+
+        One member with one deceptive name is one finding, and a second report of it
+        inflates ``DiagnosticSummary.counts``, burns a second retention slot and fires
+        the caller's callback again. That is easy to get wrong here because a member can
+        be typed more than once per archive: ``extract_all`` lists an indexed backend
+        twice, once for the totals and the selector and once to drive the extraction,
+        and a backend that builds its ``ArchiveMember`` objects from the header each
+        time (ZIP, ISO) produces a different object for the same member on the second
+        pass. One that caches them (7z, RAR) hands the same object back and reaches here
+        with the same key, which is the same answer by a shorter route.
+
+        ``report_key`` is what identifies the member across those passes — its position
+        in the listing, and for a diagnostic a member can raise more than once (an
+        invalid timestamp in two separate fields) the position paired with whatever
+        tells the two apart. ``None`` disables the memo, for a caller with nothing
+        stable to key on.
+
+        ``diagnostic_logger`` keeps a code that belongs to another logging category on
+        its own logger — ``archivey.normalization`` for a normalized name — since
+        routing every diagnostic through this one method would otherwise re-label them
+        all as ``archivey.backends``.
+
+        A repeat sighting re-attaches the first report to the object this pass produced,
+        because the caller holds that one and an empty ``member.diagnostics`` on it is no
+        report at all. Where there is nothing to re-attach — an IGNORE disposition and a
+        spent retention budget both emit without attaching — the repeat is still
+        suppressed, which is the case ``counts`` depends on most: under IGNORE it is the
+        only channel the caller has left.
+        """
+        memo = (report_key, code) if report_key is not None else None
+        if memo is not None and memo in self._member_reports:
+            reported = self._member_reports[memo]
+            if reported is not None:
+                self._diagnostics_collector.reattach_to_member(member, reported)
+            return
+        diagnostic = self._diagnostics_collector.emit(
+            code=code,
+            message=message,
+            context=context,
+            member=member,
+            attach_to_member=True,
+            logger=diagnostic_logger if diagnostic_logger is not None else logger,
+        )
+        if memo is not None:
+            # Only a report that landed on the member can be handed to a later object:
+            # re-attaching one that did not would give the second object a record the
+            # first never got.
+            self._member_reports[memo] = (
+                diagnostic
+                if any(attached is diagnostic for attached in member._diagnostics)
+                else None
+            )
+
+    def _emit_link_target_unavailable(
+        self,
+        member: ArchiveMember,
+        *,
+        reason: str,
+        message: str,
+        target_in_archive: bool,
+        report_key: int | None = None,
+    ) -> None:
+        """Report that a link's target could not be read, and why.
+
+        Every path that leaves ``link_target`` unset on a member the archive calls a
+        link goes through here. That is the whole guarantee `safe-extraction` and
+        ``docs/extracting.md`` make about the ``LINK_TARGET_UNAVAILABLE`` outcome: it says
+        only that extraction wrote nothing, so the *reason* has to reach the caller on
+        the diagnostics channel, and ``SYMLINK_TARGET_UNAVAILABLE`` is in
+        ``ARCHIVE_INTEGRITY_CODES`` so a strict policy refuses the archive outright.
+        A backend that returns quietly instead makes that guarantee false.
+
+        ``target_in_archive`` says whether the archive carries a target this reader
+        could not reach — compressed, split across volumes, encrypted — as against
+        recording none at all. Extraction turns the first into a per-member failure and
+        only the second into ``LINK_TARGET_UNAVAILABLE``, because a member the archive
+        describes in full must not go missing from the output under a status that reads
+        as success. The caller decides it because the caller is the only place that
+        knows; inferring it downstream from "the lookup finished" is what this
+        parameter replaced.
+
+        ``report_key`` is for a backend calling this while the member is still being
+        *typed*, before :meth:`_register_member` has given it an id: it is the member's
+        position in the archive's listing, which is what registration takes the id from.
+        It is passed rather than waited for because typing time is the only moment every
+        path shares. Link finalization does not run in a progressive pass a caller
+        abandons early, and registration does not run at all in a 7z one, which streams
+        straight off its cached member list — so anything held back for either loses the
+        report on exactly the archives this outcome exists for. On that 7z path nothing
+        ever stamps the id: the report names the position and the member's own public
+        ``member_id`` stays unset, so a caller reading both sees an id on one and not on
+        the other.
+
+        One member reported once is what the caller's ``counts``, retention budget and
+        callback all assume; :meth:`_report_member_diagnostic` is what holds that, here
+        and for the other diagnostics a member can be typed into twice.
+        """
+        member._link_target_absent = not target_in_archive
+        key = member._member_id if member._member_id is not None else report_key
+        self._report_member_diagnostic(
+            code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
+            message=message,
+            context=SymlinkTargetContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=key,
+                reason=reason,
+            ),
+            member=member,
+            report_key=key,
+        )
+
+    def _apply_reparse_data(
+        self,
+        member: ArchiveMember,
+        data: bytes,
+        *,
+        fallback_type: MemberType,
+        report_key: int | None = None,
+    ) -> None:
+        """Set ``link_target`` (and ``is_junction``) from a Windows reparse buffer.
+
+        This answers the target question outright — it either produces a target or
+        records that the archive holds none — so it marks the lookup done. A backend
+        that already has the buffer, or already knows there is none, can therefore call
+        it while the member is being typed, and ``_resolve_link_target`` will not run
+        the hook again later. That matters because the hook runs at EOF in a streaming
+        pass, long after extraction has decided what to do with the member.
+
+        The reparse tag that separates a junction from a symlink is the first field of
+        that buffer, and the buffer is the member's *data*, so this is the same
+        listing-from-data path a symlink target already takes — see
+        :mod:`archivey.internal.windows_reparse`.
+
+        The attribute bit that gets a member here says it *was* a reparse point on the
+        source filesystem. It does not promise the archive carries the buffer, and it
+        does not promise the tag named a link at all — Windows sets the same bit for
+        deduplication stubs, cloud placeholders and WSL entries, whose data is ordinary
+        content. So a member whose data is present but is not a link buffer goes back to
+        ``fallback_type`` and keeps that content: the bytes are what we know, the link
+        type is what we inferred, and discarding the former for the latter would cost
+        the caller a readable member.
+
+        That trade only pays when ``fallback_type`` is a FILE. Re-typing to DIRECTORY
+        buys nothing and costs twice over: :meth:`open` refuses a directory, so the data
+        this exists to preserve becomes unreachable anyway, and the entry has already
+        lost the trailing slash that made it a directory in the first place (the backend
+        suppresses that rename's diagnostic because a *link* stored with the directory
+        convention is the format's own spelling). A directory-shaped entry therefore
+        stays a targetless link, which is what the archive said it was.
+
+        A member with no data at all has nothing to reinterpret and stays a link with no
+        target. That is the case every Windows archiver actually produces for a junction:
+        7-Zip writes no data for the directory reparse point that every junction is, so
+        the target and the tag are both simply gone, and a member whose target we
+        invented would be worse than one that says it has none.
+        """
+        member._link_target_resolved = True
+        parsed = parse_reparse_data(data)
+        if parsed is not None and parsed.is_junction:
+            # The tag is the buffer's first field, so a junction is established as soon
+            # as the buffer parses — independently of whether a target came out of it.
+            member.extra[EXTRA_IS_JUNCTION] = True
+        if parsed is not None and parsed.target:
+            member.link_target = parsed.target
+            return
+
+        if parsed is None and data and fallback_type is not MemberType.DIRECTORY:
+            member.type = fallback_type
+            reason = "reparse_data_unrecognized"
+            message = (
+                f"{quoted(member.name)} is flagged as a Windows reparse point, but its "
+                f"{len(data)} bytes of data are not a symlink or junction buffer; "
+                f"presenting it as a {fallback_type.value} with that data as its content."
+            )
+        elif parsed is None and data:
+            reason = "reparse_data_unrecognized"
+            message = (
+                f"{quoted(member.name)} is flagged as a Windows reparse point, but its "
+                f"{len(data)} bytes of data are not a symlink or junction buffer; "
+                f"it is stored as a directory, whose content is not readable either "
+                f"way, so it stays a link with no target."
+            )
+        else:
+            if not data:
+                detail = "the writer stored no reparse data for it"
+                reason = "reparse_data_absent"
+            else:
+                detail = "its reparse data names no target"
+                reason = "reparse_data_nameless"
+            message = (
+                f"Cannot read the link target of {quoted(member.name)}: {detail}; "
+                f"leaving link_target unset."
+            )
+        # Every branch above is the archive recording no target: no data, a buffer that
+        # names nothing, or bytes that are not a link buffer at all. None of them is a
+        # target this reader merely failed to reach.
+        self._emit_link_target_unavailable(
+            member,
+            reason=reason,
+            message=message,
+            target_in_archive=False,
+            report_key=report_key,
+        )
 
     @staticmethod
     def _index_member_name(
@@ -1843,7 +2098,7 @@ class BaseArchiveReader(ArchiveReader):
             if member.link_target_member is not None:
                 return self._open_with_link_follow(member.link_target_member, visited)
             if member.link_target is None:
-                self._ensure_link_target(member)
+                self._resolve_link_target(member)
             if member.link_target is None:
                 raise LinkTargetNotFoundError(
                     "Link target is unknown",

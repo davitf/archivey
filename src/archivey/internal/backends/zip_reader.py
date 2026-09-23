@@ -47,7 +47,6 @@ from archivey.diagnostics import (
     DiagnosticCode,
     MemberTimestampContext,
     NameEncodingContext,
-    SymlinkTargetContext,
     raw_name_to_base64,
 )
 from archivey.escaping import quoted
@@ -65,8 +64,11 @@ from archivey.exceptions import (
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.logs import backends as logger
-from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
+from archivey.internal.logs import normalization as normalization_logger
+from archivey.internal.naming import (
+    member_name_normalized_report,
+    normalize_member_name,
+)
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
@@ -92,6 +94,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
+from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.internal.zip_aes import (
     open_winzip_aes_member,
     parse_winzip_aes_extra,
@@ -106,6 +109,7 @@ from archivey.internal.zipcrypto import (
     password_matches_check_byte,
 )
 from archivey.types import (
+    EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -187,6 +191,18 @@ _decode_filter_properties: Callable[[int, bytes], dict] = _raw_decode_filter_pro
 # For these, a stored backslash is a separator; for Unix/other entries it is a literal
 # filename character (see the minimal-name-normalization change / archive-data-model spec).
 _BACKSLASH_SEPARATOR_SYSTEMS: frozenset[CreateSystem] = frozenset(
+    {
+        CreateSystem.FAT,
+        CreateSystem.OS2_HPFS,
+        CreateSystem.WINDOWS_NTFS,
+        CreateSystem.VFAT,
+    }
+)
+# ZIP create-system values whose `external_attr` low word is a Win32 DOS attribute word
+# (FILE_ATTRIBUTE_*). Deliberately a sibling of _BACKSLASH_SEPARATOR_SYSTEMS rather than
+# the same object: the two answer different questions about the same family and are free
+# to diverge — a creator could spell paths the DOS way without recording DOS attributes.
+_DOS_ATTRIBUTE_SYSTEMS: frozenset[CreateSystem] = frozenset(
     {
         CreateSystem.FAT,
         CreateSystem.OS2_HPFS,
@@ -392,6 +408,27 @@ def _zip_timestamps(
                     created = when
 
     return modified, accessed, created, issues
+
+
+def _is_windows_reparse_point(
+    info: zipfile.ZipInfo, create_system: CreateSystem
+) -> bool:
+    """True when this entry is flagged as a Windows reparse point (handbook §2.2.1).
+
+    The bit lives in the low (DOS attribute) word of ``external_attr``, and only a
+    DOS/Windows creator puts a Win32 attribute word there. Every other creator writes
+    whatever its own platform records — a Unix creator's authority is the mode in the
+    high word — so bit ``0x400`` outside :data:`_DOS_ATTRIBUTE_SYSTEMS` is somebody
+    else's bit and is not read.
+
+    "Flagged as" is the whole claim: the bit says the entry was a reparse point on the
+    source filesystem, not that the archive carries the reparse buffer or that the tag
+    named a link. What the data turns out to be decides that, in
+    ``BaseArchiveReader._apply_reparse_data``.
+    """
+    return create_system in _DOS_ATTRIBUTE_SYSTEMS and bool(
+        info.external_attr & FILE_ATTRIBUTE_REPARSE_POINT
+    )
 
 
 class ZipReader(BaseArchiveReader):
@@ -604,8 +641,13 @@ class ZipReader(BaseArchiveReader):
         return None
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
-        for info in self._archive.infolist():
-            yield self._to_member(info)
+        # The position is passed down because this runs more than once per archive --
+        # `extract_all` lists an indexed backend twice -- and a member typed on the
+        # second pass is a different `ArchiveMember` object for the same member. It is
+        # the id `_register_member` stamps, so a diagnostic raised here can name the
+        # member and be recognised as one already reported.
+        for index, info in enumerate(self._archive.infolist()):
+            yield self._to_member(info, index)
 
     def _sniff_unflagged_name(
         self, raw_name: bytes, cp437_decoded: str
@@ -639,7 +681,7 @@ class ZipReader(BaseArchiveReader):
             return utf8_decoded, None
         return utf8_decoded, "utf-8"
 
-    def _to_member(self, info: zipfile.ZipInfo) -> ArchiveMember:
+    def _to_member(self, info: zipfile.ZipInfo, index: int) -> ArchiveMember:
         full_mode = info.external_attr >> 16
         is_unix = info.create_system == 3
         # Permission bits only; None when no usable Unix mode was stored.
@@ -647,16 +689,27 @@ class ZipReader(BaseArchiveReader):
             stat.S_IMODE(full_mode) if (info.external_attr != 0 and is_unix) else None
         )
 
-        if info.is_dir():
-            member_type = MemberType.DIRECTORY
-        elif is_unix and stat.S_ISLNK(full_mode):
-            member_type = MemberType.SYMLINK
-        else:
-            member_type = MemberType.FILE
-
         create_system = _CREATE_SYSTEM_BY_VALUE.get(
             info.create_system, CreateSystem.UNKNOWN
         )
+
+        # A Windows reparse point (symlink or junction) is marked by a DOS attribute
+        # bit in the low word, and 7-Zip's `-snl` is the only common writer that sets
+        # it. Checked before is_dir(): a directory reparse point carries both bits and
+        # is a link, not a directory — its trailing "/" is then dropped by
+        # normalize_member_name, which is how 7z already presents the same member.
+        # The type is provisional: the data decides, in `_apply_reparse_data`, whether
+        # the entry really holds a link buffer, and a member that does not goes back to
+        # the type below.
+        is_reparse_point = _is_windows_reparse_point(info, create_system)
+
+        if info.is_dir():
+            fallback_type = MemberType.DIRECTORY
+        elif is_unix and stat.S_ISLNK(full_mode):
+            fallback_type = MemberType.SYMLINK
+        else:
+            fallback_type = MemberType.FILE
+        member_type = MemberType.SYMLINK if is_reparse_point else fallback_type
         # Convert "\" to "/" only for DOS/Windows-origin entries (where it is a separator);
         # a Unix (or other) entry keeps a backslash as a literal filename character.
         backslash_is_separator = create_system in _BACKSLASH_SEPARATOR_SYSTEMS
@@ -716,6 +769,11 @@ class ZipReader(BaseArchiveReader):
             if aes_info is None or not aes_info.is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
         extra = MemberExtra({"zip.compress_type": info.compress_type})
+        if is_reparse_point:
+            # From the attribute bit alone, so it is known while listing and stays true
+            # even when the data turns out not to be a link buffer and the member is
+            # re-typed. `is_junction` needs the tag inside that data, and is set later.
+            extra[EXTRA_IS_REPARSE_POINT] = True
         if aes_info is not None:
             extra["zip.aes_vendor_version"] = aes_info.vendor_version
             extra["zip.aes_strength"] = aes_info.strength
@@ -746,8 +804,14 @@ class ZipReader(BaseArchiveReader):
             member.comment = _decode_with_fallback(info.comment)
         if create_system is not None:
             member.create_system = create_system
+        # Every diagnostic below goes through the reader's once-per-member ledger, keyed
+        # on the member's position: this runs again for the same member on a second
+        # listing pass, and one member is one finding however often it is typed. The
+        # position is also what each report names the member by, because registration
+        # has not stamped `_member_id` yet and takes the id from this same enumeration
+        # (measured: the two agree in both read modes, and under `extract_all`).
         if inferred_encoding is not None:
-            self._diagnostics_collector.emit(
+            self._report_member_diagnostic(
                 code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
                 message=(
                     f"ZIP member name decoded as {inferred_encoding!r} rather than the "
@@ -756,36 +820,63 @@ class ZipReader(BaseArchiveReader):
                 context=NameEncodingContext(
                     archive_name=self._archive_name,
                     member_name=member.name,
-                    member_id=member._member_id,
+                    member_id=index,
                     raw_name_base64=raw_name_to_base64(member.raw_name),
                     inferred_encoding=inferred_encoding,
                     declared_encoding="cp437",
                 ),
                 member=member,
-                attach_to_member=True,
-                logger=logger,
+                report_key=index,
             )
-        emit_member_name_normalized(
-            self._diagnostics_collector,
+        name_report = member_name_normalized_report(
             member=member,
             presented_name=decoded,
             archive_name=self._archive_name,
+            member_id=index,
+            # A directory reparse point is stored with the directory convention's
+            # trailing "/" and is still a link, so normalization drops the slash. Only
+            # this backend knows that, so only this backend says so.
+            link_stored_as_directory=is_reparse_point and info.is_dir(),
         )
+        if name_report is not None:
+            normalized_message, normalized_context = name_report
+            self._report_member_diagnostic(
+                code=DiagnosticCode.MEMBER_NAME_NORMALIZED,
+                message=normalized_message,
+                context=normalized_context,
+                member=member,
+                report_key=index,
+                # This code's own logging category, which emitting it from here rather
+                # than through `emit_member_name_normalized` would otherwise lose.
+                diagnostic_logger=normalization_logger,
+            )
+        if is_reparse_point and info.file_size == 0:
+            # A writer that stores no data for a reparse point has recorded no target
+            # for it, and that is knowable from the header alone — no read, and so no
+            # dependence on this being a seekable pass. Deciding it here rather than in
+            # the link-target hook is what makes streaming agree: that hook runs at EOF,
+            # after extraction has already decided what to do with the member, which
+            # left a 7-Zip junction raising instead of taking the recorded outcome.
+            self._apply_reparse_data(
+                member, b"", fallback_type=fallback_type, report_key=index
+            )
         for issue in ts_issues:
-            self._diagnostics_collector.emit(
+            self._report_member_diagnostic(
                 code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
                 message=issue.message,
                 context=MemberTimestampContext(
                     archive_name=self._archive_name,
                     member_name=member.name,
-                    member_id=member._member_id,
+                    member_id=index,
                     field=issue.field,
                     source=issue.source,
                     value_repr=issue.value_repr,
                 ),
                 member=member,
-                attach_to_member=True,
-                logger=logger,
+                # One member can carry several invalid timestamps, and they are separate
+                # findings, so the field joins the position in the key. Two passes over
+                # the same bad field still report it once.
+                report_key=(index, issue.field, issue.source),
             )
         return member
 
@@ -1423,30 +1514,41 @@ class ZipReader(BaseArchiveReader):
         assert isinstance(info, zipfile.ZipInfo), (
             "ZIP member is missing its ZipInfo handle"
         )
+        # A Windows reparse point stores a REPARSE_DATA_BUFFER rather than a bare
+        # path, and that buffer is where the junction tag lives. Decoding it as UTF-8
+        # would report ~92 bytes of binary as this member's link target.
+        create_system = _CREATE_SYSTEM_BY_VALUE.get(
+            info.create_system, CreateSystem.UNKNOWN
+        )
+        is_reparse_point = _is_windows_reparse_point(info, create_system)
+        # What the member would be if its data turns out not to be a link buffer —
+        # the same test `_to_member` used before the reparse bit overrode it.
+        fallback_type = MemberType.DIRECTORY if info.is_dir() else MemberType.FILE
+        # The zero-data case does not appear here: `_to_member` settles it while the
+        # member is being typed, so this hook is never reached for one.
         # A symlink's target is its (possibly encrypted) file data. Listing must stay
         # usable without a password, so a missing/wrong password leaves link_target
         # unset (following the link later fails with LinkTargetNotFoundError); other
         # errors surface translated like any member-read error.
         try:
             with self._open_member(member) as f:
-                member.link_target = f.read().decode("utf-8", errors="surrogateescape")
+                data = f.read()
+            if is_reparse_point:
+                self._apply_reparse_data(member, data, fallback_type=fallback_type)
+            else:
+                member.link_target = data.decode("utf-8", errors="surrogateescape")
         except EncryptionError:
-            message = (
-                f"Cannot read the symlink target of {info.filename!r} without the "
-                f"correct password; leaving link_target unset."
-            )
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
-                message=message,
-                context=SymlinkTargetContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=member._member_id,
-                    reason="password_required",
+            self._emit_link_target_unavailable(
+                member,
+                reason="password_required",
+                message=(
+                    f"Cannot read the symlink target of {quoted(member.name)} without the "
+                    f"correct password; leaving link_target unset."
                 ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
+                # The archive does carry the target; it is locked, not missing. So this
+                # member fails the way the encrypted file next to it does, rather than
+                # disappearing from the output under a status that reads as success.
+                target_in_archive=True,
             )
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
