@@ -347,13 +347,17 @@ read the pull request's labels first and write them back with `review` appended.
 
 Do not add it when a maintainer decision is still unanswered, or when the closing
 comment said the rounds an agent can ask for are spent; the workflow refuses the second
-anyway, including a label made through the maintainer's account. When the closing
-comment said no further round is needed, add it only if your fixes grew into a larger
-change than the findings described (a new code path, a redesign a question led to):
-the workflow lets that label through and trusts your judgement, so do not spend a round
-on the fixes the review already described. If the label is still on the pull request a few minutes
-after you added it, no round started: resolve any merge conflict or merge `main`, then
-remove the label and add it again.
+anyway, including a label made through the maintainer's account.
+
+When the closing comment said no further round is needed, that is the default, not a
+lock. Add the label anyway only if a fix grew beyond what the review saw, such as a nit
+or a decision that turned into a new code path or a redesign, and say so in your
+disposition comment. The workflow lets that label through and trusts your judgement
+(davitf, 2026-09-23), so do not spend a round on fixes the review already described.
+
+If the label is still on the pull request a few minutes after you added it, no round
+started: resolve any merge conflict or merge `main`, then remove the label and add it
+again.
 
 ---
 

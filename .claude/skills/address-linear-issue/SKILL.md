@@ -134,7 +134,9 @@ Work through the findings with
 [`address-review-findings`](../address-review-findings/SKILL.md) — ledger,
 reproduce-before-fix, gates, one decision packet at a time, replies on the PR.
 When the closing comment asks to see the fixes, add the `review` label again
-after pushing them; that skill's §7 says when not to.
+after pushing them. When it asks for none, that is the default, not a lock: add
+the label anyway if a fix grew beyond what the review saw. That skill's §7 has
+both cases.
 
 Only one agent works a branch. If someone else picked it up, leave it alone:
 two agents pushing to one branch is worse than a slower round. Steward skips a
@@ -144,8 +146,10 @@ start in the same minute before either replies; that race is accepted — do not
 invent a label or marker to close it.
 
 The review stops asking for rounds once it no longer needs to see the result,
-or the moment it raises a question only the maintainer can answer, and an agent
-gets five rounds at most. None of that is this session's to override.
+or the moment it raises a question only the maintainer can answer. Whether a
+change that grew afterwards needs another look is this session's judgement
+(address-review-findings §7). The five-round cap is not this session's to
+override.
 
 ## Never
 

@@ -32,8 +32,8 @@ disposition. The full process lives in the skill:
 8. **Ask for the next round, if the review asked to see the fixes** — after the last
    push, add the `review` label (`gh pr edit <number> --add-label review`). The round's
    closing comment says whether it wants another look; do not add the label while a
-   maintainer decision is open, or when it said no further round is needed unless your
-   fixes grew into a larger change than the findings described. Last
+   maintainer decision is open, or when it said no further round is needed unless a fix
+   grew beyond what the review saw (say so in your disposition comment). Last
    action, after everything else, since a commit pushed afterwards may not be in what
    gets reviewed.
 

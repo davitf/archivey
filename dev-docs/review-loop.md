@@ -57,8 +57,9 @@ again.
 
 Each finished round posts one closing comment from `github-actions[bot]` whose first line
 is a `<!-- archivey-review-round n=N sha=… verdict=… -->` marker. The workflow reads
-those first lines to number the next round and to see the last verdict. No other round
-state exists, so nothing can fall out of step with what actually ran:
+those first lines to number the next round. The verdict is there for whoever reads the
+pull request's history, and nothing acts on it. No other round state exists, so nothing
+can fall out of step with what actually ran:
 
 - A review that stops before writing its verdict posts "did not finish" with an
   `<!-- archivey-review-attempt … -->` marker instead. It is not a round, but the commit
