@@ -396,6 +396,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         source_mod.ArchiveSource,
         zip_aes.WinZipAesDecryptStream,
         detection._BoundedPeekReader,
+        # Stands in for a refused .lzma decoder: every read raises, so it produces no
+        # bytes and has no seek-point table to forward to.
+        codecs._RefusedAloneStream,
     }
 
     found = _readonly_stream_subclasses()

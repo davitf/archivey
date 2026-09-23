@@ -15,7 +15,12 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionStatus, open_archive
-from archivey.config import AcceleratorMode, ArchiveyConfig
+from archivey.config import (
+    AcceleratorMode,
+    ArchiveyConfig,
+    PasswordInput,
+    PasswordRequest,
+)
 from archivey.exceptions import (
     ArchiveyUsageError,
     EncryptionError,
@@ -82,7 +87,7 @@ def _write_py7zr_archive(
 
 
 def _assert_roundtrip(
-    path: Path, files: dict[str, bytes], *, password: str | list[str] | None = None
+    path: Path, files: dict[str, bytes], *, password: PasswordInput = None
 ) -> None:
     with open_archive(path, password=password) as archive:
         members = {
@@ -816,6 +821,47 @@ def test_header_encrypted_wrong_password_mentions_header(tmp_path: Path) -> None
         open_archive(archive, password="wrong").close()
     assert "rejected" in caught.value.message.lower()
     assert "Password required" not in caught.value.message
+
+
+def test_header_encrypted_password_list_order_does_not_matter(tmp_path: Path) -> None:
+    """A wrong key's garbage header used to end the attempt at the first candidate."""
+    archive = tmp_path / "header-encrypted-list.7z"
+    _write_py7zr_archive(archive, _FILES, password="secret", header_encryption=True)
+    _assert_roundtrip(archive, _FILES, password=["wrong", "secret"])
+
+
+@requires("cryptography")
+@requires_binary("7z")
+def test_header_encrypted_cli_archive_password_list_order_does_not_matter(
+    tmp_path: Path,
+) -> None:
+    """Same, on 7-Zip's own output, which (unlike py7zr) CRCs the encoded header."""
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "a.txt").write_bytes(b"hello")
+    archive = tmp_path / "cli-header-encrypted.7z"
+    subprocess.run(
+        ["7z", "a", "-psecret", "-mhe=on", str(archive), str(source / "a.txt")],
+        check=True,
+        capture_output=True,
+    )
+    with open_archive(archive, password=["wrong", "secret"]) as reader:
+        assert reader.read("a.txt") == b"hello"
+
+
+def test_header_encrypted_provider_asked_again_after_a_wrong_answer(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "header-encrypted-provider.7z"
+    _write_py7zr_archive(archive, _FILES, password="secret", header_encryption=True)
+    asked: list[tuple[object, int]] = []
+
+    def provider(request: PasswordRequest) -> str:
+        asked.append((request.member, request.attempt))
+        return "wrong" if request.attempt == 1 else "secret"
+
+    _assert_roundtrip(archive, _FILES, password=provider)
+    assert asked == [(None, 1), (None, 2)]
 
 
 @requires("cryptography")

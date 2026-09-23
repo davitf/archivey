@@ -6,8 +6,10 @@ Linux ``3.13t`` ``free-threaded-concurrency`` CI job.
 
 from __future__ import annotations
 
+import contextvars
 import gzip
 import io
+import threading
 from pathlib import Path
 
 import pytest
@@ -172,6 +174,105 @@ def test_password_provider_reentry_raises() -> None:
     candidates = _PasswordCandidates.from_input(provider)
     box["c"] = candidates
     assert candidates.attempt(None, lambda _p: b"data") == b"data"
+
+
+def test_password_provider_second_thread_waits_instead_of_raising() -> None:
+    """Two workers needing the provider at once is a correct program, not reentry.
+
+    The guard used to count calls per reader, so while one thread's provider was
+    running, any other thread asking the same reader failed with the reentry error.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def provider(req):  # noqa: ANN001
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        entered.set()
+        release.wait(5)
+        with lock:
+            active -= 1
+        return b"pw"
+
+    candidates = _PasswordCandidates.from_input(provider)
+    results: dict[str, object] = {}
+
+    def ask(name: str) -> None:
+        try:
+            results[name] = candidates.ask_provider(None, 1)
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            results[name] = exc
+
+    first = threading.Thread(target=ask, args=("first",))
+    first.start()
+    assert entered.wait(5)
+    second = threading.Thread(target=ask, args=("second",))
+    second.start()
+    # The second call must be parked on the turn, not failed and finished.
+    second.join(0.2)
+    assert second.is_alive(), results.get("second")
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert results == {"first": b"pw", "second": b"pw"}
+    assert max_active == 1
+
+
+def test_password_provider_reentry_from_a_context_carrying_thread_raises() -> None:
+    """A provider that hands reader work to a helper thread is still reentry.
+
+    The helper is not the provider's thread, so a thread check alone would park it
+    behind the turn the provider holds while the provider waits on the helper.
+    ``contextvars.copy_context().run`` is what ``asyncio.to_thread`` does.
+    """
+    box: dict[str, object] = {}
+
+    def helper() -> None:
+        try:
+            box["result"] = candidates.ask_provider(None, 99)
+        except ArchiveyUsageError as exc:
+            box["result"] = exc
+
+    def provider(req):  # noqa: ANN001
+        context = contextvars.copy_context()
+        worker = threading.Thread(target=context.run, args=(helper,), daemon=True)
+        worker.start()
+        worker.join(5)
+        box["deadlocked"] = worker.is_alive()
+        return b"pw"
+
+    candidates = _PasswordCandidates.from_input(provider)
+    assert candidates.ask_provider(None, 1) == b"pw"
+    assert box["deadlocked"] is False
+    assert isinstance(box["result"], ArchiveyUsageError)
+    assert "reentered" in str(box["result"])
+
+
+def test_password_provider_turn_released_when_provider_raises() -> None:
+    calls = 0
+
+    def provider(req):  # noqa: ANN001
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("prompt cancelled")
+        return b"pw"
+
+    candidates = _PasswordCandidates.from_input(provider)
+    with pytest.raises(RuntimeError, match="prompt cancelled"):
+        candidates.ask_provider(None, 1)
+    worker: dict[str, object] = {}
+    thread = threading.Thread(
+        target=lambda: worker.update(pw=candidates.ask_provider(None, 1))
+    )
+    thread.start()
+    thread.join(5)
+    assert worker == {"pw": b"pw"}
 
 
 def test_password_known_good_promotion_converges() -> None:
