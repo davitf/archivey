@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 
 from archivey.config import (
@@ -19,6 +20,7 @@ __all__ = [
     "AcceleratorMode",
     "DEFAULT_STREAM_CONFIG",
     "DecoderLimits",
+    "KeyDerivationBudget",
     "StreamConfig",
     "check_decoder_memory",
     "exceeds_decoder_memory",
@@ -118,3 +120,45 @@ def check_decoder_memory(declared: int, *, limits: DecoderLimits, what: str) -> 
             f"({what} declares {declared} bytes). The archive chose this number; "
             f"raise DecoderLimits.max_decoder_memory if the archive is trusted."
         )
+
+
+class KeyDerivationBudget:
+    """The rounds of archive-declared key derivation one open archive may still run.
+
+    One per reader, built from its :class:`~archivey.config.DecoderLimits` and shared
+    by every key cache the reader holds. A cache calls :meth:`spend` on a miss,
+    immediately before the derivation, so a hit costs nothing and the refusal lands
+    before the work starts, which is the only place it helps: the derivation runs in
+    ``hashlib`` with the GIL released and cannot be interrupted.
+
+    ``spend`` is locked so two threads opening members at once cannot both pass the
+    check on the same remaining budget. The derivation itself runs outside the lock.
+    """
+
+    __slots__ = ("_cap", "_lock", "_spent")
+
+    def __init__(self, limits: DecoderLimits = DecoderLimits()) -> None:
+        self._cap = limits.max_key_derivation_rounds
+        self._spent = 0
+        self._lock = threading.Lock()
+
+    def __repr__(self) -> str:
+        return f"<KeyDerivationBudget: {self._spent} of {self._cap} rounds spent>"
+
+    def spend(self, rounds: int, *, what: str) -> None:
+        """Charge ``rounds`` to the budget, or raise before the derivation runs.
+
+        ``what`` names the scheme for the message, for example
+        ``"RAR5 key derivation"``.
+        """
+        with self._lock:
+            total = self._spent + rounds
+            if self._cap is not None and total > self._cap:
+                raise ResourceLimitError(
+                    f"Decoder limit reached: max_key_derivation_rounds={self._cap} "
+                    f"({what} at {rounds} rounds would bring this archive's total "
+                    f"to {total}). The archive chose the cost and the number of "
+                    f"keys; raise DecoderLimits.max_key_derivation_rounds if the "
+                    f"archive is trusted."
+                )
+            self._spent = total

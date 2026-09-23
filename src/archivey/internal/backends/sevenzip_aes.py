@@ -13,6 +13,7 @@ import functools
 import hashlib
 
 from archivey.exceptions import UnsupportedFeatureError
+from archivey.internal.config import KeyDerivationBudget
 from archivey.internal.streams.crypto import AES_BLOCK_SIZE, AesParams
 
 # 7-Zip's own decoder clamp (7zAes.cpp ``k_NumCyclesPower_Supported_MAX``): accept
@@ -114,12 +115,27 @@ class SevenZipKeyCache:
     can cost almost nothing (the ``0x3F`` sentinel hashes nothing), so the bound is
     that count, not the CPU cost of filling it. Neither this class nor the cache
     wrapper has a ``repr`` that shows passwords or keys.
+
+    Each miss is charged ``2**cycles`` to ``budget``
+    (:attr:`~archivey.config.DecoderLimits.max_key_derivation_rounds`) before it
+    runs. The charge sits inside the cached function, which ``functools.cache``
+    calls only on a miss. The reader passes a budget built from its own limits; a
+    cache made without one charges the default limits.
     """
 
     __slots__ = ("_derive",)
 
-    def __init__(self) -> None:
-        self._derive = functools.cache(derive_sevenzip_aes_key)
+    def __init__(self, *, budget: KeyDerivationBudget | None = None) -> None:
+        charge = budget if budget is not None else KeyDerivationBudget()
+
+        def derive(password: bytes, *, salt: bytes, cycles: int) -> bytes:
+            # Out-of-range and no-hash (0x3F) values cost nothing: the first raises
+            # in derive_sevenzip_aes_key before any hashing, the second never hashes.
+            if 0 <= cycles <= _SEVENZIP_MAX_CYCLES_POWER:
+                charge.spend(1 << cycles, what="7z key derivation")
+            return derive_sevenzip_aes_key(password, salt=salt, cycles=cycles)
+
+        self._derive = functools.cache(derive)
 
     def aes_params_from_properties(
         self, password: bytes, properties: bytes

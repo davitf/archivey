@@ -241,7 +241,7 @@ ListingLimits.UNLIMITED = ListingLimits(
 
 @dataclass(frozen=True)
 class DecoderLimits:
-    """Caps on what a decoder may allocate because the *archive* said to.
+    """Caps on what a decoder may allocate or compute because the *archive* said to.
 
     Several codecs size their working memory from a number in the archive's own
     header rather than from anything the caller chose: 7z PPMd var.H carries a
@@ -259,6 +259,10 @@ class DecoderLimits:
     so a 151 KB stream declaring 4 GiB held 1.1 GiB resident after producing
     1 GiB, where the same stream declaring 1 MiB held 59 MB. The dictionary
     bounds how much of the output the decoder keeps, and the archive picks it.
+
+    The same shape holds for key derivation, which costs time rather than memory:
+    RAR5 and 7z headers say how many hashing rounds turn a password into a key,
+    and :attr:`max_key_derivation_rounds` caps their total over one open archive.
 
     This is not an :class:`ExtractionLimits` field, and the difference is not
     cosmetic. The bomb guards there measure *output*: they count bytes as an
@@ -340,19 +344,55 @@ class DecoderLimits:
             opens files it did not choose — an upload endpoint, a mail scanner —
             wants the same move for a different reason: 256 MiB still takes
             everything the PPMd and LZMA presets produce.
+        max_key_derivation_rounds: Total rounds of password-to-key derivation one
+            open archive may run. The default is ``2**27``.
+
+            RAR5 and 7z let the archive choose how expensive a key is to derive:
+            RAR5's ``kdf_count`` asks for ``2**kdf_count`` PBKDF2-HMAC-SHA256
+            rounds, 7z's ``NumCyclesPower`` for ``2**cycles`` SHA-256 rounds, each
+            up to ``2**24`` (a few seconds). Each derivation is capped already;
+            this caps the sum. RAR5 salts each encryption record and 7z each
+            folder, so an archive can make every member cost a fresh derivation,
+            and a candidate password list multiplies that again. The work runs
+            inside ``hashlib`` with the GIL released and cannot be interrupted,
+            so what the caller sees is a process that stops responding.
+
+            Rounds are counted as the archive declares them, per derivation that
+            actually runs. A key the reader already derived for the same
+            password and salt comes from its cache and costs nothing, and real
+            writers reuse one salt across an archive (rar 7.00 writes one per
+            archiving run, 7-Zip 23.01 writes none), so an ordinary archive
+            spends one or two derivations whatever its size. Every candidate
+            password that is tried counts, right or wrong. The RAR3 scheme,
+            whose cost is fixed at ``2**18`` SHA-1 rounds, counts at that
+            number; ZIP AES (a fixed 1000 rounds) is not counted.
+
+            ``2**27`` is eight derivations at the ``2**24`` maximum, about half
+            a minute of hashing; 256 at 7-Zip's ``2**19``; 4096 at rar's
+            ``2**15``. Exceeding it raises
+            :class:`~archivey.exceptions.ResourceLimitError` before the
+            derivation that would cross it starts. Code that opens archives it
+            did not choose may want ``2**24``, one maximum-cost derivation.
     """
 
     max_decoder_memory: int | None = 2 * 2**30
+    max_key_derivation_rounds: int | None = 2**27
 
     UNLIMITED: ClassVar[DecoderLimits]
 
     def __post_init__(self) -> None:
         cls = "DecoderLimits"
         _check_limit(self.max_decoder_memory, cls=cls, field_name="max_decoder_memory")
+        _check_limit(
+            self.max_key_derivation_rounds,
+            cls=cls,
+            field_name="max_key_derivation_rounds",
+        )
 
 
 DecoderLimits.UNLIMITED = DecoderLimits(
     max_decoder_memory=None,
+    max_key_derivation_rounds=None,
 )
 
 

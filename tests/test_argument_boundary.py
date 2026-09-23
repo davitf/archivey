@@ -331,6 +331,12 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 bad,
                 lambda b=bad: DecoderLimits(max_decoder_memory=b),
             ),
+            _case(
+                "DecoderLimits",
+                "max_key_derivation_rounds",
+                bad,
+                lambda b=bad: DecoderLimits(max_key_derivation_rounds=b),
+            ),
         ]
 
     # ``ratio_activation_threshold`` is the one limit field that is not ``| None``, so

@@ -67,7 +67,10 @@ from archivey.internal.backends.sevenzip_pipeline import (
     parse_decoded_header,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
-from archivey.internal.config import stream_config_from_archivey
+from archivey.internal.config import (
+    KeyDerivationBudget,
+    stream_config_from_archivey,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
@@ -264,7 +267,9 @@ class SevenZipReader(BaseArchiveReader):
         del encoding  # 7z stores names as UTF-16LE.
         self._source = source
         self._passwords = passwords or _PasswordCandidates()
-        self._key_cache = SevenZipKeyCache()
+        self._key_cache = SevenZipKeyCache(
+            budget=KeyDerivationBudget(self._config.decoder_limits)
+        )
         self._folder_passwords: dict[int, bytes | None] = {}
         # A symlink's target is its member data, usually mid-way through a solid
         # folder, so link bytes are read ahead of resolution, a folder at a time

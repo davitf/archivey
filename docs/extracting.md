@@ -238,6 +238,13 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` on `Archive
   `ResourceLimitError`. Format detection is the exception: a `.lzma` or compressed-tar
   sample is decoded uncapped to recognise it, so under a memory cap an oversized
   declaration can surface as `MemoryError` from `open_archive` instead.
+- **Key-derivation work** — RAR5 and 7z headers say how many hashing rounds turn a
+  password into a key, and an archive can salt every member so each needs its own
+  (`DecoderLimits.max_key_derivation_rounds`, default `2**27` rounds in total per open
+  archive, about half a minute of hashing). Keys the reader already derived are reused
+  for free, so an ordinary encrypted archive spends one or two derivations; each wrong
+  candidate password counts. Trips raise `ResourceLimitError` before the derivation
+  starts.
 
 Loosen per call with `limits=` (extraction only), raise `listing_limits` or
 `decoder_limits` at `open_archive(config=…)`, or use `ExtractionLimits.UNLIMITED` /
