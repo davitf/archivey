@@ -352,7 +352,8 @@ def _report_extraction(
 
     ``extra_renamed`` / ``extra_skipped`` fold in collisions resolved during the
     post-extract hoist (the library report covers only the wrapper extraction,
-    which is collision-free by construction). ``dest_label`` is the hoist's own
+    which is collision-free by construction). A hoist skip also comes off
+    ``extracted``: the report counted that file before the hoist discarded it. ``dest_label`` is the hoist's own
     account of where the content landed, which the report — written before the hoist
     moved anything — cannot know.
 
@@ -446,6 +447,10 @@ def _report_extraction(
                 file=err,
             )
 
+    # Every hoist skip unlinked one file the report counted as extracted — our own copy,
+    # set aside for the operator's — so it is not on disk and not counted, exactly as
+    # a direct extraction's ``NOT_OVERWRITTEN`` is not.
+    extracted -= extra_skipped
     if dest_label is None:
         dest_label = _summary_dest_label(target, report)
     print(

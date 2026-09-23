@@ -396,11 +396,16 @@ guarded like message sites: `tests/test_escaping.py::test_cli_print_sites_escape
 walks every `print()` in `cli/` and fails on an interpolated value that is neither passed
 through an escaping renderer nor listed, with its reason, as safe by type;
 `test_cli_does_not_escape_a_native_path` fails on a bare escape of something path-shaped.
-*Residual:* both are spelling-level sweeps. The allow-list trusts that a variable such as
-`label` was built with an escape, and a helper that returns text for a print site to
-escape (like `_format_os_error`) is checked only by its own test, not by the sweep. The
-progress bar hands tqdm an escaped `desc` and is outside the sweep, since it does not call
-`print()`.
+The first sweep follows a local name to its assignments in the enclosing function and a
+same-module helper call to its return values, so `label = f"{escape_path(...)}"` and
+`_summary_dest_label` pass on their own evidence rather than on their spelling.
+*Residual:* what it cannot follow — an attribute, a call into another module, a `str`
+parameter — passes only through the allow-list, and there the reason is trusted. Two
+entries carry real text: `_report_extraction`'s `dest_label` parameter (the hoist's label,
+built with `escape_path`) and `info`'s `_field` arguments (checked at `_field`'s call
+sites instead). A helper that returns text for a print site to escape, like
+`_format_os_error`, is checked only by its own tests. The progress bar hands tqdm an
+escaped `desc` and is outside the sweep, since it does not call `print()`.
 
 ### O10. A content probe fabricates a member from arbitrary attacker bytes — narrowed
 

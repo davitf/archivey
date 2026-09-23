@@ -500,82 +500,168 @@ _CLI_RENDERERS = {
 # here is what makes that true.
 _CLI_PRINTERS = {"print", "_field"}
 
-# Values a print site may interpolate raw, keyed ``module: expression``. Each one is
-# safe by type or already escaped where it was built; say which. An entry that no
-# longer matches a site fails ``test_cli_print_allowances_name_real_sites``.
+# What a print site may still interpolate raw once the sweep has traced it as far as it
+# can, keyed ``module: expression``: attributes, calls into other modules, and ``str``
+# parameters, which the sweep cannot follow. Each is safe by type or escaped where it
+# was built; say which. An entry that no longer matches fails
+# ``test_cli_print_allowances_name_real_sites``.
 _CLI_PRINT_ALLOWED = {
     "common.py: stats.bytes_decompressed": "int counter",
-    "common.py: consumed_s": "int counter or '-'",
+    "common.py: str(stats.compressed_bytes_consumed)": "int counter",
     "common.py: stats.source_seek_count": "int counter",
-    "extract_cmd.py: extracted": "int counter",
-    "extract_cmd.py: renamed": "int counter",
-    "extract_cmd.py: skipped": "int counter",
-    "extract_cmd.py: blocked": "int counter",
-    "extract_cmd.py: failed": "int counter",
     "extract_cmd.py: ', '.join(parts)": "counts, built two lines above",
-    "extract_cmd.py: dest_label": "from _summary_dest_label or the hoist; escaped",
-    "extract_cmd.py: label": "built with escape_path",
-    "extract_cmd.py: where": "from _escaped_where",
-    "extract_cmd.py: detail": "built with format_error_detail",
-    "filters.py: extra": "the operator's own -d suggestion, from argv",
-    "info_cmd.py: key + ':'": "_field's key; its call sites are checked here",
+    "extract_cmd.py: dest_label": (
+        "the hoist's label, built with escape_path in maybe_hoist_single_root"
+    ),
+    "info_cmd.py: key": "_field's key; its call sites are checked here",
     "info_cmd.py: text": "_field's text; its call sites are checked here",
     "list_cmd.py: report.error": "an ArchiveyError, which escapes itself",
     "main.py: archivey.__version__": "archivey's own version",
-    "main.py: label": "format label from the format registry",
+    "main.py: format_format_label(fmt)": "format label from the format registry",
     "main.py: avail.support.value": "enum value",
-    "main.py: missing": "dependency names and install hints from archivey",
-    "main.py: code": "a SystemExit message raised by the CLI itself",
-    "test_cmd.py: _test_summary(ok=ok, failed=failed, members_total=members_total)": (
-        "counts"
+    "main.py: exc.code": "a SystemExit message raised by the CLI itself",
+    "main.py: '; '.join((f'{m.name} ({m.install_hint})' for m in avail.missing))": (
+        "dependency names and install hints from archivey"
     ),
 }
 
-
-def _printed_expressions(node: ast.expr) -> list[ast.expr]:
-    """The expressions a printed argument interpolates, descending into f-strings.
-
-    A conditional f-string fragment (``f', {n} failed' if n else ''``) is followed into
-    both branches; its condition is not printed. A ``!r`` conversion is inert, since
-    ``repr`` escapes every non-printable character.
-    """
-    if isinstance(node, ast.Constant):
-        return []
-    if isinstance(node, ast.JoinedStr):
-        found: list[ast.expr] = []
-        for value in node.values:
-            if isinstance(value, ast.FormattedValue) and value.conversion != ord("r"):
-                found.extend(_printed_expressions(value.value))
-        return found
-    if isinstance(node, ast.IfExp):
-        return _printed_expressions(node.body) + _printed_expressions(node.orelse)
-    return [node]
+# Parameter annotations that make a value safe by type.
+_SAFE_ANNOTATIONS = {"int", "int | None", "bool"}
 
 
 def _call_name(node: ast.Call) -> str:
     return getattr(node.func, "id", None) or getattr(node.func, "attr", None) or ""
 
 
+class _PrintTracer:
+    """Follow a printed expression back to the values it is built from.
+
+    A local name is followed to every assignment of it in the enclosing function, and a
+    call to a function of the same module to every value it returns. What cannot be
+    followed — an attribute, a call into another module, an unannotated or ``str``
+    parameter, a loop variable — is a *leaf*, and a leaf passes only through
+    ``_CLI_PRINT_ALLOWED``. Following names is what lets
+    ``label = f"{escape_path(...)}"`` pass on its own evidence instead of on the
+    spelling ``label``.
+    """
+
+    def __init__(self, tree: ast.Module) -> None:
+        self.functions = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+
+    def leaves(
+        self, node: ast.expr, scope: ast.AST, seen: frozenset[str] = frozenset()
+    ) -> list[ast.expr]:
+        if isinstance(node, ast.Constant):
+            return []
+        if isinstance(node, ast.JoinedStr):
+            found: list[ast.expr] = []
+            for value in node.values:
+                # ``!r`` is inert: ``repr`` escapes every non-printable character.
+                if isinstance(value, ast.FormattedValue) and value.conversion != ord(
+                    "r"
+                ):
+                    found.extend(self.leaves(value.value, scope, seen))
+            return found
+        if isinstance(node, ast.IfExp):  # the condition is not printed
+            return self.leaves(node.body, scope, seen) + self.leaves(
+                node.orelse, scope, seen
+            )
+        if isinstance(node, ast.BinOp):
+            return self.leaves(node.left, scope, seen) + self.leaves(
+                node.right, scope, seen
+            )
+        if isinstance(node, ast.Call):
+            name = _call_name(node)
+            if name in _CLI_RENDERERS:
+                return []
+            local = (
+                self.functions.get(name) if isinstance(node.func, ast.Name) else None
+            )
+            if local is None:
+                return [node]
+            if name in seen:
+                return []
+            return [
+                leaf
+                for ret in ast.walk(local)
+                if isinstance(ret, ast.Return) and ret.value is not None
+                for leaf in self.leaves(ret.value, local, seen | {name})
+            ]
+        if isinstance(node, ast.Name):
+            return self._name_leaves(node, scope, seen)
+        return [node]
+
+    def _name_leaves(
+        self, node: ast.Name, scope: ast.AST, seen: frozenset[str]
+    ) -> list[ast.expr]:
+        key = f"{id(scope)}:{node.id}"
+        if key in seen:
+            return []
+        seen = seen | {key}
+        found: list[ast.expr] = []
+        bound = False
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = scope.args
+            for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
+                if arg.arg == node.id:
+                    bound = True
+                    annotation = ast.unparse(arg.annotation) if arg.annotation else ""
+                    if annotation not in _SAFE_ANNOTATIONS:
+                        found.append(node)
+        for child in ast.walk(scope):
+            if isinstance(child, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == node.id for t in child.targets
+            ):
+                value: ast.expr | None = child.value
+            elif (
+                isinstance(child, (ast.AnnAssign, ast.AugAssign))
+                and isinstance(child.target, ast.Name)
+                and child.target.id == node.id
+            ):
+                value = child.value
+            elif isinstance(child, (ast.For, ast.comprehension)) and any(
+                isinstance(t, ast.Name) and t.id == node.id
+                for t in ast.walk(child.target)
+            ):
+                bound = True
+                found.append(node)  # a loop variable: not followed
+                continue
+            else:
+                continue
+            bound = True
+            if value is not None:
+                found.extend(self.leaves(value, scope, seen))
+        if not bound:
+            found.append(node)  # a module global or a closure variable
+        return found
+
+
 def _cli_print_sites() -> list[tuple[str, int, str]]:
-    """``(module, line, expression)`` for every raw value a CLI printer writes."""
-    sites: list[tuple[str, int, str]] = []
+    """``(module, line, expression)`` for every untraced value a CLI printer writes."""
+    sites: set[tuple[str, int, str]] = set()
     for path in sorted(_CLI.rglob("*.py")):
         module = path.relative_to(_CLI).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or _call_name(node) not in _CLI_PRINTERS:
+        tracer = _PrintTracer(tree)
+        for scope in ast.walk(tree):
+            if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            # ``_field``'s last argument is the stream, not text.
-            args = node.args[:2] if _call_name(node) == "_field" else node.args
-            for arg in args:
-                for expr in _printed_expressions(arg):
-                    if (
-                        isinstance(expr, ast.Call)
-                        and _call_name(expr) in _CLI_RENDERERS
-                    ):
-                        continue
-                    sites.append((module, node.lineno, ast.unparse(expr)))
-    return sites
+            for node in ast.walk(scope):
+                if (
+                    not isinstance(node, ast.Call)
+                    or _call_name(node) not in _CLI_PRINTERS
+                ):
+                    continue
+                # ``_field``'s last argument is the stream, not text.
+                args = node.args[:2] if _call_name(node) == "_field" else node.args
+                for arg in args:
+                    for leaf in tracer.leaves(arg, scope):
+                        sites.add((module, node.lineno, ast.unparse(leaf)))
+    return sorted(sites)
 
 
 def test_cli_print_sites_escape_what_they_print() -> None:

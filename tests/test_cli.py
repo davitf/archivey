@@ -1786,7 +1786,22 @@ def test_hoist_names_no_destination_when_skip_discards_the_root(
     assert (tmp_path / "a.txt").read_bytes() == b"MINE"
     assert _report_lines(err, "skipped: ") == ["skipped: a.txt"]
     assert _report_lines(err, "moved to ") == []
-    assert _summary_lines(err)[0].endswith("→ .")
+    # Nothing from the archive is on disk, so nothing counts as extracted — the same
+    # line a direct extraction hitting this collision prints.
+    assert _summary_lines(err) == ["0 extracted, 0 renamed, 1 skipped → ."]
+
+
+def test_hoist_skip_inside_a_merged_root_is_not_counted_as_extracted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One skip per colliding child: only the file that moved counts as extracted."""
+    monkeypatch.chdir(tmp_path)
+    archive = _hoist_collision_archive(tmp_path)
+    _seed_existing_root(tmp_path)
+    assert main(["x", str(archive), "--overwrite", "skip"]) == EXIT_OK
+    assert _summary_lines(capsys.readouterr().err) == [
+        "1 extracted, 0 renamed, 1 skipped → root/"
+    ]
 
 
 def test_hoist_does_not_mark_a_file_root_as_a_directory(
@@ -1821,6 +1836,17 @@ def test_relative_name_falls_back_to_forward_slashes() -> None:
     assert _relative_name(landed, PureWindowsPath("D:/target")) == (
         "C:/out/elsewhere/a.txt"
     )
+
+
+def test_unmatched_pattern_hint_escapes_the_suggested_dest(
+    sample_zip: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The ``-d`` hint repeats the pattern; it is escaped like the ``!r`` form beside it."""
+    assert main(["x", str(sample_zip), "ev\x1bil/"]) == EXIT_FAIL
+    lines = _report_lines(capsys.readouterr().err, "warning: pattern matched")
+    assert lines == [
+        "warning: pattern matched no members: 'ev\\x1bil/' (did you mean -d ev\\x1bil?)"
+    ]
 
 
 def test_escape_path_renders_forward_slashes() -> None:
