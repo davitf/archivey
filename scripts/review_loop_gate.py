@@ -1,32 +1,45 @@
 #!/usr/bin/env python3
-"""Decide whether the automated review loop should run, and on which pull request.
+"""Decide whether a review round runs, and write the comment that closes it.
 
-Stdlib only, no GitHub access: the workflow collects the facts, this script makes
-the decision. That split is the point — the decision is the part worth testing, and
-a gate that has to be exercised by pushing to a pull request is a gate nobody tests.
+A round starts when someone adds the ``review`` label to a pull request, and the round
+takes the label off again as it starts, so the label can be added for the next one.
+`.github/workflows/review-loop.yml` is the wiring; this is the part worth testing.
+Stdlib only, no GitHub access: the workflow collects the facts and this makes the
+decisions.
 
-Reads one JSON object on stdin, writes one JSON object on stdout:
+Two modes, each reading one JSON object on stdin and writing one on stdout.
 
-    {"run": true, "pr": 365, "round": 2, "head_sha": "abc…", "head_ref": "…", "reason": "...",
-     "cap_reached": false, "forced": false, "enrol": false, "final": false}
+**Decide** (the default)::
 
-Two shapes go in. A single event (`pull_request`, `issue_comment`,
-`workflow_dispatch`) carries one pull request's facts at the top level. The
-`schedule` shape carries `candidates`, every pull request currently in the loop,
-and `now`; the answer names which one to review, or none.
+    {"labels": ["review", ...], "markers": ["<!-- archivey-review-round n=1 ... -->"],
+     "head_sha": "abc...", "sender_type": "Bot", "sender_login": "claude[bot]",
+     "label_since": "2026-09-23T01:00:00Z",
+     "label_events": [{"at": "2026-09-23T01:00:00Z", "actor": "claude[bot]",
+                       "app": "claude"}],
+     "repository": "davitf/archivey"}
+    -> {"run": true, "round": 2, "final": false, "person": false, "reason": "...",
+        "comment": "", "max_rounds": 5}
 
-With ``--verdict`` it reads the other end of a round instead: the verdict file the
-reviewing agent wrote, answering whether that verdict ends the loop.
+``markers`` are the first lines of the workflow's own earlier comments on the pull
+request (`ROUND_MARKER` and `ATTEMPT_MARKER`). They are the only state: which rounds ran,
+what each one's verdict was, and which commits a review already failed on.
+``label_events`` are the pull request's ``review`` labeled events, with the slug of
+the app each was ``performed_via_github_app`` (empty for none), and ``label_since`` is
+the pull request's ``updated_at`` in the webhook, which labelling bumps; see
+`is_person`.
 
-    {"verdict": "approved", "stop": true, "summary": "…", "question": "", "reason": "…"}
+**Finish** (``--finish``)::
 
-That is the loop's real stopping rule — the round cap behind it is the backstop, not
-the mechanism. See `VERDICT_STOPS`.
+    {"round": 3, "final": false, "head_sha": "abc...", "repository": "...",
+     "verdict": {"verdict": "findings", "summary": "...", "question": ""}}
+    -> {"verdict": "findings", "stop": false, "counted": true,
+        "comment": "...", "reason": "...", "label": "changes-requested",
+        "unlabel": ["approved", "approved-with-fixes", "needs-decision"]}
 
-Round state lives in ``loop:round-N`` labels on the pull request rather than in this
-script: the workflow that runs round N applies the label, so the next event can read
-the count back. Labels are also the only piece of loop state a human can see and
-change from the GitHub UI, which is what makes the loop stoppable without a commit.
+``verdict`` is the file the reviewing agent wrote, or ``null`` when it wrote none.
+The comment says what happened and what the implementer does next, and it carries
+the marker that makes the round count. ``label`` is the outcome label the workflow puts
+on, taking the ``unlabel`` ones off; see `OUTCOME_LABELS`.
 """
 
 from __future__ import annotations
@@ -34,183 +47,190 @@ from __future__ import annotations
 import json
 import re
 import sys
-from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timedelta, timezone
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 
-#: How many automated review rounds run before the loop hands the PR back to a human.
+#: The label that asks for a round. Adding it is the whole trigger.
+REVIEW_LABEL = "review"
+
+#: The label that keeps a pull request out of review for good. The review hub carries
+#: it: its base is an orphan branch, so its diff is the whole repository, and one
+#: `review` label there would review everything.
+NO_REVIEW_LABEL = "no-review"
+
+#: How many rounds an agent can ask for before the pull request is a person's.
 #:
-#: Five rather than three (davitf, 2026-09-21), because the cap had become the only
-#: thing that ever stopped the loop. Every pull request the loop has finished carries
-#: `loop:round-3`: not one reached a clean review, or any other stop, before the
-#: counter ran out. A number doing all the stopping is a number that has to be right,
-#: and it is not: on #380 round 3 approved with two nits left, while on #392 and #394
-#: round 3 still had real work in front of it and both had to wait for a person.
-#:
-#: What makes five safe is that the count is no longer the mechanism. A round whose
-#: verdict does not ask to see the fix ends the loop where it stands
-#: (`VERDICT_STOPS`), so the extra rounds are spent only while the reviewer is still
-#: asking for another look. On the two pull requests whose rounds are recorded in
-#: full — #380 (nine findings, then three, then two) and #389 (five, three, two) —
-#: the verdict rule stops both at round 3 exactly as today, and spends nothing more.
-#:
-#: This is a ceiling, not a target, and it stays a hard one: an agent cannot raise it
-#: (`TRUSTED_BOTS` stops here), and past it a comment buys rounds only up to
-#: `MAX_FORCED_ROUNDS`.
+#: Five (davitf, 2026-09-21): the cap is the backstop that stops two agents going back
+#: and forth on one pull request, not the mechanism that ends a review. A round whose
+#: verdict does not ask to see the fix already says "no further round" (`VERDICT_STOPS`).
 MAX_ROUNDS = 5
 
-#: The round past which no *comment* starts anything, however entitled the commenter.
+#: The round past which nothing runs, whoever asks.
 #:
-#: `@claude review` from a person is a forced round precisely so it can reach past the
-#: cap and past a park. That is right for a person and unbounded for an agent, and the
-#: two are indistinguishable here: `address-review-findings` tells the fixing agent to
-#: send that phrase after every round, and an agent posting through the maintainer's
-#: account (which the review addendum allows) is `OWNER` like the maintainer. Without a
-#: ceiling, fix-comment-fix-comment reviews forever at full cost. Three rounds past the
-#: automatic cap is enough that a person who genuinely wants another round gets it
-#: without noticing this exists. Past it `workflow_dispatch` with `force` is the
-#: override, and it stays unbounded because a button in the GitHub UI is not something
-#: an agent presses.
-#:
-#: It was twice the cap while the cap was three, and moving the cap to five kept the
-#: spare rounds rather than the multiplier (davitf, 2026-09-21): doubling would have
-#: made the worst case an agent can reach ten rounds instead of six, which is the
-#: opposite of what raising the cap was asked for. What this number has to be is out of
-#: reach of a person buying one more round, and that is a constant, not a ratio.
+#: A person can buy rounds past `MAX_ROUNDS`, and telling a person from an agent rests
+#: on one field GitHub records (`is_person`). This ceiling keeps the bound if that field
+#: is ever misread: three spare rounds, as the loop this replaced had (davitf,
+#: 2026-09-21).
 MAX_FORCED_ROUNDS = MAX_ROUNDS + 3
 
-#: How long a pull request's head commit must sit untouched before a round starts.
-#:
-#: This is the whole reason the loop is scheduled rather than push-driven. An agent
-#: implementing a ticket pushes several times in a few minutes — on the first pull
-#: request the loop saw, four commits landed inside thirteen minutes — and a round per
-#: push would spend the cap reviewing half-written work and then have nothing left for
-#: the finished branch. Silence is the only "the implementer has stopped" signal
-#: GitHub offers, so the loop waits for it.
-#: Thirty rather than ten (davitf, 2026-09-19). The fallback only has to be *safe*,
-#: not fast: an agent that finishes properly says so and gets its round immediately,
-#: so the timer is there for the agent that died mid-task. Ten minutes was short
-#: enough that an ordinary pause — a long test run, a slow tool call, a session
-#: waiting on a person — read as "finished" and spent a round on half-written code.
-#: The cost of being wrong is asymmetric: a premature round burns one of the cap's
-#: rounds on half-written code, while a late one only delays a branch nobody is
-#: watching anyway.
-#:
-#: **It is measured from the committer's clock, not from the push.** The scan reads
-#: `.commit.committer.date`, which is when the commit was made; GitHub does not carry a
-#: per-commit push time anywhere the scan can reach. `CONTRIBUTING.md` asks for the test
-#: gate before pushing — all three configs when the change can reach them, the everyday
-#: leg otherwise — and either takes minutes, so the gap is real: commit at 12:00,
-#: run the gate, push at 12:40, and the 12:45 tick sees a head forty-five minutes old
-#: and calls a branch quiet five minutes after a push. A rebase that preserves
-#: committer dates does the same. Closing it properly means recording when the scan
-#: first *saw* a head, which is a second piece of per-commit state; the signal the
-#: implementer sends is what makes that not worth carrying yet, since a branch this
-#: misjudges is one whose agent did not send it.
-QUIET_MINUTES = 30
+#: How much older than the webhook's ``updated_at`` this run's labeled event may be.
+#: The two are written by the same action and usually agree to the second. The
+#: workflow's retry check spells the same number out; a test holds them together.
+LABEL_EVENT_SKEW = timedelta(seconds=30)
 
-#: Opt out entirely. Wins over everything, including an explicit ``@claude review``.
-LABEL_OFF = "loop:off"
-#: How a pull request joins the loop. Removed once a round has run, because
-#: ``loop:round-N`` carries the enrolment from then on — the scan matches either.
-LABEL_ON = "loop:on"
-#: The loop finished: a review that did not ask to see the fix, or the round cap spent.
-LABEL_DONE = "loop:done"
-#: Parked on a maintainer decision. Cleared by whoever answers it.
-LABEL_DECISION = "loop:decision"
-#: Parked by a human for any other reason.
-LABEL_HOLD = "loop:hold"
-
-ROUND_LABEL = re.compile(r"^loop:round-(\d+)$")
-
-#: Branch prefix Cursor's cloud agents use, which is what auto-enrols a new PR.
-CURSOR_BRANCH_PREFIX = "cursor/"
-
-#: What a human comments to force another round: the phrase, at the top of the comment.
+#: The first line of a closing comment for a round that ran, and what the count counts.
 #:
-#: The position is the whole point. The loop's own prose quotes its trigger — the
-#: hand-back comments below say "Comment `@claude review` to buy another round", a
-#: review packet puts the phrase in a maintainer question, a dispositions comment
-#: quotes it back while explaining what it does. On 2026-09-19 that happened for real:
-#: a dispositions comment on #369 spent a forced round reviewing the very pull request
-#: that was fixing the loop, and the reviewer's own packet had tripped the same guard
-#: nine minutes earlier. Anchoring at the start separates asking for a round from
-#: writing about one, because nobody opens a comment with the phrase by accident.
-#:
-#: The `^` is not redundant with the `.match` below. Anchoring only at the call site
-#: put the paperwork-quoting bug one `.match` → `.search` substitution away from coming
-#: back, and nothing at the call site would have said so. In the pattern, either method
-#: is safe.
-#:
-#: Leading whitespace is allowed; `\b` keeps "@claude reviewer" out. It stays
-#: case-insensitive to match `contains()` in `.github/workflows/claude.yml`, which
-#: skips any comment holding this substring anywhere so the assistant and the loop
-#: never both answer one comment. That guard being the looser of the two is the safe
-#: direction: a comment that merely mentions the phrase now runs neither workflow.
-COMMENT_TRIGGER = re.compile(r"^\s*@claude review\b", re.IGNORECASE)
+#: The workflow reads only comments by ``github-actions[bot]``, so a person quoting a
+#: marker cannot change the count.
+ROUND_MARKER = "<!-- archivey-review-round"
 
-#: Who may force a round by commenting.
-TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+#: The first line of a closing comment for a review that stopped before its verdict.
+#: Not a round, but the commit it failed on is remembered (see `decide`).
+ATTEMPT_MARKER = "<!-- archivey-review-attempt"
 
-#: Bots whose ``@claude review`` comment starts a round.
-#:
-#: A bot cannot be a repository collaborator — GitHub reports `author_association:
-#: NONE` for `cursor[bot]` even on a pull request it has been working on — so the test
-#: above never reaches it. This is the narrow exception, and it grants strictly less
-#: than the human one: a person asking for a round is asking past the cap and past a
-#: parked label, because a person is who parked it. An agent saying "I have finished
-#: pushing" is not, so the cap and every park still hold for these.
-#: Both spellings of each, because the identity an agent posts under is not one thing:
-#: Cursor's cloud agent is `cursor[bot]`, a Claude Code session is `claude[bot]`, and
-#: `address-review-findings` §7 tells whichever of them holds the branch to send the
-#: same phrase. Leaving Claude Code out made the instruction a lie on half its hosts.
-TRUSTED_BOTS = frozenset({"cursor[bot]", "cursor", "claude[bot]", "claude"})
+_FIELD = re.compile(r"(\w+)=(\S+)")
 
-#: Labels that park the loop. A pull request carrying one is skipped by the scan.
-PARKED_LABELS = (LABEL_DONE, LABEL_DECISION, LABEL_HOLD)
-
-#: What a round's verdict says about whether the loop spends another round.
+#: What a round's verdict says about whether another round is wanted.
 #:
-#: The round cap is a backstop; this is the mechanism. The reviewer already decides the
-#: question — `code-review-skill`'s addendum §0 gives it four verdicts, and three of
-#: them mean "I do not need to see the result": a plain approval, a conditional
-#: approval whose only open findings are nits with an obvious fix, and a comment. Only
-#: "request changes" says a 🔴 stands or a fix wants another look. That judgement used
-#: to die in the review's prose: the loop read every round that posted anything as
-#: "findings" and scheduled the next one, so what stopped it was the counter reaching
-#: three.
+#: The reviewer decides this, per `code-review-skill`'s addendum §0: a plain approval,
+#: a conditional approval whose open findings have an obvious fix, and a comment all
+#: mean "I do not need to see the result". Only "request changes" asks for another
+#: look. In the two weeks to 2026-09-19 every 🔴 in this repository was raised in
+#: round 1 or 2, and late rounds found almost only wording, so a round the reviewer
+#: did not ask for is the back-and-forth the cap exists to bound.
 #:
-#: The addendum's own round budget says the same thing from the other side, on measured
-#: evidence: in the two weeks to 2026-09-19 every 🔴 in this repository was raised in
-#: round 1 or 2, late rounds produced almost only wording findings, and seven findings
-#: existed *only* because an earlier fix on the same pull request created them. A loop
-#: that keeps going while the reviewer has stopped asking for another look is exactly
-#: the back-and-forth that costs credits and finds nothing.
-#:
-#: A verdict this does not recognise counts as `findings`. A reviewer whose verdict
+#: A verdict this does not recognise counts as `findings`: a reviewer whose verdict
 #: cannot be read has not said it is finished, and the cap still bounds what that costs.
+#:
+#: This decides what the closing comment asks for, and nothing more. An agent's label
+#: after a round that asked for none still runs: a nit or a maintainer question can
+#: grow into a larger change that warrants a full review, and the implementer is
+#: trusted to judge that (davitf, 2026-09-23).
 VERDICT_STOPS = {
     # Nothing was found at all.
     "clean": True,
-    # Findings were posted and the reviewer does not need to see them fixed: addendum
-    # §0's "✅ Approve, conditional on the listed fixes" and "💬 Comment". The findings
-    # are still posted in full and the implementer is still asked to fix them — what
-    # ends is the re-reading, not the work.
+    # ✅ Approve, with nothing to fix beyond 💡/📚/🎉 annotations.
     "approved": True,
-    # 🔄 Request Changes. Another round, if the cap has one left.
+    # ✅ Approve conditional on the listed fixes, or 💬 Comment: findings were posted,
+    # and the reviewer does not need to see them fixed. They are still fixed; what ends
+    # is the re-reading.
+    "conditional": True,
+    # 🔄 Request Changes: the next round is the implementer's to ask for.
     "findings": False,
-    # A maintainer decision. The loop parks rather than stopping, so answering the
-    # question and asking for a round carries on where this left off rather than
-    # needing the loop restarted. The round itself still counts: the workflow applies
-    # `loop:round-$ROUND` unconditionally, above the branch that acts on the verdict,
-    # so a round that ends in a question has spent one of the cap's. That is
-    # deliberate — a round that read the
-    # diff and found something worth asking about is a round that was spent — and it
-    # is why parking is not free.
+    # A maintainer decision. Once it is answered and acted on, the implementer asks for
+    # the next round; the workflow cannot tell an answered question from an open one.
     "decision": False,
 }
 
 #: What an unreadable or unrecognised verdict is treated as. See `VERDICT_STOPS`.
 DEFAULT_VERDICT = "findings"
+
+#: The label a finished round leaves on the pull request, so its standing shows in the
+#: pull request list. A round puts its own on and takes the others off.
+#:
+#: These only report. Nothing here reads them, and nothing may: a status label that
+#: steered the rounds is what went wrong with the ``loop:round-N`` labels this workflow
+#: replaced, and the round markers stay the only state (davitf asked for the labels,
+#: 2026-09-23). A round that did not finish, or did not run, leaves them as they were,
+#: and one left on after later pushes goes stale; the marker names the commit reviewed.
+OUTCOME_LABELS = {
+    "clean": "approved",
+    "approved": "approved",
+    "conditional": "approved-with-fixes",
+    "findings": "changes-requested",
+    "decision": "needs-decision",
+}
+
+
+def _footer(repository: str) -> str:
+    # A relative link does not resolve from an issue comment, so spell the URL out.
+    doc = f"https://github.com/{repository}/blob/main/dev-docs/review-loop.md"
+    return (
+        f"\n\n---\n_Posted by the [review workflow]({doc}). "
+        "[Claude Code](https://claude.ai/code) wrote the review; "
+        "this comment is bookkeeping._\n"
+    )
+
+
+# --- what the earlier comments say ----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class History:
+    #: Rounds that reached a verdict.
+    rounds: int
+    #: Commits a review stopped on before reaching a verdict.
+    failed_shas: frozenset[str]
+
+
+def read_history(markers: object) -> History:
+    """What the workflow's own earlier comments record, from their first lines."""
+    rounds = 0
+    failed: set[str] = set()
+    for line in markers if isinstance(markers, list) else []:
+        if not isinstance(line, str):
+            continue
+        fields = dict(_FIELD.findall(line))
+        if line.startswith(ROUND_MARKER + " "):
+            rounds += 1
+        elif line.startswith(ATTEMPT_MARKER + " ") and fields.get("sha"):
+            failed.add(fields["sha"])
+    return History(rounds, frozenset(failed))
+
+
+def _when(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def label_event(event: dict) -> dict | None:
+    """The labeled event this run is for, or None when it cannot be found.
+
+    The latest ``review`` event on the pull request is not enough on its own: the
+    events API can lag the webhook by a few seconds, and then the latest listed event
+    is an earlier label, perhaps a person's click. So only an event by this run's
+    sender, no older than the webhook's ``updated_at`` less `LABEL_EVENT_SKEW`, is
+    taken. The workflow retries the fetch a few times before giving up.
+    """
+    since = _when(event.get("label_since"))
+    if since is None:
+        return None
+    earliest = since - LABEL_EVENT_SKEW
+    sender = event.get("sender_login")
+    found = []
+    for item in event.get("label_events") or []:
+        if not isinstance(item, dict) or item.get("actor") != sender:
+            continue
+        at = _when(item.get("at"))
+        if at is not None and at >= earliest:
+            found.append((at, item))
+    return max(found, key=lambda pair: pair[0])[1] if found else None
+
+
+def is_person(event: dict) -> bool:
+    """Did a person add the label, rather than an agent?
+
+    ``sender.type`` alone is not enough. An agent working from a Claude Code project
+    thread sometimes lands its label as ``davitf``, type ``User``: #384's events show
+    one at 2026-09-21T01:57:37Z, with ``performed_via_github_app: claude``, while the
+    same route landed as ``claude[bot]`` on #392 and #399. What separates the two is
+    that app field, which is empty only when someone acted without an app, in GitHub's
+    own interface. An event that cannot be found (`label_event`) counts as an agent:
+    that can only refuse a person, and a second click fixes it.
+    """
+    found = label_event(event)
+    return (
+        event.get("sender_type") == "User"
+        and found is not None
+        and found.get("app") == ""
+    )
+
+
+# --- deciding whether a round runs ----------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -218,311 +238,78 @@ class Decision:
     run: bool
     round: int
     reason: str
-    pr: int = 0
-    head_sha: str = ""
-    #: The head branch name. Not a decision input — the workflow needs it to tell which
-    #: agent holds the branch, and everything the workflow acts on comes off the gate so
-    #: there is one place to look when a run does something surprising.
-    head_ref: str = ""
-    cap_reached: bool = False
-    forced: bool = False
-    #: Add `loop:on`: this pull request belongs in the loop and was not in it yet.
-    enrol: bool = False
-    #: The round about to run is the last automatic one, so say so when it finishes.
+    #: The round about to run is the last one an agent can ask for.
     final: bool = False
-    #: The cap, so the workflow's prose and its label list have one source for it
-    #: rather than a copy that drifts the next time the number moves.
+    #: A person asked, so the agent-only refusals did not apply.
+    person: bool = False
+    #: What to post when no round runs and the reason is worth announcing, else empty.
+    comment: str = ""
+    #: The cap, so the workflow's prompt has one source for it.
     max_rounds: int = MAX_ROUNDS
-    #: The highest round any route can reach. The workflow creates a `loop:round-N`
-    #: label for each one: the round it is running is the label it then applies, and a
-    #: forced round reaches past `max_rounds`.
-    max_forced_rounds: int = MAX_FORCED_ROUNDS
-
-
-def current_round(labels: list[str]) -> int:
-    """Highest ``loop:round-N`` on the PR, or 0 if the loop has not run yet."""
-    rounds = [int(m.group(1)) for label in labels if (m := ROUND_LABEL.match(label))]
-    return max(rounds, default=0)
-
-
-def parse_time(value: object) -> datetime | None:
-    """A GitHub timestamp (`2026-09-19T05:40:26Z`) as an aware datetime, or None."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
-def enrolled(labels: list[str]) -> bool:
-    """Is this pull request in the loop?
-
-    A branch name enrols a *new* pull request, once, when it opens. Past that point
-    only the label counts. Reading the prefix here instead would sweep in every
-    `cursor/*` pull request that was open before the loop existed — eight were open
-    the day it landed, and a loop that reviewed all of them would have been switched
-    off within the hour.
-    """
-    return LABEL_ON in labels or current_round(labels) > 0
-
-
-def _minutes(span: timedelta) -> int:
-    """A quiet period in whole minutes, for the reason strings."""
-    return int(span.total_seconds() // 60)
 
 
 def decide(event: dict) -> Decision:
-    """The answer for one event: which pull request to review, and as which round."""
-    if event.get("event_name") == "schedule":
-        return _choose(event)
-    return replace(
-        _classify(event),
-        pr=int(event.get("number") or 0),
-        head_sha=str(event.get("head_sha") or ""),
-        head_ref=str(event.get("head_ref") or ""),
-    )
-
-
-# --- single events ------------------------------------------------------------------
-
-
-def _classify(event: dict) -> Decision:
+    """Should adding the label run a round now, and which round is it?"""
     labels = list(event.get("labels") or [])
-    done = current_round(labels)
+    history = read_history(event.get("markers"))
+    done = history.rounds
     nxt = done + 1
-    final = nxt >= MAX_ROUNDS
+    person = is_person(event)
+    footer = _footer(str(event.get("repository") or ""))
+    label = f"`{REVIEW_LABEL}`"
 
-    if LABEL_OFF in labels:
-        return Decision(False, done, f"{LABEL_OFF} is set")
+    def refuse(reason: str, comment: str) -> Decision:
+        return Decision(False, done, reason, person=person, comment=comment + footer)
 
-    event_name = event.get("event_name", "")
+    if REVIEW_LABEL not in labels:
+        # The label was on the pull request when the event fired and is gone now: a
+        # round that started meanwhile took it, or a person changed their mind. Either
+        # way nobody is asking any more.
+        return Decision(False, done, f"the {REVIEW_LABEL!r} label is no longer set")
 
-    # A human (or workflow_dispatch) forcing a round bypasses the cap and the parked
-    # labels. This is the escape hatch for "I answered the decision, carry on" and for
-    # a fourth round when the third nearly got there.
-    if event_name == "issue_comment":
-        if not event.get("is_pull_request"):
-            return Decision(False, done, "comment is not on a pull request")
-        if not COMMENT_TRIGGER.match(event.get("comment_body") or ""):
-            return Decision(False, done, "comment does not ask for a review")
-        if event.get("cross_repository"):
-            # The `pull_request` path below refuses a fork on the grounds that the run
-            # has no secrets and the review would fail anyway. That reason does not
-            # hold here: an `issue_comment` run is on the base repository and *does*
-            # get them, so this is the one automatic path where a fork round would
-            # really start. It is also the only one a fork can reach, since both the
-            # others refuse a fork before any label could be written.
-            return Decision(False, done, "pull request is from a fork")
-        if event.get("comment_author_association") in TRUSTED_ASSOCIATIONS:
-            # The ceiling lives inside this branch, not ahead of it. `cap_reached` is
-            # not an inert field: the workflow's hand-back step keys on it, adds
-            # `loop:done` and rewrites the status comment. Checking it before the trust
-            # tests handed those writes to anyone who could type the phrase. The bot
-            # path below has its own stop at `MAX_ROUNDS`, and a stranger falls through
-            # to the same refusal they get at every other round, so nothing is lost by
-            # binding this to the only path that can reach past the ordinary cap.
-            if nxt > MAX_FORCED_ROUNDS:
-                return Decision(
-                    False, done, "forced-round ceiling spent", cap_reached=True
-                )
-            # `final` still applies. It does not mean "nobody can buy another round" —
-            # a person always can, at round 3 as much as at round 5. It means the
-            # automatic loop is spent, which is exactly what `loop:done` records, and
-            # the workflow clears every stale park as a round runs and re-adds that
-            # label only when this is set. Dropping it here took `loop:done` off a
-            # pull request that was past the cap and never put it back.
-            return Decision(True, nxt, "requested by comment", forced=True, final=final)
+    if NO_REVIEW_LABEL in labels:
+        return refuse(
+            f"{NO_REVIEW_LABEL!r} is set",
+            f"**Not reviewed: this pull request carries `{NO_REVIEW_LABEL}`.** "
+            "Nothing reviews it while that label is on.",
+        )
 
-        if str(event.get("comment_author_login") or "") in TRUSTED_BOTS:
-            # An agent saying it has stopped pushing — the signal the quiet period
-            # exists to infer, stated outright, so do not wait for it. Every park
-            # still holds: unlike a person, a bot is not who set one.
-            for label in PARKED_LABELS:
-                if label in labels:
-                    return Decision(False, done, f"{label} is set")
+    if nxt > MAX_FORCED_ROUNDS:
+        return refuse(
+            "the ceiling is spent",
+            f"**Not reviewed: {MAX_FORCED_ROUNDS} rounds have run, which is the most "
+            "this workflow runs on one pull request.** Review the rest by hand.",
+        )
 
-            enrol = False
-            if not enrolled(labels):
-                # This is where the reviewing agent hands an approval back for a pass
-                # from zero, and a `claude/*` branch has no enrolment to hand it: only
-                # `cursor/*` auto-enrols, deliberately, so that the scan cannot have
-                # Claude review its own diff before a second reviewer has looked.
-                # Refusing here left that hand-back dead with nothing posted to say so.
-                # An explicit request from a trusted agent is a better enrolment signal
-                # than a branch prefix, so take it as one.
-                #
-                # An unenrolled `cursor/*` branch is the opposite case and still
-                # refused: Cursor's own pull requests enrol themselves when they open,
-                # so one without a label is a pull request that predates the loop, and
-                # sweeping those in is what the prefix is kept out of the scan to
-                # avoid.
-                if str(event.get("head_ref") or "").startswith(CURSOR_BRANCH_PREFIX):
-                    return Decision(
-                        False, done, "pull request is not enrolled in the loop"
-                    )
-                enrol = True
-
-            if nxt > MAX_ROUNDS:
-                return Decision(False, done, "round cap spent", cap_reached=True)
-            return Decision(
-                True,
-                nxt,
-                "the implementing agent says it is finished",
-                enrol=enrol,
-                final=final,
+    if not person:
+        if nxt > MAX_ROUNDS:
+            return refuse(
+                "round cap spent, and an agent asked",
+                f"**Not reviewed: all {MAX_ROUNDS} rounds an agent can ask for are "
+                "spent.** This pull request needs a person now. A person adding the "
+                f"{label} label still buys another round.",
+            )
+        head_sha = str(event.get("head_sha") or "")
+        if head_sha and head_sha in history.failed_shas:
+            return refuse(
+                "a review already failed at this commit, and an agent asked",
+                "**Not retried: a review already stopped before its verdict at this "
+                "commit.** Retrying the same commit usually fails the same way. If it "
+                "stopped within seconds, the likely cause is that this branch's copy "
+                "of the review workflow differs from `main`'s: merge `main` and add "
+                f"the {label} label again. A person adding the label retries as is.",
             )
 
-        return Decision(False, done, "commenter is not a repository collaborator")
-
-    if event_name == "workflow_dispatch":
-        if event.get("force"):
-            # Same reasoning as the forced comment above: forcing skips the cap, it
-            # does not make a post-cap round stop being the last automatic one.
-            return Decision(True, nxt, "requested manually", forced=True, final=final)
-        if nxt > MAX_ROUNDS:
-            return Decision(False, done, "round cap spent", cap_reached=True)
-        return Decision(True, nxt, "requested manually", final=final)
-
-    if event_name != "pull_request":
-        return Decision(False, done, f"event {event_name!r} does not drive the loop")
-
-    if event.get("cross_repository"):
-        # A fork's pull_request run has no secrets, so the review would fail anyway.
-        return Decision(False, done, "pull request is from a fork")
-
-    action = event.get("action", "")
-    if action not in ("opened", "ready_for_review"):
-        # `synchronize` deliberately does not appear here. A push is how work in
-        # progress looks, not how finished work looks; the scheduled scan decides.
-        return Decision(False, done, f"action {action!r} does not drive the loop")
-
-    head_ref = str(event.get("head_ref") or "")
-    if not (head_ref.startswith(CURSOR_BRANCH_PREFIX) or enrolled(labels)):
-        return Decision(False, done, "pull request is not enrolled in the loop")
-
-    if action == "opened":
-        # Nothing to review yet — an agent opens the pull request early and keeps
-        # pushing. Enrol it and let the scan pick it up once it goes quiet.
-        return Decision(
-            False, done, "enrolled; the scan reviews it once it is quiet", enrol=True
-        )
-
-    for label in PARKED_LABELS:
-        if label in labels:
-            # No `enrol` here, on purpose. The enrol step is gated on that flag alone,
-            # so setting it would run `loop-status.sh` and overwrite the status comment
-            # that explains the park — the maintainer's question, on `loop:decision`,
-            # or why a round died, on `loop:hold` — with "a review starts by itself".
-            # A pull request carrying a park label is already enrolled; that is how it
-            # got parked. The cap branch below can afford the flag because the hand-back
-            # step runs after the enrol step and overwrites the wrong status with the
-            # right one.
-            return Decision(False, done, f"{label} is set")
-
-    if nxt > MAX_ROUNDS:
-        return Decision(False, done, "round cap spent", cap_reached=True, enrol=True)
-
-    # "Ready for review" is a person or an agent saying the work is finished, which is
-    # exactly the signal the quiet period exists to infer. Do not make them wait for it.
-    return Decision(True, nxt, "marked ready for review", enrol=True, final=final)
-
-
-# --- the scheduled scan --------------------------------------------------------------
-
-
-def _scheduled(candidate: dict, now: datetime | None, quiet: timedelta) -> Decision:
-    labels = list(candidate.get("labels") or [])
-    done = current_round(labels)
-    nxt = done + 1
-    pr = int(candidate.get("number") or 0)
-    head_sha = str(candidate.get("head_sha") or "")
-
-    def out(
-        run: bool,
-        rnd: int,
-        reason: str,
-        *,
-        cap_reached: bool = False,
-        final: bool = False,
-    ) -> Decision:
-        return Decision(
-            run,
-            rnd,
-            reason,
-            pr=pr,
-            head_sha=head_sha,
-            head_ref=str(candidate.get("head_ref") or ""),
-            cap_reached=cap_reached,
-            final=final,
-        )
-
-    if LABEL_OFF in labels:
-        return out(False, done, f"{LABEL_OFF} is set")
-    if candidate.get("cross_repository"):
-        return out(False, done, "pull request is from a fork")
-    for label in PARKED_LABELS:
-        if label in labels:
-            return out(False, done, f"{label} is set")
-    if not enrolled(labels):
-        return out(False, done, "pull request is not enrolled in the loop")
-    if nxt > MAX_ROUNDS:
-        return out(False, done, "round cap spent", cap_reached=True)
-    if not head_sha:
-        return out(False, done, "head commit is unknown")
-    if head_sha == str(candidate.get("last_reviewed_sha") or ""):
-        return out(False, done, "this commit has already been reviewed")
-
-    pushed = parse_time(candidate.get("head_committed_at"))
-    if pushed is None:
-        return out(False, done, "head commit has no timestamp")
-    if now is None:
-        # Fail closed. Not knowing the time means not knowing whether the branch is
-        # quiet, and the expensive answer is the one that assumes it is.
-        return out(False, done, "scan time is unknown")
-    if now - pushed < quiet:
-        # `quiet`, not `QUIET_MINUTES`: the threshold is a parameter, the tests pass
-        # other values, and a message naming the constant would describe a rule that
-        # did not produce it.
-        return out(
-            False, done, f"still being pushed to — quiet for under {_minutes(quiet)}m"
-        )
-
-    return out(
+    return Decision(
         True,
         nxt,
-        f"no new commits for {_minutes(quiet)} minutes",
+        "requested by a person" if person else "requested by an agent",
         final=nxt >= MAX_ROUNDS,
+        person=person,
     )
 
 
-def _choose(event: dict) -> Decision:
-    """One pull request per tick, longest-waiting first.
-
-    One is not a throttle bolted on afterwards: a scan that started a review on
-    everything eligible would, the first time it ran, start one per enrolled pull
-    request at once. Taking the oldest head commit first is also the order a person
-    would pick, and it is total — ties break on the pull request number — so a tick
-    that is interrupted and retried makes the same choice.
-    """
-    now = parse_time(event.get("now"))
-    quiet = timedelta(minutes=QUIET_MINUTES)
-
-    ready = []
-    for candidate in event.get("candidates") or []:
-        decision = _scheduled(candidate, now, quiet)
-        pushed = parse_time(candidate.get("head_committed_at"))
-        if decision.run and pushed is not None:
-            ready.append((pushed, decision.pr, decision))
-
-    if not ready:
-        return Decision(False, 0, "no pull request is waiting for a round")
-    ready.sort(key=lambda item: (item[0], item[1]))
-    return ready[0][2]
-
-
-# --- the verdict a round ends with ---------------------------------------------------
+# --- finishing a round -----------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -530,7 +317,7 @@ class Verdict:
     """What the round's own verdict file says, once it has been made safe to act on."""
 
     verdict: str
-    #: The automatic loop ends here, whatever the round counter still allows.
+    #: The reviewer does not need another round.
     stop: bool
     summary: str
     #: Only a `decision` carries one; anything else is dropped rather than shown.
@@ -541,30 +328,26 @@ class Verdict:
 def read_verdict(payload: object) -> Verdict:
     """The reviewer's verdict file, normalised.
 
-    The reviewing agent writes this file, so it is the one input to the loop that is
-    prose rather than GitHub state, and the failure to guard against is a quiet one: a
-    verdict the workflow does not recognise falling through a shell `case` into
-    "findings" with nothing saying it happened. Every answer here names what it read.
+    The reviewing agent writes this file, so it is the one input that is prose rather
+    than GitHub state. Every answer names what it read, so a spelling nobody expected
+    shows up in the run summary instead of quietly becoming another round.
     """
     if not isinstance(payload, dict):
         return Verdict(
-            DEFAULT_VERDICT,
-            False,
-            "",
-            "",
-            "the verdict file is not a JSON object",
+            DEFAULT_VERDICT, False, "", "", "the verdict file is not a JSON object"
         )
 
     raw = payload.get("verdict")
     name = raw.strip().lower() if isinstance(raw, str) else ""
     summary = payload.get("summary")
+    summary = summary.strip() if isinstance(summary, str) else ""
     question = payload.get("question")
 
     if name not in VERDICT_STOPS:
         return Verdict(
             DEFAULT_VERDICT,
             False,
-            summary if isinstance(summary, str) else "",
+            summary,
             "",
             f"verdict {raw!r} is not one this loop knows; treating it as "
             f"{DEFAULT_VERDICT!r}",
@@ -573,33 +356,151 @@ def read_verdict(payload: object) -> Verdict:
     return Verdict(
         name,
         VERDICT_STOPS[name],
-        summary if isinstance(summary, str) else "",
-        # A question belongs to a decision. Carrying one on any other verdict would put
-        # an unanswerable question in the status comment of a pull request that is not
-        # parked, which reads as though something is waiting on the maintainer.
-        question if name == "decision" and isinstance(question, str) else "",
+        summary,
+        # A question on any other verdict would read as though something waits on the
+        # maintainer, on a pull request where nothing does.
+        question.strip() if name == "decision" and isinstance(question, str) else "",
         f"verdict {name!r}",
     )
 
 
-def main() -> int:
-    if "--verdict" in sys.argv[1:]:
-        try:
-            answer = read_verdict(json.load(sys.stdin))
-        except json.JSONDecodeError as exc:
-            # Not an error exit: the workflow has to act on every round it starts, and
-            # a round whose verdict file is unreadable still posted its findings. The
-            # parser's own complaint is the reason, because "it is not JSON" on its own
-            # sends whoever reads the run to the wrong place.
-            answer = Verdict(
-                DEFAULT_VERDICT, False, "", "", f"unreadable verdict: {exc}"
-            )
-        json.dump(asdict(answer), sys.stdout)
-        sys.stdout.write("\n")
-        return 0
+@dataclass(frozen=True)
+class Finish:
+    verdict: str
+    stop: bool
+    #: The comment carries `ROUND_MARKER`, so this round counts towards the cap.
+    counted: bool
+    comment: str
+    reason: str
+    #: The outcome label to put on (`OUTCOME_LABELS`), or empty to leave them alone.
+    label: str = ""
+    #: The other outcome labels, to take off when `label` goes on.
+    unlabel: tuple[str, ...] = ()
 
-    event = json.load(sys.stdin)
-    json.dump(asdict(decide(event)), sys.stdout)
+
+def finish(event: dict) -> Finish:
+    """The comment that closes a round: what the review said and what happens next."""
+    rnd = int(event.get("round") or 0)
+    final = bool(event.get("final"))
+    sha = str(event.get("head_sha") or "")
+    footer = _footer(str(event.get("repository") or ""))
+    label = f"`{REVIEW_LABEL}`"
+
+    if event.get("verdict") is None:
+        # Not a round: the review did not reach a verdict, and one that died early (one
+        # on #352 did, 481 ms in) has not spent the reviewer's time. The attempt marker
+        # records the commit, so an agent cannot retry it into a loop (`decide`).
+        marker = f"{ATTEMPT_MARKER} n={rnd}{f' sha={sha}' if sha else ''} -->"
+        return Finish(
+            DEFAULT_VERDICT,
+            False,
+            False,
+            f"{marker}\n\n**Round {rnd} did not finish.** The review stopped before it "
+            "reached a verdict, so the round was not counted. If it stopped within "
+            "seconds, the likely cause is that this branch's copy of the review "
+            "workflow differs from `main`'s: merge `main`, then add the "
+            f"{label} label again. An agent's retry at this same commit is refused; "
+            "a person's is not." + footer,
+            "no verdict file",
+        )
+
+    v = read_verdict(event.get("verdict"))
+    summary = f" {v.summary}" if v.summary else ""
+
+    def again(sentence: str) -> str:
+        """How another round starts, which the cap and the ceiling can change."""
+        if rnd >= MAX_FORCED_ROUNDS:
+            return (
+                "This was the last round this workflow runs on this pull request, so "
+                "review anything further by hand."
+            )
+        if final:
+            return (
+                f"All {MAX_ROUNDS} rounds an agent can ask for are spent, so only a "
+                f"person adding the {label} label starts another."
+            )
+        return sentence
+
+    if v.verdict == "decision":
+        body = (
+            f"**Round {rnd} stopped for a decision.**{summary}\n\n"
+            f"**The question:** {v.question or 'see the review above.'}\n\n"
+            "The options, and what each one costs, are in the review above. "
+            + again(f"Once it is answered, add the {label} label again to carry on.")
+        )
+    elif v.verdict == "clean":
+        body = (
+            f"**Round {rnd} found nothing to fix.**{summary}\n\n"
+            "This is ready for a person to look at and merge."
+        )
+    elif v.stop:
+        # Not "the review approved it": this covers ✅ Approve, the conditional
+        # approval and 💬 Comment, and §0 is explicit that a comment is not an approval.
+        body = (
+            f"**Round {rnd}: the review does not need to see the result.**{summary}\n\n"
+            "Work through any findings it posted with `address-review-findings`. No "
+            "further round is needed. "
+            + again(
+                "If the fixes grow into a larger change that needs a fresh look, add "
+                f"the {label} label again."
+            )
+        )
+    elif rnd >= MAX_FORCED_ROUNDS:
+        body = (
+            f"**Round {rnd} posted findings, and that was the last round this workflow "
+            f"runs on this pull request.**{summary}\n\n"
+            "Work through them with `address-review-findings`, and review the result "
+            "by hand."
+        )
+    elif final:
+        body = (
+            f"**Round {rnd} posted findings, and that was the last round an agent can "
+            f"ask for.**{summary}\n\n"
+            "Work through them with `address-review-findings`. Nothing reviews the "
+            f"result unless a person adds the {label} label."
+        )
+    else:
+        body = (
+            f"**Round {rnd} posted findings and wants to see the fixes.**{summary}\n\n"
+            "Work through them with `address-review-findings`, push, and then add the "
+            f"{label} label again for round {rnd + 1}. Up to {MAX_ROUNDS} rounds run "
+            "this way."
+        )
+
+    marker = (
+        f"{ROUND_MARKER} n={rnd}{f' sha={sha}' if sha else ''} verdict={v.verdict} -->"
+    )
+    outcome = OUTCOME_LABELS[v.verdict]
+    return Finish(
+        v.verdict,
+        v.stop,
+        True,
+        f"{marker}\n\n{body}{footer}",
+        v.reason,
+        outcome,
+        tuple(sorted({other for other in OUTCOME_LABELS.values() if other != outcome})),
+    )
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError as exc:
+        payload = {"_error": str(exc)}
+
+    if "--finish" in sys.argv[1:]:
+        # Never an error exit: the findings are already on the pull request, and the
+        # round still has to say so and take its label off.
+        if "_error" in payload:
+            answer = asdict(
+                Finish(DEFAULT_VERDICT, False, False, "", payload["_error"])
+            )
+        else:
+            answer = asdict(finish(payload))
+    else:
+        answer = asdict(decide(payload if isinstance(payload, dict) else {}))
+
+    json.dump(answer, sys.stdout)
     sys.stdout.write("\n")
     return 0
 

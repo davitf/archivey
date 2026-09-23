@@ -332,25 +332,32 @@ Once the round is done, the PR should record what happened to every finding.
 
 Reply once per round, not once per fix.
 
-**Then say you have finished**, in a comment on the PR that *starts* with
-`@claude review`. That starts the next round of the
-[review loop](../../../dev-docs/review-loop.md) immediately. It is the last thing you
-do, after the final push — a commit pushed after it will not be in what gets reviewed.
+**Then ask for the next round, if the review asked to see the fixes.** The round's
+closing comment says which: when it asks for them, add the `review` label after your
+final push, which starts the next round of the
+[review loop](../../../dev-docs/review-loop.md). It is the last thing you do — a commit
+pushed after it may not be in what gets reviewed.
 
-The position is load-bearing: the gate reads the phrase only at the top of a comment,
-so that a dispositions comment quoting it does not start a round by itself. Post it as
-its own comment, phrase first, anything else after.
+```bash
+gh pr edit <number> --add-label review
+```
 
-Saying nothing is not a failure, only a slower path: the loop starts a round by
-itself once the branch has gone thirty minutes without a new commit. So the signal is
-worth sending and never worth faking. Do not send it before the work is pushed.
+Through the GitHub MCP instead, `issue_write` `update` replaces the whole label set:
+read the pull request's labels first and write them back with `review` appended.
 
-And do not send it to reach past a `loop:done`, `loop:decision` or `loop:hold`. From a
-bot account the gate simply refuses that. From the maintainer's account it does not:
-the phrase is *also* how a person restarts a parked loop, so posting through their
-account spends a round they did not ask for. Whether you can tell which account you are
-posting under is exactly the point — if you are not sure, do not send it on a parked
-pull request.
+Do not add it when a maintainer decision is still unanswered, or when the closing
+comment said the rounds an agent can ask for are spent; the workflow refuses the second
+anyway, including a label made through the maintainer's account.
+
+When the closing comment said no further round is needed, that is the default, not a
+lock. Add the label anyway only if a fix grew beyond what the review saw, such as a nit
+or a decision that turned into a new code path or a redesign, and say so in your
+disposition comment. The workflow lets that label through and trusts your judgement
+(davitf, 2026-09-23), so do not spend a round on fixes the review already described.
+
+If the label is still on the pull request a few minutes after you added it, no round
+started: resolve any merge conflict or merge `main`, then remove the label and add it
+again.
 
 ---
 

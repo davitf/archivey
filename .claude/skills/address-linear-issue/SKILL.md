@@ -77,9 +77,8 @@ unless the user asked.
    issue's identifier and
    `links: [{url: "<the PR URL>", title: "<the PR title>"}]`. The `id` is what
    makes it an update: without it `save_issue` *creates* a new issue and the
-   attachment never reaches the one the ping will query. Do not skip this.
-   It is what the review loop's findings ping looks the issue up by, and nothing
-   else here creates it: Linear's GitHub integration links a pull request from
+   attachment lands nowhere. Do not skip this. Nothing else here links the two:
+   Linear's GitHub integration links a pull request from
    the branch name, the title or the description, and none of those may carry a
    tracker key on this repository. A Linear comment containing the URL does not
    create an attachment either.
@@ -91,39 +90,38 @@ the tracker is not, so no issue key and no tracker URL belongs in PR text —
 `AGENTS.md` §"Nothing from the internal tracker goes into PR text" is the rule,
 and a tool that appends a `Linear Issue:` footer for you needs that footer turned
 off (davitf, 2026-09-20). That footer used to be what made Linear link the pull
-request, which is why step 1 now has to be done deliberately. If it is missed,
-the findings ping warns in the job summary and the implementer is never woken.
+request, which is why step 1 now has to be done deliberately.
 
 ## 3. Hand the pull request to the review loop
 
 Once the PR is up and the fix is on the remote, put it in the loop and stop.
 Do not start this step on uncommitted work, and do not review the diff yourself.
 
-**Open the pull request as a draft, then take it out of draft when you are
-finished.** Coming out of draft is what starts the review, and it is the one
-signal that cannot be mistimed: everything pushed before it is what gets read.
-
-A branch named `cursor/*` enrols itself when the pull request opens. Anything
-else needs the label first:
+**Add the `review` label when you are finished pushing.** Adding it is what
+starts the review, and everything pushed before it is what gets read:
 
 ```bash
-gh pr edit <number> --add-label loop:on
-gh pr ready <number>
+gh pr edit <number> --add-label review
 ```
 
+Through the GitHub MCP instead, `issue_write` `update` replaces the whole label set:
+read the pull request's labels first and write them back with `review` appended.
+
 That is the whole handoff. `code-review-skill` runs against the PR in a separate
-Claude session and posts the review there, with `loop:round-1` on the pull
-request. Up to three rounds run.
+Claude session, posts the review there, and closes the round with a comment that
+says whether it wants to see the fixes.
 
 Two consequences worth stating, because they change what this session does next:
 
 - **Nothing here waits for the review.** It arrives on the pull request minutes
   later, on GitHub, not as a return value. Say in your reply that the loop has
   it, and leave.
-- **Stop pushing once you have said you are finished.** If you never say so at
-  all, the loop starts a round by itself after the branch has gone thirty minutes
-  without a new commit — so a late commit does not lose the review, it only
-  delays it and reviews a state you did not mean to submit.
+- **Stop pushing once you have added the label.** A push after it may land after
+  the review has read the branch, and then nothing reviews it until someone adds
+  the label again.
+- **Check the label came off.** If it is still on the pull request a few minutes
+  later, no round started: resolve any merge conflict or merge `main`, then remove
+  the label and add it again.
 
 If the loop is not available — no GitHub Actions, or a fork, where the workflow
 has no secrets — say so and stop rather than reviewing your own work. A review
@@ -131,30 +129,35 @@ this session writes is not a second opinion whatever it is labelled.
 
 ## 4. Address the findings
 
-The review lands on the pull request, and the loop posts an `@cursoragent` comment
-asking for it to be addressed through
+The review lands on the pull request, followed by the round's closing comment.
+Work through the findings with
 [`address-review-findings`](../address-review-findings/SKILL.md) — ledger,
 reproduce-before-fix, gates, one decision packet at a time, replies on the PR.
+When the closing comment asks to see the fixes, add the `review` label again
+after pushing them. When it asks for none, that is the default, not a lock: add
+the label anyway if a fix grew beyond what the review saw. That skill's §7 has
+both cases.
 
-So whether **this** session does that work depends on who is still holding the
-branch. If you are and the user is waiting on you, read that skill and do it;
-the push that follows starts the next round half an hour later, with no further
-handoff. If Cursor picked the branch up, leave it alone: two agents pushing to
-one branch is worse than a slower round. Steward skips a second round only when
-a disposition comment (opener names `address-review-findings`) is already on
-those finding IDs. Two agents can still start in the same minute before either
-replies; that race is accepted — do not invent a label or marker to close it.
+Only one agent works a branch. If someone else picked it up, leave it alone:
+two agents pushing to one branch is worse than a slower round. Steward skips a
+second round only when a disposition comment (opener names
+`address-review-findings`) is already on those finding IDs. Two agents can still
+start in the same minute before either replies; that race is accepted — do not
+invent a label or marker to close it.
 
-The loop stops itself after three rounds, or the moment a review raises a
-question only the maintainer can answer. Neither is this session’s to override.
+The review stops asking for rounds once it no longer needs to see the result,
+or the moment it raises a question only the maintainer can answer. Whether a
+change that grew afterwards needs another look is this session's judgement
+(address-review-findings §7). The five-round cap is not this session's to
+override.
 
 ## Never
 
 - Review your own diff, or “quickly glance” instead of step 3.
 - Spawn a reviewer subagent of your own. The loop is the reviewer; a second one
   costs credits to duplicate a review that is already coming.
-- Keep pushing to the branch after the handoff “while waiting”. That is what
-  stops the review from starting.
+- Keep pushing to the branch after the handoff “while waiting”. The review may
+  have read the branch already, and nothing reviews those pushes.
 - Implement from the title without reading Linear comments.
 - Skip posting the PR URL on the Linear issue.
 - Mark the Linear issue done, or close it, unless the user asked.

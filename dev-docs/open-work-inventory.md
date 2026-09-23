@@ -77,7 +77,7 @@ PR is, not whether it is ready — read the PR.
 
 | PR | What | Where it sits |
 | --- | --- | --- |
-| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge.** Head *is* `main` (base is an orphan `empty-base`), so it re-renders against current `main` automatically — there is nothing to merge into it. 208 threads, 140 open. Carries `loop:off` so it can never enrol in the review loop. **It was closed by accident on 2026-09-21 and reopened the same day** — see the note below |
+| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge.** Head *is* `main` (base is an orphan `empty-base`), so it re-renders against current `main` automatically — there is nothing to merge into it. 208 threads, 140 open. Carries `no-review` so no review round can run on it. **It was closed by accident on 2026-09-21 and reopened the same day** — see the note below |
 | [#385](https://github.com/davitf/archivey/pull/385) | Keep `type:` off the start of a comment line in `volumes.py` | One round, `loop:on`. A one-line hazard: a comment beginning `type:` reads as a type comment |
 | [#386](https://github.com/davitf/archivey/pull/386) | ZIP and 7z: read Windows reparse points instead of guessing at them | Draft, `loop:decision`. Answers #315 S20-K9, the `is_junction` cross-format promise |
 | [#387](https://github.com/davitf/archivey/pull/387) | Drop the `unrar x` tempdir strategy the reader never had | Draft, spec-only |
@@ -104,9 +104,9 @@ event proves it: that event carries **no commit at all**, where incident 1's car
 
 **So the rule is about reproduction, not about proximity: when you write down what a closing
 phrase said, do not reproduce it.** Describe it — "PR 365's squash body ended with a closing
-keyword and the hub's number" — or break the string. §10 of the review addendum already
-carries this exact shape for the review loop's trigger phrase, which is a command rather than
-a quotable string; the hub's number is the same hazard with a different parser. Ordinary
+keyword and the hub's number" — or break the string. §10 of the review addendum
+carried this exact shape for the old review loop's trigger phrase, which was a command rather
+than a quotable string; the hub's number is the same hazard with a different parser. Ordinary
 sentences that merely contain both a keyword and the number are fine: this page has eight of
 them and neither closure came from that shape.
 
@@ -117,8 +117,8 @@ both.
 
 **And a closure fails silently**, which is why the rule has to be mechanical rather than
 watchful. A closed hub still serves every thread over the `ccr/review_threads` route,
-`scripts/sweep_coverage.py` keeps returning the same coverage, and the review loop never
-touched it anyway (`loop:off`). Nothing in the repository degrades; the hub simply stops
+`scripts/sweep_coverage.py` keeps returning the same coverage, and the review workflow never
+touches it anyway (`no-review`). Nothing in the repository degrades; the hub simply stops
 being a pull request. `empty-base` was untouched both times, so reopening restored everything
 and cost nothing.
 
