@@ -10,12 +10,15 @@ import pytest
 
 from archivey.exceptions import CorruptionError, EncryptionError
 from archivey.internal.backends.rar_parser import (
+    RarKdfCache,
     _HeaderDecryptStream,
     _rar3_s2k,
     _Rar3Sha1,
     parse_rar_archive,
+    parse_rar_volumes,
 )
-from tests.conftest import requires
+from archivey.internal.streams.crypto import SevenZipKeyCache
+from tests.conftest import requires, requires_binary
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -193,3 +196,131 @@ def test_rar3_s2k_matches_rarfile_for_a_long_password() -> None:
     password = "x" * 40  # 80 UTF-16LE bytes + 8-byte salt > 64
     salt = bytes(range(8))
     assert _rar3_s2k(password, salt) == rarfile.rar3_s2k(password, salt)
+
+
+_TINYVOL_HP = [f"tinyvol_hp.part{n}.rar" for n in range(1, 5)]
+
+
+def _count_rar5_derivations(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record the round count of every RAR5 PBKDF2 the parser runs."""
+    import archivey.internal.backends.rar_parser as rar_parser
+
+    rounds: list[int] = []
+    real = rar_parser.pbkdf2_hmac
+
+    def counting(
+        name: str, password: bytes, salt: bytes, iterations: int, dklen: int
+    ) -> bytes:
+        rounds.append(iterations)
+        return real(name, password, salt, iterations, dklen)
+
+    monkeypatch.setattr(rar_parser, "pbkdf2_hmac", counting)
+    return rounds
+
+
+@requires("cryptography")
+def test_header_encrypted_volume_set_derives_each_key_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every part of an ``-hp`` set repeats the encryption record, salt included.
+
+    Each volume used to derive the PswCheck and the header key again: eight
+    derivations for this four-part set, each costing up to ``2**24`` rounds at
+    the archive's choosing. One cache across the set does each once.
+    """
+    rounds = _count_rar5_derivations(monkeypatch)
+    handles = [_fixture(name).open("rb") for name in _TINYVOL_HP]
+    try:
+        archive = parse_rar_volumes(handles, password="header_password")
+    finally:
+        for handle in handles:
+            handle.close()
+    assert archive.has_header_encryption
+    assert [m.filename for m in archive.members] == ["payload.bin"]
+    assert {m.volume_index for m in archive.members} == {0}
+    # AES key at 2**kdf_count, PswCheck at +32; kdf_count is RARLAB's 15.
+    assert sorted(rounds) == [1 << 15, (1 << 15) + 32]
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    "name",
+    ["encrypted_header__.rar", "encrypted_header__rar4.rar"],
+)
+def test_kdf_cache_carries_header_keys_between_parses(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second parse through the same cache derives nothing.
+
+    The reader parses once per password candidate, and a caller that passes its
+    own cache shares header keys with its member reads.
+    """
+    import archivey.internal.backends.rar_parser as rar_parser
+
+    rounds = _count_rar5_derivations(monkeypatch)
+    rar3_calls: list[bytes] = []
+    real_rar3 = rar_parser._rar3_s2k
+
+    def counting_rar3(password: str | bytes, salt: bytes) -> tuple[bytes, bytes]:
+        rar3_calls.append(salt)
+        return real_rar3(password, salt)
+
+    monkeypatch.setattr(rar_parser, "_rar3_s2k", counting_rar3)
+    cache = RarKdfCache()
+    path = _fixture(name)
+    with path.open("rb") as handle:
+        first = parse_rar_archive(handle, password="header_password", kdf_cache=cache)
+    derived = len(rounds) + len(rar3_calls)
+    assert derived > 0
+    with path.open("rb") as handle:
+        second = parse_rar_archive(handle, password="header_password", kdf_cache=cache)
+    assert len(rounds) + len(rar3_calls) == derived
+    assert [m.filename for m in second.members] == [m.filename for m in first.members]
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    "name",
+    ["encrypted_header__.rar", "encrypted_header__rar4.rar"],
+)
+def test_kdf_cache_does_not_answer_for_another_password(name: str) -> None:
+    """The cache is keyed by password: a wrong candidate after the right one
+    still fails, and the right one after a wrong one still succeeds."""
+    cache = RarKdfCache()
+    path = _fixture(name)
+    for password, ok in (
+        ("not-the-password", False),
+        ("header_password", True),
+        ("not-the-password", False),
+    ):
+        with path.open("rb") as handle:
+            if ok:
+                archive = parse_rar_archive(handle, password=password, kdf_cache=cache)
+                assert archive.members
+            else:
+                with pytest.raises((CorruptionError, EncryptionError)):
+                    parse_rar_archive(handle, password=password, kdf_cache=cache)
+
+
+@requires("cryptography")
+def test_kdf_caches_keep_passwords_and_keys_out_of_repr() -> None:
+    """Both caches hold candidate passwords and the keys derived from them."""
+    rar = RarKdfCache()
+    with _fixture("encrypted_header__.rar").open("rb") as handle:
+        parse_rar_archive(handle, password="header_password", kdf_cache=rar)
+    sevenzip = SevenZipKeyCache()
+    sevenzip.derive("header_password".encode("utf-16-le"), salt=b"", cycles=4)
+    for cache in (rar, sevenzip):
+        text = repr(cache)
+        assert "header_password" not in text
+        assert "\\x" not in text, text
+
+
+@requires("cryptography")
+@requires_binary("unrar")
+def test_header_encrypted_volume_set_reads_back() -> None:
+    """The committed ``-hp`` volume set is a real set, not only a listing."""
+    from archivey import open_archive
+
+    with open_archive(_fixture(_TINYVOL_HP[0]), password="header_password") as archive:
+        assert archive.read("payload.bin") == b"ABCDEFGH" * 200

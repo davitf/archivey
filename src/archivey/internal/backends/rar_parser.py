@@ -396,6 +396,7 @@ def parse_rar_archive(
     password: str | bytes | None = None,
     use_qo: bool = True,
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
+    kdf_cache: RarKdfCache | None = None,
 ) -> RarArchive:
     """Parse from current position (archive start). Source must be seekable.
 
@@ -407,10 +408,15 @@ def parse_rar_archive(
     (``None`` = ``ListingLimits.UNLIMITED``). Omitting it uses the same default
     as ``ListingLimits()``; pass ``None`` to lift the bound. RAR has no
     header-size analogue, so ``None`` can walk until memory is exhausted.
+
+    ``kdf_cache`` holds the header-key derivations. A caller that derives the same
+    keys again later (another parse, a member's PswCheck) can pass one cache to
+    both; without one the parse makes a fresh cache.
     """
     return _parse_rar_volume(
         source,
         password=password,
+        kdf_cache=kdf_cache if kdf_cache is not None else RarKdfCache(),
         volume_index=0,
         allow_continuation=False,
         use_qo=use_qo,
@@ -424,6 +430,7 @@ def parse_rar_volumes(
     password: str | bytes | None = None,
     use_qo: bool = True,
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
+    kdf_cache: RarKdfCache | None = None,
 ) -> RarArchive:
     """Parse an ordered multi-volume RAR set, merging split members across volumes.
 
@@ -435,9 +442,15 @@ def parse_rar_volumes(
     ``max_members`` is the same listing budget as :func:`parse_rar_archive`.
     Each volume is capped independently, and the merged table is capped again
     so two volumes that are each under the budget cannot together exceed it.
+
+    Every volume shares one ``kdf_cache`` (the caller's, or a fresh one): each
+    volume of a header-encrypted set carries its own encryption record, normally
+    with the same salt, and would otherwise derive the same keys again.
     """
     if not volumes:
         raise ValueError("at least one RAR volume is required")
+    if kdf_cache is None:
+        kdf_cache = RarKdfCache()
 
     merged: RarArchive | None = None
     base_offset = 0
@@ -445,6 +458,7 @@ def parse_rar_volumes(
         part = _parse_rar_volume(
             volume,
             password=password,
+            kdf_cache=kdf_cache,
             volume_index=index,
             allow_continuation=index > 0,
             use_qo=use_qo,
@@ -569,6 +583,7 @@ def _parse_rar_volume(
     source: BinaryIO,
     *,
     password: str | bytes | None,
+    kdf_cache: RarKdfCache,
     volume_index: int,
     allow_continuation: bool,
     use_qo: bool = True,
@@ -591,6 +606,7 @@ def _parse_rar_volume(
         archive = _parse_rar5(
             source,
             password=password,
+            kdf_cache=kdf_cache,
             sfx_offset=sfx_offset,
             volume_index=volume_index,
             use_qo=use_qo,
@@ -600,6 +616,7 @@ def _parse_rar_volume(
         archive = _parse_rar3(
             source,
             password=password,
+            kdf_cache=kdf_cache,
             sfx_offset=sfx_offset,
             volume_index=volume_index,
             max_members=max_members,
@@ -1033,13 +1050,73 @@ def _rar3_s2k(password: str | bytes, salt: bytes) -> tuple[bytes, bytes]:
     return key_le, bytes(iv)
 
 
-def _rar5_s2k(password: str | bytes, salt: bytes, iterations: int) -> bytes:
+def _rar5_s2k(
+    password: str | bytes,
+    salt: bytes,
+    iterations: int,
+    *,
+    kdf_cache: RarKdfCache | None = None,
+) -> bytes:
     """PBKDF2-HMAC-SHA256 for RAR5 (returns 32-byte AES-256 key material)."""
     ustr = _normalize_password_utf8(password)
+    if kdf_cache is not None:
+        return kdf_cache.rar5(ustr, salt, iterations)
     return pbkdf2_hmac("sha256", ustr, salt, iterations, dklen=32)
 
 
-def rar5_hash_key(password: str | bytes, salt: bytes, kdf_count_shift: int) -> bytes:
+class RarKdfCache:
+    """Derived RAR key material, so each distinct derivation runs once.
+
+    RAR5's cost is the archive's choice: ``2**kdf_count`` PBKDF2 rounds, accepted up
+    to ``2**24`` (about 3-4 s each). RAR3's is a fixed 2**18-round SHA-1 loop that
+    runs in Python. RARLAB writes one salt per archiving run, so every volume of a
+    header-encrypted set repeats the same derivation; without a cache each volume
+    paid it again.
+
+    Keyed by the normalized password, the salt and (RAR5) the round count, so a
+    wrong candidate never answers for a right one and the three RAR5 outputs
+    (AES key, HashKey, PswCheck at ``+0``/``+16``/``+32`` rounds) stay distinct.
+    A cache belongs to one open archive: :func:`parse_rar_archive` and
+    :func:`parse_rar_volumes` make their own when none is passed.
+
+    Entries are key material and passwords, so ``repr`` shows only a count. There
+    is no lock: two threads racing on one entry both derive it and store equal
+    bytes, which costs time but never a wrong key.
+    """
+
+    __slots__ = ("_rar3", "_rar5")
+
+    def __init__(self) -> None:
+        self._rar5: dict[tuple[bytes, bytes, int], bytes] = {}
+        self._rar3: dict[tuple[bytes, bytes], tuple[bytes, bytes]] = {}
+
+    def __repr__(self) -> str:
+        return f"<RarKdfCache: {len(self._rar5) + len(self._rar3)} entries>"
+
+    def rar5(self, password_utf8: bytes, salt: bytes, iterations: int) -> bytes:
+        key = (password_utf8, salt, iterations)
+        derived = self._rar5.get(key)
+        if derived is None:
+            derived = pbkdf2_hmac("sha256", password_utf8, salt, iterations, dklen=32)
+            self._rar5[key] = derived
+        return derived
+
+    def rar3(self, password: str | bytes, salt: bytes) -> tuple[bytes, bytes]:
+        key = (_normalize_password_utf16le(password), salt)
+        derived = self._rar3.get(key)
+        if derived is None:
+            derived = _rar3_s2k(password, salt)
+            self._rar3[key] = derived
+        return derived
+
+
+def rar5_hash_key(
+    password: str | bytes,
+    salt: bytes,
+    kdf_count_shift: int,
+    *,
+    kdf_cache: RarKdfCache | None = None,
+) -> bytes:
     """Derive the RAR5 HashKey used by ``ConvertHashToMAC`` (PBKDF2 at ``(1<<kdf)+16``).
 
     The AES key is at ``1 << kdf_count``, HashKey at ``+16``, and PswCheck at ``+32``
@@ -1047,7 +1124,7 @@ def rar5_hash_key(password: str | bytes, salt: bytes, kdf_count_shift: int) -> b
     """
     if kdf_count_shift > _RAR_MAX_KDF_SHIFT:
         raise CorruptionError(f"RAR5 kdf_count too large: {kdf_count_shift}")
-    return _rar5_s2k(password, salt, (1 << kdf_count_shift) + 16)
+    return _rar5_s2k(password, salt, (1 << kdf_count_shift) + 16, kdf_cache=kdf_cache)
 
 
 def convert_crc_to_mac(crc: int, hash_key: bytes) -> int:
@@ -1237,18 +1314,11 @@ def _parse_rar3_old_comment_subblocks(
 # ---------------------------------------------------------------------------
 
 
-@dataclass(slots=True)
-class _Rar3EncState:
-    password: str | bytes
-    last_salt: bytes | None = None
-    last_key: bytes | None = None
-    last_iv: bytes | None = None
-
-
 def _parse_rar3(
     source: BinaryIO,
     *,
     password: str | bytes | None,
+    kdf_cache: RarKdfCache,
     sfx_offset: int,
     volume_index: int = 0,
     max_members: int | None,
@@ -1260,7 +1330,6 @@ def _parse_rar3(
     has_header_encryption = False
     comment: str | _Rar3Comment | None = None
     members: list[RarMemberInfo] = []
-    enc_state: _Rar3EncState | None = None
     needs_next_volume = False
 
     while True:
@@ -1275,10 +1344,8 @@ def _parse_rar3(
                 raise EncryptionError(
                     "RAR archive has encrypted headers but no password was provided"
                 )
-            if enc_state is None:
-                enc_state = _Rar3EncState(password=password)
             try:
-                header_fd = _rar3_decrypt_header(source, enc_state)
+                header_fd = _rar3_decrypt_header(source, password, kdf_cache)
             except PackageNotInstalledError:
                 raise
             except Exception as exc:
@@ -1446,20 +1513,10 @@ def _parse_rar3(
 
 
 def _rar3_decrypt_header(
-    source: BinaryIO, state: _Rar3EncState
+    source: BinaryIO, password: str | bytes, kdf_cache: RarKdfCache
 ) -> _HeaderDecryptStream:
     salt = _require_exact(source, 8, "RAR3 header salt")
-    if (
-        state.last_salt == salt
-        and state.last_key is not None
-        and state.last_iv is not None
-    ):
-        key, iv = state.last_key, state.last_iv
-    else:
-        key, iv = _rar3_s2k(state.password, salt)
-        state.last_salt = salt
-        state.last_key = key
-        state.last_iv = iv
+    key, iv = kdf_cache.rar3(password, salt)
     return _HeaderDecryptStream(source, key, iv)
 
 
@@ -1648,7 +1705,6 @@ class _Rar5HdrEnc:
     kdf_count: int
     salt: bytes
     check_value: bytes | None
-    cached_key: bytes | None = None
 
 
 def _rar5_locator_qopen_abs(
@@ -1976,6 +2032,7 @@ def _parse_rar5(
     source: BinaryIO,
     *,
     password: str | bytes | None,
+    kdf_cache: RarKdfCache,
     sfx_offset: int,
     volume_index: int = 0,
     use_qo: bool = True,
@@ -2009,7 +2066,7 @@ def _parse_rar5(
                     "RAR archive has encrypted headers but no password was provided"
                 )
             try:
-                header_fd = _rar5_decrypt_header(source, hdr_enc, password)
+                header_fd = _rar5_decrypt_header(source, hdr_enc, password, kdf_cache)
             except PackageNotInstalledError:
                 raise
             except EncryptionError:
@@ -2119,7 +2176,7 @@ def _parse_rar5(
                 )
             if check_value is not None and password is not None:
                 password_verified = _check_rar5_password(
-                    check_value, kdf_count, salt, password
+                    check_value, kdf_count, salt, password, kdf_cache=kdf_cache
                 )
             hdr_enc = _Rar5HdrEnc(
                 algo=algo,
@@ -2263,18 +2320,25 @@ def _read_rar5_block(
 
 
 def _rar5_decrypt_header(
-    source: BinaryIO, hdr_enc: _Rar5HdrEnc, password: str | bytes
+    source: BinaryIO,
+    hdr_enc: _Rar5HdrEnc,
+    password: str | bytes,
+    kdf_cache: RarKdfCache,
 ) -> _HeaderDecryptStream:
     if hdr_enc.kdf_count > _RAR_MAX_KDF_SHIFT:
         raise CorruptionError(f"RAR5 kdf_count too large: {hdr_enc.kdf_count}")
-    if hdr_enc.cached_key is None:
-        hdr_enc.cached_key = _rar5_s2k(password, hdr_enc.salt, 1 << hdr_enc.kdf_count)
+    key = _rar5_s2k(password, hdr_enc.salt, 1 << hdr_enc.kdf_count, kdf_cache=kdf_cache)
     iv = _require_exact(source, 16, "RAR5 header IV")
-    return _HeaderDecryptStream(source, hdr_enc.cached_key, iv)
+    return _HeaderDecryptStream(source, key, iv)
 
 
 def _check_rar5_password(
-    check_value: bytes, kdf_count_shift: int, salt: bytes, password: str | bytes
+    check_value: bytes,
+    kdf_count_shift: int,
+    salt: bytes,
+    password: str | bytes,
+    *,
+    kdf_cache: RarKdfCache | None = None,
 ) -> bool:
     """Verify the RAR5 header password against the check value.
 
@@ -2293,7 +2357,7 @@ def _check_rar5_password(
     if not hmac.compare_digest(hashlib.sha256(hdr_check).digest()[:4], hdr_sum):
         return False
     kdf_count = (1 << kdf_count_shift) + 32
-    pwd_hash = _rar5_s2k(password, salt, kdf_count)
+    pwd_hash = _rar5_s2k(password, salt, kdf_count, kdf_cache=kdf_cache)
     pwd_check = bytearray(8)
     for i, v in enumerate(pwd_hash):
         pwd_check[i & 7] ^= v
