@@ -1084,9 +1084,10 @@ longer record and are unchanged except where marked.
    remove `strict_archive_eof`, refuse raw `.bin` images by name, pin `__module__`. All four
    change public surface, which is why they belong before the 0.2.0 freeze.
 5. **`single-archive-source`, then `one-member-listing-per-reader`.** Both rewrite
-   `base_reader.py` and the source boundary, so they go one at a time. Several open sweep
-   threads sit in code the first one replaces (S23-K6, V-K1, the S19 detection-workspace
-   findings) — fix those as part of it, not before.
+   `base_reader.py` and the source boundary, so they go one at a time. Some open sweep
+   threads sit in code the first one changes or removes: S23-K6 is about `FullCountStream` and
+   `PeekableStream`, which it deletes, and S19-K2 is about `detection_workspace.py`, which it
+   rewrites. Fix those as part of it, not before.
 6. **The remaining non-blocking threads**, batched by file as #393 did, skipping files a
    change in step 5 is about to rewrite. Sweep the three unswept files at the same time.
 
