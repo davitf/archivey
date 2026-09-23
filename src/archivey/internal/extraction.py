@@ -1605,23 +1605,23 @@ class ExtractionCoordinator:
         self,
         stream: BinaryIO | None,
         dest_path: Path,
-        member: ArchiveMember | None,
+        member: ArchiveMember,
         tracker: BombTracker | None,
     ) -> None:
-        """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata
-        (when given), then ``os.replace()``-ing it onto ``dest_path`` — atomic, so a
-        mid-stream failure never truncates or removes an existing destination (only the temp
-        is discarded), and the target name never appears half-written. The temp lives in the
-        destination directory so the rename stays on one filesystem. ``member`` is ``None``
-        when materializing an orphaned hardlink source's content (it applies no metadata; the
-        links each carry their own).
+        """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata,
+        then ``os.replace()``-ing it onto ``dest_path`` — atomic, so a mid-stream failure
+        never truncates or removes an existing destination (only the temp is discarded),
+        and the target name never appears half-written. The temp lives in the destination
+        directory so the rename stays on one filesystem. When the orphan pass materializes
+        an unselected hardlink source, ``member`` is the *link's* transformed copy, so the
+        file carrying the content gets the link's (policy-capped) mode, not the source's.
 
         Under TRUSTED, a member with no stored mode gets the mode an ordinary file
         creation would, ``0o666`` less the umask, rather than ``mkstemp``'s private
         ``0o600``. Nothing chmods it afterwards, so the temp's creation mode is the file's
         final mode. STRICT and STANDARD give a mode-less member their own default instead
         (see ``_effective_mode``), so this arm is TRUSTED's alone."""
-        if member is not None and self._effective_mode(member) is None:
+        if self._effective_mode(member) is None:
             tmp = self._temp_sibling(dest_path.parent)
             fd = _open_new_file(tmp, 0o666)
         else:
@@ -1634,8 +1634,7 @@ class ExtractionCoordinator:
                 self._copy_to_fileobj(
                     stream, dst, tracker, emit_progress=self._emit_progress
                 )
-            if member is not None:
-                self._apply_metadata(tmp, member)
+            self._apply_metadata(tmp, member)
             os.replace(tmp, dest_path)
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
