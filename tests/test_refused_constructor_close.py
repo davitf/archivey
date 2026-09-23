@@ -7,7 +7,8 @@ finalizer, as an ``AttributeError`` reported at an arbitrary later moment.
 
 A GIL build without ``-X dev`` drops that second error silently, so these tests do not
 wait for the collector. They take the half-built object out of the ``__init__`` frame
-in the traceback and do to it what the finalizer does.
+in the traceback and call ``close()`` on it. That is stricter than the finalizer, which
+skips an instance already marked closed: ``close()`` must not raise either way.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
 )
+from archivey.internal.streams.verify import VerifyingStream
 from archivey.internal.volumes import ConcatenatedFile
 from tests.streams_util import ShortReadNonSeekable
 
@@ -51,10 +53,9 @@ def _refused(cls: type[T], exc_info: pytest.ExceptionInfo[BaseException]) -> T:
 
 
 def _assert_closes_cleanly(obj: io.IOBase) -> None:
-    # IOBase.__del__: close() only when not already closed, and it must not raise.
-    if not obj.closed:
-        obj.close()
+    obj.close()
     assert obj.closed
+    obj.close()  # and again, as an idempotent close must
 
 
 @pytest.mark.parametrize(
@@ -115,6 +116,54 @@ def test_decompressor_stream_refused_decoder_respects_ownership(
     assert inner.closed is owns_inner
 
 
+class _CloseFails(io.BytesIO):
+    def close(self) -> None:
+        super().close()
+        raise OSError("teardown failed")
+
+
+@pytest.mark.parametrize(
+    "construct",
+    [
+        pytest.param(
+            lambda inner: DecompressorStream(
+                inner,
+                make_decoder=_refusing_decoder,  # type: ignore[arg-type]
+                owns_inner=True,
+            ),
+            id="decompressor-stream",
+        ),
+        pytest.param(
+            lambda inner: VerifyingStream(
+                inner,
+                {"no-such-digest": b"\x00"},  # type: ignore[dict-item]
+                collector=DiagnosticCollector(policy=DiagnosticPolicy.strict()),
+            ),
+            id="verifying-stream",
+        ),
+    ],
+)
+def test_refusal_outlives_a_failing_owned_inner_close(construct: object) -> None:
+    """The refusal is the diagnosis; a teardown error must not replace it."""
+    inner = _CloseFails(b"payload")
+    with pytest.raises((_DecoderRefused, DiagnosticRaisedError)):
+        construct(inner)  # type: ignore[operator]
+    assert inner.closed
+
+
+def test_verifying_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
+    inner = io.BytesIO(b"payload")
+    collector = DiagnosticCollector(policy=DiagnosticPolicy.strict())
+    with pytest.raises(DiagnosticRaisedError) as caught:
+        VerifyingStream(
+            inner,
+            {"no-such-digest": b"\x00"},  # type: ignore[dict-item]
+            collector=collector,
+        )
+    _assert_closes_cleanly(_refused(VerifyingStream, caught))
+    assert inner.closed  # the wrapper owns its inner, as close() does
+
+
 def test_decompressor_stream_missing_path_closes_cleanly(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError) as caught:
         DecompressorStream(tmp_path / "gone.bin", make_decoder=_refusing_decoder)  # type: ignore[arg-type]
@@ -139,3 +188,117 @@ def test_archive_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
         )
     _assert_closes_cleanly(_refused(ArchiveStream, caught))
     assert opened == []  # refused before the member was opened
+
+
+# The inventory. ``close()`` on an instance built by ``__new__`` alone is the worst case: an
+# ``__init__`` that raised on its first line. A class that survives it needs no entry. Every
+# other ``IOBase`` subclass in ``src/`` is listed below, either because a test above covers
+# its refusals or with the reason its ``__init__`` cannot raise before it assigns what
+# ``close()`` reads. A new stream class fails here until someone makes that call.
+_REFUSALS_TESTED_ABOVE = {
+    "archivey.internal.volumes.ConcatenatedFile",
+    "archivey.internal.streams.archive_stream.ArchiveStream",
+    "archivey.internal.streams.decompressor_stream.DecompressorStream",
+    "archivey.internal.streams.verify.VerifyingStream",
+}
+_CLOSE_STATE_FIRST = {
+    "archivey.internal.streams.streamtools.base.DelegatingStream": (
+        "assigns _inner, _owns_inner and _subclass_closes_inner before its assert "
+        "and is_seekable()"
+    ),
+    "archivey.internal.streams.streamtools.full_count.BorrowedStream": (
+        "refuses in __new__, before an instance exists"
+    ),
+    "archivey.internal.streams.streamtools.locked.LockedStream": (
+        "DelegatingStream.__init__, then a plain _lock assignment"
+    ),
+    "archivey.internal.streams.streamtools.locked.CloseLockedStream": (
+        "DelegatingStream.__init__, then a plain _lock assignment"
+    ),
+    "archivey.internal.streams.counting.CountingReader": "plain assignments only",
+    "archivey.internal.streams.counting.OutputCountingStream": "plain assignments only",
+    "archivey.internal.streams.counting.SeekCountingStream": "plain assignments only",
+    "archivey.internal.streams.codecs._GzipTruncationCheckStream": (
+        "plain assignments only"
+    ),
+    "archivey.internal.streams.codecs._AcceleratorStream": (
+        "ensure_binaryio() runs before DelegatingStream.__init__ but raises only on a "
+        "text stream, and the inner is always a rapidgzip reader"
+    ),
+    "archivey.internal.backends.iso_reader._ImageBoundedStream": (
+        "inner.tell() runs after DelegatingStream.__init__ has set what close() reads"
+    ),
+    "archivey.internal.backends.iso_reader._PyCdlibStream": (
+        "raw.__enter__() runs after DelegatingStream.__init__ has set what close() reads"
+    ),
+    "archivey.internal.backends.rar_reader._UnrarOwnedStream": "plain assignments only",
+    "archivey.internal.backends.rar_reader._UnrarRespawnStream": "plain assignments only",
+    "archivey.internal.streams.streamtools.slice.SlicingStream": (
+        "_init_from_source assigns _stream and _owns_inner before any check"
+    ),
+    "archivey.internal.streams.streamtools.slice.SharedView": (
+        "_init_from_source assigns _stream and _owns_inner before any check"
+    ),
+    "archivey.internal.streams.crypto.AesDecryptStream": (
+        "assigns _source and _owns_inner before source.tell() and the stage build"
+    ),
+    "archivey.internal.zip_aes.WinZipAesDecryptStream": (
+        "its negative cipher_len refusal precedes _source, but open_winzip_aes_member "
+        "refuses compress_size < overhead first, so cipher_len is never negative"
+    ),
+}
+
+
+def _archivey_iobase_classes() -> dict[str, type]:
+    from tests.test_stream_bases import _import_all_archivey_modules
+
+    _import_all_archivey_modules()
+    found: dict[str, type] = {}
+    stack: list[type] = [io.IOBase]
+    while stack:
+        for sub in stack.pop().__subclasses__():
+            name = f"{sub.__module__}.{sub.__qualname__}"
+            if name not in found:
+                found[name] = sub
+                stack.append(sub)
+    return {name: cls for name, cls in found.items() if name.startswith("archivey.")}
+
+
+def _survives_close_before_init(cls: type) -> bool:
+    try:
+        obj = cls.__new__(cls)
+    except TypeError:
+        return False
+    try:
+        obj.close()
+    except AttributeError:
+        return False
+    finally:
+        # Keep the finalizer from repeating the attempt at collection time.
+        io.IOBase.close(obj)
+    return True
+
+
+def test_refused_constructor_close_inventory() -> None:
+    classes = _archivey_iobase_classes()
+    listed = _REFUSALS_TESTED_ABOVE | set(_CLOSE_STATE_FIRST)
+    assert not (_REFUSALS_TESTED_ABOVE & set(_CLOSE_STATE_FIRST))
+    assert not listed - set(classes), "listed classes that no longer exist"
+
+    unclassified = sorted(
+        name
+        for name, cls in classes.items()
+        if name not in listed and not _survives_close_before_init(cls)
+    )
+    assert not unclassified, (
+        "these stream classes' close() fails on an instance whose __init__ raised "
+        "early; assign what close() reads before anything that can raise, then list "
+        "the class here with the reason, or cover its refusals with a test above: "
+        f"{unclassified}"
+    )
+    stale = sorted(
+        name
+        for name in _CLOSE_STATE_FIRST
+        if _survives_close_before_init(classes[name])
+    )
+    assert not stale, f"these need no entry any more: {stale}"

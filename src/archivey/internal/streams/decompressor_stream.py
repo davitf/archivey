@@ -342,13 +342,16 @@ class DecompressorStream(ReadOnlyIOStream):
             # ``close()`` needs a decoder, and ``IOBase.__del__`` calls it on any
             # instance not marked closed, including one whose ``__init__`` raised.
             # Release what this stream already owns and mark it closed here, so the
-            # finalizer has nothing left to do (a refused decoder, such as a
-            # ``DecoderLimits`` refusal, otherwise dies again as ``AttributeError``).
+            # finalizer has nothing left to do. A decoder constructor that raises
+            # (``PpmdDecoder`` refuses PPMd7 without a pack or unpack size) or a path
+            # that cannot be opened otherwise dies again there as ``AttributeError``.
             owned = self._owned_inner
             self._owned_inner = None
             try:
                 if owned is not None:
                     owned.close()
+            except Exception:  # noqa: BLE001 - the refusal below is the error to report
+                pass
             finally:
                 super().close()
             raise
@@ -553,6 +556,8 @@ class DecompressorStream(ReadOnlyIOStream):
     def close(self) -> None:
         # Quiesce any decoder-owned native worker before dropping references, so a
         # blocked PPMd worker cannot be resumed into freed memory at GC.
+        if self.closed:
+            return
         try:
             self._decoder.close()
         finally:
