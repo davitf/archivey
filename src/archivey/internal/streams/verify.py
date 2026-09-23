@@ -579,14 +579,27 @@ class VerifyingStream(ReadOnlyIOStream):
         # This wrapper is used explicitly (codec length backstops, tests), so it always
         # owns a verifier even when there is nothing to check — unlike the fused path,
         # which uses ``build_member_verifier`` to skip the wrapper entirely in that case.
-        self._verifier = MemberVerifier(
-            expected,
-            expected_size=expected_size,
-            collector=collector,
-            member=member,
-            archive_name=archive_name,
-            digest_transforms=digest_transforms,
-        )
+        try:
+            self._verifier = MemberVerifier(
+                expected,
+                expected_size=expected_size,
+                collector=collector,
+                member=member,
+                archive_name=archive_name,
+                digest_transforms=digest_transforms,
+            )
+        except BaseException:
+            # The build can raise (a digest diagnostic under a RAISE policy), and
+            # ``IOBase.__del__`` still calls ``close()``, which needs the verifier.
+            # Close the inner this wrapper owns and mark it closed, so the finalizer
+            # has nothing left to do.
+            try:
+                inner.close()
+            except Exception:  # noqa: BLE001 - the refusal below is the error to report
+                pass
+            finally:
+                super().close()
+            raise
 
     # Compat for tests / diagnostics that inspect frontier state.
     @property

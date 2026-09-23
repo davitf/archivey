@@ -133,6 +133,11 @@ class ArchiveStream(ReadOnlyIOStream):
         self._size = size
         self._diagnostics_collector = collector
         self._on_close = on_close
+        # ``close()`` reads these two. Assign them before the verifier build below,
+        # which can raise (a digest diagnostic under a RAISE policy): ``IOBase.__del__``
+        # still calls ``close()`` on an instance whose ``__init__`` raised.
+        self._finalizer: weakref.finalize | None = None
+        self._verifier: MemberVerifier | None = verifier
         # A stream's diagnostics are everything emitted from its open onward: capture the
         # collector position here and difference against "now" on each query. No per-stream
         # bookkeeping is retained collector-side.
@@ -143,9 +148,7 @@ class ArchiveStream(ReadOnlyIOStream):
         # already-built ``verifier`` (collapse adoption); otherwise build from knobs.
         # ``expected_size`` here is the verify bound only — bare ``size=`` (fsspec
         # attribute) must not enable length checks on TAR/ISO/directory handles.
-        if verifier is not None:
-            self._verifier: MemberVerifier | None = verifier
-        else:
+        if verifier is None:
             self._verifier = build_member_verifier(
                 expected_hashes,
                 expected_size=expected_size,
@@ -154,7 +157,6 @@ class ArchiveStream(ReadOnlyIOStream):
                 archive_name=archive_name,
                 digest_transforms=digest_transforms,
             )
-        self._finalizer: weakref.finalize | None = None
         if not lazy:
             self._ensure_open()
 
