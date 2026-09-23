@@ -1230,13 +1230,89 @@ def test_numbered_volume_repeat_detection_does_not_rescan_per_part() -> None:
 def test_open_archive_survives_a_huge_numbered_sibling(tmp_path: Path) -> None:
     """End to end: the sibling is an ordinary filename anyone can drop in the directory."""
     (tmp_path / "foo.7z.001").write_bytes(b"")
-    (tmp_path / "foo.7z.005000000").write_bytes(b"")
+    (tmp_path / "foo.7z.999999").write_bytes(b"")
     start = time.monotonic()
-    with pytest.raises(
-        TruncatedError, match=r"missing parts 2, .*\(4999998 in total\)"
-    ):
+    with pytest.raises(TruncatedError, match=r"missing parts 2, .*\(999997 in total\)"):
         open_archive(tmp_path / "foo.7z.001")
     assert time.monotonic() - start < 5.0
+
+
+def test_lone_numbered_volume_message_is_not_sized_by_its_part_number(
+    tmp_path: Path,
+) -> None:
+    """The lone-part message used to list every earlier part by name.
+
+    ``a.zip.999999`` alone in a directory built a ~14 MB message over ~2 s from the
+    filename, and ``a.zip.9999999`` ~150 MB over ~15 s before part numbers were
+    capped at six digits. The earlier parts are now capped like the sequence
+    message's and counted, so the message is the same size whatever the number.
+    """
+    path = tmp_path / "a.zip.999999"
+    path.write_bytes(b"PK")
+    with pytest.raises(TruncatedError) as excinfo:
+        open_archive(path)
+    assert str(excinfo.value) == (
+        "Incomplete multi-volume set for a.zip: found part 999999 only; missing "
+        "a.zip.001, a.zip.002, a.zip.003, a.zip.004, a.zip.005, a.zip.006, "
+        "a.zip.007, a.zip.008, … (999998 earlier parts in total)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "counted"),
+    [("vol.7z.009", False), ("vol.7z.010", True)],
+    ids=["eight-earlier-all-named", "nine-earlier-counted"],
+)
+def test_lone_numbered_volume_message_names_up_to_the_cap(
+    name: str, counted: bool
+) -> None:
+    error = volumes_mod.incomplete_lone_numbered_volume_error(name)
+    assert error is not None
+    message = str(error)
+    assert "vol.7z.008" in message
+    assert ("earlier parts in total" in message) is counted
+
+
+def test_numbered_part_number_too_long_to_parse_is_not_a_volume_name(
+    tmp_path: Path,
+) -> None:
+    """Names checked before any file opens must not reach ``int()`` past its limit.
+
+    Python refuses to parse more than ``sys.get_int_max_str_digits()`` digits (4300
+    by default) with a bare ``ValueError``. A stream's ``name`` and the paths of an
+    explicit sequence are read before anything is opened, so both used to raise it
+    out of ``open_archive``. Past part 999 999 the lone-part refusal no longer
+    applies: a ``.7z`` name goes to ordinary detection, and a ``.zip`` name is still
+    caught by the separate spanned-ZIP name check. Leading zeros do not count
+    towards the cap, so a long run of zeros is still part 0.
+    """
+    digits = "1" * 5000
+    zip_bytes = b"PK\x03\x04" + b"\x00" * 60
+    stream = io.BytesIO(zip_bytes)
+    stream.name = f"x.7z.{digits}"
+    with pytest.raises(CorruptionError, match="Could not open ZIP archive"):
+        open_archive(stream)
+    stream = io.BytesIO(zip_bytes)
+    stream.name = f"x.zip.{digits}"
+    with pytest.raises(UnsupportedFeatureError, match="spanned"):
+        open_archive(stream)
+
+    assert volumes_mod.incomplete_lone_numbered_volume_error(f"x.zip.{digits}") is None
+    assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip.999999")
+    assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip.1000000") is None
+
+    # The cap is on the value, not the width: zero padding does not count.
+    assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip.0999999")
+    assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip.0001000000") is None
+    assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip." + "0" * 5000)
+    # The same value cap on the `.partN` scheme.
+    assert volumes_mod._rar_part_number("x.part0999999.rar") == 999999
+    assert volumes_mod._rar_part_number("x.part1000000.rar") == 0
+    assert volumes_mod._rar_part_number("x.part0001000000.rar") == 0
+
+    # The explicit sequence: name validation used to raise before the open did.
+    with pytest.raises(OpenError, match="Cannot open volume"):
+        join_volumes([tmp_path / f"x.zip.{digits}", tmp_path / "x.zip.002"])
 
 
 @pytest.mark.parametrize(
@@ -1601,3 +1677,33 @@ def test_a_partn_part_beside_an_rnn_set_on_its_own_base_is_still_refused(
                 tmp_path / "Show.part1.r00",
             ]
         )
+
+
+def test_zero_padded_numbered_set_past_six_digits_still_joins(tmp_path: Path) -> None:
+    """``split -b … -d -a 7 --numeric-suffixes=1`` pads the part to seven digits.
+
+    The part-number cap bounds the value, not the width, so ``big.zip.0000001`` is
+    part 1 and the set opens; a width cap turned it into a spanned-ZIP refusal.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("hello.txt", b"hello, volumes")
+    data = buffer.getvalue()
+    half = len(data) // 2
+    (tmp_path / "big.zip.0000001").write_bytes(data[:half])
+    (tmp_path / "big.zip.0000002").write_bytes(data[half:])
+
+    with open_archive(tmp_path / "big.zip.0000001") as archive:
+        assert [member.name for member in archive.members()] == ["hello.txt"]
+        assert archive.read("hello.txt") == b"hello, volumes"
+
+
+def test_zero_padded_rar_part_names_past_six_digits_are_siblings(
+    tmp_path: Path,
+) -> None:
+    for part in (1, 2):
+        (tmp_path / f"x.part{part:07d}.rar").write_bytes(b"")
+    assert discover_volume_siblings(tmp_path / "x.part0000001.rar") == [
+        tmp_path / "x.part0000001.rar",
+        tmp_path / "x.part0000002.rar",
+    ]

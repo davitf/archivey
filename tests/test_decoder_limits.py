@@ -24,12 +24,13 @@ import subprocess
 import zipfile
 import zlib
 from pathlib import Path
+from typing import Any, BinaryIO
 
 import pytest
 
 import archivey
 from archivey import ArchiveyConfig, DecoderLimits, open_archive
-from archivey.exceptions import ResourceLimitError
+from archivey.exceptions import CorruptionError, ResourceLimitError
 from archivey.internal.config import (
     DEFAULT_STREAM_CONFIG,
     check_decoder_memory,
@@ -42,6 +43,7 @@ from tests.conftest import requires, requires_binary
 from tests.streams_util import (
     NonSeekableBytesIO,
     make_lzip_member,
+    make_multiblock_xz,
     xz_cli_available,
 )
 
@@ -730,6 +732,47 @@ def test_xz_decoder_carries_the_cap_as_its_memlimit(
     assert lzma_decoders_built
     cap = DecoderLimits().max_decoder_memory
     assert cap is not None
+    for kwargs in lzma_decoders_built:
+        memlimit = kwargs.get("memlimit")
+        assert isinstance(memlimit, int)
+        assert cap <= memlimit <= cap + 128 * 1024
+
+
+def test_xz_hand_off_after_a_block_chain_keeps_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    lzma_decoders_built: list[dict[str, object]],
+) -> None:
+    """The sequential decoder a finished block chain hands off to is capped too.
+
+    Stream B's block scan is made to fail, so a resume in stream A runs a block chain
+    to B's start and then continues sequentially; every decoder on that path, the
+    hand-off's included, must carry the caller's cap as its memlimit.
+    """
+    from archivey.internal.streams import xz
+
+    parts = [bytes([i]) * 150_000 for i in range(3)]
+    streams = [make_multiblock_xz(p, block_size=65536) for p in parts]
+    b_start = len(streams[0])
+    real_scan = xz._read_xz_index_backwards
+
+    def scan(stream: BinaryIO, file_size: int, stop_at: int = 0, **kw: Any) -> Any:
+        if stop_at == b_start:
+            raise CorruptionError("forced for the test")
+        return real_scan(stream, file_size, stop_at=stop_at, **kw)
+
+    monkeypatch.setattr(xz, "_read_xz_index_backwards", scan)
+    cap = 2**24
+    content = b"".join(parts)
+    with XzDecompressorStream(
+        io.BytesIO(b"".join(streams)),
+        decoder_limits=DecoderLimits(max_decoder_memory=cap),
+    ) as stream:
+        assert stream.read() == content
+        lzma_decoders_built.clear()
+        stream.seek(70_000)
+        assert stream.read() == content[70_000:]
+    # The chain's blocks in A, then the hand-off's sequential decoder for B onwards.
+    assert len(lzma_decoders_built) >= 2
     for kwargs in lzma_decoders_built:
         memlimit = kwargs.get("memlimit")
         assert isinstance(memlimit, int)

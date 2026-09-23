@@ -8,6 +8,8 @@ import gzip
 import importlib.util
 import io
 import lzma
+import random
+import struct
 import zlib
 from collections.abc import Callable
 from typing import Any, BinaryIO
@@ -15,7 +17,11 @@ from typing import Any, BinaryIO
 import pytest
 
 from archivey.config import REWIND_REDECODE_WARN_BYTES
-from archivey.exceptions import PackageNotInstalledError, TruncatedError
+from archivey.exceptions import (
+    CorruptionError,
+    PackageNotInstalledError,
+    TruncatedError,
+)
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.lzip import LzipDecompressorStream, _read_index_backwards
@@ -104,9 +110,6 @@ def test_xz_size_then_read_multistream_no_collision() -> None:
 
 def test_xz_zero_uncompressed_size_blocks_do_not_crash_index() -> None:
     """Crafted index with zero-size blocks must not raise AssertionError (F1b)."""
-    import struct
-    import zlib
-
     from archivey.exceptions import ArchiveyError
     from archivey.internal.streams.xz import (
         _XZ_FOOTER_MAGIC,
@@ -191,6 +194,117 @@ def test_xz_multiblock_backward_seek_crosses_block_boundary() -> None:
         assert stream.read(length) == CONTENT[start : start + length]
 
 
+@pytest.mark.skipif(
+    not xz_cli_available(),
+    reason="the xz CLI is needed to build a multi-block (single-stream) XZ fixture",
+)
+@pytest.mark.parametrize(
+    ("start", "length"),
+    [
+        (100_000, 150_000),  # resumes in block 1, crosses into blocks 2-3
+        (65_536, -1),  # resumes exactly on a block start, reads to EOF
+        (131_000, 70_000),  # crosses a boundary late in a feed chunk
+    ],
+)
+def test_xz_multiblock_seek_serves_the_right_bytes_across_feed_chunks(
+    start: int, length: int
+) -> None:
+    """A block-chain resume must not rewind ``inner`` under ``DecompressorStream``.
+
+    Incompressible content makes the compressed stream larger than one
+    ``DecompressorStream`` read, so ``_XzBlockChain`` advances to a contiguous block
+    while bytes past that block's start are still in the chunk it is consuming. If the
+    advance rewound ``inner``, the next read would hand those bytes over a second time
+    and the output would carry a copy of the next block's header.
+    """
+    content = random.Random(4).randbytes(300_000)
+    compressed = make_multiblock_xz(content, block_size=65536)
+    blocks = _read_xz_index_backwards(io.BytesIO(compressed), len(compressed))
+    assert len(blocks) > 3
+    assert len(compressed) > 2 * 65536  # a resume spans several feed chunks
+
+    with XzDecompressorStream(io.BytesIO(compressed)) as stream:
+        assert stream.read() == content  # forward pass populates the block index
+        stream.seek(start)
+        end = len(content) if length < 0 else start + length
+        assert stream.read(length) == content[start:end]
+
+
+@pytest.mark.skipif(
+    not xz_cli_available(),
+    reason="the xz CLI is needed to build a multi-block (single-stream) XZ fixture",
+)
+def test_xz_multistream_block_chain_resume_crosses_a_stream_gap() -> None:
+    """The discontinuous hop (stream footer and padding between two blocks) still works.
+
+    The chain may reposition ``inner`` only where it also drops the rest of the chunk
+    it holds; this pins that path while the contiguous one no longer seeks.
+    """
+    rng = random.Random(5)
+    part1 = rng.randbytes(200_000)
+    part2 = rng.randbytes(200_000)
+    compressed = (
+        make_multiblock_xz(part1, block_size=65536)
+        + b"\x00" * 8  # stream padding
+        + make_multiblock_xz(part2, block_size=65536)
+    )
+    content = part1 + part2
+
+    with XzDecompressorStream(io.BytesIO(compressed)) as stream:
+        assert stream.read() == content
+        # The padding is counted into the compressed cursor, so the second stream's
+        # backward scan finds its footer and every point past the origin has blocks.
+        assert all(sp.state is not None for sp in stream._seek_points[1:])
+        for start in (70_000, 150_000, 199_999):
+            stream.seek(start)
+            assert stream.read(150_000) == content[start : start + 150_000]
+        stream.seek(70_000)
+        assert stream.read() == content[70_000:]
+
+
+@pytest.mark.skipif(
+    not xz_cli_available(),
+    reason="the xz CLI is needed to build a multi-block (single-stream) XZ fixture",
+)
+def test_xz_block_chain_hands_off_at_a_stream_without_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stream whose block scan degraded is decoded, not skipped or cut off.
+
+    Stream B's per-stream scan is made to fail, so the table holds a ``state=None``
+    start for B between A's and C's blocks. A resume in A must stop its chain there and
+    carry on sequentially: jumping to C would serve C's bytes at B's offsets, and ending
+    at A would return a short read and publish a short size.
+    """
+    from archivey.internal.streams import xz as xz_module
+
+    rng = random.Random(7)
+    parts = [rng.randbytes(150_000) for _ in range(3)]
+    streams = [make_multiblock_xz(p, block_size=65536) for p in parts]
+    compressed = b"".join(streams)
+    content = b"".join(parts)
+    b_start = len(streams[0])
+
+    real_scan = xz_module._read_xz_index_backwards
+
+    def scan(stream: BinaryIO, file_size: int, stop_at: int = 0, **kw: Any) -> Any:
+        if stop_at == b_start:
+            raise CorruptionError("forced for the test")
+        return real_scan(stream, file_size, stop_at=stop_at, **kw)
+
+    monkeypatch.setattr(xz_module, "_read_xz_index_backwards", scan)
+
+    with XzDecompressorStream(io.BytesIO(compressed)) as stream:
+        assert stream.read() == content
+        placeholders = [sp for sp in stream._seek_points[1:] if sp.state is None]
+        assert [sp.decompressed_offset for sp in placeholders] == [len(parts[0])]
+        stream.seek(70_000)
+        assert stream.read(200_000) == content[70_000:270_000]
+        stream.seek(70_000)
+        assert stream.read() == content[70_000:]
+        assert stream.seek(0, io.SEEK_END) == len(content)
+
+
 def test_xz_truncated_raises() -> None:
     compressed = lzma.compress(CONTENT, format=lzma.FORMAT_XZ)
     with XzDecompressorStream(io.BytesIO(compressed[: len(compressed) // 2])) as stream:
@@ -265,8 +379,6 @@ def test_xz_partial_index_mid_seek_includes_later_streams() -> None:
 
 def test_xz_index_crc_mismatch_raises_on_backwards_scan() -> None:
     """Corrupt index CRC must not be trusted as seek offsets."""
-    from archivey.exceptions import CorruptionError
-
     compressed = bytearray(lzma.compress(CONTENT, format=lzma.FORMAT_XZ))
     # Flip a byte in the index region (just before the 12-byte footer).
     compressed[-16] ^= 0xFF
@@ -276,10 +388,6 @@ def test_xz_index_crc_mismatch_raises_on_backwards_scan() -> None:
 
 def test_xz_index_unpadded_overflow_raises() -> None:
     """Index records whose unpadded sizes extend before offset 0 are rejected."""
-    import struct
-    import zlib
-
-    from archivey.exceptions import CorruptionError
     from archivey.internal.streams.xz import (
         _XZ_FOOTER_MAGIC,
         _XZ_STREAM_MAGIC,
@@ -312,18 +420,135 @@ def test_xz_index_unpadded_overflow_raises() -> None:
 
 def test_lzip_trailer_member_size_past_start_raises() -> None:
     """Corrupt member_size that walks before offset 0 must not become seek points."""
-    from archivey.exceptions import CorruptionError
-
     good = make_lzip_member(b"hello-lzip-payload")
     bad = bytearray(good)
     # Trailer: crc32(4) + data_size(8) + member_size(8) at end.
     # Set member_size larger than the file.
-    import struct
-
     crc, data_size, _member_size = struct.unpack_from("<IQQ", bad, len(bad) - 20)
     struct.pack_into("<IQQ", bad, len(bad) - 20, crc, data_size, len(bad) + 100)
     with pytest.raises(CorruptionError, match="member_size|exceeds"):
         _read_index_backwards(io.BytesIO(bytes(bad)), len(bad))
+
+
+def _lzip_with_lying_member_size(lying_member: int = 0) -> bytes:
+    """Three 256-byte members ``A``/``B``/``C``; one trailer also claims the next member.
+
+    ``lying_member``'s trailer ``member_size`` covers itself and the member after it.
+    CRC-32 and ``data_size`` are left intact, so only ``member_size`` lies.
+    """
+    members = [make_lzip_member(p) for p in (b"A" * 256, b"B" * 256, b"C" * 256)]
+    bad = bytearray(b"".join(members))
+    trailer_at = sum(len(m) for m in members[: lying_member + 1]) - 20
+    crc, data_size, _ = struct.unpack_from("<IQQ", bad, trailer_at)
+    claimed = len(members[lying_member]) + len(members[lying_member + 1])
+    struct.pack_into("<IQQ", bad, trailer_at, crc, data_size, claimed)
+    return bytes(bad)
+
+
+def test_lzip_trailer_member_size_mismatch_raises_on_forward_read() -> None:
+    """A trailer ``member_size`` that disagrees with the bytes consumed is corruption.
+
+    Before this was checked, the forward read accepted the file and recorded the lie as
+    the next member's seek point, so ``seek(256)`` then served member 2's bytes.
+    """
+    bad = _lzip_with_lying_member_size()
+    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
+        with pytest.raises(CorruptionError, match="member size mismatch"):
+            stream.read()
+
+
+def test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain() -> None:
+    """Pins the residual recorded as threat-model O17: an index-only seek trusts trailers.
+
+    Member 1's trailer claims to span members 0 and 1. The backward walk lands on member
+    0's real magic and accepts two members, so a seek past the lie, with no full read
+    before it, serves member 2's bytes at offset 256 and reads cleanly to the index's
+    end. A seek inside the misdescribed region and a full read both raise. If index
+    validation is ever added, this test changes with O17.
+    """
+    bad = _lzip_with_lying_member_size(lying_member=1)
+
+    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
+        stream.seek(256)
+        assert stream.read() == b"C" * 256  # the index's answer, not member 1
+        assert stream.tell() == 512
+
+    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
+        with pytest.raises(CorruptionError, match="member size mismatch"):
+            stream.seek(100)
+            stream.read(16)  # the lying trailer is reached within the first feed
+
+    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
+        with pytest.raises(CorruptionError, match="member size mismatch"):
+            stream.read()
+
+
+@pytest.mark.skipif(
+    not xz_cli_available(),
+    reason="the xz CLI is needed to build a multi-block (single-stream) XZ fixture",
+)
+def test_xz_cold_seek_trusts_a_self_consistent_block_index() -> None:
+    """Pins the xz half of threat-model O17: an index-only seek trusts the stream index.
+
+    Index records 0 and 1 are merged into one record with block 0's uncompressed size.
+    The compressed total is unchanged, so the backward scan still finds the stream
+    header, and a seek to 65536 with no full read before it serves block C. A seek
+    inside the merged region returns correct bytes until the decode reaches the end of
+    the stream, where liblzma checks the index and raises; a full read raises too. If
+    index validation is ever added, this test changes with O17.
+    """
+    from archivey.internal.streams import xz as xz_module
+
+    data = b"".join(bytes([ord("A") + i]) * 65536 for i in range(4))
+    compressed = make_multiblock_xz(data, block_size=65536)
+    footer = compressed[-12:]
+    _check, index_size = xz_module._parse_xz_footer(footer)
+    index_start = len(compressed) - 12 - index_size
+    records = xz_module._parse_xz_index(compressed[index_start : -12 - 4])
+    assert len(records) == 4
+    (u0, d0), (u1, _d1) = records[0], records[1]
+    merged = [(xz_module._round_up_4(u0) + u1, d0), *records[2:]]
+    body = b"\x00" + xz_module._encode_mbi(len(merged))
+    body += b"".join(
+        xz_module._encode_mbi(u) + xz_module._encode_mbi(d) for u, d in merged
+    )
+    body += b"\x00" * (xz_module._round_up_4(len(body)) - len(body))
+    index = body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
+    footer_body = struct.pack("<I", len(index) // 4 - 1) + footer[8:10]
+    new_footer = (
+        struct.pack("<I", zlib.crc32(footer_body) & 0xFFFFFFFF)
+        + footer_body
+        + footer[10:]
+    )
+    bad = compressed[:index_start] + index + new_footer
+
+    with XzDecompressorStream(io.BytesIO(bad)) as stream:
+        stream.seek(65536)
+        assert stream.read() == data[2 * 65536 :]  # blocks C and D, not B
+        assert stream.seek(0, io.SEEK_END) == 3 * 65536
+
+    with XzDecompressorStream(io.BytesIO(bad)) as stream:
+        stream.seek(1000)
+        assert stream.read(70_000) == data[1000:71_000]  # right bytes, no error yet
+        with pytest.raises(CorruptionError):
+            stream.read()
+
+    with XzDecompressorStream(io.BytesIO(bad)) as stream:
+        with pytest.raises(CorruptionError):
+            stream.read()
+
+
+def test_lzip_multi_member_seek_after_forward_read_serves_the_right_bytes() -> None:
+    """Seek points recorded by a forward read land on the member they name."""
+    rng = random.Random(6)
+    parts = [rng.randbytes(40_000), rng.randbytes(90_000), rng.randbytes(30_000)]
+    content = b"".join(parts)
+    compressed = make_multi_member_lzip(parts)
+    with LzipDecompressorStream(io.BytesIO(compressed)) as stream:
+        assert stream.read() == content
+        for start, length in ((40_000, 1000), (135_000, 25_000), (10, 150_000)):
+            stream.seek(start)
+            assert stream.read(length) == content[start : start + length]
 
 
 # --- lzip seeking via the trailer scan -------------------------------------------------

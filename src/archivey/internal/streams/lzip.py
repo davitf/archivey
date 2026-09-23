@@ -150,6 +150,10 @@ class _LzipState:
         self._dec: lzma.LZMADecompressor | None = None
         self._crc = 0
         self._member_size = 0
+        # Compressed bytes of the current member consumed so far, header included; the
+        # trailer's member_size is checked against it (plus the trailer) in
+        # _verify_trailer, because LzipDecoder uses member_size as a seek offset.
+        self._member_comp_size = 0
         self._finished = False
         self._members_seen = 0
         self.truncated = False
@@ -220,11 +224,13 @@ class _LzipState:
                     plain = self._dec.decompress(chunk, remaining)
                 except lzma.LZMAError as e:
                     raise CorruptionError(f"Error reading Lzip archive: {e}") from e
+                self._member_comp_size += len(chunk)
                 if plain:
                     self._crc = zlib.crc32(plain, self._crc)
                     self._member_size += len(plain)
                     output.extend(plain)
                 if self._dec.eof:
+                    self._member_comp_size -= len(self._dec.unused_data)
                     self._buf[0:0] = self._dec.unused_data
                     self._dec = None
                     self._state = self._NEED_TRAILER
@@ -276,6 +282,7 @@ class _LzipState:
             raise CorruptionError(f"Error reading lzip header: {e}") from e
         self._crc = 0
         self._member_size = 0
+        self._member_comp_size = _HEADER_SIZE
         return True
 
     def _verify_trailer(self, trailer: bytes) -> tuple[int, int]:
@@ -288,6 +295,12 @@ class _LzipState:
         if self._member_size != data_size:
             raise CorruptionError(
                 f"Lzip size mismatch: stored {data_size}, actual {self._member_size}"
+            )
+        actual_member_size = self._member_comp_size + _TRAILER_SIZE
+        if member_size != actual_member_size:
+            raise CorruptionError(
+                f"Lzip member size mismatch: stored {member_size}, "
+                f"actual {actual_member_size}"
             )
         self._members_seen += 1
         return (int(data_size), int(member_size))

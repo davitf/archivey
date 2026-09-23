@@ -7,6 +7,7 @@ import os
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, TextIO
 
+from archivey.cli.format import escape_path
 from archivey.cost import StreamCapability
 from archivey.types import ArchiveMember
 
@@ -79,7 +80,9 @@ def warn_unmatched_includes(
         ):
             # Strip a trailing slash for the suggested -d argument display.
             suggested = pattern.rstrip("/") or pattern
-            extra = f" (did you mean -d {suggested}?)"
+            # The pattern is the operator's own argv, but it is printed next to its
+            # ``!r`` form on the same line, so it gets the same treatment.
+            extra = f" (did you mean -d {escape_path(suggested)}?)"
         print(
             f"warning: pattern matched no members: {pattern!r}{extra}",
             file=err,
