@@ -207,6 +207,10 @@ promise with that line; treat `0.2.0` as the first release of this library.
 - **`STRICT` extraction no longer widens a file's permissions.** A file stored as
   `0o660` (group-shared, what `umask 007` produces) was written as `0o644`, readable
   by every user. The stored mode is now masked with `0o644`, so it comes out `0o640`.
+  A hardlink's stored mode gets the same treatment under `STRICT` and `STANDARD` as a
+  file's: a link written as a copy (its source not selected, or on another device) used
+  to keep any mode, setuid and world-write included. A mode a filter removes falls back
+  to the policy's default (`0o644`, `0o755` for a directory).
 - **A hardlink copied across a device boundary counts toward `max_extracted_bytes`.**
   When a link cannot be made because the destination spans two filesystems, archivey
   copies the content instead; those copies were not counted, so a fan-out of links could

@@ -197,12 +197,20 @@ _HIGH_BITS = 0o7000  # setuid | setgid | sticky
 _EXEC_BITS = 0o111
 
 
+def _carries_file_mode(member: ArchiveMember) -> bool:
+    """Whether ``member``'s mode can end up on a regular file the extraction writes."""
+    return member.type in (MemberType.FILE, MemberType.HARDLINK)
+
+
 def transform_strict(member: ArchiveMember) -> ArchiveMember:
     """STRICT: drop ownership, strip high/execute bits, cap files at 644, dirs at 755.
 
     A file's stored mode is *masked* with ``0o644``, never raised to it: ``0o660``
     (``umask 007``, a group-shared file) becomes ``0o640``, not ``0o644``. The policy
     that distrusts the archive must not be the one that opens a file up to other users.
+
+    A hardlink's mode is treated as a file's: a link materialized as a copy (the source
+    was not selected, or it sits on another device) is written with it.
     """
     new: dict[str, object] = {
         "uid": None,
@@ -212,7 +220,7 @@ def transform_strict(member: ArchiveMember) -> ArchiveMember:
     }
     if member.is_dir:
         new["mode"] = 0o755
-    elif member.is_file:
+    elif _carries_file_mode(member):
         mode = member.mode
         if mode is None:
             new["mode"] = 0o644
@@ -222,11 +230,14 @@ def transform_strict(member: ArchiveMember) -> ArchiveMember:
 
 
 def transform_standard(member: ArchiveMember) -> ArchiveMember:
-    """STANDARD: strip setuid/setgid/sticky, keep execute and ownership."""
+    """STANDARD: strip setuid/setgid/sticky, keep execute and ownership.
+
+    Hardlinks are treated as files, for the reason given on ``transform_strict``.
+    """
     new: dict[str, object] = {}
     if member.is_dir:
         new["mode"] = 0o755 if member.mode is None else (member.mode & ~_HIGH_BITS)
-    elif member.is_file:
+    elif _carries_file_mode(member):
         new["mode"] = 0o644 if member.mode is None else (member.mode & ~_HIGH_BITS)
     return member.replace(**new)
 

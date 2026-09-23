@@ -551,6 +551,86 @@ def test_trusted_as_root_keeps_setuid_setgid_through_chown(
     assert (st.st_uid, st.st_gid) == (1000, 1000)
 
 
+def _tar_file_and_link(file_mode: int, link_mode: int) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("src.bin")
+        info.size = 3
+        info.mode = file_mode
+        t.addfile(info, io.BytesIO(b"abc"))
+        link = tarfile.TarInfo("link.bin")
+        link.type = tarfile.LNKTYPE
+        link.linkname = "src.bin"
+        link.mode = link_mode
+        t.addfile(link)
+    return buf.getvalue()
+
+
+@_posix_perms
+@pytest.mark.parametrize(
+    "policy,expected",
+    [(ExtractionPolicy.STRICT, 0o644), (ExtractionPolicy.STANDARD, 0o777)],
+)
+def test_materialized_hardlink_mode_is_capped_like_a_files(
+    tmp_path: Path, policy: ExtractionPolicy, expected: int
+) -> None:
+    """A hardlink written as real content gets the policy's file-mode treatment.
+
+    Extracting only the link orphans its source, so the link carries the content and
+    its own mode. The transforms used to cap only FILE members, so ``0o4777`` landed
+    as is under STRICT and STANDARD alike.
+    """
+    archive = _tar_file_and_link(0o600, 0o4777)
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as r:
+        r.extract_all(dest, members=["link.bin"], policy=policy)
+    assert (dest / "link.bin").read_bytes() == b"abc"
+    assert (dest / "link.bin").stat().st_mode & 0o7777 == expected
+
+
+@_posix_perms
+def test_cross_device_hardlink_copy_mode_is_capped_under_strict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The EXDEV copy takes the link's mode, so that mode has to be capped first."""
+
+    def always_exdev(source: object, target: object, *a: object, **k: object) -> None:
+        raise OSError(errno.EXDEV, "cross-device")
+
+    monkeypatch.setattr(os, "link", always_exdev)
+    dest = tmp_path / "out"
+    extract(io.BytesIO(_tar_file_and_link(0o600, 0o4777)), dest)
+    assert (dest / "src.bin").stat().st_mode & 0o7777 == 0o600
+    assert (dest / "link.bin").stat().st_mode & 0o7777 == 0o644
+
+
+@_posix_perms
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+def test_filter_dropping_the_mode_still_gets_the_policy_default(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """A filter runs after the transform; a ``mode=None`` it returns is not TRUSTED's.
+
+    The umask-default creation mode belongs to TRUSTED alone. Under a permissive
+    umask it would give a group- or world-writable file, so STRICT and STANDARD fall
+    back to their documented ``0o644`` for a file and ``0o755`` for a directory.
+    """
+    archive = _tar_bytes([("dir", "d", None), ("file", "d/f.txt", b"x")])
+
+    def drop_mode(m: ArchiveMember) -> ArchiveMember:
+        return m.replace(mode=None)
+
+    old = os.umask(0o002)
+    try:
+        dest = tmp_path / "out"
+        with open_archive(io.BytesIO(archive)) as r:
+            r.extract_all(dest, filter=drop_mode, policy=policy)
+    finally:
+        os.umask(old)
+    assert (dest / "d" / "f.txt").stat().st_mode & 0o7777 == 0o644
+    assert (dest / "d").stat().st_mode & 0o7777 == 0o755
+
+
 @_posix_perms
 def test_extract_zip_standard_keeps_execute(tmp_path: Path) -> None:
     src = tmp_path / "m.zip"
@@ -1425,6 +1505,28 @@ def test_cross_device_hardlink_copy_counts_toward_max_extracted_bytes(
     extract(src, dest2, limits=ExtractionLimits(max_extracted_bytes=5000))
     for i in range(4):
         assert (dest2 / f"L{i}.bin").read_bytes() == payload
+
+
+def test_copied_bytes_count_toward_the_byte_cap_but_not_the_ratio() -> None:
+    """Nothing decompressed a cross-device copy, so only the byte cap sees it.
+
+    Whether the copy happens depends on the destination's mount points, not on the
+    archive, so letting it trip the archive-wide ratio would blame the archive.
+    """
+    source = SimpleNamespace(compressed_source_size=10, compressed_bytes_consumed=10)
+    t = BombTracker(
+        max_bytes=5000,
+        max_ratio=2.0,
+        ratio_activation_threshold=0,
+        source=source,  # type: ignore[arg-type]
+    )
+    t.start_member(_member("a"))
+    t.count(15)  # decoded: ratio 1.5, under the limit
+    t.count_copy(4000)  # copied: would be ratio 400 if counted
+    t.count(1)  # the next decoded chunk re-checks the ratio on decoded bytes only
+    assert t.total_bytes == 4016
+    with pytest.raises(_AlwaysStopResourceLimitError, match="max_extracted_bytes"):
+        t.count_copy(1000)
 
 
 @_posix_perms
@@ -2862,6 +2964,38 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
     assert written.read_bytes() == b"A"
     assert written_paths == {written}
     assert collision_map == {"README": _Claim(written, 0)}
+
+
+def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
+    """An exact path this run wrote wins over a case-variant claim in the map.
+
+    Directories are not in the collision map, so a run can write directory ``x`` and
+    file ``X`` (claimed under key ``x``). An anti-item ``x`` names the directory.
+    """
+    from archivey.internal.extraction import _Claim
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    directory = dest / "x"
+    directory.mkdir()
+    file_ = dest / "X"
+    if file_.exists():
+        pytest.skip("case-insensitive filesystem: x and X are one entry")
+    file_.write_bytes(b"F")
+
+    coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
+    written_paths = {directory, file_}
+    collision_map = {"x": _Claim(file_, 1)}
+    anti = ArchiveMember(type=MemberType.ANTI, name="x")
+
+    result = coordinator._apply_anti_item(
+        anti, directory, written_paths, collision_map, dest
+    )
+
+    assert result.path == directory
+    assert not directory.exists()
+    assert file_.read_bytes() == b"F"
+    assert collision_map == {"x": _Claim(file_, 1)}
 
 
 @pytest.mark.parametrize(

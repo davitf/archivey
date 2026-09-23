@@ -158,13 +158,17 @@ class BombTracker:
         )
         self._max_entries = max_entries
         self._entry_count = 0
-        self._total_bytes = 0  # cumulative across all members
+        self._total_bytes = 0  # decoded output, cumulative across all members
+        # Bytes copied from a file this run already wrote (the cross-device hardlink
+        # fallback). They count toward the byte cap, not the ratios.
+        self._copied_bytes = 0
         self._member_bytes = 0  # output bytes for the current member
         self._member: ArchiveMember | None = None
 
     @property
     def total_bytes(self) -> int:
-        return self._total_bytes
+        """Every byte written to the destination, decoded or copied."""
+        return self._total_bytes + self._copied_bytes
 
     @property
     def member_bytes(self) -> int:
@@ -213,20 +217,21 @@ class BombTracker:
 
         The cross-device hardlink fallback writes a second full copy of content already
         on disk. Those bytes land on the filesystem, so they count toward
-        ``max_extracted_bytes`` and the archive-wide ratio like any other write. They
-        are not this member's decoded output, so the per-member ratio (decoded bytes
-        against the member's compressed size) leaves them out.
+        ``max_extracted_bytes`` like any other write. Nothing decompressed them, so
+        neither ratio sees them: whether a copy happens depends on where the
+        destination's mount points fall, not on the archive, and a ratio abort would
+        blame the archive for it.
         """
-        self._total_bytes += chunk_bytes
+        self._copied_bytes += chunk_bytes
         self._check_cumulative_bytes()
-        self._check_archive_ratio()
 
     def _check_cumulative_bytes(self) -> None:
         # Cumulative byte guard (always-stop).
-        if self._max_bytes is not None and self._total_bytes > self._max_bytes:
+        written = self.total_bytes
+        if self._max_bytes is not None and written > self._max_bytes:
             raise _AlwaysStopResourceLimitError(
                 f"Extraction limit reached: max_extracted_bytes={self._max_bytes} "
-                f"(written {self._total_bytes} bytes)"
+                f"(written {written} bytes)"
             )
 
     def _check_archive_ratio(self) -> None:
@@ -960,12 +965,14 @@ class ExtractionCoordinator:
         (``photo.jpg`` → ``photo (1).jpg``); a directory has no suffix and appends to the
         whole segment.
 
-        The search resumes after the last ``N`` this run took for the same collision key,
-        rather than starting at 1 each time. Every name below it is still taken (claims
-        are only ever added, and ``_release_claim`` resets the counters when one goes), so
-        the answer is the same first free name, found without rescanning: restarting
-        made ``k`` members colliding on one key cost ``k²`` probes, which a hostile
-        archive of case-variant names turns into hours."""
+        The search resumes after the last ``N`` this run handed out for the same
+        collision key, rather than starting at 1 each time: restarting made ``k``
+        members colliding on one key cost ``k²`` probes, which a hostile archive of
+        case-variant names turns into hours. The counter records names handed out, not
+        names taken, so a member renamed and then failing to write leaves a gap in the
+        numbering (``(1)`` unused, next member gets ``(2)``). The result is still
+        deterministic, which is what the spec asks. ``_release_claim`` resets the
+        counters, so a name freed by an anti-item is found again."""
         parent = requested.parent
         if transformed.type == MemberType.DIRECTORY:
             stem, suffix = requested.name, ""
@@ -991,18 +998,19 @@ class ExtractionCoordinator:
     ) -> ExtractionResult:
         """Delete what an earlier member of this run wrote at the anti-item's name.
 
-        The name is looked up through the collision map first, so it matches the way
-        every other collision does: under STRICT and STANDARD, an anti-item ``readme``
-        deletes the ``README`` this run wrote, which on a case-insensitive filesystem is
-        the file it names. TRUSTED keys on the exact name, so there it is exact.
-        Directories are not in the map and match by exact path. Nothing is deleted that
-        this run did not write.
+        An exact path this run wrote wins. Otherwise the name is looked up through the
+        collision map, so it matches the way every other collision does: under STRICT
+        and STANDARD, an anti-item ``readme`` deletes the ``README`` this run wrote,
+        which on a case-insensitive filesystem is the file it names. TRUSTED keys on the
+        exact name, so there it is exact. Directories are not in the map, so a directory
+        matches only by its exact path. Nothing is deleted that this run did not write.
         """
-        claim = collision_map.get(
-            collision_key(self._rel_name(dest, dest_path), self._policy)
-        )
-        if claim is not None and claim.path in written_paths:
-            dest_path = claim.path
+        if dest_path not in written_paths:
+            claim = collision_map.get(
+                collision_key(self._rel_name(dest, dest_path), self._policy)
+            )
+            if claim is not None and claim.path in written_paths:
+                dest_path = claim.path
         if dest_path not in written_paths:
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
@@ -1608,11 +1616,12 @@ class ExtractionCoordinator:
         when materializing an orphaned hardlink source's content (it applies no metadata; the
         links each carry their own).
 
-        A member with no stored mode (only TRUSTED lets one through; the other policies
-        substitute ``0o644``) gets the mode an ordinary file creation would, ``0o666``
-        less the umask, rather than ``mkstemp``'s private ``0o600``. Nothing chmods it
-        afterwards, so the temp's creation mode is the file's final mode."""
-        if member is not None and member.mode is None:
+        Under TRUSTED, a member with no stored mode gets the mode an ordinary file
+        creation would, ``0o666`` less the umask, rather than ``mkstemp``'s private
+        ``0o600``. Nothing chmods it afterwards, so the temp's creation mode is the file's
+        final mode. STRICT and STANDARD give a mode-less member their own default instead
+        (see ``_effective_mode``), so this arm is TRUSTED's alone."""
+        if member is not None and self._effective_mode(member) is None:
             tmp = self._temp_sibling(dest_path.parent)
             fd = _open_new_file(tmp, 0o666)
         else:
@@ -1712,7 +1721,9 @@ class ExtractionCoordinator:
                 # Every recorded path is cross-device: fall back to a copy from the first.
                 # Created private when a mode follows (as mkstemp would), at the ordinary
                 # creation mode when none does, the same as a FILE write.
-                create_mode = 0o600 if member.mode is not None else 0o666
+                create_mode = (
+                    0o600 if self._effective_mode(member) is not None else 0o666
+                )
                 with (
                     open(existing[0], "rb") as src,
                     os.fdopen(_open_new_file(tmp, create_mode), "wb") as dst,
@@ -1745,6 +1756,19 @@ class ExtractionCoordinator:
             if not os.path.lexists(candidate):
                 return candidate
 
+    def _effective_mode(self, member: ArchiveMember) -> int | None:
+        """The mode to give what ``member`` writes; ``None`` means the creation default.
+
+        The policy transforms fill in a missing mode, but a user filter runs after them
+        and may hand back ``mode=None``. STRICT and STANDARD still owe their documented
+        default then (file ``0o644``, dir ``0o755``), not whatever the umask leaves.
+        Only TRUSTED means "as stored", and a member that stored nothing gets the
+        creation default.
+        """
+        if member.mode is not None or self._policy is ExtractionPolicy.TRUSTED:
+            return member.mode
+        return 0o755 if member.is_dir else 0o644
+
     def _apply_metadata(self, path: Path, member: ArchiveMember) -> None:
         """Best-effort ownership / mode / mtime. Failures are swallowed (best-effort).
 
@@ -1764,9 +1788,10 @@ class ExtractionCoordinator:
                 os.chown(path, member.uid, member.gid)
             except OSError:
                 pass
-        if member.mode is not None:
+        mode = self._effective_mode(member)
+        if mode is not None:
             try:
-                os.chmod(path, member.mode)
+                os.chmod(path, mode)
             except OSError:
                 pass
         if member.modified is not None:
