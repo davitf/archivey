@@ -434,7 +434,7 @@ def test_lzip_trailer_member_size_past_start_raises() -> None:
         _read_index_backwards(io.BytesIO(bytes(bad)), len(bad))
 
 
-def _lzip_with_lying_member_size() -> tuple[bytes, list[bytes]]:
+def _lzip_with_lying_member_size() -> bytes:
     """Three members; member 0's trailer claims it also spans member 1.
 
     CRC-32 and ``data_size`` are left intact, so only ``member_size`` lies.
@@ -447,7 +447,7 @@ def _lzip_with_lying_member_size() -> tuple[bytes, list[bytes]]:
     struct.pack_into(
         "<IQQ", bad, trailer_at, crc, data_size, len(members[0]) + len(members[1])
     )
-    return bytes(bad), parts
+    return bytes(bad)
 
 
 def test_lzip_trailer_member_size_mismatch_raises_on_forward_read() -> None:
@@ -456,24 +456,43 @@ def test_lzip_trailer_member_size_mismatch_raises_on_forward_read() -> None:
     Before this was checked, the forward read accepted the file and recorded the lie as
     the next member's seek point, so ``seek(256)`` then served member 2's bytes.
     """
-    bad, _ = _lzip_with_lying_member_size()
+    bad = _lzip_with_lying_member_size()
     with LzipDecompressorStream(io.BytesIO(bad)) as stream:
         with pytest.raises(CorruptionError, match="member size mismatch"):
             stream.read()
 
 
-def test_lzip_lying_member_size_never_serves_another_members_bytes() -> None:
-    """Whatever order the reads come in, offset 256 is member 1's data or an error."""
-    bad, parts = _lzip_with_lying_member_size()
-    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
-        with pytest.raises(CorruptionError):
+def test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain() -> None:
+    """Pins the residual recorded as threat-model O17: an index-only seek trusts trailers.
+
+    Member 1's trailer claims to span members 0 and 1. The backward walk lands on member
+    0's real magic and accepts two members, so a seek past the lie, with no full read
+    before it, serves member 2's bytes at offset 256 and reads cleanly to the index's
+    end. A seek inside the misdescribed region and a full read both raise. If index
+    validation is ever added, this test changes with O17.
+    """
+    parts = [b"A" * 256, b"B" * 256, b"C" * 256]
+    members = [make_lzip_member(p) for p in parts]
+    bad = bytearray(b"".join(members))
+    trailer_at = len(members[0]) + len(members[1]) - 20
+    crc, data_size, _ = struct.unpack_from("<IQQ", bad, trailer_at)
+    struct.pack_into(
+        "<IQQ", bad, trailer_at, crc, data_size, len(members[0]) + len(members[1])
+    )
+
+    with LzipDecompressorStream(io.BytesIO(bytes(bad))) as stream:
+        stream.seek(256)
+        assert stream.read() == parts[2]  # the index's answer, not member 1
+        assert stream.tell() == 512
+
+    with LzipDecompressorStream(io.BytesIO(bytes(bad))) as stream:
+        with pytest.raises(CorruptionError, match="member size mismatch"):
+            stream.seek(100)
             stream.read()
-        try:
-            stream.seek(256)
-            got = stream.read(256)
-        except CorruptionError:
-            return
-        assert got == parts[1]
+
+    with LzipDecompressorStream(io.BytesIO(bytes(bad))) as stream:
+        with pytest.raises(CorruptionError, match="member size mismatch"):
+            stream.read()
 
 
 def test_lzip_multi_member_seek_after_forward_read_serves_the_right_bytes() -> None:
