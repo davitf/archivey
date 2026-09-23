@@ -21,6 +21,7 @@ and RAR5 ConvertHashToMAC when checksums are tweaked.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import shutil
@@ -31,7 +32,7 @@ import threading
 import zlib
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -50,6 +51,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
     UnsupportedOperationError,
+    raw_message_of,
 )
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
@@ -340,6 +342,24 @@ def _tweaked_hash_key(enc: RarEncryptionInfo, password: str) -> bytes | None:
         except EncryptionError:
             return None
     return rar5_hash_key(password, enc.salt, enc.kdf_count)
+
+
+def _psw_check_usable(enc: RarEncryptionInfo) -> bool:
+    """Whether ``enc`` carries a PswCheck that can tell a right password from a wrong one.
+
+    Mirrors the shape test :func:`rar_parser._check_rar5_password` applies before it
+    derives a key: twelve bytes whose last four are the SHA-256 prefix of the first
+    eight. RAR4 records and a damaged check have none, and a candidate cannot be
+    judged before ``unrar`` runs. It does not mirror that function's ``kdf_count``
+    bound: a usable check with an out-of-range cost still reaches the check, which
+    raises ``CorruptionError`` for the member rather than deriving at that cost.
+    """
+    check = enc.check_value
+    return (
+        check is not None
+        and len(check) == 12
+        and hashlib.sha256(check[:8]).digest()[:4] == check[8:]
+    )
 
 
 class _UnrarOwnedStream(DelegatingStream):
@@ -696,6 +716,16 @@ class RarReader(BaseArchiveReader):
         del encoding  # RAR names are decoded by the native parser.
         self._source = source
         self._passwords = passwords or _PasswordCandidates()
+        # The candidate each RAR5 encryption record's PswCheck accepted, keyed by the
+        # record's salt, KDF cost and check. RAR writes one salt per archiving run,
+        # so this is usually one derivation per archive rather than one per member.
+        self._checked_passwords: dict[tuple[bytes, int, bytes], bytes] = {}
+        # The tweaked-digest HashKey derived from that candidate, under the same key:
+        # a member's digest check is built more than once per open.
+        self._hash_keys: dict[tuple[bytes, int, bytes], bytes] = {}
+        # The first member whose PswCheck can judge a candidate, found once on first
+        # use; ``False`` until looked for, ``None`` when there is none.
+        self._archive_check_member: ArchiveMember | None | Literal[False] = False
         self._volume_count = getattr(source, "volume_count", volume_count)
         self._temp_path: Path | None = None
         self._temp_dir: Path | None = None
@@ -976,6 +1006,119 @@ class RarReader(BaseArchiveReader):
             return _password_as_str(password)
         return None
 
+    def _checked_password(
+        self,
+        enc: RarEncryptionInfo,
+        member: ArchiveMember | None,
+        *,
+        ask_provider: bool,
+    ) -> bytes | None:
+        """The candidate ``enc``'s PswCheck accepts, found by trying them in order.
+
+        ``enc`` must pass :func:`_psw_check_usable`. With ``ask_provider`` this is the
+        ordinary per-unit attempt (known-good, then the list, then the provider) and
+        exhaustion raises ``_PasswordCandidatesExhausted``. Without it, only the
+        concrete candidates are tried and ``None`` means none matched: a caller that
+        must not prompt (building a digest check for a member nobody read yet) still
+        gets the right password when the caller listed it, just not first.
+        """
+        assert enc.check_value is not None
+        check_value = enc.check_value
+        key = (enc.salt, enc.kdf_count, check_value)
+        found = self._checked_passwords.get(key)
+        if found is not None:
+            return found
+
+        def check(password: bytes) -> bytes:
+            try:
+                _check_rar5_password(
+                    check_value,
+                    enc.kdf_count,
+                    enc.salt,
+                    _password_as_str(password) or "",
+                )
+            except (EncryptionError, UnicodeError):
+                raise EncryptionError("Wrong password for this RAR member") from None
+            return password
+
+        if ask_provider:
+            found = self._passwords.attempt(member, check)
+        else:
+            for password in self._passwords.iter_candidates():
+                try:
+                    found = check(password)
+                except EncryptionError:
+                    continue
+                break
+            if found is None:
+                return None
+        self._checked_passwords[key] = found
+        return found
+
+    def _member_data_password(self, member: ArchiveMember) -> str | None:
+        """The password to hand the ``unrar`` spawn that reads ``member``.
+
+        ``unrar`` takes one password and cannot try a list, so a candidate list is
+        resolved here. A RAR5 member carries a PswCheck, so its password is picked
+        per member, before ``unrar`` runs. A plain member of a solid archive may sit
+        behind encrypted ones and needs their password; a plain member of a non-solid
+        one needs none worth resolving. Without a usable check (RAR4) nothing can
+        judge a candidate before ``unrar`` runs, so ``unrar`` gets the first one.
+        """
+        raw = member._raw
+        assert isinstance(raw, RarMemberInfo)
+        enc = raw.file_encryption
+        if enc is not None and _psw_check_usable(enc):
+            return self._checked_data_password(enc, member)
+        if self._archive.is_solid:
+            return self._archive_data_password()
+        return self._unrar_data_password()
+
+    def _archive_data_password(self) -> str | None:
+        """The password for an ``unrar`` spawn that decodes the whole archive.
+
+        Taken from the first member whose PswCheck can judge a candidate; the pass
+        spawn and a solid archive's plain members read through it.
+        """
+        if self._passwords.has_passwords():
+            member = self._archive_check_member
+            if member is False:
+                member = next(
+                    (
+                        candidate
+                        for candidate in self._members
+                        if isinstance(candidate._raw, RarMemberInfo)
+                        and candidate._raw.file_encryption is not None
+                        and _psw_check_usable(candidate._raw.file_encryption)
+                    ),
+                    None,
+                )
+                self._archive_check_member = member
+            if member is not None:
+                raw = member._raw
+                assert isinstance(raw, RarMemberInfo)
+                assert raw.file_encryption is not None
+                return self._checked_data_password(raw.file_encryption, member)
+        return self._unrar_data_password()
+
+    def _checked_data_password(
+        self, enc: RarEncryptionInfo, member: ArchiveMember
+    ) -> str | None:
+        if not self._passwords.has_passwords():
+            # Nothing to try: unrar reports the missing password itself, as before.
+            return None
+        try:
+            found = self._checked_password(enc, member, ask_provider=True)
+        except _PasswordCandidatesExhausted as exc:
+            raise EncryptionError(
+                raw_message_of(exc),
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            ) from exc
+        assert found is not None
+        return _password_as_str(found)
+
     def _ensure_archive_path(self) -> Path:
         """Return a filesystem path ``unrar`` can open (materialize streams once).
 
@@ -1200,10 +1343,11 @@ class RarReader(BaseArchiveReader):
             """
             nonlocal solid
             if solid is None:
+                password = self._archive_data_password()
                 path = self._ensure_archive_path()
                 proc, stdout = open_unrar_p(
                     path,
-                    password=self._unrar_data_password(),
+                    password=password,
                     version_control=version_control,
                 )
                 # Between Popen and the wrapper taking ownership, a raise would
@@ -1293,13 +1437,31 @@ class RarReader(BaseArchiveReader):
         """
         if not _crc_is_tweaked(info):
             return None
-        password = self._unrar_password
         enc = info.file_encryption
-        if password is None or enc is None:
+        if enc is None:
             return None
-        hash_key = _tweaked_hash_key(enc, password)
-        if hash_key is None:
-            return None
+        if _psw_check_usable(enc):
+            # The candidate the check accepts, not the first one: the first may be
+            # another member's password, and its HashKey would fail good data.
+            # Never prompts; a provider's answer is here once a read asked for it.
+            checked = self._checked_password(enc, None, ask_provider=False)
+            if checked is None:
+                return None
+            assert enc.check_value is not None
+            cache_key = (enc.salt, enc.kdf_count, enc.check_value)
+            hash_key = self._hash_keys.get(cache_key)
+            if hash_key is None:
+                hash_key = rar5_hash_key(
+                    _password_as_str(checked) or "", enc.salt, enc.kdf_count
+                )
+                self._hash_keys[cache_key] = hash_key
+        else:
+            password = self._unrar_password
+            if password is None:
+                return None
+            hash_key = _tweaked_hash_key(enc, password)
+            if hash_key is None:
+                return None
         expected: dict[HashAlgorithm, bytes] = {}
         transforms: dict[HashAlgorithm, Callable[[bytes], bytes]] = {}
         if info.crc32 is not None:
@@ -1785,12 +1947,6 @@ class RarReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
-        # Prefer our fused digest check (including tweaked ConvertHashToMAC) over
-        # unrar's exit code for corruption; wrong-password (11) still maps.
-        has_hash = bool(member.hashes) or (
-            isinstance(raw, RarMemberInfo)
-            and self._tweaked_verify_spec(raw) is not None
-        )
         glob_prefix = self._unrar_glob_prefix(
             member, presented, version_control=version_control
         )
@@ -1852,6 +2008,14 @@ class RarReader(BaseArchiveReader):
                 source_format=ArchiveFormat.RAR,
             )
 
+        # Picked before the copy below: a password no candidate satisfies fails here
+        # without spooling a stream source to disk.
+        data_password = self._member_data_password(member)
+        # Prefer our fused digest check (including tweaked ConvertHashToMAC) over
+        # unrar's exit code for corruption; wrong-password (11) still maps. After the
+        # password: the tweaked check needs the one the member's PswCheck accepted.
+        has_hash = bool(member.hashes) or self._tweaked_verify_spec(raw) is not None
+
         # Only now: every refusal above is decided from the parsed member table and
         # spawns nothing, so a stream source must not be spooled to disk to reach one.
         path = self._ensure_archive_path()
@@ -1859,7 +2023,7 @@ class RarReader(BaseArchiveReader):
         def _spawn() -> BinaryIO:
             proc, stdout = open_unrar_p(
                 path,
-                password=self._unrar_data_password(),
+                password=data_password,
                 member=presented,
                 version_control=version_control,
             )

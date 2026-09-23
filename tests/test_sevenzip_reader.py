@@ -15,7 +15,12 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionStatus, open_archive
-from archivey.config import AcceleratorMode, ArchiveyConfig
+from archivey.config import (
+    AcceleratorMode,
+    ArchiveyConfig,
+    PasswordInput,
+    PasswordRequest,
+)
 from archivey.exceptions import (
     ArchiveyUsageError,
     EncryptionError,
@@ -82,7 +87,7 @@ def _write_py7zr_archive(
 
 
 def _assert_roundtrip(
-    path: Path, files: dict[str, bytes], *, password: str | list[str] | None = None
+    path: Path, files: dict[str, bytes], *, password: PasswordInput = None
 ) -> None:
     with open_archive(path, password=password) as archive:
         members = {
@@ -816,6 +821,47 @@ def test_header_encrypted_wrong_password_mentions_header(tmp_path: Path) -> None
         open_archive(archive, password="wrong").close()
     assert "rejected" in caught.value.message.lower()
     assert "Password required" not in caught.value.message
+
+
+def test_header_encrypted_password_list_order_does_not_matter(tmp_path: Path) -> None:
+    """A wrong key's garbage header used to end the attempt at the first candidate."""
+    archive = tmp_path / "header-encrypted-list.7z"
+    _write_py7zr_archive(archive, _FILES, password="secret", header_encryption=True)
+    _assert_roundtrip(archive, _FILES, password=["wrong", "secret"])
+
+
+@requires("cryptography")
+@requires_binary("7z")
+def test_header_encrypted_cli_archive_password_list_order_does_not_matter(
+    tmp_path: Path,
+) -> None:
+    """Same, on 7-Zip's own output, which (unlike py7zr) CRCs the encoded header."""
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "a.txt").write_bytes(b"hello")
+    archive = tmp_path / "cli-header-encrypted.7z"
+    subprocess.run(
+        ["7z", "a", "-psecret", "-mhe=on", str(archive), str(source / "a.txt")],
+        check=True,
+        capture_output=True,
+    )
+    with open_archive(archive, password=["wrong", "secret"]) as reader:
+        assert reader.read("a.txt") == b"hello"
+
+
+def test_header_encrypted_provider_asked_again_after_a_wrong_answer(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "header-encrypted-provider.7z"
+    _write_py7zr_archive(archive, _FILES, password="secret", header_encryption=True)
+    asked: list[tuple[object, int]] = []
+
+    def provider(request: PasswordRequest) -> str:
+        asked.append((request.member, request.attempt))
+        return "wrong" if request.attempt == 1 else "secret"
+
+    _assert_roundtrip(archive, _FILES, password=provider)
+    assert asked == [(None, 1), (None, 2)]
 
 
 @requires("cryptography")
@@ -2409,3 +2455,133 @@ def test_comment_terminator_is_trimmed_a_code_unit_at_a_time() -> None:
     assert _read_comment(_Cursor(b"\x00" + "hi\x00\x00".encode("utf-16le"))) == "hi"
     assert _read_comment(_Cursor(b"\x00")) is None
     assert _read_comment(_Cursor(b"\x00" + "\x00".encode("utf-16le"))) is None
+
+
+def _encode_7z_number(value: int) -> bytes:
+    """7z ``NUMBER``: leading 1-bits of the first byte count the extra LE bytes."""
+    for extra in range(8):
+        if value < 1 << (8 * extra + 7 - extra):
+            first = (0xFF << (8 - extra)) & 0xFF | (value >> (8 * extra))
+            return bytes([first]) + (value & ((1 << 8 * extra) - 1)).to_bytes(
+                extra, "little"
+            )
+    return b"\xff" + value.to_bytes(8, "little")
+
+
+def _overstate_ppmd_unpack_size(path: Path, unpack_size: int) -> int:
+    """Rewrite a one-folder PPMd 7z's ``kCodersUnpackSize``, repairing both CRCs.
+
+    Returns the size the writer declared. The CRC repair is what makes this test
+    reach the decoder at all: without it the parser refuses the header for
+    corruption first.
+    """
+    data = bytearray(path.read_bytes())
+    next_offset, next_size = struct.unpack("<QQ", bytes(data[12:28]))
+    start = 32 + next_offset
+    header = bytes(data[start : start + next_size])
+    coder = header.find(b"\x23\x03\x04\x01")  # PPMd method id, 7z var.H
+    assert coder > 0, "no plaintext PPMd coder record in the 7z header"
+    field = header.index(b"\x0c", coder)  # kCodersUnpackSize
+    declared = header[field + 1]
+    assert declared < 0x80, "fixture member must be under 128 bytes"
+    header = header[: field + 1] + _encode_7z_number(unpack_size) + header[field + 2 :]
+    data[start:] = header
+    data[12:28] = struct.pack("<QQ", next_offset, len(header))
+    data[28:32] = struct.pack("<L", zlib.crc32(header))
+    data[8:12] = struct.pack("<L", zlib.crc32(bytes(data[12:32])))
+    path.write_bytes(bytes(data))
+    return declared
+
+
+@requires_binary("7z")
+@requires("pyppmd")
+@pytest.mark.parametrize("unpack_size", [56, 1 << 40], ids=["plus-1", "1TiB"])
+def test_ppmd_folder_overstating_unpack_size_is_truncated(
+    tmp_path: Path, unpack_size: int
+) -> None:
+    """A PPMd folder declaring more output than its pack holds is a truncated member.
+
+    #315 thread K6: the read used to end in a bare ``MemoryError`` from pyppmd, which
+    reads as the host running out of memory. The decode runs in a child process
+    like the other truncated-PPMd cases in ``test_ppmd_raw_streams``.
+    """
+    from tests.test_ppmd_raw_streams import _K6_PAYLOAD, _run_ppmd_child
+
+    member = tmp_path / "small.txt"
+    member.write_bytes(_K6_PAYLOAD)
+    archive = tmp_path / "overstated.7z"
+    subprocess.run(
+        ["7z", "a", "-mhc=off", "-m0=PPMd", str(archive), str(member)],
+        check=True,
+        capture_output=True,
+    )
+    assert _overstate_ppmd_unpack_size(archive, unpack_size) == len(_K6_PAYLOAD)
+
+    _run_ppmd_child(
+        f"""\
+from archivey import open_archive
+from archivey.exceptions import TruncatedError
+from archivey.types import CompressionAlgorithm
+
+with open_archive({str(archive)!r}) as reader:
+    (entry,) = reader.members()
+    # 7-Zip stores what it cannot compress; a stored member never reaches PPMd.
+    assert [m.algo for m in entry.compression] == [CompressionAlgorithm.PPMD]
+    assert entry.size == {unpack_size}
+    for read_size in (-1, 64, 3_000_000_000):
+        with reader.open(entry) as stream:
+            try:
+                while stream.read(read_size):
+                    pass
+            except TruncatedError:
+                continue
+            raise SystemExit(f"read({{read_size}}) ended without TruncatedError")
+print("ok")
+"""
+    )
+
+
+# 194-byte 7z: PPMd + 7zAES, headers in the clear, one member of 51200 ``a`` bytes,
+# password "secret". Measured with 7-Zip 23.01; its salt and IV make "wrong856" decrypt
+# to a PPMd pack that ends short of the declared size, the same shape as the
+# overstated folder above. A rebuild gets a different salt, so the bytes are pinned.
+_AES_PPMD_WRONG_KEY_7Z = (
+    "N3q8ryccAARi2VNcIAAAAAAAAACCAAAAAAAAAIuCqMonpMt3igbDY+G+w+v4QIi/"
+    "UMHCwxS/uDM9NxKUj6xH9QEEBgABCSAABwsBAAIkBvEHARJTDyPgfVpOxFoWzpLc"
+    "0dKtViYjAwQBBQYAABAAAQAMGcAAyAAICgGfWJo8AAAFARkJAAAAAAAAAAAAERkA"
+    "cABhAHkAbABvAGEAZAAuAGIAaQBuAAAAGQIAABQKAQD1wcosnEbdARUGAQAggKSB"
+    "AAA="
+)
+
+
+@requires("pyppmd")
+@requires("cryptography")
+def test_aes_ppmd_wrong_key_moves_on_to_the_next_password(tmp_path: Path) -> None:
+    """A wrong key whose garbage stops PPMd short is a wrong key, not a crash.
+
+    ``wrong856`` used to end password iteration with pyppmd's ``MemoryError`` before
+    ``secret`` was tried (``dev-docs/known-issues.md``). Run in a child process like
+    the other PPMd garbage decodes.
+    """
+    import base64
+    import hashlib
+
+    from tests.test_ppmd_raw_streams import _run_ppmd_child
+
+    raw = base64.b64decode(_AES_PPMD_WRONG_KEY_7Z)
+    assert hashlib.sha256(raw).hexdigest() == (
+        "35dbb0c965d7030d5d27986d165483f9db1d923f347fb23a92acdb02d80b8dbb"
+    )
+    archive = tmp_path / "aes-ppmd.7z"
+    archive.write_bytes(raw)
+
+    _run_ppmd_child(
+        f"""\
+from archivey import open_archive
+
+with open_archive({str(archive)!r}, password=["wrong856", "secret"]) as reader:
+    member = next(m for m in reader.members() if m.is_file)
+    assert reader.read(member) == b"a" * 51200
+print("ok")
+"""
+    )

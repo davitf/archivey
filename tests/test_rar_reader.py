@@ -19,7 +19,12 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionStatus, open_archive
-from archivey.config import REWIND_REDECODE_WARN_BYTES, ArchiveyConfig, ListingLimits
+from archivey.config import (
+    REWIND_REDECODE_WARN_BYTES,
+    ArchiveyConfig,
+    ListingLimits,
+    PasswordRequest,
+)
 from archivey.cost import AccessCost
 from archivey.diagnostics import DiagnosticCode
 from archivey.escaping import display_path
@@ -731,6 +736,106 @@ def test_encrypted_data_requires_password(name: str) -> None:
     with open_archive(path, password="password") as archive:
         assert archive.read("secret.txt") == b"This is secret"
         assert archive.read("also_secret.txt") == b"This is also secret"
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    ("name", "member_name", "payload"),
+    [
+        ("encryption__.rar", "secret.txt", b"This is secret"),
+        ("encryption_blake2sp.rar", "store.txt", b"stored payload"),
+    ],
+)
+def test_rar5_encrypted_data_password_list_order_does_not_matter(
+    name: str, member_name: str, payload: bytes
+) -> None:
+    """A candidate list with the right password second used to fail on RAR5 data.
+
+    Headers are clear, so nothing tried the list at open, and every ``unrar`` spawn was
+    handed the first candidate. The member's PswCheck now picks the right one.
+    """
+    path = _fixture(name)
+    with open_archive(path, password=["wrong", "password"]) as archive:
+        assert archive.read(member_name) == payload
+    with open_archive(path, password=["wrong", "password"]) as archive:
+        read = {
+            member.name: stream.read()
+            for member, stream in archive.stream_members()
+            if stream is not None
+        }
+        assert read[member_name] == payload
+
+
+@requires_binary("unrar")
+def test_rar5_solid_encrypted_pass_gets_the_matching_password() -> None:
+    """A ``stream_members()`` pass is one ``unrar p`` spawn for the whole archive."""
+    path = _fixture("encryption_solid__.rar")
+    with open_archive(path, password=["wrong", "password"]) as archive:
+        assert archive.info.is_solid
+        read = {
+            member.name: stream.read()
+            for member, stream in archive.stream_members()
+            if stream is not None
+        }
+    assert read == {
+        "also_secret.txt": b"This is also secret",
+        "secret.txt": b"This is secret",
+    }
+    with open_archive(path, password=["wrong", "password"]) as archive:
+        assert archive.read("secret.txt") == b"This is secret"
+
+
+@requires_binary("unrar")
+def test_rar5_solid_plain_member_gets_the_archive_password() -> None:
+    """A plain member of a solid archive decodes through its encrypted predecessors.
+
+    ``rar`` cannot append a plain member to a solid encrypted archive (it asks for
+    the password and then encrypts the new member too), so the plain member is made
+    by dropping ``secret.txt``'s encryption record after listing. Its bytes are
+    still encrypted, so ``unrar`` only returns them with the password the other
+    member's check picked; the first candidate is wrong.
+    """
+    path = _fixture("encryption_solid__.rar")
+    with open_archive(path, password=["wrong", "password"]) as archive:
+        member = archive.get("secret.txt")
+        assert member is not None
+        raw = member._raw
+        assert isinstance(raw, RarMemberInfo)
+        member._raw = dataclasses.replace(raw, file_encryption=None)
+        assert archive.read(member) == b"This is secret"
+
+
+@requires_binary("unrar")
+def test_rar5_encrypted_data_asks_provider_again_after_a_wrong_answer() -> None:
+    asked: list[tuple[str | None, int]] = []
+
+    def provider(request: PasswordRequest) -> str:
+        member = request.member
+        asked.append((member.name if member is not None else None, request.attempt))
+        return "wrong" if request.attempt == 1 else "password"
+
+    with open_archive(_fixture("encryption__.rar"), password=provider) as archive:
+        assert archive.read("secret.txt") == b"This is secret"
+        assert archive.read("also_secret.txt") == b"This is also secret"
+    # The second member shares the first one's encryption record: no second prompt.
+    assert asked == [("secret.txt", 1), ("secret.txt", 2)]
+
+
+@requires_binary("unrar")
+def test_rar5_tweaked_digest_checked_with_the_password_that_matched() -> None:
+    """The HashKey comes from the candidate PswCheck accepted, not the first one.
+
+    Deriving it from the first candidate would silently skip the tweaked-digest check
+    (its PswCheck fails, so no key) and read a corrupt member as good.
+    """
+    path = _fixture("encryption_blake2sp.rar")
+    with open_archive(path, password=["wrong", "password"]) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        raw = member._raw
+        assert isinstance(raw, RarMemberInfo)
+        member._raw = dataclasses.replace(raw, blake2sp_hash=bytes(32))
+        with pytest.raises(CorruptionError, match="blake2sp"):
+            reader.read(member)
 
 
 @requires_binary("unrar")

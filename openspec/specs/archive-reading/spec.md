@@ -728,8 +728,11 @@ password rather than once per member. Exhaustion (or provider `None`) →
 
 **Concurrent use (observable):** After materialization, workers MAY open
 differently encrypted members concurrently; known-good promotions are shared;
-provider callbacks are serialized; same-reader reentry from a provider raises
-`ArchiveyUsageError`. Protocol/lock details: `reader-concurrency`.
+provider callbacks are serialized, and a worker that needs the provider while
+another worker's call runs waits for it. Reentry from inside a provider into a
+password-requiring operation on the same reader raises `ArchiveyUsageError` where
+it can be recognized; which reentry that is, and what a provider that blocks on a
+helper thread gets, is in `reader-concurrency`.
 
 #### Scenario: password matrix
 
@@ -741,7 +744,8 @@ provider callbacks are serialized; same-reader reentry from a provider raises
 | Provider returns `None` | `EncryptionError` for that unit |
 | Header-encrypted archive, provider only | Request with `member is None` |
 | Concurrent opens of different encrypted units (post-materialization) | Each decrypts correctly; promotions shared without races |
-| Provider starts another password op on same reader | Nested op → `ArchiveyUsageError` |
+| Two workers need the provider at once | Second waits for the first call; neither raises |
+| Provider starts another password op on same reader, same thread | Nested op → `ArchiveyUsageError` |
 
 ### Requirement: Confirm candidates when a weak check permits retries
 
