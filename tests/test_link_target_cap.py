@@ -72,8 +72,8 @@ def _sevenzip_with_link(tmp_path: Path, target: bytes) -> bytes:
     A real symlink cannot be longer than ``PATH_MAX``, so ``7z -snl`` cannot write the
     over-long one this needs. The member is written as a regular file holding the
     target bytes, and its mode in the (uncompressed) header is then patched from
-    ``S_IFREG`` to ``S_IFLNK``, which is the only thing that differs between the two in
-    a 7z archive. Both header CRCs are recomputed so the archive stays valid.
+    a regular file to ``S_IFLNK``, which is the only thing that differs between the two
+    in a 7z archive. Both header CRCs are recomputed so the archive stays valid.
     """
     tree = tmp_path / "tree"
     tree.mkdir()
@@ -91,14 +91,17 @@ def _sevenzip_with_link(tmp_path: Path, target: bytes) -> bytes:
     # NextHeaderCRC over bytes 12..32; the next header follows at 32 + offset.
     offset, size, _crc = struct.unpack_from("<QQI", data, 12)
     start = 32 + offset
-    header = bytes(data[start : start + size])
+    header = bytearray(data[start : start + size])
+    # kAttributes (0x15), property size 6, all-defined 1, external 0, then the one
+    # member's UInt32. Its value depends on the host 7-Zip ran on (a Windows writer
+    # records no Unix mode at all), so it is overwritten rather than matched.
     # 7-Zip's Unix extension: 0x8000 flags a mode in the high word; 0x20 is ARCHIVE.
-    regular = struct.pack("<I", (0o100644 << 16) | 0x8020)
-    symlink = struct.pack("<I", (0o120777 << 16) | 0x8020)
-    assert header.count(regular) == 1, "expected exactly one regular-file attribute"
-    header = header.replace(regular, symlink)
+    attributes = b"\x15\x06\x01\x00"
+    assert header.count(attributes) == 1, "expected one kAttributes property"
+    at = header.index(attributes) + len(attributes)
+    struct.pack_into("<I", header, at, (0o120777 << 16) | 0x8020)
     data[start : start + size] = header
-    struct.pack_into("<I", data, 28, zlib.crc32(header))
+    struct.pack_into("<I", data, 28, zlib.crc32(bytes(header)))
     struct.pack_into("<I", data, 8, zlib.crc32(bytes(data[12:32])))
     return bytes(data)
 
