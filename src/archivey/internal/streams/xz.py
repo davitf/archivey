@@ -670,7 +670,12 @@ class XzDecoder(BaseDecoder):
         if getattr(self._engine, "truncated", False):
             self._pending_error = TruncatedError("XZ file is truncated")
         elif self._handoff is not None and self._engine.is_finished():
-            # inner ended where the seek table promised a further stream.
+            # A guard, not a path DecompressorStream reaches today: feed() hands off as
+            # soon as the chain finishes, and flush() runs only once inner is exhausted,
+            # by which point an unfinished chain has already set truncated. Should a
+            # chain ever finish here with the hand-off still owed (a seek table that
+            # outlived the file it was built from), fail loudly rather than report
+            # finished and let the stream publish a size that stops short.
             self._pending_error = TruncatedError("XZ file is truncated")
         return DecodeOut(data, self._points_for_units(units))
 

@@ -110,7 +110,6 @@ def test_xz_size_then_read_multistream_no_collision() -> None:
 
 def test_xz_zero_uncompressed_size_blocks_do_not_crash_index() -> None:
     """Crafted index with zero-size blocks must not raise AssertionError (F1b)."""
-    import struct
     import zlib
 
     from archivey.exceptions import ArchiveyError
@@ -382,8 +381,6 @@ def test_xz_partial_index_mid_seek_includes_later_streams() -> None:
 
 def test_xz_index_crc_mismatch_raises_on_backwards_scan() -> None:
     """Corrupt index CRC must not be trusted as seek offsets."""
-    from archivey.exceptions import CorruptionError
-
     compressed = bytearray(lzma.compress(CONTENT, format=lzma.FORMAT_XZ))
     # Flip a byte in the index region (just before the 12-byte footer).
     compressed[-16] ^= 0xFF
@@ -393,10 +390,8 @@ def test_xz_index_crc_mismatch_raises_on_backwards_scan() -> None:
 
 def test_xz_index_unpadded_overflow_raises() -> None:
     """Index records whose unpadded sizes extend before offset 0 are rejected."""
-    import struct
     import zlib
 
-    from archivey.exceptions import CorruptionError
     from archivey.internal.streams.xz import (
         _XZ_FOOTER_MAGIC,
         _XZ_STREAM_MAGIC,
@@ -429,14 +424,10 @@ def test_xz_index_unpadded_overflow_raises() -> None:
 
 def test_lzip_trailer_member_size_past_start_raises() -> None:
     """Corrupt member_size that walks before offset 0 must not become seek points."""
-    from archivey.exceptions import CorruptionError
-
     good = make_lzip_member(b"hello-lzip-payload")
     bad = bytearray(good)
     # Trailer: crc32(4) + data_size(8) + member_size(8) at end.
     # Set member_size larger than the file.
-    import struct
-
     crc, data_size, _member_size = struct.unpack_from("<IQQ", bad, len(bad) - 20)
     struct.pack_into("<IQQ", bad, len(bad) - 20, crc, data_size, len(bad) + 100)
     with pytest.raises(CorruptionError, match="member_size|exceeds"):
@@ -465,8 +456,6 @@ def test_lzip_trailer_member_size_mismatch_raises_on_forward_read() -> None:
     Before this was checked, the forward read accepted the file and recorded the lie as
     the next member's seek point, so ``seek(256)`` then served member 2's bytes.
     """
-    from archivey.exceptions import CorruptionError
-
     bad, _ = _lzip_with_lying_member_size()
     with LzipDecompressorStream(io.BytesIO(bad)) as stream:
         with pytest.raises(CorruptionError, match="member size mismatch"):
@@ -475,8 +464,6 @@ def test_lzip_trailer_member_size_mismatch_raises_on_forward_read() -> None:
 
 def test_lzip_lying_member_size_never_serves_another_members_bytes() -> None:
     """Whatever order the reads come in, offset 256 is member 1's data or an error."""
-    from archivey.exceptions import CorruptionError
-
     bad, parts = _lzip_with_lying_member_size()
     with LzipDecompressorStream(io.BytesIO(bad)) as stream:
         with pytest.raises(CorruptionError):
