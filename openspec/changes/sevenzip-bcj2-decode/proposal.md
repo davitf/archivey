@@ -7,17 +7,21 @@ one the reference tool wrote at its headline setting. Today such a folder raises
 BCJ2, because the reader refuses the folder's four pack streams before it looks at the
 coder.
 
-No Python option decodes BCJ2. Measured 2026-09-23 on a 7-Zip 23.01 `-mx9` archive of
-`/usr/bin/git`: `py7zr` 1.1.3 raises `UnsupportedCompressionMethodError` ("BCJ2 filter
-is not supported by py7zr"), and `pybcj` exports decoders for the six simple branch
-filters and nothing else. So this is not a regression to fix before 0.2.0. It is a gap
-every pure-Python reader shares.
+Among the pure-Python readers, none decodes BCJ2. Measured 2026-09-23 on a 7-Zip
+23.01 `-mx9` archive of `/usr/bin/git`: `py7zr` 1.1.3 raises
+`UnsupportedCompressionMethodError` ("BCJ2 filter is not supported by py7zr"), and
+`pybcj` exports decoders for the six simple branch filters and nothing else. Two
+C-backed packages do decode it, and both produced correct bytes: `pylzma` 0.6.1
+(`bcj2_decode`) and `libarchive-c` 5.3 over the system libarchive 3.7.2. Design D8
+covers why neither is the route: pylzma allocates the whole output from the declared
+size, and libarchive would be a second 7z reader. So this is not a regression to fix
+before 0.2.0, and the way to close the gap is archivey's own decoder.
 
 BCJ2 is small. The decoder copies one stream up to each x86 branch opcode, decodes one
 range-coded bit, and on a 1 takes a 4-byte target from one of two other streams. The
 four inputs are separate pack streams, so each needs its own read position on the
-archive, which is what `SharedSource` views already give. A throwaway prototype
-written for this proposal (`prototype/bcj2.py`) decodes 7-Zip's own output
+archive, which is what `SharedSource` views already give. A prototype written for
+this proposal (`prototype/bcj2.py`) decodes 7-Zip's own output
 byte-for-byte at about 14 MB/s. The numbers are in design.md.
 
 ## What Changes

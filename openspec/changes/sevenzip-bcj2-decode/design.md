@@ -77,7 +77,7 @@ All 20 runs match the original bytes.
   between two inputs, and supporting one means buffering, which is a decode engine
   rather than a planner.
 - A C accelerator. The measured speed is acceptable for what BCJ2 is used on (below).
-  An optional accelerator can come later behind the same stream.
+  `pylzma` could become one later, behind the same stream (D8, open question 3).
 - Seeking inside a BCJ2 folder.
 - BCJ2 in an encoded header.
 
@@ -200,6 +200,42 @@ No writer puts BCJ2 on a header, and the header decode is bounded work that runs
 anything lists. So a multi-pack encoded-header folder keeps raising
 `UnsupportedFeatureError`.
 
+### D8. Our own decoder, not `pylzma` or `libarchive-c`
+
+Two C-backed packages decode BCJ2. Both were measured 2026-09-23 in a scratch venv on
+the same archives as the prototype (`git` and `python3.11` at `-mx9`, a solid folder,
+output ending on `E8` or `0F`, forced BCJ2 on random data). Both return the correct
+bytes on every one.
+
+| | `pylzma` 0.6.1 (`bcj2_decode`) | `libarchive-c` 5.3 over libarchive 3.7.2 | prototype |
+| --- | --- | --- | --- |
+| What it is | One function over four in-memory buffers, from LZMA SDK 25.01 | A whole second 7z reader, in C | A stream over four streams |
+| BCJ2 stage speed | 530–900 MB/s | not separable | 14–17 MB/s |
+| Whole archive read | — | 11–31 MB/s through `get_blocks()` | 10–12 MB/s |
+| Memory | All four inputs plus the whole output | libarchive's own buffers | Bounded blocks |
+| `dest_len` of 1 TiB | `MemoryError`: it allocates the declared size | — | Nothing allocated from a size |
+| Truncated or damaged input | `TypeError("bcj2 decoding failed")` for any of the four | libarchive's error | `TruncatedError` naming the stream, or `CorruptionError` |
+| Encrypted 7z | n/a (archivey does the AES) | Refused ("Damaged 7-Zip archive"; header-encrypted: "not supported") | Works through the existing AES stage |
+| Packaging | LGPL-2.1. No wheel for CPython 3.11 on Linux x86-64: pip built it from source here | Loads the system `libarchive` with ctypes; the wheel ships none | Nothing new |
+
+`pylzma` survived 3,000 random mutations of the four inputs with no crash: it either
+returned the declared length or raised the `TypeError`. It is the fast and plausible
+option. The problems are its API and its packaging, not its correctness. It takes
+whole buffers, so a folder's four streams and its output all sit in memory at once.
+It sizes its output from `dest_len`, which is the archive's declared unpack size. That
+is the same shape as the blocking sweep findings, where a header number drives an
+allocation before validation, and here the allocation would be the whole folder. Its
+errors do not say which stream failed, and a missing wheel means a C compiler at install
+time for a core codec.
+
+`libarchive-c` is the fallback reader that ADR 0001 and `7z.md` §6 already reject: a
+second decompressor stack with its own parser, bugs and cost model, reading hostile
+input in C. It also cannot open encrypted 7z at all, so it would cover only part of the
+BCJ2 cases.
+
+**Decision:** decode BCJ2 in Python, as in D3. Keep `pylzma` in mind as an optional
+accelerator for the BCJ2 stage only (open question 3).
+
 ## Risks / Trade-offs
 
 - **An older encoder's `rc` tail.** If 7-Zip 9.20-era output ends with bytes the lazy
@@ -222,3 +258,9 @@ anything lists. So a multi-pack encoded-header folder keeps raising
    same bytes read through `open()` are unbounded for every codec, and extraction is
    already bounded. The alternative is a `DecoderLimits` field for "work per output
    byte", which no other codec has.
+3. **Should `pylzma` be an optional accelerator for the BCJ2 stage?** It is 30–60×
+   faster and correct, but it takes whole buffers and allocates `dest_len` up front
+   (D8). Using it safely would mean calling it only for folders whose declared size
+   fits under a cap (a `DecoderLimits` field, or the existing 2 GiB decoder cap), and
+   adding a dependency with no Linux wheel. The recommendation is not now: first ship the
+   pure-Python stream, then decide on measured demand.
