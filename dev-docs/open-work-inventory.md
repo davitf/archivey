@@ -657,24 +657,29 @@ it tracks.
 
 ### 1. The format handbook — `dev-docs/formats/`
 
-Two of the intended set exist: [`rar.md`](formats/rar.md) (91 KB) and
-[`zip.md`](formats/zip.md) (42 KB). Both follow the same nine-section shape — At a glance,
-Shape, The pipeline here, In the wild, Threat surface, Sharp edges, Decisions, Open questions,
-Verify, References — so the template is settled and the remaining pages are writing, not
-design.
+Three of the intended set exist: [`rar.md`](formats/rar.md),
+[`zip.md`](formats/zip.md) and [`7z.md`](formats/7z.md). `rar.md` is the longest by some
+way; the other two are each a little over 40% of it. (Byte counts used to be written out
+here and were wrong twice, because any edit to a page invalidates the number describing
+it — `wc -c` the files if you need the exact figures.) All three follow the same
+nine-section shape — At a glance, Shape, The pipeline here, In the wild, Threat surface,
+Sharp edges, Decisions, Open questions, Verify, References — so the template is settled
+and the remaining pages are writing, not design.
 
 | Page | State |
 | --- | --- |
 | `rar.md` | **Written**; `§7` has 5 open questions. The temporary to-fix list is gone: #19 and #21 shipped, #6 layer 2 lives in §7, the `unrar` mask port in [`IDEAS.md`](IDEAS.md) |
 | `zip.md` | **Written**; `§7` has 1 open question (whether PKWARE Strong Encryption deserves an explicit refusal rather than a misleading wrong-password error) |
-| `sevenzip.md` | **Missing, and next by value.** The format with the most machinery behind it after RAR — folders, coder graphs, substreams, BCJ2 unsupported. Thirteen open #315 findings sit against it: six on `sevenzip_parser.py` (bind-pair arithmetic, pack-size overrun, substream mapping, the `kComment` external flag), three on the reader, two on the pipeline, one each on `sevenzip_methods.py` and `sevenzip_detect.py` |
+| `7z.md` | **Written.** `§7` has 3 open questions. The file is `7z.md`, not the `sevenzip.md` this row used to name — the format is spelled `7z` everywhere else that faces a reader (`format-7z`, `docs/formats.md`, `review/backlog.md`). Thirteen open #315 findings still sit against the backend: six on `sevenzip_parser.py` (bind-pair arithmetic, pack-size overrun, substream mapping, the `kComment` external flag), three on the reader, two on the pipeline, one each on `sevenzip_methods.py` and `sevenzip_detect.py` |
 | `tar.md` | **Missing.** Includes the stdlib-leniency question that `open-issues.md` **P3** is about |
 | `iso.md` | **Missing.** Thin — one optional backend, `pycdlib` |
 | `single-file.md` | **Missing.** gzip, bzip2, xz, lzip, zstd, lz4, brotli, `.Z`: the seek-point and truncation behaviour is spread across `codecs.py`, `xz.py`, `lzip.py` and `unix_compress.py` with no single page |
 | `directory.md` | **Missing.** Thinnest of all; may not earn a page |
 
 **The handbook is how a format's to-fix register gets created**, which is the argument for continuing it:
-writing `rar.md` produced 21 tracked code changes, 19 of which have shipped. That is the
+writing `rar.md` produced 21 tracked code changes, 19 of which have shipped, and `7z.md`
+surfaced two of its own (a refusal that names the wrong coder, and the folder decode that
+listing a solid archive with a symlink in it pays for). That is the
 highest-yield documentation work in the repo, and it is also why each new page should be
 expected to *add* open items rather than only close them.
 
@@ -850,7 +855,7 @@ sweep S0..S25 ──> 208 #315 threads, 140 open ──> new parcels, new change
         │              (first pass over src/ complete 2026-09-20; draining is what is left)
         └── a second pass waits on those threads being drained, not on a decision
 
-formats/sevenzip.md, tar.md, iso.md, single-file.md ──> more §10-style registers
+formats/tar.md, iso.md, single-file.md ──> more §10-style registers
 docs/ prose + how-it-works.md ──> (nothing; skeleton, scope and claims all done)
 ```
 
@@ -1064,9 +1069,9 @@ being implemented and archived on 2026-09-12.
 
 **Wave 6 — the docs, continuously and in parallel with everything above.** Not a wave in the
 sense the others are: a long-running programme that should have one page in flight at a time
-rather than a slot in the order. `sevenzip.md` is the next handbook page by value — the format
-with the most machinery behind it after RAR, and the one with six open parser findings against
-it. The user guide's remaining prose is the one item here with no agent-shaped unit of work
+rather than a slot in the order. `7z.md` is written (see §1 above); `tar.md` is the next page
+by value, because the stdlib-leniency question `open-issues.md` **P3** is about has no other
+home. The user guide's remaining prose is the one item here with no agent-shaped unit of work
 defined for it yet. **The sweep half of this wave is spent**: the reading is done, and the
 second pass davi gated on it also waits on the drain, so there is no batch to schedule.
 
