@@ -87,14 +87,40 @@ link keeps the flag alongside its re-typed `MemberType`.
 
 | Case | Expected |
 | --- | --- |
-| TAR contains a device node or FIFO | `member.type == MemberType.OTHER` |
-| ZIP contains a Windows junction | `member.type == MemberType.SYMLINK`; `member.extra["is_junction"] is True` |
-| 7z ANTI-bit entry | `member.type == MemberType.ANTI`; `member.is_anti`; not `is_file` |
+| TAR contains a device node or FIFO † | `member.type == MemberType.OTHER` |
+| ZIP whose member carries a junction's reparse data † | `member.type == MemberType.SYMLINK`; `member.extra["is_junction"] is True`; `link_target` is the buffer's substitute name |
+| ZIP whose member has the reparse bit and no reparse data | `member.type == MemberType.SYMLINK`; `link_target is None`; `is_junction` unset, the tag that would establish it being in the data that was not written |
+| 7z ANTI-bit entry † | `member.type == MemberType.ANTI`; `member.is_anti`; not `is_file` |
 | ZIP entry with `FILE_ATTRIBUTE_REPARSE_POINT` | `member.is_reparse_point`; the bit lives in the DOS attribute word, so it SHALL be read only from a DOS/Windows `create_system` |
-| 7z entry with `FILE_ATTRIBUTE_REPARSE_POINT` | `member.is_reparse_point`, unless the attribute word's high half already says `S_IFLNK` — a POSIX symlink is not a reparse point |
-| RAR5 redirect type 2 (Windows symlink) or 3 (junction) | `member.is_reparse_point`; type 3 also sets `is_junction` |
-| RAR5 redirect type 1 (Unix symlink), or a TAR/ISO symlink | `member.is_reparse_point` is False |
-| Directory source read on Windows | `member.is_reparse_point` for every symlink; on POSIX, never |
+| 7z entry with `FILE_ATTRIBUTE_REPARSE_POINT` | `member.is_reparse_point`, unless the attribute word's high half already says `S_IFLNK` † — a POSIX symlink is not a reparse point |
+| RAR5 redirect type 2 (Windows symlink) or 3 (junction) † | `member.is_reparse_point`; type 3 also sets `is_junction` |
+| RAR5 redirect type 1 (Unix symlink) †, or a TAR/ISO symlink | `member.is_reparse_point` is False |
+| Directory source read on Windows | `member.is_reparse_point` for every symlink †; on POSIX, never |
+
+A case marked † is not pinned by another tool's output: no producer available to this
+project writes that shape, so the test builds it — an assembled archive, a hand-built
+header record, or a member constructed directly. The row still states what the system
+guarantees for an archive that does carry the shape, but whether any writer in the wild
+produces it is untested, and so is the behaviour a real one would get.
+
+- **A TAR device node or FIFO.** Nothing builds one; the `OTHER` mapping is exercised
+  through a member constructed in the test.
+- **A junction's reparse data in a ZIP.** A junction is always a directory reparse
+  point, and the writers measured here store no reparse data for a directory (the row
+  below it is what they write instead), so the only ZIPs carrying a junction buffer are
+  assembled ones. `is_junction` from an archive therefore rests on the format allowing
+  the shape rather than on any tool producing it.
+- **A 7z ANTI-bit entry.** The test that builds one with the 7z CLI skips wherever the
+  installed version cannot write an anti-item update archive, which is the case on the
+  development image; what runs everywhere assembles the header itself.
+- **The `S_IFLNK` exception in the 7z row.** No writer sets both the POSIX link mode and
+  the reparse bit, so the guard against reading one as the other has no case to run on.
+- **The RAR5 redirect types.** No RAR in the corpus carries a Windows redirect; the
+  three redirect types are pinned against a hand-built header record.
+- **Every symlink from a Windows directory source.** A junction scanned from a live
+  Windows filesystem is covered on the Windows CI leg, but creating a symlink there
+  needs privileges the runner does not have, so the symlink half is exercised by
+  simulating the platform.
 
 ### Requirement: Compression methods model codec chains
 

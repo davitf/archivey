@@ -358,6 +358,10 @@ def test_windows_junction_detected_and_not_traversed(tmp_path: Path) -> None:
     # A junction is surfaced as a symlink-like leaf, flagged via is_junction.
     assert junction_member.type == MemberType.SYMLINK
     assert junction_member.is_junction is True
+    # And it is a reparse point, which is the wider claim is_junction implies. This is
+    # the only place either flag is read off a real Windows filesystem rather than off
+    # a simulated os.name, so it is worth asserting here and not only in the unit test.
+    assert junction_member.is_reparse_point is True
     # It is NOT walked through: its contents do not appear under the junction name.
     assert "jx/inside.txt" not in by_name
     # The real target directory, walked directly, still yields its contents.
