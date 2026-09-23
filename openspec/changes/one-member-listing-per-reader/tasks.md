@@ -103,13 +103,21 @@
       contexts as `member_id` (7z and RAR: the index in their open-time list; ISO: an
       `enumerate` over its walk)
 - [ ] 4.7 D6c: add `ArchiveyConfig.read_link_targets: bool = True`, reader-lifetime like
-      `listing_limits`. With `False`, ZIP, 7z and RAR3/4 `_ensure_link_target` read no
-      member data and emit nothing, and `extract_all` fails such a link member under
-      `OnError`. Tests, parametrised over `streaming`: an encrypted solid 7z
-      `[a.txt, link, b.txt]` with a provider that fails the test if it is called and
-      `read_link_targets=False`, `stream_members(lambda m: False)` to the end, zero bytes
-      decoded; the same on an encrypted ZIP symlink; an unencrypted 7z with the link
-      excluded under the default, resolved. Mutation: ignore the setting in one backend.
+      `listing_limits`. With `False`, listing and `stream_members()` read no member data
+      for a link target on ZIP, 7z or RAR3/4 and emit nothing. `extract_all` runs its
+      selector and `filter` on the link first (with `link_target=None`), then reads the
+      target of a link both accept: on 7z through the pass's own folder decoder, in random
+      access as an ordinary member read. An unreadable target fails the member as locked.
+      Tests, parametrised over `streaming`:
+      - an encrypted solid 7z `[a.txt, link, b.txt]` with a provider that fails the test
+        if called, `read_link_targets=False`, `stream_members(lambda m: False)` to the end:
+        zero bytes decoded; the same on an encrypted ZIP symlink;
+      - `extract_all` under `False` with a filter recording what it saw: the link reaches
+        the filter with `link_target=None` before any read, then is written with its
+        target; with a filter rejecting targetless links, the provider is never consulted;
+      - an unencrypted 7z with the link excluded under the default: resolved.
+      Mutations: ignore the setting in one backend; read the target before the filter
+      runs.
 - [ ] 4.8 Add `read_link_targets` to the "Explicit configuration object" schema, config
       matrix and reader-lifetime sentence in `archive-reading`. Write that MODIFIED block
       at implementation time against the then-live requirement, because another open

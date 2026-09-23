@@ -357,9 +357,14 @@ Today's 7z streaming pass does not finalize, so it reads no link data. After D6 
 config field or a `stream_members` argument. Claude recommended the config field, because
 links are resolved once per reader on shared objects (D1), and `members()` reads targets
 as well as the pass does. A per-call argument could not tell a later `members()` what to
-do. The field is `ArchiveyConfig.read_link_targets: bool = True`, a placeholder name. It
-is reader-lifetime, like `listing_limits`. davitf has not yet confirmed the name or the
-default.
+do. The field is `ArchiveyConfig.read_link_targets: bool = True`, reader-lifetime like
+`listing_limits`.
+
+**The default is `True`, ruled by davitf (2026-09-23):** *"as lazy as possible while
+providing full info and consistency … having link targets filled sometimes but not
+always is a recipe for bugs. the config field is an explicit opt-in, and callers who use
+it are aware of the consequences."* He tied it to the same principle that has archivey
+check checksums of possibly encrypted stored members before serving anything.
 
 - **`True` (default).** Every link whose target is member data is read the way that
   format reads it today, in both modes and whether or not a selector excludes it. The
@@ -371,11 +376,26 @@ default.
 - **`False`.** No member data is read for a link target, in either mode. Targets come from
   headers only (RAR5, TAR, ISO). ZIP, 7z and RAR3/4 links keep `link_target=None` and emit
   no `SYMLINK_TARGET_UNAVAILABLE`, because that code is in `ARCHIVE_INTEGRITY_CODES` and
-  a strict policy would refuse an archive over a setting the caller chose. The laziness
-  promise holds exactly, and nothing prompts. `extract_all` cannot write such a link, so
-  it fails that member like one whose target is locked (`target_in_archive=True`), under
-  `OnError`. Whether extraction should instead read the targets of the links it is about
-  to write is open with davitf. That would need the selector passed down to the 7z pass.
+  a strict policy would refuse an archive over a setting the caller chose. For listing and
+  `stream_members()` the laziness promise holds exactly, and nothing prompts.
+
+**`extract_all` under `False`, ruled by davitf (2026-09-23):** *"it already needs to read
+and decrypt all selected files in order to write them, so I think it should try to read
+the targets as well. what we should promise is that the callable filter is called before
+reading the target if the flag is off (consistent with the flag), so the caller can
+choose to skip links with no target before the extractor tries to read them"*. So:
+
+- `extract_all` reads the target of each link it is about to write, the way that format
+  reads member data (decompression and the full password sequence on ZIP and 7z; the
+  direct read on RAR3/4). A target it cannot read fails that member as a locked target
+  (`target_in_archive=True`), under `OnError`.
+- The `members` selector and the `filter` callable both see the link first, with
+  `link_target=None`, and only a link both accept is read. A caller can skip targetless
+  links before any read happens.
+- No selector has to be passed down. The link is read after selection, at the pass's
+  current position. On 7z that means reading the link's bytes through the pass's own
+  folder decoder, so it adds no decode beyond D6b's budget. In random access it is an
+  ordinary member read.
 
 Rejected in the earlier round: never consulting the provider for an excluded link, and
 plumbing the selector into every backend. The setting covers both needs with one rule

@@ -72,10 +72,13 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
   7z this includes decompression and the full password sequence, provider included. A
   target it cannot read stays unset with `SYMLINK_TARGET_UNAVAILABLE`. RAR3/4 reads only
   stored, unencrypted, single-volume bytes, as before.
-- `False`: the reader SHALL NOT read member data for a link target. Such a link keeps
-  `link_target=None`, and no `SYMLINK_TARGET_UNAVAILABLE` is emitted for it.
-  `extract_all` fails that member as one whose target the archive carries but the reader
-  cannot reach, under `OnError`. Header-carried targets (RAR5, TAR, ISO) are unaffected.
+- `False`: listing and `stream_members()` SHALL NOT read member data for a link target.
+  Such a link keeps `link_target=None`, and no `SYMLINK_TARGET_UNAVAILABLE` is emitted for
+  it. `extract_all` SHALL call its `members` selector and its `filter` on such a link, with
+  `link_target=None`, before reading the target. Only then SHALL it read the target of a
+  link both accept, the way the format reads member data. A target it cannot read fails
+  that member as one whose target the archive carries but the reader cannot reach, under
+  `OnError`. Header-carried targets (RAR5, TAR, ISO) are unaffected.
 
 #### Scenario: link-target setting matrix
 
@@ -83,7 +86,9 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
 | --- | --- |
 | ZIP with an encrypted symlink, default config, no password, provider supplied | Provider consulted; on failure `link_target` unset with `SYMLINK_TARGET_UNAVAILABLE` |
 | Same archive, `read_link_targets=False`, `members()` | No member data read; provider not consulted; `link_target` unset; no diagnostic |
-| Same archive, `read_link_targets=False`, `extract_all()` | The symlink member fails under `OnError`; nothing else changes |
+| Same archive, `read_link_targets=False`, password supplied, `extract_all()` | The filter sees the link with `link_target=None`, then the target is read and the link is written |
+| Same archive, `read_link_targets=False`, filter rejects members with `link_target is None` | The target is never read; provider not consulted; the link is not written |
+| Same archive, `read_link_targets=False`, no password, `extract_all()` | The symlink member fails under `OnError`, as a locked target |
 | RAR5 symlink, `read_link_targets=False` | `link_target` set from the header |
 
 ## MODIFIED Requirements

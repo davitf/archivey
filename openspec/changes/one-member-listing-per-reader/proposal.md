@@ -58,13 +58,14 @@ objects.
   from a 111 KB folder. Each folder is decoded at most once for its links, up to its last
   link. A streaming pass reads link bytes from its own decode, including links a consumer
   never reads past (design D6b).
-- New reader setting `ArchiveyConfig.read_link_targets` (default `True`, name not final),
-  proposed by davitf. ZIP, 7z and RAR3/4 store a symlink's target as member data. With
+- New reader setting `ArchiveyConfig.read_link_targets` (default `True`), proposed and
+  ruled by davitf. ZIP, 7z and RAR3/4 store a symlink's target as member data. With
   `True`, those targets are read in both modes, including links a `stream_members`
   selector excluded, so the report matches random access. On ZIP and 7z that can
-  decompress unselected data and consult the password provider. With `False`, no member
-  data is read for a link target, nothing prompts, and the laziness promise holds
-  exactly. Header-carried targets (RAR5, TAR, ISO) are unaffected (design D6c).
+  decompress unselected data and consult the password provider. With `False`, listing and
+  `stream_members()` read no member data for a link target, nothing prompts, and the
+  laziness promise holds exactly. `extract_all` still reads the targets of links it writes,
+  but only after its selector and filter have seen them with `link_target=None`. Header-carried targets (RAR5, TAR, ISO) are unaffected (design D6c).
 - Typing-time diagnostics carry the member's `member_id` on every backend. Only ZIP does
   today; 7z, RAR and ISO report `None` (design D8).
 
