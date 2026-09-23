@@ -15,7 +15,7 @@
 ## Backends & format coverage
 
 - **Read raw CD sector images (`.bin`) by stripping sectors** — 0.2.0 recognises a raw
-  image and refuses it by name (`iso_reader._refuse_raw_sector_image`); davitf deferred
+  image and refuses it by name (`iso_reader.refuse_raw_sector_image`); davitf deferred
   reading one past the release (#315, S22-K6 thread, 2026-09-21). The layout was
   prototyped on that thread and is all in the file: byte 15 is the mode, the submode's
   `0x20` bit splits Mode 2 Form 1 from Form 2, and the sector size is where the second

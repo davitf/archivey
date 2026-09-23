@@ -256,7 +256,22 @@ def _pin_public_module() -> None:
     Computed over ``__all__`` rather than listed, so a name added later is covered too.
     Only classes and functions: an instance reports its class's module, and pinning it
     would set an attribute on the instance (or fail, on a frozen dataclass).
+
+    Two lookups go through a class's ``__module__`` and would follow the pin to the
+    wrong namespace:
+
+    - **Annotations.** Under ``from __future__ import annotations`` a class's hints are
+      strings, evaluated against ``sys.modules[cls.__module__]``, where ``Path`` or
+      ``DetectionCostReceipt`` are not names. So each class's own hints are resolved
+      *before* the pin, and ``typing.get_type_hints`` keeps working. A hint that cannot
+      resolve here (a ``TYPE_CHECKING``-only name) is left as it was rather than
+      failing the import; ``tests/test_public_api.py`` catches it instead.
+    - **Source.** ``inspect.getsource`` finds a class's file through its module, and
+      there is no way to point it elsewhere. On a pinned class it raises ``OSError``;
+      ``__firstlineno__`` is dropped so Python 3.13+ raises too, instead of returning
+      lines of this file. Functions are unaffected: they carry their own code object.
     """
+    import typing
     from types import FunctionType
 
     namespace = globals()
@@ -264,8 +279,20 @@ def _pin_public_module() -> None:
         obj = namespace[name]
         if not isinstance(obj, (type, FunctionType)):
             continue
-        if obj.__module__.startswith("archivey.internal"):
-            obj.__module__ = __name__
+        if not obj.__module__.startswith("archivey.internal"):
+            continue
+        if isinstance(obj, type):
+            own = obj.__dict__.get("__annotations__")
+            if own:
+                try:
+                    hints = typing.get_type_hints(obj, include_extras=True)
+                except NameError:
+                    pass
+                else:
+                    obj.__annotations__ = {key: hints[key] for key in own}
+            if "__firstlineno__" in obj.__dict__:
+                delattr(obj, "__firstlineno__")
+        obj.__module__ = __name__
 
 
 _pin_public_module()

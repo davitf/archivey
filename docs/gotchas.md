@@ -90,7 +90,10 @@ these are bugs; all of them are stated so you can decide whether they matter to 
 - **TAR trailing data is checked only 1 MiB past the trailer.** A non-zero byte in that
   window emits `ARCHIVE_TRAILING_DATA` (trailing junk, or a second archive concatenated
   on); zero padding passes, since `tar` writes 10 KiB records. A byte further out is not
-  seen. On a `.tar.gz` that window is decompressed to inspect it.
+  seen. On a `.tar.gz` that window is decompressed to inspect it. On a forward-only
+  source (a pipe or socket) the listing reads up to 1 MiB past the trailer, so a
+  sender that keeps the connection open after the tar ends makes the listing wait for
+  more bytes or EOF. Close the sending side when the tar is done.
 - **Truncation detection on bare gzip/zlib through rapidgzip is best-effort.**
   Upstream soft-EOFs by design and Archivey backstops it, but a residual hole
   remains. Use `use_rapidgzip=OFF` when you need certainty. This is about **bare**

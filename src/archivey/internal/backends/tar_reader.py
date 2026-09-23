@@ -642,7 +642,9 @@ class TarReader(BaseArchiveReader):
         decompressed to be inspected. Past the bound it stops looking and reports
         nothing, so a second archive further out goes unseen; the bound is an effort
         limit, not a claim that the rest is zero. Read in bounded chunks: the tail may be
-        arbitrarily long and must not be materialized.
+        arbitrarily long and must not be materialized. On a forward-only source the
+        reads go past the trailer too, so a pipe held open after the tar ends blocks
+        here until more bytes or EOF arrive; ``docs/gotchas.md`` says so to callers.
 
         A tail that fails to *decode* ends the scan quietly. On a compressed tar the
         bytes past the trailer can be a truncated gzip footer or junk after the

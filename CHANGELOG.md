@@ -102,7 +102,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `detect_format`, the registry queries, `ArchiveStream`, `enable_measurement`). They
   now report `archivey`, so a pickled `ExtractionResult` or policy enum records
   `archivey.OverwritePolicy` rather than an internal path that could never move, and
-  `repr()` and `help()` agree.
+  `repr()` and `help()` agree. `typing.get_type_hints` still resolves on those classes.
+  `inspect.getsource` on the twelve pinned classes now raises `OSError`: Python finds a
+  class's source through its module, and there is no way to point it back.
 - **A raw CD sector image is refused by name.** The `.bin` of a `.bin`/`.cue` pair
   used to fail detection with "no magic-byte match", which reads like a corrupt file. It
   is now recognised by its sector sync pattern and refused with

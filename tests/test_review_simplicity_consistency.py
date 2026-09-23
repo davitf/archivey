@@ -983,6 +983,42 @@ def test_trailing_data_scan_is_bounded(tmp_path: Path) -> None:
         assert reader.diagnostics.total_count == 0
 
 
+@pytest.mark.parametrize(
+    ("damage", "expected"),
+    [
+        ("junk-inside-gzip", {"ARCHIVE_TRAILING_DATA": 1}),
+        ("junk-after-gzip", {}),
+        ("gzip-footer-missing", {}),
+    ],
+)
+def test_compressed_tail_that_will_not_decode_ends_the_scan_quietly(
+    damage: str, expected: dict[str, int], tmp_path: Path
+) -> None:
+    """F20: on a ``.tar.gz``, only bytes the codec yields count as trailing data.
+
+    Bytes inside the gzip stream past the tar trailer are reported. Junk after the gzip
+    stream, or a missing gzip footer, makes the tail read fail to decode; the scan then
+    stops without a diagnostic or an error, because the tar itself was read whole.
+    Removing the ``except ReadError`` around the tail read makes the last two raise.
+    """
+    import gzip
+
+    tar = _one_member_tar()
+    data = {
+        "junk-inside-gzip": gzip.compress(tar + b"JUNK" * 1024),
+        "junk-after-gzip": gzip.compress(tar) + b"JUNKJUNK",
+        "gzip-footer-missing": gzip.compress(tar)[:-4],
+    }[damage]
+    path = tmp_path / f"{damage}.tar.gz"
+    path.write_bytes(data)
+
+    with open_archive(path, format=ArchiveFormat.TAR_GZ) as reader:
+        assert [m.name for m in reader.members()] == ["a.txt"]
+        assert {
+            code.name: count for code, count in reader.diagnostics.counts.items()
+        } == expected
+
+
 def test_zero_padding_after_the_trailer_still_passes(tmp_path: Path) -> None:
     """F20 (guardrail): the case the "nothing but zeros" rule exists to preserve.
 
