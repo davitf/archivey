@@ -595,6 +595,14 @@ def test_lzma_alone_non_seekable_source_is_checked_and_replayed() -> None:
         ) as stream,
     ):
         stream.read()
+    # The refused stream is not seekable whatever the source was: no position it
+    # could report would be true of a stream that decodes nothing.
+    with open_codec_stream(
+        Codec.LZMA_ALONE, io.BytesIO(written), config=config
+    ) as stream:
+        assert stream.seekable() is False
+        with pytest.raises(io.UnsupportedOperation):
+            stream.tell()
     # Under the cap, the header the check read is still there for liblzma.
     with open_codec_stream(
         Codec.LZMA_ALONE, NonSeekableBytesIO(written), config=DEFAULT_STREAM_CONFIG
@@ -726,3 +734,59 @@ def test_xz_decoder_carries_the_cap_as_its_memlimit(
         memlimit = kwargs.get("memlimit")
         assert isinstance(memlimit, int)
         assert cap <= memlimit <= cap + 128 * 1024
+
+
+def test_xz_cap_too_large_for_liblzma_reads_as_unlimited() -> None:
+    """liblzma's memlimit is a uint64; a cap past it refuses nothing and must not crash.
+
+    ``2**64 - 1`` plus the overhead allowance does not fit, and handing it over raised
+    ``OverflowError`` from the decompressor's constructor.
+    """
+    written = lzma.compress(_LZMA_MEMBER, format=lzma.FORMAT_XZ)
+    for cap in (2**64 - 1, 2**70):
+        config = dataclasses.replace(
+            DEFAULT_STREAM_CONFIG, decoder_limits=DecoderLimits(max_decoder_memory=cap)
+        )
+        with open_codec_stream(Codec.XZ, io.BytesIO(written), config=config) as stream:
+            assert stream.read() == _LZMA_MEMBER
+
+
+class _DrainFailingDecompressor:
+    """Stands in for ``LZMADecompressor`` at the point ``_XzState.flush`` drains it."""
+
+    needs_input = False
+
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        raise lzma.LZMAError(self._message)
+
+
+@pytest.mark.parametrize(
+    ("message", "raises"),
+    [
+        pytest.param("Memory usage limit exceeded", True, id="memlimit-is-raised"),
+        pytest.param("Corrupt input data", False, id="corruption-reads-as-truncation"),
+    ],
+)
+def test_xz_flush_drain_does_not_swallow_a_memlimit_refusal(
+    monkeypatch: pytest.MonkeyPatch, message: str, raises: bool
+) -> None:
+    """The mid-stream drain treats a liblzma error as a truncated tail, except a limit.
+
+    White-box: the drain runs only when the decoder still holds input after the
+    final ``_process`` pass, which a real stream does not reliably reach.
+    """
+    from archivey.internal.streams import xz
+
+    state = xz._XzState(DecoderLimits(max_decoder_memory=2**16))
+    state._state = xz._XzState._IN_STREAM
+    monkeypatch.setattr(state, "_dec", _DrainFailingDecompressor(message))
+    monkeypatch.setattr(state, "_process", lambda max_length=-1: (b"", []))
+    if raises:
+        with pytest.raises(ResourceLimitError, match="max_decoder_memory=65536"):
+            state.flush()
+    else:
+        assert state.flush() == (b"", [])
+        assert state.truncated is True

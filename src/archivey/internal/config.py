@@ -21,6 +21,7 @@ __all__ = [
     "DecoderLimits",
     "StreamConfig",
     "check_decoder_memory",
+    "exceeds_decoder_memory",
     "stream_config_from_archivey",
 ]
 
@@ -79,6 +80,17 @@ DEFAULT_STREAM_CONFIG = stream_config_from_archivey(
 )
 
 
+def exceeds_decoder_memory(declared: int, limits: DecoderLimits) -> bool:
+    """Whether an archive-declared allocation is over ``max_decoder_memory``.
+
+    The one statement of the boundary: :func:`check_decoder_memory` raises on it, and
+    a caller that has to decide without raising yet (the ``.lzma`` codec) branches on
+    it, so the two cannot drift apart.
+    """
+    cap = limits.max_decoder_memory
+    return cap is not None and declared > cap
+
+
 def check_decoder_memory(declared: int, *, limits: DecoderLimits, what: str) -> None:
     """Refuse an archive-declared decoder allocation above ``max_decoder_memory``.
 
@@ -100,10 +112,9 @@ def check_decoder_memory(declared: int, *, limits: DecoderLimits, what: str) -> 
     Lives here rather than in ``codecs.py`` so the xz and lzip decoders, which
     ``codecs.py`` imports, can call it without an import cycle.
     """
-    cap = limits.max_decoder_memory
-    if cap is not None and declared > cap:
+    if exceeds_decoder_memory(declared, limits):
         raise ResourceLimitError(
-            f"Decoder limit reached: max_decoder_memory={cap} "
+            f"Decoder limit reached: max_decoder_memory={limits.max_decoder_memory} "
             f"({what} declares {declared} bytes). The archive chose this number; "
             f"raise DecoderLimits.max_decoder_memory if the archive is trusted."
         )

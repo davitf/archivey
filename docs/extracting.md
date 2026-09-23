@@ -230,7 +230,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` on `Archive
   said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
   2 GiB). Checked before the allocation, on `open()` / `read()` as much as on
   `extract()`, so it is neither a listing nor an extraction cap. Trips raise
-  `ResourceLimitError`.
+  `ResourceLimitError`. Format detection is the exception: a `.lzma` or compressed-tar
+  sample is decoded uncapped to recognise it, so under a memory cap an oversized
+  declaration can surface as `MemoryError` from `open_archive` instead.
 
 Loosen per call with `limits=` (extraction only), raise `listing_limits` or
 `decoder_limits` at `open_archive(config=…)`, or use `ExtractionLimits.UNLIMITED` /

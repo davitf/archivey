@@ -51,6 +51,7 @@ from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
     check_decoder_memory,
+    exceeds_decoder_memory,
 )
 from archivey.internal.streams.archive_stream import (
     ArchiveStream,
@@ -892,12 +893,16 @@ class MetadataContext:
 # --- the codec descriptors -------------------------------------------------------------
 
 
-# Detection probes decode a bounded sample, so what a header declares cannot make
-# them hold more than that sample's output: liblzma touches its dictionary only as
-# output is written. Capping the probe as well would make detection answer "not this
-# format" for a stream whose dictionary is over the cap, and a caller who opened it
-# with ``DecoderLimits.UNLIMITED`` would then get the wrong format rather than the
-# read they asked for. The open that follows detection applies the caller's limits.
+# Detection probes decode uncapped. A probe decodes a bounded sample, so a declared
+# dictionary cannot *fill* more than that sample's output — but liblzma still
+# *reserves* the declared size when the decoder is built, so a probe over a stream
+# declaring 4 GiB asks the allocator for 4 GiB. Under overcommit that costs nothing
+# resident; under ``RLIMIT_AS`` or a strict commit limit it is a ``MemoryError`` at
+# detection, before the caller's cap is ever consulted. Capping the probe instead
+# would make detection answer "not this format" for a stream whose dictionary is
+# over the cap, and a caller who opened it with ``DecoderLimits.UNLIMITED`` would get
+# the wrong format rather than the read they asked for. ``DecoderLimits`` says so;
+# the open that follows detection applies the caller's limits.
 _PROBE_STREAM_CONFIG = replace(
     DEFAULT_STREAM_CONFIG, decoder_limits=DecoderLimits.UNLIMITED
 )
@@ -1466,6 +1471,12 @@ def _peek_alone_header(source: CodecSource) -> tuple[CodecSource, bytes]:
     itself unless it could neither seek nor peek, in which case it is wrapped in a
     :class:`PeekableStream` that replays the header — nothing is lost, since such a
     source could not have been rewound anyway.
+
+    A path source is read twice, once here for the header and once by ``LZMAFile``,
+    so the checked header and the decoded one come from two opens of the file. That
+    is the same concurrent-open shape the single-file reader uses for every path
+    source; whoever can swap the file between the two can as easily swap in a whole
+    archive whose declared dictionary is under the cap.
     """
     if isinstance(source, (str, os.PathLike)):
         with open(os.fspath(source), "rb") as f:
@@ -1507,14 +1518,10 @@ class _RefusedAloneStream(ReadOnlyIOStream):
         )
         raise AssertionError("unreachable: the declared size is over the cap")
 
-    def seekable(self) -> bool:
-        return True
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        return 0
-
-    def tell(self) -> int:
-        return 0
+    # Not seekable, and ``seek``/``tell`` are ``RawIOBase``'s raising defaults: a
+    # stream with no data has no position or size to report, and answering 0 would
+    # let a caller that sizes a member with ``seek(0, SEEK_END)`` read it as empty
+    # without ever meeting the refusal.
 
 
 class LzmaAloneCodec(_LzmaErrorCodec):
@@ -1531,8 +1538,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         # A shorter header is left for liblzma to call truncated.
         if len(header) == _ALONE_HEADER_SIZE:
             declared = int.from_bytes(header[1:5], "little")
-            cap = config.decoder_limits.max_decoder_memory
-            if cap is not None and declared > cap:
+            if exceeds_decoder_memory(declared, config.decoder_limits):
                 return _RefusedAloneStream(declared, config.decoder_limits)
         # stdlib LZMAFile seeks by re-decompressing from the start; the outer ArchiveStream
         # warns on rewind (see rewind_warning).

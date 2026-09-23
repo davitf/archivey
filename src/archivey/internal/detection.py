@@ -268,10 +268,11 @@ def _probe_inner_tar(
 
     Accelerators are forced ``OFF``: ``seekable=True`` must not flip AUTO rapidgzip /
     IndexedBzip2File on for a short detection peek. Decoder limits are lifted for the
-    same reason the codec content probes lift them: the read is bounded, so a declared
-    dictionary cannot fill more than it, and a capped probe would call a ``.tar.xz``
-    with a large dictionary a bare ``.xz`` even for a caller who opened it with
-    ``DecoderLimits.UNLIMITED``. The open that follows applies the caller's limits.
+    same reason the codec content probes lift them (``_PROBE_STREAM_CONFIG`` in
+    ``codecs.py``): a capped probe would call a ``.tar.xz`` with a large dictionary a
+    bare ``.xz`` even for a caller who opened it with ``DecoderLimits.UNLIMITED``. The
+    read is bounded, so the dictionary cannot fill past it, but liblzma still reserves
+    the declared size. The open that follows applies the caller's limits.
 
     Returns ``False`` (deferring the determination to open time) when the codec backend is
     absent, the source is not decodable as this codec, or the decoded output carries no TAR

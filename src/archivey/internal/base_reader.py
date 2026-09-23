@@ -973,8 +973,9 @@ class BaseArchiveReader(ArchiveReader):
         format_name = self._format.display_name
         if chosen_by == "content_probe":
             message = (
-                f"Decode failed for {format_name}, which was identified only by a "
-                f"content probe; the source may not be that format"
+                f"Reading {format_name} failed (a decode failure or a limit), and it "
+                f"was identified only by a content probe; the source may not be that "
+                f"format"
             )
         else:
             detected_text = detected_format or "nothing (detection refuses these bytes)"
@@ -1001,12 +1002,21 @@ class BaseArchiveReader(ArchiveReader):
         """Stamp a probe-only decode failure and emit the matching diagnostic."""
         if not exc.format_unconfirmed:
             format_name = (exc.source_format or self._format).display_name
-            detail = exc.raw_message
-            new_msg = (
+            detail = exc.raw_message.rstrip(".")
+            unconfirmed = (
                 f"Format identification was unconfirmed (content probe only); "
-                f"the source may not be {format_name}. Decode failed: {detail}. "
-                f"Partial output may already have been produced"
+                f"the source may not be {format_name}."
             )
+            if isinstance(exc, ResourceLimitError):
+                # A limit stops the read rather than the decoder failing on it, and a
+                # decoder-memory refusal stops it before anything is decoded, so
+                # neither "decode failed" nor "partial output" would be true of it.
+                new_msg = f"{unconfirmed} The read was stopped by a limit: {detail}"
+            else:
+                new_msg = (
+                    f"{unconfirmed} Decode failed: {detail}. "
+                    f"Partial output may already have been produced"
+                )
             escaped = escape_control_chars(new_msg)
             exc.raw_message = new_msg
             exc.message = escaped

@@ -290,6 +290,7 @@ def _read_xz_index_backwards(
 # a cap set 128 KiB or less below one of the sizes an xz header can declare (2^n or
 # 3 * 2^(n-1)) admits that size on xz alone.
 _LIBLZMA_OVERHEAD_ALLOWANCE = 128 * 1024
+_LIBLZMA_MEMLIMIT_MAX = 2**64 - 1
 
 
 def _new_decompressor(limits: DecoderLimits) -> lzma.LZMADecompressor:
@@ -303,7 +304,9 @@ def _new_decompressor(limits: DecoderLimits) -> lzma.LZMADecompressor:
     gives the other paths.
     """
     cap = limits.max_decoder_memory
-    if cap is None:
+    # liblzma's memlimit is a uint64. A cap whose allowance-padded value does not fit
+    # refuses nothing liblzma could be asked for, so it is left off, as for no cap.
+    if cap is None or cap + _LIBLZMA_OVERHEAD_ALLOWANCE > _LIBLZMA_MEMLIMIT_MAX:
         return lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
     return lzma.LZMADecompressor(
         format=lzma.FORMAT_XZ, memlimit=cap + _LIBLZMA_OVERHEAD_ALLOWANCE
@@ -371,8 +374,12 @@ class _XzState:
             try:
                 more = self._dec.decompress(b"")
                 out = out + more
-            except lzma.LZMAError:
-                pass
+            except lzma.LZMAError as e:
+                # A corrupt tail is what truncation looks like here, so it stays a
+                # truncation. A memlimit refusal is not damage and is not swallowed.
+                failure = _lzma_failure(e, "XZ decompression error", self._limits)
+                if isinstance(failure, ResourceLimitError):
+                    raise failure from e
         self.truncated = True
         return out, units
 

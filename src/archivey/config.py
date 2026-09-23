@@ -277,7 +277,16 @@ class DecoderLimits:
     one. Exceeding a guard raises
     :class:`~archivey.exceptions.ResourceLimitError` *before* the allocation,
     which is the only place it can be raised: the process has no recourse once
-    the request is in the allocator's hands. Under a memory cap (a container
+    the request is in the allocator's hands.
+
+    **Detection is not capped.** Formats without magic (``.lzma``, and the
+    compressed tar inside ``.tar.xz`` and its siblings) are recognised by
+    decoding a small sample, and that sample is decoded with no decoder limit,
+    because a capped probe would report a different format for a caller who
+    passed :attr:`UNLIMITED`. The sample bounds how much of the dictionary is
+    filled, not how much liblzma reserves: under a memory cap, a file declaring
+    4 GiB can raise ``MemoryError`` from ``open_archive`` before this limit is
+    consulted. The open that follows detection is capped as described here. Under a memory cap (a container
     limit, ``RLIMIT_AS``, a small machine) a refused native allocation does not
     surface as ``MemoryError`` — pyppmd 1.3.1 dies on ``double free or
     corruption`` and takes the interpreter with it, so no ``try``/``except``

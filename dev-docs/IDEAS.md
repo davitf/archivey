@@ -530,12 +530,20 @@
   working set from a number in the archive's own header (7z PPMd var.H's 32-bit window,
   ZIP method 98's megabyte count, the LZMA dictionary size) has no row of its own in
   `dev-docs/threat-model.md`; O11 is the nearest and is about detection-time decode work,
-  which is a different mechanism. `DecoderLimits` now covers both halves (PPMd, then the
-  LZMA dictionary on every container that declares one), so the row should read
-  "mitigated". Not written with either guard because `threat-model.md` was owned by
-  another open pull request each time, and an `O`-numbered row cannot be appended without
-  knowing what numbers that one takes. Write it once that lands; the measurements are in
-  the `DecoderLimits` docstring and `tests/test_decoder_limits.py`.
+  which is a different mechanism. `DecoderLimits` now covers the open of both (PPMd, then
+  the LZMA dictionary on every container that declares one), so the row should read
+  "mitigated on open, **open on detection**": the `.lzma` content probe and the inner-TAR
+  probe decode uncapped, so liblzma reserves whatever the header declares — a
+  `MemoryError` under `RLIMIT_AS` or a strict commit limit, before the cap is consulted.
+  That also makes O11's "memory is not the problem (each candidate's output is
+  discarded)" untrue for the LZMA probes, which the row should correct. A likely fix for
+  the `.lzma` probe: rewrite the header's dictionary down to the probe's output budget
+  before decoding, which decodes a bounded sample identically, since no match can reach
+  further back than the output produced so far. Not written with either guard because
+  `threat-model.md` was owned by another open pull request each time, and an `O`-numbered
+  row cannot be appended without knowing what numbers that one takes. Write it once that
+  lands; the measurements are in the `DecoderLimits` docstring and
+  `tests/test_decoder_limits.py`.
 
 - **Detection budget / receipt public surface** — deferred by `detection-prefix-workspace`
   Decision 3A. Types live in `archivey.detection_cost` but are omitted from

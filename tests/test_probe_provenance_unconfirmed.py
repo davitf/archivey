@@ -127,7 +127,12 @@ def test_lzma_alone_probable_limit_refusal_sets_format_unconfirmed() -> None:
         with pytest.raises(ResourceLimitError) as caught:
             reader.open(next(iter(reader))).read()
         assert caught.value.format_unconfirmed is True
-        assert "unconfirmed" in str(caught.value)
+        message = str(caught.value)
+        assert "unconfirmed" in message
+        # Nothing was decoded: the refusal comes before any decoder is built.
+        assert "stopped by a limit" in message
+        assert "Decode failed" not in message
+        assert "Partial output" not in message
         codes = {d.code for d in reader.diagnostics.retained}
         assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in codes
 
