@@ -334,9 +334,9 @@ re-decode from the folder start or use explicitly bounded/disk-backed retention.
 The system SHALL populate 7z metadata from the native header. `ArchiveInfo.is_solid`
 is `True` when any folder packs more than one file, `CostReceipt.solid_block_count`
 is the folder count, and non-solid archives report `AccessCost.DIRECT`. Each
-member's parsed coder chain SHALL map to `tuple[CompressionMethod, ...]` in filter
-order. If a POSIX attribute block is absent, `mode`, `uid`, and `gid` SHALL be
-`None`, never guessed defaults.
+member's parsed coder chain SHALL map to `tuple[CompressionMethod, ...]` in compress
+order: pre-filters first, packing codec last. If a POSIX attribute block is absent,
+`mode`, `uid`, and `gid` SHALL be `None`, never guessed defaults.
 
 #### Scenario: metadata matrix
 
@@ -344,7 +344,7 @@ order. If a POSIX attribute block is absent, `mode`, `uid`, and `gid` SHALL be
 | --- | --- |
 | Folder packs multiple files | `ArchiveInfo.is_solid` true; `solid_block_count` equals folder count |
 | Every folder packs one file | `ArchiveInfo.is_solid` false; access cost is `DIRECT` |
-| BCJ pre-filter followed by LZMA2 | `member.compression` records the full chain in order |
+| BCJ pre-filter followed by LZMA2 | `member.compression` is `(BCJ, LZMA2)`, not the decode order the folder stores |
 | No POSIX attribute block | `member.mode`, `member.uid`, and `member.gid` are all `None` |
 
 ### Requirement: Infer presented names for nameless 7z members

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import os
 import sys
 from collections.abc import Callable, Sequence
 from enum import Enum
@@ -29,6 +30,7 @@ from archivey.cli.info_cmd import run_info
 from archivey.cli.list_cmd import run_list
 from archivey.cli.logging_config import cli_logging
 from archivey.cli.test_cmd import run_test
+from archivey.escaping import display_path, quoted
 from archivey.exceptions import ArchiveyError
 from archivey.internal.enum_args import normalize_spelling
 
@@ -468,14 +470,22 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
 
 
 def _format_os_error(exc: OSError) -> str:
-    """Human prose for missing paths / I/O errors (cli-product P6)."""
+    """Human prose for missing paths / I/O errors (cli-product P6).
+
+    Returned **unescaped**: the caller escapes it once, at the print site. The filename
+    is therefore delimited with :func:`~archivey.escaping.quoted`, not ``!r`` — ``repr``
+    would escape it here and the print site would escape those backslashes again — and
+    rendered ``/``-separated so a Windows path's separators are not doubled either.
+    """
     path = exc.filename
-    detail = exc.strerror or str(exc)
-    if path is not None:
-        if exc.errno == errno.ENOENT:
-            return f"archivey: cannot open {path!r}: no such file or directory"
-        return f"archivey: cannot open {path!r}: {detail}"
-    return f"archivey: {detail}"
+    if path is None:
+        return f"archivey: {exc.strerror or str(exc)}"
+    shown = str(path) if isinstance(path, int) else display_path(os.fsdecode(path))
+    if exc.errno == errno.ENOENT:
+        return f"archivey: cannot open {quoted(shown)}: no such file or directory"
+    # Not ``str(exc)`` as the fallback: it embeds the filename through ``repr``.
+    reason = exc.strerror or (os.strerror(exc.errno) if exc.errno else "I/O error")
+    return f"archivey: cannot open {quoted(shown)}: {reason}"
 
 
 def _parse_cli_args(
