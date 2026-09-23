@@ -76,10 +76,43 @@ Everything reads the list by position and pulls when it reaches the end:
 
 | Consumer | Reads |
 | --- | --- |
-| Index-only peek | Pulls to the end, then applies last-entry-wins `is_current` if not yet applied, and returns the list. Reads no member data. |
+| Index-only peek | Pulls to the end and returns the list. Reads no member data. |
 | Resolved materialization | Pulls to the end, resolves links on the listed objects, publishes `_materialized` |
-| Streaming forward pass | Pulls one member at a time, yields it, and finalizes at the end as today |
+| Streaming forward pass | Holds its own cursor (a position in the list); pulls when the cursor reaches the end of what has been walked; finalizes when the cursor passes the last member of a completed walk (D1b) |
 | 7z / solid-RAR data pass | Iterates the listed members by position (D6) |
+
+**D1a. Last-entry-wins `is_current` is stamped once, when the walk completes**, by
+whichever consumer completed it, and nowhere else. Link resolution never reads
+`is_current` (`_lookup_link_target_for_member` and `_resolve_link` do not touch it), so
+stamping before or after resolution gives the same links. The only visible difference
+is *when* a held member shows its final value:
+
+- A streaming pass nobody peeks into completes the walk at EOF, so members keep today's
+  timing.
+- A peek into an upfront index completes the walk early, and every member the pass
+  yields afterwards already has its final `is_current`. Measured on `c45ce34`: today a
+  shadowed `a.txt` reads `is_current=True` for the whole streaming pass while the peek's
+  separate objects already read `False`. That is also why **streaming `extract_all()`
+  over a ZIP with a duplicate name aborts today**. Its own peek stamps objects the pass
+  never uses, the pass writes the shadowed `a.txt`, and the later `a.txt` then fails with
+  `ExtractionError: Destination already exists` under the default overwrite policy.
+  Random access on the same archive returns `SUPERSEDED, EXTRACTED, EXTRACTED`, which is
+  what `safe-extraction` "Skip non-current members by default" requires in either mode.
+  After this change the pass yields the peek's stamped objects, and the streaming result
+  matches random access. Streaming TAR aborts the same way today, and this change cannot
+  fix it because TAR has no index to peek. That is recorded as its own item, not
+  claimed here.
+
+The "preserve those orderings" note on `_finalize_links` (`base_reader.py:1095`) goes.
+The eager/progressive ordering difference it protects collapses into D1a.
+
+**D1b. A streaming pass finalizes on its cursor, not on the walk.** A peek can drain the
+walk while the pass's cursor is still at member 0, so walk exhaustion is no longer the
+same event as the pass reaching the end. The pass finalizes (resolves links, publishes
+the complete report) when its cursor steps past the last member of a completed walk,
+exactly once. A walk drained by a peek, followed by an abandoned pass (`break`, no
+`scan_members()`), leaves `_materialized` unpublished and reads no link data. That is
+`archive-reading`'s "An abandoned pass … SHALL NOT finalize", unchanged.
 
 **Rejected: cache the peek's result and leave the other paths alone.** That is the smallest
 diff and fixes ZIP and ISO for `extract_all`. But the streaming pass and the 7z/RAR passes
@@ -107,7 +140,11 @@ One small behaviour change follows. Today an upfront-index peek whose walk hits 
 damage propagates the error. After this change it returns the stored incomplete report,
 which is the shape the peek already returns after an incomplete pass. The walks that can
 fail this way are rare: ZIP's `infolist()` and 7z's header are parsed at open, so the
-per-member typing step is what would have to fail.
+per-member typing step is what would have to fail. `extract_all` stays fail-closed
+anyway: it uses the peek only for progress totals and the selector (`extraction.py:331`),
+then calls `_get_members_registered(enforce_listing_limits=True)` (`:343`), which raises
+on the report's error before anything is written. The guarantee is kept by that second
+call, not by the peek.
 
 ### D3. Link resolution completes the listed objects in place
 
@@ -153,7 +190,8 @@ A streaming reader is single-owner by construction. A peek from inside a streami
 `for` loop runs while the pass generator is suspended between yields, so nobody is
 mid-pull. For an upfront-index backend, the peek then drains the walk ahead of the pass.
 This is safe because walking an upfront index reads no member data (the definition of
-`_MEMBER_LIST_UPFRONT`). For other backends the peek returns `None` and pulls nothing.
+`_MEMBER_LIST_UPFRONT`). Draining the walk does not finalize the pass (D1b). For other
+backends the peek returns `None` and pulls nothing.
 
 ### D6. 7z and solid-RAR data passes iterate the base list
 
@@ -163,12 +201,33 @@ without resolving links first, which matches today's timing: neither reads link 
 before the pass. In streaming they pull through the shared forward pass, so members are
 stamped and registered and the pass finalizes at EOF like TAR's.
 
-This fixes the unregistered-member bug in the proposal. It has one consequence to
-measure, not assume: finalizing a streaming 7z or solid-RAR pass at EOF runs
-`_resolve_link_target` on its symlinks, and 7z stores link targets in member data. If that
-re-decodes a solid folder, the pass must capture the target while it streams the member
-(the member's own data is the target) rather than re-read at EOF. Task 4.4 measures this
-before choosing.
+This fixes the unregistered-member bug in the proposal. It has one consequence: a
+streaming pass that finalizes at EOF runs `_resolve_link_target` on its symlinks.
+
+- **RAR** needs nothing. RAR5 carries the target in the header (`file_redir`), and RAR3/4
+  targets are read raw from the archive without `unrar`, so EOF resolution never touches
+  the solid pipe.
+- **7z** stores a symlink's target as the member's data, and `_ensure_link_target` reads
+  it through `_open_member`, which on a solid folder decodes from the folder start. So
+  the pass **captures the target while its folder decode passes the member**, and EOF
+  resolution uses the captured bytes instead of re-reading. This costs the caller
+  nothing. `stream_members()` yields `None` as the stream for a non-file member
+  (`archive-reading`, "Non-file stream_members yield None"; `sevenzip_reader._open`
+  returns `None` unless `member.is_file`), so no caller-visible stream is consumed. The
+  pass reads bytes the solid reader would otherwise skip past.
+- **Memory bound.** The capture reads what `_ensure_link_target` already reads today: the
+  whole member, with no size cap beyond the reader's decompression limits. The capture
+  neither widens nor narrows that. A declared-huge symlink is a pre-existing gap: ZIP and
+  7z read the whole decompressed member (`stream.read()`) with no cap of their own, while
+  RAR reads only stored bytes straight from the archive. It is tracked as its own item,
+  and when it is capped, the capture takes the same cap.
+- A member whose data turns out not to be a link buffer (the reparse-point fallback in
+  `_apply_reparse_data`) reverts to a file type at resolution. Today's streaming pass
+  already yields such a member as a symlink with a `None` stream, and this change keeps
+  that.
+
+Task 4.4 checks the capture against a real solid 7z symlink fixture, counting folder
+decodes: one per folder, not one more per symlink.
 
 ### D7. What is deleted
 
@@ -181,12 +240,30 @@ before choosing.
 - `_get_members_index_only`, `_pass_scanned` / `_pass_by_name_lists` as separate state from
   the materialized list, and the tracker `reset()` calls in `_begin_forward_pass` /
   `_materialize_members`.
-- The `report_key` plumbing (`report_key=index` at ZIP's and 7z's typing-time emits, and
-  the `index` parameter ZIP's `_to_member` gained for it), where nothing but the ledger uses
-  the position.
+- The `report_key=` arguments at ZIP's and 7z's typing-time emits. The listing position
+  itself stays, for D8.
 - `_iter_members`' docstring about separate enumerations having to agree. Order stability
   is still worth stating, because a fresh random-access walk after a discarded failure
   (D2) must produce the same ids.
+
+### D8. Typing-time diagnostics carry the listing position as `member_id`
+
+A diagnostic raised while a member is being typed runs inside the backend's walk, before
+the base stamps `_member_id`. Today the backends disagree on what goes into the context's
+`member_id` for such a diagnostic:
+
+| Backend | Typing-time `member_id` today |
+| --- | --- |
+| ZIP | The listing position (`index`, `zip_reader.py:824`, `:835`, `:874`) |
+| 7z | `member._member_id`, which is `None` at typing time (`sevenzip_reader.py:573`) |
+| RAR | `member._member_id`, `None`: members are typed at open (`rar_reader.py:1112`, `:1136`, `:1168`) |
+| ISO | Whatever `emit_member_name_normalized` reads off the unstamped member: `None` |
+
+With one walk, the listing position *is* the `member_id` the base will stamp, so every
+backend passes its position down (ZIP already does) and fills the context from it. A
+caller correlating a diagnostic with `member.member_id` then gets a match on every format
+instead of only ZIP. 7z and RAR build their lists at open, so the position is the list
+index. ISO gains an `enumerate` over its walk.
 
 ## Risks / Trade-offs
 

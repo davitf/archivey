@@ -20,7 +20,17 @@
 - [ ] 1.5 Failing test: `MEMBER_NAME_BIDI_CONTROL` from a peek-then-materialize sequence is
       counted once and attached to the object the caller holds (today it attaches to the
       discarded prep-pass object)
-- [ ] 1.6 Keep green, and check each fails when its path is broken:
+- [ ] 1.6 Failing test: streaming `extract_all()` over a ZIP holding `a.txt` twice returns
+      `SUPERSEDED`, `EXTRACTED` for the two entries, as random access does (today it raises
+      `ExtractionError: Destination already exists`)
+- [ ] 1.7 Failing test: over a streaming ZIP with a symlink, peek inside the
+      `stream_members()` loop and `break`; assert `_materialized` stays unpublished and no
+      link-target read happened (D1b). Mutation: finalize on walk exhaustion; the test
+      must go red.
+- [ ] 1.8 Failing test: a typing-time diagnostic (normalized name, invalid timestamp) on
+      ZIP, 7z, RAR and ISO carries a context `member_id` equal to the member's own
+      `member_id` (D8)
+- [ ] 1.9 Keep green, and check each fails when its path is broken:
       `MEMBER_NAME_NORMALIZED` counted once per member on `extract_all` (ZIP),
       the existing PR 386 dedupe tests, and the listing-limit refusal part-way through a
       ZIP listing (`tests/test_listing_limits.py`)
@@ -35,11 +45,15 @@
 - [ ] 2.3 Route `_materialize_members` through the walk; resolve links on `_listed`;
       publish `_materialized` from it
 - [ ] 2.4 Route `_begin_forward_pass` / `_ProgressivePassIterator` through the walk;
-      fold `_pass_scanned` / `_pass_by_name_lists` into the base list
-- [ ] 2.5 Failure handling per D2: discard and allow a retry in random access, poison in
+      fold `_pass_scanned` / `_pass_by_name_lists` into the base list. The pass keeps its
+      own cursor and finalizes when that cursor passes the end of a completed walk (D1b).
+- [ ] 2.5 Stamp last-entry-wins `is_current` once, at walk completion (D1a). Drop
+      `_finalize_links`' `is_current_first` parameter and its "preserve those orderings"
+      docstring note.
+- [ ] 2.6 Failure handling per D2: discard and allow a retry in random access, poison in
       streaming, store the incomplete report on terminal damage. One test per branch
       that fails when a branch is routed to the wrong behaviour.
-- [ ] 2.6 Listing limits per D4: account once at pull, enforce per caller, and run
+- [ ] 2.7 Listing limits per D4: account once at pull, enforce per caller, and run
       `assert_within_limits()` when an enforcing caller finds members already pulled.
       Remove the tracker `reset()` calls and `_register_member`'s "already stamped"
       branch.
@@ -55,13 +69,15 @@
 
 - [ ] 4.1 `sevenzip_reader._iter_with_data`: iterate the base list, not `self._members`
 - [ ] 4.2 `rar_reader._iter_with_data` solid branch: the same
-- [ ] 4.3 ZIP: replace `_report_member_diagnostic(..., report_key=index)` with direct
-      emits and drop the `index` parameter from `_to_member` if nothing else needs it; the
-      same for 7z's `report_key=index`
-- [ ] 4.4 Measure a streaming 7z pass over a symlink fixture with EOF finalization on: does
-      `_resolve_link_target` re-decode a solid folder? If it does, capture the target while
-      the pass streams the member instead of re-reading at EOF. Record the numbers in
-      `design.md` D6.
+- [ ] 4.3 ZIP and 7z: drop the `report_key=` arguments and emit directly. ZIP keeps the
+      `index` parameter (D8 uses it).
+- [ ] 4.4 7z streaming pass: capture a symlink's target while the folder decode passes the
+      member, and let EOF resolution use it (D6). Test on a solid 7z symlink fixture,
+      counting folder decodes: one per folder. Mutation: remove the capture; the count
+      must rise.
+- [ ] 4.5 D8: 7z, RAR and ISO pass the listing position into typing-time diagnostic
+      contexts as `member_id` (7z and RAR: the index in their open-time list; ISO: an
+      `enumerate` over its walk)
 
 ## 5. Delete the dedupe machinery (D7)
 

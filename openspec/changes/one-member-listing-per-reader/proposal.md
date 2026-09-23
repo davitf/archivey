@@ -48,10 +48,18 @@ objects.
   emits. The ISO known issue closes without its planned fix.
 - 7z and RAR keep their private lists for folder grouping and solid-prefix sums; the base
   stops depending on them for listing.
+- Streaming `extract_all()` over a ZIP with a duplicate name stops aborting. Today the
+  pass yields objects whose `is_current` is not stamped until EOF, so the shadowed entry
+  is written and the later one fails with `ExtractionError: Destination already exists`.
+  Random access on the same archive reports `SUPERSEDED` (design D1a).
+- Typing-time diagnostics carry the member's `member_id` on every backend. Only ZIP does
+  today; 7z, RAR and ISO report `None` (design D8).
 
 Not changing: the public API, `ArchiveMember`'s shape, the complete-or-raise contract and
 listing limits. When a pass resolves links changes only for 7z and solid RAR, whose passes
-start registering and finalizing like every other backend's (design D6).
+start registering and finalizing like every other backend's (design D6). When
+`is_current` settles changes only where a peek completes the walk before a streaming
+pass reaches EOF (design D1a).
 
 ## Capabilities
 
