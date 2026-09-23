@@ -13,6 +13,7 @@ skips an instance already marked closed: ``close()`` must not raise either way.
 
 from __future__ import annotations
 
+import inspect
 import io
 from pathlib import Path
 from typing import BinaryIO, TypeVar
@@ -265,6 +266,10 @@ def _archivey_iobase_classes() -> dict[str, type]:
 
 
 def _survives_close_before_init(cls: type) -> bool:
+    if inspect.isabstract(cls):
+        # No instance can exist to be half-built. Python 3.12+ refuses the __new__
+        # below outright; 3.11's io.RawIOBase __new__ still allows it.
+        return True
     try:
         obj = cls.__new__(cls)
     except TypeError:
