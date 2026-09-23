@@ -806,7 +806,10 @@ class ZipReader(BaseArchiveReader):
             member.create_system = create_system
         # Every diagnostic below goes through the reader's once-per-member ledger, keyed
         # on the member's position: this runs again for the same member on a second
-        # listing pass, and one member is one finding however often it is typed.
+        # listing pass, and one member is one finding however often it is typed. The
+        # position is also what each report names the member by, because registration
+        # has not stamped `_member_id` yet and takes the id from this same enumeration
+        # (measured: the two agree in both read modes, and under `extract_all`).
         if inferred_encoding is not None:
             self._report_member_diagnostic(
                 code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
@@ -817,7 +820,7 @@ class ZipReader(BaseArchiveReader):
                 context=NameEncodingContext(
                     archive_name=self._archive_name,
                     member_name=member.name,
-                    member_id=member._member_id,
+                    member_id=index,
                     raw_name_base64=raw_name_to_base64(member.raw_name),
                     inferred_encoding=inferred_encoding,
                     declared_encoding="cp437",
@@ -829,6 +832,7 @@ class ZipReader(BaseArchiveReader):
             member=member,
             presented_name=decoded,
             archive_name=self._archive_name,
+            member_id=index,
             # A directory reparse point is stored with the directory convention's
             # trailing "/" and is still a link, so normalization drops the slash. Only
             # this backend knows that, so only this backend says so.
@@ -863,7 +867,7 @@ class ZipReader(BaseArchiveReader):
                 context=MemberTimestampContext(
                     archive_name=self._archive_name,
                     member_name=member.name,
-                    member_id=member._member_id,
+                    member_id=index,
                     field=issue.field,
                     source=issue.source,
                     value_repr=issue.value_repr,

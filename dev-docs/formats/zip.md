@@ -261,9 +261,11 @@ which is what it was before and which silently lost the fact that anything was t
 The trailing `/` the writer stores on that entry is dropped by `normalize_member_name`,
 because the member is not a directory; the same member has always been spelled without
 it in 7z. The ZIP backend passes `link_stored_as_directory` to
-`emit_member_name_normalized` so that drop does not report a `MEMBER_NAME_NORMALIZED`
-anomaly — the flag is explicit precisely because the helper is shared, and a TAR
-`SYMTYPE` entry named `link/` *is* an anomaly worth reporting.
+`member_name_normalized_report` so that drop does not report a `MEMBER_NAME_NORMALIZED`
+anomaly — the flag is explicit precisely because the suppression rules are shared, and a
+TAR `SYMTYPE` entry named `link/` *is* an anomaly worth reporting. ZIP calls that
+half rather than `emit_member_name_normalized`, which the other backends use, because it
+emits the report itself, through the ledger that reports one member once.
 
 `extra["is_reparse_point"]` records the bit itself, so it is available while listing and
 stays set even when the data turns out not to be a link buffer and the member is

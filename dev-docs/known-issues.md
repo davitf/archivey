@@ -314,7 +314,8 @@ objects from the header on each pass runs its typing-time diagnostics twice for 
 member. `DiagnosticSummary.counts` is documented as exact, so that inflates the count,
 burns a second retention slot and fires the caller's callback again for one finding.
 
-ZIP is fixed: its three typing-time emits go through `BaseArchiveReader.
+ZIP is fixed: its four typing-time emits — an inferred name encoding, a normalized
+name, an invalid timestamp and the link-target report — go through `BaseArchiveReader.
 _report_member_diagnostic`, which remembers a report by the member's position in the
 listing and re-attaches the first one to the object the later pass produced. Measured on
 a three-entry ZIP, `MEMBER_NAME_NORMALIZED` went from 4 back to 2.

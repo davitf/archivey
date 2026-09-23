@@ -1296,7 +1296,11 @@ def test_a_member_typed_twice_is_one_finding(tmp_path: Path) -> None:
     `DiagnosticSummary.counts` is documented as exact: one member with one deceptive
     name is one finding, whether the caller listed it once or extracted it.
 
-    Three codes are raised from that point in this backend, and this covers all three.
+    This covers two of the four codes raised from that point: a rewritten name and two
+    invalid timestamp fields, three findings on one member. The name-encoding inference
+    has its own test below, and the link report has its own in
+    `tests/test_windows_reparse.py`.
+
     The two timestamps are deliberately both invalid: they are separate findings on one
     member, so the deduplication has to key on the field as well as the member, not
     collapse them into one.
@@ -1329,9 +1333,12 @@ def test_a_member_typed_twice_is_one_finding(tmp_path: Path) -> None:
             code: opened.diagnostics.counts.get(code) for code in expected
         } == expected
         # And the caller finds the reports on the objects its own pass handed back,
-        # rather than on the ones the first pass built and dropped.
+        # rather than on the ones the first pass built and dropped, each naming the
+        # member it is about: the reports are raised before registration stamps the id,
+        # so they carry the position it will be stamped from.
         (member,) = opened.members()
         assert len(member.diagnostics) == 3
+        assert {d.context.member_id for d in member.diagnostics} == {member._member_id}
 
 
 def test_an_inferred_encoding_is_one_finding_per_member(tmp_path: Path) -> None:
@@ -1340,6 +1347,9 @@ def test_an_inferred_encoding_is_one_finding_per_member(tmp_path: Path) -> None:
     with open_archive(_EXTERNAL_DIR / "encoding_infozip_jules.zip") as opened:
         opened.extract_all(tmp_path)
         assert opened.diagnostics.counts.get(code) == 4
+        for member in opened.members():
+            (reported,) = [d for d in member.diagnostics if d.code is code]
+            assert reported.context.member_id == member._member_id
 
 
 def test_unflagged_utf8_name_is_sniffed() -> None:

@@ -229,6 +229,7 @@ def member_name_normalized_report(
     presented_name: str,
     archive_name: str | None = None,
     link_stored_as_directory: bool = False,
+    member_id: int | None = None,
 ) -> tuple[str, NameNormalizationContext] | None:
     """The ``MEMBER_NAME_NORMALIZED`` report for this member, or ``None`` for no finding.
 
@@ -236,6 +237,10 @@ def member_name_normalized_report(
     member more than once per archive can put the report through its own once-per-member
     ledger instead of the collector directly. The suppression rules below are the reason
     this is not something a caller can decide for itself.
+
+    ``member_id`` names the member in the report when the caller knows its position and
+    registration has not stamped the id yet, which is the case for a backend emitting
+    while it types. Left out, the report carries whatever the member already has.
 
     Suppresses the no-op case where a DIRECTORY member only gained the canonical
     trailing slash (Python's ``tarfile`` strips it on read) — that is not an
@@ -271,7 +276,7 @@ def member_name_normalized_report(
     return message, NameNormalizationContext(
         archive_name=archive_name,
         member_name=member.name,
-        member_id=member._member_id,
+        member_id=member_id if member_id is not None else member._member_id,
         raw_name_base64=raw_name_to_base64(member.raw_name),
         presented_name=presented_name,
         normalized_name=member.name,
