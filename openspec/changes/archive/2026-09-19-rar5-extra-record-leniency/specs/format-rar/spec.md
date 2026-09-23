@@ -216,9 +216,21 @@ leniency applies to them. They are not members, so nothing lists them and no per
 diagnostic describes them.
 
 A SERVICE header whose extra-area walk dropped a record or gave up SHALL emit the same
-diagnostics a member's header does. The argument for dropping a record rather than refusing
-the archive is that the diagnostic is emitted and a strict policy can still refuse; a header
-that reported nothing was outside that argument.
+diagnostics a member's header does, in every volume of a multi-volume set. The argument for
+dropping a record rather than refusing the archive is that the diagnostic is emitted and a
+strict policy can still refuse; a header that reported nothing was outside that argument.
+
+Those diagnostics SHALL NOT describe the header as a member. It is in no listing, so naming
+it as one sends the caller looking for something that is not there; the message SHALL name
+the header and what the archive therefore does without — the comment, or the quick-open
+index — and SHALL carry no member name.
+
+How many such headers one archive retains SHALL be bounded, and the bound SHALL NOT depend
+on the archive. A SERVICE header is not a member, so the listing bound never counts one, and
+a small archive of nothing but damaged SERVICE headers would otherwise retain without limit.
+Past the bound the headers SHALL be counted and the count reported, so reaching it is not
+itself silent. Counting them against the listing bound instead is rejected: that refuses an
+archive `unrar` lists, over headers that are optional metadata.
 
 The gates that slice a SERVICE payload out of the archive — the stored-comment gate and the
 quick-open gate — SHALL refuse a header that stopped before it could rule encryption out,
@@ -235,3 +247,14 @@ falling back to the header walk, is a missing answer; the alternative is a wrong
 - **AND** the walk's dropped record and its stop SHALL each emit
   `MEMBER_HEADER_RECORD_SKIPPED`
 - **AND** a strict diagnostic policy SHALL refuse the archive
+- **AND** the diagnostics SHALL carry no member name and SHALL say the archive comment was
+  not used
+
+#### Scenario: An archive of damaged service headers is reported under a bound
+
+- **GIVEN** a RAR5 archive holding more damaged SERVICE headers than the bound retains
+- **WHEN** the archive is opened
+- **THEN** the number retained SHALL be the bound, whatever the archive holds
+- **AND** one further `MEMBER_HEADER_RECORD_SKIPPED` SHALL report how many were not
+  described individually
+

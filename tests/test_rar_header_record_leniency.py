@@ -11,6 +11,8 @@ Found by the #315 sweep (batch S16, finding R2-K7).
 
 from __future__ import annotations
 
+import binascii
+import io
 import shutil
 import subprocess
 from pathlib import Path
@@ -28,8 +30,10 @@ from archivey import (
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.backends import rar_unrar
 from archivey.internal.backends.rar_parser import (
+    _MAX_DAMAGED_SERVICE_HEADERS,
     _MAX_SKIPPED_HEADER_RECORDS,
     load_vint,
+    parse_rar_archive,
 )
 from archivey.internal.streams import verify
 from archivey.types import HashAlgorithm, MemberType
@@ -859,10 +863,19 @@ def test_a_truncated_member_is_truncated_whatever_its_header_said(
             (member,) = [m for m in archive.members() if m.is_file]
             with pytest.raises(TruncatedError) as raised:
                 archive.read(member)
-        verdicts[label] = str(raised.value)
+        # ``.message`` and not ``str()``: the rendering appends the archive path,
+        # which is a different temp file for each of the two runs.
+        verdicts[label] = (raised.value.message, raised.value.member_name)
 
-    assert "13 of 14" in verdicts["cut-short header"], verdicts["cut-short header"]
-    assert "encrypted" not in verdicts["cut-short header"].lower()
+    # The comparison the test is named for: same physical damage, same verdict,
+    # whichever header it wore. Without it both assertions below are about the
+    # cut-short run alone, and a change that kept both on ``TruncatedError`` while
+    # making one report a different byte count — or stop naming the member — would
+    # go unnoticed. Both of those had in fact happened.
+    assert verdicts["intact header"] == verdicts["cut-short header"], verdicts
+    message, _ = verdicts["cut-short header"]
+    assert "13 of 14" in message, message
+    assert "encrypted" not in message.lower()
 
 
 def _graft_service_extra_area(data: bytes, extra: bytes) -> bytes:
@@ -933,8 +946,26 @@ def test_a_cut_short_service_header_neither_speaks_nor_gets_sliced(
             "the comment is decoded from bytes the header never finished "
             "describing, so it must not be presented"
         )
-        codes = [d.code for d in archive.diagnostics.retained]
-        assert codes.count(DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED) == 2, codes
+        listed = {m.name for m in archive.members()}
+        emitted = [
+            d
+            for d in archive.diagnostics.retained
+            if d.code == DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        ]
+        assert len(emitted) == 2, emitted
+
+    # What the caller is told has to be true of a header that is in no listing.
+    # Sharing the member wording named ``CMT`` as a member they could then not
+    # find, and never mentioned the comment it had withheld — which is the one
+    # consequence that happened.
+    assert "CMT" not in listed, listed
+    for diagnostic in emitted:
+        assert isinstance(diagnostic.context, MemberHeaderRecordContext)
+        assert diagnostic.context.member_name == "", diagnostic.context
+        assert diagnostic.context.member_id is None, diagnostic.context
+        assert "CMT service header" in diagnostic.message, diagnostic.message
+        assert "the member is listed" not in diagnostic.message, diagnostic.message
+    assert "the archive comment was not used" in emitted[-1].message, emitted[-1]
 
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
     with pytest.raises(DiagnosticRaisedError):
@@ -996,6 +1027,135 @@ def test_a_cut_short_quick_open_header_is_not_parsed_as_a_member_table(
         "the QO payload was parsed out of a header that stopped before its "
         "extra records were read to the end"
     )
+
+
+def _rar5_vint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        out.append(byte | (0x80 if value else 0))
+        if not value:
+            return bytes(out)
+
+
+def _rar5_header(block_type: int, body: bytes, extra: bytes) -> bytes:
+    """One RAR5 header with an extra area, CRC and both size vints correct."""
+    flags = 0x0001 if extra else 0x0000
+    full = _rar5_vint(block_type) + _rar5_vint(flags)
+    if extra:
+        full += _rar5_vint(len(extra))
+    full += body + extra
+    size = _rar5_vint(len(full))
+    crc = binascii.crc32(size + full) & 0xFFFFFFFF
+    return crc.to_bytes(4, "little") + size + full
+
+
+def _damaged_service_header(name: bytes = b"X") -> bytes:
+    """A 17-byte SERVICE header whose extra area holds one zero-size record.
+
+    Everything optional is off — no timestamp, no checksum, no data area — so the
+    header is as small as the format allows and an archive of them is as dense in
+    damaged headers per byte as an attacker can make it.
+    """
+    body = (
+        _rar5_vint(0)  # file_flags
+        + _rar5_vint(0)  # unpacked size
+        + _rar5_vint(0)  # attributes
+        + _rar5_vint(0)  # compression info
+        + _rar5_vint(0)  # host OS
+        + _rar5_vint(len(name))
+        + name
+    )
+    return _rar5_header(3, body, b"\x00\x00")
+
+
+def _archive_of_damaged_service_headers(count: int) -> bytes:
+    main = _rar5_header(1, _rar5_vint(0), b"")
+    return b"Rar!\x1a\x07\x01\x00" + main + _damaged_service_header() * count
+
+
+def test_damaged_service_headers_are_retained_under_a_bound(tmp_path: Path) -> None:
+    """The retention this rule needs is attacker-sized, so it has to be capped.
+
+    A SERVICE header is not a member, so ``max_members`` never counts one: before
+    the cap, 200 000 of these 17-byte headers — a 3.4 MB file — retained 80 MB and
+    no value of any config field stopped it. Counting them as members instead
+    would refuse an archive ``unrar`` lists, which is the opposite of what the rest
+    of this walk does, so they get their own cap and the remainder is reported as a
+    count rather than dropped.
+    """
+    retained = []
+    for count in (_MAX_DAMAGED_SERVICE_HEADERS * 4, _MAX_DAMAGED_SERVICE_HEADERS * 8):
+        archive = parse_rar_archive(
+            io.BytesIO(_archive_of_damaged_service_headers(count))
+        )
+        retained.append(len(archive.damaged_service_headers))
+        assert archive.damaged_service_headers_omitted == (
+            count - _MAX_DAMAGED_SERVICE_HEADERS
+        )
+    # Twice the headers, the same retention: the bound is what decides, not the
+    # archive. An uncapped list gives 64 and then 128 here.
+    assert retained == [_MAX_DAMAGED_SERVICE_HEADERS] * 2, retained
+
+    path = tmp_path / "many_damaged_service_headers.rar"
+    path.write_bytes(
+        _archive_of_damaged_service_headers(_MAX_DAMAGED_SERVICE_HEADERS + 3)
+    )
+    with open_archive(path) as archive:
+        messages = [
+            d.message
+            for d in archive.diagnostics.retained
+            if d.code == DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        ]
+    assert any("3 further RAR5 service header(s)" in m for m in messages), messages
+
+
+def test_a_damaged_service_header_past_the_first_volume_is_reported(
+    tmp_path: Path,
+) -> None:
+    """The volume merge is field by field, so a new field is silent until added.
+
+    A damaged SERVICE header in volume 2 reported nothing: the archive opened
+    clean and a strict policy found nothing to refuse, which is the whole of what
+    the reporting rule promises.
+    """
+    counts = {}
+    for damaged_part in ("tinyvol.part1.rar", "tinyvol.part2.rar"):
+        for part in ("tinyvol.part1.rar", "tinyvol.part2.rar"):
+            data = (_FIXTURES / part).read_bytes()
+            if part == damaged_part:
+                data = _insert_after_rar5_main(data, _damaged_service_header())
+            (tmp_path / part).write_bytes(data)
+        with open_archive(tmp_path / "tinyvol.part1.rar") as archive:
+            archive.members()
+            counts[damaged_part] = sum(
+                d.code == DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+                for d in archive.diagnostics.retained
+            )
+
+    assert counts["tinyvol.part2.rar"] == counts["tinyvol.part1.rar"] == 2, counts
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with pytest.raises(DiagnosticRaisedError):
+        with open_archive(tmp_path / "tinyvol.part1.rar", config=strict) as archive:
+            archive.members()
+
+
+def _insert_after_rar5_main(data: bytes, header: bytes) -> bytes:
+    """Splice ``header`` in right after the volume's MAIN header."""
+    pos = 8  # past the RAR5 signature
+    header_size, body_at = load_vint(data, pos + 4)
+    header_end = body_at + header_size
+    block_type, p = load_vint(data, body_at)
+    assert block_type == 1, f"first block is {block_type}, not MAIN"
+    header_flags, p = load_vint(data, p)
+    if header_flags & 0x0001:
+        _extra_size, p = load_vint(data, p)
+    data_size = 0
+    if header_flags & 0x0002:
+        data_size, _ = load_vint(data, p)
+    at = header_end + data_size
+    return data[:at] + header + data[at:]
 
 
 @pytest.mark.parametrize(

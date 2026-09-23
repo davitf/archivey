@@ -54,6 +54,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
     RAR_ID,
+    DamagedServiceHeader,
     RarArchive,
     RarEncryptionInfo,
     RarMemberInfo,
@@ -639,6 +640,15 @@ def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO
         raise
 
 
+# What a service header's payload would have answered, for the diagnostic that
+# reports one whose walk stopped: the payload is then refused, because a header
+# nobody finished reading may be hiding the record that says it is ciphertext.
+_SERVICE_PAYLOAD_LOST = {
+    "CMT": "the archive comment",
+    "QO": "the quick-open index",
+}
+
+
 class RarReader(BaseArchiveReader):
     """Reads RAR archives: native metadata parse + RARLAB ``unrar`` for data."""
 
@@ -736,10 +746,8 @@ class RarReader(BaseArchiveReader):
         self._members = [self._to_member(info) for info in self._archive.members]
         # SERVICE headers (``CMT``, ``QO``) are not members, so the walk above never
         # reaches them, and a damaged one would otherwise report nothing under any
-        # policy. Emitted after the members so a strict collector refuses on the
-        # first fault in file order rather than on whichever kind of header it was.
-        for info in self._archive.damaged_service_headers:
-            self._emit_header_record_diagnostics(info, info.filename, None)
+        # policy.
+        self._emit_service_header_diagnostics()
 
     def _open_shared_source(self, source: Path | BinaryIO) -> SharedSource:
         """Build SharedSource, discovering/materializing volumes as needed."""
@@ -1296,7 +1304,7 @@ class RarReader(BaseArchiveReader):
 
     def _emit_header_record_diagnostics(
         self,
-        info: RarMemberInfo,
+        info: RarMemberInfo | DamagedServiceHeader,
         name: str,
         member: ArchiveMember | None,
     ) -> None:
@@ -1309,9 +1317,18 @@ class RarReader(BaseArchiveReader):
         is emitted and ``ARCHIVE_INTEGRITY_CODES`` makes a strict policy refuse.
         A service header that said nothing was the one place that argument did not
         hold.
+
+        The two cases do not get the same words. A member's is about a member that
+        was listed; a service header's is about a header that is in no listing, and
+        what a reader wants to know is which of the archive's own answers went
+        missing with it. Sharing the wording named ``CMT`` as a member the caller
+        could then not find, and never mentioned the comment it had withheld. The
+        context follows the same split: ``member_name`` is empty and ``member_id``
+        is ``None`` for a service header, because there is no member to name.
         """
         member_id = member._member_id if member is not None else None
         attach = member is not None
+        context_name = name if member is not None else ""
         for record, record_id, reason in info.skipped_header_records:
             named = record if record_id is None else f"{record} ({record_id})"
             self._diagnostics_collector.emit(
@@ -1319,10 +1336,14 @@ class RarReader(BaseArchiveReader):
                 message=(
                     f"RAR5 extra record {named} is malformed and was dropped "
                     f"({reason}); the member is listed without what it carried."
+                    if member is not None
+                    else f"RAR5 extra record {named} in this archive's {name} "
+                    f"service header is malformed and was dropped ({reason}); "
+                    f"the header was read without what it carried."
                 ),
                 context=MemberHeaderRecordContext(
                     archive_name=self._archive_name,
-                    member_name=name,
+                    member_name=context_name,
                     member_id=member_id,
                     record=record,
                     record_id=record_id,
@@ -1349,10 +1370,14 @@ class RarReader(BaseArchiveReader):
                 message=(
                     f"This RAR5 member's header was not read to the end because "
                     f"{stop_reason}; it is listed from what was read before that."
+                    if member is not None
+                    else f"This archive's {name} service header was not read to "
+                    f"the end because {stop_reason}, so {_SERVICE_PAYLOAD_LOST.get(name, 'its payload')} "
+                    f"was not used."
                 ),
                 context=MemberHeaderRecordContext(
                     archive_name=self._archive_name,
-                    member_name=name,
+                    member_name=context_name,
                     member_id=member_id,
                     record="",
                     record_id=None,
@@ -1361,6 +1386,39 @@ class RarReader(BaseArchiveReader):
                 ),
                 member=member,
                 attach_to_member=attach,
+                logger=logger,
+            )
+
+    def _emit_service_header_diagnostics(self) -> None:
+        """Report the SERVICE headers (``CMT``, ``QO``) whose walk did not finish.
+
+        Emitted after the members so a strict collector refuses on the first fault
+        in file order rather than on whichever kind of header it was. The parser
+        caps how many it keeps, so the count of the rest is reported too: a cap
+        that silently swallowed the remainder would reopen the hole this reporting
+        exists to close.
+        """
+        for damaged in self._archive.damaged_service_headers:
+            self._emit_header_record_diagnostics(damaged, damaged.name, None)
+        omitted = self._archive.damaged_service_headers_omitted
+        if omitted:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"{omitted} further RAR5 service header(s) in this archive "
+                    f"were not read to the end and are not described "
+                    f"individually; an archive with this many damaged service "
+                    f"headers is crafted rather than merely damaged."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name="",
+                    member_id=None,
+                    record="",
+                    record_id=None,
+                    reason="too many damaged service headers to describe",
+                    list_truncated=True,
+                ),
                 logger=logger,
             )
 
@@ -1497,12 +1555,21 @@ class RarReader(BaseArchiveReader):
         try:
             while verifier.read(view, _CONFIRM_CHUNK_BYTES):
                 pass
-        except TruncatedError:
+        except TruncatedError as exc:
             # A member whose bytes end short of its declared size is a truncated
             # member, whatever its header said, and relabelling that as a verdict
             # about encryption would name a cause that did not happen. This pass
             # is interpreting one outcome — the digest — and has nothing to add
             # to the others, so they travel as they would on an ordinary read.
+            #
+            # Stamped because this pass raises from the open path rather than from
+            # a member read, which is where the reader's own boundary would have
+            # filled these in: without it the same truncation named the archive
+            # and the member on an intact header and named neither on a cut-short
+            # one.
+            exc.source_format = exc.source_format or ArchiveFormat.RAR
+            exc.archive_name = exc.archive_name or self._archive_name
+            exc.member_name = exc.member_name or member.name
             raise
         except CorruptionError as exc:
             # What is left is the digest verdict. The verifier's other

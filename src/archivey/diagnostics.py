@@ -262,8 +262,14 @@ class MemberHeaderRecordContext(_JsonSafeContext):
 
     A member header is attacker-sized, so how many records one member may drop is
     capped and reaching the cap stops the header being read. ``list_truncated`` is
-    true on exactly one diagnostic per member, the one reporting that; ``record``
-    names nothing on that one. Everywhere else it is false.
+    true on exactly one diagnostic per header, the one reporting that — it is the
+    *record* list that was cut short, not the archive's listing; ``record`` names
+    nothing on that one. Everywhere else it is false.
+
+    A RAR5 archive's own ``CMT`` and ``QO`` service headers carry the same records
+    and are reported the same way, and they are not members: those diagnostics
+    carry an empty ``member_name`` and a ``member_id`` of ``None``, and the message
+    names the header and what the archive therefore does without.
     """
 
     kind: Literal["member_header_record"] = "member_header_record"

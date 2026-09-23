@@ -94,6 +94,14 @@ _RAR5_MAX_HEADER = 2 * 1024 * 1024
 # field: listing limits stay out of this parser, and a caller cannot usefully
 # raise a "more skipped extras" budget.
 _MAX_SKIPPED_HEADER_RECORDS = 16
+# SERVICE headers (``CMT``, ``QO``) are not members, so ``max_members`` never
+# counts them and a damaged one is retained for the reader to report. Both halves
+# of that are attacker-controlled: a 3.4 MB archive of nothing but damaged SERVICE
+# headers retained 80 MB before this cap. Counting them as members instead would
+# refuse an archive ``unrar`` lists, which is the opposite of this walk's posture,
+# so they get their own cap and the overflow is reported as a count. Structural
+# for the same reason as the cap above.
+_MAX_DAMAGED_SERVICE_HEADERS = 16
 # BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
 _MAX_SEEK = (1 << 63) - 1
 # Same default as ListingLimits.max_members. None is the explicit UNLIMITED opt-out.
@@ -340,6 +348,21 @@ class RarMemberInfo:
         return self.file_version is not None and self.file_version != 0
 
 
+@dataclass(slots=True, frozen=True)
+class DamagedServiceHeader:
+    """A SERVICE header whose extra-area walk dropped a record or gave up.
+
+    Not a :class:`RarMemberInfo`: a service header is not a member, nothing lists
+    it, and keeping the whole parse of one both says otherwise and retains far more
+    than the reader reads. These three fields are what the reader reports.
+    """
+
+    #: ``CMT``, ``QO`` — the header's own name, not a member name.
+    name: str
+    skipped_header_records: tuple[tuple[str, int | None, str], ...]
+    header_walk_stop_reason: str | None
+
+
 @dataclass(slots=True)
 class RarArchive:
     version: int  # 4 = RAR3-on-disk family (1.5/2/3); 5 = RAR5 (not "RAR 4.x")
@@ -351,11 +374,15 @@ class RarArchive:
     is_volume: bool
     needs_next_volume: bool = False
     #: SERVICE headers (``CMT``, ``QO``) whose extra-area walk dropped a record or
-    #: gave up, in file order. They are not members, so nothing lists them and the
-    #: reader's per-member diagnostics never see them — yet the same leniency
-    #: applies to their headers, and the argument that leniency is not silent rests
-    #: on a diagnostic being emitted. The reader emits from this at open.
-    damaged_service_headers: list[RarMemberInfo] = field(default_factory=list)
+    #: gave up, in file order, at most ``_MAX_DAMAGED_SERVICE_HEADERS`` of them.
+    #: They are not members, so nothing lists them and the reader's per-member
+    #: diagnostics never see them — yet the same leniency applies to their headers,
+    #: and the argument that leniency is not silent rests on a diagnostic being
+    #: emitted. The reader emits from this at open.
+    damaged_service_headers: list[DamagedServiceHeader] = field(default_factory=list)
+    #: How many damaged SERVICE headers the cap above kept out of that list. The
+    #: reader reports the count, so hitting the cap is itself never silent.
+    damaged_service_headers_omitted: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +477,19 @@ def parse_rar_volumes(
             if part.comment and not merged.comment:
                 merged.comment = part.comment
             merged.is_volume = True
+            # Damaged SERVICE headers are per volume and the merge is field by
+            # field, so leaving this out made a damaged header past volume 1
+            # silent — the archive opened clean and nothing said a header could
+            # not be finished. The cap applies to the merged list for the same
+            # reason it applies to one volume's.
+            for damaged in part.damaged_service_headers:
+                if not _append_damaged_service_header(
+                    merged.damaged_service_headers, damaged
+                ):
+                    merged.damaged_service_headers_omitted += 1
+            merged.damaged_service_headers_omitted += (
+                part.damaged_service_headers_omitted
+            )
             for member in part.members:
                 if member.split_before and merged.members:
                     _merge_split_member(merged.members[-1], member)
@@ -479,6 +519,32 @@ def parse_rar_volumes(
             "Incomplete RAR multi-volume set: end of archive expects another volume"
         )
     return merged
+
+
+def _append_damaged_service_header(
+    headers: list[DamagedServiceHeader],
+    source: RarMemberInfo | DamagedServiceHeader,
+) -> bool:
+    """Retain a damaged SERVICE header, or report that the cap turned it away.
+
+    Takes the parsed header from the walk or the already-narrowed record from
+    another volume, and narrows it here rather than at the call sites, so nothing
+    is built for a header the cap is about to turn away. The caller counts what
+    this refuses: nothing is dropped silently, because the reader reports the
+    count alongside the headers it does describe.
+    """
+    if len(headers) >= _MAX_DAMAGED_SERVICE_HEADERS:
+        return False
+    headers.append(
+        source
+        if isinstance(source, DamagedServiceHeader)
+        else DamagedServiceHeader(
+            name=source.filename,
+            skipped_header_records=source.skipped_header_records,
+            header_walk_stop_reason=source.header_walk_stop_reason,
+        )
+    )
+    return True
 
 
 def _append_member(
@@ -1931,7 +1997,8 @@ def _parse_rar5(
     needs_next_volume = False
     seen_file_offsets: set[int] = set()
     qo_by_off: dict[int, RarMemberInfo] = {}
-    damaged_service_headers: list[RarMemberInfo] = []
+    damaged_service_headers: list[DamagedServiceHeader] = []
+    damaged_service_headers_omitted = 0
 
     while True:
         header_fd: _Readable = source
@@ -2096,7 +2163,10 @@ def _parse_rar5(
                     seen_file_offsets.add(member.header_offset)
             elif block_type == _RAR5_SERVICE:
                 if member.skipped_header_records or member.header_walk_stop_reason:
-                    damaged_service_headers.append(member)
+                    if not _append_damaged_service_header(
+                        damaged_service_headers, member
+                    ):
+                        damaged_service_headers_omitted += 1
                 if _is_stored_rar5_cmt(member):
                     source.seek(data_offset)
                     raw = _require_exact(source, member.file_size, "RAR5 comment")
@@ -2117,6 +2187,7 @@ def _parse_rar5(
         is_volume=is_volume,
         needs_next_volume=needs_next_volume,
         damaged_service_headers=damaged_service_headers,
+        damaged_service_headers_omitted=damaged_service_headers_omitted,
     )
 
 
