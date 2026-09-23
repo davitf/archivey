@@ -32,7 +32,7 @@ import threading
 import zlib
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -343,10 +343,12 @@ def _tweaked_hash_key(enc: RarEncryptionInfo, password: str) -> bytes | None:
 def _psw_check_usable(enc: RarEncryptionInfo) -> bool:
     """Whether ``enc`` carries a PswCheck that can tell a right password from a wrong one.
 
-    The same test :func:`rar_parser._check_rar5_password` applies before it derives a
-    key: twelve bytes whose last four are the SHA-256 prefix of the first eight. RAR4
-    records and a damaged check have none, and a candidate cannot be judged before
-    ``unrar`` runs.
+    Mirrors the shape test :func:`rar_parser._check_rar5_password` applies before it
+    derives a key: twelve bytes whose last four are the SHA-256 prefix of the first
+    eight. RAR4 records and a damaged check have none, and a candidate cannot be
+    judged before ``unrar`` runs. It does not mirror that function's ``kdf_count``
+    bound: a usable check with an out-of-range cost still reaches the check, which
+    raises ``CorruptionError`` for the member rather than deriving at that cost.
     """
     check = enc.check_value
     return (
@@ -714,6 +716,12 @@ class RarReader(BaseArchiveReader):
         # record's salt, KDF cost and check. RAR writes one salt per archiving run,
         # so this is usually one derivation per archive rather than one per member.
         self._checked_passwords: dict[tuple[bytes, int, bytes], bytes] = {}
+        # The tweaked-digest HashKey derived from that candidate, under the same key:
+        # a member's digest check is built more than once per open.
+        self._hash_keys: dict[tuple[bytes, int, bytes], bytes] = {}
+        # The first member whose PswCheck can judge a candidate, found once on first
+        # use; ``False`` until looked for, ``None`` when there is none.
+        self._archive_check_member: ArchiveMember | None | Literal[False] = False
         self._volume_count = getattr(source, "volume_count", volume_count)
         self._temp_path: Path | None = None
         self._temp_dir: Path | None = None
@@ -1069,13 +1077,24 @@ class RarReader(BaseArchiveReader):
         spawn and a solid archive's plain members read through it.
         """
         if self._passwords.has_passwords():
-            for member in self._members:
+            member = self._archive_check_member
+            if member is False:
+                member = next(
+                    (
+                        candidate
+                        for candidate in self._members
+                        if isinstance(candidate._raw, RarMemberInfo)
+                        and candidate._raw.file_encryption is not None
+                        and _psw_check_usable(candidate._raw.file_encryption)
+                    ),
+                    None,
+                )
+                self._archive_check_member = member
+            if member is not None:
                 raw = member._raw
-                if not isinstance(raw, RarMemberInfo):
-                    continue
-                enc = raw.file_encryption
-                if enc is not None and _psw_check_usable(enc):
-                    return self._checked_data_password(enc, member)
+                assert isinstance(raw, RarMemberInfo)
+                assert raw.file_encryption is not None
+                return self._checked_data_password(raw.file_encryption, member)
         return self._unrar_data_password()
 
     def _checked_data_password(
@@ -1424,9 +1443,14 @@ class RarReader(BaseArchiveReader):
             checked = self._checked_password(enc, None, ask_provider=False)
             if checked is None:
                 return None
-            hash_key = rar5_hash_key(
-                _password_as_str(checked) or "", enc.salt, enc.kdf_count
-            )
+            assert enc.check_value is not None
+            cache_key = (enc.salt, enc.kdf_count, enc.check_value)
+            hash_key = self._hash_keys.get(cache_key)
+            if hash_key is None:
+                hash_key = rar5_hash_key(
+                    _password_as_str(checked) or "", enc.salt, enc.kdf_count
+                )
+                self._hash_keys[cache_key] = hash_key
         else:
             password = self._unrar_password
             if password is None:

@@ -338,9 +338,12 @@ class SevenZipReader(BaseArchiveReader):
 
         def decrypt(password: bytes) -> PlainHeader:
             # AES header decrypt has no MAC: a wrong password yields garbage that fails
-            # the codec or property parsing rather than raising EncryptionError in
-            # decrypt. Both are judged here, per candidate, so a wrong first candidate
-            # moves on to the next one instead of ending the attempt (D8).
+            # the codec (CorruptionError, or most often TruncatedError: wrong-key LZMA
+            # usually ends short of the declared size) or property parsing, rather
+            # than raising EncryptionError in decrypt. All are judged here, per
+            # candidate, so a wrong first candidate moves on to the next one instead of
+            # ending the attempt (D8). The cost: damaged encoded-header bytes cannot be
+            # told from a wrong key, so they read as a rejected password.
             # UnsupportedFeatureError / PackageNotInstalledError from decode (hostile
             # NumCyclesPower, missing cryptography) are not about the password and
             # pass through.

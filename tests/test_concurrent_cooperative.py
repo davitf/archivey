@@ -6,6 +6,7 @@ Linux ``3.13t`` ``free-threaded-concurrency`` CI job.
 
 from __future__ import annotations
 
+import contextvars
 import gzip
 import io
 import threading
@@ -220,6 +221,36 @@ def test_password_provider_second_thread_waits_instead_of_raising() -> None:
     second.join(5)
     assert results == {"first": b"pw", "second": b"pw"}
     assert max_active == 1
+
+
+def test_password_provider_reentry_from_a_context_carrying_thread_raises() -> None:
+    """A provider that hands reader work to a helper thread is still reentry.
+
+    The helper is not the provider's thread, so a thread check alone would park it
+    behind the turn the provider holds while the provider waits on the helper.
+    ``contextvars.copy_context().run`` is what ``asyncio.to_thread`` does.
+    """
+    box: dict[str, object] = {}
+
+    def helper() -> None:
+        try:
+            box["result"] = candidates.ask_provider(None, 99)
+        except ArchiveyUsageError as exc:
+            box["result"] = exc
+
+    def provider(req):  # noqa: ANN001
+        context = contextvars.copy_context()
+        worker = threading.Thread(target=context.run, args=(helper,), daemon=True)
+        worker.start()
+        worker.join(5)
+        box["deadlocked"] = worker.is_alive()
+        return b"pw"
+
+    candidates = _PasswordCandidates.from_input(provider)
+    assert candidates.ask_provider(None, 1) == b"pw"
+    assert box["deadlocked"] is False
+    assert isinstance(box["result"], ArchiveyUsageError)
+    assert "reentered" in str(box["result"])
 
 
 def test_password_provider_turn_released_when_provider_raises() -> None:

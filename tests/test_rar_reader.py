@@ -767,6 +767,45 @@ def test_rar5_encrypted_data_password_list_order_does_not_matter(
 
 
 @requires_binary("unrar")
+def test_rar5_solid_encrypted_pass_gets_the_matching_password() -> None:
+    """A ``stream_members()`` pass is one ``unrar p`` spawn for the whole archive."""
+    path = _fixture("encryption_solid__.rar")
+    with open_archive(path, password=["wrong", "password"]) as archive:
+        assert archive.info.is_solid
+        read = {
+            member.name: stream.read()
+            for member, stream in archive.stream_members()
+            if stream is not None
+        }
+    assert read == {
+        "also_secret.txt": b"This is also secret",
+        "secret.txt": b"This is secret",
+    }
+    with open_archive(path, password=["wrong", "password"]) as archive:
+        assert archive.read("secret.txt") == b"This is secret"
+
+
+@requires_binary("unrar")
+def test_rar5_solid_plain_member_gets_the_archive_password() -> None:
+    """A plain member of a solid archive decodes through its encrypted predecessors.
+
+    ``rar`` cannot append a plain member to a solid encrypted archive (it asks for
+    the password and then encrypts the new member too), so the plain member is made
+    by dropping ``secret.txt``'s encryption record after listing. Its bytes are
+    still encrypted, so ``unrar`` only returns them with the password the other
+    member's check picked; the first candidate is wrong.
+    """
+    path = _fixture("encryption_solid__.rar")
+    with open_archive(path, password=["wrong", "password"]) as archive:
+        member = archive.get("secret.txt")
+        assert member is not None
+        raw = member._raw
+        assert isinstance(raw, RarMemberInfo)
+        member._raw = dataclasses.replace(raw, file_encryption=None)
+        assert archive.read(member) == b"This is secret"
+
+
+@requires_binary("unrar")
 def test_rar5_encrypted_data_asks_provider_again_after_a_wrong_answer() -> None:
     asked: list[tuple[str | None, int]] = []
 
