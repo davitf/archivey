@@ -599,9 +599,9 @@ four checksum bytes are only `sha256(check[:8])[:4]`, which the writer controls)
 not reach it, and the RAR5 data path pays it on every encrypted member read, as the
 tweaked-checksum HashKey already did before the candidate check existed.
 
-**Designed, not shipped:** a total derivation budget on `DecoderLimits`, summing the
-declared rounds rather than counting derivations at the cap, because RAR salts per member.
-It needs a default number from the maintainer. Until then a caller reading untrusted
+**Designed, not shipped:** a total derivation budget on `DecoderLimits`. What it is
+measured in and why is the open question in `dev-docs/formats/7z.md` §7, its one home; it
+needs a default number from the maintainer. Until then a caller reading untrusted
 encrypted archives bounds this with its own timeout.
 
 ## OPEN gaps — compatibility
