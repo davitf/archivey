@@ -340,6 +340,29 @@ def test_strict_mode_none_defaults() -> None:
     assert transform_strict(_member("d/", type=MemberType.DIRECTORY)).mode == 0o755
 
 
+@pytest.mark.parametrize(
+    "stored,expected",
+    [
+        (0o600, 0o600),
+        (0o640, 0o640),
+        (0o660, 0o640),  # umask 007: group-shared, must not gain other-read
+        (0o664, 0o644),
+        (0o666, 0o644),
+        (0o604, 0o604),
+        (0o000, 0o000),
+    ],
+)
+def test_strict_file_mode_is_masked_never_widened(stored: int, expected: int) -> None:
+    """STRICT clears bits a file stored; it never sets one the file did not have.
+
+    ``min(mode, 0o644)`` compared the modes as integers, so ``0o660`` came out as
+    ``0o644`` and gained other-read under the policy meant to distrust the archive.
+    """
+    out = transform_strict(_member("f", mode=stored))
+    assert out.mode == expected
+    assert out.mode is not None and out.mode & ~stored == 0
+
+
 # ---------------------------------------------------------------------------
 # BombTracker (task 2.3)
 # ---------------------------------------------------------------------------
@@ -473,6 +496,139 @@ def test_extract_zip_strict_normalizes_mode(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     extract(src, dest, policy=ExtractionPolicy.STRICT)
     assert (dest / "x.sh").stat().st_mode & 0o777 == 0o644
+
+
+@_posix_perms
+def test_trusted_mode_less_file_gets_the_umask_default(tmp_path: Path) -> None:
+    """A member storing no mode extracts like an ordinary file creation under TRUSTED.
+
+    A Windows-created ZIP entry stores no Unix mode. STRICT and STANDARD substitute
+    ``0o644``; TRUSTED passes ``None`` through, and the file used to keep ``mkstemp``'s
+    ``0o600`` — the most permissive policy producing the least readable files.
+    """
+    src = tmp_path / "w.zip"
+    with zipfile.ZipFile(src, "w") as z:
+        info = zipfile.ZipInfo("a.txt")
+        info.create_system = 0  # MS-DOS: no Unix mode in external_attr
+        info.external_attr = 0
+        z.writestr(info, b"hello")
+    with open_archive(src) as r:
+        assert next(iter(r.members())).mode is None
+
+    umask = os.umask(0o022)
+    os.umask(umask)
+    dest = tmp_path / "out"
+    extract(src, dest, policy=ExtractionPolicy.TRUSTED)
+    assert (dest / "a.txt").stat().st_mode & 0o7777 == 0o666 & ~umask
+    assert (dest / "a.txt").read_bytes() == b"hello"
+    assert not [p for p in dest.iterdir() if p.name.startswith(".archivey-tmp-")]
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() != 0,
+    reason="chown to another uid needs root",
+)
+@pytest.mark.parametrize("mode", [0o4755, 0o2755, 0o6755, 0o1755])
+def test_trusted_as_root_keeps_setuid_setgid_through_chown(
+    tmp_path: Path, mode: int
+) -> None:
+    """TRUSTED as root applies the stored mode *after* the ownership.
+
+    Linux ``chown`` clears setuid/setgid on a regular file even for root, so chmod then
+    chown landed ``0o4755`` as ``0o755``. ``tar -xp`` as root keeps them; so must this.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("tool")
+        info.size = 2
+        info.mode = mode
+        info.uid = info.gid = 1000
+        t.addfile(info, io.BytesIO(b"hi"))
+    dest = tmp_path / "out"
+    extract(io.BytesIO(buf.getvalue()), dest, policy=ExtractionPolicy.TRUSTED)
+    st = (dest / "tool").stat()
+    assert st.st_mode & 0o7777 == mode
+    assert (st.st_uid, st.st_gid) == (1000, 1000)
+
+
+def _tar_file_and_link(file_mode: int, link_mode: int) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("src.bin")
+        info.size = 3
+        info.mode = file_mode
+        t.addfile(info, io.BytesIO(b"abc"))
+        link = tarfile.TarInfo("link.bin")
+        link.type = tarfile.LNKTYPE
+        link.linkname = "src.bin"
+        link.mode = link_mode
+        t.addfile(link)
+    return buf.getvalue()
+
+
+@_posix_perms
+@pytest.mark.parametrize(
+    "policy,expected",
+    [(ExtractionPolicy.STRICT, 0o644), (ExtractionPolicy.STANDARD, 0o777)],
+)
+def test_materialized_hardlink_mode_is_capped_like_a_files(
+    tmp_path: Path, policy: ExtractionPolicy, expected: int
+) -> None:
+    """A hardlink written as real content gets the policy's file-mode treatment.
+
+    Extracting only the link orphans its source, so the link carries the content and
+    its own mode. The transforms used to cap only FILE members, so ``0o4777`` landed
+    as is under STRICT and STANDARD alike.
+    """
+    archive = _tar_file_and_link(0o600, 0o4777)
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as r:
+        r.extract_all(dest, members=["link.bin"], policy=policy)
+    assert (dest / "link.bin").read_bytes() == b"abc"
+    assert (dest / "link.bin").stat().st_mode & 0o7777 == expected
+
+
+@_posix_perms
+def test_cross_device_hardlink_copy_mode_is_capped_under_strict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The EXDEV copy takes the link's mode, so that mode has to be capped first."""
+
+    def always_exdev(source: object, target: object, *a: object, **k: object) -> None:
+        raise OSError(errno.EXDEV, "cross-device")
+
+    monkeypatch.setattr(os, "link", always_exdev)
+    dest = tmp_path / "out"
+    extract(io.BytesIO(_tar_file_and_link(0o600, 0o4777)), dest)
+    assert (dest / "src.bin").stat().st_mode & 0o7777 == 0o600
+    assert (dest / "link.bin").stat().st_mode & 0o7777 == 0o644
+
+
+@_posix_perms
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+def test_filter_dropping_the_mode_still_gets_the_policy_default(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """A filter runs after the transform; a ``mode=None`` it returns is not TRUSTED's.
+
+    The umask-default creation mode belongs to TRUSTED alone. Under a permissive
+    umask it would give a group- or world-writable file, so STRICT and STANDARD fall
+    back to their documented ``0o644`` for a file and ``0o755`` for a directory.
+    """
+    archive = _tar_bytes([("dir", "d", None), ("file", "d/f.txt", b"x")])
+
+    def drop_mode(m: ArchiveMember) -> ArchiveMember:
+        return m.replace(mode=None)
+
+    old = os.umask(0o002)
+    try:
+        dest = tmp_path / "out"
+        with open_archive(io.BytesIO(archive)) as r:
+            r.extract_all(dest, filter=drop_mode, policy=policy)
+    finally:
+        os.umask(old)
+    assert (dest / "d" / "f.txt").stat().st_mode & 0o7777 == 0o644
+    assert (dest / "d").stat().st_mode & 0o7777 == 0o755
 
 
 @_posix_perms
@@ -1318,6 +1474,93 @@ def test_cross_device_hardlink_reuses_sibling(tmp_path: Path, monkeypatch) -> No
     assert not os.path.samefile(dest / "A.txt", dest / "B.txt")  # B is a separate copy
 
 
+def test_cross_device_hardlink_copy_counts_toward_max_extracted_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The EXDEV fallback writes a full copy, so the byte cap has to see it.
+
+    Every link fails cross-device here, so each of the four links is a 1000-byte copy:
+    5000 bytes land on disk from a member that decodes to 1000. A 2500-byte cap has to
+    stop that, where before it saw only the source's own 1000.
+    """
+    payload = os.urandom(1000)
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [("file", "A.bin", payload)]
+            + [("hard", f"L{i}.bin", "A.bin") for i in range(4)]
+        )
+    )
+
+    def always_exdev(source: object, target: object, *a: object, **k: object) -> None:
+        raise OSError(errno.EXDEV, "cross-device")
+
+    monkeypatch.setattr(os, "link", always_exdev)
+    dest = tmp_path / "out"
+    with pytest.raises(ResourceLimitError, match="max_extracted_bytes=2500"):
+        extract(src, dest, limits=ExtractionLimits(max_extracted_bytes=2500))
+
+    # Under the cap, every copy still lands, byte for byte.
+    dest2 = tmp_path / "out2"
+    extract(src, dest2, limits=ExtractionLimits(max_extracted_bytes=5000))
+    for i in range(4):
+        assert (dest2 / f"L{i}.bin").read_bytes() == payload
+
+
+def test_copied_bytes_count_toward_the_byte_cap_but_not_the_ratio() -> None:
+    """Nothing decompressed a cross-device copy, so only the byte cap sees it.
+
+    Whether the copy happens depends on the destination's mount points, not on the
+    archive, so letting it trip the archive-wide ratio would blame the archive.
+    """
+    source = SimpleNamespace(compressed_source_size=10, compressed_bytes_consumed=10)
+    t = BombTracker(
+        max_bytes=5000,
+        max_ratio=2.0,
+        ratio_activation_threshold=0,
+        source=source,  # type: ignore[arg-type]
+    )
+    t.start_member(_member("a"))
+    t.count(15)  # decoded: ratio 1.5, under the limit
+    t.count_copy(4000)  # copied: would be ratio 400 if counted
+    t.count(1)  # the next decoded chunk re-checks the ratio on decoded bytes only
+    assert t.total_bytes == 4016
+    with pytest.raises(_AlwaysStopResourceLimitError, match="max_extracted_bytes"):
+        t.count_copy(1000)
+
+
+@_posix_perms
+def test_cross_device_hardlink_copy_takes_the_link_members_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hand-written copy still lands with the link member's own mode.
+
+    The copy is created private and chmodded before the swap, the same as a FILE write,
+    so the source's ``0o600`` does not leak onto a link that stored ``0o640``.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        info = tarfile.TarInfo("A.bin")
+        info.size = 3
+        info.mode = 0o600
+        t.addfile(info, io.BytesIO(b"abc"))
+        link = tarfile.TarInfo("L.bin")
+        link.type = tarfile.LNKTYPE
+        link.linkname = "A.bin"
+        link.mode = 0o640
+        t.addfile(link)
+
+    def always_exdev(source: object, target: object, *a: object, **k: object) -> None:
+        raise OSError(errno.EXDEV, "cross-device")
+
+    monkeypatch.setattr(os, "link", always_exdev)
+    dest = tmp_path / "out"
+    extract(io.BytesIO(buf.getvalue()), dest, policy=ExtractionPolicy.TRUSTED)
+    assert (dest / "A.bin").stat().st_mode & 0o7777 == 0o600
+    assert (dest / "L.bin").stat().st_mode & 0o7777 == 0o640
+    assert (dest / "L.bin").read_bytes() == b"abc"
+
+
 # ---------------------------------------------------------------------------
 # Live (streaming) decompression-ratio guard (live-decompression-ratio-guard)
 # ---------------------------------------------------------------------------
@@ -1910,6 +2153,32 @@ def test_o7_plain_percent_name_untouched(tmp_path: Path) -> None:
     assert sorted(p.name for p in dest.iterdir()) == ["50%.txt"]
 
 
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("foo. /bar", "foo/bar"),
+        ("foo. \\bar", "foo\\bar"),  # separator kept as stored, segment stripped
+        ("a\\b.\\c ", "a\\b\\c"),
+        ("mixed. /x \\y.", "mixed/x\\y"),
+    ],
+)
+def test_o3_strip_treats_a_backslash_as_a_separator(name: str, expected: str) -> None:
+    """Trailing dot/space stripping splits on ``\\`` too, like the rest of the module.
+
+    TAR keeps ``\\`` as a literal character and Windows writes it as a separator, so
+    ``foo. \\bar`` has to lose its trailing space as ``foo. /bar`` does. The separators
+    are put back as stored: this rewrites segments, not the path's structure.
+    """
+    out = apply_name_policy(_member(name), ExtractionPolicy.STRICT)
+    assert out.name == expected
+
+
+@pytest.mark.parametrize("name", ["a/.../b", "a\\...\\b", "a/. \\b"])
+def test_o3_all_dots_segment_rejected_after_either_separator(name: str) -> None:
+    with pytest.raises(UnportableNameError, match="entirely dots/spaces"):
+        apply_name_policy(_member(name), ExtractionPolicy.STRICT)
+
+
 # --- OverwritePolicy.RENAME ------------------------------------------------
 
 
@@ -1952,6 +2221,76 @@ def test_rename_suffix_edge_cases(tmp_path: Path, name: str, expected: str) -> N
     extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
     assert expected in {p.name for p in dest.iterdir()}
     assert (dest / name).read_bytes() == b"preexisting"
+
+
+def _case_variants(word: str) -> list[str]:
+    """Every upper/lower spelling of ``word``: distinct names, one collision key."""
+    out = [""]
+    for ch in word:
+        out = [prefix + c for prefix in out for c in (ch.lower(), ch.upper())]
+    return out
+
+
+def test_rename_resumes_the_counter_instead_of_rescanning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``k`` members colliding on one key cost ``k`` probes, not ``k²``.
+
+    64 case variants of one name, under STRICT, all share a collision key. Restarting
+    at ``(1)`` for each made the k-th member walk ``(1)`` … ``(k)``, computing a
+    collision key per probe: about 2000 here, and hours for an archive of a few hundred
+    KB. Resuming from the last ``N`` keeps it to one probe per member.
+    """
+    import archivey.internal.extraction as extraction_mod
+
+    names = [f"{v}.txt" for v in _case_variants("abcdef")]
+    archive = _tar_bytes([("file", n, n.encode()) for n in names])
+
+    probes = 0
+    real_collision_key = extraction_mod.collision_key
+
+    def counting_collision_key(name: str, policy: ExtractionPolicy) -> str:
+        nonlocal probes
+        if " (" in name:
+            probes += 1
+        return real_collision_key(name, policy)
+
+    monkeypatch.setattr(extraction_mod, "collision_key", counting_collision_key)
+    dest = tmp_path / "out"
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    # One derived name tried per colliding member, plus the claim registered for it.
+    # Rescanning from (1) made this about 2000.
+    assert probes <= 2 * (len(names) - 1)
+    assert report.results[0].path == dest / "abcdef.txt"
+    derived = sorted(
+        int(r.path.name.rsplit("(", 1)[1].split(")")[0])
+        for r in report.results[1:]
+        if r.path is not None
+    )
+    assert derived == list(range(1, len(names)))
+
+
+def test_rename_resume_skips_a_name_already_on_disk(tmp_path: Path) -> None:
+    """Resuming does not skip the on-disk check: a pre-existing ``(2)`` is stepped over.
+
+    The counter only says which names this run has already taken; a name someone put in
+    the destination beforehand is found by the ``lstat`` exactly as before.
+    """
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "aB (2).txt").write_bytes(b"pre-existing")
+    archive = _tar_bytes(
+        [("file", "ab.txt", b"0"), ("file", "Ab.txt", b"1"), ("file", "aB.txt", b"2")]
+    )
+    report = extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.RENAME)
+    assert [r.path.name for r in report.results if r.path is not None] == [
+        "ab.txt",
+        "Ab (1).txt",
+        "aB (3).txt",
+    ]
+    assert (dest / "aB (2).txt").read_bytes() == b"pre-existing"
 
 
 def test_requested_path_equals_path_for_normal_write(tmp_path: Path) -> None:
@@ -2565,6 +2904,98 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
 
     assert pre_existing.read_bytes() == b"not ours"  # never ours to delete
     assert collision_map == {"other.txt": _Claim(other, 0)}
+
+
+def test_anti_item_finds_a_case_variant_through_the_collision_map(
+    tmp_path: Path,
+) -> None:
+    """Under STRICT an anti-item ``readme`` deletes the ``README`` this run wrote.
+
+    The collision map already treats the two as one name, on every platform; the
+    anti-item used to compare exact paths instead, so on a case-insensitive filesystem
+    the file it names survived.
+    """
+    from archivey.internal.extraction import _Claim
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    written = dest / "README"
+    written.write_bytes(b"A")
+
+    coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
+    written_paths = {written}
+    collision_map = {"readme": _Claim(written, 0)}
+    anti = ArchiveMember(type=MemberType.ANTI, name="readme")
+
+    result = coordinator._apply_anti_item(
+        anti, dest / "readme", written_paths, collision_map, dest
+    )
+
+    assert result.status is ExtractionStatus.EXTRACTED
+    assert result.path == written
+    assert not written.exists()
+    assert written_paths == set()
+    assert collision_map == {}
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="TRUSTED defers to the local OS, and on Windows both the filesystem and "
+    "Path equality fold case, so there `readme` is the `README` this run wrote",
+)
+def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
+    """TRUSTED keys on the exact name, so ``readme`` leaves ``README`` alone."""
+    from archivey.internal.extraction import _Claim
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    written = dest / "README"
+    written.write_bytes(b"A")
+
+    coordinator = ExtractionCoordinator(policy=ExtractionPolicy.TRUSTED)
+    written_paths = {written}
+    collision_map = {"README": _Claim(written, 0)}
+    anti = ArchiveMember(type=MemberType.ANTI, name="readme")
+
+    coordinator._apply_anti_item(
+        anti, dest / "readme", written_paths, collision_map, dest
+    )
+
+    assert written.read_bytes() == b"A"
+    assert written_paths == {written}
+    assert collision_map == {"README": _Claim(written, 0)}
+
+
+def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
+    """An exact path this run wrote wins over a case-variant claim in the map.
+
+    Directories are not in the collision map, so a run can write directory ``x`` and
+    file ``X`` (claimed under key ``x``). An anti-item ``x`` names the directory.
+    """
+    from archivey.internal.extraction import _Claim
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    directory = dest / "x"
+    directory.mkdir()
+    file_ = dest / "X"
+    if file_.exists():
+        pytest.skip("case-insensitive filesystem: x and X are one entry")
+    file_.write_bytes(b"F")
+
+    coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
+    written_paths = {directory, file_}
+    collision_map = {"x": _Claim(file_, 1)}
+    anti = ArchiveMember(type=MemberType.ANTI, name="x")
+
+    result = coordinator._apply_anti_item(
+        anti, directory, written_paths, collision_map, dest
+    )
+
+    assert result.path == directory
+    assert not directory.exists()
+    assert file_.read_bytes() == b"F"
+    assert collision_map == {"x": _Claim(file_, 1)}
 
 
 @pytest.mark.parametrize(

@@ -13,6 +13,14 @@
   ``read``/``readinto``/``seek``/``tell``/``seekable``/``close`` to it, so a wrapper that only
   changes one operation overrides just that method.
 
+``close()`` also runs on a half-built instance: ``IOBase.__del__`` calls it on any
+instance not marked closed, including one whose ``__init__`` raised. So a stream's
+``__init__`` assigns everything ``close()`` reads before anything that can raise, or
+releases what it holds and marks itself closed before re-raising. A class that breaks
+this dies a second time at collection, as an ``AttributeError`` blamed on whatever runs
+then. ``tests/test_refused_constructor_close.py`` keeps an inventory of every stream
+class against this rule.
+
 This module is part of the codec-/format-agnostic ``streamtools`` core: it imports only from
 ``streamtools`` itself (``is_seekable``), nothing from the rest of ``archivey``.
 The source boundary's full-count guarantee lives outside this package, in

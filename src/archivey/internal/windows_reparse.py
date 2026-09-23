@@ -24,8 +24,10 @@ __all__ = [
     "FILE_ATTRIBUTE_REPARSE_POINT",
     "IO_REPARSE_TAG_MOUNT_POINT",
     "IO_REPARSE_TAG_SYMLINK",
+    "REPARSE_HEADER_BYTES",
     "ReparsePoint",
     "parse_reparse_data",
+    "reparse_payload_length",
 ]
 
 # winnt.h: the attribute bit shared by every reparse point, symlink and junction alike.
@@ -39,6 +41,9 @@ IO_REPARSE_TAG_SYMLINK = 0xA000000C
 
 # REPARSE_DATA_BUFFER: ULONG ReparseTag, USHORT ReparseDataLength, USHORT Reserved.
 _HEADER = struct.Struct("<IHH")
+# A caller reads this much first, then the payload length it declares
+# (`reparse_payload_length`), which the 16-bit field keeps to 0xFFFF.
+REPARSE_HEADER_BYTES = _HEADER.size
 # Both tags' payloads open with the same four offsets, in bytes, into PathBuffer.
 _NAMES = struct.Struct("<HHHH")
 # A SYMLINK payload has an extra ULONG Flags before PathBuffer; MOUNT_POINT has none.
@@ -85,6 +90,23 @@ def _decode_path(buffer: bytes, offset: int, length: int) -> str:
     # permits unpaired surrogates in a path. Replacing them would silently rewrite a
     # target; passing them through keeps the round trip honest.
     return buffer[offset : offset + length].decode("utf-16-le", errors="surrogatepass")
+
+
+def reparse_payload_length(header: bytes) -> int:
+    """Payload bytes a buffer opening with ``header`` declares; 0 if it is not a link one.
+
+    ``header`` is the first :data:`REPARSE_HEADER_BYTES` of the member's data. Reading
+    this many more gives :func:`parse_reparse_data` everything it looks at — a real
+    symlink buffer is around a hundred bytes — so a reader never decodes more of a
+    member than the buffer itself claims to be. A header that is short, or whose tag is
+    not a symlink or a junction, declares nothing the parser would use.
+    """
+    if len(header) < _HEADER.size:
+        return 0
+    tag, data_length, _reserved = _HEADER.unpack_from(header, 0)
+    if tag not in (IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_SYMLINK):
+        return 0
+    return data_length
 
 
 def parse_reparse_data(data: bytes) -> ReparsePoint | None:

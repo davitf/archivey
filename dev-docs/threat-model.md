@@ -694,6 +694,31 @@ measured in and why is the open question in `dev-docs/formats/7z.md` §7, its on
 needs a default number from the maintainer. Until then a caller reading untrusted
 encrypted archives bounds this with its own timeout.
 
+### O19. A symlink target stored as member data sized listing's allocation — closed
+
+ZIP, 7z and RAR3/4 keep a symlink's target in the member's data, and listing reads it to
+fill `link_target`. ZIP and 7z compress that data, and the read was a bare `read()`.
+Measured: a 407 785-byte ZIP whose one symlink "target" was 400 MiB of zeros peaked at
+2 400 MiB (tracemalloc) inside `members()` in 9.9 s, with `max_members=10` and
+`max_metadata_bytes=4096` both set. `max_metadata_bytes` did not reach it for a second
+reason: it weighs `link_target` at registration, and a data-stored target is read after
+every member is registered, so the field was weighed as `None`.
+
+*Closed:* a data-stored target is capped at `MAX_LINK_TARGET_BYTES` (4096, the Linux
+`PATH_MAX`). A member declaring more is not opened. ZIP and 7z declare a size and verify
+data against it, so a member whose data outruns a smaller declared size fails as
+`CorruptionError` at that size; a read with no declared size stops at 4097 bytes. A
+longer target is left unset with `SYMLINK_TARGET_UNAVAILABLE`
+(`reason="target_too_long"`) and never truncated, per the maintainer's ruling that such
+a target is corrupt or malicious; the code is an archive-integrity one, so
+`DiagnosticPolicy.strict()` refuses the archive. A Windows reparse buffer is read only
+as far as its own header declares (at most `8 + 0xFFFF` bytes, a hundred or so in
+practice) and its parsed target is held to the same cap. A target resolved after
+registration is now added to the listing tracker as it arrives, so `max_metadata_bytes`
+covers it. Header-stored targets (TAR, RAR5, Rock Ridge) were already weighed at
+registration and bounded by their header parsers. Found on PR #315 (S21-K10); tracked
+internally.
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed
