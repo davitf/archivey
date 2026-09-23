@@ -86,6 +86,20 @@ DEFAULT_RATIO_ACTIVATION_THRESHOLD = 5 * 2**20  # 5 MiB
 DEFAULT_MAX_ENTRIES = 1_048_576  # 2**20
 
 
+def _open_new_file(path: Path, mode: int) -> int:
+    """Create ``path``, which must not exist, for writing; return the open fd.
+
+    ``mode`` is the creation mode, so the umask applies to it as it does to any new
+    file. The flags are ``mkstemp``'s: ``O_EXCL`` fails loudly on a name that appeared
+    underneath us, ``O_NOFOLLOW`` refuses a symlink planted there, and ``O_BINARY`` /
+    ``O_NOINHERIT`` matter on Windows only.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    for extra in ("O_NOFOLLOW", "O_BINARY", "O_NOINHERIT"):
+        flags |= getattr(os, extra, 0)
+    return os.open(path, flags, mode)
+
+
 class _AbortExtraction(Exception):
     """Internal carrier for an ``abort_on`` trigger fired deep in the write path.
 
@@ -144,13 +158,17 @@ class BombTracker:
         )
         self._max_entries = max_entries
         self._entry_count = 0
-        self._total_bytes = 0  # cumulative across all members
+        self._total_bytes = 0  # decoded output, cumulative across all members
+        # Bytes copied from a file this run already wrote (the cross-device hardlink
+        # fallback). They count toward the byte cap, not the ratios.
+        self._copied_bytes = 0
         self._member_bytes = 0  # output bytes for the current member
         self._member: ArchiveMember | None = None
 
     @property
     def total_bytes(self) -> int:
-        return self._total_bytes
+        """Every byte written to the destination, decoded or copied."""
+        return self._total_bytes + self._copied_bytes
 
     @property
     def member_bytes(self) -> int:
@@ -172,13 +190,7 @@ class BombTracker:
     def count(self, chunk_bytes: int) -> None:
         self._total_bytes += chunk_bytes
         self._member_bytes += chunk_bytes
-
-        # Cumulative byte guard (always-stop).
-        if self._max_bytes is not None and self._total_bytes > self._max_bytes:
-            raise _AlwaysStopResourceLimitError(
-                f"Extraction limit reached: max_extracted_bytes={self._max_bytes} "
-                f"(written {self._total_bytes} bytes)"
-            )
+        self._check_cumulative_bytes()
 
         # Per-member ratio: activates on THIS member's output; a per-member failure
         # (skippable under OnError.CONTINUE).
@@ -198,7 +210,31 @@ class BombTracker:
                     f"max_ratio={self._max_ratio:.0f}:1",
                     member_name=member.name,
                 )
+        self._check_archive_ratio()
 
+    def count_copy(self, chunk_bytes: int) -> None:
+        """Count bytes copied from a file this run already wrote, not decoded.
+
+        The cross-device hardlink fallback writes a second full copy of content already
+        on disk. Those bytes land on the filesystem, so they count toward
+        ``max_extracted_bytes`` like any other write. Nothing decompressed them, so
+        neither ratio sees them: whether a copy happens depends on where the
+        destination's mount points fall, not on the archive, and a ratio abort would
+        blame the archive for it.
+        """
+        self._copied_bytes += chunk_bytes
+        self._check_cumulative_bytes()
+
+    def _check_cumulative_bytes(self) -> None:
+        # Cumulative byte guard (always-stop).
+        written = self.total_bytes
+        if self._max_bytes is not None and written > self._max_bytes:
+            raise _AlwaysStopResourceLimitError(
+                f"Extraction limit reached: max_extracted_bytes={self._max_bytes} "
+                f"(written {written} bytes)"
+            )
+
+    def _check_archive_ratio(self) -> None:
         # Archive-wide ratio: activates on CUMULATIVE output; a whole-archive bomb signal
         # (always-stop). Uses the static outer compressed size when it is cheaply known,
         # otherwise a LIVE denominator — the compressed bytes consumed from the source so
@@ -301,6 +337,11 @@ class ExtractionCoordinator:
         # correct the tally with it (progress reports tallies of results, not of writes
         # attempted). Reset per ``run()``.
         self._members_extracted = 0
+        # RENAME: the last ``N`` tried per collision key of the requested name, so the
+        # next member colliding on that key resumes after it instead of rescanning from
+        # ``(1)``. Reset per ``run()``, and cleared whenever a claim is released (a freed
+        # name may be the first free one again).
+        self._rename_next: dict[str, int] = {}
 
     # --- entry point ---------------------------------------------------------------
 
@@ -311,6 +352,7 @@ class ExtractionCoordinator:
         self._ensure_dest_root(dest)
         dest_root = dest.resolve()
         forward_only = reader._streaming
+        self._rename_next = {}
 
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
@@ -782,6 +824,7 @@ class ExtractionCoordinator:
                 original,
                 transformed,
                 dest_path,
+                tracker,
                 source_paths,
                 orphans,
                 forward_only,
@@ -920,17 +963,28 @@ class ExtractionCoordinator:
 
         The counter goes before the final suffix so the extension is preserved
         (``photo.jpg`` → ``photo (1).jpg``); a directory has no suffix and appends to the
-        whole segment."""
+        whole segment.
+
+        The search resumes after the last ``N`` this run handed out for the same
+        collision key, rather than starting at 1 each time: restarting made ``k``
+        members colliding on one key cost ``k²`` probes, which a hostile archive of
+        case-variant names turns into hours. The counter records names handed out, not
+        names taken, so a member renamed and then failing to write leaves a gap in the
+        numbering (``(1)`` unused, next member gets ``(2)``). The result is still
+        deterministic, which is what the spec asks. ``_release_claim`` resets the
+        counters, so a name freed by an anti-item is found again."""
         parent = requested.parent
         if transformed.type == MemberType.DIRECTORY:
             stem, suffix = requested.name, ""
         else:
             stem, suffix = requested.stem, requested.suffix
-        n = 1
+        counter_key = collision_key(self._rel_name(dest, requested), self._policy)
+        n = self._rename_next.get(counter_key, 1)
         while True:
             candidate = parent / f"{stem} ({n}){suffix}"
             candidate_key = collision_key(self._rel_name(dest, candidate), self._policy)
             if candidate_key not in collision_map and not os.path.lexists(candidate):
+                self._rename_next[counter_key] = n + 1
                 return candidate
             n += 1
 
@@ -942,6 +996,21 @@ class ExtractionCoordinator:
         collision_map: dict[str, _Claim],
         dest: Path,
     ) -> ExtractionResult:
+        """Delete what an earlier member of this run wrote at the anti-item's name.
+
+        An exact path this run wrote wins. Otherwise the name is looked up through the
+        collision map, so it matches the way every other collision does: under STRICT
+        and STANDARD, an anti-item ``readme`` deletes the ``README`` this run wrote,
+        which on a case-insensitive filesystem is the file it names. TRUSTED keys on the
+        exact name, so there it is exact. Directories are not in the map, so a directory
+        matches only by its exact path. Nothing is deleted that this run did not write.
+        """
+        if dest_path not in written_paths:
+            claim = collision_map.get(
+                collision_key(self._rel_name(dest, dest_path), self._policy)
+            )
+            if claim is not None and claim.path in written_paths:
+                dest_path = claim.path
         if dest_path not in written_paths:
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
@@ -976,6 +1045,8 @@ class ExtractionCoordinator:
         claim = collision_map.get(key)
         if claim is not None and claim.path == path:
             del collision_map[key]
+            # A freed name can be the first free one for a later RENAME again.
+            self._rename_next.clear()
 
     def _write_file(
         self,
@@ -1086,6 +1157,7 @@ class ExtractionCoordinator:
         original: ArchiveMember,
         transformed: ArchiveMember,
         dest_path: Path,
+        tracker: BombTracker,
         source_paths: dict[int, list[Path]],
         orphans: list[_Orphan],
         forward_only: bool,
@@ -1105,7 +1177,9 @@ class ExtractionCoordinator:
                     original, None, ExtractionStatus.NOT_OVERWRITTEN, None
                 )
             os.makedirs(dest_path.parent, exist_ok=True)
-            self._place_link(source_paths, source.member_id, dest_path, transformed)
+            self._place_link(
+                source_paths, source.member_id, dest_path, transformed, tracker
+            )
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
             )
@@ -1150,7 +1224,13 @@ class ExtractionCoordinator:
         for source_id, group in orphans_by_source.items():
             if source_id in source_paths:
                 self._link_orphan_group(
-                    group, source_paths, source_id, results, collision_map, dest
+                    group,
+                    source_paths,
+                    source_id,
+                    tracker,
+                    results,
+                    collision_map,
+                    dest,
                 )
             else:
                 needed.add(source_id)
@@ -1329,6 +1409,7 @@ class ExtractionCoordinator:
             remaining,
             source_paths,
             source_member.member_id,
+            tracker,
             results,
             collision_map,
             dest,
@@ -1339,6 +1420,7 @@ class ExtractionCoordinator:
         group: list[_Orphan],
         source_paths: dict[int, list[Path]],
         source_id: int,
+        tracker: BombTracker,
         results: list[ExtractionResult],
         collision_map: dict[str, _Claim],
         dest: Path,
@@ -1373,7 +1455,9 @@ class ExtractionCoordinator:
                     )
                     continue
                 os.makedirs(resolved.parent, exist_ok=True)
-                self._place_link(source_paths, source_id, resolved, orphan.transformed)
+                self._place_link(
+                    source_paths, source_id, resolved, orphan.transformed, tracker
+                )
             except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
@@ -1521,26 +1605,36 @@ class ExtractionCoordinator:
         self,
         stream: BinaryIO | None,
         dest_path: Path,
-        member: ArchiveMember | None,
+        member: ArchiveMember,
         tracker: BombTracker | None,
     ) -> None:
-        """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata
-        (when given), then ``os.replace()``-ing it onto ``dest_path`` — atomic, so a
-        mid-stream failure never truncates or removes an existing destination (only the temp
-        is discarded), and the target name never appears half-written. The temp lives in the
-        destination directory so the rename stays on one filesystem. ``member`` is ``None``
-        when materializing an orphaned hardlink source's content (it applies no metadata; the
-        links each carry their own)."""
-        # mkstemp hands back an already-open fd; write straight into it (no close+reopen).
-        fd, tmp_name = tempfile.mkstemp(dir=dest_path.parent, prefix=_TMP_PREFIX)
-        tmp = Path(tmp_name)
+        """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata,
+        then ``os.replace()``-ing it onto ``dest_path`` — atomic, so a mid-stream failure
+        never truncates or removes an existing destination (only the temp is discarded),
+        and the target name never appears half-written. The temp lives in the destination
+        directory so the rename stays on one filesystem. When the orphan pass materializes
+        an unselected hardlink source, ``member`` is the *link's* transformed copy, so the
+        file carrying the content gets the link's (policy-capped) mode, not the source's.
+
+        Under TRUSTED, a member with no stored mode gets the mode an ordinary file
+        creation would, ``0o666`` less the umask, rather than ``mkstemp``'s private
+        ``0o600``. Nothing chmods it afterwards, so the temp's creation mode is the file's
+        final mode. STRICT and STANDARD give a mode-less member their own default instead
+        (see ``_effective_mode``), so this arm is TRUSTED's alone."""
+        if self._effective_mode(member) is None:
+            tmp = self._temp_sibling(dest_path.parent)
+            fd = _open_new_file(tmp, 0o666)
+        else:
+            # mkstemp hands back an already-open fd; write straight into it (no
+            # close+reopen). Its 0o600 keeps the content private until the chmod below.
+            fd, tmp_name = tempfile.mkstemp(dir=dest_path.parent, prefix=_TMP_PREFIX)
+            tmp = Path(tmp_name)
         try:
             with os.fdopen(fd, "wb") as dst:
                 self._copy_to_fileobj(
                     stream, dst, tracker, emit_progress=self._emit_progress
                 )
-            if member is not None:
-                self._apply_metadata(tmp, member)
+            self._apply_metadata(tmp, member)
             os.replace(tmp, dest_path)
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
@@ -1592,10 +1686,18 @@ class ExtractionCoordinator:
         source_id: int,
         new_path: Path,
         member: ArchiveMember,
+        tracker: BombTracker,
     ) -> None:
         """Create ``new_path`` as a hardlink to the source's content, trying each recorded
         on-disk path in turn; on all-cross-device (EXDEV), copy from an existing path.
-        Appends ``new_path`` so a later same-device link can reuse it.
+        Appends ``new_path`` so a later same-device link can reuse it — which is what
+        keeps a fan-out across one device boundary to a single copy per device rather
+        than one per link.
+
+        The copy is a real write of the source's full size, so it goes through
+        ``tracker`` and counts toward ``max_extracted_bytes``; a link adds no bytes.
+        It is written into a new file, not ``shutil.copy2``'d, so it carries this
+        member's metadata alone, never the source file's mode.
 
         The link is built at a temp sibling and ``os.replace``d into place, the same way
         a FILE write lands: ``os.link`` needs a free name, so the alternative is to
@@ -1616,7 +1718,18 @@ class ExtractionCoordinator:
                     raise
             else:
                 # Every recorded path is cross-device: fall back to a copy from the first.
-                shutil.copy2(existing[0], tmp)
+                # Created private when a mode follows (as mkstemp would), at the ordinary
+                # creation mode when none does, the same as a FILE write.
+                create_mode = (
+                    0o600 if self._effective_mode(member) is not None else 0o666
+                )
+                with (
+                    open(existing[0], "rb") as src,
+                    os.fdopen(_open_new_file(tmp, create_mode), "wb") as dst,
+                ):
+                    while chunk := src.read(_CHUNK):
+                        tracker.count_copy(len(chunk))
+                        dst.write(chunk)
                 copied = True
             if copied:
                 # Applied before the swap, so the final name never appears with the
@@ -1642,19 +1755,26 @@ class ExtractionCoordinator:
             if not os.path.lexists(candidate):
                 return candidate
 
+    def _effective_mode(self, member: ArchiveMember) -> int | None:
+        """The mode to give what ``member`` writes; ``None`` means the creation default.
+
+        The policy transforms fill in a missing mode, but a user filter runs after them
+        and may hand back ``mode=None``. STRICT and STANDARD still owe their documented
+        default then (file ``0o644``, dir ``0o755``), not whatever the umask leaves.
+        Only TRUSTED means "as stored", and a member that stored nothing gets the
+        creation default.
+        """
+        if member.mode is not None or self._policy is ExtractionPolicy.TRUSTED:
+            return member.mode
+        return 0o755 if member.is_dir else 0o644
+
     def _apply_metadata(self, path: Path, member: ArchiveMember) -> None:
-        """Best-effort mode / mtime / ownership. Failures are swallowed (best-effort)."""
-        if member.mode is not None:
-            try:
-                os.chmod(path, member.mode)
-            except OSError:
-                pass
-        if member.modified is not None:
-            try:
-                ts = member.modified.timestamp()
-                os.utime(path, (ts, ts))
-            except (OSError, ValueError, OverflowError):
-                pass
+        """Best-effort ownership / mode / mtime. Failures are swallowed (best-effort).
+
+        Ownership goes first: Linux ``chown`` clears setuid/setgid on a non-directory
+        even when root calls it, so a ``chmod`` before it would lose exactly the bits
+        TRUSTED promises to keep. GNU tar orders the two the same way for this reason.
+        """
         # Ownership only under TRUSTED as root (STRICT/STANDARD never chown).
         if (
             self._policy is ExtractionPolicy.TRUSTED
@@ -1666,6 +1786,18 @@ class ExtractionCoordinator:
             try:
                 os.chown(path, member.uid, member.gid)
             except OSError:
+                pass
+        mode = self._effective_mode(member)
+        if mode is not None:
+            try:
+                os.chmod(path, mode)
+            except OSError:
+                pass
+        if member.modified is not None:
+            try:
+                ts = member.modified.timestamp()
+                os.utime(path, (ts, ts))
+            except (OSError, ValueError, OverflowError):
                 pass
 
     # --- progress / misc -----------------------------------------------------------

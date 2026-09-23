@@ -128,6 +128,21 @@ promise with that line; treat `0.2.0` as the first release of this library.
   than it holds, and a wrong password on an AES-encrypted PPMd folder, where the
   `MemoryError` also stopped password iteration before the correct candidate was tried.
   Reading a PPMd member larger than 2 GiB no longer raises `OverflowError` either.
+- **Extraction under `TRUSTED` keeps what the archive stored.** As root, a setuid or
+  setgid file now keeps those bits: the mode used to be applied before the ownership,
+  and Linux `chown` clears both. A file whose archive stores no mode, such as a ZIP
+  entry written on Windows, now gets the mode an ordinary new file gets (`0o666` less
+  the umask) instead of `0o600`.
+- **`OverwritePolicy.RENAME` finds a free name in one step per member.** Each colliding
+  member used to count up from `name (1)` again, so an archive of many names differing
+  only in case took time quadratic in their number: 45 seconds for four thousand.
+- **Under `STRICT`, trailing dots and spaces are stripped after a `\` as well.** A TAR
+  name keeps `\` as a literal character and Windows writes it as a separator, so
+  `foo. \bar` kept its trailing space where `foo. /bar` lost it, and an all-dots
+  segment after a `\` was not refused.
+- **An anti-item deletes the file its name matches under the collision rules.** Under
+  `STRICT` and `STANDARD` an anti-item `readme` now removes the `README` the same
+  extraction wrote, as every other name collision already treated the two.
 
 ### Changed
 
@@ -214,6 +229,17 @@ promise with that line; treat `0.2.0` as the first release of this library.
   AES key derived from them, so a traceback with locals, a debugger dump or a debug log
   line could carry them. The field is now excluded from `repr`, as the AES key in the
   decrypt parameters already was.
+- **`STRICT` extraction no longer widens a file's permissions.** A file stored as
+  `0o660` (group-shared, what `umask 007` produces) was written as `0o644`, readable
+  by every user. The stored mode is now masked with `0o644`, so it comes out `0o640`.
+  A hardlink's stored mode gets the same treatment under `STRICT` and `STANDARD` as a
+  file's: a link written as a copy (its source not selected, or on another device) used
+  to keep any mode, setuid and world-write included. A mode a filter removes falls back
+  to the policy's default (`0o644`, `0o755` for a directory).
+- **A hardlink copied across a device boundary counts toward `max_extracted_bytes`.**
+  When a link cannot be made because the destination spans two filesystems, archivey
+  copies the content instead; those copies were not counted, so a fan-out of links could
+  write many times the cap.
 - **7z `NumUnpackStreams` no longer allocates an unbounded list.** `kNumUnPackStream`
   was not bounded by remaining header bytes: with no `kSize`/`kCRC`, the parser did
   `[None] * N` (and `[True] * N` on the CRC all-defined path) from a few header
