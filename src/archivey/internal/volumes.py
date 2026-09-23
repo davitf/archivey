@@ -74,6 +74,8 @@ SourceSequence = Sequence[SourceItem]
 # detection, while a ``.zip`` name still matches the uncapped
 # ``is_zip_split_segment_name`` and is refused as a spanned ZIP. The ``.partN`` pattern
 # below has the same cap for the same reason.
+# The largest part the six-digit ``part`` groups below can hold.
+_MAX_VOLUME_PART = 999_999
 _NUMBERED_VOLUME_RE = re.compile(
     r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>\d{3,6})$", re.IGNORECASE
 )
@@ -910,8 +912,12 @@ def incomplete_lone_numbered_volume_error(
     ]
     if earlier > _MAX_ENUMERATED_PARTS:
         missing.append(f"… ({earlier} earlier parts in total)")
-    missing.append(f"{base}.{part + 1:03d}")
-    missing_text = ", ".join(missing) + ", …"
+    if part < _MAX_VOLUME_PART:
+        # At the cap the successor is a name the pattern refuses, so it is not named.
+        missing.append(f"{base}.{part + 1:03d}")
+        missing_text = ", ".join(missing) + ", …"
+    else:
+        missing_text = ", ".join(missing)
     return TruncatedError(
         f"Incomplete multi-volume set for {base}: "
         f"found part {part} only; missing {missing_text}"

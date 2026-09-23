@@ -1254,7 +1254,7 @@ def test_lone_numbered_volume_message_is_not_sized_by_its_part_number(
     assert str(excinfo.value) == (
         "Incomplete multi-volume set for a.zip: found part 999999 only; missing "
         "a.zip.001, a.zip.002, a.zip.003, a.zip.004, a.zip.005, a.zip.006, "
-        "a.zip.007, a.zip.008, … (999998 earlier parts in total), a.zip.1000000, …"
+        "a.zip.007, a.zip.008, … (999998 earlier parts in total)"
     )
 
 
@@ -1281,9 +1281,10 @@ def test_numbered_part_number_too_long_to_parse_is_not_a_volume_name(
     Python refuses to parse more than ``sys.get_int_max_str_digits()`` digits (4300
     by default) with a bare ``ValueError``. A stream's ``name`` and the paths of an
     explicit sequence are read before anything is opened, so both used to raise it
-    out of ``open_archive``. Past six digits the lone-part refusal no longer applies:
-    a ``.7z`` name goes to ordinary detection, and a ``.zip`` name is still caught by
-    the separate spanned-ZIP name check.
+    out of ``open_archive``. Past part 999 999 the lone-part refusal no longer
+    applies: a ``.7z`` name goes to ordinary detection, and a ``.zip`` name is still
+    caught by the separate spanned-ZIP name check. Leading zeros do not count
+    towards the cap, so a long run of zeros is still part 0.
     """
     digits = "1" * 5000
     zip_bytes = b"PK\x03\x04" + b"\x00" * 60
@@ -1303,6 +1304,11 @@ def test_numbered_part_number_too_long_to_parse_is_not_a_volume_name(
     # The cap is on the value, not the width: zero padding does not count.
     assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip.0999999")
     assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip.0001000000") is None
+    assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip." + "0" * 5000)
+    # The same value cap on the `.partN` scheme.
+    assert volumes_mod._rar_part_number("x.part0999999.rar") == 999999
+    assert volumes_mod._rar_part_number("x.part1000000.rar") == 0
+    assert volumes_mod._rar_part_number("x.part0001000000.rar") == 0
 
     # The explicit sequence: name validation used to raise before the open did.
     with pytest.raises(OpenError, match="Cannot open volume"):
