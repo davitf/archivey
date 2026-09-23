@@ -506,6 +506,25 @@
   requirement currently forbids passing multiple member paths, so this needs a spec
   change and not just an optimization. Raised by davitf, 2026-09-19.
 
+- **A second prebuilt `DecoderLimits` with smaller caps** — asked for by davitf,
+  2026-09-23, in the same comment that settled the 2 GiB default: a preset "tuned for
+  server safety, that would allow common real life archives but reject ones that are too
+  expensive to open". The numbers are known — 256 MiB covers everything 7-Zip's own
+  presets write (16 MiB plain, 256 MiB at `-mx9`, both input-independent), so it admits
+  ordinary archives and refuses a deliberate `mem=2g`. **Recommended for a later change,
+  not the one that added the type**: with a single field on `DecoderLimits` the preset is
+  an alias for `DecoderLimits(max_decoder_memory=256 * 2**20)`, which a caller can already
+  write, and a name that promises a tuned bundle should arrive with a bundle — the LZMA
+  dictionary cap and the total KDF budget are both heading for this type. Adding a class
+  attribute later is purely additive.
+  **The name is open**, and davitf said so explicitly. `UNTRUSTED` is the suggestion on
+  the table: `STRICT` is taken in spirit by `strict_archive_eof` in the same file and by
+  archivey's use of "strict" for how harshly corruption is treated, while `UNTRUSTED`
+  names what the caller knows — the provenance of the input — rather than how tight the
+  numbers are, and reads correctly beside `UNLIMITED`. It also happens to be the answer
+  for a host whose headroom is below the default cap, which the `DecoderLimits` docstring
+  currently covers in prose only.
+
 - **Threat-model row for archive-declared decoder memory** — a codec that sizes its
   working set from a number in the archive's own header (7z PPMd var.H's 32-bit window,
   ZIP method 98's megabyte count, the LZMA dictionary size) has no row of its own in

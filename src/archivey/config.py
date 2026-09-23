@@ -289,8 +289,8 @@ class DecoderLimits:
             member to 16× its size rounded up to a power of two (floor 64 KiB).
             Its presets never ask for much: plain ``-m0=PPMd`` declares 16 MiB
             and ``-mx9`` 256 MiB, whatever the input. Reaching 2 GiB therefore
-            takes both an explicit ``mem=2g`` and a member of 128 MiB or more;
-            only ``mem=3g`` and ``mem=4g`` go above it. The field itself is
+            takes an explicit ``mem=2g``, which cannot go above it at any member
+            size; only ``mem=3g`` and ``mem=4g`` do. The field itself is
             32 bits, so a header may declare just under 4 GiB — and a 153-byte
             archive may declare it, which is the case the cap is really for,
             since asking costs an attacker nothing and it is read before any
@@ -301,9 +301,20 @@ class DecoderLimits:
             archive 7-Zip's own presets write, by a factor of eight, and admits
             a deliberate ``mem=2g`` as well; it refuses the top of the field.
             Reading archives written with ``mem=3g`` or above means raising it
-            or passing :attr:`UNLIMITED`. Code that opens files it did not
-            choose — an upload endpoint, a mail scanner — wants the opposite
-            move: 256 MiB still takes everything the presets produce.
+            or passing :attr:`UNLIMITED`.
+
+            What the default is *not* is a promise about the machine. The cap
+            bounds what an archive may ask for; whether an allocation succeeds
+            is a property of the host, and the two are independent. A process
+            with less headroom than the cap — a container under a memory limit,
+            a small VM — gets nothing from the default: a declaration below
+            2 GiB passes the guard, and the allocation that follows is the one
+            that fails, which is the unsurvivable case described above. Such a
+            process should set the cap under its own headroom, anchored on the
+            limit it runs with rather than on anything 7-Zip writes. Code that
+            opens files it did not choose — an upload endpoint, a mail scanner —
+            wants the same move for a different reason: 256 MiB still takes
+            everything the presets produce.
     """
 
     max_decoder_memory: int | None = 2 * 2**30
