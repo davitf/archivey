@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterator
 from collections.abc import Sequence as ABCSequence
+from contextvars import ContextVar
 from typing import TypeVar, cast
 
 from archivey.config import PasswordInput, PasswordProvider, PasswordRequest
@@ -13,6 +14,14 @@ from archivey.internal.arg_checks import describe_value
 from archivey.types import ArchiveMember
 
 _T = TypeVar("_T")
+
+# The provider call running in this context, if any. The reentry check reads it as
+# well as the thread: a provider that hands reader work to a helper thread which
+# carries its context (``asyncio.to_thread``, ``contextvars.copy_context().run``, a
+# thread that inherits context) is still recognized as reentering.
+_PROVIDER_CALL: ContextVar[object | None] = ContextVar(
+    "archivey_password_provider_call", default=None
+)
 
 
 class _PasswordCandidatesExhausted(EncryptionError):
@@ -39,9 +48,13 @@ class _PasswordCandidates:
 
     Under ``MemberStreams.CONCURRENT`` the known-good snapshot/promotion and provider
     callback are synchronized (D10): the provider is invoked with **no** Archivey lock
-    held; same-reader provider reentry raises ``ArchiveyUsageError``. Concurrent
-    first-touch may call the provider / attempt a candidate more than once — promotion
-    still converges.
+    held, one call at a time per reader; a second thread waits for the first call to
+    return. Reentry from inside the provider raises ``ArchiveyUsageError`` when it
+    comes from the provider's own thread or from a thread carrying its context; a
+    helper thread with neither cannot be told apart from an independent worker, so it
+    waits, and a provider that blocks on such a thread deadlocks. Concurrent
+    first-touch may call the provider / attempt a candidate more than once —
+    promotion still converges.
     """
 
     __slots__ = (
@@ -49,8 +62,8 @@ class _PasswordCandidates:
         "_known_good",
         "_provider",
         "_state_lock",
-        "_provider_lock",
-        "_provider_depth",
+        "_provider_turn",
+        "_provider_owner",
     )
 
     def __init__(
@@ -64,8 +77,12 @@ class _PasswordCandidates:
         self._candidates: tuple[bytes, ...] = tuple(candidates)
         self._provider = provider
         self._state_lock = threading.Lock()
-        self._provider_lock = threading.Lock()
-        self._provider_depth = 0
+        # The running provider call's thread and token, or None. Identified rather
+        # than counted: a count cannot tell a provider calling back into archivey (a
+        # deadlock if it waited, so refused) from a second worker that needs the
+        # provider at the same moment (a correct program, so it waits).
+        self._provider_turn = threading.Condition(threading.Lock())
+        self._provider_owner: tuple[int, object] | None = None
 
     @classmethod
     def from_input(cls, password: PasswordInput) -> _PasswordCandidates:
@@ -101,19 +118,6 @@ class _PasswordCandidates:
                 self._known_good or self._candidates or self._provider is not None
             )
 
-    def has_static_candidates(self) -> bool:
-        """True when the caller supplied concrete password bytes (not merely a provider).
-
-        A bare :data:`~archivey.config.PasswordProvider` is not "supplying a password"
-        until a backend asks for one, which is why the 7z header-encryption path
-        distinguishes the two: it must decide *before* asking whether it has anything to
-        try. ``open_archive`` deliberately does **not** use this — a password on a format
-        with no encryption is a resource offered, not an assertion, so all three forms
-        are accepted alike (``archive-reading``).
-        """
-        with self._state_lock:
-            return bool(self._known_good or self._candidates)
-
     def is_ambiguous(self) -> bool:
         """Whether a weak password check needs confirmation before accepting a result.
 
@@ -131,8 +135,9 @@ class _PasswordCandidates:
     def ask_provider(self, member: ArchiveMember | None, attempt: int) -> bytes | None:
         """Return the provider's next answer, or ``None`` to stop.
 
-        Invokes the provider with no Archivey lock held (the provider lock is released
-        around the callback). Same-reader reentry raises ``ArchiveyUsageError``.
+        Invokes the provider with no Archivey lock held; calls from other threads wait
+        their turn. Reentry from inside the provider raises ``ArchiveyUsageError`` (see
+        the class docstring for which reentry can be recognized).
         """
         if self._provider is None:
             return None
@@ -142,20 +147,32 @@ class _PasswordCandidates:
         self, member: ArchiveMember | None, attempt: int
     ) -> bytes | None:
         assert self._provider is not None
-        with self._provider_lock:
-            if self._provider_depth > 0:
+        me = threading.get_ident()
+        token = object()
+        with self._provider_turn:
+            owner = self._provider_owner
+            if owner is not None and (
+                owner[0] == me or _PROVIDER_CALL.get() is owner[1]
+            ):
                 raise ArchiveyUsageError(
                     "Password provider reentered a password-requiring operation on the "
                     "same archive reader. Return a password (or None) without calling "
                     "back into archivey from the provider."
                 )
-            self._provider_depth += 1
+            # Another thread's provider call is running: wait for it rather than
+            # refuse, so callbacks stay serialized (reader-concurrency).
+            while self._provider_owner is not None:
+                self._provider_turn.wait()
+            self._provider_owner = (me, token)
+        context_token = _PROVIDER_CALL.set(token)
         try:
             # Provider runs with no Archivey lock held (D10).
             raw = self._provider(PasswordRequest(member=member, attempt=attempt))
         finally:
-            with self._provider_lock:
-                self._provider_depth -= 1
+            _PROVIDER_CALL.reset(context_token)
+            with self._provider_turn:
+                self._provider_owner = None
+                self._provider_turn.notify()
         if raw is None:
             return None
         if not isinstance(raw, (str, bytes)):

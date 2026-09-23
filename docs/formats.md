@@ -151,6 +151,9 @@ behaviour. The complete list is on the two classes.
   it is implemented natively on stdlib `hashlib`. RAR5 members with the HASHMAC flag
   verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a password is available;
   tweaked values are not exposed as plain `member.hashes`.
+- **Password lists on encrypted data:** RAR5 records a password check per member, so a
+  list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
+  is given the first candidate, so put the right password first for those.
 - **File-version history (`-ver`):** revision rows appear in `members()` as names like
   `path;1` with `extra["rar.file_version"]` and `is_current=False`; the live path stays
   `is_current=True`. Default extract **skips** non-current rows.

@@ -511,6 +511,13 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         _ENCRYPTION,
         extra=("-m3", "-ppassword"),
     )
+    # Solid and encrypted: one `unrar p` pass needs one password for every member.
+    build(
+        rar5_bin,
+        "encryption_solid__.rar",
+        _ENCRYPTION,
+        extra=("-s", "-m3", "-ppassword"),
+    )
     build(
         rar5_bin,
         "encrypted_header__.rar",
