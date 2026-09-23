@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
-from archivey.escaping import escape_control_chars
+from archivey.escaping import display_path, escape_control_chars
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.types import ArchiveFormat, ArchiveMember, MemberType
 
@@ -36,6 +37,19 @@ def escape_member_name(name: str) -> str:
     not escape them again, or the backslashes would double.
     """
     return escape_control_chars(name)
+
+
+def escape_path(path: str | os.PathLike[str]) -> str:
+    """Render a path for terminal display: ``/``-separated, then escaped.
+
+    For every path the CLI prints that is not already relative to an extraction root —
+    the wrapper directory, the hoist destination, a collision's destination, the
+    closing summary. Most are built from a member's top-level name or from the archive's
+    own filename, and either can carry control bytes. Rendering ``/``-separated first
+    keeps a native Windows path from having every separator doubled by the escape
+    (:func:`archivey.escaping.display_path`).
+    """
+    return escape_control_chars(display_path(path))
 
 
 def format_error_detail(exc: BaseException) -> str:

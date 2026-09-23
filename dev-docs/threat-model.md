@@ -278,7 +278,9 @@ reported on and author what the operator sees in its place. `cli/format.py`'s
 `escape_member_name` exists for this (GNU `ls` / `tar` quote for the same reason). PR #235
 (whose subject is `extraction-results-authoritative` — the escaping rode in on it) routed
 the **report-line** print sites through it: the report lines themselves, the error detail
-appended to `failed:` / `blocked:`, and the hoist's messages.
+appended to `failed:` / `blocked:`, and the hoist's collision lines (`renamed:`,
+`skipped:`, `Destination already exists:`). That pass was a hand audit and it was not
+complete — see *Print sites after the second audit* below.
 
 **Implemented** (`escape-cli-log-records`): archive-derived text is escaped where it
 **becomes a message**, not where a message is displayed. `ArchiveyError` and
@@ -344,8 +346,11 @@ Escaping at construction closes it: that line is the escaped message.
 interpolated raw would render `C:\\Users\\out\\a.txt`. Every path in a message is
 rendered `/`-separated first by `escaping.display_path()`, leaving the escape nothing to
 double; a backslash that survives is then a character in a *name*, which is what the
-escape is for. Print sites already followed this rule by rendering relative to the
-extraction root. Guarded by a static sweep, since the failure is invisible on Linux.
+escape is for. Guarded by a static sweep, since the failure is invisible on Linux. Print
+sites follow the same rule: a member-derived path is rendered relative to the extraction
+root, and any other path goes through `cli/format.escape_path` (`display_path`, then the
+escape). That second half is newer than it looks — until the second audit below, the
+hoist's collision lines escaped `str(dest)`, a native path.
 
 *Escape exactly once.* Escaping already-escaped text doubles the backslashes the first
 escape wrote. Review found this was not a rare cosmetic edge: **52 message sites**
@@ -374,6 +379,33 @@ render `\x9b`. The guarantee is now stated as inertness, not unique recoverabili
 Tests for the fixed print sites: `tests/test_cli.py::test_extract_escapes_*`. Those use a
 Windows-legal U+2028 for the cross-platform cases and keep the ANSI/CR spoof in a
 Unix-only test, because a name containing control bytes cannot be created on NTFS.
+
+*Print sites after the second audit.* The first print-site pass missed the widest surface
+of all: `archivey info` printed every field raw, including an archive comment — arbitrary
+bytes, up to 64 KiB in a ZIP — on **stdout**, where `2>/dev/null` hides nothing. It also
+missed the closing extract summary, which names the sole top-level entry (the member's own
+name), and the hoist's `moved to`, `removed wrapper`, `hoist stopped` and `files left in`
+lines. All are escaped now: `info` escapes every value it prints, and the summary and
+hoist lines go through `escape_path`. `main()`'s `OSError` notice escaped *twice* (`!r`
+and then the print-site escape) and now escapes once. Tests:
+`tests/test_cli.py::test_extract_summary_escapes_*`, `test_hoist_escapes_*`,
+`test_info_escapes_*`, `test_missing_archive_name_is_escaped_once`.
+
+Two hand audits in a row each found sites the previous one missed, so print sites are now
+guarded like message sites: `tests/test_escaping.py::test_cli_print_sites_escape_what_they_print`
+walks every `print()` in `cli/` and fails on an interpolated value that is neither passed
+through an escaping renderer nor listed, with its reason, as safe by type;
+`test_cli_does_not_escape_a_native_path` fails on a bare escape of something path-shaped.
+The first sweep follows a local name to its assignments in the enclosing function and a
+same-module helper call to its return values, so `label = f"{escape_path(...)}"` and
+`_summary_dest_label` pass on their own evidence rather than on their spelling.
+*Residual:* what it cannot follow — an attribute, a call into another module, a `str`
+parameter — passes only through the allow-list, and there the reason is trusted. Two
+entries carry real text: `_report_extraction`'s `dest_label` parameter (the hoist's label,
+built with `escape_path`) and `info`'s `_field` arguments (checked at `_field`'s call
+sites instead). A helper that returns text for a print site to escape, like
+`_format_os_error`, is checked only by its own tests. The progress bar hands tqdm an
+escaped `desc` and is outside the sweep, since it does not call `print()`.
 
 ### O10. A content probe fabricates a member from arbitrary attacker bytes — narrowed
 
@@ -580,6 +612,58 @@ exception's traceback pins the frame — and the fp — for as long as a
 catch-and-continue loop holds it, one descriptor per refused image. The open is
 wrapped so the handle is closed before the exception leaves. Found on PR #315
 (S22-K1); tracked internally.
+
+### O17. A seek trusts the format's own index, so a crafted `.xz` or `.lz` can misplace bytes — accepted
+
+Random access into a single-file `.xz` or `.lz` resolves the target offset from the file's
+own index without decompressing what comes before it: the XZ stream index (block
+unpadded and uncompressed sizes), or the lzip member trailers (`data_size`,
+`member_size`). Both are attacker-controlled. An index that is consistent with itself
+but describes different unit boundaries than a forward decode would passes every check
+that does not decompress. A seek straight to an offset, with no full read before it,
+then serves bytes from another unit, and `try_get_size()` / `member.size` report the
+index's total. Nothing raises.
+
+Measured on PR #407 against both formats, with a forward read of the same bytes raising
+`CorruptionError` in each case:
+
+- **lzip**, three 256-byte members `A`/`B`/`C`: member 1's trailer `member_size` set to
+  cover members 0 and 1. The backward trailer walk lands on member 0's real `LZIP`
+  magic and succeeds with two members; `seek(256)` serves `C`, size reads 512 of 768.
+- **xz**, four 64 KiB blocks: index records 0 and 1 merged into one (unpadded
+  `round_up_4(u0) + u1`, uncompressed `d0`, CRCs recomputed). The stream-header
+  arithmetic still lands on the real header; `seek(65536)` serves block `C`, size reads
+  196 608 of 262 144.
+
+*Accepted, ruled by davi on 2026-09-23 (PR #407 review round 1).* No cheap check can
+close it: where a unit really ends is known only by decompressing it, and not having to
+do that is the reason the index exists. The alternative, decoding from the start before
+the first cold seek trusts the index, would remove fast random access for every honest
+file. xz's and lzip's own tools trust their indexes the same way.
+
+What does hold: a forward read never trusts the index. It verifies every lzip trailer
+field (CRC-32, `data_size` and, since PR #407, `member_size`) and lets liblzma check
+every XZ block against its stream index, so a full read of a crafted file raises. Seek
+points a forward read records are ones the decode has already checked: lzip's come from
+validated trailers, and an XZ stream's block points are read only after liblzma has
+accepted that stream's index.
+
+A seek that lands *inside* the misdescribed region resumes from a point before the lie
+and decodes through it, so it raises once the decode reaches the end of the lying unit,
+and not before. The bytes returned up to then are the right ones for their offsets. For
+lzip that end is the lying member's trailer: on the file above, `seek(100)` then
+`read(16)` raises, because the 256-byte members decode within the first feed. For xz it
+is the end of the whole stream, where liblzma checks the index: `seek(1000)` then
+`read(70000)` returns correct bytes with no error, and `read()` to the end raises.
+
+A seek *past* the lie followed by a read to the end is not caught. Every unit after the
+target is genuine and passes its own checks, and the decode reaches the file's last byte
+exactly where the index says it should; only the numbering of offsets is wrong. On the
+two files above, `read()` after the seek ends cleanly at 512 and 196 608. A consumer
+that must not act on misplaced bytes should read the stream through once, or verify a
+digest, before seeking into it. A heuristic diagnostic for an ambiguous trailer walk
+(an `LZIP` magic at a member start the walk skipped) was considered and not taken: an
+attacker who controls the trailers can avoid it.
 
 ### O18. The archive chooses what a password attempt costs — open
 

@@ -514,6 +514,11 @@ _volume_style_names = st.one_of(
 )
 
 
+# A part number past ``sys.get_int_max_str_digits()`` (4300 by default) made ``int()``
+# raise, which the strategy's short digit runs never reach.
+@example(name="x.zip." + "1" * 5000)
+@example(name="x.part" + "1" * 5000 + ".rar")
+@example(name="x.part" + "1" * 5000 + ".exe")
 @given(name=_volume_style_names)
 def test_volume_part_helpers_total(name: str) -> None:
     for number in (

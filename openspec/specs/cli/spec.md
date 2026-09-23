@@ -12,7 +12,9 @@ Shell interface for inspecting, verifying, and extracting archives with fnmatch 
 | `safe-extraction` | Default safe extraction policy used by `extract` |
 | `packaging-and-extras` | `[recommended]` extra supplies `tqdm`; core remains importable without it |
 | `access-mode-and-cost` | Optional I/O instrumentation/cost reporting |
+
 ## Requirements
+
 ### Requirement: archivey command with list, test, and extract subcommands
 
 The system SHALL provide an `archivey` command whose verbs are **subcommands**:
@@ -176,7 +178,9 @@ message is displayed:
   message the CLI never prints itself — an uncaught exception whose traceback the
   interpreter writes to stderr, whose final line is the exception's message.
 - **Print sites** escape the member names and member-derived paths they format
-  themselves — listings, report lines, summaries.
+  themselves — listings, report lines, summaries — and every archive-level value they
+  print, of which the archive comment `archivey info` shows is the widest: arbitrary
+  bytes, and on **stdout**, so redirecting stderr does not hide it.
 
 The CLI's log handler SHALL NOT escape the records it renders. Escaping a message that
 already escaped itself would double every backslash in it, and the library's own log
@@ -190,7 +194,10 @@ exceptions escape themselves.
 
 A member-derived **path** formatted by a print site SHALL be rendered relative to the
 operation's root, with `/` separators, before escaping. A native path would otherwise
-have every separator doubled by the backslash escape on Windows.
+have every separator doubled by the backslash escape on Windows. Any other path a print
+site formats — the wrapper directory named after the archive file, the destination a
+single root was hoisted to, the archive path `info` echoes — SHALL be rendered with `/`
+separators before escaping, for the same reason.
 
 Escaping is a **display** concern and SHALL NOT change the bytes written to disk, the
 member names the library reports, or any value on `ExtractionResult`.
@@ -209,6 +216,11 @@ member names the library reports, or any value on `ExtractionResult`.
 | A handler installed by an embedding app or `caplog` | Receives the record unescaped and unmodified |
 | An ordinary member name with no control bytes | Printed unchanged |
 | A Windows destination path in a report line | Separators not doubled (rendered relative, `/`-separated, before escaping) |
+| The same name as the single top-level directory, in the closing summary and the hoist's `moved to` line | Escaped — the summary is the last line the operator reads |
+| An archive whose filename carries a non-printable character, extracted into a wrapper named after it | `extracting into` and the summary print the wrapper escaped |
+| A ZIP comment carrying `\x1b[2K` + `\r`, shown by `archivey info` | Printed on stdout as `\x1b[2K` / `\r` text; no raw ESC or CR |
+| Any other `archivey info` value (format version, `-v` extra entries) | Escaped the same way |
+| An archivey exception `info` prints as its `open:` line | Not escaped a second time |
 
 ### Requirement: info and detect summarize archive identity
 
@@ -317,4 +329,3 @@ filesystem entry literally named `-`.
 | --- | --- |
 | `archivey list -` | Non-zero exit; message states stdin archives are not supported yet |
 | `archivey extract -` | Same |
-

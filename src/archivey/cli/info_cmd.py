@@ -7,10 +7,16 @@ from typing import TextIO
 
 from archivey import detect_format, open_archive
 from archivey.cli.common import reject_stdin_token
-from archivey.cli.format import format_access_summary, format_format_label
+from archivey.cli.format import (
+    escape_path,
+    format_access_summary,
+    format_error_detail,
+    format_format_label,
+)
 from archivey.cli.password import resolve_password
 from archivey.config import PasswordInput
 from archivey.cost import CostReceipt
+from archivey.escaping import escape_control_chars
 from archivey.exceptions import ArchiveyError
 from archivey.types import ArchiveFormat
 
@@ -19,8 +25,27 @@ def _format_label(fmt: ArchiveFormat) -> str:
     return format_format_label(fmt)
 
 
+def _field(key: str, text: str, out: TextIO) -> None:
+    """Print one ``key: value`` line; ``text`` must already be terminal-safe."""
+    print(f"{key + ':':<12} {text}", file=out)
+
+
 def _line(key: str, value: object, out: TextIO) -> None:
-    print(f"{key + ':':<12} {value}", file=out)
+    """Print one ``key: value`` line, escaping the value.
+
+    Every value is escaped, not only the ones known to come from the archive today.
+    The comment is the obvious one — arbitrary bytes, up to 64 KiB in a ZIP — but the
+    version string and the ``extra`` bag are archive- or backend-derived too, and an
+    escape costs nothing on the enums, booleans and integers that make up the rest.
+    The key is escaped as well: ``extra.<key>`` names come from the open ``extra`` bag.
+
+    Two values do not go through here. The archive path goes through
+    :func:`~archivey.cli.format.escape_path`, which renders it ``/``-separated
+    first so a Windows path's separators are not doubled; and an exception goes
+    through :func:`~archivey.cli.format.format_error_detail`, because archivey's own
+    exceptions have already escaped their message.
+    """
+    _field(escape_control_chars(key), escape_control_chars(str(value)), out)
 
 
 def _print_cost_axes(cost: CostReceipt, out: TextIO) -> None:
@@ -50,7 +75,7 @@ def run_info(
         print("track-io: n/a for info (no member-body decode)", file=err)
 
     detected = detect_format(archive)
-    _line("path", archive, out)
+    _field("path", escape_path(archive), out)
     _line("format", _format_label(detected.format), out)
     _line("confidence", detected.confidence.value, out)
     _line("detected_by", detected.detected_by, out)
@@ -80,6 +105,6 @@ def run_info(
                     _line(f"extra.{key}", value, out)
     except ArchiveyError as exc:
         # Detection succeeded enough to print identity; open failure is still a fail.
-        _line("open", exc, err)
+        _field("open", format_error_detail(exc), err)
         return 1
     return 0

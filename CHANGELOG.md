@@ -75,6 +75,14 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `MemberStreams.CONCURRENT`, a thread that needed the provider while another thread's call
   was running got the `ArchiveyUsageError` meant for a provider that calls back into the
   reader. It now waits for that call to finish; the reentry error stays for its real case.
+- **A 7z member's `compression` chain is now in compress order**, as documented on
+  `ArchiveMember.compression` and the way 7-Zip itself lists it: a BCJ member reads
+  `(BCJ, LZMA2)`, filters first and packing codec last. It used to come back reversed,
+  because a 7z folder stores its coders in decode order and the reader copied them as
+  stored. ZIP, RAR, TAR and ISO members carry at most one codec and were unaffected.
+  A 7z coder archivey does not recognise, such as the ARM64 filter, is now listed as
+  `UNKNOWN`, as ZIP and RAR already did; it used to be dropped, so such a member listed
+  as plain LZMA and then refused to read.
 - **A Windows symlink in a ZIP or a 7z now reports its real target.** Both formats store
   such a link as a `REPARSE_DATA_BUFFER` — the Win32 structure, not a bare path — and
   neither backend parsed it. 7z decoded those ~92 binary bytes as UTF-8 and handed the
