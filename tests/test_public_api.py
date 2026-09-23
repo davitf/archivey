@@ -101,3 +101,43 @@ def test_public_symbols_are_in_all() -> None:
     assert not missing_demoted, (
         f"demoted symbols no longer importable from archivey: {sorted(missing_demoted)}"
     )
+
+
+def test_no_public_name_reports_an_internal_module() -> None:
+    """Every class and function in ``__all__`` reports ``archivey``, not ``internal``.
+
+    ``pickle`` stores ``__module__``, so a name reporting ``archivey.internal.…`` would
+    freeze that path into data callers persist. ``__init__`` pins it for every name
+    defined under ``internal``, including ones added later.
+    """
+    leaked = {
+        name: obj.__module__
+        for name in archivey.__all__
+        if isinstance(obj := getattr(archivey, name), type) or callable(obj)
+        if getattr(obj, "__module__", "").startswith("archivey.internal")
+    }
+    assert leaked == {}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        archivey.OverwritePolicy.SKIP,
+        archivey.DetectionConfidence.CERTAIN,
+        archivey.FormatSupport.FULL,
+    ],
+    ids=lambda v: type(v).__name__,
+)
+def test_pickles_name_the_public_module(value: object) -> None:
+    import pickle
+
+    data = pickle.dumps(value)
+    assert b"archivey.internal" not in data
+    assert pickle.loads(data) is value
+
+
+def test_pinning_leaves_the_internal_objects_shared() -> None:
+    from archivey.internal import extraction_types
+
+    assert extraction_types.OverwritePolicy is archivey.OverwritePolicy
+    assert archivey.ExtractionResult.__module__ == "archivey"

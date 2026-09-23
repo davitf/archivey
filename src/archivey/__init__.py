@@ -240,5 +240,36 @@ __all__ = [
 # immediately after `import archivey` (open_archive also imports as a safety net).
 import archivey.internal.backends  # noqa: E402,F401
 
+
+def _pin_public_module() -> None:
+    """Report ``archivey`` as the module of every public name defined under ``internal``.
+
+    Seventeen names in ``__all__`` (the extraction types, detection, the registry
+    queries, ``ArchiveStream``, ``enable_measurement``) are defined under
+    ``archivey.internal``. ``pickle`` records a class's ``__module__``, so an
+    ``ExtractionResult`` or a policy enum persisted by a caller would otherwise name
+    ``archivey.internal.extraction_types`` — a path that could then never move without
+    breaking their data. Pinned here, it names ``archivey``, which is stable, and
+    ``repr()``, ``help()`` and ``inspect.getmodule`` say the same. The internal layout
+    stays free to change; ``internal`` imports still see the same objects.
+
+    Computed over ``__all__`` rather than listed, so a name added later is covered too.
+    Only classes and functions: an instance reports its class's module, and pinning it
+    would set an attribute on the instance (or fail, on a frozen dataclass).
+    """
+    from types import FunctionType
+
+    namespace = globals()
+    for name in __all__:
+        obj = namespace[name]
+        if not isinstance(obj, (type, FunctionType)):
+            continue
+        if obj.__module__.startswith("archivey.internal"):
+            obj.__module__ = __name__
+
+
+_pin_public_module()
+del _pin_public_module
+
 # Keep importlib.metadata helpers out of the public namespace (__all__ is authoritative).
 del PackageNotFoundError, version
