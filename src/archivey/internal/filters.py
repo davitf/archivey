@@ -35,6 +35,9 @@ from archivey.types import ArchiveMember, MemberType
 # Split a member name into path components on either separator; a ".." component after
 # this split is a traversal attempt regardless of which separator the archive used.
 _SEP_SPLIT = re.compile(r"[\\/]")
+# The same split, keeping each separator as its own list item, for a rewrite that has to
+# put the name back together exactly as it was apart from the segments it changed.
+_SEP_KEEP_SPLIT = re.compile(r"([\\/])")
 
 
 def _is_absolute(name: str) -> bool:
@@ -195,7 +198,12 @@ _EXEC_BITS = 0o111
 
 
 def transform_strict(member: ArchiveMember) -> ArchiveMember:
-    """STRICT: drop ownership, strip high/execute bits, normalize to 644/755."""
+    """STRICT: drop ownership, strip high/execute bits, cap files at 644, dirs at 755.
+
+    A file's stored mode is *masked* with ``0o644``, never raised to it: ``0o660``
+    (``umask 007``, a group-shared file) becomes ``0o640``, not ``0o644``. The policy
+    that distrusts the archive must not be the one that opens a file up to other users.
+    """
     new: dict[str, object] = {
         "uid": None,
         "gid": None,
@@ -209,8 +217,7 @@ def transform_strict(member: ArchiveMember) -> ArchiveMember:
         if mode is None:
             new["mode"] = 0o644
         else:
-            mode = (mode & ~_HIGH_BITS) & ~_EXEC_BITS
-            new["mode"] = min(mode & 0o666, 0o644)
+            new["mode"] = mode & ~_HIGH_BITS & ~_EXEC_BITS & 0o644
     return member.replace(**new)
 
 
@@ -255,14 +262,21 @@ _RESERVED_NAMES = frozenset(
 
 
 def _sanitize_portable_name(name: str) -> str:
-    """O7: rewrite a name carrying non-UTF-8 (surrogateescape) bytes to a deterministic,
-    reversible portable spelling. Each surrogateescape char ``U+DC80``–``U+DCFF`` (a raw
-    byte 0x80–0xFF that did not decode as UTF-8) becomes ``%XX`` (uppercase hex of the
-    byte); a literal ``%`` becomes ``%25`` so the escaping is unambiguously reversible.
+    """O7: rewrite a name carrying non-UTF-8 (surrogateescape) bytes to a deterministic
+    portable spelling. Each surrogateescape char ``U+DC80``–``U+DCFF`` (a raw byte
+    0x80–0xFF that did not decode as UTF-8) becomes ``%XX`` (uppercase hex of the byte);
+    a literal ``%`` becomes ``%25``, so a *rewritten* name unescapes back to its bytes.
 
     Only names that actually carry such bytes are rewritten — valid Unicode (including
     NFC/NFD forms) is representable on every filesystem and is returned unchanged; its
     cross-platform folding is the collision-tracking concern, not a representability one.
+
+    The escaping is therefore reversible within a rewritten name, not across names: a
+    stored ``%FF`` is returned verbatim and a raw ``0xFF`` byte is also written ``%FF``.
+    The name alone cannot tell the two apart; ``ExtractionResult.presented_name`` can,
+    since it is set only when the name was rewritten. The collision map sees both
+    spellings as one key, so the second is resolved by the ``OverwritePolicy`` rather
+    than silently overwriting the first.
     """
     if not any("\udc80" <= c <= "\udcff" for c in name):
         return name
@@ -282,10 +296,17 @@ def _strip_trailing_dot_space(name: str) -> str:
     itself produces (``stuff_etc.`` → ``stuff_etc``). Deterministic on every OS, so the
     result is identical everywhere and the O2 collision map catches any name it now clashes
     with. A segment that is *entirely* dots/spaces has no portable spelling and is rejected
-    (an all-dots segment like ``...`` cannot round-trip and would collapse a path)."""
-    parts = name.split("/")
+    (an all-dots segment like ``...`` cannot round-trip and would collapse a path).
+
+    A segment ends at either separator, ``/`` or ``\\``, as it does for ``_SEP_SPLIT``
+    and ``collision_key``: a TAR name keeps ``\\`` as a literal character, and Windows
+    then writes it as a separator, so ``foo. \\bar`` must lose its trailing space too.
+    The separators themselves are kept as they are; only the segments change."""
     out: list[str] = []
-    for part in parts:
+    for part in _SEP_KEEP_SPLIT.split(name):
+        if part in ("/", "\\"):
+            out.append(part)
+            continue
         # Empty (from a leading/trailing/`//` separator) and the path-navigation spellings
         # "." / ".." are structural, not trailing-dot hazards — pass them through untouched
         # ("." is the never-empty root from normalize_member_name; ".." is caught earlier by
@@ -299,7 +320,7 @@ def _strip_trailing_dot_space(name: str) -> str:
                 f"Path segment is entirely dots/spaces: {part!r}", member_name=name
             )
         out.append(stripped)
-    return "/".join(out)
+    return "".join(out)
 
 
 def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> ArchiveMember:
