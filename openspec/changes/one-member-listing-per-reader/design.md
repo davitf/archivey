@@ -393,9 +393,35 @@ choose to skip links with no target before the extractor tries to read them"*. S
   `link_target=None`, and only a link both accept is read. A caller can skip targetless
   links before any read happens.
 - No selector has to be passed down. The link is read after selection, at the pass's
-  current position. On 7z that means reading the link's bytes through the pass's own
-  folder decoder, so it adds no decode beyond D6b's budget. In random access it is an
-  ordinary member read.
+  current position. `extract_all` always drives a `stream_members` pass, in both access
+  modes (`extraction.py`, `_run_pass`), so on 7z the read always goes through the pass's own
+  folder decoder and adds no decode beyond D6b's budget.
+
+**What "`False`" gates, by trigger rather than by method.** `extract_all`'s child pass is
+a `stream_members` pass, and `open()` / `read()` resolve a link through the same
+`_resolve_link_target` that finalization uses (`base_reader.py:2099-2106`). So the gate
+cannot sit in the backends' `_ensure_link_target`: that would also switch off extraction's
+read and transparent link following. `False` means "no read as a side effect". Listing and
+a pass advancing skip the read, and so do the link-finalization loops that run on their
+behalf (`_finalize_links`, `_finalize_pass_links`). Neither records the skip in
+`_link_target_resolved`, so a later explicit read is not swallowed by the memo. A read the
+caller asked for goes ahead: `extract_all` after its selector and filter, and `open()`
+following a link. The `open()` half follows from davitf's `extract_all` reasoning (it
+"already needs to read and decrypt all selected files"). It is Claude's inference, not a
+separate ruling. In random access `open()` is an ordinary member read, with the re-decode
+cost `format-7z` already allows for a random open into a solid folder.
+
+**An explicit read fills the member in place.** That is ADR 0007's live-object contract,
+and the existing hooks already store (`member.link_target = …`). So a report taken after
+`extract_all(members=["link-a"])` under `False` shows `link-a`'s target and `None` for
+`link-b`. The mix is what the caller asked for, not a format or mode difference, and a
+filled target is not read again.
+
+**RAR3/4 stored targets are off under `False` too.** That read costs no decompression or
+password, so skipping it buys little laziness. It is skipped for uniformity: under
+`False`, a target set by listing means exactly "the header carries it", on every format
+and whatever the compression method. The `format-rar` and `format-zip` requirements that
+promise listing-time reads get MODIFIED blocks scoped to `True`.
 
 Rejected in the earlier round: never consulting the provider for an excluded link, and
 plumbing the selector into every backend. The setting covers both needs with one rule

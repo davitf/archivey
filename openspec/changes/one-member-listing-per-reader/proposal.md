@@ -90,6 +90,8 @@ pass reaches EOF (design D1a).
   list will, with data-stored link fields filled in place later.
 - `format-7z` — a new requirement bounds 7z link reads to one decode per folder, up to its
   last link member, in both modes. It refines "Stream solid folders with bounded memory".
+- `format-zip`, `format-rar` — their listing-time link-target reads are scoped to
+  `read_link_targets=True`.
 
 ## Impact
 
@@ -104,8 +106,12 @@ pass reaches EOF (design D1a).
   - `iso_reader.py` passes the listing position into typing-time diagnostics. This closes
     its known issue.
 - `src/archivey/internal/diagnostics_collector.py`: `reattach_to_member` removed.
-- `src/archivey/config.py`: `ArchiveyConfig.read_link_targets`, honoured by the ZIP, 7z
-  and RAR `_ensure_link_target`.
+- `src/archivey/config.py`: `ArchiveyConfig.read_link_targets`. It is honoured in the
+  base reader's link-finalization loops (`_finalize_links`, `_finalize_pass_links`), not
+  in the backends' `_ensure_link_target`, so explicit reads stay possible.
+- `src/archivey/internal/extraction.py`: under `False`, a link target read after the
+  selector and filter accept the link, before `_write_symlink`.
+- `_emit_link_target_unavailable`'s docstring, whose "every path" claim `False` changes.
 - Tests: a new small 7-Zip `-snl` fixture with symlinks before, between and after file
   members in one solid folder, plus its non-solid twin.
 - Docs: `dev-docs/known-issues.md` (ISO entry resolved), `dev-docs/IDEAS.md` (entry

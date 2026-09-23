@@ -72,13 +72,28 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
   7z this includes decompression and the full password sequence, provider included. A
   target it cannot read stays unset with `SYMLINK_TARGET_UNAVAILABLE`. RAR3/4 reads only
   stored, unencrypted, single-volume bytes, as before.
-- `False`: listing and `stream_members()` SHALL NOT read member data for a link target.
-  Such a link keeps `link_target=None`, and no `SYMLINK_TARGET_UNAVAILABLE` is emitted for
-  it. `extract_all` SHALL call its `members` selector and its `filter` on such a link, with
-  `link_target=None`, before reading the target. Only then SHALL it read the target of a
-  link both accept, the way the format reads member data. A target it cannot read fails
-  that member as one whose target the archive carries but the reader cannot reach, under
-  `OnError`. Header-carried targets (RAR5, TAR, ISO) are unaffected.
+- `False`: the reader SHALL NOT read member data for a link target as a side effect of
+  listing (the peek, `members()`, `scan_members()`, `members_report()`, `get()`,
+  `__iter__`) or of a pass advancing (`stream_members()`, including the child pass
+  `extract_all` drives). Such a link keeps `link_target=None`, no
+  `SYMLINK_TARGET_UNAVAILABLE` is emitted for it, and the skipped read is not recorded as
+  an attempt. This covers RAR3/4 stored targets too, although that read needs no
+  decompression or password. Under `False`, a `link_target` set by listing then means
+  exactly that the header carries it, whatever the compression method.
+  Header-carried targets (RAR5, TAR, ISO) are unaffected.
+- Under `False` the reader SHALL read a link's target only when the caller asks for that
+  member:
+  - `extract_all` SHALL call its `members` selector and its `filter` on the link, with
+    `link_target=None`, before reading the target, and SHALL read it only for a link both
+    accept. A target it cannot read fails that member as one whose target the archive
+    carries but the reader cannot reach, under `OnError`.
+  - `open()` / `read()` on a link SHALL follow it as "Transparent link following"
+    requires, reading its target first.
+
+  Such a read SHALL fill `link_target` in place on the member, like any late-bound field,
+  and a filled target SHALL NOT be read again. A report taken afterwards therefore shows
+  targets for the links read this way and `None` for the rest. `False` is a promise about
+  what the reader reads on its own, not about what a member ends up holding.
 
 #### Scenario: link-target setting matrix
 
@@ -90,6 +105,9 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
 | Same archive, `read_link_targets=False`, filter rejects members with `link_target is None` | The target is never read; provider not consulted; the link is not written |
 | Same archive, `read_link_targets=False`, no password, `extract_all()` | The symlink member fails under `OnError`, as a locked target |
 | RAR5 symlink, `read_link_targets=False` | `link_target` set from the header |
+| RAR4 stored symlink, `read_link_targets=False`, `members()` | `link_target=None`; no member data read |
+| ZIP with two symlinks, `read_link_targets=False`, `extract_all(members=["link-a"])`, then `members()` | `link-a` has its target; `link-b` has `link_target=None` |
+| ZIP symlink, `read_link_targets=False`, password supplied, `reader.open("link")` | The target is read, then the link is followed |
 
 ## MODIFIED Requirements
 

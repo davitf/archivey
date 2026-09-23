@@ -1,8 +1,10 @@
 ## 0. Gate
 
-- [ ] 0.1 Before archiving, check both MODIFIED blocks against the live requirements:
-      `access-mode-and-cost` "members_report_if_available() — a report peek" and
-      `archive-reading` "Bounded-memory sequential streaming via stream_members". A
+- [ ] 0.1 Before archiving, check all four MODIFIED blocks against the live requirements:
+      `access-mode-and-cost` "members_report_if_available() — a report peek",
+      `archive-reading` "Bounded-memory sequential streaming via stream_members",
+      `format-zip` "Map ZIP member metadata to ArchiveMember" and `format-rar` "Resolve RAR
+      link targets when possible at list time". A
       MODIFIED delta replaces the whole block, so anything the live requirement gained
       after this change was written would be deleted silently. Dry-run
       `openspec archive` on a scratch copy of `openspec/`, `diff -u` the result against the
@@ -89,7 +91,10 @@
         every link, including the last member;
       - a streaming pass reading no stream still resolves every link and decodes to the
         last-link end offset;
-      - the non-solid case decodes each link's own folder once.
+      - the non-solid case decodes each link's own folder once;
+      - under `read_link_targets=False`, listing plus a pass reading no stream decodes
+        nothing for links, and `extract_all` accepting every member decodes each folder
+        once, in both modes.
       Mutations: resolve per link again (the `members()` count must rise); skip the
       pass's own link read (the last-member link must stay unresolved, or be read by a
       second decode that raises the count).
@@ -103,26 +108,38 @@
       contexts as `member_id` (7z and RAR: the index in their open-time list; ISO: an
       `enumerate` over its walk)
 - [ ] 4.7 D6c: add `ArchiveyConfig.read_link_targets: bool = True`, reader-lifetime like
-      `listing_limits`. With `False`, listing and `stream_members()` read no member data
-      for a link target on ZIP, 7z or RAR3/4 and emit nothing. `extract_all` runs its
+      `listing_limits`. Gate the read by trigger, not in the backends: under `False`,
+      the link-finalization loops that run for listing and for a pass
+      (`_finalize_links`, `_finalize_pass_links`) skip data-stored targets on ZIP, 7z and
+      RAR3/4, emit nothing, and leave `_link_target_resolved` unset.
+      `_resolve_link_target` stays callable for explicit reads. `extract_all` runs its
       selector and `filter` on the link first (with `link_target=None`), then reads the
-      target of a link both accept: on 7z through the pass's own folder decoder, in random
-      access as an ordinary member read. An unreadable target fails the member as locked.
-      Tests, parametrised over `streaming`:
+      target of a link both accept, through its own pass. `open()` following a link
+      reads the target as today. Explicit reads fill the member in place. Tests,
+      parametrised over `streaming`:
       - an encrypted solid 7z `[a.txt, link, b.txt]` with a provider that fails the test
         if called, `read_link_targets=False`, `stream_members(lambda m: False)` to the end:
         zero bytes decoded; the same on an encrypted ZIP symlink;
       - `extract_all` under `False` with a filter recording what it saw: the link reaches
         the filter with `link_target=None` before any read, then is written with its
         target; with a filter rejecting targetless links, the provider is never consulted;
+      - ZIP with two links, `extract_all(members=["link-a"])` under `False`, then
+        `members()`: `link-a` filled, `link-b` `None`;
+      - `reader.open("link")` under `False` follows the link;
+      - a RAR4 stored symlink under `False`: `link_target=None`, RAR5 still set;
       - an unencrypted 7z with the link excluded under the default: resolved.
-      Mutations: ignore the setting in one backend; read the target before the filter
-      runs.
-- [ ] 4.8 Add `read_link_targets` to the "Explicit configuration object" schema, config
+      Mutations: gate inside `_ensure_link_target` (the `open()` and extraction tests must
+      fail); record the skipped read in the memo (the extraction test must fail); read
+      the target before the filter runs.
+- [ ] 4.8 Correct `_emit_link_target_unavailable`'s docstring
+      (`base_reader.py:1374-1380`). Its claim that every path leaving `link_target` unset
+      goes through it stops holding under `False`, so name that path and say why it emits
+      nothing.
+- [ ] 4.9 Add `read_link_targets` to the "Explicit configuration object" schema, config
       matrix and reader-lifetime sentence in `archive-reading`. Write that MODIFIED block
       at implementation time against the then-live requirement, because another open
       change edits the same block. Task 0.1's whole-block check applies to it.
-- [ ] 4.9 Document the setting in the user docs next to `listing_limits`, including what
+- [ ] 4.10 Document the setting in the user docs next to `listing_limits`, including what
       `False` does to extraction.
 
 ## 5. Delete the dedupe machinery (D7)
