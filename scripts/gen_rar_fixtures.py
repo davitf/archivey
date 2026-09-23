@@ -643,9 +643,14 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
             cwd=root,
             extra=("-m0", "-v900b", "-hpheader_password"),
         )
-        parts = sorted(out_dir.glob("tinyvol_hp.part*.rar"))
-        if len(parts) < 2:
-            raise RuntimeError("expected tinyvol_hp to span several volumes")
+        # ``_rar_a`` unlinks earlier ``tinyvol_hp.part*.rar`` first, so these are
+        # this run's parts. The tests expect exactly four.
+        parts = [out_dir / f"tinyvol_hp.part{n}.rar" for n in range(1, 5)]
+        if (
+            not all(part.is_file() for part in parts)
+            or (out_dir / "tinyvol_hp.part5.rar").exists()
+        ):
+            raise RuntimeError("expected tinyvol_hp to span exactly four volumes")
         if out.is_file():
             out.unlink()
         for part in parts:

@@ -409,9 +409,9 @@ def parse_rar_archive(
     as ``ListingLimits()``; pass ``None`` to lift the bound. RAR has no
     header-size analogue, so ``None`` can walk until memory is exhausted.
 
-    ``kdf_cache`` holds the header-key derivations. A caller that derives the same
-    keys again later (another parse, a member's PswCheck) can pass one cache to
-    both; without one the parse makes a fresh cache.
+    ``kdf_cache`` holds the header-key derivations. ``RarReader`` passes its own,
+    so a member's PswCheck reuses the header's; without one the parse makes a
+    fresh cache.
     """
     return _parse_rar_volume(
         source,
@@ -1058,9 +1058,9 @@ def _rar5_s2k(
     kdf_cache: RarKdfCache | None = None,
 ) -> bytes:
     """PBKDF2-HMAC-SHA256 for RAR5 (returns 32-byte AES-256 key material)."""
-    ustr = _normalize_password_utf8(password)
     if kdf_cache is not None:
-        return kdf_cache.rar5(ustr, salt, iterations)
+        return kdf_cache.rar5(password, salt, iterations)
+    ustr = _normalize_password_utf8(password)
     return pbkdf2_hmac("sha256", ustr, salt, iterations, dklen=32)
 
 
@@ -1076,8 +1076,15 @@ class RarKdfCache:
     Keyed by the normalized password, the salt and (RAR5) the round count, so a
     wrong candidate never answers for a right one and the three RAR5 outputs
     (AES key, HashKey, PswCheck at ``+0``/``+16``/``+32`` rounds) stay distinct.
-    A cache belongs to one open archive: :func:`parse_rar_archive` and
-    :func:`parse_rar_volumes` make their own when none is passed.
+    ``RarReader`` holds one for its lifetime and passes it to every parse and
+    member-side derivation; :func:`parse_rar_archive` and :func:`parse_rar_volumes`
+    make a fresh one per call when none is passed.
+
+    The dict has no size bound, and needs none: an entry is added only on a miss,
+    and a miss runs the derivation the caller was about to run anyway, at the
+    archive's declared cost. Entries cannot grow faster than the CPU work that
+    produces them, so an archive that varies its salts gains no amplification
+    over the per-derivation cost it already had.
 
     Entries are key material and passwords, so ``repr`` shows only a count. There
     is no lock: two threads racing on one entry both derive it and store equal
@@ -1093,15 +1100,18 @@ class RarKdfCache:
     def __repr__(self) -> str:
         return f"<RarKdfCache: {len(self._rar5) + len(self._rar3)} entries>"
 
-    def rar5(self, password_utf8: bytes, salt: bytes, iterations: int) -> bytes:
-        key = (password_utf8, salt, iterations)
+    def rar5(self, password: str | bytes, salt: bytes, iterations: int) -> bytes:
+        """PBKDF2-HMAC-SHA256 of the normalized ``password``, as :func:`_rar5_s2k`."""
+        normalized = _normalize_password_utf8(password)
+        key = (normalized, salt, iterations)
         derived = self._rar5.get(key)
         if derived is None:
-            derived = pbkdf2_hmac("sha256", password_utf8, salt, iterations, dklen=32)
+            derived = pbkdf2_hmac("sha256", normalized, salt, iterations, dklen=32)
             self._rar5[key] = derived
         return derived
 
     def rar3(self, password: str | bytes, salt: bytes) -> tuple[bytes, bytes]:
+        """RAR3 AES key and IV for ``password``, as :func:`_rar3_s2k`."""
         key = (_normalize_password_utf16le(password), salt)
         derived = self._rar3.get(key)
         if derived is None:
