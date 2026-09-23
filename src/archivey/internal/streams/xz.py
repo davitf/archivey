@@ -289,6 +289,10 @@ class _XzState:
         self._streams_seen = 0
         self._finished = False
         self._stream_decomp_bytes = 0
+        # Stream padding stripped since the last stream ended. It is counted into the
+        # next stream's compressed size so that XzDecoder's compressed cursor stays on
+        # real file offsets; the per-stream backward scan reads the footer from there.
+        self._padding_before_stream = 0
         self.truncated = False
 
     def feed(
@@ -349,6 +353,7 @@ class _XzState:
                     padding += 4
                 if padding:
                     del self._buf[:padding]
+                    self._padding_before_stream += padding
 
                 if len(self._buf) < _STREAM_HEADER_SIZE:
                     break
@@ -390,7 +395,10 @@ class _XzState:
                 output.extend(plain)
                 if self._dec.eof:
                     unused = self._dec.unused_data
-                    compressed_size = self._bytes_fed - len(unused)
+                    compressed_size = (
+                        self._padding_before_stream + self._bytes_fed - len(unused)
+                    )
+                    self._padding_before_stream = 0
                     new_streams.append((self._stream_decomp_bytes, compressed_size))
                     self._streams_seen += 1
                     self._dec = None
@@ -414,6 +422,13 @@ class _XzBlockChain:
     Used once the index is known. Each block is wrapped in a synthetic single-block XZ
     stream and fed to ``LZMADecompressor``. Exposes the same feed/flush/is_finished
     interface as ``_XzState``.
+
+    ``inner`` is shared with the ``DecompressorStream`` driving ``feed``, which reads
+    ahead of the block being decoded. The chain may therefore move ``inner`` only where
+    it also discards the rest of the chunk it holds: once at construction, before any
+    read, and when the next block is not contiguous with the one just finished. Moving
+    it on a contiguous advance would make the next read hand over bytes ``feed`` is
+    already consuming, and LZMA2 would decode them twice.
     """
 
     def __init__(self, blocks: list[_XzBlockBounds], inner: BinaryIO) -> None:
@@ -426,12 +441,13 @@ class _XzBlockChain:
         self._finished = len(blocks) == 0
         self.truncated = False
         if not self._finished:
-            self._start_block(0)
+            self._start_block(0, reposition=True)
 
-    def _start_block(self, idx: int) -> None:
+    def _start_block(self, idx: int, *, reposition: bool) -> None:
         self._block_idx = idx
         block = self._blocks[idx]
-        self._inner.seek(block.compressed_start)
+        if reposition:
+            self._inner.seek(block.compressed_start)
         self._dec = lzma.LZMADecompressor(format=lzma.FORMAT_XZ)
         self._block_bytes_fed = 0
         stream_flags = bytes([0x00, block.check])
@@ -509,8 +525,13 @@ class _XzBlockChain:
                     self._finished = True
                 else:
                     prev_end = block.compressed_start + _round_up_4(block.unpadded_size)
-                    self._start_block(next_idx)
-                    if self._blocks[next_idx].compressed_start != prev_end:
+                    contiguous = self._blocks[next_idx].compressed_start == prev_end
+                    # A contiguous block's bytes are already in data[pos:]; see the
+                    # class docstring for why inner must not move here.
+                    self._start_block(next_idx, reposition=not contiguous)
+                    if not contiguous:
+                        # data[pos:] is the gap before the next block; inner now
+                        # points at that block, so drop the rest of this chunk.
                         break
             elif self._dec is not None and not self._dec.needs_input:
                 if not plain:
@@ -558,7 +579,15 @@ class _XzBlockChain:
 
 
 class XzDecoder(BaseDecoder):
-    """XZ decoder: sequential ``_XzState`` or block-chain resume via ``recreate``."""
+    """XZ decoder: sequential ``_XzState`` or block-chain resume via ``recreate``.
+
+    A block chain covers only the blocks the seek table knows. A stream whose blocks
+    are unknown (its per-stream backward scan degraded) has a ``state=None`` stream-start
+    point instead, and the chain stops before it: skipping it would serve the next
+    known block's bytes at that stream's offsets. When the chain finishes with such a
+    point ahead (``handoff``), the decoder moves ``inner`` to it and carries on with a
+    sequential ``_XzState``.
+    """
 
     def __init__(
         self,
@@ -571,8 +600,10 @@ class XzDecoder(BaseDecoder):
         collector: DiagnosticCollector | None,
         get_seek_points: Callable[[], list[SeekPoint]],
         index_built: Callable[[], bool],
+        handoff: SeekPoint | None = None,
     ) -> None:
         self._engine = engine
+        self._handoff = handoff
         self._inner = inner
         self._comp_cursor = comp_cursor
         self._decomp_cursor = decomp_cursor
@@ -592,17 +623,20 @@ class XzDecoder(BaseDecoder):
         get_seek_points: Callable[[], list[SeekPoint]],
         index_built: Callable[[], bool],
     ) -> XzDecoder:
+        handoff: SeekPoint | None = None
         if point.state is None:
             engine: _XzState | _XzBlockChain = _XzState()
         else:
             start_block: _XzBlockBounds = point.state
-            subsequent = [
-                sp.state
-                for sp in get_seek_points()
-                if sp.decompressed_offset > point.decompressed_offset
-                and sp.state is not None
-            ]
-            engine = _XzBlockChain([start_block, *subsequent], inner)
+            chain = [start_block]
+            for sp in get_seek_points():
+                if sp.decompressed_offset <= point.decompressed_offset:
+                    continue
+                if sp.state is None:
+                    handoff = sp
+                    break
+                chain.append(sp.state)
+            engine = _XzBlockChain(chain, inner)
         return cls(
             engine,
             inner=inner,
@@ -612,6 +646,7 @@ class XzDecoder(BaseDecoder):
             collector=collector,
             get_seek_points=get_seek_points,
             index_built=index_built,
+            handoff=handoff,
         )
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> XzDecoder:
@@ -626,13 +661,33 @@ class XzDecoder(BaseDecoder):
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         data, units = self._engine.feed(chunk, max_length=max_length)
-        return DecodeOut(data, self._points_for_units(units))
+        points = self._points_for_units(units)
+        self._hand_off_if_chain_done()
+        return DecodeOut(data, points)
 
     def flush(self) -> DecodeOut:
         data, units = self._engine.flush()
         if getattr(self._engine, "truncated", False):
             self._pending_error = TruncatedError("XZ file is truncated")
+        elif self._handoff is not None and self._engine.is_finished():
+            # inner ended where the seek table promised a further stream.
+            self._pending_error = TruncatedError("XZ file is truncated")
         return DecodeOut(data, self._points_for_units(units))
+
+    def _hand_off_if_chain_done(self) -> None:
+        """Continue sequentially from ``handoff`` once the block chain has finished.
+
+        A finished chain has already dropped the rest of the chunk it was fed, so moving
+        ``inner`` here keeps the rule in ``_XzBlockChain``'s docstring.
+        """
+        if self._handoff is None or not self._engine.is_finished():
+            return
+        point = self._handoff
+        self._handoff = None
+        self._inner.seek(point.compressed_offset)
+        self._engine = _XzState()
+        self._comp_cursor = point.compressed_offset
+        self._decomp_cursor = point.decompressed_offset
 
     @property
     def finished(self) -> bool:
