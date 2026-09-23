@@ -60,8 +60,15 @@ SourceSequence = Sequence[SourceItem]
 # numbered part (``.7z.001`` / ``.zip.001`` / ``.exe.001``) is refused at
 # ``open_archive`` as an incomplete set, naming the missing parts — not as a ZIP
 # spanned-set error. Info-ZIP ``.zNN`` stays that ZIP refusal.
+#
+# The part number is capped at 64 digits. A name from a directory listing cannot
+# exceed the filesystem's name limit, but a stream's ``name`` and a path in an explicit
+# sequence are checked before any file is opened, and Python refuses to parse an
+# integer past ``sys.get_int_max_str_digits()`` digits (4300 by default, never below
+# 640) with a bare ``ValueError``. No real set comes near 64 digits, so a longer run is
+# not a part number and the name is not a volume name.
 _NUMBERED_VOLUME_RE = re.compile(
-    r"^(?P<base>.+\.(?:7z|zip|exe))\.(?P<part>\d{3,})$", re.IGNORECASE
+    r"^(?P<base>.+\.(?:7z|zip|exe))\.(?P<part>\d{3,64})$", re.IGNORECASE
 )
 # WinRAR ``-v`` writes ``name.partN.rar``. An SFX first volume keeps the ``partN``
 # marker and changes only the last extension: ``name.part1.sfx`` (Linux rar) or
@@ -885,7 +892,16 @@ def incomplete_lone_numbered_volume_error(
         return None
     base = match.group("base")
     part = int(match.group("part"))
-    missing = [f"{base}.{n:03d}" for n in range(1, part)]
+    # The part number comes from the name alone, so it must not size the list: a
+    # lone ``a.zip.9999999`` used to spell out every earlier part and build a
+    # ~150 MB message. Only the prefix worth printing is enumerated, the same cap
+    # :func:`_numbered_volume_sequence_error` uses, and the rest is a count.
+    earlier = part - 1
+    missing = [
+        f"{base}.{n:03d}" for n in range(1, min(earlier, _MAX_ENUMERATED_PARTS) + 1)
+    ]
+    if earlier > _MAX_ENUMERATED_PARTS:
+        missing.append(f"… ({earlier} earlier parts in total)")
     missing.append(f"{base}.{part + 1:03d}")
     missing_text = ", ".join(missing) + ", …"
     return TruncatedError(

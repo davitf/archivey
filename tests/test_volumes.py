@@ -17,6 +17,7 @@ import pytest
 
 from archivey import detect_format, extract, open_archive
 from archivey.exceptions import (
+    ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
     FormatDetectionError,
@@ -1237,6 +1238,66 @@ def test_open_archive_survives_a_huge_numbered_sibling(tmp_path: Path) -> None:
     ):
         open_archive(tmp_path / "foo.7z.001")
     assert time.monotonic() - start < 5.0
+
+
+def test_lone_numbered_volume_message_is_not_sized_by_its_part_number(
+    tmp_path: Path,
+) -> None:
+    """The lone-part message used to list every earlier part by name.
+
+    ``a.zip.9999999`` alone in a directory built a ~150 MB message over ~15 s from
+    the filename. The earlier parts are now capped like the sequence message's and
+    counted, so the message is the same size whatever the number.
+    """
+    path = tmp_path / "a.zip.9999999"
+    path.write_bytes(b"PK")
+    with pytest.raises(TruncatedError) as excinfo:
+        open_archive(path)
+    assert str(excinfo.value) == (
+        "Incomplete multi-volume set for a.zip: found part 9999999 only; missing "
+        "a.zip.001, a.zip.002, a.zip.003, a.zip.004, a.zip.005, a.zip.006, "
+        "a.zip.007, a.zip.008, … (9999998 earlier parts in total), a.zip.10000000, …"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "counted"),
+    [("vol.7z.009", False), ("vol.7z.010", True)],
+    ids=["eight-earlier-all-named", "nine-earlier-counted"],
+)
+def test_lone_numbered_volume_message_names_up_to_the_cap(
+    name: str, counted: bool
+) -> None:
+    error = volumes_mod.incomplete_lone_numbered_volume_error(name)
+    assert error is not None
+    message = str(error)
+    assert "vol.7z.008" in message
+    assert ("earlier parts in total" in message) is counted
+
+
+def test_numbered_part_number_too_long_to_parse_is_not_a_volume_name(
+    tmp_path: Path,
+) -> None:
+    """Names checked before any file opens must not reach ``int()`` past its limit.
+
+    Python refuses to parse more than ``sys.get_int_max_str_digits()`` digits (4300
+    by default) with a bare ``ValueError``. A stream's ``name`` and the paths of an
+    explicit sequence are read before anything is opened, so both used to raise it
+    out of ``open_archive``. Past 64 digits the name is no longer a volume name.
+    """
+    digits = "1" * 5000
+    stream = io.BytesIO(b"PK\x03\x04" + b"\x00" * 60)
+    stream.name = f"x.zip.{digits}"
+    with pytest.raises(ArchiveyError) as excinfo:
+        open_archive(stream)
+    assert not isinstance(excinfo.value, TruncatedError)
+
+    assert volumes_mod.incomplete_lone_numbered_volume_error(f"x.zip.{digits}") is None
+    assert volumes_mod.incomplete_lone_numbered_volume_error(f"x.zip.{'1' * 64}")
+
+    # The explicit sequence: name validation used to raise before the open did.
+    with pytest.raises(OpenError, match="Cannot open volume"):
+        join_volumes([tmp_path / f"x.zip.{digits}", tmp_path / "x.zip.002"])
 
 
 @pytest.mark.parametrize(
