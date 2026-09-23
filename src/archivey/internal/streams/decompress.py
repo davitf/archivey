@@ -403,8 +403,10 @@ _PPMD_QUIESCE_MAX_CALLS = 8
 
 # pyppmd parses ``decode``'s ``length`` as a C ``int``; anything larger raises a bare
 # ``OverflowError``. A request is capped here and the rest is asked for on the next
-# call — reachable from a member over 2 GiB read in one large ``read(n)``, or from a
-# header that overstates ``unpack_size`` read the same way.
+# call. The oversized request comes from ``feed(chunk, -1)`` — what ``readall()`` /
+# ``read(-1)`` sends — whose limit is the whole remaining ``unpack_size``, and from
+# one large ``read(n)``; either reaches it on a member over 2 GiB, or on a header
+# that overstates ``unpack_size`` past that.
 _PPMD_MAX_REQUEST = (1 << 31) - 1
 
 
@@ -511,7 +513,8 @@ class PpmdDecoder(BaseDecoder):
         self._nul_injected = False
         self._compressed_eof = False
         # Set once the payload is provably spent (see ``_note_decoded``); from then on
-        # no call reaches the native decoder.
+        # nothing on the decode path calls the native decoder. Teardown still does:
+        # ``_quiesce_worker`` sends its bounded NUL in exactly this state.
         self._exhausted = False
         # ``mem_size`` is bounded one layer up, by ``check_decoder_memory`` in
         # ``codecs.py``, against ``DecoderLimits.max_decoder_memory`` — not here,
@@ -557,14 +560,22 @@ class PpmdDecoder(BaseDecoder):
         On pyppmd 1.3.1 a ``decode`` returns short of ``requested`` only when its
         worker blocked on empty input or decoded the model's end. Short **and** at
         ``eof`` **and** with every compressed byte already fed, no more input is
-        coming and the payload has nothing left: a later call can only resume a
-        worker parked on empty input, which raises a spurious ``MemoryError`` (it
-        reads past the input buffer) rather than returning. A valid member never gets
+        coming and the payload has nothing left: another decode-path call could only
+        resume a worker parked on empty input, which raises a spurious
+        ``MemoryError`` (it reads past the input buffer) rather than returning. So
+        ``feed`` and ``flush`` make no further call; ``_quiesce_worker`` still sends
+        its bounded NUL at teardown, which is what keeps the parked worker from
+        writing into freed memory when the decoder is freed. A valid member never gets
         here, because its ``unpack_size`` matches the payload and every request is
         met in full — premature ``eof`` (the ``Code == 0`` proxy) arrives on a *full*
         return, which is why ``eof`` alone cannot be the stop. Reached when the
         container overstates ``unpack_size``; ``flush`` then reports
         ``TruncatedError``.
+
+        ``_decode_unsized`` (PPMd8 without ``unpack_size``) is deliberately not
+        wrapped: its end mark stops the worker on valid data, ``_decode`` refuses to
+        call it again once ``eof`` is set, and ``flush`` runs no post-eof drain without
+        a size, so it never reaches the parked-worker resume this guards against.
         """
         if (
             len(out) < requested

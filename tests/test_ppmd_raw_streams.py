@@ -971,3 +971,16 @@ def test_ppmd7_payload_spent_needs_complete_pack() -> None:
     assert dec.flush().data == b""
     assert len(fake.calls) == before
     assert dec.pending_error is not None
+
+
+def test_ppmd7_drain_stops_at_the_first_short_return_at_eof() -> None:
+    """The flush drain's own stop: a full premature-eof return lets the drain start,
+    and the first short return at ``eof`` inside it ends it with no further call."""
+    fake = _FakeDecomp(needs_input=False, eof=True, returns=[b"a" * 10, b"bcd"])
+    dec = _ppmd7_with_fake(fake, produced=0)  # unpack_size=100, pack_size=50
+    assert dec.feed(b"x" * 50, max_length=10).data == b"a" * 10
+    assert not dec._exhausted  # a full return, however premature its eof
+    assert dec.flush().data == b"bcd"
+    assert dec._exhausted
+    assert fake.calls[1:] == [(b"", 64)]
+    assert dec.pending_error is not None

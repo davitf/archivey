@@ -784,15 +784,17 @@ Two stacked issues on pyppmd 1.3.x:
   errors, the bare-pyppmd overshoot reproducer reports the UAF.
 - **Stop at a spent payload.** A sized `decode` that returns short of its request, at
   native `eof`, with every compressed byte fed, means the payload has nothing left
-  (`PpmdDecoder._note_decoded`). No further `decode` reaches pyppmd after that — the
-  next one would resume a worker parked on empty input, which reads past the input
-  buffer and surfaces as a bare `MemoryError` — and `flush` reports `TruncatedError`.
+  (`PpmdDecoder._note_decoded`). The decode path makes no further `decode` after
+  that — the next one would resume a worker parked on empty input, which reads past
+  the input buffer and surfaces as a bare `MemoryError` — and `flush` reports
+  `TruncatedError`.
   Reached from a 7z folder that overstates `unpack_size` (#315 thread K6) and from a
   wrong AES key (section below). `_quiesce_worker` sends its NUL in that state even at
   `eof`: without it valgrind shows the Free-time invalid write, and a later decoder in
   the same process started from corrupted state.
 - **Cap each request at a C `int`** (`_PPMD_MAX_REQUEST`): pyppmd parses `length` as
-  one, and a larger value raised `OverflowError` on a `read(n)` over 2 GiB.
+  one, and a larger value raised `OverflowError` reading a PPMd member over 2 GiB
+  (`readall()` asks for the whole remaining member in one request).
 - Keep unfinished-decoder adversarial coverage in fresh subprocesses; tolerate
   child teardown abort after a successful body (`tests/test_ppmd_raw_streams.py`).
 
