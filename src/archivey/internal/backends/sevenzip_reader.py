@@ -817,9 +817,14 @@ class SevenZipReader(BaseArchiveReader):
         fallback_type = self._member_type_ignoring_reparse(raw.record)
         # The zero-data case does not appear here: `_to_member` settles it while the
         # member is being typed, so this hook is never reached for one.
+        # The read is capped (`_read_link_target_data`): the data is compressed, so an
+        # uncapped read let a small archive decode to gigabytes here.
         try:
-            with self._open_member(member) as stream:
-                data = stream.read()
+            data = self._read_link_target_data(
+                member,
+                lambda: self._open_member(member),
+                is_reparse_point=is_reparse_point,
+            )
         except EncryptionError:
             # A 7z symlink's target is its file data, so without the password there is
             # nothing to decode. Listing has to stay usable without one, so the member
@@ -837,6 +842,8 @@ class SevenZipReader(BaseArchiveReader):
                 # disappearing from the output under a status that reads as success.
                 target_in_archive=True,
             )
+            return
+        if data is None:
             return
         if is_reparse_point:
             self._apply_reparse_data(member, data, fallback_type=fallback_type)

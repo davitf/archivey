@@ -32,11 +32,13 @@ from archivey.exceptions import LinkTargetNotFoundError
 from archivey.internal.backends import directory_reader
 from archivey.internal.backends.rar_parser import RarMemberInfo
 from archivey.internal.backends.rar_reader import _rar_member_extra_and_link
+from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.extraction_types import OnError
 from archivey.internal.windows_reparse import (
     FILE_ATTRIBUTE_REPARSE_POINT,
     IO_REPARSE_TAG_MOUNT_POINT,
     IO_REPARSE_TAG_SYMLINK,
+    MAX_REPARSE_BUFFER_BYTES,
     parse_reparse_data,
 )
 from archivey.types import ArchiveMember, MemberType
@@ -520,6 +522,61 @@ def test_a_reparse_member_whose_data_is_not_a_link_keeps_its_content(
         assert not member.is_junction
         with opened.open(member) as stream:
             assert stream.read() == b"not a reparse buffer"
+
+
+def test_a_reparse_target_over_the_link_cap_is_refused(tmp_path: Path) -> None:
+    """A reparse buffer's target is held to the cap every data-stored target is.
+
+    The cap is on the target, measured in UTF-8 like the other formats' targets, not
+    on the UTF-16 buffer, whose byte count is roughly twice the path's.
+    """
+    at_cap = "a" * MAX_LINK_TARGET_BYTES
+    over = "b" * (MAX_LINK_TARGET_BYTES + 1)
+    archive = tmp_path / "long_reparse.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name, target in (("at_cap", at_cap), ("over", over)):
+            info = zipfile.ZipInfo(name)
+            info.create_system = 0
+            info.external_attr = 0x20 | FILE_ATTRIBUTE_REPARSE_POINT
+            zf.writestr(info, _reparse_buffer(IO_REPARSE_TAG_SYMLINK, target, target))
+    with open_archive(archive) as opened:
+        by_name = {m.name: m for m in opened.members()}
+        assert by_name["at_cap"].link_target == at_cap
+        assert by_name["over"].type is MemberType.SYMLINK
+        assert by_name["over"].link_target is None
+        assert _unavailable_reasons(opened) == ["target_too_long"]
+
+
+def test_a_large_non_link_reparse_member_keeps_all_its_content(
+    tmp_path: Path,
+) -> None:
+    """Only a prefix is read to decide, and the member's content is not cut to it.
+
+    The link-target read stops at `MAX_REPARSE_BUFFER_BYTES`, the most the parser ever
+    looks at. A deduplication stub or cloud placeholder keeps its whole file in this
+    data, so the decision must not refuse it for its size, and the diagnostic must
+    report the size the member really has rather than the prefix.
+    """
+    content = bytes(range(256)) * ((MAX_REPARSE_BUFFER_BYTES // 256) + 64)
+    assert len(content) > MAX_REPARSE_BUFFER_BYTES
+    archive = tmp_path / "big_odd_reparse.zip"
+    _zip_with_reparse_member(
+        archive,
+        name="tree/weird",
+        attributes=0x20 | FILE_ATTRIBUTE_REPARSE_POINT,
+        data=content,
+    )
+    with open_archive(archive) as opened:
+        (member,) = opened.members()
+        assert member.type is MemberType.FILE
+        with opened.open(member) as stream:
+            assert stream.read() == content
+        (reported,) = [
+            d
+            for d in opened.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+        assert f"{len(content)} bytes" in reported.message
 
 
 def test_a_directory_shaped_reparse_point_with_odd_data_stays_a_link(

@@ -24,6 +24,7 @@ __all__ = [
     "FILE_ATTRIBUTE_REPARSE_POINT",
     "IO_REPARSE_TAG_MOUNT_POINT",
     "IO_REPARSE_TAG_SYMLINK",
+    "MAX_REPARSE_BUFFER_BYTES",
     "ReparsePoint",
     "parse_reparse_data",
 ]
@@ -39,6 +40,11 @@ IO_REPARSE_TAG_SYMLINK = 0xA000000C
 
 # REPARSE_DATA_BUFFER: ULONG ReparseTag, USHORT ReparseDataLength, USHORT Reserved.
 _HEADER = struct.Struct("<IHH")
+# The most bytes `parse_reparse_data` ever looks at: the header, then as much payload as
+# its 16-bit ReparseDataLength can declare. Bytes past that change no parse, so a caller
+# reading member data for this parser needs no more — which bounds the read however
+# much data the member really holds (a deduplication stub keeps its whole file there).
+MAX_REPARSE_BUFFER_BYTES = _HEADER.size + 0xFFFF
 # Both tags' payloads open with the same four offsets, in bytes, into PathBuffer.
 _NAMES = struct.Struct("<HHHH")
 # A SYMLINK payload has an extra ULONG Flags before PathBuffer; MOUNT_POINT has none.

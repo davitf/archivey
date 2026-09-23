@@ -75,7 +75,11 @@ from archivey.internal.backends.rar_unrar import (
     open_unrar_p,
     terminate_unrar,
 )
-from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.base_reader import (
+    MAX_LINK_TARGET_BYTES,
+    BaseArchiveReader,
+    ReadBackend,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
@@ -1626,6 +1630,12 @@ class RarReader(BaseArchiveReader):
             and not raw.split_before
             and not raw.split_after
         ):
+            # Stored, so the read is the header's own size and cannot amplify; it is
+            # still held to the cap every data-stored target is, and an oversized one
+            # is refused before any of it is read.
+            if raw.file_size > MAX_LINK_TARGET_BYTES:
+                self._emit_link_target_too_long(member)
+                return
             view = self._shared.view(raw.data_offset, raw.file_size)
             try:
                 data = view.read()
