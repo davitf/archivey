@@ -33,11 +33,13 @@ the pull request's ``updated_at`` in the webhook, which labelling bumps; see
     {"round": 3, "final": false, "head_sha": "abc...", "repository": "...",
      "verdict": {"verdict": "findings", "summary": "...", "question": ""}}
     -> {"verdict": "findings", "stop": false, "counted": true,
-        "comment": "...", "reason": "..."}
+        "comment": "...", "reason": "...", "label": "changes-requested",
+        "unlabel": ["approved", "approved-with-fixes", "needs-decision"]}
 
 ``verdict`` is the file the reviewing agent wrote, or ``null`` when it wrote none.
 The comment says what happened and what the implementer does next, and it carries
-the marker that makes the round count.
+the marker that makes the round count. ``label`` is the outcome label the workflow puts
+on, taking the ``unlabel`` ones off; see `OUTCOME_LABELS`.
 """
 
 from __future__ import annotations
@@ -107,9 +109,12 @@ _FIELD = re.compile(r"(\w+)=(\S+)")
 VERDICT_STOPS = {
     # Nothing was found at all.
     "clean": True,
-    # Findings were posted, and the reviewer does not need to see them fixed. They are
-    # still fixed; what ends is the re-reading.
+    # ✅ Approve, with nothing to fix beyond 💡/📚/🎉 annotations.
     "approved": True,
+    # ✅ Approve conditional on the listed fixes, or 💬 Comment: findings were posted,
+    # and the reviewer does not need to see them fixed. They are still fixed; what ends
+    # is the re-reading.
+    "conditional": True,
     # 🔄 Request Changes: the next round is the implementer's to ask for.
     "findings": False,
     # A maintainer decision. Once it is answered and acted on, the implementer asks for
@@ -119,6 +124,22 @@ VERDICT_STOPS = {
 
 #: What an unreadable or unrecognised verdict is treated as. See `VERDICT_STOPS`.
 DEFAULT_VERDICT = "findings"
+
+#: The label a finished round leaves on the pull request, so its standing shows in the
+#: pull request list. A round puts its own on and takes the others off.
+#:
+#: These only report. Nothing here reads them, and nothing may: a status label that
+#: steered the rounds is what went wrong with the ``loop:round-N`` labels this workflow
+#: replaced, and the round markers stay the only state (davitf asked for the labels,
+#: 2026-09-23). A round that did not finish, or did not run, leaves them as they were,
+#: and one left on after later pushes goes stale; the marker names the commit reviewed.
+OUTCOME_LABELS = {
+    "clean": "approved",
+    "approved": "approved",
+    "conditional": "approved-with-fixes",
+    "findings": "changes-requested",
+    "decision": "needs-decision",
+}
 
 
 def _footer(repository: str) -> str:
@@ -351,6 +372,10 @@ class Finish:
     counted: bool
     comment: str
     reason: str
+    #: The outcome label to put on (`OUTCOME_LABELS`), or empty to leave them alone.
+    label: str = ""
+    #: The other outcome labels, to take off when `label` goes on.
+    unlabel: tuple[str, ...] = ()
 
 
 def finish(event: dict) -> Finish:
@@ -445,7 +470,16 @@ def finish(event: dict) -> Finish:
     marker = (
         f"{ROUND_MARKER} n={rnd}{f' sha={sha}' if sha else ''} verdict={v.verdict} -->"
     )
-    return Finish(v.verdict, v.stop, True, f"{marker}\n\n{body}{footer}", v.reason)
+    label = OUTCOME_LABELS[v.verdict]
+    return Finish(
+        v.verdict,
+        v.stop,
+        True,
+        f"{marker}\n\n{body}{footer}",
+        v.reason,
+        label,
+        tuple(sorted({other for other in OUTCOME_LABELS.values() if other != label})),
+    )
 
 
 def main() -> int:

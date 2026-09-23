@@ -271,6 +271,7 @@ def test_markers_that_cannot_be_read_count_for_nothing(value: object) -> None:
 def test_a_review_that_does_not_ask_to_see_the_fix_ends_the_rounds() -> None:
     assert gate.read_verdict(verdict_file(verdict="clean")).stop
     assert gate.read_verdict(verdict_file(verdict="approved")).stop
+    assert gate.read_verdict(verdict_file(verdict="conditional")).stop
     assert not gate.read_verdict(verdict_file(verdict="findings")).stop
     assert not gate.read_verdict(verdict_file(verdict="decision")).stop
 
@@ -294,7 +295,7 @@ def test_a_verdict_nobody_expected_still_gets_an_answer() -> None:
 
 def test_a_question_belongs_to_a_decision_and_to_nothing_else() -> None:
     assert gate.read_verdict(verdict_file(verdict="decision", question="Q?")).question
-    for name in ["clean", "approved", "findings"]:
+    for name in ["clean", "approved", "conditional", "findings"]:
         assert not gate.read_verdict(verdict_file(verdict=name, question="Q?")).question
 
 
@@ -312,9 +313,46 @@ def test_a_review_that_did_not_finish_is_not_counted() -> None:
     assert first_line == f"{gate.ATTEMPT_MARKER} n=2 sha={SHA} -->"
     assert gate.read_history([first_line]).failed_shas == {SHA}
     assert f"`{gate.REVIEW_LABEL}`" in answer.comment
+    # The outcome label stays whatever the last finished round left.
+    assert (answer.label, answer.unlabel) == ("", ())
 
 
-@pytest.mark.parametrize("name", ["clean", "approved", "findings", "decision"])
+@pytest.mark.parametrize(
+    ("name", "label"),
+    [
+        ("clean", "approved"),
+        ("approved", "approved"),
+        ("conditional", "approved-with-fixes"),
+        ("findings", "changes-requested"),
+        ("decision", "needs-decision"),
+    ],
+)
+def test_every_verdict_leaves_one_outcome_label(name: str, label: str) -> None:
+    answer = finish(verdict_file(verdict=name, question="Q?"))
+    assert answer.label == label
+    assert set(answer.unlabel) == set(gate.OUTCOME_LABELS.values()) - {label}
+
+
+def test_every_verdict_has_an_outcome_label() -> None:
+    assert gate.OUTCOME_LABELS.keys() == gate.VERDICT_STOPS.keys()
+    assert gate.OUTCOME_LABELS[gate.DEFAULT_VERDICT] == "changes-requested"
+
+
+@pytest.mark.parametrize("present", sorted(set(gate.OUTCOME_LABELS.values())))
+def test_the_gate_never_reads_an_outcome_label(present: str) -> None:
+    """The labels only report; the round markers stay the only state."""
+    for history in [[], rounds("findings"), rounds(*["findings"] * gate.MAX_ROUNDS)]:
+        for who in [{}, PERSON]:
+            bare = decide(markers=history, **who)
+            labelled = decide(
+                markers=history, labels=[gate.REVIEW_LABEL, present], **who
+            )
+            assert bare == labelled
+
+
+@pytest.mark.parametrize(
+    "name", ["clean", "approved", "conditional", "findings", "decision"]
+)
 def test_every_finished_round_counts_and_records_what_it_read(name: str) -> None:
     answer = finish(verdict_file(verdict=name, question="Fix here or file it?"))
     assert answer.counted
@@ -415,7 +453,15 @@ def test_decide_mode_writes_the_keys_the_workflow_reads() -> None:
 
 def test_finish_mode_writes_the_keys_the_workflow_reads() -> None:
     payload = _run(json.dumps({"round": 1, "verdict": verdict_file()}), "--finish")
-    assert payload.keys() == {"verdict", "stop", "counted", "comment", "reason"}
+    assert payload.keys() == {
+        "verdict",
+        "stop",
+        "counted",
+        "comment",
+        "reason",
+        "label",
+        "unlabel",
+    }
 
 
 def test_neither_mode_fails_on_input_it_cannot_parse() -> None:
@@ -479,17 +525,17 @@ def _close_step() -> str:
 # than the one the test wrote — a failure of the harness, not of the step.
 @pytest.mark.skipif(sys.platform == "win32", reason="the step runs on ubuntu-latest")
 @pytest.mark.parametrize(
-    ("verdict_text", "counted"),
+    ("verdict_text", "counted", "label"),
     [
-        (None, False),
-        (json.dumps(verdict_file(verdict="approved")), True),
-        ("this is not json", True),
-        ("[1, 2]", True),
+        (None, False, ""),
+        (json.dumps(verdict_file(verdict="conditional")), True, "approved-with-fixes"),
+        ("this is not json", True, "changes-requested"),
+        ("[1, 2]", True, "changes-requested"),
     ],
-    ids=["missing", "approved", "garbled", "not-an-object"],
+    ids=["missing", "conditional", "garbled", "not-an-object"],
 )
 def test_the_close_step_runs_as_written(
-    tmp_path: Path, verdict_text: str | None, counted: bool
+    tmp_path: Path, verdict_text: str | None, counted: bool, label: str
 ) -> None:
     """Run the step's own shell, with `gh` stubbed, against each shape of verdict file."""
     bash, jq = shutil.which("bash"), shutil.which("jq")
@@ -521,6 +567,20 @@ def test_the_close_step_runs_as_written(
 
     result = json.loads((work / "finish.json").read_text(encoding="utf-8"))
     assert result["counted"] is counted
-    assert "pr comment 7" in (tmp_path / "gh.log").read_text(encoding="utf-8")
+    calls = (tmp_path / "gh.log").read_text(encoding="utf-8")
+    assert "pr comment 7" in calls
     posted = (work / "comment.md").read_text(encoding="utf-8")
     assert posted.startswith(gate.ROUND_MARKER) is counted
+
+    # One outcome label on, the other three off; none touched when nothing counted.
+    added = [line for line in calls.splitlines() if "--method POST" in line]
+    removed = [line for line in calls.splitlines() if "--method DELETE" in line]
+    if label:
+        assert added == [
+            f"api --method POST repos/{REPO}/issues/7/labels "
+            f"-f labels[]={label} --silent"
+        ]
+        assert len(removed) == len(set(gate.OUTCOME_LABELS.values())) - 1
+        assert not any(line.endswith(f"/labels/{label} --silent") for line in removed)
+    else:
+        assert added == removed == []

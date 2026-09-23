@@ -53,6 +53,23 @@ label. Adding a label that is already there raises no event, so every later requ
 nothing too. Resolve the conflict or merge `main`, then remove the label and add it
 again.
 
+**The outcome shows as a label.** A finished round leaves one label saying how it
+ended, and takes off any other of the four:
+
+| Verdict | Label |
+| --- | --- |
+| `clean`, `approved` | `approved` |
+| `conditional` | `approved-with-fixes` |
+| `findings` | `changes-requested` |
+| `decision` | `needs-decision` |
+
+These labels only report, so the pull request list shows where each one stands.
+Nothing reads them: the rounds are counted from the closing comments below, because a
+status label that steered the rounds is what went wrong with the `loop:round-N` labels
+this replaced. A round that did not finish or did not run leaves the label as it was.
+A label left on after later pushes is stale; the closing comment names the commit that
+was reviewed. `OUTCOME_LABELS` in the gate holds the mapping.
+
 ## Counting rounds
 
 Each finished round posts one closing comment from `github-actions[bot]` whose first line
@@ -91,10 +108,10 @@ second click fixes that. `is_person` in the gate holds the rule.
 ## Stopping it
 
 - **The verdict decides whether another round is asked for.** The reviewer writes one of
-  four verdicts. `clean` and `approved` mean it does not need to see the result:
-  `approved` covers "✅ Approve", "✅ Approve, conditional on the listed fixes" and
-  "💬 Comment". The findings are still posted in full and still fixed, but the closing
-  comment does not ask for another round. `findings` (🔄 Request Changes) asks for one.
+  five verdicts. `clean`, `approved` and `conditional` mean it does not need to see the
+  result: `approved` is a plain "✅ Approve", and `conditional` covers "✅ Approve,
+  conditional on the listed fixes" and "💬 Comment". The findings are still posted in
+  full and still fixed, but the closing comment does not ask for another round. `findings` (🔄 Request Changes) asks for one.
   `decision` stops until the maintainer answers. `VERDICT_STOPS` in
   [`scripts/review_loop_gate.py`](../scripts/review_loop_gate.py) holds the mapping.
 - **The verdict advises; it does not refuse.** After a verdict that needs no other
@@ -145,8 +162,9 @@ Should it need redoing by hand: `claude setup-token`, then Settings → Secrets 
 variables → Actions. `ANTHROPIC_API_KEY` works in its place if per-token billing is
 preferred; swap the input name in the workflow.
 
-The `review` and `no-review` labels exist in the repository. `gh pr edit` cannot create
-a missing one, so recreate either by hand if it is ever deleted.
+The `review` and `no-review` labels exist in the repository, and so do the four outcome
+labels. `gh pr edit` cannot create a missing one, so recreate any of them by hand if it
+is ever deleted.
 
 ## Known rough edges
 
