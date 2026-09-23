@@ -592,16 +592,19 @@ reason: it weighs `link_target` at registration, and a data-stored target is rea
 every member is registered, so the field was weighed as `None`.
 
 *Closed:* a data-stored target is capped at `MAX_LINK_TARGET_BYTES` (4096, the Linux
-`PATH_MAX`). A member declaring more is not opened; any other read stops at 4097 bytes.
-A longer target is left unset with `SYMLINK_TARGET_UNAVAILABLE`
-(`reason="target_too_long"`) and never truncated, per the maintainer's ruling that such a
-target is corrupt or malicious; the code is an archive-integrity one, so
-`DiagnosticPolicy.strict()` refuses the archive. A Windows reparse buffer is read only as
-far as its parser can look (`8 + 0xFFFF` bytes) and its parsed target is held to the same
-cap. A target resolved after registration is now added to the listing tracker as it
-arrives, so `max_metadata_bytes` covers it. Header-stored targets (TAR, RAR5, Rock Ridge)
-were already weighed at registration and bounded by their header parsers. Found on PR
-#315 (S21-K10); tracked internally.
+`PATH_MAX`). A member declaring more is not opened. ZIP and 7z declare a size and verify
+data against it, so a member whose data outruns a smaller declared size fails as
+`CorruptionError` at that size; a read with no declared size stops at 4097 bytes. A
+longer target is left unset with `SYMLINK_TARGET_UNAVAILABLE`
+(`reason="target_too_long"`) and never truncated, per the maintainer's ruling that such
+a target is corrupt or malicious; the code is an archive-integrity one, so
+`DiagnosticPolicy.strict()` refuses the archive. A Windows reparse buffer is read only
+as far as its own header declares (at most `8 + 0xFFFF` bytes, a hundred or so in
+practice) and its parsed target is held to the same cap. A target resolved after
+registration is now added to the listing tracker as it arrives, so `max_metadata_bytes`
+covers it. Header-stored targets (TAR, RAR5, Rock Ridge) were already weighed at
+registration and bounded by their header parsers. Found on PR #315 (S21-K10); tracked
+internally.
 
 ## OPEN gaps — compatibility
 

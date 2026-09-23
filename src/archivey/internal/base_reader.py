@@ -112,8 +112,9 @@ from archivey.internal.streams.streamtools import (
     source_byte_size,
 )
 from archivey.internal.windows_reparse import (
-    MAX_REPARSE_BUFFER_BYTES,
+    REPARSE_HEADER_BYTES,
     parse_reparse_data,
+    reparse_payload_length,
 )
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
@@ -136,6 +137,13 @@ compressed, so without a bound a few hundred KiB of archive decode to gigabytes 
 no symlink a POSIX system wrote is longer. A longer one is treated as corrupt or
 malicious — left unset with a ``SYMLINK_TARGET_UNAVAILABLE`` diagnostic, never
 truncated, since a shortened path would point somewhere the archive did not say.
+
+On Windows the number is a policy, not a consequence of ``PATH_MAX``: an extended-length
+path runs to 32 767 UTF-16 units, so a genuine Windows symlink could carry a longer
+target, and the same cap applied to a reparse buffer's target refuses it. That is
+deliberate. The maintainer's ruling is about target length whatever format carries it —
+a target over 4096 bytes is rejected as corrupt or malicious — so it is not a bug on
+Windows input.
 
 Targets stored in a header (TAR's ``linkname``, RAR5's redirection record, Rock Ridge)
 are not read through this cap: the header parser has already allocated them, and
@@ -1483,23 +1491,33 @@ class BaseArchiveReader(ArchiveReader):
     ) -> bytes | None:
         """Read a symlink member's data for its target, never past the cap.
 
-        A plain target gets at most :data:`MAX_LINK_TARGET_BYTES` + 1 bytes: one byte
-        over is all it takes to know the target is too long, and the rest of the member
-        is never decoded. A member whose declared size is already over is refused
-        without opening it. Either way this reports the member and returns ``None``.
+        A member whose declared size is over :data:`MAX_LINK_TARGET_BYTES` is refused
+        without opening it: this reports the member and returns ``None``. That is the
+        path every over-long ZIP or 7z target takes, because both always declare a size.
 
-        A Windows reparse buffer is read up to :data:`MAX_REPARSE_BUFFER_BYTES` and
-        never refused here: its data may turn out to be ordinary file content (see
-        :meth:`_apply_reparse_data`), which is readable at any length, and the parser
-        looks at no more than that prefix anyway. The target it yields is checked
-        against the same cap there.
+        Otherwise the read asks for at most the cap + 1 bytes, and an answer over the
+        cap is refused the same way. Where the backend's stream verifies the declared
+        size — ZIP always, 7z whenever checksums are verified, the default — a member
+        whose data runs past a size under the cap never gets that far: reaching its
+        declared size with data left over raises ``CorruptionError`` there, as for any
+        other member whose data disagrees with its header. The byte bound is what holds
+        where the size is unknown or not verified.
 
-        A target under the cap is read to end of stream, so the member's checksum is
-        verified exactly as a full read would.
+        A Windows reparse buffer is never refused here, because its data may turn out to
+        be ordinary file content (see :meth:`_apply_reparse_data`) that stays readable at
+        any length. It is read as far as the buffer's own header says it runs — the
+        8-byte header, then the payload length it declares, at most 0xFFFF — which is
+        everything :func:`parse_reparse_data` looks at. The target it yields is held to
+        the cap there.
+
+        Both reads ask for one byte past what they need. On a member that is exactly
+        that long, the extra byte reaches end of stream, so its checksum is verified as
+        a whole read would.
         """
         if is_reparse_point:
             with open_data() as stream:
-                return read_exact(stream, MAX_REPARSE_BUFFER_BYTES)
+                header = read_exact(stream, REPARSE_HEADER_BYTES)
+                return header + read_exact(stream, reparse_payload_length(header) + 1)
         declared = member.size
         if declared is None or declared <= MAX_LINK_TARGET_BYTES:
             with open_data() as stream:
@@ -1571,9 +1589,12 @@ class BaseArchiveReader(ArchiveReader):
             member.link_target = parsed.target
             return
 
-        # `data` may be only the prefix `_read_link_target_data` reads; the member's
-        # own size is how much content it really holds.
-        data_size = member.size if member.size is not None else len(data)
+        # `data` may be only the prefix `_read_link_target_data` read, so the message
+        # names the size the archive declares for the member instead. Without one, all
+        # it can say is that there are at least this many bytes.
+        data_size = (
+            str(member.size) if member.size is not None else f"at least {len(data)}"
+        )
         if parsed is None and data and fallback_type is not MemberType.DIRECTORY:
             member.type = fallback_type
             reason = "reparse_data_unrecognized"

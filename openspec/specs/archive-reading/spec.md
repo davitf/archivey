@@ -936,9 +936,10 @@ start-offset / SFX rules (`format-rar`, `format-7z`).
 ### Requirement: Bounded symlink-target reads from member data
 
 A backend that reads a symlink's target from the member's data (ZIP, 7z, RAR3/4)
-SHALL NOT read more than `MAX_LINK_TARGET_BYTES` (4096) + 1 bytes of it. A member
-whose declared size is already over 4096 bytes SHALL NOT be opened for its target at
-all.
+SHALL bound that read. For a plain target, a member whose declared size is over
+`MAX_LINK_TARGET_BYTES` (4096) SHALL NOT be opened for its target at all, and any other
+read SHALL ask for at most 4096 + 1 bytes. A Windows reparse buffer is bounded
+differently, by its own header, as the paragraph after next says.
 
 A target longer than 4096 bytes SHALL be treated as corrupt or malicious: `link_target`
 SHALL stay unset, and `SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with
@@ -948,11 +949,18 @@ member (`LinkTargetNotFoundError`) rather than report `LINK_TARGET_UNAVAILABLE`.
 `SYMLINK_TARGET_UNAVAILABLE` is in `ARCHIVE_INTEGRITY_CODES`, so
 `DiagnosticPolicy.strict()` refuses the archive.
 
-A Windows reparse buffer stored as member data SHALL be read up to the most bytes its
-parser examines (the 8-byte header plus the 16-bit `ReparseDataLength`'s maximum) and
-SHALL NOT be refused for its size, because a member flagged as a reparse point may
-turn out to hold ordinary file content. The target parsed from a buffer SHALL be held
-to the same 4096-byte cap, measured in UTF-8.
+A Windows reparse buffer stored as member data SHALL be read as far as its own header
+declares: the 8-byte header, then the payload length its 16-bit `ReparseDataLength`
+states (plus one byte, so a member that is exactly one buffer reaches end of stream and
+is verified). A header whose tag is not a symlink or a junction declares nothing to
+read. The buffer SHALL NOT be refused for its size, because a member flagged as a
+reparse point may turn out to hold ordinary file content. The target parsed from a
+buffer SHALL be held to the same 4096-byte cap, measured in UTF-8.
+
+A member whose data outruns a declared size under the cap is corrupt, not over-long:
+where the backend verifies data against the declared size (ZIP always, 7z whenever
+checksums are verified), the read SHALL fail with `CorruptionError` on reaching that
+size, as for any other member, and the cap does not decide the outcome.
 
 Targets stored in a header (TAR `linkname`, RAR5 redirection records, Rock Ridge) are
 outside this requirement: the header parser has already allocated them, and
@@ -964,9 +972,11 @@ outside this requirement: the header parser has already allocated them, and
 | --- | --- |
 | Data-stored target of exactly 4096 bytes | `link_target` set, no diagnostic |
 | Data-stored target of 4097 bytes | `link_target is None`; `SYMLINK_TARGET_UNAVAILABLE`, `reason="target_too_long"` |
-| Compressed target declaring 400 MiB | Refused without decoding any of it |
-| Declared size unknown or under the cap, data longer | Read stops at 4097 bytes; refused as above |
+| Compressed target declaring 64 MiB | Refused without decoding any of it |
+| ZIP target whose data outruns a declared size under the cap | `CorruptionError` naming the declared size; nothing past it decoded |
+| No declared size, data longer than the cap | Read stops at 4097 bytes; refused as over-long |
 | Over-long target under `DiagnosticPolicy.strict()` | Listing raises `DiagnosticRaisedError` |
 | Over-long target, `extract_all(on_error=CONTINUE)` | That link `FAILED` with `LinkTargetNotFoundError`; other members extract |
-| Reparse buffer whose target is over 4096 UTF-8 bytes | Refused as above |
-| Reparse-flagged member whose data is larger than any buffer and not one | Re-typed to its fallback with all its content readable |
+| Reparse buffer whose target is over 4096 UTF-8 bytes | Refused as over-long |
+| Reparse buffer followed by more data | Only the declared buffer and one byte are read |
+| Reparse-flagged member whose data is not a buffer, any size | Re-typed to its fallback with all its content readable; only its header read while listing |

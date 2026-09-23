@@ -22,12 +22,14 @@ malicious rather than truncated, through the diagnostic policy.
 - A data-stored symlink target longer than 4096 bytes (`MAX_LINK_TARGET_BYTES`) is left
   unset and reported as `SYMLINK_TARGET_UNAVAILABLE` with `reason="target_too_long"`. It
   is never truncated.
-- The read is bounded: a member whose declared size is over the cap is not opened, and
-  any other read stops at cap + 1 bytes.
-- A Windows reparse buffer is read up to the most bytes its parser looks at
-  (`8 + 0xFFFF`) and is never refused for size, because a reparse-flagged member can be
-  an ordinary file whose content is kept. The target a buffer yields is held to the same
-  4096-byte cap, in UTF-8.
+- The read is bounded: a member whose declared size is over the cap is not opened. ZIP and
+  7z verify data against the declared size, so data that outruns a smaller one fails as
+  `CorruptionError` there, as for any member; a read with no declared size stops at
+  cap + 1 bytes.
+- A Windows reparse buffer is read as far as its own header declares (8 bytes, then the
+  payload length it states, at most 0xFFFF) and is never refused for size, because a
+  reparse-flagged member can be an ordinary file whose content is kept. The target a
+  buffer yields is held to the same 4096-byte cap, in UTF-8.
 - A target resolved after registration is added to the listing tracker as it is
   resolved, under the same enforcement as registration, so `max_metadata_bytes` covers
   it.

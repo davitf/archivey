@@ -6,7 +6,8 @@
       refuse a declared size over the cap without opening, otherwise read at most cap + 1.
 - [x] 1.2 ZIP, 7z and RAR4 `_ensure_link_target` read through it (RAR4 checks the stored
       size, which is its read).
-- [x] 1.3 Reparse buffers: read at most `MAX_REPARSE_BUFFER_BYTES`, never refused for size;
+- [x] 1.3 Reparse buffers: read the header, then the payload length it declares, never
+      refused for size;
       the parsed target is held to the cap; the fallback diagnostic reports the member's
       real size.
 

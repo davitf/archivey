@@ -20,8 +20,10 @@ import os
 import stat
 import struct
 import subprocess
+import tracemalloc
 import zipfile
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -30,6 +32,7 @@ from archivey import ExtractionStatus, open_archive
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
 from archivey.exceptions import (
+    CorruptionError,
     DiagnosticRaisedError,
     LinkTargetNotFoundError,
     ResourceLimitError,
@@ -106,6 +109,21 @@ def _sevenzip_with_link(tmp_path: Path, target: bytes) -> bytes:
     return bytes(data)
 
 
+# Well under `_BOMB_TARGET`'s 64 MiB, and far over what listing a few small members
+# allocates: a peak under this means the bomb was not decoded.
+_DECODED_NOTHING = 8 << 20
+
+
+def _peak_traced_bytes(action: Callable[[], object]) -> int:
+    """The tracemalloc peak while ``action`` runs, in bytes."""
+    tracemalloc.start()
+    try:
+        action()
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
 def _list(reader: ArchiveReader, streaming: bool) -> list[ArchiveMember]:
     """Every member, with link targets resolved, by each mode's own full listing."""
     if not streaming:
@@ -155,11 +173,15 @@ def test_a_compressed_zip_target_bomb_is_refused_without_decoding(
     data = _zip_with_links(_BOMB_TARGET)
     assert len(data) < 1 << 20
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-        by_name = {m.name: m for m in _list(reader, streaming)}
+        listed: list[ArchiveMember] = []
+        # `bytes_decompressed` does not observe link-target reads, so the allocation
+        # peak is what shows the 64 MiB was never decoded: the uncapped read peaked
+        # at several times that.
+        peak = _peak_traced_bytes(lambda: listed.extend(_list(reader, streaming)))
+        assert peak < _DECODED_NOTHING
+        by_name = {m.name: m for m in listed}
         assert by_name["link0"].link_target is None
         assert _too_long(reader) == ["link0"]
-        # Only target.txt's seven bytes were decoded, in either mode.
-        assert reader.bytes_decompressed <= len(b"payload")
 
 
 @requires_binary("7z")
@@ -177,7 +199,9 @@ def test_sevenzip_target_is_capped(
 ) -> None:
     data = _sevenzip_with_link(tmp_path, target)
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-        (link,) = _list(reader, streaming)
+        listed: list[ArchiveMember] = []
+        peak = _peak_traced_bytes(lambda: listed.extend(_list(reader, streaming)))
+        (link,) = listed
         assert link.type is MemberType.SYMLINK
         if kept:
             assert link.link_target == target.decode()
@@ -185,7 +209,7 @@ def test_sevenzip_target_is_capped(
         else:
             assert link.link_target is None
             assert _too_long(reader) == ["link"]
-            assert reader.bytes_decompressed == 0
+            assert peak < _DECODED_NOTHING
 
 
 def test_a_rar4_stored_target_over_the_cap_is_refused(
@@ -214,10 +238,33 @@ def test_a_rar4_stored_target_over_the_cap_is_refused(
         assert sorted(_too_long(reader)) == sorted(m.name for m in links)
 
 
+@pytest.mark.parametrize("streaming", _MODES)
+def test_a_zip_target_longer_than_its_declared_size_is_corruption(
+    streaming: bool,
+) -> None:
+    """A header that under-declares the target is a corrupt member, not a long target.
+
+    ZIP verifies every member's data against its declared size, so the read stops at
+    those 10 bytes and the data left over raises there, as it would for any other
+    member. The cap is never what decides this case, and nothing past the declared
+    size plus one byte is decoded.
+    """
+    data = bytearray(_zip_with_links(b"x" * 500_000))
+    for signature, size_at in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
+        # The second of each: the first is target.txt's header.
+        header = data.find(signature, data.find(signature) + 1)
+        struct.pack_into("<I", data, header + size_at, 10)
+    with open_archive(io.BytesIO(bytes(data)), streaming=streaming) as reader:
+        with pytest.raises(CorruptionError, match="declared size of 10 bytes"):
+            _list(reader, streaming)
+
+
 def test_the_read_stops_one_byte_past_the_cap_when_the_size_is_unknown() -> None:
-    """The declared size is checked first, so a member claiming to be small is the
-    only way to reach the read itself. This drives the shared helper directly with an
-    endless stream and no declared size, which is what a lying header would amount to.
+    """The byte bound for a backend that does not verify the declared size.
+
+    Neither ZIP nor 7z reaches it with a real archive — both declare a size, which is
+    checked first, and both verify it by default — so this drives the shared helper
+    directly with an endless stream and no declared size.
     """
 
     class Endless(io.RawIOBase):
