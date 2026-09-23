@@ -78,10 +78,15 @@ can fall out of step with what actually ran:
 The round cap and the retry guard apply to agents only, so the workflow has to tell an
 agent from a person. `sender.type` is not enough: an agent working from a Claude Code project thread
 sometimes lands its label as `davitf`, type `User` (#384's events, 2026-09-21), and
-sometimes as `claude[bot]`. The workflow reads the pull request's latest `review`
-labeled event instead. A person is a `User` sender whose event has no
+sometimes as `claude[bot]`. The workflow reads the `review` labeled event this run is
+for instead: the latest one by the same sender, no older than the pull request's
+`updated_at` in the webhook (which labelling bumps) less thirty seconds. The events API
+can lag the webhook, so it fetches again for a few seconds until that event is listed;
+without the date check, an agent's label could be read against the maintainer's own
+earlier click. A person is a `User` sender whose event has no
 `performed_via_github_app`, which is what a click in GitHub's own interface records. An
-event that cannot be found counts as an agent. `is_person` in the gate holds the rule.
+event that cannot be found counts as an agent, which can only refuse a person, and a
+second click fixes that. `is_person` in the gate holds the rule.
 
 ## Stopping it
 

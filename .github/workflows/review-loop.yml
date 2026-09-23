@@ -63,6 +63,8 @@ jobs:
         env:
           SENDER_TYPE: ${{ github.event.sender.type }}
           SENDER_LOGIN: ${{ github.event.sender.login }}
+          # Labelling bumps it, so it dates the label this run is for.
+          LABEL_SINCE: ${{ github.event.pull_request.updated_at }}
         run: |
           set -euo pipefail
           # Read now, not from the event: the label may have come off since the event
@@ -80,23 +82,37 @@ jobs:
 
           # Which app, if any, added the label. An agent acting through the
           # maintainer's account arrives as a `User` sender, and this is the field that
-          # tells it apart (`is_person` in the gate). The latest event is the one this
-          # run is for, or a newer one; either way it is who is asking now.
-          app="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/events" --paginate \
-            --jq '.[] | select(.event == "labeled" and .label.name == "review")
-                      | "app=" + (.performed_via_github_app.slug // "")' | tail -n 1)"
+          # tells it apart (`is_person` in the gate). The events API can lag the
+          # webhook, so fetch again for a while until an event as recent as this
+          # label is listed; the 30 is the gate's `LABEL_EVENT_SKEW`. Found or not,
+          # the gate picks the event, and one it cannot find counts as an agent.
+          for attempt in 1 2 3 4; do
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/events" --paginate \
+              --jq '.[] | select(.event == "labeled" and .label.name == "review")
+                        | {at: .created_at, actor: .actor.login,
+                           app: (.performed_via_github_app.slug // "")}' \
+              > /tmp/label-events.jsonl
+            if jq -e -s --arg since "$LABEL_SINCE" \
+                'any(.[]; (.at | fromdateiso8601) >= ($since | fromdateiso8601) - 30)' \
+                /tmp/label-events.jsonl > /dev/null; then
+              break
+            fi
+            [ "$attempt" = 4 ] || sleep 5
+          done
 
           jq -n \
             --slurpfile pr /tmp/pr.json \
             --rawfile markers /tmp/markers.txt \
             --arg sender_type "$SENDER_TYPE" \
             --arg sender_login "$SENDER_LOGIN" \
-            --arg label_app "$app" \
+            --arg label_since "$LABEL_SINCE" \
+            --slurpfile label_events /tmp/label-events.jsonl \
             --arg repository "$GITHUB_REPOSITORY" \
             '{labels: [$pr[0].labels[].name], head_sha: $pr[0].headRefOid,
               markers: ($markers | split("\n") | map(select(length > 0))),
               sender_type: $sender_type, sender_login: $sender_login,
-              label_app: $label_app, repository: $repository}' > /tmp/gate-input.json
+              label_since: $label_since, label_events: $label_events,
+              repository: $repository}' > /tmp/gate-input.json
 
           python3 scripts/review_loop_gate.py < /tmp/gate-input.json > /tmp/gate.json
           cat /tmp/gate.json
@@ -155,11 +171,13 @@ jobs:
             --allowedTools Read,Grep,Glob,WebFetch,Bash
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
-            This is review round ${{ steps.gate.outputs.round }}. Another round runs only
-            if your verdict asks to see the fixes, and an agent can ask for at most
-            ${{ steps.gate.outputs.max_rounds }} rounds — which is the addendum's own
-            round budget, so review as it tells you to and let the verdict say whether
-            another round is needed rather than padding one to reach it.
+            This is review round ${{ steps.gate.outputs.round }}. Your verdict decides
+            whether the closing comment asks for another round; the implementer adds
+            one otherwise only if its fixes grow beyond what you described. An agent can
+            ask for at most ${{ steps.gate.outputs.max_rounds }} rounds — which is the
+            addendum's own round budget, so review as it tells you to and let the
+            verdict say whether another round is needed rather than padding one to
+            reach it.
 
             Follow this repository's own review skill, in full, as if it had been invoked
             by name: read `.claude/skills/code-review-skill/SKILL.md` and

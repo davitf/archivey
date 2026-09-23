@@ -51,14 +51,28 @@ def decide(**overrides) -> gate.Decision:
         "head_sha": SHA,
         "sender_type": "Bot",
         "sender_login": "claude[bot]",
-        "label_app": "app=claude",
+        "label_since": NOW,
+        "label_events": [labeled("claude[bot]", "claude")],
         "repository": REPO,
     }
     return gate.decide(base | overrides)
 
 
+#: When this run's label was added, as the webhook's ``updated_at`` says.
+NOW = "2026-09-23T01:40:00Z"
+
+
+def labeled(actor: str, app: str, at: str = NOW) -> dict:
+    """One ``review`` labeled event, as the workflow extracts it."""
+    return {"at": at, "actor": actor, "app": app}
+
+
 #: What a person clicking the label in GitHub's own interface looks like.
-PERSON = {"sender_type": "User", "sender_login": "davitf", "label_app": "app="}
+PERSON = {
+    "sender_type": "User",
+    "sender_login": "davitf",
+    "label_events": [labeled("davitf", "")],
+}
 
 
 def finish(verdict: object, **overrides) -> gate.Finish:
@@ -128,15 +142,51 @@ def test_an_agent_cannot_ask_for_a_round_past_the_cap() -> None:
 @pytest.mark.parametrize(
     "who",
     [
-        {"sender_type": "Bot", "label_app": "app="},
+        {"sender_type": "Bot", "label_events": [labeled("claude[bot]", "")]},
         # An agent acting through the maintainer's account: #384 recorded exactly this.
-        {"sender_type": "User", "label_app": "app=claude"},
+        {
+            "sender_login": "davitf",
+            "sender_type": "User",
+            "label_events": [labeled("davitf", "claude")],
+        },
         # The event could not be found, so nobody can say it was a person.
-        {"sender_type": "User", "label_app": ""},
-        {"sender_type": "User", "label_app": None},
-        {"sender_type": None, "label_app": "app="},
+        {"sender_login": "davitf", "sender_type": "User", "label_events": []},
+        {"sender_login": "davitf", "sender_type": "User", "label_events": None},
+        {
+            "sender_login": "davitf",
+            "sender_type": None,
+            "label_events": [labeled("davitf", "")],
+        },
+        # The events API had not listed this run's event yet, and the latest one it
+        # did list was the maintainer's own click, a while ago.
+        {
+            "sender_login": "davitf",
+            "sender_type": "User",
+            "label_events": [labeled("davitf", "", at="2026-09-23T01:20:00Z")],
+        },
+        # Someone else's click is not this run's event.
+        {
+            "sender_login": "davitf",
+            "sender_type": "User",
+            "label_events": [labeled("someone", "")],
+        },
+        {
+            "sender_login": "davitf",
+            "sender_type": "User",
+            "label_since": "",
+            "label_events": [labeled("davitf", "")],
+        },
     ],
-    ids=["bot", "user-via-app", "user-no-event", "user-app-none", "no-sender"],
+    ids=[
+        "bot",
+        "user-via-app",
+        "user-no-event",
+        "user-events-none",
+        "no-sender",
+        "stale-person-event",
+        "other-actor",
+        "no-since",
+    ],
 )
 def test_only_a_person_buys_a_round_past_the_cap(who: dict) -> None:
     past_cap = rounds(*["findings"] * (gate.MAX_ROUNDS + 1))
@@ -149,6 +199,21 @@ def test_only_a_person_buys_a_round_past_the_cap(who: dict) -> None:
     assert person.person
     assert person.final
     assert person.round == gate.MAX_ROUNDS + 2
+
+
+def test_the_latest_matching_event_decides_and_skew_is_allowed() -> None:
+    """A click a few seconds before ``updated_at`` still counts; the newest one wins."""
+    slightly_early = "2026-09-23T01:39:45Z"
+    events = [labeled("davitf", "", at=slightly_early)]
+    assert decide(**(PERSON | {"label_events": events})).person
+    events.append(labeled("davitf", "claude", at="2026-09-23T01:40:02Z"))
+    assert not decide(**(PERSON | {"label_events": events})).person
+
+
+def test_the_workflow_retries_with_the_gates_skew() -> None:
+    step = (ROOT / ".github/workflows/review-loop.yml").read_text(encoding="utf-8")
+    seconds = int(gate.LABEL_EVENT_SKEW.total_seconds())
+    assert f"($since | fromdateiso8601) - {seconds})" in step
 
 
 def test_nothing_runs_past_the_ceiling_whoever_asks() -> None:
@@ -285,6 +350,29 @@ def test_the_last_round_does_not_ask_an_agent_for_another() -> None:
     answer = finish(verdict_file(verdict="findings"), round=5, final=True)
     assert "again for round" not in answer.comment
     assert "unless a person adds" in answer.comment
+
+
+@pytest.mark.parametrize("name", ["findings", "approved", "decision"])
+def test_the_ceiling_round_does_not_offer_another(name: str) -> None:
+    """At the ceiling nothing runs again, so no comment may say a label would."""
+    answer = finish(
+        verdict_file(verdict=name, question="Q?"),
+        round=gate.MAX_FORCED_ROUNDS,
+        final=True,
+    )
+    assert "last round this workflow runs" in answer.comment
+    assert "label again" not in answer.comment
+    assert "a person adds" not in answer.comment
+    assert "person adding" not in answer.comment
+
+
+@pytest.mark.parametrize("name", ["approved", "decision"])
+def test_past_the_cap_only_a_person_starts_another(name: str) -> None:
+    answer = finish(
+        verdict_file(verdict=name, question="Q?"), round=gate.MAX_ROUNDS, final=True
+    )
+    assert "only a person adding the `review` label" in answer.comment
+    assert "label again" not in answer.comment
 
 
 def test_a_round_that_does_not_need_another_look_says_so() -> None:

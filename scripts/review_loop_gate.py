@@ -13,15 +13,20 @@ Two modes, each reading one JSON object on stdin and writing one on stdout.
 
     {"labels": ["review", ...], "markers": ["<!-- archivey-review-round n=1 ... -->"],
      "head_sha": "abc...", "sender_type": "Bot", "sender_login": "claude[bot]",
-     "label_app": "app=claude", "repository": "davitf/archivey"}
+     "label_since": "2026-09-23T01:00:00Z",
+     "label_events": [{"at": "2026-09-23T01:00:00Z", "actor": "claude[bot]",
+                       "app": "claude"}],
+     "repository": "davitf/archivey"}
     -> {"run": true, "round": 2, "final": false, "person": false, "reason": "...",
         "comment": "", "max_rounds": 5}
 
 ``markers`` are the first lines of the workflow's own earlier comments on the pull
 request (`ROUND_MARKER` and `ATTEMPT_MARKER`). They are the only state: which rounds ran,
 what each one's verdict was, and which commits a review already failed on.
-``label_app`` is what the pull request's latest ``review`` labeled event recorded as
-``performed_via_github_app``; see `is_person`.
+``label_events`` are the pull request's ``review`` labeled events, with the slug of
+the app each was ``performed_via_github_app`` (empty for none), and ``label_since`` is
+the pull request's ``updated_at`` in the webhook, which labelling bumps; see
+`is_person`.
 
 **Finish** (``--finish``)::
 
@@ -41,6 +46,7 @@ import json
 import re
 import sys
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 
 #: The label that asks for a round. Adding it is the whole trigger.
 REVIEW_LABEL = "review"
@@ -64,6 +70,11 @@ MAX_ROUNDS = 5
 #: is ever misread: three spare rounds, as the loop this replaced had (davitf,
 #: 2026-09-21).
 MAX_FORCED_ROUNDS = MAX_ROUNDS + 3
+
+#: How much older than the webhook's ``updated_at`` this run's labeled event may be.
+#: The two are written by the same action and usually agree to the second. The
+#: workflow's retry check spells the same number out; a test holds them together.
+LABEL_EVENT_SKEW = timedelta(seconds=30)
 
 #: The first line of a closing comment for a round that ran, and what the count counts.
 #:
@@ -146,6 +157,39 @@ def read_history(markers: object) -> History:
     return History(rounds, frozenset(failed))
 
 
+def _when(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def label_event(event: dict) -> dict | None:
+    """The labeled event this run is for, or None when it cannot be found.
+
+    The latest ``review`` event on the pull request is not enough on its own: the
+    events API can lag the webhook by a few seconds, and then the latest listed event
+    is an earlier label, perhaps a person's click. So only an event by this run's
+    sender, no older than the webhook's ``updated_at`` less `LABEL_EVENT_SKEW`, is
+    taken. The workflow retries the fetch a few times before giving up.
+    """
+    since = _when(event.get("label_since"))
+    if since is None:
+        return None
+    earliest = since - LABEL_EVENT_SKEW
+    sender = event.get("sender_login")
+    found = []
+    for item in event.get("label_events") or []:
+        if not isinstance(item, dict) or item.get("actor") != sender:
+            continue
+        at = _when(item.get("at"))
+        if at is not None and at >= earliest:
+            found.append((at, item))
+    return max(found, key=lambda pair: pair[0])[1] if found else None
+
+
 def is_person(event: dict) -> bool:
     """Did a person add the label, rather than an agent?
 
@@ -154,11 +198,15 @@ def is_person(event: dict) -> bool:
     one at 2026-09-21T01:57:37Z, with ``performed_via_github_app: claude``, while the
     same route landed as ``claude[bot]`` on #392 and #399. What separates the two is
     that app field, which is empty only when someone acted without an app, in GitHub's
-    own interface. The workflow passes it as ``app=<slug>``, ``app=`` for none, and an
-    empty string when it could not find the event, which counts as an agent.
+    own interface. An event that cannot be found (`label_event`) counts as an agent:
+    that can only refuse a person, and a second click fixes it.
     """
-    app = event.get("label_app")
-    return event.get("sender_type") == "User" and app == "app="
+    found = label_event(event)
+    return (
+        event.get("sender_type") == "User"
+        and found is not None
+        and found.get("app") == ""
+    )
 
 
 # --- deciding whether a round runs ----------------------------------------------------
@@ -334,12 +382,26 @@ def finish(event: dict) -> Finish:
     v = read_verdict(event.get("verdict"))
     summary = f" {v.summary}" if v.summary else ""
 
+    def again(sentence: str) -> str:
+        """How another round starts, which the cap and the ceiling can change."""
+        if rnd >= MAX_FORCED_ROUNDS:
+            return (
+                "This was the last round this workflow runs on this pull request, so "
+                "review anything further by hand."
+            )
+        if final:
+            return (
+                f"All {MAX_ROUNDS} rounds an agent can ask for are spent, so only a "
+                f"person adding the {label} label starts another."
+            )
+        return sentence
+
     if v.verdict == "decision":
         body = (
             f"**Round {rnd} stopped for a decision.**{summary}\n\n"
             f"**The question:** {v.question or 'see the review above.'}\n\n"
-            "The options, and what each one costs, are in the review above. Once it is "
-            f"answered, add the {label} label again to carry on."
+            "The options, and what each one costs, are in the review above. "
+            + again(f"Once it is answered, add the {label} label again to carry on.")
         )
     elif v.verdict == "clean":
         body = (
@@ -352,8 +414,18 @@ def finish(event: dict) -> Finish:
         body = (
             f"**Round {rnd}: the review does not need to see the result.**{summary}\n\n"
             "Work through any findings it posted with `address-review-findings`. No "
-            "further round is needed. If the fixes grow into a larger change that "
-            f"needs a fresh look, add the {label} label again."
+            "further round is needed. "
+            + again(
+                "If the fixes grow into a larger change that needs a fresh look, add "
+                f"the {label} label again."
+            )
+        )
+    elif rnd >= MAX_FORCED_ROUNDS:
+        body = (
+            f"**Round {rnd} posted findings, and that was the last round this workflow "
+            f"runs on this pull request.**{summary}\n\n"
+            "Work through them with `address-review-findings`, and review the result "
+            "by hand."
         )
     elif final:
         body = (
