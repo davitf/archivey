@@ -31,8 +31,13 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.backends import tar_reader as tar_reader_module
+from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
 from tests.conftest import requires_zstd, zstd_backend
-from tests.streams_util import NonSeekableBytesIO, ReadSizeRecorder
+from tests.streams_util import (
+    FactSizedReadRecorder,
+    NonSeekableBytesIO,
+    ReadSizeRecorder,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -1386,9 +1391,9 @@ def _tar_with_oversized_metadata_header(typeflag: bytes, declared: int) -> bytes
 
 
 @pytest.mark.parametrize("typeflag", [b"x", b"L"])
-@pytest.mark.parametrize("advertise_size", [True, False], ids=["sized", "unsized"])
+@pytest.mark.parametrize("length", ["fact", "hint", "unknown"])
 def test_extended_header_size_does_not_drive_the_allocation(
-    typeflag: bytes, advertise_size: bool
+    typeflag: bytes, length: str
 ) -> None:
     """A 10 KB archive must not make the reader ask its source for 6 GiB.
 
@@ -1398,37 +1403,39 @@ def test_extended_header_size_does_not_drive_the_allocation(
     the bytes is the observable: whether the allocation then succeeds depends on the
     machine, so it is the request that is pinned, not a ``MemoryError``.
 
-    The two parameters are the two branches of the bound, and they are bounded by
-    different things. ``sized`` advertises the fsspec ``size`` attribute, so the
-    reader knows how many bytes are left and clamps to exactly that; it fails against
-    the unbounded ``self._inner.read(size)`` this wrapper used to do, which passes
-    6 442 450 944 straight through. ``unsized`` hides it, which is what every
-    compressed source and every ordinary caller-supplied file-like looks like: the
-    length is unknown, so the read is stepped instead, and this case fails against
-    treating an unknown length as an unlimited one (``remaining is None`` forwarding
-    ``size`` down), which passes the same 6 442 450 944. A bound tested only on the
-    advertised branch is untested on the branch most sources actually take.
+    The three parameters are the three things the source can know about its length,
+    and they take different branches of the bound. ``fact`` is a ``BytesIO``, whose
+    length the boundary reads from its buffer, so the read is clamped to exactly what
+    is left; it fails against an unbounded ``read(size)``, which passes 6 442 450 944
+    straight through. ``hint`` advertises the fsspec ``size`` attribute, a caller's
+    unverified claim, which must not clamp (an understating hint would truncate a
+    legitimate read), so the read is stepped. ``unknown`` has neither, which is what
+    every compressed source and every ordinary caller-supplied file-like looks like;
+    it is stepped too, and fails against treating an unknown length as an unlimited
+    one (``remaining is None`` forwarding ``size`` down), which passes the same
+    6 442 450 944. A bound tested only where the length is known is untested on the
+    branch most sources actually take.
     """
     declared = 6 * 1024**3
     data = _tar_with_oversized_metadata_header(typeflag, declared)
-    source = ReadSizeRecorder(data, advertise_size=advertise_size)
+    source: FactSizedReadRecorder | ReadSizeRecorder = (
+        FactSizedReadRecorder(data)
+        if length == "fact"
+        else ReadSizeRecorder(data, advertise_size=length == "hint")
+    )
 
     with pytest.raises(CorruptionError):
         with open_archive(source, format=ArchiveFormat.TAR) as reader:
             reader.members()
 
     assert source.requested, "the source was never read"
-    # The source sits under a ``BufferedReader``, whose refill size is a constant of
+    # A raw source sits under a ``BufferedReader``, whose refill size is a constant of
     # the runtime (``io.DEFAULT_BUFFER_SIZE``: 8 KiB through 3.13, 128 KiB from 3.14)
     # and has nothing to do with the archive. So the bound is one refill or, whichever
-    # is larger, the archive when its length is known and the step when it is not;
-    # what both assertions pin is that no read scales with ``declared``, which is six
+    # is larger, the archive when its length is a fact and the step when it is not;
+    # what every case pins is that no read scales with ``declared``, which is six
     # gigabytes.
-    reach = (
-        len(data)
-        if advertise_size
-        else tar_reader_module._EofProbeStream._UNKNOWN_LENGTH_READ_STEP
-    )
+    reach = len(data) if length == "fact" else DEFAULT_UNKNOWN_LENGTH_READ_STEP
     bound = max(reach, io.DEFAULT_BUFFER_SIZE)
     assert max(source.requested) <= bound, (
         f"asked the source for {max(source.requested)} bytes "

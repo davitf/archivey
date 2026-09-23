@@ -30,10 +30,16 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     UnsupportedOperationError,
 )
-from archivey.internal.backends.iso_reader import IsoReader, _ImageBoundedStream
+from archivey.internal.backends.iso_reader import IsoReader
 from archivey.internal.registry import FormatSupport, get_registry
+from archivey.internal.source import ArchiveSource
+from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
 from tests.conftest import requires
-from tests.streams_util import NonSeekableBytesIO, ReadSizeRecorder
+from tests.streams_util import (
+    FactSizedReadRecorder,
+    NonSeekableBytesIO,
+    ReadSizeRecorder,
+)
 
 pytestmark = requires("pycdlib")
 
@@ -447,10 +453,8 @@ def _iso_with_oversized_root_directory(declared: int) -> bytes:
     return bytes(blob)
 
 
-@pytest.mark.parametrize("advertise_size", [True, False], ids=["sized", "unsized"])
-def test_directory_data_length_does_not_drive_the_allocation(
-    advertise_size: bool,
-) -> None:
+@pytest.mark.parametrize("length", ["fact", "hint", "unknown"])
+def test_directory_data_length_does_not_drive_the_allocation(length: str) -> None:
     """A directory record's 32-bit length must not size a read of the image.
 
     It is read at ``open_fp`` time, before a member is listed, so a small image buys
@@ -458,33 +462,34 @@ def test_directory_data_length_does_not_drive_the_allocation(
     ``ArchiveyError`` at all. Asking for the bytes is the observable: whether the
     allocation then succeeds depends on the machine.
 
-    The two parameters are the two branches of the bound, and they fail against
-    different mutations. ``sized`` advertises the fsspec ``size`` attribute, so the
-    image's length is known and the read is clamped to what is left; it fails against
-    handing pycdlib an unbounded handle, which passes 4 294 967 040 straight through.
-    ``unsized`` hides it, which is what an ordinary caller-supplied seekable
-    file-like looks like — not a path, not one of the types ``source_byte_size`` will
-    end-seek — and it is the branch a wrapper applied only when the length is known
-    does not cover at all: it fails against wrapping conditionally, and against
-    reading ``size`` whole once the length is unknown, both of which pass the same
-    4 294 967 040.
+    The three parameters are the three things the source can know about the image's
+    length, and they take different branches of the bound. ``fact`` is a ``BytesIO``,
+    whose length the boundary reads from its buffer, so the read is clamped to what is
+    left; it fails against handing pycdlib an unbounded source, which passes
+    4 294 967 040 straight through. ``hint`` advertises the fsspec ``size`` attribute,
+    a caller's unverified claim, which must not clamp (an understating hint would
+    truncate a legitimate read), so the read is stepped. ``unknown`` has neither, which
+    is what an ordinary caller-supplied seekable file-like looks like; it is stepped
+    too, and fails against bounding only when the length is known.
     """
     declared = 0xFFFFFF00
     data = _iso_with_oversized_root_directory(declared)
-    source = ReadSizeRecorder(data, advertise_size=advertise_size)
+    source: FactSizedReadRecorder | ReadSizeRecorder = (
+        FactSizedReadRecorder(data)
+        if length == "fact"
+        else ReadSizeRecorder(data, advertise_size=length == "hint")
+    )
 
     with pytest.raises(CorruptionError):
         open_archive(source, format=ArchiveFormat.ISO)
 
     assert source.requested, "the source was never read"
-    # As in the TAR equivalent: the source sits under a ``BufferedReader`` whose refill
-    # size is a runtime constant (``io.DEFAULT_BUFFER_SIZE``: 8 KiB through 3.13,
-    # 128 KiB from 3.14), larger than this image on a recent Python. The bound is one
-    # refill or, whichever is larger, the image when its length is known and the step
-    # when it is not; what is pinned is that no read scales with ``declared``.
-    reach = (
-        len(data) if advertise_size else _ImageBoundedStream._UNKNOWN_LENGTH_READ_STEP
-    )
+    # As in the TAR equivalent: a raw source sits under a ``BufferedReader`` whose
+    # refill size is a runtime constant (``io.DEFAULT_BUFFER_SIZE``: 8 KiB through
+    # 3.13, 128 KiB from 3.14), larger than this image on a recent Python. The bound is
+    # one refill or, whichever is larger, the image when its length is a fact and the
+    # step when it is not; what is pinned is that no read scales with ``declared``.
+    reach = len(data) if length == "fact" else DEFAULT_UNKNOWN_LENGTH_READ_STEP
     bound = max(reach, io.DEFAULT_BUFFER_SIZE)
     assert max(source.requested) <= bound, (
         f"asked the source for {max(source.requested)} bytes "
@@ -492,19 +497,23 @@ def test_directory_data_length_does_not_drive_the_allocation(
     )
 
 
-def test_a_path_source_is_read_through_our_own_handle(rock_ridge_iso: Path) -> None:
-    """Bounding a path source is only possible while archivey owns the handle.
+def test_a_path_source_is_read_through_the_archive_source(
+    rock_ridge_iso: Path,
+) -> None:
+    """Bounding a path source is only possible while pycdlib reads archivey's object.
 
-    A path went to ``PyCdlib.open``, which opens its own file and leaves nothing of
-    archivey's underneath it, so there was nowhere to put the bound; only the
-    measured path opened its own. This pins the handle rather than the allocation:
-    the allocation itself is what the bound prevents, and provoking it to prove that
-    costs gigabytes. ``test_directory_data_length_does_not_drive_the_allocation``
-    covers the bound on a source that can record what was asked of it.
+    A path handed to ``PyCdlib.open`` would open its own file and leave nothing of
+    archivey's underneath it, so there would be nowhere to put the bound. This pins
+    the object rather than the allocation: the allocation itself is what the bound
+    prevents, and provoking it to prove that costs gigabytes.
+    ``test_directory_data_length_does_not_drive_the_allocation`` covers the bound on a
+    source that can record what was asked of it.
     """
     with open_archive(rock_ridge_iso) as reader:
         assert isinstance(reader, IsoReader)
-        assert reader._owned_fp is not None
+        assert isinstance(reader._source, ArchiveSource)
+        assert reader._source.path == rock_ridge_iso
+        assert reader._iso._cdfp is reader._source
         assert [m.name for m in reader.members()]
 
 

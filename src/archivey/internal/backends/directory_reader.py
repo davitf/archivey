@@ -13,7 +13,7 @@ import os
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Iterator, Mapping
+from typing import Iterator, Mapping
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -34,6 +34,7 @@ from archivey.internal.logs import backends as logger
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -331,7 +332,7 @@ class DirectoryReadBackend(ReadBackend):
 
     def open_read(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
         passwords: _PasswordCandidates | None,
@@ -346,17 +347,21 @@ class DirectoryReadBackend(ReadBackend):
         reject_start_offset(start_offset, format, archive_name)
         # `format` is always DIRECTORY here (single-format backend); accepted for the
         # uniform ReadBackend signature. Password rejection is central (SUPPORTS_PASSWORD).
-        if not isinstance(source, Path):
-            raise TypeError("Directory backend requires a Path source")
-        return DirectoryReader(
-            source,
+        if not source.is_directory or source.path is None:
+            raise TypeError("Directory backend requires a directory path source")
+        reader = DirectoryReader(
+            source.path,
             streaming,
-            archive_name or str(source),
+            archive_name or str(source.path),
             config,
             collector=collector,
             member_streams=member_streams,
             open_site=open_site,
         )
+        # Recorded like every other backend's, so the reader's teardown closes it. A
+        # directory source holds nothing open; this keeps one close path, not two.
+        reader._source = source
+        return reader
 
 
 # Self-register at import time

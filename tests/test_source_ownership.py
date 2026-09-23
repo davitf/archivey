@@ -132,9 +132,8 @@ def test_a_sequence_of_caller_streams_is_not_closed() -> None:
     # io.BytesIO and typing.BinaryIO as unrelated, so the sequence does not match.
     resolved = resolve_source(parts)  # type: ignore[arg-type]
     assert resolved.volume_count == 2
-    # Narrowing the Path | BinaryIO also asserts which of the two came back.
-    joined = resolved.open_source
-    assert isinstance(joined, io.IOBase)
+    joined = resolved.source
+    assert joined.joined is not None
     assert joined.read() == b"first halfsecond half"
     joined.close()
     for part in parts:

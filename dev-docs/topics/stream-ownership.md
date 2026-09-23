@@ -14,13 +14,13 @@ decoder means "do not close the inner." Silence on a `DelegatingStream` means
 | `SlicingStream` | borrow | `owns_inner=True` (4 production sites) |
 | `SharedView` | borrow, hardcoded | none — Parcel B split this class so `lock=` could not switch modes |
 | `DecompressorStream` | borrow | `owns_inner=True` on later staged BCJ filters (first-stage Copy+BCJ / BCJ-alone borrows the pack view) |
-| `DelegatingStream` | **own** | class constant `_OWNS_INNER = False` (1 production class: `BorrowedStream`), or `owns_inner=False` ad hoc; `_SUBCLASS_CLOSES_INNER` is *who* closes, not *whether* |
+| `DelegatingStream` | **own** | none; `_SUBCLASS_CLOSES_INNER` is *who* closes, not *whether* |
 | `AesDecryptStream` | borrow | `owns_inner=True` — 7z AES-CBC pull stream; default matches other transform wrappers. Production 7z borrows the pack `SharedView`. |
 | `_HeaderDecryptStream` | borrow, hardcoded | none — RAR header cursor must not close the archive; ciphertext `tell`, not a member stream |
 | `WinZipAesDecryptStream` | **own**, hardcoded | none — ZIP AE-x payload slice has no borrow caller; CTR+HMAC, not CBC |
-| `BorrowedStream` | borrow, class flag | none — it exists to borrow; it is the source boundary's wrapper around the caller's own stream |
-| `SharedSource` | Path → own; `BinaryIO` → borrow | encoded in the constructor argument type |
-| ZIP/ISO `_owned_fp`, TAR `_owned_stream` | Path the reader opened | not a wrapper flag; leave the names |
+| `ArchiveSource` | borrow the caller's object; own what it opened or built | none — how it was built decides: `for_path` owns its lazy handle, `for_stream` borrows (and detaches, never closes, a buffer it put in front), `for_volumes` owns the join and the sources built for its stream parts |
+| `SharedSource` | borrow, always | none — the reader's `ArchiveSource` owns what is underneath |
+| TAR `_owned_stream`, RAR `_owned_concat` | what the reader built itself | not a wrapper flag; see §4 |
 
 The public contract is the borrow default: archivey never closes a
 caller-supplied `BinaryIO` (`openspec/specs/archive-reading/spec.md`). Views and
@@ -29,11 +29,13 @@ stand-in in a close chain, so it owns.
 
 The defaults alone do not deliver that contract: they say what each *wrapper*
 does, and a caller's object that reaches a backend unwrapped is one owning wrapper
-away from being closed. The source boundary
-(`streamtools/full_count.py`) therefore hands every backend a `BorrowedStream` over
-the caller's stream, so no keyword anywhere above it has to be right for the contract
-to hold. `tests/test_source_ownership.py` is the end-to-end check; the inventories
-below are the per-class one.
+away from being closed. The source boundary (`internal/source.py`) therefore hands
+every backend an `ArchiveSource`, never the caller's stream, so no keyword anywhere
+above it has to be right for the contract to hold. The reader owns that source and
+closes it after its own teardown (`BaseArchiveReader._maybe_teardown`); if a backend
+constructor raises first, `open_archive` closes it. `tests/test_source_ownership.py`
+is the end-to-end check, `tests/test_archive_source.py` the unit one, and the
+inventories below the per-class one.
 
 `AesDecryptStream` is a `ReadOnlyIOStream`, so it is absent from the
 `DelegatingStream` inventory and from the leak oracle's pinned population
@@ -60,13 +62,11 @@ Counting wrappers (`CountingReader`, `OutputCountingStream`,
 `SeekCountingStream`) are spliced mid-chain, and their inner must therefore be a
 wrapper rather than the caller's own object.
 
-That inner is never the caller's own object, because every stream source crosses
-`ensure_full_count_reads` before any backend sees it, and what it returns is always
-one of the boundary's own wrappers: `BorrowedStream`, `FullCountStream` or a
-non-closing buffer. None of them closes the caller's stream, so the owning default
-has nothing of the caller's to reach. `tests/test_source_ownership.py` checks that
-end to end, over every format, both common stream shapes, and measurement on and
-off.
+That inner is never the caller's own object, because every source crosses the
+boundary before any backend sees it, and what comes out is an `ArchiveSource`. Closing
+it never closes the caller's stream, so the owning default has nothing of the caller's
+to reach. `tests/test_source_ownership.py` checks that end to end, over every format,
+both common stream shapes, and measurement on and off.
 
 | Class | Close must reach |
 | --- | --- |
@@ -77,7 +77,6 @@ off.
 | `OutputCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
 | `SeekCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
 | `CountingReader` | mid-chain; inner is already a non-closing wrapper (see above) |
-| `BorrowedStream` | nothing — `_OWNS_INNER = False`; it is what makes "already a non-closing wrapper" true |
 
 Two more own, but close themselves and tell the base to skip the second call:
 
@@ -91,11 +90,11 @@ handle the oracle does not pin: default `DelegatingStream` constructors wrap
 `BytesIO` by the thousand and are excluded on purpose. The oracle catching the
 #336 shape is not a reason to create a new silent-miss on `LockedStream`.
 
-`_OWNS_INNER = False` as a per-class opt-out is the other half of that argument, not a
-softening of it. The default stays own, so no existing class changes and no forgotten
-keyword can turn one into a leak; the flag only lets a class that owns nothing say so,
-and `test_delegating_stream_close_inventory` makes saying so a recorded decision. Its
-one production use is `BorrowedStream`, whose inner is by construction the caller's.
+A per-class opt-out (`_OWNS_INNER = False`) existed while the boundary's borrow
+wrapper was a `DelegatingStream`. It went with that wrapper: `ArchiveSource` borrows by
+being its own class, and a flag with no production user is one more thing the
+inventory would have to explain. A future wrapper that must not close what it wraps
+should likewise not be a `DelegatingStream`.
 
 `subclass_closes_inner` is kept, not folded into `owns_inner`. Both values own;
 the flag is the close *mechanism*. Eliminating it would double-close the
@@ -125,10 +124,16 @@ the way `lock=None` used to. A second class for that is `SharedView` already.
 
 ## 4. Reader-level flags, left alone
 
-`SharedSource._owns_handle`, ZIP/ISO `_owned_fp`, TAR `_owned_stream` record
-"did this reader open a Path." They are not wrapper kwargs. Path vs `BinaryIO`
-already encodes the answer at construction. Renaming them to `owns_inner`
-would collide with the wrapper vocabulary for no call-site gain.
+The flags that recorded "did this reader open a Path" (`SharedSource._owns_handle`,
+ZIP/ISO `_owned_fp`, the source half of TAR's `_owned_stream`) are gone: the
+`ArchiveSource` opens the handle and the reader closes the source. Two reader-level
+fields remain, each for something the reader built itself rather than a source it
+was handed. TAR's `_owned_stream` is the decompressor over a compressed tar. RAR's
+`_owned_concat` joins siblings discovered from volume 1's path: the boundary hands
+RAR that path (unrar walks the set itself and needs the files on disk), and RAR's
+in-process reader builds its own join from it. They are not wrapper kwargs, and
+renaming them to `owns_inner` would collide with the wrapper vocabulary for no
+call-site gain.
 
 `ConcatenatedFile` is the same split: Path volumes are owned, caller streams are
 borrowed. Path parts are sized with `os.stat()` and opened on the first read
@@ -160,9 +165,9 @@ Neither is ownership.
 `SlicingStream` is keyed on the **kwarg** `owns_inner`. `DelegatingStream` is
 keyed on the resolved `_subclass_closes_inner` instance flag — the class-level
 `_SUBCLASS_CLOSES_INNER` default, or a constructor kwarg that overrides it.
-A `BorrowedStream` is deliberately not pinned: the oracle pins wrappers that own a
-private inner, and this one owns nothing — the handle under it is the caller's to
-close.
+An `ArchiveSource` is not pinned: it is neither a `SlicingStream` nor a
+`DelegatingStream`, and what it owns is closed by the reader's teardown, which
+`tests/test_archive_source.py` and `tests/test_source_ownership.py` check directly.
 Renaming those without updating `tests/leak_oracle.py` pins nothing, and the
 tests being edited are the ones that would have caught it.
 
@@ -176,7 +181,7 @@ before committing.
 
 ```bash
 uv run --no-sync pytest tests/test_stream_bases.py tests/test_slice.py \
-    tests/test_source_ownership.py tests/test_full_count_stream.py \
+    tests/test_source_ownership.py tests/test_archive_source.py \
     tests/test_leak_oracle.py tests/test_codecs.py tests/test_rar_reader.py \
     tests/test_volumes.py tests/test_sevenzip_reader.py::test_first_stage_bcj_does_not_close_pack_source \
     tests/test_sevenzip_reader.py::test_copy_bcj_folder_roundtrip -q --no-cov

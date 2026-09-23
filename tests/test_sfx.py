@@ -58,11 +58,11 @@ from archivey.internal.sfx import (
     executable_cue,
     scan_for_magic,
 )
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.brotli_framing import (
     BrotliBlock,
     parse_metablock,
 )
-from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.streamtools.slice import SlicingStream
 from archivey.internal.zip_detect import validate_zip_local_header
 from archivey.types import ArchiveFormat
@@ -568,8 +568,12 @@ def test_no_7z_magic_within_the_window_raises_rather_than_listing_nothing(
 
 
 def _open_with(source, *, password=None, start_offset=0):
+    from archivey.internal.source import ArchiveSource
+
     return SevenZipReadBackend().open_read(
-        source,
+        ArchiveSource.for_path(source)
+        if isinstance(source, Path)
+        else ArchiveSource.for_stream(source),
         format=ArchiveFormat.SEVEN_Z,
         streaming=False,
         passwords=_PasswordCandidates.from_input(password),
@@ -634,12 +638,13 @@ def test_start_offset_is_believed_rather_than_rescanned(tmp_path: Path) -> None:
 
 def test_a_format_without_stubs_refuses_a_start_offset(tmp_path: Path) -> None:
     from archivey.internal.backends.tar_reader import TarReadBackend
+    from archivey.internal.source import ArchiveSource
 
     path = tmp_path / "x.tar"
     path.write_bytes(b"\x00" * 1024)
     with pytest.raises(UnsupportedFeatureError, match="nonzero start offset"):
         TarReadBackend().open_read(
-            path,
+            ArchiveSource.for_path(path),
             format=ArchiveFormat.TAR,
             streaming=False,
             passwords=None,
@@ -919,7 +924,7 @@ def test_detection_leaves_a_non_seekable_stream_replayable(tmp_path: Path) -> No
     destructive read for the streaming ZIP reader this repo is heading towards.
     """
     payload = _STUB + _zip_bytes()
-    source = PeekableStream(io.BytesIO(payload))
+    source = ArchiveSource.for_stream(io.BytesIO(payload))
     detected = detect_format(source)
     assert detected.format == ArchiveFormat.ZIP
     assert detected.payload_offset == len(_STUB)

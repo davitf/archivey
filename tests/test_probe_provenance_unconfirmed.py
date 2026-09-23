@@ -27,8 +27,8 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.detection import _extension_corroborates
+from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.streams.brotli_framing import BrotliBlock, parse_metablock
-from archivey.internal.streams.peekable import DETECTION_LIMIT
 from archivey.types import ContainerFormat, StreamFormat
 from tests.conftest import requires
 

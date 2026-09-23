@@ -69,6 +69,7 @@ ARCHIVEY_NAMES = (
     "MemberStreams",
     "OverwritePolicy",
     "PeekableStream",
+    "ArchiveSource",
     "SharedSource",
     "SlicingStream",
     "TruncatedError",

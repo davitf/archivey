@@ -247,10 +247,10 @@ def test_seekable_stream_rewound_to_zero() -> None:
 
 
 def test_peekable_stream_not_consumed() -> None:
-    from archivey.internal.streams.peekable import PeekableStream
+    from archivey.internal.source import ArchiveSource
 
     data = _zip_bytes()
-    stream = PeekableStream(NonSeekableBytesIO(data))
+    stream = ArchiveSource.for_stream(NonSeekableBytesIO(data))
     info = detect_format(stream)
     assert info.format == ArchiveFormat.ZIP
     # Nothing consumed: the backend can still read the whole archive.
@@ -502,13 +502,13 @@ def test_inner_tar_over_bzip2_large_block_is_tar_bz2() -> None:
 
 
 def test_inner_tar_over_bzip2_large_block_non_seekable() -> None:
-    # Same, from a non-seekable pipe wrapped as the opener does: the PeekableStream buffers
+    # Same, from a non-seekable pipe wrapped as the opener does: the source's replay prefix buffers
     # enough of the prefix for the probe to reach the header region, and the source is not
     # consumed (the backend can still read the whole archive afterwards).
-    from archivey.internal.streams.peekable import PeekableStream
+    from archivey.internal.source import ArchiveSource
 
     data = _large_block_tar_bz2()
-    stream = PeekableStream(NonSeekableBytesIO(data))
+    stream = ArchiveSource.for_stream(NonSeekableBytesIO(data))
     info = detect_format(stream)
     assert info.format == ArchiveFormat.TAR_BZ2
     assert stream.read(len(data)) == data
@@ -839,8 +839,8 @@ def _system_area_the_brotli_probe_accepts(source_length: int) -> bytes:
     pass: if the probe stops accepting any candidate, it says so instead of passing
     because nothing claimed the image.
     """
+    from archivey.internal.detection_workspace import DETECTION_LIMIT
     from archivey.internal.streams.codecs import BrotliCodec
-    from archivey.internal.streams.peekable import DETECTION_LIMIT
 
     probe = BrotliCodec()
     for seed in range(256):
@@ -912,9 +912,9 @@ def test_unknown_length_short_source_falls_through_to_the_extension(
 ) -> None:
     # Unknown length, far too short for the ISO window: the far-magic step takes a short
     # peek, matches nothing and falls through — being short is never itself a rejection.
-    from archivey.internal.streams.peekable import PeekableStream
+    from archivey.internal.source import ArchiveSource
 
-    stream = PeekableStream(NonSeekableBytesIO(b"short mystery bytes"))
+    stream = ArchiveSource.for_stream(NonSeekableBytesIO(b"short mystery bytes"))
     with pytest.raises(FormatDetectionError):
         detect_format(stream)
 

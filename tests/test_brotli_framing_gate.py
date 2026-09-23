@@ -146,7 +146,7 @@ def test_ole_and_coff_residuals_honest_detect_format() -> None:
     # goes to Alone. COFF's are all zero, so Alone declines and Brotli takes it instead,
     # at GUESS rather than PROBABLE: a weaker claim on the same fabrication, still
     # probe-only and so still stamping `format_unconfirmed` on a read failure.
-    from archivey.internal.streams.peekable import DETECTION_LIMIT
+    from archivey.internal.detection_workspace import DETECTION_LIMIT
 
     ole = bytes.fromhex("D0CF11E0A1B11AE1") + b"\x00" * 8000
     assert first_block_overruns_source(ole, len(ole)) is False
@@ -255,14 +255,14 @@ def test_unknown_length_skips_framing_gate() -> None:
 def test_nonseekable_pipe_skips_gate_at_detection_limit() -> None:
     # End-to-end: short non-seekable peeks still get a length (peek came back short);
     # at DETECTION_LIMIT the length is unknown and the A-34 stub remains a probe hit.
-    from archivey.internal.streams.peekable import PeekableStream
+    from archivey.internal.source import ArchiveSource
     from tests.streams_util import NonSeekableBytesIO
 
     stub = b"MZ" + b"\x90" * 4094
     short = stub[:3000]
     with pytest.raises(FormatDetectionError):
-        detect_format(PeekableStream(NonSeekableBytesIO(short)))
-    info = detect_format(PeekableStream(NonSeekableBytesIO(stub)))
+        detect_format(ArchiveSource.for_stream(NonSeekableBytesIO(short)))
+    info = detect_format(ArchiveSource.for_stream(NonSeekableBytesIO(stub)))
     assert info.format == ArchiveFormat.BROTLI
 
 

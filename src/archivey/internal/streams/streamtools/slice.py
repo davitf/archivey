@@ -227,8 +227,8 @@ class SlicingStream(ReadOnlyIOStream):
         #   gathered here.
         #
         # Neither rescues a RawIO that shorts mid-stream; per ADR 0014 that inner needs a
-        # full-count wrapper in front, which is what ``ensure_full_count_reads`` puts at
-        # the source boundary. Every inner a backend slices is full-count already.
+        # full-count layer in front, which the ``ArchiveSource`` built at the source
+        # boundary is. Every inner a backend slices is full-count already.
         drain = n < 0
         n = self._compute_bytes_to_read(n)  # stays negative for an unbounded drain
         if n == 0:

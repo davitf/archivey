@@ -27,7 +27,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal import volumes as volumes_mod
-from archivey.internal.streams.streamtools import ensure_full_count_reads
+from archivey.internal.source import ArchiveSource
 from archivey.internal.volumes import (
     ConcatenatedFile,
     discover_volume_siblings,
@@ -751,8 +751,8 @@ class _WatchedPathOpens:
 
 
 def test_non_seekable_volume_item_still_refused() -> None:
-    """``FullCountStream.tell()`` raises, which still trips the ConcatenatedFile refusal."""
-    item = ensure_full_count_reads(ShortReadNonSeekable(b"abc", 1))
+    """A non-seekable ``ArchiveSource.tell()`` raises, which still trips the refusal."""
+    item = ArchiveSource.for_stream(ShortReadNonSeekable(b"abc", 1))
     with pytest.raises(
         StreamNotSeekableError, match="all volume streams must be seekable"
     ):
@@ -762,8 +762,8 @@ def test_non_seekable_volume_item_still_refused() -> None:
 def test_short_returning_seekable_volume_item_reads_through_boundary() -> None:
     joined = ConcatenatedFile(
         [
-            ensure_full_count_reads(ShortReadBytesIO(b"hello")),
-            ensure_full_count_reads(ShortReadBytesIO(b"world")),
+            ArchiveSource.for_stream(ShortReadBytesIO(b"hello")),
+            ArchiveSource.for_stream(ShortReadBytesIO(b"world")),
         ]
     )
     assert joined.read() == b"helloworld"
@@ -1143,7 +1143,7 @@ def test_concatenated_file_volume_ranges_for_mixed_path_and_stream(
 
 
 def test_concatenated_file_can_be_buffered() -> None:
-    """``ConcatenatedFile`` is handed out as ``open_source``; buffering it must work.
+    """``ConcatenatedFile`` is joined behind an ``ArchiveSource``; buffering it must work.
 
     ``RawIOBase`` expects ``readinto``; this class overrides ``read`` instead, so
     without an explicit bridge both spellings raised ``NotImplementedError``.

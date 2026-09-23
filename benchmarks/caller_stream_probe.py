@@ -31,9 +31,18 @@ never contained it.
 
 **Reading the numbers.** Per-case wall noise here is a few percent, so the driver
 alternates the two sides and takes the per-case minimum, as ``harness.py`` prescribes;
-one run each way cannot resolve a small effect. The ``path`` shape is the control: the
-boundary does not touch a ``Path`` source, so its ratio is the noise floor of the
-comparison and every stream ratio should be read against it, not against 1.00.
+one run each way cannot resolve a small effect. Every shape is a treatment, ``path``
+included: the source boundary builds one object for a path too, so no shape is left
+untouched to serve as the control. The noise floor comes from each side instead. With
+``--compare-globs`` and at least two runs a side, the runs of one side are split into
+odd and even halves and compared with each other; that ratio is what the same code
+measures against itself, and every before/after ratio should be read against it, not
+against 1.00.
+
+The shapes: ``path`` is a ``Path``; ``file`` is ``open(path, "rb")``, already buffered;
+``bytesio`` is a ``BytesIO``, also already buffered; ``raw`` is
+``open(path, "rb", buffering=0)``, a seekable ``RawIOBase`` with no buffer, the one shape
+the boundary adds a read buffer to.
 
 Measurement is **off**. It is the benchmark harness's own switch, it adds a wrapper on
 both sides, and an ordinary caller never enables it — so leaving it on would measure a
@@ -56,7 +65,7 @@ from archivey import open_archive
 from benchmarks import fixtures
 
 _OPS = ("open_list", "read_all")
-_SHAPES = ("path", "file", "bytesio")
+_SHAPES = ("path", "file", "bytesio", "raw")
 
 
 def _op_open_list(source: Path | BinaryIO) -> int:
@@ -131,6 +140,7 @@ def _measure(root: Path | None, scale: str, repeats: int) -> dict[str, object]:
             "path": lambda path=path: path,  # type: ignore[misc]  # bind the loop var
             "file": lambda path=path: open(path, "rb"),  # type: ignore[misc]  # ditto
             "bytesio": lambda data=data: io.BytesIO(data),  # type: ignore[misc]  # ditto
+            "raw": lambda path=path: open(path, "rb", buffering=0),  # type: ignore[misc]  # ditto
         }
         for op_name in _OPS:
             for shape in _SHAPES:
@@ -170,6 +180,19 @@ def _merge_best(runs: Iterable[dict[str, object]]) -> dict[str, float]:
     return best
 
 
+def _noise_floor(runs: list[dict[str, object]]) -> list[float]:
+    """Per-case ratios of one side's odd runs against its even runs.
+
+    Both halves ran the same code, so what these ratios show is the measurement's own
+    spread. Needs two runs; with fewer there is nothing to split and the list is empty.
+    """
+    if len(runs) < 2:
+        return []
+    odd = _merge_best(runs[0::2])
+    even = _merge_best(runs[1::2])
+    return [even[key] / odd[key] for key in odd if key in even]
+
+
 def _compare(before_paths: list[Path], after_paths: list[Path]) -> int:
     before_runs = [_load(p) for p in before_paths]
     after_runs = [_load(p) for p in after_paths]
@@ -185,25 +208,31 @@ def _compare(before_paths: list[Path], after_paths: list[Path]) -> int:
     before = _merge_best(before_runs)
     after = _merge_best(after_runs)
     print(f"{'case':<38} {'before ms':>10} {'after ms':>10} {'ratio':>7}")
-    ratios: list[float] = []
-    control: list[float] = []
+    by_shape: dict[str, list[float]] = {}
     for key in sorted(before):
         if key not in after:
             continue
         ratio = after[key] / before[key]
-        (control if key.endswith("/path") else ratios).append(ratio)
+        by_shape.setdefault(key.rsplit("/", 1)[1], []).append(ratio)
         print(
             f"{key:<38} {before[key] * 1000:>10.2f} {after[key] * 1000:>10.2f} "
             f"{ratio:>7.3f}"
         )
-    if control:
-        print(
-            f"\ncontrol (path sources, untouched): median {statistics.median(control):.3f}"
-        )
-    if ratios:
-        print(
-            f"stream sources:                    median {statistics.median(ratios):.3f}"
-        )
+    print()
+    for shape in _SHAPES:
+        ratios = by_shape.get(shape)
+        if ratios:
+            print(f"{shape + ' sources:':<24} median {statistics.median(ratios):.3f}")
+    for label, runs in (("before", before_runs), ("after", after_runs)):
+        floor = _noise_floor(runs)
+        if floor:
+            spread = max(abs(1 - r) for r in floor)
+            print(
+                f"noise floor ({label}, odd vs even runs): "
+                f"median {statistics.median(floor):.3f}, widest {spread:.1%}"
+            )
+        else:
+            print(f"noise floor ({label}): needs two or more runs")
     return 0
 
 

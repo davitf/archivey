@@ -20,8 +20,6 @@ Module map:
 - :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` (wrapper bases)
 - :mod:`.binaryio` — classify/coerce sources (``is_seekable``, ``ensure_binaryio``, …)
   plus ``ask_resume_offset`` (duck-typed resume query; see the named exception above)
-- :mod:`.full_count` — ``FullCountStream`` / ``BorrowedStream`` / ``ensure_full_count_reads``
-  (the source boundary: full-count reads, and a wrapper so nothing closes the caller's stream)
 - :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``
 - :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
 - :mod:`.locked` — ``LockedStream`` / ``CloseLockedStream`` (whole-op lock wrappers)
@@ -61,11 +59,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     require_source,
     source_byte_size,
     source_name,
-)
-from archivey.internal.streams.streamtools.full_count import (
-    BorrowedStream,
-    FullCountStream,
-    ensure_full_count_reads,
+    source_size_fact,
 )
 from archivey.internal.streams.streamtools.locked import CloseLockedStream, LockedStream
 from archivey.internal.streams.streamtools.shared import SharedSource
@@ -81,10 +75,8 @@ from archivey.internal.streams.streamtools.solid import (
 
 __all__ = [
     "BinaryIOWrapper",
-    "BorrowedStream",
     "CloseLockedStream",
     "DelegatingStream",
-    "FullCountStream",
     "LockedStream",
     "ReadOnlyIOStream",
     "ReadableStream",
@@ -94,7 +86,6 @@ __all__ = [
     "SolidBlockReader",
     "ensure_binaryio",
     "ensure_bufferedio",
-    "ensure_full_count_reads",
     "fix_stream_start_position",
     "is_filename",
     "is_seekable",
@@ -108,5 +99,6 @@ __all__ = [
     "read_within_reach",
     "DEFAULT_UNKNOWN_LENGTH_READ_STEP",
     "source_byte_size",
+    "source_size_fact",
     "source_name",
 ]

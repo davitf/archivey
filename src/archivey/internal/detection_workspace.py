@@ -3,8 +3,9 @@
 Every tier that reads from the front of a source does so through a
 :class:`PrefixWorkspace`. Extending the window reads only the delta; bytes already
 retrieved are never re-fetched. A seekable caller stream records its entry position,
-reads forward once, and restores once in an exception-safe exit. A non-seekable source
-uses the same replay buffer the backend will consume (:class:`PeekableStream`).
+reads forward once, and restores once in an exception-safe exit. A non-seekable
+:class:`~archivey.internal.source.ArchiveSource` is peeked, so its replay prefix holds
+the bytes and the backend reads them from the same object.
 """
 
 from __future__ import annotations
@@ -21,12 +22,17 @@ from archivey.detection_cost import (
     MutableDetectionCostReceipt,
     TierSkipReason,
 )
-from archivey.internal.streams.peekable import PeekableStream
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
     is_seekable,
     read_exact,
     source_byte_size,
 )
+
+# Default amount detection peeks (``format-detection``'s DETECTION_LIMIT). A peek grows
+# past it on demand — 32 774 bytes when the ISO probe is triggered — so this is the
+# typical case, not a cap on what a non-seekable source's replay prefix may hold.
+DETECTION_LIMIT = 4096
 
 # Non-seekable ``read_at`` ceiling for content-probe chain walks: reaching offset N means
 # buffering [0, N). 1 MiB covers a second link after a 4- or 5-nibble first block; a
@@ -55,7 +61,7 @@ class PrefixWorkspace:
         self._path_handle: BinaryIO | None = None
         self._owned_path = False
         self._seekable_stream: BinaryIO | None = None
-        self._peekable: PeekableStream | None = None
+        self._peekable: ArchiveSource | None = None
         self._raw_forward: BinaryIO | None = None
         self._spool: tempfile.SpooledTemporaryFile[bytes] | None = None
         self._spool_abandoned = False
@@ -64,6 +70,11 @@ class PrefixWorkspace:
         # from source EOF: the scan records ``BUDGET_EXHAUSTED`` from this, because
         # the validator's ``NOT_THIS_FORMAT`` cannot tell the two apart.
         self._clamped_view_read = False
+        if isinstance(source, ArchiveSource) and source.path is not None:
+            # Detection keeps its own handle on a file and closes it on exit, so the
+            # source's handle opens only when a backend reads, and a backend that never
+            # does (``unrar`` over a path) leaves nothing open on the archive.
+            source = source.path
         # Total size of the underlying object from its own offset 0, when cheap.
         self._total_size = source_byte_size(source)
         self._kind: str
@@ -78,10 +89,10 @@ class PrefixWorkspace:
                     self._total_size = os.fstat(self._path_handle.fileno()).st_size
                 except (OSError, AttributeError):
                     pass
-        elif isinstance(source, PeekableStream):
+        elif isinstance(source, ArchiveSource) and not source.seekable():
             self._kind = "peekable"
             self._peekable = source
-            # PeekableStream is the opener's shared replay buffer — never a second layer.
+            # The source's own replay prefix — the backend drains it, so never a copy.
         elif is_seekable(source):
             self._kind = "seekable"
             self._seekable_stream = source
@@ -142,7 +153,8 @@ class PrefixWorkspace:
         # not scheduled yet (max_tail_bytes is 0 on every preset); capability advertising
         # is for callers that opt in via replace() ahead of prefixed-archive-detection.
 
-        # Paths and PeekableStream / seekable streams leave bytes available to a backend.
+        # Paths, seekable streams and an ArchiveSource's replay prefix leave bytes
+        # available to a backend.
         if self._kind in ("path", "peekable", "seekable", "spool") or (
             self._spool is not None and not self._spool_abandoned
         ):
@@ -356,7 +368,7 @@ class PrefixWorkspace:
         if nbytes <= 0:
             return b""
         if self._peekable is not None:
-            # Grow the shared PeekableStream buffer; slice only the delta we lack.
+            # Grow the source's replay prefix; slice only the delta we lack.
             end = len(self._buf) + nbytes
             peeked = self._peekable.peek(end)
             return peeked[len(self._buf) : end]

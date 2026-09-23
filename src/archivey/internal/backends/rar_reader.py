@@ -87,6 +87,7 @@ from archivey.internal.password import (
 )
 from archivey.internal.rar_detect import validate_rar_main_header
 from archivey.internal.registry import register_reader
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
@@ -95,7 +96,6 @@ from archivey.internal.streams.streamtools import (
     SlicingStream,
     SolidBlockReader,
     is_seekable,
-    is_stream,
     skip_forward,
 )
 from archivey.internal.streams.verify import build_member_verifier
@@ -130,18 +130,18 @@ _STREAM_VOLUMES_DISK_COPY_NOTE = (
 )
 
 
-def _rar_stream_copy_cost_notes(source: Path | BinaryIO) -> tuple[str, ...]:
+def _rar_stream_copy_cost_notes(source: ArchiveSource) -> tuple[str, ...]:
     """Open-time caveat when member data needs a filesystem path for ``unrar``.
 
-    Path sources (including ``ConcatenatedFile`` of path volumes) get no note.
-    Both stream shapes get the same predictive caveat: the copy happens on the
-    first read ``unrar`` has to serve, not at open. Keyed from source shape so
-    ``Path`` items inside ``_materialize_stream_volumes`` are not mis-labelled
-    as streams.
+    A file source, or a joined set of files, gets no note. Both stream shapes get the
+    same predictive caveat: the copy happens on the first read ``unrar`` has to serve,
+    not at open. Keyed from the source's facts so a mixed set, whose file parts
+    ``_materialize_stream_volumes`` copies alongside the streams, is labelled as the
+    streams it contains.
     """
-    if isinstance(source, Path):
+    if source.path is not None:
         return ()
-    if isinstance(source, ConcatenatedFile):
+    if source.joined is not None:
         if source.volume_paths:
             return ()
         return (_STREAM_VOLUMES_DISK_COPY_NOTE,)
@@ -667,7 +667,7 @@ class RarReader(BaseArchiveReader):
 
     def __init__(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         streaming: bool,
         passwords: _PasswordCandidates | None,
         encoding: str | None,
@@ -692,7 +692,7 @@ class RarReader(BaseArchiveReader):
         del encoding  # RAR names are decoded by the native parser.
         self._source = source
         self._passwords = passwords or _PasswordCandidates()
-        self._volume_count = getattr(source, "volume_count", volume_count)
+        self._volume_count = max(source.volume_count, volume_count)
         self._temp_path: Path | None = None
         self._temp_dir: Path | None = None
         self._owned_concat: ConcatenatedFile | None = None
@@ -709,7 +709,7 @@ class RarReader(BaseArchiveReader):
         # (CostReceipt is a static snapshot; see access-mode-and-cost).
         self._cost_notes = _rar_stream_copy_cost_notes(source)
 
-        if is_stream(source) and not is_seekable(source):
+        if not source.seekable():
             raise StreamNotSeekableError(
                 "RAR archives require a seekable source: headers and stored member "
                 "ranges are addressed by offsets.",
@@ -759,23 +759,29 @@ class RarReader(BaseArchiveReader):
         # policy.
         self._emit_service_header_diagnostics()
 
-    def _open_shared_source(self, source: Path | BinaryIO) -> SharedSource:
+    def _open_shared_source(self, source: ArchiveSource) -> SharedSource:
         """Build SharedSource, discovering/materializing volumes as needed."""
         wrap = self._seek_handle_wrapper()
-        if isinstance(source, Path):
-            siblings = discover_volume_siblings(source)
+        path = source.path
+        if path is not None:
+            siblings = discover_volume_siblings(path)
             if siblings is not None and len(siblings) > 1:
+                # The source reads volume 1 only; ``unrar`` walks the set on disk, and
+                # the header walk reads across it through a join this reader builds.
+                # That join is the one source-level object a backend still opens and
+                # closes itself, because the boundary hands RAR volume 1's path.
                 self._volume_paths = siblings
                 self._volume_count = len(siblings)
                 self._archive_path = siblings[0]
                 concat = ConcatenatedFile(siblings)
                 self._owned_concat = concat
                 return SharedSource(concat, wrap_handle=wrap)
-            self._volume_paths = [source]
-            self._archive_path = source
+            self._volume_paths = [path]
+            self._archive_path = path
             return SharedSource(source, wrap_handle=wrap)
 
-        if isinstance(source, ConcatenatedFile):
+        joined = source.joined
+        if isinstance(joined, ConcatenatedFile):
             paths = source.volume_paths
             if paths:
                 # Path volumes: prefer real sibling files for unrar.
@@ -785,7 +791,7 @@ class RarReader(BaseArchiveReader):
                 return SharedSource(source, wrap_handle=wrap)
             # Stream volumes: parse from the originals; copy for unrar only when
             # a member actually needs one (_ensure_archive_path).
-            items = source.volume_items
+            items = joined.volume_items
             self._stream_volume_items = items
             self._volume_count = len(items)
             return SharedSource(source, wrap_handle=wrap)
@@ -844,11 +850,12 @@ class RarReader(BaseArchiveReader):
 
     def _stream_volume_ranges(self) -> list[tuple[int, int]]:
         """``(start, size)`` per volume in the concatenated space this reader reads."""
-        source = self._source
-        assert isinstance(source, ConcatenatedFile), (
-            "stream volumes only come from a ConcatenatedFile source"
+        assert self._source is not None
+        joined = self._source.joined
+        assert isinstance(joined, ConcatenatedFile), (
+            "stream volumes only come from a joined source"
         )
-        return source.volume_ranges
+        return joined.volume_ranges
 
     def _parse_archive(self) -> tuple[RarArchive, str | None]:
         max_members = self._config.listing_limits.max_members
@@ -1982,7 +1989,7 @@ class RarReadBackend(ReadBackend):
 
     def open_read(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
         passwords: _PasswordCandidates | None,
