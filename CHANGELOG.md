@@ -56,7 +56,7 @@ promise with that line; treat `0.2.0` as the first release of this library.
   Those numbers are not bounded by the file's size (a 153-byte 7z can ask for 4 GiB)
   and the allocation happens on `open()` and `read()`, which `ExtractionLimits` does
   not cover, so it is a type of its own rather than another bomb guard. Default
-  1 GiB, `DecoderLimits.UNLIMITED` to opt out, `ResourceLimitError` when exceeded.
+  2 GiB, `DecoderLimits.UNLIMITED` to opt out, `ResourceLimitError` when exceeded.
   Enforced so far on both PPMd paths, where the refusal is not optional: under a
   memory cap a rejected allocation kills the interpreter from inside pyppmd instead
   of raising.

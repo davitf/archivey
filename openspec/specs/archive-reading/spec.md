@@ -807,7 +807,7 @@ class ListingLimits:
 
 @dataclass(frozen=True)
 class DecoderLimits:
-    max_decoder_memory: int | None = 1 * 2**30
+    max_decoder_memory: int | None = 2 * 2**30
     UNLIMITED: ClassVar["DecoderLimits"]
 
 @dataclass(frozen=True)

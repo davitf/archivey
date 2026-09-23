@@ -281,19 +281,32 @@ class DecoderLimits:
 
     Attributes:
         max_decoder_memory: Largest archive-declared working set a single
-            decoder may allocate. The default is 1 GiB. What 7-Zip declares is
-            not a fixed ceiling — measured on 23.01, it writes about 16× the
-            input size, bounded by whatever ``-m0=PPMd:mem=…`` asked for — so
-            the figures that matter are these: a plain ``-m0=PPMd`` declares
-            16 MiB and ``-mx9`` 256 MiB whatever the input, while an explicit
-            ``mem=2g`` on a 128 MiB input declares the full 2 GiB. So 1 GiB
-            clears the presets by a wide margin and refuses an archive written
-            with an explicit ``mem`` above it; raise the cap or pass
-            :attr:`UNLIMITED` for those. A hand-edited header can say 4 GiB,
-            which is the whole 32-bit field and what the cap is really for.
+            decoder may allocate. The default is 2 GiB.
+
+            That number is a policy choice, not a limit of the format, so here
+            is what it was chosen against. Measured on 7-Zip 23.01, a writer
+            declares whatever ``-m0=PPMd:mem=…`` asked for, reduced for a small
+            member to 16× its size rounded up to a power of two (floor 64 KiB).
+            Its presets never ask for much: plain ``-m0=PPMd`` declares 16 MiB
+            and ``-mx9`` 256 MiB, whatever the input. Reaching 2 GiB therefore
+            takes both an explicit ``mem=2g`` and a member of 128 MiB or more;
+            only ``mem=3g`` and ``mem=4g`` go above it. The field itself is
+            32 bits, so a header may declare just under 4 GiB — and a 153-byte
+            archive may declare it, which is the case the cap is really for,
+            since asking costs an attacker nothing and it is read before any
+            member data is.
+
+            2 GiB is the last round value below that 32-bit ceiling, matching
+            :attr:`ExtractionLimits.max_extracted_bytes`. It admits every
+            archive 7-Zip's own presets write, by a factor of eight, and admits
+            a deliberate ``mem=2g`` as well; it refuses the top of the field.
+            Reading archives written with ``mem=3g`` or above means raising it
+            or passing :attr:`UNLIMITED`. Code that opens files it did not
+            choose — an upload endpoint, a mail scanner — wants the opposite
+            move: 256 MiB still takes everything the presets produce.
     """
 
-    max_decoder_memory: int | None = 1 * 2**30
+    max_decoder_memory: int | None = 2 * 2**30
 
     UNLIMITED: ClassVar[DecoderLimits]
 

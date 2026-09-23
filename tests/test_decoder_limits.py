@@ -33,10 +33,11 @@ from archivey.internal.streams.codecs import check_decoder_memory
 from archivey.types import CompressionAlgorithm
 from tests.conftest import requires, requires_binary
 
-# The window 7-Zip declares scales with the input (measured: about 16x it, bounded
-# by whatever ``mem=`` asked for), so the 39-byte member every case here uses comes
-# back declaring 64 KiB. Cases that want "declared above the cap" lower the cap
-# under that figure rather than asking for a genuinely large allocation.
+# A writer declares what ``mem=`` asked for, reduced for a small member to 16x its
+# size rounded up to a power of two, with a 64 KiB floor; the 39-byte member every
+# case here uses lands on that floor. Cases that want "declared above the cap"
+# lower the cap under that figure rather than asking for a genuinely large
+# allocation.
 _TINY_MEMBER_DECLARED_MEM = 64 * 1024
 
 _PPMD_CODER_HEADER = bytes([0x23, 0x03, 0x04, 0x01, 0x05])
@@ -46,8 +47,8 @@ _PPMD_CODER_HEADER = bytes([0x23, 0x03, 0x04, 0x01, 0x05])
 # --- the guard on its own, with no codec backend needed --------------------------------
 
 
-def test_default_cap_is_one_gib() -> None:
-    assert DecoderLimits().max_decoder_memory == 1 * 2**30
+def test_default_cap_is_two_gib() -> None:
+    assert DecoderLimits().max_decoder_memory == 2 * 2**30
     assert DecoderLimits.UNLIMITED.max_decoder_memory is None
     assert ArchiveyConfig().decoder_limits == DecoderLimits()
 
@@ -79,7 +80,12 @@ def test_stream_config_carries_the_caller_s_limits() -> None:
     [
         (1024, 1024, False),  # exactly at the cap is allowed
         (1025, 1024, True),
-        (2**32 - 1, 1 * 2**30, True),  # the default against the widest 7z field
+        # The default's own boundary, checked here rather than end to end so
+        # that pinning it costs nothing: the allowed side would otherwise build
+        # a real 2 GiB PPMd model.
+        (2 * 2**30, 2 * 2**30, False),
+        (2 * 2**30 + 1, 2 * 2**30, True),
+        (2**32 - 1, 2 * 2**30, True),  # the default against the widest 7z field
         (2**32 - 1, None, False),  # UNLIMITED
         (0, 1024, False),
     ],
@@ -188,36 +194,25 @@ def test_7z_ppmd_declaring_four_gib_is_refused_before_allocating(
 
 @requires_binary("7z")
 @requires("pyppmd")
-@pytest.mark.parametrize(
-    ("declared", "refused"),
-    [(1 * 2**30, False), (1 * 2**30 + 1, True)],
-)
-def test_the_default_boundary_is_where_the_docstring_says(
-    tmp_path: Path, declared: int, refused: bool
-) -> None:
-    """Exactly 1 GiB is read; one byte more is refused, under the default config.
+def test_the_default_refuses_just_above_its_own_boundary(tmp_path: Path) -> None:
+    """One byte over 2 GiB is refused under the default config, end to end.
 
-    Pinned because the default is a policy number a future edit could move without
-    meaning to. It is pinned by patching the declared window into a tiny archive
-    rather than by writing a 128 MiB input, so the allowed case costs a 1 GiB
-    allocation and not also a large fixture.
+    Pinned because the default is a policy number a future edit could move
+    without meaning to. Only the refused side runs through a real archive: the
+    allowed side of the same boundary would build a 2 GiB PPMd model for a
+    39-byte member, so it is checked against the guard itself in
+    :func:`test_check_decoder_memory_boundaries`.
     """
     member = tmp_path / "a.txt"
     member.write_bytes(b"hello ppmd world, compress me a little\n")
     archive = tmp_path / "boundary.7z"
     _write_ppmd_7z(archive, member)
-    _declare_ppmd_memory(archive, declared)
+    _declare_ppmd_memory(archive, 2 * 2**30 + 1)
 
     with open_archive(archive) as reader:
         (entry,) = reader.members()
-        if refused:
-            with pytest.raises(ResourceLimitError, match="max_decoder_memory"):
-                reader.open(entry)
-        else:
-            # The window is the decoder's, not the member's: a 1 GiB model decodes
-            # these 39 bytes back correctly.
-            with reader.open(entry) as stream:
-                assert stream.read() == member.read_bytes()
+        with pytest.raises(ResourceLimitError, match="max_decoder_memory"):
+            reader.open(entry)
 
 
 @requires_binary("7z")
