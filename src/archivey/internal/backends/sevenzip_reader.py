@@ -100,7 +100,6 @@ from archivey.types import (
     ArchiveInfo,
     ArchiveInfoExtra,
     ArchiveMember,
-    CompressionAlgorithm,
     CompressionMethod,
     CreateSystem,
     HashAlgorithm,
@@ -395,23 +394,30 @@ class SevenZipReader(BaseArchiveReader):
     ) -> list[tuple[CompressionMethod, ...]]:
         """One public compression-chain tuple per folder (shared by its members).
 
-        A folder stores its coders in decode order (the packed bytes feed the
-        first), but ``ArchiveMember.compression`` is in compress order, so walk
-        them backwards. That is also the order 7-Zip lists a member's ``Method``
-        in: ``-mf=BCJ`` reads ``BCJ LZMA2``.
+        ``ArchiveMember.compression`` is in compress order, and a linear chain —
+        one packed stream into the first coder, each coder's output bound to the
+        next one's input — lists its coders in decode order, so walk them
+        backwards. That is also the order 7-Zip lists a member's ``Method`` in:
+        ``-mf=BCJ`` reads ``BCJ LZMA2``. Listing does not check the wiring; only
+        decoding does (``_check_linear_coder_chain`` in ``plan_folder``). A folder
+        outside that shape gets the same reversal as a best effort: for BCJ2,
+        7-Zip writes the BCJ2 coder last, so it leads the tuple, but the three
+        coders on its side streams follow in no meaningful order, and whether they
+        belong in the tuple at all is not settled yet.
+
+        A coder the registry does not know is listed as ``UNKNOWN`` rather than
+        dropped, so the chain never looks shorter than it is. AES is left out: it
+        is encryption, reported through ``is_encrypted``.
         """
         out: list[tuple[CompressionMethod, ...]] = []
         for folder in archive.folders:
-            methods: list[CompressionMethod] = []
-            for coder in reversed(folder.coders):
-                # Skip AES before lookup: METHOD_AES.algorithm is UNKNOWN, so the
-                # filter below would drop it too, but only after a registry hit.
-                if is_aes(coder.method):
-                    continue
-                method = compression_method_for_coder(coder)
-                if method.algo is not CompressionAlgorithm.UNKNOWN:
-                    methods.append(method)
-            out.append(tuple(methods))
+            out.append(
+                tuple(
+                    compression_method_for_coder(coder)
+                    for coder in reversed(folder.coders)
+                    if not is_aes(coder.method)
+                )
+            )
         return out
 
     def _build_members(self) -> list[ArchiveMember]:

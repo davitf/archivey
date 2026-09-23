@@ -107,7 +107,7 @@ _METHODS: tuple[SevenZipMethod, ...] = (
     _single(b"\x04\xf7\x11\x04", CompressionAlgorithm.LZ4, Codec.LZ4),
     _single(b"\x03\x04\x01", CompressionAlgorithm.PPMD, Codec.PPMD),
     # Encryption, not a codec: UNKNOWN is deliberate, and folder listing skips AES
-    # entries via MethodKind rather than looking the algorithm up.
+    # entries via is_aes before looking the algorithm up.
     SevenZipMethod(b"\x06\xf1\x07\x01", CompressionAlgorithm.UNKNOWN, MethodKind.AES),
 )
 
