@@ -2836,6 +2836,11 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
     assert collision_map == {}
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="TRUSTED defers to the local OS, and on Windows both the filesystem and "
+    "Path equality fold case, so there `readme` is the `README` this run wrote",
+)
 def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
     """TRUSTED keys on the exact name, so ``readme`` leaves ``README`` alone."""
     from archivey.internal.extraction import _Claim
