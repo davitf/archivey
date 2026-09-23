@@ -470,15 +470,15 @@ def finish(event: dict) -> Finish:
     marker = (
         f"{ROUND_MARKER} n={rnd}{f' sha={sha}' if sha else ''} verdict={v.verdict} -->"
     )
-    label = OUTCOME_LABELS[v.verdict]
+    outcome = OUTCOME_LABELS[v.verdict]
     return Finish(
         v.verdict,
         v.stop,
         True,
         f"{marker}\n\n{body}{footer}",
         v.reason,
-        label,
-        tuple(sorted({other for other in OUTCOME_LABELS.values() if other != label})),
+        outcome,
+        tuple(sorted({other for other in OUTCOME_LABELS.values() if other != outcome})),
     )
 
 
