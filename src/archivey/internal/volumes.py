@@ -61,25 +61,28 @@ SourceSequence = Sequence[SourceItem]
 # ``open_archive`` as an incomplete set, naming the missing parts — not as a ZIP
 # spanned-set error. Info-ZIP ``.zNN`` stays that ZIP refusal.
 #
-# The part number is capped at six digits, 999 999 parts, which no real set comes near.
-# The cap keeps a part number read from a name small, and it keeps ``int()`` safe. A name
-# from a directory listing is bounded by the filesystem's name limit, but a stream's
-# ``name`` and a path in an explicit sequence are checked before any file is opened,
-# and Python refuses to parse an integer past ``sys.get_int_max_str_digits()`` digits
-# (4300 by default) with a bare ``ValueError``. A longer run is not a part number, so
-# the lone-part refusal below does not apply: a ``.7z`` or ``.exe`` name goes to
-# ordinary detection, while a ``.zip`` name still matches the uncapped
-# ``is_zip_split_segment_name`` and is refused as a spanned ZIP. The ``.partN``
-# pattern below has the same cap for the same reason.
+# The part number is capped at 999 999 parts, which no real set comes near. The cap is
+# on the value, not the width: leading zeros are matched outside the ``part`` group, so
+# ``split -d -a 7`` output (``big.zip.0000001``) is still a set while ``a.zip.9999999``
+# is not a part name. The captured group is at most six digits whatever the name, which
+# keeps a part number read from a name small and keeps ``int()`` safe. A name from a
+# directory listing is bounded by the filesystem's name limit, but a stream's ``name``
+# and a path in an explicit sequence are checked before any file is opened, and Python
+# refuses to parse an integer past ``sys.get_int_max_str_digits()`` digits (4300 by
+# default) with a bare ``ValueError``. A larger number is not a part number, so the
+# lone-part refusal below does not apply: a ``.7z`` or ``.exe`` name goes to ordinary
+# detection, while a ``.zip`` name still matches the uncapped
+# ``is_zip_split_segment_name`` and is refused as a spanned ZIP. The ``.partN`` pattern
+# below has the same cap for the same reason.
 _NUMBERED_VOLUME_RE = re.compile(
-    r"^(?P<base>.+\.(?:7z|zip|exe))\.(?P<part>\d{3,6})$", re.IGNORECASE
+    r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>\d{3,6})$", re.IGNORECASE
 )
 # WinRAR ``-v`` writes ``name.partN.rar``. An SFX first volume keeps the ``partN``
 # marker and changes only the last extension: ``name.part1.sfx`` (Linux rar) or
 # ``name.part1.exe`` (Windows), with later volumes still ``.partN.rar``. The stem
 # before ``.part`` is the set's base, so mixed extensions on one stem are one set.
 _RAR_PART_RE = re.compile(
-    r"^(?P<base>.+)\.part(?P<part>\d{1,6})\.(?:rar|sfx|exe)$", re.IGNORECASE
+    r"^(?P<base>.+)\.part0*(?P<part>\d{1,6})\.(?:rar|sfx|exe)$", re.IGNORECASE
 )
 _RAR_RNN_RE = re.compile(r"^(?P<base>.+)\.r(?P<part>\d{2})$", re.IGNORECASE)
 
@@ -616,9 +619,9 @@ def _numbered_volume_sequence_error(base: str, numbered: Sequence[int]) -> str:
 
     Everything this builds is bounded by ``len(numbered)`` — the number of files on
     disk — never by the part numbers themselves. A part number comes from a filename
-    (``_NUMBERED_VOLUME_RE`` accepts three to six digits), so sizing anything
-    by ``max(numbered)`` would let a sibling named ``foo.7z.999999``
-    decide an allocation. The set is required to be exactly ``1..N``, so only a part
+    (``_NUMBERED_VOLUME_RE`` accepts parts up to 999 999), so sizing anything by
+    ``max(numbered)`` would let a sibling named ``foo.7z.999999`` decide an
+    allocation. The set is required to be exactly ``1..N``, so only a part
     at or below ``N`` can be described as missing; anything above it is out of range
     by construction.
     """
@@ -897,8 +900,9 @@ def incomplete_lone_numbered_volume_error(
     base = match.group("base")
     part = int(match.group("part"))
     # The part number comes from the name alone, so it must not size the list: a
-    # lone ``a.zip.9999999`` used to spell out every earlier part and build a
-    # ~150 MB message. Only the prefix worth printing is enumerated, the same cap
+    # lone ``a.zip.999999`` used to spell out every earlier part and build a ~14 MB
+    # message (``a.zip.9999999``, ~150 MB, before part numbers were capped). Only the
+    # prefix worth printing is enumerated, the same cap
     # :func:`_numbered_volume_sequence_error` uses, and the rest is a count.
     earlier = part - 1
     missing = [

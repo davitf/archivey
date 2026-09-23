@@ -1300,6 +1300,10 @@ def test_numbered_part_number_too_long_to_parse_is_not_a_volume_name(
     assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip.999999")
     assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip.1000000") is None
 
+    # The cap is on the value, not the width: zero padding does not count.
+    assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip.0999999")
+    assert volumes_mod.incomplete_lone_numbered_volume_error("x.zip.0001000000") is None
+
     # The explicit sequence: name validation used to raise before the open did.
     with pytest.raises(OpenError, match="Cannot open volume"):
         join_volumes([tmp_path / f"x.zip.{digits}", tmp_path / "x.zip.002"])
@@ -1667,3 +1671,33 @@ def test_a_partn_part_beside_an_rnn_set_on_its_own_base_is_still_refused(
                 tmp_path / "Show.part1.r00",
             ]
         )
+
+
+def test_zero_padded_numbered_set_past_six_digits_still_joins(tmp_path: Path) -> None:
+    """``split -b … -d -a 7 --numeric-suffixes=1`` pads the part to seven digits.
+
+    The part-number cap bounds the value, not the width, so ``big.zip.0000001`` is
+    part 1 and the set opens; a width cap turned it into a spanned-ZIP refusal.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("hello.txt", b"hello, volumes")
+    data = buffer.getvalue()
+    half = len(data) // 2
+    (tmp_path / "big.zip.0000001").write_bytes(data[:half])
+    (tmp_path / "big.zip.0000002").write_bytes(data[half:])
+
+    with open_archive(tmp_path / "big.zip.0000001") as archive:
+        assert [member.name for member in archive.members()] == ["hello.txt"]
+        assert archive.read("hello.txt") == b"hello, volumes"
+
+
+def test_zero_padded_rar_part_names_past_six_digits_are_siblings(
+    tmp_path: Path,
+) -> None:
+    for part in (1, 2):
+        (tmp_path / f"x.part{part:07d}.rar").write_bytes(b"")
+    assert discover_volume_siblings(tmp_path / "x.part0000001.rar") == [
+        tmp_path / "x.part0000001.rar",
+        tmp_path / "x.part0000002.rar",
+    ]
