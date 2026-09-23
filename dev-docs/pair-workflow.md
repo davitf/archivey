@@ -31,9 +31,11 @@ live in
 7. User docs if needed      Diátaxis mode + unslop (published `docs/` only)
 ```
 
-Steps 4–6 can run without a driver: Cursor implements, Claude reviews, Cursor addresses,
-up to three rounds, stopping the moment a decision packet appears.
-[`review-loop.md`](review-loop.md) has the wiring and the `loop:*` labels that stop it.
+Steps 4–6 run through one label: the implementer adds `review` to the pull request, a
+Claude session that did not write the diff reviews it, and the implementer addresses the
+findings and adds the label again when the review asked to see the fixes. An agent gets
+five rounds at most, and a decision packet stops the rounds until it is answered.
+[`review-loop.md`](review-loop.md) has the wiring.
 
 | Phase | Human sees | Agents may also use |
 | --- | --- | --- |

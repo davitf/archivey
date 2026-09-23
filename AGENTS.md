@@ -467,14 +467,13 @@ in the wrong place.
 
 4. **Linear issues** use `.claude/skills/address-linear-issue/SKILL.md` (Cursor:
    `/address-linear-issue`). Same two skills, sequenced: the implementing agent reads
-   the ticket, fixes it, opens the PR and enrols it in the
+   the ticket, fixes it, opens the PR and hands it to the
    [review loop](dev-docs/review-loop.md), which runs `code-review-skill` in a separate
    Claude session and posts to the PR; whoever holds the branch then runs
-   `address-review-findings`. **Say when you have finished** — take the PR out of draft
-   after implementing, and post a comment *starting* with `@claude review` after
-   addressing a round — as the last action, after the final push; that is what starts
-   each round. The phrase counts only at the top of a comment, so writing about it
-   elsewhere starts nothing. Do not review your own
+   `address-review-findings`. **Add the `review` label when you have finished** — after
+   implementing, and again after addressing a round whose closing comment asked to see
+   the fixes — as the last action, after the final push; adding the label is what starts
+   each round. Do not review your own
    diff, and do not spawn a reviewer of your own — the loop is the second opinion. Maintainer decision (davitf,
    2026-09-19): Claude reviews PRs started from a Linear issue, replacing the fresh
    Cursor Grok subagent this step used to spawn.
