@@ -152,8 +152,9 @@ def test_open_stream_closes_the_source_it_built(
     Over a seekable raw stream the source owns a read buffer of its own; closing the
     source detaches it. Nothing else would: the caller holds only the returned stream.
     Fails against returning the codec stream without tying the source to it, and
-    against a refusal (here ``seekable=True`` asked of an uncompressed payload) that
-    leaves the built source open.
+    against a refusal that leaves the built source open: here a payload no detector
+    claims, so ``_resolve_stream_format`` raises and the source must close on the way
+    out.
     """
     import gzip
 

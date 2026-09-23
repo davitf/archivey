@@ -606,9 +606,11 @@ class ArchiveSource(ReadOnlyIOStream):
                 if self._replay is not None:
                     self._replay.clear()
                 # Dropping the readers is what refuses a read after close, at no cost
-                # to the read path: every read then reaches ``_stream()``, which checks
-                # ``closed``. A borrowed caller stream would otherwise go on serving
-                # bytes to whatever still holds this source.
+                # to the read path: every read that would touch the stream then reaches
+                # ``_stream()``, which checks ``closed`` (``read(0)`` and an empty
+                # ``readinto`` return first, as nothing is read). A borrowed caller
+                # stream would otherwise go on serving bytes to whatever still holds
+                # this source.
                 self._reader = None
                 self._gatherer = None
                 super().close()

@@ -630,6 +630,32 @@ def test_open_archive_on_a_fifo_path_behaves_as_a_pipe(
     assert read == [("a.txt", b"abc")]
 
 
+@pytest.mark.skipif(_WINDOWS, reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("seekable", [False, True])
+def test_open_stream_on_a_fifo_path_reads_it_forward_only(
+    tmp_path: Path, seekable: bool
+) -> None:
+    """``open_stream`` reads a FIFO path as ``open_archive`` does, forward-only.
+
+    It used to gate on ``is_file()`` and report the pipe as a missing file. Fails
+    against that gate: both arms then raise ``FileNotFoundError``.
+    """
+    import gzip
+
+    from archivey import open_stream
+    from archivey.exceptions import StreamNotSeekableError
+
+    fifo = tmp_path / "payload.gz"
+    _named_fifo_with_writer(fifo, gzip.compress(b"hello" * 10))
+
+    if seekable:
+        with pytest.raises(StreamNotSeekableError):
+            open_stream(fifo, seekable=True)
+        return
+    with open_stream(fifo) as stream:
+        assert stream.read() == b"hello" * 10
+
+
 def test_a_closed_source_refuses_to_read_a_borrowed_stream() -> None:
     """Whatever still holds a closed source must get an error, not the caller's bytes.
 

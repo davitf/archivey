@@ -638,8 +638,10 @@ def open_stream(
                 f"{display_path(path)} is a directory, not a compressed stream; "
                 f"use open_archive() to read a directory tree"
             )
-        if not path.is_file():
+        if not path.exists():
             raise FileNotFoundError(f"Compressed stream not found: {path}")
+        # A FIFO or device path is a non-seekable source with no path, read once
+        # through the source, exactly as open_archive reads it.
         codec_input = ArchiveSource.for_path(path)
     else:
         if not is_stream(source):
