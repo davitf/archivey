@@ -110,8 +110,6 @@ def test_xz_size_then_read_multistream_no_collision() -> None:
 
 def test_xz_zero_uncompressed_size_blocks_do_not_crash_index() -> None:
     """Crafted index with zero-size blocks must not raise AssertionError (F1b)."""
-    import zlib
-
     from archivey.exceptions import ArchiveyError
     from archivey.internal.streams.xz import (
         _XZ_FOOTER_MAGIC,
@@ -390,8 +388,6 @@ def test_xz_index_crc_mismatch_raises_on_backwards_scan() -> None:
 
 def test_xz_index_unpadded_overflow_raises() -> None:
     """Index records whose unpadded sizes extend before offset 0 are rejected."""
-    import zlib
-
     from archivey.internal.streams.xz import (
         _XZ_FOOTER_MAGIC,
         _XZ_STREAM_MAGIC,
@@ -434,19 +430,18 @@ def test_lzip_trailer_member_size_past_start_raises() -> None:
         _read_index_backwards(io.BytesIO(bytes(bad)), len(bad))
 
 
-def _lzip_with_lying_member_size() -> bytes:
-    """Three members; member 0's trailer claims it also spans member 1.
+def _lzip_with_lying_member_size(lying_member: int = 0) -> bytes:
+    """Three 256-byte members ``A``/``B``/``C``; one trailer also claims the next member.
 
+    ``lying_member``'s trailer ``member_size`` covers itself and the member after it.
     CRC-32 and ``data_size`` are left intact, so only ``member_size`` lies.
     """
-    parts = [b"A" * 256, b"B" * 256, b"C" * 256]
-    members = [make_lzip_member(p) for p in parts]
+    members = [make_lzip_member(p) for p in (b"A" * 256, b"B" * 256, b"C" * 256)]
     bad = bytearray(b"".join(members))
-    trailer_at = len(members[0]) - 20
+    trailer_at = sum(len(m) for m in members[: lying_member + 1]) - 20
     crc, data_size, _ = struct.unpack_from("<IQQ", bad, trailer_at)
-    struct.pack_into(
-        "<IQQ", bad, trailer_at, crc, data_size, len(members[0]) + len(members[1])
-    )
+    claimed = len(members[lying_member]) + len(members[lying_member + 1])
+    struct.pack_into("<IQQ", bad, trailer_at, crc, data_size, claimed)
     return bytes(bad)
 
 
@@ -471,27 +466,75 @@ def test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain() -> None:
     end. A seek inside the misdescribed region and a full read both raise. If index
     validation is ever added, this test changes with O17.
     """
-    parts = [b"A" * 256, b"B" * 256, b"C" * 256]
-    members = [make_lzip_member(p) for p in parts]
-    bad = bytearray(b"".join(members))
-    trailer_at = len(members[0]) + len(members[1]) - 20
-    crc, data_size, _ = struct.unpack_from("<IQQ", bad, trailer_at)
-    struct.pack_into(
-        "<IQQ", bad, trailer_at, crc, data_size, len(members[0]) + len(members[1])
-    )
+    bad = _lzip_with_lying_member_size(lying_member=1)
 
-    with LzipDecompressorStream(io.BytesIO(bytes(bad))) as stream:
+    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
         stream.seek(256)
-        assert stream.read() == parts[2]  # the index's answer, not member 1
+        assert stream.read() == b"C" * 256  # the index's answer, not member 1
         assert stream.tell() == 512
 
-    with LzipDecompressorStream(io.BytesIO(bytes(bad))) as stream:
+    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
         with pytest.raises(CorruptionError, match="member size mismatch"):
             stream.seek(100)
+            stream.read(16)  # the lying trailer is reached within the first feed
+
+    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
+        with pytest.raises(CorruptionError, match="member size mismatch"):
             stream.read()
 
-    with LzipDecompressorStream(io.BytesIO(bytes(bad))) as stream:
-        with pytest.raises(CorruptionError, match="member size mismatch"):
+
+@pytest.mark.skipif(
+    not xz_cli_available(),
+    reason="the xz CLI is needed to build a multi-block (single-stream) XZ fixture",
+)
+def test_xz_cold_seek_trusts_a_self_consistent_block_index() -> None:
+    """Pins the xz half of threat-model O17: an index-only seek trusts the stream index.
+
+    Index records 0 and 1 are merged into one record with block 0's uncompressed size.
+    The compressed total is unchanged, so the backward scan still finds the stream
+    header, and a seek to 65536 with no full read before it serves block C. A seek
+    inside the merged region returns correct bytes until the decode reaches the end of
+    the stream, where liblzma checks the index and raises; a full read raises too. If
+    index validation is ever added, this test changes with O17.
+    """
+    from archivey.internal.streams import xz as xz_module
+
+    data = b"".join(bytes([ord("A") + i]) * 65536 for i in range(4))
+    compressed = make_multiblock_xz(data, block_size=65536)
+    footer = compressed[-12:]
+    _check, index_size = xz_module._parse_xz_footer(footer)
+    index_start = len(compressed) - 12 - index_size
+    records = xz_module._parse_xz_index(compressed[index_start : -12 - 4])
+    assert len(records) == 4
+    (u0, d0), (u1, _d1) = records[0], records[1]
+    merged = [(xz_module._round_up_4(u0) + u1, d0), *records[2:]]
+    body = b"\x00" + xz_module._encode_mbi(len(merged))
+    body += b"".join(
+        xz_module._encode_mbi(u) + xz_module._encode_mbi(d) for u, d in merged
+    )
+    body += b"\x00" * (xz_module._round_up_4(len(body)) - len(body))
+    index = body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
+    footer_body = struct.pack("<I", len(index) // 4 - 1) + footer[8:10]
+    new_footer = (
+        struct.pack("<I", zlib.crc32(footer_body) & 0xFFFFFFFF)
+        + footer_body
+        + footer[10:]
+    )
+    bad = compressed[:index_start] + index + new_footer
+
+    with XzDecompressorStream(io.BytesIO(bad)) as stream:
+        stream.seek(65536)
+        assert stream.read() == data[2 * 65536 :]  # blocks C and D, not B
+        assert stream.seek(0, io.SEEK_END) == 3 * 65536
+
+    with XzDecompressorStream(io.BytesIO(bad)) as stream:
+        stream.seek(1000)
+        assert stream.read(70_000) == data[1000:71_000]  # right bytes, no error yet
+        with pytest.raises(CorruptionError):
+            stream.read()
+
+    with XzDecompressorStream(io.BytesIO(bad)) as stream:
+        with pytest.raises(CorruptionError):
             stream.read()
 
 

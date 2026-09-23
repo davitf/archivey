@@ -614,9 +614,15 @@ field (CRC-32, `data_size` and, since PR #407, `member_size`) and lets liblzma c
 every XZ block against its stream index, so a full read of a crafted file raises. Seek
 points a forward read records are ones the decode has already checked: lzip's come from
 validated trailers, and an XZ stream's block points are read only after liblzma has
-accepted that stream's index. A seek that lands *inside* the misdescribed region raises
-too, because it resumes from a point before the lie and decodes through it
-(`seek(100)` on the lzip file, `seek(1000)` on the xz one).
+accepted that stream's index.
+
+A seek that lands *inside* the misdescribed region resumes from a point before the lie
+and decodes through it, so it raises once the decode reaches the end of the lying unit,
+and not before. The bytes returned up to then are the right ones for their offsets. For
+lzip that end is the lying member's trailer: on the file above, `seek(100)` then
+`read(16)` raises, because the 256-byte members decode within the first feed. For xz it
+is the end of the whole stream, where liblzma checks the index: `seek(1000)` then
+`read(70000)` returns correct bytes with no error, and `read()` to the end raises.
 
 A seek *past* the lie followed by a read to the end is not caught. Every unit after the
 target is genuine and passes its own checks, and the decode reaches the file's last byte
