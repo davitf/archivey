@@ -182,6 +182,11 @@ parser would get the unbounded one, which is where the allocations were found.
 wrapper at the source. The peel flag stays for the member-level wrappers that still use
 it.
 
+*As built:* `size` reports what `source_byte_size` answers, a caller's `size` hint
+included, because the access-mode spec still has that hint answer `source_byte_size` and
+`compressed_source_size`. The fact lives in a private length, and only a fact clamps a
+read (decision 5). The Cheap facts row of the access-mode delta says the same.
+
 ### 7. Three wrappers stay above it
 
 `ArchiveSource` does not absorb every layer above the source; three stay, each a wrapper

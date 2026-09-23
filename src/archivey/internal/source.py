@@ -137,8 +137,9 @@ class ArchiveSource(ReadOnlyIOStream):
 
     # ``is_seekable`` takes :meth:`seekable` at its word for this class instead of also
     # asking ``fileno()`` whether the object is a pipe: the answer was settled at
-    # construction, from the caller's object, and asking again would open a path source's
-    # handle only to learn what ``stat`` already said.
+    # construction — by ``is_seekable`` itself on a caller's stream, and by ``stat``'s
+    # file type on a path — and asking again would open a path source's handle only to
+    # learn what ``stat`` already said.
     _SEEKABLE_IS_SETTLED = True
 
     # The step an unknown-length read is served in. What the number buys is documented
@@ -173,9 +174,13 @@ class ArchiveSource(ReadOnlyIOStream):
         bounded: bool = True,
         is_directory: bool = False,
         position: int = 0,
+        open_path: Path | None = None,
     ) -> None:
         super().__init__()
         self._path = path
+        # What a lazy handle opens. The same as ``path`` except for a path naming a pipe
+        # or device, which has no ``path`` to offer (see :meth:`for_path`).
+        self._open_path = path if open_path is None else open_path
         # ``None`` for a path source until its first read (the handle opens lazily), and
         # for a directory, which has no stream at all.
         self._reader = reader
@@ -227,6 +232,7 @@ class ArchiveSource(ReadOnlyIOStream):
                 is_directory=True,
             )
         size: int | None
+        seekable = True
         try:
             st = os.stat(path)
         except OSError:
@@ -235,10 +241,21 @@ class ArchiveSource(ReadOnlyIOStream):
             size = None
         else:
             size = st.st_size if stat.S_ISREG(st.st_mode) else None
+            # The rule ``is_seekable`` applies to an open handle: a pipe, a character
+            # device or a socket cannot reposition (a Windows pipe claims it can and
+            # then does not); a block device can.
+            mode = st.st_mode
+            seekable = not (
+                stat.S_ISFIFO(mode) or stat.S_ISCHR(mode) or stat.S_ISSOCK(mode)
+            )
         return cls(
-            path=path,
+            # A pipe's path is no file a backend could reopen and re-read: reading it
+            # again consumes different bytes. It goes on as a stream archivey opened,
+            # through the one handle this source owns.
+            path=path if seekable else None,
+            open_path=path,
             reader=None,
-            seekable=True,
+            seekable=seekable,
             size=size,
             length=size,
             name=str(path),
@@ -340,7 +357,11 @@ class ArchiveSource(ReadOnlyIOStream):
 
     @property
     def path(self) -> Path | None:
-        """The file this source reads, when there is one; ``None`` for a stream or a set."""
+        """The file this source reads, when there is one; ``None`` for a stream or a set.
+
+        Also ``None`` for a path naming a pipe or a device: such a path is read once,
+        through this source, and never handed to a backend to reopen.
+        """
         return self._path
 
     @property
@@ -396,8 +417,8 @@ class ArchiveSource(ReadOnlyIOStream):
             raise ValueError("I/O operation on closed file.")
         if self._is_directory:
             raise io.UnsupportedOperation(f"{self._path} is a directory, not a stream")
-        assert self._path is not None
-        handle = open(self._path, "rb")
+        assert self._open_path is not None
+        handle = open(self._open_path, "rb")
         self._owned = handle
         self._reader = handle
         # A size that ``stat`` could not answer at construction (the file appeared since,
@@ -523,6 +544,8 @@ class ArchiveSource(ReadOnlyIOStream):
         return self._pos
 
     def tell(self, /) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
         if not self._seekable:
             # Forward-only: the seek-required refusals rely on ``tell`` raising here, as
             # it does on the pipe itself.
@@ -582,6 +605,12 @@ class ArchiveSource(ReadOnlyIOStream):
             finally:
                 if self._replay is not None:
                     self._replay.clear()
+                # Dropping the readers is what refuses a read after close, at no cost
+                # to the read path: every read then reaches ``_stream()``, which checks
+                # ``closed``. A borrowed caller stream would otherwise go on serving
+                # bytes to whatever still holds this source.
+                self._reader = None
+                self._gatherer = None
                 super().close()
 
     def __repr__(self) -> str:
@@ -589,6 +618,8 @@ class ArchiveSource(ReadOnlyIOStream):
             return f"ArchiveSource(directory={self._path!r})"
         if self._path is not None:
             return f"ArchiveSource(path={self._path!r})"
+        if self._open_path is not None:
+            return f"ArchiveSource(pipe={self._open_path!r})"
         if self._joined is not None:
             return f"ArchiveSource(volumes={self._volume_count})"
         return f"ArchiveSource({self._caller_stream!r})"

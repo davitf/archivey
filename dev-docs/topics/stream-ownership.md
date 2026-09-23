@@ -33,7 +33,9 @@ away from being closed. The source boundary (`internal/source.py`) therefore han
 every backend an `ArchiveSource`, never the caller's stream, so no keyword anywhere
 above it has to be right for the contract to hold. The reader owns that source and
 closes it after its own teardown (`BaseArchiveReader._maybe_teardown`); if a backend
-constructor raises first, `open_archive` closes it. `tests/test_source_ownership.py`
+constructor raises first, `open_archive` closes it. `open_stream` builds one too: the
+`ArchiveStream` it returns closes the source when it is closed (`on_close`), and a
+refusal before that point closes it on the way out. `tests/test_source_ownership.py`
 is the end-to-end check, `tests/test_archive_source.py` the unit one, and the
 inventories below the per-class one.
 

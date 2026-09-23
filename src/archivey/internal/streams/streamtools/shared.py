@@ -42,8 +42,7 @@ class SharedSource:
     handed the source in closes it. That is one rule for every caller rather than one
     per source shape; a reader hands in its archive source, which knows what it opened.
 
-    ``wrap_handle`` (optional) is applied once to the underlying file handle after it is
-    opened or accepted. Production readers use it to install a seek counter when
+    ``wrap_handle`` (optional) is applied once to the underlying file handle it was handed. Production readers use it to install a seek counter when
     measurement is enabled, and identity otherwise.
     """
 

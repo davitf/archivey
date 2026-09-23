@@ -654,6 +654,25 @@ def open_stream(
         codec_input = ArchiveSource.for_stream(source)
         # The mid-stream origin contract: the payload starts where the caller left it.
         codec_input.rebase_to_current_position()
+    # The returned stream owns the source from here, as a reader does: closing it closes
+    # the source (which never closes the caller's object), and so does any refusal
+    # before there is a stream to close.
+    try:
+        return _open_stream_from_source(
+            codec_input, format, seekable, effective_config, collector
+        )
+    except BaseException:
+        codec_input.close()
+        raise
+
+
+def _open_stream_from_source(
+    codec_input: ArchiveSource,
+    format: StreamFormat | ArchiveFormat | None,
+    seekable: bool,
+    effective_config: ArchiveyConfig,
+    collector: DiagnosticCollector,
+) -> ArchiveStream:
     source_is_seekable = codec_input.seekable()
 
     if seekable and not source_is_seekable:
@@ -687,6 +706,7 @@ def open_stream(
         config=stream_config,
         collector=collector,
         seekable=seekable and source_is_seekable,
+        on_close=codec_input.close,
     )
 
 

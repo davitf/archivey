@@ -120,6 +120,67 @@ def test_open_stream_never_closes_a_caller_stream(
         _assert_still_the_caller_s(stream, head, shape)
 
 
+class _RawSeekable(io.RawIOBase):
+    """A seekable raw stream with no buffer: the shape the source buffers for itself."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self._inner = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:  # type: ignore[override]  # test double; broad buffer type
+        return self._inner.readinto(b)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        return self._inner.seek(offset, whence)
+
+    def tell(self, /) -> int:
+        return self._inner.tell()
+
+
+@pytest.mark.parametrize("outcome", ["read", "refused"])
+def test_open_stream_closes_the_source_it_built(
+    outcome: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``open_stream``'s source closes with the stream it returns, or with the refusal.
+
+    Over a seekable raw stream the source owns a read buffer of its own; closing the
+    source detaches it. Nothing else would: the caller holds only the returned stream.
+    Fails against returning the codec stream without tying the source to it, and
+    against a refusal (here ``seekable=True`` asked of an uncompressed payload) that
+    leaves the built source open.
+    """
+    import gzip
+
+    from archivey.internal.source import ArchiveSource
+
+    built: list[ArchiveSource] = []
+    for_stream = ArchiveSource.for_stream.__func__  # type: ignore[attr-defined]
+
+    def _recording(cls, stream, **kwargs):
+        source = for_stream(cls, stream, **kwargs)
+        built.append(source)
+        return source
+
+    monkeypatch.setattr(ArchiveSource, "for_stream", classmethod(_recording))
+    if outcome == "read":
+        caller = _RawSeekable(gzip.compress(b"hello world" * 10))
+        with open_stream(caller) as decompressed:
+            assert decompressed.read() == b"hello world" * 10
+    else:
+        caller = _RawSeekable(b"not compressed at all" * 10)
+        with pytest.raises(ArchiveyError):
+            open_stream(caller)
+    assert len(built) == 1
+    assert built[0].closed
+    assert not caller.closed
+
+
 def test_a_sequence_of_caller_streams_is_not_closed() -> None:
     """Volume items go through the same boundary, one at a time.
 

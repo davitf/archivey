@@ -561,15 +561,16 @@ def test_a_refused_path_source_does_not_hold_its_handle(
 ) -> None:
     """A path open that fails must close the handle it opened, not wait for the GC.
 
-    The reader opens the path itself so it has something to bound (see
-    ``test_a_path_source_is_read_through_our_own_handle``). A failure after that open
-    leaves the file object in the frame's locals, and the exception's traceback keeps
-    that frame alive for as long as the caller holds the exception — which an
-    inventory or fuzz loop that catches and continues does for the whole batch, one
-    descriptor per refused image. ``pytest.raises`` holds it here the same way.
+    The ``ArchiveSource`` opens the path lazily, on pycdlib's first read, so it has
+    something to bound (see ``test_a_path_source_is_read_through_the_archive_source``).
+    A refusal after that open leaves the source reachable from the constructor's frame,
+    and the exception's traceback keeps that frame alive for as long as the caller holds
+    the exception — which an inventory or fuzz loop that catches and continues does for
+    the whole batch, one descriptor per refused image. ``pytest.raises`` holds it here
+    the same way.
 
-    Fails against letting the exception out of ``__init__`` without releasing the
-    handle: every fp recorded below is then still open at the assertion.
+    Fails against removing ``open_archive``'s close of the source when a backend
+    constructor raises: every fp recorded below is then still open at the assertion.
     """
     path = tmp_path / "bomb.iso"
     path.write_bytes(_iso_with_oversized_root_directory(0xFFFFFF00))
@@ -580,7 +581,7 @@ def test_a_refused_path_source_does_not_hold_its_handle(
         # The traceback is what pinned the handle; assert it is still here, so this
         # test cannot pass by the exception having been collected instead.
         assert excinfo.value.__traceback__ is not None
-        assert opened, "the reader did not open the path itself"
+        assert opened, "the source did not open the path"
         assert [fp for fp in opened if not fp.closed] == []
 
 

@@ -173,9 +173,9 @@ class SingleFileReader(BaseArchiveReader):
         self._shared: SharedSource | None = None
         self._pending_stream: ArchiveStream | None = None
         if self._seekable and (source.path is None or self._measure):
-            # Path sources normally hand the path to the codec (independent FDs). Under
-            # measurement, share the source's one instrumented handle so its seeks are
-            # visible.
+            # A stream source always shares its one handle, handing out views. A path
+            # source normally hands the path to the codec (independent FDs) and shares
+            # only under measurement, so the source's seeks are visible.
             self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         if self._seekable:
             # Eagerly open+close a codec stream so format/seekability errors surface at

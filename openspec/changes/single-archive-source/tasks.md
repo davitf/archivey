@@ -107,11 +107,14 @@
 - [x] 7.2 Update the source rows of `dev-docs/threat-model.md` to name the bounded read
       at the source.
 - [ ] 7.3 Re-derive the MODIFIED blocks (`access-mode-and-cost`, `format-detection`,
-      `testing-contract`, `backend-registry`) from the specs as they stand
-      when this change archives; the bounded source spooling change modifies the same
-      `access-mode-and-cost` requirement. Also re-point the parenthetical
-      `streamtools.ensure_full_count_reads` in `compressed-streams`' full-count
-      requirement at `ArchiveSource`; that spec has no delta here.
+      `testing-contract`, `backend-registry`, `compressed-streams`) from the specs as
+      they stand when this change archives. The `bounded-source-spooling` change
+      modifies the same `access-mode-and-cost` requirement, so whichever archives
+      second re-derives from the first; this is left open until then rather than
+      archived with the implementation.
+      *As built:* `compressed-streams` gained a delta that re-points its full-count
+      requirement's `streamtools.ensure_full_count_reads` parenthetical at the
+      `ArchiveSource`, so archiving closes it with the rest.
 
 ## 8. Verify
 

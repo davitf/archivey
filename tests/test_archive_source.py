@@ -556,3 +556,96 @@ def test_a_real_fifo_keeps_its_name_and_fileno(tmp_path: Path) -> None:
         assert source.read(len(payload)) == payload
         source.close()
         assert not raw.closed
+
+
+def _named_fifo_with_writer(path: Path, payload: bytes) -> None:
+    """Make a named FIFO at ``path`` whose writer delivers ``payload`` once opened."""
+    os.mkfifo(path)
+
+    def _fill() -> None:
+        try:
+            with open(path, "wb") as writer:
+                writer.write(payload)
+        except OSError:
+            pass
+
+    threading.Thread(target=_fill, daemon=True).start()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="os.mkfifo is Unix-only")
+def test_a_fifo_path_is_a_non_seekable_source_without_a_path(tmp_path: Path) -> None:
+    """``stat`` says a FIFO cannot reposition, so the path source must not claim it can.
+
+    ``seekable()`` is settled at construction and ``is_seekable`` takes it at its word,
+    so a ``True`` here could never be corrected downstream. ``path`` is ``None`` too: a
+    backend handed the path would reopen the pipe and read different bytes.
+    """
+    fifo = tmp_path / "pipe.tar"
+    payload = b"bytes through a named pipe"
+    _named_fifo_with_writer(fifo, payload)
+    source = ArchiveSource.for_path(fifo)
+    try:
+        assert source.seekable() is False
+        assert is_seekable(source) is False
+        assert source.path is None
+        assert source.name == str(fifo)
+        assert source.peek(5) == payload[:5]
+        assert source.read() == payload
+    finally:
+        source.close()
+
+
+@pytest.mark.skipif(_WINDOWS, reason="os.mkfifo is Unix-only")
+@pytest.mark.parametrize("streaming", [False, True])
+def test_open_archive_on_a_fifo_path_behaves_as_a_pipe(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """Random access over a FIFO path is refused as a pipe's is, not a bare ``OSError``.
+
+    Before the path source read its file type from ``stat``, the seek-needing backends
+    were reached and failed with ``[Errno 29] Illegal seek``.
+    """
+    import tarfile
+
+    from archivey import open_archive
+    from archivey.exceptions import StreamNotSeekableError
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 3
+        tar.addfile(info, io.BytesIO(b"abc"))
+    fifo = tmp_path / "archive.tar"
+    _named_fifo_with_writer(fifo, buf.getvalue())
+
+    if not streaming:
+        with pytest.raises(StreamNotSeekableError):
+            open_archive(fifo)
+        return
+    with open_archive(fifo, streaming=True) as reader:
+        read = [
+            (member.name, stream.read() if stream else None)
+            for member, stream in reader.stream_members()
+        ]
+    assert read == [("a.txt", b"abc")]
+
+
+def test_a_closed_source_refuses_to_read_a_borrowed_stream() -> None:
+    """Whatever still holds a closed source must get an error, not the caller's bytes.
+
+    A borrowed stream is still open after the source closes, so the source itself has
+    to refuse. Fails against a close that leaves the reader in place: the read path
+    reaches it without checking ``closed``.
+    """
+    caller = io.BytesIO(b"abcdefghij")
+    source = ArchiveSource.for_stream(caller)
+    assert source.read(3) == b"abc"
+    source.close()
+    with pytest.raises(ValueError, match="closed"):
+        source.read(3)
+    with pytest.raises(ValueError, match="closed"):
+        source.readinto(bytearray(3))
+    with pytest.raises(ValueError, match="closed"):
+        source.tell()
+    assert caller.tell() == 3
+    assert not caller.closed

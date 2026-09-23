@@ -31,7 +31,7 @@ passed — a path, a stream, or a volume list:
 | Full-count | `read(n)` returns `n` bytes unless the source is exhausted. A raw `read(n)` may legally return short, and header parsers, archivey's and the stdlib's alike, issue one `read(n)` and treat a short as EOF |
 | Ownership | Close what archivey opened or built — a path's handle, a joined volume set, its own read buffer — and never the caller's object, including a caller stream inside a volume list |
 | Bounded reads | No `read(n)` asks the source for more than it can still supply: clamped when the remaining length is a fact, served in steps when it is not, so a length an archive declares cannot become an allocation at the source |
-| Cheap facts | The path when a real file exists, the volume paths of a joined set, the size when it is a fact, and the name, each settled once at the boundary |
+| Cheap facts | The path when a real file exists (not a pipe or device, which is read once, through the source), the volume paths of a joined set, the size as `source_byte_size` answers it (a caller's `size` hint included; only a size that is a fact clamps, per the row above), and the name, each settled once at the boundary |
 
 How full-count is supplied differs by source, and the difference is read-ahead:
 

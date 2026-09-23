@@ -2112,6 +2112,7 @@ def open_codec_stream(
     stamp: Callable[[ArchiveyError], None] | None = None,
     collector: "DiagnosticCollector | None" = None,
     seekable: bool | None = None,
+    on_close: Callable[[], None] | None = None,
 ) -> ArchiveStream:
     """Open a decompressing stream for ``codec`` with exceptions translated/stamped.
 
@@ -2124,6 +2125,10 @@ def open_codec_stream(
     ``seekable`` is omitted the handle stays seekable so format backends that need
     positioning on an outer codec stream (compressed TAR) keep working — member-stream
     seekability is enforced by the reader wrapper instead.
+
+    ``on_close`` runs when the returned stream closes, after its inner: how a caller that
+    built something for this stream alone (``open_stream``'s source) ties it to the
+    stream's lifetime.
     """
     if not isinstance(source, (str, os.PathLike)):
         # A seekable stream positioned mid-file gets a clean tell()==0 origin (a
@@ -2156,4 +2161,5 @@ def open_codec_stream(
         seekable=stream_seekable,
         rewind_warning=backend.rewind_warning if stream_seekable else None,
         collector=collector,
+        on_close=on_close,
     )
