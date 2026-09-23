@@ -73,7 +73,10 @@ class PrefixWorkspace:
         if isinstance(source, ArchiveSource) and source.path is not None:
             # Detection keeps its own handle on a file and closes it on exit, so the
             # source's handle opens only when a backend reads, and a backend that never
-            # does (``unrar`` over a path) leaves nothing open on the archive.
+            # does leaves nothing open on the archive: ``unrar`` over a path, and ZIP,
+            # the single-file codecs and compressed TAR, which hand their parser the
+            # path. Reading through the source here would open its handle before the
+            # backend chose, and hold it for the reader's lifetime.
             source = source.path
         # Total size of the underlying object from its own offset 0, when cheap.
         self._total_size = source_byte_size(source)

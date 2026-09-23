@@ -574,7 +574,10 @@ is served in bounded steps, so the peak tracks the bytes the stream really has; 
 covers our own decompressor, whose length would cost a pass to learn, any
 caller-supplied stream that advertises none, and one that advertises an fsspec `size`
 attribute, which is an unverified claim and would truncate a legitimate read if it
-understated. A
+understated. The same holds one layer up: the source reports only a fact as its `size`,
+so a slice or shared view a backend builds over it clamps on a fact or steps too, never
+on the hint. A path naming a FIFO or a device is read once, through the source, with no
+`.path`, so no backend can reopen it and read different bytes. A
 flat metadata cap was the obvious fix and is wrong: member data reads go through the
 same wrapper, so a 40 MiB member arrives as one 41 943 040-byte request. Found on
 PR #315 (S18-K1); tracked internally.

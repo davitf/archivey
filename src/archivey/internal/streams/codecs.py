@@ -1489,9 +1489,9 @@ def _peek_alone_header(source: CodecSource) -> tuple[CodecSource, bytes]:
             return source, read_exact(source, _ALONE_HEADER_SIZE)
         finally:
             source.seek(pos)
-    # Unbounded: this only replays the header; whatever bounds the source's reads sits
-    # above or below it already.
-    replay = ArchiveSource.for_stream(source, bounded=False)
+    # Non-seekable, so its length is never a fact and nothing here clamps: this only
+    # replays the header.
+    replay = ArchiveSource.for_stream(source)
     return replay, replay.peek(_ALONE_HEADER_SIZE)
 
 
@@ -2135,7 +2135,10 @@ def open_codec_stream(
         # SlicingStream view), because codec backends address the source with absolute
         # offsets — the seekable XZ/lzip index, stdlib gzip's rewind — and would
         # otherwise read the wrong bytes. Streams at position 0 pass through unchanged
-        # (see the stream-position contract in ``format-detection``).
+        # (see the stream-position contract in ``format-detection``). Expected to be a
+        # no-op for every caller today: ``open_stream`` rebases its source first, and the
+        # readers hand in views that start at 0. It stays for a direct caller that does
+        # not.
         source = fix_stream_start_position(source)
     # Fill the AUTO size gate when the caller did not already supply a known length
     # (path ``stat``, ``SlicingStream.size``, ``BytesIO``, …). Unknown stays ``None``.

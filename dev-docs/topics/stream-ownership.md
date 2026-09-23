@@ -18,7 +18,7 @@ decoder means "do not close the inner." Silence on a `DelegatingStream` means
 | `AesDecryptStream` | borrow | `owns_inner=True` — 7z AES-CBC pull stream; default matches other transform wrappers. Production 7z borrows the pack `SharedView`. |
 | `_HeaderDecryptStream` | borrow, hardcoded | none — RAR header cursor must not close the archive; ciphertext `tell`, not a member stream |
 | `WinZipAesDecryptStream` | **own**, hardcoded | none — ZIP AE-x payload slice has no borrow caller; CTR+HMAC, not CBC |
-| `ArchiveSource` | borrow the caller's object; own what it opened or built | none — how it was built decides: `for_path` owns its lazy handle, `for_stream` borrows (and detaches, never closes, a buffer it put in front), `for_volumes` owns the join and the sources built for its stream parts |
+| `ArchiveSource` | borrow the caller's object; own what it opened or built | none — how it was built decides: `for_path` owns its lazy handle, `for_stream` borrows (and detaches, never closes, a buffer it put in front), `for_volumes` owns the join, which borrows its caller-stream parts |
 | `SharedSource` | borrow, always | none — the reader's `ArchiveSource` owns what is underneath |
 | TAR `_owned_stream`, RAR `_owned_concat` | what the reader built itself | not a wrapper flag; see §4 |
 

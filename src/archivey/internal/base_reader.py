@@ -1923,7 +1923,8 @@ class BaseArchiveReader(ArchiveReader):
         source report ``None``.
         """
         self._state.require_open("compressed_source_size")
-        return source_byte_size(self._source) if self._source is not None else None
+        # The hint, not the fact: this reports, it bounds nothing.
+        return self._source.size_hint if self._source is not None else None
 
     @property
     def compressed_bytes_consumed(self) -> int | None:
@@ -1956,7 +1957,14 @@ class BaseArchiveReader(ArchiveReader):
         scan, an accelerator); re-read bytes are counted again, which only ever inflates
         the denominator — the guard gets weaker, never a false positive.
         """
-        if source_byte_size(source) is None:
+        # Asked of the reader's source the way ``compressed_source_size`` asks it, hint
+        # included, so the two stay complements; ``source`` may be a view over it.
+        known = (
+            self._source.size_hint
+            if self._source is not None
+            else source_byte_size(source)
+        )
+        if known is None:
             counter = CountingReader(source)
             self._compressed_input_counter = counter
             return counter

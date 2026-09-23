@@ -191,7 +191,7 @@ class _EofProbeStream:
     ``typeflag`` ``x`` / ``L`` / ``K`` header — up to 8 GiB, and further through GNU
     base-256. ``BufferedReader.read(n)`` allocates ``n`` up front, so the allocation
     lands before the short read reveals the archive is three kilobytes. ``read`` below
-    therefore never asks the wrapped stream for more than it can still supply.
+    therefore asks the wrapped stream in steps rather than for the whole size at once.
     """
 
     # The step this backend reads in when the source's length is unknown: the
@@ -201,22 +201,13 @@ class _EofProbeStream:
     # :data:`DEFAULT_UNKNOWN_LENGTH_READ_STEP`, beside the branch it governs.
     _UNKNOWN_LENGTH_READ_STEP = DEFAULT_UNKNOWN_LENGTH_READ_STEP
 
-    def __init__(
-        self, inner: BinaryIO, source_size: int | None = None, *, bounded: bool = True
-    ) -> None:
+    def __init__(self, inner: BinaryIO, *, bounded: bool = True) -> None:
         self._inner = inner
         self._bounded = bounded
         # Offsets share tarfile's coordinate space (both anchored at the wrapped
         # stream's current position), so they compare directly to TarInfo offsets.
         self._pos = inner.tell() if inner.seekable() else 0
         self.last_read: tuple[int, bytes] = (-1, b"")
-        # The wrapped stream's total length, or None when it is not known. It shares an
-        # origin with ``tell()`` — a whole file's size against an absolute position, a
-        # slice's length against a slice-relative one — so ``size - _pos`` is what is
-        # left either way. Only a length that is a fact belongs here: the caller passes
-        # None rather than a decompressor's estimate, which can understate (a gzip
-        # ISIZE wraps past 4 GiB) and would then truncate a legitimate read.
-        self._source_size = source_size
 
     def read(self, size: int = -1) -> bytes:
         offset = self._pos
@@ -233,13 +224,10 @@ class _EofProbeStream:
         """
         if not self._bounded:
             return self._inner.read(size)
+        # Stepped, never clamped: the one bounded caller wraps a decompressor, whose
+        # length is not a fact (a gzip ISIZE wraps past 4 GiB and can understate).
         return read_within_reach(
-            self._inner,
-            size,
-            remaining=(
-                None if self._source_size is None else self._source_size - self._pos
-            ),
-            step=self._UNKNOWN_LENGTH_READ_STEP,
+            self._inner, size, remaining=None, step=self._UNKNOWN_LENGTH_READ_STEP
         )
 
     def seek(self, offset: int, whence: int = 0) -> int:
@@ -381,11 +369,7 @@ class TarReader(BaseArchiveReader):
             # decompressor; a BufferedReader in front guarantees full-sized reads.
             self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
             return self._tarfile_open(
-                # No source size: the wrapped stream is our decompressor, whose
-                # length is not a fact we hold and would cost a pass to learn.
-                fileobj=self._wrap_eof_probe(
-                    self._owned_stream, streaming, source_size=None
-                ),
+                fileobj=self._wrap_eof_probe(self._owned_stream, streaming),
                 streaming=streaming,
             )
         # A plain tar reads the source itself, which is full-count and bounded; the
@@ -404,7 +388,6 @@ class TarReader(BaseArchiveReader):
         fileobj: BinaryIO,
         streaming: bool,
         *,
-        source_size: int | None = None,
         bounded: bool = True,
     ) -> BinaryIO:
         """Wrap a random-access fileobj so the end-of-archive check can inspect the block
@@ -413,13 +396,13 @@ class TarReader(BaseArchiveReader):
 
         That is also why bounding a header-sized read only happens here: ``r|`` needs no
         bound, tarfile's own ``_Stream.read`` looping in ``bufsize`` chunks, and ``r:``
-        is the mode that hands a raw handle through. ``source_size`` is the wrapped
-        stream's length when that is a fact; see :class:`_EofProbeStream`. A plain tar
-        passes ``bounded=False``: the source it wraps bounds its own reads.
+        is the mode that hands a raw handle through. Over a decompressor the read is
+        stepped (see :class:`_EofProbeStream`); a plain tar passes ``bounded=False``: the
+        source it wraps bounds its own reads.
         """
         if streaming:
             return fileobj
-        probe = _EofProbeStream(fileobj, source_size, bounded=bounded)
+        probe = _EofProbeStream(fileobj, bounded=bounded)
         self._eof_probe_stream = probe
         return cast("BinaryIO", probe)
 

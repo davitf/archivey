@@ -321,16 +321,19 @@ def test_a_path_handle_is_archiveys_and_closes_with_the_source(tmp_path: Path) -
     assert handle.closed  # type: ignore[union-attr]
 
 
-def test_a_joined_set_and_its_stream_parts_close_with_the_source() -> None:
+def test_a_joined_set_closes_with_the_source_and_borrows_its_stream_parts() -> None:
+    """The join gathers a short-reading part itself, so a part needs no wrapper of its own.
+
+    Fails against a join that takes one short read as final (``b"abcd"`` comes back)
+    or one that closes the caller's stream parts.
+    """
     callers = [io.BytesIO(b"abc"), ShortReadBytesIO(b"defg", max_chunk=1)]
-    parts = [ArchiveSource.for_stream(c, bounded=False) for c in callers]  # type: ignore[arg-type]
-    joined = ConcatenatedFile(parts)
-    source = ArchiveSource.for_volumes(joined, parts=parts)
-    assert source.read() == b"abcdefg"
+    joined = ConcatenatedFile(callers)  # type: ignore[arg-type]
+    source = ArchiveSource.for_volumes(joined)
+    assert source.read(7) == b"abcdefg"
     assert source.volume_count == 2
     source.close()
     assert joined.closed
-    assert all(part.closed for part in parts)
     assert not any(c.closed for c in callers)
 
 
@@ -437,12 +440,16 @@ def test_a_hint_length_steps_instead_of_clamping(build) -> None:
     """An integer ``size`` attribute is a caller's claim and must not truncate a read.
 
     It understates here on purpose: clamping on it would return 10 bytes of a 100-byte
-    stream. It is still what ``source_byte_size`` reports. One case per full-count
-    strategy, since each is built from the caller's object on its own branch.
+    stream. It is kept as ``size_hint`` and is not ``size``, which is what
+    ``source_byte_size`` reads, so nothing built over the source clamps on it either.
+    One case per full-count strategy, since each is built from the caller's object on
+    its own branch.
     """
     caller = build(bytes(100))
     source = ArchiveSource.for_stream(caller)
-    assert source_byte_size(source) == 10
+    assert source.size_hint == 10
+    assert source.size is None
+    assert source_byte_size(source) is None
     assert len(source.read(100)) == 100
 
 
@@ -480,13 +487,56 @@ def test_a_rebased_source_clamps_from_its_new_origin() -> None:
     assert max(caller.requested) <= len(DATA)
 
 
+class _UnderstatingBytesIO(io.BytesIO):
+    """A ``BytesIO`` whose fsspec-style ``size`` claims a quarter of what it holds."""
+
+    size = 50_000
+
+
+def _hinted_archive(fmt: str, payload: bytes) -> bytes:
+    import tarfile
+    import zipfile
+
+    buf = io.BytesIO()
+    if fmt == "tar":
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            info = tarfile.TarInfo("big.bin")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+    else:
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("big.bin", payload)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("fmt", ["tar", "zip"])
+@pytest.mark.parametrize("prefix", [b"", b"x" * 1000], ids=["at-0", "mid-stream"])
+def test_an_understating_size_hint_truncates_no_member(fmt: str, prefix: bytes) -> None:
+    """A caller's ``size`` hint must not bound a slice or view built over the source.
+
+    ``source_byte_size`` reads ``size`` first, and a slice or shared view probes its
+    inner with it. Fails against ``size`` reporting the hint, on every case but TAR at
+    offset 0: the rebase slice and ZIP's start-offset slice and member views then clamp
+    to 50 000 bytes of a 200 000-byte member (ZIP mid-stream cannot even find its
+    central directory).
+    """
+    from archivey import open_archive
+
+    payload = os.urandom(200_000)
+    caller = _UnderstatingBytesIO(prefix + _hinted_archive(fmt, payload))
+    caller.seek(len(prefix))
+    with open_archive(caller) as reader:
+        with reader.open("big.bin") as stream:
+            assert stream.read() == payload
+
+
 # ---------------------------------------------------------------------------
 # Cheap facts
 # ---------------------------------------------------------------------------
 
 
 def test_explicit_size_is_answered_for_a_non_seekable_source() -> None:
-    """The fsspec ``size`` convention still reaches ``source_byte_size``."""
+    """The fsspec ``size`` convention is kept as a hint, not as the size."""
 
     class _Sized(ShortReadNonSeekable):
         def __init__(self, data: bytes, size: int) -> None:
@@ -494,7 +544,8 @@ def test_explicit_size_is_answered_for_a_non_seekable_source() -> None:
             self.size = size
 
     source = ArchiveSource.for_stream(_Sized(b"abc", 4096))
-    assert source_byte_size(source) == 4096
+    assert source.size_hint == 4096
+    assert source.size is None
     assert source.seekable() is False
 
 

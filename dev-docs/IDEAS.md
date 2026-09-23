@@ -14,6 +14,23 @@
 
 ## Backends & format coverage
 
+- **Let the source boundary join a RAR set, as it joins numbered parts** — today a RAR set
+  arrives at `RarReader` as volume 1's path, and the reader re-discovers the siblings and
+  builds its own `ConcatenatedFile` (`_owned_concat`); an explicit path list is joined by
+  `resolve_source`, detected through, then thrown away and reopened by name. Joining
+  RAR-named siblings in `resolve_source` would keep `.volume_paths` for `unrar` and let the
+  in-process header walk read the joined source, as 7z does. That deletes the RAR branch
+  in `core.py`, `_owned_concat`, the double discovery, the `volume_count` constructor
+  argument, and one of `_SourceSlot`'s two callers (after which it can become a local
+  `try`/`finally`). Two things to check first: the SFX-stub follower reads `.path`, which a
+  joined set does not have, so a `.exe` stub beside `.part1.rar` needs the stub path kept;
+  and an explicit list that omits parts is today overridden by discovery, which this
+  would change to honouring the list for the header walk while `unrar` still walks by
+  name. Raised by the design review of the single-archive-source change (PR 419).
+  Once it lands, every reader-level `SharedSource` sits over an `ArchiveSource`, and a
+  `.shared()` factory on the source becomes possible (the class itself stays: the
+  seek-index accelerators build one over an arbitrary stream).
+
 - **Port `unrar`'s member-mask matcher faithfully, instead of probing it** — a RAR member's
   stored name is handed to `unrar` as an include mask (`-n./<name>`), so archivey has to
   predict which *other* members that mask will also match in order to skip their bytes back

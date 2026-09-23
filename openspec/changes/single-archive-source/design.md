@@ -182,10 +182,11 @@ parser would get the unbounded one, which is where the allocations were found.
 wrapper at the source. The peel flag stays for the member-level wrappers that still use
 it.
 
-*As built:* `size` reports what `source_byte_size` answers, a caller's `size` hint
-included, because the access-mode spec still has that hint answer `source_byte_size` and
-`compressed_source_size`. The fact lives in a private length, and only a fact clamps a
-read (decision 5). The Cheap facts row of the access-mode delta says the same.
+*As built:* as designed. A caller's `size` hint is kept apart as `size_hint`, which only
+`compressed_source_size` reads. An earlier build exposed the hint as `size`; since
+`source_byte_size` reads `size` first, every slice and shared view over the source then
+clamped on the hint, one layer above the source's own fact-only clamp (the design review
+of the implementation found it).
 
 ### 7. Three wrappers stay above it
 
@@ -209,10 +210,13 @@ anyone has to reason about.
 
 ### 7a. Volume lists
 
-A volume list of caller streams nests one borrowed `ArchiveSource` per part inside the
-joined `ConcatenatedFile`, and one `ArchiveSource` over the whole. The parts carry ownership
-(each borrows its caller stream) and full-count, but do not bound; the outer one bounds
-once. A joined set's size is a fact when every part's is: the sum of `stat` sizes for path
+A volume list of caller streams goes into the joined `ConcatenatedFile` as it is, with one
+`ArchiveSource` over the whole. The join already supplies what a part needs: its `read`
+re-asks each volume until the request or the volume ends, and it never closes a caller's
+stream. The outer source bounds once.
+
+*As built:* an earlier build also wrapped each part in a borrowed `ArchiveSource`, which
+added nothing the join did not already do and was removed. A joined set's size is a fact when every part's is: the sum of `stat` sizes for path
 volumes, and for stream volumes the lengths `ConcatenatedFile` already measures to place its
 offsets, which are as much a fact as those offsets.
 

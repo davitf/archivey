@@ -27,10 +27,9 @@
       (decision 4).
 - [x] 2.4 Size and name measured once at construction; `size` exposed only when it is a
       fact, with the fact/hint distinction recorded (decisions 5 and 6).
-      *As built:* `.size` keeps answering what `source_byte_size` did, a hint included,
-      because the access-mode spec still has a hint answer `source_byte_size` and
-      `compressed_source_size` report it; the fact lives in a private `_length`, and
-      only that clamps.
+      *As built:* `size` is the fact; the caller's hint is `size_hint`, read only by
+      `compressed_source_size`. A first build exposed the hint as `size`, and slices
+      and shared views over the source clamped on it.
 - [x] 2.5 Bounded `read` and `readinto`: `read_within_reach` decides how many bytes may be
       requested and runs over the full-count strategy, never over the raw inner; clamp
       only on a fact (decision 5). Test that a one-byte-chunk non-seekable source still
@@ -46,6 +45,8 @@
       caller stream in a volume list as a borrowed `ArchiveSource` inside the joined set;
       the parts do not bound, the outer source does, and the joined size is a fact when
       every part's is (decision 7a).
+      *As built:* the part wrappers were removed; the join gathers and borrows its
+      stream parts itself.
 - [x] 3.2 `open_stream` and detection take the same object; detection over a path opens
       and closes its own handle from `.path`; `core.py`'s three `isinstance(source, Path)`
       branches read `.path` instead. Standalone `detect_format` is unchanged.

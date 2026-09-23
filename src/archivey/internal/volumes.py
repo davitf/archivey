@@ -25,6 +25,7 @@ from archivey.exceptions import (
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
     is_stream,
+    raise_if_text_stream,
     readinto_via_read,
     reject_source,
     source_name,
@@ -952,12 +953,15 @@ class ResolvedSource:
     volume_count: int
 
 
-def _coerce_path_or_stream(item: SourceItem) -> Path | ArchiveSource:
+def _coerce_path_or_stream(item: SourceItem) -> Path | BinaryIO:
     if isinstance(item, (str, Path)):
         return Path(item)
-    # A part: borrowed and full-count, but not bounded — the joined source over every
-    # part bounds once.
-    return ArchiveSource.for_stream(item, bounded=False)
+    # A caller stream goes into the join as it is: ``ConcatenatedFile`` gathers short
+    # reads itself and never closes a stream part, and the source over the join bounds.
+    raise_if_text_stream(item)
+    if not is_stream(item):
+        reject_source(item)
+    return item
 
 
 def _is_source_sequence(source: OpenSourceInput) -> TypeGuard[SourceSequence]:
@@ -975,8 +979,8 @@ def resolve_source(source: OpenSourceInput) -> ResolvedSource:
     backend: whatever the caller passed, what comes out carries full-count reads, the
     ownership rule (archivey closes what it built, never the caller's object), bounded
     reads and the cheap facts. A volume list becomes one source over a
-    :class:`ConcatenatedFile`, with each caller stream in it made full-count and borrowed
-    as a part of its own.
+    :class:`ConcatenatedFile`, which gathers each caller stream in it to the full count
+    and borrows it.
 
     The caller must close the returned source. A path source opens nothing until it is
     read, so resolving one only to inspect it costs no descriptor.
@@ -988,21 +992,13 @@ def resolve_source(source: OpenSourceInput) -> ResolvedSource:
         if len(raw_items) == 1:
             return _resolve_single(raw_items[0])
         items = [_coerce_path_or_stream(item) for item in raw_items]
-        parts = [item for item in items if isinstance(item, ArchiveSource)]
-        first = items[0]
-        try:
-            if not parts:
-                paths = [item for item in items if isinstance(item, Path)]
-                joined = join_volumes(paths)
-            else:
-                joined = ConcatenatedFile(items)
-        except BaseException:
-            for part in parts:
-                part.close()
-            raise
-        name = source_name(first)
+        paths = [item for item in items if isinstance(item, Path)]
+        joined = (
+            join_volumes(paths) if len(paths) == len(items) else ConcatenatedFile(items)
+        )
+        name = source_name(items[0])
         return ResolvedSource(
-            ArchiveSource.for_volumes(joined, parts=parts, name=name),
+            ArchiveSource.for_volumes(joined, name=name),
             name,
             len(items),
         )

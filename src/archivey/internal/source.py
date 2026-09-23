@@ -22,7 +22,8 @@ It **is** the stream they read (third-party parsers such as ``tarfile``, ``pycdl
   ``read``, not a separate one. The bound runs over the full-count strategy, never over
   the raw inner: ``read_within_reach`` takes one ``read`` as final.
 - **Cheap facts.** ``path`` when a real file exists, ``volume_paths`` for a joined set of
-  files, ``size``, ``name``, all settled at construction.
+  files, ``size`` when it is a fact, ``size_hint``, ``name``, all settled at
+  construction.
 
 A non-seekable source also holds the **detection replay prefix**: :meth:`peek` fills it
 without consuming, and ``read`` drains it before reaching the source. Detection and the
@@ -30,10 +31,11 @@ backend therefore see the same object, and nothing is swapped in between.
 
 Only a size that is a **fact** clamps a read — ``stat`` on a path, a ``BytesIO``'s buffer,
 ``fstat`` on a regular file, a joined set's measured parts. An integer ``size`` attribute
-on a caller's object (the fsspec convention) is a hint: it is still what :attr:`size`
-reports, because ``source_byte_size`` and ``compressed_source_size`` answered from it
-before, but it only steps a read. Clamping on a hint that understates would truncate a
-legitimate read.
+on a caller's object (the fsspec convention) is a hint: it only steps a read, because
+clamping on a hint that understates would truncate a legitimate read. :attr:`size` is the
+fact alone, so every slice or shared view built over this object — which asks
+``source_byte_size``, and that reads ``size`` first — clamps on a fact or steps too. The
+hint survives as :attr:`size_hint`, for ``compressed_source_size``, which reports it.
 
 What stays outside, as wrappers over this object that keep its guarantees: measurement
 (``SeekCountingStream``), and ZIP's start offset (a ``SlicingStream``). Member-level
@@ -133,6 +135,28 @@ class ArchiveSource(ReadOnlyIOStream):
     Build one with :meth:`for_path`, :meth:`for_stream` or :meth:`for_volumes`; the
     constructor itself is private. See the module docstring for what each guarantee
     means and where it comes from.
+
+    Which private fields are set depends only on the shape it was built from:
+
+    ============================  ==========  ============  ===========  ========
+    shape                         ``size``    replay        gatherer     seekable
+    ============================  ==========  ============  ===========  ========
+    path (regular file)           fact        none          none         yes
+    path (block device)           ``None``    none          none         yes
+    path (FIFO, device, socket)   ``None``    yes           none         no
+    directory                     ``None``    yes (unused)  none         no
+    buffered caller stream        fact/None   none          none         yes
+    seekable raw caller stream    fact/None   none          none         yes
+    non-seekable buffered stream  ``None``    yes           none         no
+    non-seekable raw stream       ``None``    yes           yes          no
+    joined volume set             fact        none          none         yes
+    ============================  ==========  ============  ===========  ========
+
+    So a fact length exists only on a seekable source, and replay and gathering only on
+    a non-seekable one. ``__init__`` asserts both, and :meth:`read`'s inlined clamp
+    relies on them: a fact length alone proves there is nothing to replay or gather.
+    A new shape or strategy must keep that true, or change ``read``, ``readinto``,
+    ``_read_all``, :meth:`peek` and :meth:`close` together.
     """
 
     # ``is_seekable`` takes :meth:`seekable` at its word for this class instead of also
@@ -151,7 +175,6 @@ class ArchiveSource(ReadOnlyIOStream):
     # replaced per instance before it matters.
     _owned: BinaryIO | JoinedVolumes | None = None
     _buffer: io.BufferedIOBase | None = None
-    _parts: tuple[ArchiveSource, ...] = ()
     _replay: bytearray | None = None
 
     def __init__(
@@ -170,8 +193,6 @@ class ArchiveSource(ReadOnlyIOStream):
         volume_paths: Sequence[Path] = (),
         volume_count: int = 1,
         joined: JoinedVolumes | None = None,
-        parts: Sequence[ArchiveSource] = (),
-        bounded: bool = True,
         is_directory: bool = False,
         position: int = 0,
         open_path: Path | None = None,
@@ -196,8 +217,6 @@ class ArchiveSource(ReadOnlyIOStream):
         self._volume_paths = list(volume_paths)
         self._volume_count = volume_count
         self._joined = joined
-        self._parts = tuple(parts)
-        self._bounded = bounded
         self._is_directory = is_directory
         # Logical position, kept here rather than asked of the reader on every read: the
         # clamp needs it, and it is only ever moved through this object. A caller's
@@ -208,6 +227,9 @@ class ArchiveSource(ReadOnlyIOStream):
         # Set for a non-seekable raw source, whose reads all go through it; ``_reader`` is
         # then the caller's object, used for nothing but identity.
         self._gatherer = gatherer
+        # The two implications the class docstring's table states and ``read`` relies on.
+        assert length is None or seekable, "a fact length on a non-seekable source"
+        assert gatherer is None or not seekable, "a gatherer on a seekable source"
 
     # --- construction --------------------------------------------------------------------
 
@@ -263,12 +285,8 @@ class ArchiveSource(ReadOnlyIOStream):
         )
 
     @classmethod
-    def for_stream(cls, stream: BinaryIO, *, bounded: bool = True) -> ArchiveSource:
-        """Borrow a caller's stream: full-count, never closed by archivey.
-
-        ``bounded=False`` is for a part inside a joined volume set, where the joined
-        source over all of them bounds once.
-        """
+    def for_stream(cls, stream: BinaryIO) -> ArchiveSource:
+        """Borrow a caller's stream: full-count, never closed by archivey."""
         raise_if_text_stream(stream)
         if isinstance(stream, ArchiveSource):
             return stream
@@ -290,7 +308,6 @@ class ArchiveSource(ReadOnlyIOStream):
                 length=fact,
                 name=name,
                 caller_stream=stream,
-                bounded=bounded,
                 position=position,
             )
         if not seekable:
@@ -303,7 +320,6 @@ class ArchiveSource(ReadOnlyIOStream):
                 length=None,
                 name=name,
                 caller_stream=stream,
-                bounded=bounded,
             )
         # A seekable raw source: a fixed-size buffer is full-count and its read-ahead is
         # recoverable by seeking. It is archivey's, so it closes with this object — by
@@ -319,23 +335,20 @@ class ArchiveSource(ReadOnlyIOStream):
             name=name,
             caller_stream=stream,
             buffer=buffer,
-            bounded=bounded,
             position=position,
         )
 
     @classmethod
     def for_volumes(
-        cls,
-        joined: JoinedVolumes,
-        *,
-        parts: Sequence[ArchiveSource] = (),
-        name: str | None = None,
+        cls, joined: JoinedVolumes, *, name: str | None = None
     ) -> ArchiveSource:
-        """Own a joined volume set, and the sources built for its stream parts.
+        """Own a joined volume set.
 
-        The joined set's ``read`` already gathers across volumes, so it passes through.
-        Its size is a fact: the sum of ``stat`` sizes for file volumes, and for stream
-        volumes the lengths it measured to place its offsets.
+        The joined set's ``read`` already gathers across volumes, re-asking each one until
+        the request or the volume ends, so it passes through, and its caller-stream parts
+        need no full-count strategy of their own; it never closes them either. Its size is
+        a fact: the sum of ``stat`` sizes for file volumes, and for stream volumes the
+        lengths it measured to place its offsets.
         """
         return cls(
             path=None,
@@ -350,7 +363,6 @@ class ArchiveSource(ReadOnlyIOStream):
             volume_paths=joined.volume_paths,
             volume_count=joined.volume_count,
             joined=joined,
-            parts=parts,
         )
 
     # --- cheap facts ---------------------------------------------------------------------
@@ -386,10 +398,20 @@ class ArchiveSource(ReadOnlyIOStream):
 
     @property
     def size(self) -> int | None:
-        """The source's total length when cheaply known, else ``None``.
+        """The source's total length when it is a fact, else ``None``.
 
-        What ``source_byte_size`` would have said of the caller's object, measured once.
-        It may be a hint; see the module docstring for which sizes clamp a read.
+        The one length anything may clamp a read to. ``source_byte_size`` reads it first,
+        so a slice or shared view over this source clamps on a fact or not at all.
+        """
+        return self._length
+
+    @property
+    def size_hint(self) -> int | None:
+        """The source's total length when cheaply known, a caller's claim included.
+
+        What ``source_byte_size`` said of the caller's object, measured once: an fsspec
+        ``size`` attribute counts here and not in :attr:`size`. For reporting
+        (``compressed_source_size``), never for bounding a read.
         """
         return self._size
 
@@ -428,19 +450,14 @@ class ArchiveSource(ReadOnlyIOStream):
     def read(self, n: int | None = -1, /) -> bytes:
         if n is None or n < 0:
             return self._read_all()
-        # The common case, inlined: a sized read of a source whose length is a fact,
-        # with nothing to replay and no gathering. This is ``read_within_reach``'s
-        # clamp branch; every read of an archive pays for this method's frames, so the
-        # rest of the dispatch is kept off it (task 8.2 of the change).
+        # The common case, inlined: a sized read of a source whose length is a fact —
+        # which proves there is nothing to replay and no gathering (the class
+        # docstring's table). This is ``read_within_reach``'s clamp branch; every read
+        # of an archive pays for this method's frames, so the rest of the dispatch is
+        # kept off it (task 8.2 of the change).
         reader = self._reader
         length = self._length
-        if (
-            length is not None
-            and self._bounded
-            and reader is not None
-            and self._gatherer is None
-            and not self._replay
-        ):
+        if length is not None and reader is not None:
             data = reader.read(min(n, max(length - self._pos, 0)))
             self._pos += len(data)
             return data
@@ -463,16 +480,10 @@ class ArchiveSource(ReadOnlyIOStream):
 
     def _read_source(self, n: int) -> bytes:
         reader = self._full_count_reader()
-        if self._bounded:
-            remaining = None if self._length is None else self._length - self._pos
-            data = read_within_reach(
-                reader,
-                n,
-                remaining=remaining,
-                step=self._UNKNOWN_LENGTH_READ_STEP,
-            )
-        else:
-            data = reader.read(n)
+        remaining = None if self._length is None else self._length - self._pos
+        data = read_within_reach(
+            reader, n, remaining=remaining, step=self._UNKNOWN_LENGTH_READ_STEP
+        )
         self._pos += len(data)
         return data
 
@@ -505,7 +516,7 @@ class ArchiveSource(ReadOnlyIOStream):
         if self._replay or self._gatherer is not None or self._reader is None:
             return super().readinto(b)
         view = memoryview(b).cast("B")
-        if self._length is not None and self._bounded:
+        if self._length is not None:
             remaining = max(self._length - self._pos, 0)
             if len(view) > remaining:
                 view = view[:remaining]
@@ -576,8 +587,14 @@ class ArchiveSource(ReadOnlyIOStream):
             return
         start = self._pos
         # The slice borrows its inner, so closing this object still closes exactly what
-        # it closed before: its own buffer and nothing of the caller's.
-        self._reader = SlicingStream(self._stream(), start=start)
+        # it closed before: its own buffer and nothing of the caller's. It is told the
+        # fact length rather than probing its inner, which could answer with a hint.
+        self._reader = SlicingStream(
+            self._stream(),
+            start=start,
+            source_size=self._length,
+            probe_source_size=False,
+        )
         if self._size is not None:
             self._size = max(self._size - start, 0)
         if self._length is not None:
@@ -600,8 +617,6 @@ class ArchiveSource(ReadOnlyIOStream):
                     # A ``_NonClosingBufferedReader``: it detaches, so the caller's raw
                     # stays open.
                     buffer.close()
-                for part in self._parts:
-                    part.close()
             finally:
                 if self._replay is not None:
                     self._replay.clear()
