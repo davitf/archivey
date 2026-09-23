@@ -334,35 +334,52 @@ Rejected: resolving links on demand one at a time and accepting the re-decode. T
 today's behaviour, and the measurements above show it is the expensive path on the most
 common writer defaults.
 
-#### D6c. Links the caller's selector excluded (awaiting davitf's ruling)
+#### D6c. Reading link targets stored as member data is a reader setting
 
 `archive-reading` promises that `stream_members()` does not open, decompress or request a
 password for a member the selector excludes. Selection happens above the backend:
 `_iter_stream_members` filters after `_iter_with_data()` yields (`base_reader.py:2160`),
 so a backend never learns a member was excluded. EOF finalization resolves every link in
-the pass, excluded or not. ZIP already does this today: `_stamp_progressive_member`
-records a member before the selector runs, and `_finalize_pass_links` reads every link's
-data. Today's 7z pass does not finalize at all, so it reads no link data. After D6 it does,
-and on an encrypted folder it would consult the password provider for a link the caller
-excluded.
+the pass, excluded or not.
 
-Three contracts were put to davitf:
+What each format does today when a link's target is stored as member data (each
+backend's `_ensure_link_target`):
 
-- **Skip encrypted only** (recommended, and what the deltas say until he rules). Excluded
-  links are read, so the complete report matches random access. If an excluded link needs
-  a password, the pass tries the known-good and sequence candidates but never consults the
-  provider. If none opens it, `link_target` stays unset with `SYMLINK_TARGET_UNAVAILABLE`,
-  the diagnostic an unreadable target already gets. The cost of reading excluded links
-  stays within D6b's one-decode-per-folder budget.
-- **Read every link.** Every link is resolved in both modes, but an excluded link in an
-  encrypted folder triggers a password request the caller did not ask for.
-- **Selected links only.** The promise holds as written, but the selector must be passed
-  down into `_iter_with_data`. Excluded links then stay unresolved in streaming mode, on
-  ZIP as well as 7z, which splits `link_target` by mode.
+| Format | Where the target lives | What a read does today |
+| --- | --- | --- |
+| ZIP, 7z | Member data | Opens the member like a file: decompresses, then tries known-good passwords, the caller's candidates, and the **provider**. On failure, `link_target` stays unset with `SYMLINK_TARGET_UNAVAILABLE` (`password_required`). Random-access `members()` already does this for every link. |
+| RAR3/4 | Member data | Reads only stored, unencrypted bytes in one volume, straight from the archive. It never decompresses, decrypts or prompts. Otherwise `link_target` stays unset with `target_data_encrypted`, `_compressed` or `_split_across_volumes`. |
+| RAR5, TAR, ISO | Header | Nothing to read |
 
-The first option carries a MODIFIED delta for "Bounded-memory sequential streaming via
-stream_members". The delta states the link-target exception and amends the two matrix
-rows that promised no decode for an excluded member.
+Today's 7z streaming pass does not finalize, so it reads no link data. After D6 it does.
+
+**Proposed by davitf (2026-09-23): let the caller choose.** His proposal was either a
+config field or a `stream_members` argument. Claude recommended the config field, because
+links are resolved once per reader on shared objects (D1), and `members()` reads targets
+as well as the pass does. A per-call argument could not tell a later `members()` what to
+do. The field is `ArchiveyConfig.read_link_targets: bool = True`, a placeholder name. It
+is reader-lifetime, like `listing_limits`. davitf has not yet confirmed the name or the
+default.
+
+- **`True` (default).** Every link whose target is member data is read the way that
+  format reads it today, in both modes and whether or not a selector excludes it. The
+  complete report then matches random access. On ZIP and 7z this can decompress data the
+  caller did not select, within D6b's one-decode-per-folder budget on 7z, and can consult
+  the password provider. The `stream_members` laziness promise gains this one
+  exception. RAR3/4 keeps its direct read. Routing its compressed or encrypted targets
+  through `unrar` is a separate item, not part of this change.
+- **`False`.** No member data is read for a link target, in either mode. Targets come from
+  headers only (RAR5, TAR, ISO). ZIP, 7z and RAR3/4 links keep `link_target=None` and emit
+  no `SYMLINK_TARGET_UNAVAILABLE`, because that code is in `ARCHIVE_INTEGRITY_CODES` and
+  a strict policy would refuse an archive over a setting the caller chose. The laziness
+  promise holds exactly, and nothing prompts. `extract_all` cannot write such a link, so
+  it fails that member like one whose target is locked (`target_in_archive=True`), under
+  `OnError`. Whether extraction should instead read the targets of the links it is about
+  to write is open with davitf. That would need the selector passed down to the 7z pass.
+
+Rejected in the earlier round: never consulting the provider for an excluded link, and
+plumbing the selector into every backend. The setting covers both needs with one rule
+that works the same way on every backend.
 
 ### D7. What is deleted
 

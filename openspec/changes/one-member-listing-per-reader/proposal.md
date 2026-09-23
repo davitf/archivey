@@ -58,16 +58,18 @@ objects.
   from a 111 KB folder. Each folder is decoded at most once for its links, up to its last
   link. A streaming pass reads link bytes from its own decode, including links a consumer
   never reads past (design D6b).
-- A streaming pass still resolves symlinks the caller's selector excluded, as ZIP already
-  does, so the complete report matches random access. That can decompress data the
-  caller did not select. It never asks the password provider on behalf of an excluded
-  link, which is left unresolved with a diagnostic instead. This amends `stream_members`'
-  laziness promise and awaits davitf's ruling (design D6c).
+- New reader setting `ArchiveyConfig.read_link_targets` (default `True`, name not final),
+  proposed by davitf. ZIP, 7z and RAR3/4 store a symlink's target as member data. With
+  `True`, those targets are read in both modes, including links a `stream_members`
+  selector excluded, so the report matches random access. On ZIP and 7z that can
+  decompress unselected data and consult the password provider. With `False`, no member
+  data is read for a link target, nothing prompts, and the laziness promise holds
+  exactly. Header-carried targets (RAR5, TAR, ISO) are unaffected (design D6c).
 - Typing-time diagnostics carry the member's `member_id` on every backend. Only ZIP does
   today; 7z, RAR and ISO report `None` (design D8).
 
-Not changing: the public API, `ArchiveMember`'s shape, the complete-or-raise contract and
-listing limits. When a pass resolves links changes only for 7z and solid RAR, whose passes
+Not changing: the public API apart from the new `read_link_targets` setting,
+`ArchiveMember`'s shape, the complete-or-raise contract and listing limits. When a pass resolves links changes only for 7z and solid RAR, whose passes
 start registering and finalizing like every other backend's (design D6). When
 `is_current` settles changes only where a peek completes the walk before a streaming
 pass reaches EOF (design D1a).
@@ -76,12 +78,13 @@ pass reaches EOF (design D1a).
 
 ### Modified Capabilities
 
-- `archive-reading` — adds three requirements. Each member is listed once per reader:
+- `archive-reading` — adds four requirements. Each member is listed once per reader:
   object identity across listing methods, exact per-member diagnostic counts, and
   `member_id` on typing-time diagnostic contexts on every backend. Last-entry-wins
   `is_current` is stamped once, when the walk completes or stops on terminal damage. A
   streaming pass finalizes on its own cursor, not on walk completion. The
-  `stream_members` laziness requirement gains a symlink-target exception (D6c).
+  `stream_members` laziness requirement gains a symlink-target exception, governed by the
+  new `read_link_targets` setting, which gets its own requirement (D6c).
 - `access-mode-and-cost` — the report peek returns the same member objects the resolved
   list will, with data-stored link fields filled in place later.
 - `format-7z` — a new requirement bounds 7z link reads to one decode per folder, up to its
@@ -100,6 +103,8 @@ pass reaches EOF (design D1a).
   - `iso_reader.py` passes the listing position into typing-time diagnostics. This closes
     its known issue.
 - `src/archivey/internal/diagnostics_collector.py`: `reattach_to_member` removed.
+- `src/archivey/config.py`: `ArchiveyConfig.read_link_targets`, honoured by the ZIP, 7z
+  and RAR `_ensure_link_target`.
 - Tests: a new small 7-Zip `-snl` fixture with symlinks before, between and after file
   members in one solid folder, plus its non-solid twin.
 - Docs: `dev-docs/known-issues.md` (ISO entry resolved), `dev-docs/IDEAS.md` (entry

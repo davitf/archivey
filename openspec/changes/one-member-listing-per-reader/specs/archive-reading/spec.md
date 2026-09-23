@@ -61,6 +61,31 @@ members it passed.
 | --- | --- |
 | Streaming ZIP: peek inside the `stream_members()` loop, then `break` | No complete report published; no link-target reads |
 
+### Requirement: Link targets stored as member data are read only when configured
+
+`ArchiveyConfig` SHALL carry `read_link_targets: bool = True`. Like `listing_limits`, it
+is fixed for the reader's lifetime. A later `extract_all(config=...)` SHALL NOT change it.
+It governs every symlink whose target the format stores as member data rather than in
+the header (ZIP, 7z, RAR3/4), in both access modes.
+
+- `True`: the reader reads such a target the way the format reads member data. On ZIP and
+  7z this includes decompression and the full password sequence, provider included. A
+  target it cannot read stays unset with `SYMLINK_TARGET_UNAVAILABLE`. RAR3/4 reads only
+  stored, unencrypted, single-volume bytes, as before.
+- `False`: the reader SHALL NOT read member data for a link target. Such a link keeps
+  `link_target=None`, and no `SYMLINK_TARGET_UNAVAILABLE` is emitted for it.
+  `extract_all` fails that member as one whose target the archive carries but the reader
+  cannot reach, under `OnError`. Header-carried targets (RAR5, TAR, ISO) are unaffected.
+
+#### Scenario: link-target setting matrix
+
+| Case | Expected |
+| --- | --- |
+| ZIP with an encrypted symlink, default config, no password, provider supplied | Provider consulted; on failure `link_target` unset with `SYMLINK_TARGET_UNAVAILABLE` |
+| Same archive, `read_link_targets=False`, `members()` | No member data read; provider not consulted; `link_target` unset; no diagnostic |
+| Same archive, `read_link_targets=False`, `extract_all()` | The symlink member fails under `OnError`; nothing else changes |
+| RAR5 symlink, `read_link_targets=False` | `link_target` set from the header |
+
 ## MODIFIED Requirements
 
 ### Requirement: Bounded-memory sequential streaming via stream_members
@@ -81,15 +106,14 @@ are lazy: unselected/unread members are not opened/decompressed and do not reque
 passwords. Yields the original mutable `ArchiveMember` so late-bound fields stay
 visible.
 
-Symlink targets are the one exception. On backends that store a symlink's target as
-member data (ZIP, 7z), a pass that finalizes resolves every symlink's target, selected
-or not, so the complete report matches random access. Reading an unselected link's target
-MAY decompress data the caller did not select; on 7z that is the link's folder up to the
-link, within the budget of `format-7z` "A 7z folder is decoded at most once for its link
-targets". An unselected link whose target needs a password SHALL NOT consult the password
-provider. Known-good and sequence candidates MAY be tried. When none opens it,
-`link_target` stays unset and `SYMLINK_TARGET_UNAVAILABLE` is emitted, as for any link
-whose target cannot be read.
+Symlink targets stored as member data (ZIP, 7z, RAR3/4) are the one exception, and only
+while `read_link_targets` is `True` (see "Link targets stored as member data are read
+only when configured"). A pass that finalizes then reads every such target, selected or
+not, so the complete report matches random access. That read MAY decompress data the
+caller did not select and MAY consult the password provider. On 7z it decodes the link's
+folder up to the link, within the budget of `format-7z` "A 7z folder is decoded at most
+once for its link targets". With `read_link_targets=False` the promise holds without
+exception.
 
 Yielded streams are iterator-owned and valid only until advance: the iterator SHALL
 close/invalidate the previous stream before the next yield. MUST NOT retain a
@@ -111,13 +135,13 @@ streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
 | Case | Expected |
 | --- | --- |
 | Yielded file stream emits diagnostic before advance | Stream + reader snapshots share one retained occurrence |
-| Selector excludes member / stream unread | No open/decompress; no data-path diagnostic. A symlink's target is still read at finalization on ZIP and 7z (see the exception above) |
+| Selector excludes member / stream unread | No open/decompress; no data-path diagnostic. With `read_link_targets=True`, a data-stored symlink target is still read at finalization (see the exception above) |
 | Solid archive | Progressive decode; peak = decompressor state + one chunk |
-| `stream_members(lambda m: m.name.endswith(".txt"))` | Only `.txt`; unselected never opened except for symlink targets read at finalization; original mutable members |
+| `stream_members(lambda m: m.name.endswith(".txt"))` | Only `.txt`; unselected never opened, except data-stored symlink targets when `read_link_targets=True`; original mutable members |
 | Fully read stream, then inspect member | Late-bound fields (e.g. size/CRC) visible on same object |
 | Advance after one yield | Prior stream closed/invalidated first |
 | Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable |
 | Close/abandon partial generator | Current stream closed; pass ownership released once |
 | Random `open()` into solid block | Re-decode from block start + skip; no diagnostic, no warning — discoverable via `reader.cost.access_cost` and the `open()` docstring |
-| Encrypted solid 7z `[a.txt, link, b.txt]`, no password, `stream_members(lambda m: False)` to the end | Provider never consulted; `link_target` unset; `SYMLINK_TARGET_UNAVAILABLE` for the link |
-| Unencrypted solid 7z, selector excludes a symlink, pass to the end | The link's target is resolved; its folder is decoded up to the link once |
+| Unencrypted solid 7z, selector excludes a symlink, pass to the end (default config) | The link's target is resolved; its folder is decoded up to the link once |
+| Encrypted solid 7z `[a.txt, link, b.txt]`, `read_link_targets=False`, `stream_members(lambda m: False)` to the end | Nothing decoded; provider never consulted; `link_target` unset; no `SYMLINK_TARGET_UNAVAILABLE` |

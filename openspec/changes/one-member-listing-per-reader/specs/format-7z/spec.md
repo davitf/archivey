@@ -3,7 +3,8 @@
 ### Requirement: A 7z folder is decoded at most once for its link targets
 
 A 7z symlink's target is stored as the member's data, often in the middle of a solid
-folder. This refines the folder-decode budget of "Stream solid folders with bounded
+folder. This applies while `read_link_targets` is `True`; with `False`, no folder is
+decoded for link targets. This refines the folder-decode budget of "Stream solid folders with bounded
 memory" for link targets. For its link targets, a 7z folder SHALL be decoded at most once
 per reader, and not past the end of its last link member. The consumer's own reads are
 covered by the bullets below.

@@ -102,12 +102,20 @@
 - [ ] 4.6 D8: 7z, RAR and ISO pass the listing position into typing-time diagnostic
       contexts as `member_id` (7z and RAR: the index in their open-time list; ISO: an
       `enumerate` over its walk)
-- [ ] 4.7 D6c: a link the selector excluded never consults the password provider. On
-      ZIP and 7z, when the known-good and sequence candidates fail, leave `link_target`
-      unset and emit `SYMLINK_TARGET_UNAVAILABLE`. Test with an encrypted solid 7z
-      `[a.txt, link, b.txt]`, no password, and a provider that fails the test if it is
-      called: `stream_members(lambda m: False)` to the end. Add the same test on an
-      encrypted ZIP symlink. Mutation: let the excluded link reach the provider.
+- [ ] 4.7 D6c: add `ArchiveyConfig.read_link_targets: bool = True`, reader-lifetime like
+      `listing_limits`. With `False`, ZIP, 7z and RAR3/4 `_ensure_link_target` read no
+      member data and emit nothing, and `extract_all` fails such a link member under
+      `OnError`. Tests, parametrised over `streaming`: an encrypted solid 7z
+      `[a.txt, link, b.txt]` with a provider that fails the test if it is called and
+      `read_link_targets=False`, `stream_members(lambda m: False)` to the end, zero bytes
+      decoded; the same on an encrypted ZIP symlink; an unencrypted 7z with the link
+      excluded under the default, resolved. Mutation: ignore the setting in one backend.
+- [ ] 4.8 Add `read_link_targets` to the "Explicit configuration object" schema, config
+      matrix and reader-lifetime sentence in `archive-reading`. Write that MODIFIED block
+      at implementation time against the then-live requirement, because another open
+      change edits the same block. Task 0.1's whole-block check applies to it.
+- [ ] 4.9 Document the setting in the user docs next to `listing_limits`, including what
+      `False` does to extraction.
 
 ## 5. Delete the dedupe machinery (D7)
 
