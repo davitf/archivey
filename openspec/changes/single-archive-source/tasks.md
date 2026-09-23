@@ -119,4 +119,9 @@
 - [x] 8.2 Re-run the probe against 1.1's before side; put the table on the PR, with the
       path rows read as treatment. If the seekable-raw row shows, apply the bound-method
       fallback from design §Risks; if a path row shows, say which backend and why.
+      *As built:* the first run showed path and seekable-raw sources about 4% slower,
+      from a Python frame on every read. `read` now inlines the clamp for a
+      fact-length source (about 0.7 µs per read left over the bare handle, from
+      1.1 µs); the bound-method fallback is not available, because the clamp has to
+      run. The table on the PR is the second run.
 - [x] 8.3 `openspec validate --strict single-archive-source`.

@@ -407,6 +407,22 @@ class ArchiveSource(ReadOnlyIOStream):
     def read(self, n: int | None = -1, /) -> bytes:
         if n is None or n < 0:
             return self._read_all()
+        # The common case, inlined: a sized read of a source whose length is a fact,
+        # with nothing to replay and no gathering. This is ``read_within_reach``'s
+        # clamp branch; every read of an archive pays for this method's frames, so the
+        # rest of the dispatch is kept off it (task 8.2 of the change).
+        reader = self._reader
+        length = self._length
+        if (
+            length is not None
+            and self._bounded
+            and reader is not None
+            and self._gatherer is None
+            and not self._replay
+        ):
+            data = reader.read(min(n, max(length - self._pos, 0)))
+            self._pos += len(data)
+            return data
         if n == 0:
             return b""
         replay = self._replay
