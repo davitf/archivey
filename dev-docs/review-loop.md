@@ -74,8 +74,8 @@ state exists, so nothing can fall out of step with what actually ran:
 
 ## Who is asking
 
-Most refusals below apply to agents only, so the workflow has to tell an agent from a
-person. `sender.type` is not enough: an agent working from a Claude Code project thread
+The round cap and the retry guard apply to agents only, so the workflow has to tell an
+agent from a person. `sender.type` is not enough: an agent working from a Claude Code project thread
 sometimes lands its label as `davitf`, type `User` (#384's events, 2026-09-21), and
 sometimes as `claude[bot]`. The workflow reads the pull request's latest `review`
 labeled event instead. A person is a `User` sender whose event has no
@@ -91,8 +91,10 @@ event that cannot be found counts as an agent. `is_person` in the gate holds the
   comment does not ask for another round. `findings` (🔄 Request Changes) asks for one.
   `decision` stops until the maintainer answers. `VERDICT_STOPS` in
   [`scripts/review_loop_gate.py`](../scripts/review_loop_gate.py) holds the mapping.
-- **After a verdict that needs no other round, an agent's label is refused**, with a
-  comment saying so; a person's label still runs one.
+- **The verdict advises; it does not refuse.** After a verdict that needs no other
+  round, an agent's label still runs one. A nit or a maintainer question sometimes grows
+  into a larger change that warrants a full review, and the implementer is trusted to
+  judge that (davitf, 2026-09-23). The cap below still bounds it.
 - **Five rounds an agent can ask for, then a person.** Past `MAX_ROUNDS` an agent's
   label is refused, with a comment saying so, and a person's label still runs a round.
   Past `MAX_FORCED_ROUNDS` (eight) nothing runs, so the bound holds even if the person

@@ -345,11 +345,13 @@ gh pr edit <number> --add-label review
 Through the GitHub MCP instead, `issue_write` `update` replaces the whole label set:
 read the pull request's labels first and write them back with `review` appended.
 
-Do not add it when the closing comment said no further round is needed, when a
-maintainer decision is still unanswered, or when it said the rounds an agent can ask
-for are spent. The workflow refuses an agent's label in the first and last cases
-anyway, including one made through the maintainer's account; waiting for a decision's
-answer is yours to get right. If the label is still on the pull request a few minutes
+Do not add it when a maintainer decision is still unanswered, or when the closing
+comment said the rounds an agent can ask for are spent; the workflow refuses the second
+anyway, including a label made through the maintainer's account. When the closing
+comment said no further round is needed, add it only if your fixes grew into a larger
+change than the findings described (a new code path, a redesign a question led to):
+the workflow lets that label through and trusts your judgement, so do not spend a round
+on the fixes the review already described. If the label is still on the pull request a few minutes
 after you added it, no round started: resolve any merge conflict or merge `main`, then
 remove the label and add it again.
 

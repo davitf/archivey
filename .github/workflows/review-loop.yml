@@ -11,9 +11,8 @@ name: Review loop
 # Who adds the label is the implementing agent when its pull request is ready and again
 # after each round of fixes (`address-review-findings`), or a person at any time. Only
 # someone with triage access can label a pull request, so the label is also the
-# permission check. The gate refuses an agent's label past `MAX_ROUNDS`, after a round
-# that said no further round is needed, and at a commit a review already failed on; a
-# person's label still runs, up to `MAX_FORCED_ROUNDS`. `is_person` in the gate says how
+# permission check. The gate refuses an agent's label past `MAX_ROUNDS` and at a commit
+# a review already failed on; a person's label still runs, up to `MAX_FORCED_ROUNDS`. `is_person` in the gate says how
 # the two are told apart.
 #
 # The first lines of this workflow's closing comments are the only state: which rounds

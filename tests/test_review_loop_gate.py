@@ -158,27 +158,13 @@ def test_nothing_runs_past_the_ceiling_whoever_asks() -> None:
     assert "most this workflow runs" in answer.comment
 
 
-@pytest.mark.parametrize("verdict", ["clean", "approved"])
-def test_a_round_that_needs_no_other_refuses_an_agent(verdict: str) -> None:
-    """The verdict is what ends the rounds, so it has to bind an agent that ignores it."""
-    history = rounds("findings", verdict)
-    refused = decide(markers=history)
-    assert not refused.run
-    assert "said no further round is needed" in refused.comment
-
-    assert decide(markers=history, **PERSON).run
-
-
-@pytest.mark.parametrize("verdict", ["findings", "decision", "not-a-verdict"])
-def test_a_round_that_asked_for_more_lets_an_agent_continue(verdict: str) -> None:
-    assert decide(markers=rounds(verdict)).run
-
-
-def test_the_latest_round_is_the_one_whose_verdict_counts() -> None:
-    """A person's round after an approval can reopen the rounds for the agent."""
-    # Listed out of order: comments arrive paginated, and the round number decides.
-    history = list(reversed(rounds("approved", "findings")))
-    assert decide(markers=history).run
+@pytest.mark.parametrize(
+    "verdict", ["clean", "approved", "findings", "decision", "not-a-verdict"]
+)
+def test_an_agent_can_ask_for_another_round_whatever_the_verdict(verdict: str) -> None:
+    """The verdict advises; the implementer judges when a change has grown enough to need
+    another look (davitf, 2026-09-23). Only the cap bounds an agent's rounds."""
+    assert decide(markers=rounds("findings", verdict)).run
 
 
 def test_an_agent_cannot_retry_a_commit_a_review_already_failed_on() -> None:
@@ -273,7 +259,7 @@ def test_every_finished_round_counts_and_records_what_it_read(name: str) -> None
     assert first_line == f"{gate.ROUND_MARKER} n=2 sha={SHA} verdict={name} -->"
     # What the gate reads back is what this wrote.
     history = gate.read_history([first_line])
-    assert (history.rounds, history.last_verdict) == (1, name)
+    assert history.rounds == 1
     assert "Two nits left." in answer.comment
     assert "https://github.com/davitf/archivey/blob/main/dev-docs/review-loop.md" in (
         answer.comment
@@ -306,6 +292,7 @@ def test_a_round_that_does_not_need_another_look_says_so() -> None:
     assert approved.stop
     assert "No further round is needed" in approved.comment
     assert "again for round" not in approved.comment
+    assert "grow into a larger change" in approved.comment
 
     clean = finish(verdict_file(verdict="clean"))
     assert "ready for a person to look at and merge" in clean.comment

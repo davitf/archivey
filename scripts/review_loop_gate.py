@@ -54,8 +54,7 @@ NO_REVIEW_LABEL = "no-review"
 #:
 #: Five (davitf, 2026-09-21): the cap is the backstop that stops two agents going back
 #: and forth on one pull request, not the mechanism that ends a review. A round whose
-#: verdict does not ask to see the fix already says "no further round", and an agent's
-#: label after it is refused (`VERDICT_STOPS`).
+#: verdict does not ask to see the fix already says "no further round" (`VERDICT_STOPS`).
 MAX_ROUNDS = 5
 
 #: The round past which nothing runs, whoever asks.
@@ -89,6 +88,11 @@ _FIELD = re.compile(r"(\w+)=(\S+)")
 #:
 #: A verdict this does not recognise counts as `findings`: a reviewer whose verdict
 #: cannot be read has not said it is finished, and the cap still bounds what that costs.
+#:
+#: This decides what the closing comment asks for, and nothing more. An agent's label
+#: after a round that asked for none still runs: a nit or a maintainer question can
+#: grow into a larger change that warrants a full review, and the implementer is
+#: trusted to judge that (davitf, 2026-09-23).
 VERDICT_STOPS = {
     # Nothing was found at all.
     "clean": True,
@@ -123,30 +127,23 @@ def _footer(repository: str) -> str:
 class History:
     #: Rounds that reached a verdict.
     rounds: int
-    #: The verdict of the latest of those, or "" when none ran.
-    last_verdict: str
     #: Commits a review stopped on before reaching a verdict.
     failed_shas: frozenset[str]
 
 
 def read_history(markers: object) -> History:
     """What the workflow's own earlier comments record, from their first lines."""
-    rounds: list[tuple[int, str]] = []
+    rounds = 0
     failed: set[str] = set()
     for line in markers if isinstance(markers, list) else []:
         if not isinstance(line, str):
             continue
         fields = dict(_FIELD.findall(line))
         if line.startswith(ROUND_MARKER + " "):
-            try:
-                number = int(fields.get("n", ""))
-            except ValueError:
-                number = 0
-            rounds.append((number, fields.get("verdict", "")))
+            rounds += 1
         elif line.startswith(ATTEMPT_MARKER + " ") and fields.get("sha"):
             failed.add(fields["sha"])
-    latest = max(rounds, default=(0, ""))
-    return History(len(rounds), latest[1], frozenset(failed))
+    return History(rounds, frozenset(failed))
 
 
 def is_person(event: dict) -> bool:
@@ -222,14 +219,6 @@ def decide(event: dict) -> Decision:
                 f"**Not reviewed: all {MAX_ROUNDS} rounds an agent can ask for are "
                 "spent.** This pull request needs a person now. A person adding the "
                 f"{label} label still buys another round.",
-            )
-        if VERDICT_STOPS.get(history.last_verdict, False):
-            return refuse(
-                f"the last round's verdict was {history.last_verdict!r}, and an agent "
-                "asked",
-                f"**Not reviewed: round {done} said no further round is needed.** "
-                f"Work through its findings; a person adding the {label} label still "
-                "buys another round.",
             )
         head_sha = str(event.get("head_sha") or "")
         if head_sha and head_sha in history.failed_shas:
@@ -363,8 +352,8 @@ def finish(event: dict) -> Finish:
         body = (
             f"**Round {rnd}: the review does not need to see the result.**{summary}\n\n"
             "Work through any findings it posted with `address-review-findings`. No "
-            f"further round is needed; a person adding the {label} label still buys "
-            "one."
+            "further round is needed. If the fixes grow into a larger change that "
+            f"needs a fresh look, add the {label} label again."
         )
     elif final:
         body = (
