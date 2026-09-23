@@ -57,7 +57,6 @@ from archivey.exceptions import (
 )
 from archivey.internal.arg_checks import (
     check_callable,
-    check_config,
     check_extraction_limits,
     describe_value,
 )
@@ -2182,7 +2181,6 @@ class BaseArchiveReader(ArchiveReader):
         on_error: OnError | OnErrorStr = OnError.STOP,
         abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
-        config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,
     ) -> ExtractionReport:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
@@ -2201,7 +2199,6 @@ class BaseArchiveReader(ArchiveReader):
             abort_on, AbortOn, call="extract_all()", param="abort_on="
         )
         self._state.require_open("extract_all()")
-        check_config(config, call="extract_all(config=…)")
         check_extraction_limits(limits, call="extract_all(limits=…)")
         check_callable(on_progress, call="extract_all(on_progress=…)")
         # ``filter`` is not consulted until the first member is offered, by which point
@@ -2221,12 +2218,10 @@ class BaseArchiveReader(ArchiveReader):
         # type-checks against BaseArchiveReader.
         from archivey.internal.extraction import ExtractionCoordinator
 
-        # Listing limits stay on the open-time reader config for the reader lifetime;
-        # a per-call config may override extraction_limits / policy / accelerators but
-        # must not replace self._config.listing_limits (see archive-reading).
-        effective_config = config if config is not None else self._config
+        # The reader's open config applies to the whole reader lifetime; only the
+        # extraction limits have a per-call override (see archive-reading).
         effective_limits = (
-            limits if limits is not None else effective_config.extraction_limits
+            limits if limits is not None else self._config.extraction_limits
         )
         collector = self._diagnostics_collector
         # This call's report covers only its own extraction-phase events. The one-shot

@@ -266,8 +266,7 @@ class DecoderLimits:
 
     Applied from the reader's open :attr:`ArchiveyConfig.decoder_limits` for its
     lifetime, as :class:`ListingLimits` is: the codec-layer view is built once
-    when the reader is, so a later ``extract_all(config=…)`` carrying different
-    decoder limits changes nothing.
+    when the reader is.
 
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables every
     one. Exceeding a guard raises

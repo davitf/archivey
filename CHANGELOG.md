@@ -97,6 +97,10 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **`ArchiveReader.extract_all()` no longer takes `config=`.** It honoured only the
+  extraction limits and silently dropped every other field, including a per-call
+  diagnostic policy or callback. A reader runs under the config it was opened with;
+  pass `limits=` to override the extraction limits for one call.
 - **`ArchiveMember.extra` / `ArchiveInfo.extra` are `MemberExtra` / `ArchiveInfoExtra`.**
   Known keys narrow on a subscript read. Assign a `MemberExtra({...})` rather than a
   bare dict; mutating the existing bag in place is unchanged. Only type-checking

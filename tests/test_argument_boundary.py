@@ -78,8 +78,8 @@ class _Case(NamedTuple):
 
     ``entry`` is the name as :func:`_public_surface` and :data:`_NOT_SWEPT` spell it,
     and it is what the inventory matches on. Keying by argument name alone was not
-    enough: a ``config`` row on ``open_archive`` made ``extract_all(config=…)`` look
-    swept, so removing that check would not have failed the inventory.
+    enough: a ``limits`` row on ``extract`` made ``extract_all(limits=…)`` look swept,
+    so removing that check would not have failed the inventory.
 
     ``argument`` also decides whether a bare ``TypeError`` is allowed, so a row added
     with an unfamiliar name gets the strict treatment by default.
@@ -139,12 +139,6 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 "config",
                 bad,
                 lambda b=bad: detect_format(archive, config=b),
-            ),
-            _case(
-                "extract_all",
-                "config",
-                bad,
-                lambda b=bad: _extract_all(archive, out(), None, config=b),
             ),
         ]
 
