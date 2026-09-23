@@ -278,7 +278,9 @@ reported on and author what the operator sees in its place. `cli/format.py`'s
 `escape_member_name` exists for this (GNU `ls` / `tar` quote for the same reason). PR #235
 (whose subject is `extraction-results-authoritative` — the escaping rode in on it) routed
 the **report-line** print sites through it: the report lines themselves, the error detail
-appended to `failed:` / `blocked:`, and the hoist's messages.
+appended to `failed:` / `blocked:`, and the hoist's collision lines (`renamed:`,
+`skipped:`, `Destination already exists:`). That pass was a hand audit and it was not
+complete — see *Print sites after the second audit* below.
 
 **Implemented** (`escape-cli-log-records`): archive-derived text is escaped where it
 **becomes a message**, not where a message is displayed. `ArchiveyError` and
@@ -344,8 +346,11 @@ Escaping at construction closes it: that line is the escaped message.
 interpolated raw would render `C:\\Users\\out\\a.txt`. Every path in a message is
 rendered `/`-separated first by `escaping.display_path()`, leaving the escape nothing to
 double; a backslash that survives is then a character in a *name*, which is what the
-escape is for. Print sites already followed this rule by rendering relative to the
-extraction root. Guarded by a static sweep, since the failure is invisible on Linux.
+escape is for. Guarded by a static sweep, since the failure is invisible on Linux. Print
+sites follow the same rule: a member-derived path is rendered relative to the extraction
+root, and any other path goes through `cli/format.escape_path` (`display_path`, then the
+escape). That second half is newer than it looks — until the second audit below, the
+hoist's collision lines escaped `str(dest)`, a native path.
 
 *Escape exactly once.* Escaping already-escaped text doubles the backslashes the first
 escape wrote. Review found this was not a rare cosmetic edge: **52 message sites**
@@ -374,6 +379,28 @@ render `\x9b`. The guarantee is now stated as inertness, not unique recoverabili
 Tests for the fixed print sites: `tests/test_cli.py::test_extract_escapes_*`. Those use a
 Windows-legal U+2028 for the cross-platform cases and keep the ANSI/CR spoof in a
 Unix-only test, because a name containing control bytes cannot be created on NTFS.
+
+*Print sites after the second audit.* The first print-site pass missed the widest surface
+of all: `archivey info` printed every field raw, including an archive comment — arbitrary
+bytes, up to 64 KiB in a ZIP — on **stdout**, where `2>/dev/null` hides nothing. It also
+missed the closing extract summary, which names the sole top-level entry (the member's own
+name), and the hoist's `moved to`, `removed wrapper`, `hoist stopped` and `files left in`
+lines. All are escaped now: `info` escapes every value it prints, and the summary and
+hoist lines go through `escape_path`. `main()`'s `OSError` notice escaped *twice* (`!r`
+and then the print-site escape) and now escapes once. Tests:
+`tests/test_cli.py::test_extract_summary_escapes_*`, `test_hoist_escapes_*`,
+`test_info_escapes_*`, `test_missing_archive_name_is_escaped_once`.
+
+Two hand audits in a row each found sites the previous one missed, so print sites are now
+guarded like message sites: `tests/test_escaping.py::test_cli_print_sites_escape_what_they_print`
+walks every `print()` in `cli/` and fails on an interpolated value that is neither passed
+through an escaping renderer nor listed, with its reason, as safe by type;
+`test_cli_does_not_escape_a_native_path` fails on a bare escape of something path-shaped.
+*Residual:* both are spelling-level sweeps. The allow-list trusts that a variable such as
+`label` was built with an escape, and a helper that returns text for a print site to
+escape (like `_format_os_error`) is checked only by its own test, not by the sweep. The
+progress bar hands tqdm an escaped `desc` and is outside the sweep, since it does not call
+`print()`.
 
 ### O10. A content probe fabricates a member from arbitrary attacker bytes — narrowed
 

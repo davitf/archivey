@@ -6,7 +6,7 @@ import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TextIO
 
 from archivey import (
@@ -32,7 +32,6 @@ from archivey.cli.format import escape_member_name, escape_path, format_error_de
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
-from archivey.escaping import display_path
 from archivey.exceptions import ArchiveyError
 from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.reader import ArchiveReader
@@ -151,6 +150,9 @@ class _HoistResult:
     """Outcome of :func:`maybe_hoist_single_root` for reporting and exit code."""
 
     target: Path  # where the content ended up (the wrapper when not hoisted)
+    # Terminal-safe summary destination when the hoist decided it; ``None`` leaves it
+    # to :func:`_summary_dest_label`.
+    dest_label: str | None = None
     ok: bool = True  # False → collision/failure; caller exits nonzero
     renamed: int = 0
     skipped: int = 0
@@ -182,23 +184,27 @@ def _merge_move(
     overwrite: OverwritePolicy,
     result: _HoistResult,
     err: TextIO,
-) -> None:
+) -> Path | None:
     """Move ``src`` to ``dest`` with the same per-file semantics as extracting
     directly into ``dest``'s parent: directories merge, file/symlink collisions
     resolve by the overwrite policy. Pre-existing files are never deleted — the
     only removal is our own just-extracted copy under SKIP, which a direct
     extraction would never have written. Symlinks are moved as links and never
-    descended into (on either side)."""
+    descended into (on either side).
+
+    Returns where ``src`` landed — ``dest``, or the free name a rename chose — and
+    ``None`` when SKIP discarded it. Only the caller's top-level call reads this: it is
+    where the hoisted root ended up, which a collision can move off ``dest``."""
     if not os.path.lexists(dest):
         os.rename(src, dest)
-        return
+        return dest
     src_is_dir = src.is_dir() and not src.is_symlink()
     dest_is_dir = dest.is_dir() and not dest.is_symlink()
     if src_is_dir and dest_is_dir:
         for entry in sorted(src.iterdir()):
             _merge_move(entry, dest / entry.name, overwrite, result, err)
         src.rmdir()
-        return
+        return dest
     if overwrite is OverwritePolicy.RENAME:
         free = _free_name(dest, is_dir=src_is_dir)
         os.rename(src, free)
@@ -207,15 +213,15 @@ def _merge_move(
             f"renamed: {escape_path(dest)} -> {escape_path(free)}",
             file=err,
         )
-        return
+        return free
     if overwrite is OverwritePolicy.REPLACE and not src_is_dir and not dest_is_dir:
         os.replace(src, dest)  # replaces exactly the file being extracted
-        return
+        return dest
     if overwrite is OverwritePolicy.SKIP and not src_is_dir:
         src.unlink()
         result.skipped += 1
         print(f"skipped: {escape_path(dest)}", file=err)
-        return
+        return None
     # ERROR policy — or a dir-vs-file shape that REPLACE/SKIP cannot express
     # without deleting pre-existing data. Stop; the caller keeps the remainder
     # under the wrapper and exits nonzero (direct extraction would have failed
@@ -266,8 +272,16 @@ def maybe_hoist_single_root(
                 (side / child.name).rename(dest)
                 side.rmdir()
         else:
-            _merge_move(child, dest, overwrite, result, err)
+            landed = _merge_move(child, dest, overwrite, result, err)
             wrapper.rmdir()
+            if landed is None:
+                # SKIP kept the operator's entry and discarded ours; ``skipped:``
+                # already said so, and nothing was moved anywhere. ``dest`` is the
+                # operator's own entry, so neither line may name it.
+                result.target = wrapper.parent
+                result.dest_label = "."
+                return result
+            result.target = landed
     except _HoistConflict as conflict:
         print(
             f"Destination already exists: {escape_path(conflict.dest)}",
@@ -289,6 +303,7 @@ def maybe_hoist_single_root(
     is_dir = result.target.is_dir() and not result.target.is_symlink()
     # The target is the sole root's own name, which the archive chose.
     label = f"{escape_path(result.target)}{'/' if is_dir else ''}"
+    result.dest_label = label
     if result.target == wrapper:
         # In-place flatten (src.tar → src/ containing src/): name unchanged.
         print(f"removed wrapper; content at {label}", file=err)
@@ -331,12 +346,15 @@ def _report_extraction(
     err: TextIO,
     extra_renamed: int = 0,
     extra_skipped: int = 0,
+    dest_label: str | None = None,
 ) -> tuple[int, int]:
     """Print rename notices + a closing summary from the library report (F3/D2).
 
     ``extra_renamed`` / ``extra_skipped`` fold in collisions resolved during the
     post-extract hoist (the library report covers only the wrapper extraction,
-    which is collision-free by construction).
+    which is collision-free by construction). ``dest_label`` is the hoist's own
+    account of where the content landed, which the report — written before the hoist
+    moved anything — cannot know.
 
     Returns ``(blocked_count, failed_count)`` for exit-code selection (Q1).
     """
@@ -428,7 +446,8 @@ def _report_extraction(
                 file=err,
             )
 
-    dest_label = _summary_dest_label(target, report)
+    if dest_label is None:
+        dest_label = _summary_dest_label(target, report)
     print(
         f"{extracted} extracted, {renamed} renamed, {skipped} skipped"
         f"{f', {blocked} blocked' if blocked else ''}"
@@ -457,7 +476,7 @@ def _escaped_where(result: ExtractionResult, target: Path) -> str:
     return escape_member_name(result.member.name)
 
 
-def _relative_name(path: Path | None, target: Path) -> str:
+def _relative_name(path: PurePath | None, target: PurePath) -> str:
     """The on-disk name relative to the extraction root, for reporting.
 
     Falls back to the full path, still ``/``-separated, when the member landed outside
@@ -468,7 +487,7 @@ def _relative_name(path: Path | None, target: Path) -> str:
     try:
         return path.relative_to(target).as_posix()
     except ValueError:
-        return display_path(path)
+        return path.as_posix()
 
 
 def _exit_for_outcomes(*, blocked: int, failed: int, hoist_ok: bool) -> int:
@@ -617,6 +636,7 @@ def run_extract(
                 err=err,
                 extra_renamed=hoist.renamed,
                 extra_skipped=hoist.skipped,
+                dest_label=hoist.dest_label,
             )
             return _exit_for_outcomes(blocked=blocked, failed=failed, hoist_ok=hoist.ok)
         finally:

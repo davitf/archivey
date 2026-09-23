@@ -475,3 +475,165 @@ def test_no_message_interpolates_a_native_path() -> None:
         "wrap paths in display_path() so Windows separators are not doubled by the "
         "escape:\n  " + "\n  ".join(offenders)
     )
+
+
+# --- CLI print sites ----------------------------------------------------------------
+#
+# The sweeps above guard *messages*, keyed on the constructor. A CLI ``print()`` is not
+# one, so nothing looked at the print sites, and two hand audits in a row each found
+# sites the previous one missed (the closing summary, the hoist lines, every ``info``
+# field). These two sweeps replace the third audit.
+
+_CLI = _SRC / "cli"
+
+# Calls whose result is terminal-safe by construction.
+_CLI_RENDERERS = {
+    "escape_member_name",
+    "escape_path",
+    "escape_control_chars",
+    "format_error_detail",
+    "format_member_line",  # escapes the name and link target itself
+}
+
+# Functions that write their arguments to a terminal stream. ``_field`` is ``info``'s
+# line printer, which takes text it is told is already safe; checking its call sites
+# here is what makes that true.
+_CLI_PRINTERS = {"print", "_field"}
+
+# Values a print site may interpolate raw, keyed ``module: expression``. Each one is
+# safe by type or already escaped where it was built; say which. An entry that no
+# longer matches a site fails ``test_cli_print_allowances_name_real_sites``.
+_CLI_PRINT_ALLOWED = {
+    "common.py: stats.bytes_decompressed": "int counter",
+    "common.py: consumed_s": "int counter or '-'",
+    "common.py: stats.source_seek_count": "int counter",
+    "extract_cmd.py: extracted": "int counter",
+    "extract_cmd.py: renamed": "int counter",
+    "extract_cmd.py: skipped": "int counter",
+    "extract_cmd.py: blocked": "int counter",
+    "extract_cmd.py: failed": "int counter",
+    "extract_cmd.py: ', '.join(parts)": "counts, built two lines above",
+    "extract_cmd.py: dest_label": "from _summary_dest_label or the hoist; escaped",
+    "extract_cmd.py: label": "built with escape_path",
+    "extract_cmd.py: where": "from _escaped_where",
+    "extract_cmd.py: detail": "built with format_error_detail",
+    "filters.py: extra": "the operator's own -d suggestion, from argv",
+    "info_cmd.py: key + ':'": "_field's key; its call sites are checked here",
+    "info_cmd.py: text": "_field's text; its call sites are checked here",
+    "list_cmd.py: report.error": "an ArchiveyError, which escapes itself",
+    "main.py: archivey.__version__": "archivey's own version",
+    "main.py: label": "format label from the format registry",
+    "main.py: avail.support.value": "enum value",
+    "main.py: missing": "dependency names and install hints from archivey",
+    "main.py: code": "a SystemExit message raised by the CLI itself",
+    "test_cmd.py: _test_summary(ok=ok, failed=failed, members_total=members_total)": (
+        "counts"
+    ),
+}
+
+
+def _printed_expressions(node: ast.expr) -> list[ast.expr]:
+    """The expressions a printed argument interpolates, descending into f-strings.
+
+    A conditional f-string fragment (``f', {n} failed' if n else ''``) is followed into
+    both branches; its condition is not printed. A ``!r`` conversion is inert, since
+    ``repr`` escapes every non-printable character.
+    """
+    if isinstance(node, ast.Constant):
+        return []
+    if isinstance(node, ast.JoinedStr):
+        found: list[ast.expr] = []
+        for value in node.values:
+            if isinstance(value, ast.FormattedValue) and value.conversion != ord("r"):
+                found.extend(_printed_expressions(value.value))
+        return found
+    if isinstance(node, ast.IfExp):
+        return _printed_expressions(node.body) + _printed_expressions(node.orelse)
+    return [node]
+
+
+def _call_name(node: ast.Call) -> str:
+    return getattr(node.func, "id", None) or getattr(node.func, "attr", None) or ""
+
+
+def _cli_print_sites() -> list[tuple[str, int, str]]:
+    """``(module, line, expression)`` for every raw value a CLI printer writes."""
+    sites: list[tuple[str, int, str]] = []
+    for path in sorted(_CLI.rglob("*.py")):
+        module = path.relative_to(_CLI).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or _call_name(node) not in _CLI_PRINTERS:
+                continue
+            # ``_field``'s last argument is the stream, not text.
+            args = node.args[:2] if _call_name(node) == "_field" else node.args
+            for arg in args:
+                for expr in _printed_expressions(arg):
+                    if (
+                        isinstance(expr, ast.Call)
+                        and _call_name(expr) in _CLI_RENDERERS
+                    ):
+                        continue
+                    sites.append((module, node.lineno, ast.unparse(expr)))
+    return sites
+
+
+def test_cli_print_sites_escape_what_they_print() -> None:
+    """A value a CLI printer writes is escaped, or allowed here with a reason.
+
+    Keyed on the *expression* at its module, so a new print site interpolating a raw
+    member name, path or archive field fails here even though nothing else changed.
+    """
+    offenders = [
+        f"{module}:{line} {{{expr}}}"
+        for module, line, expr in _cli_print_sites()
+        if f"{module}: {expr}" not in _CLI_PRINT_ALLOWED
+    ]
+    assert not offenders, (
+        "escape archive-derived text at the print site (escape_member_name, "
+        "escape_path, format_error_detail), or add the value to _CLI_PRINT_ALLOWED "
+        "with the reason it is safe:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_cli_print_allowances_name_real_sites() -> None:
+    """A stale allowance is a hole waiting for the next site with that spelling."""
+    live = {f"{module}: {expr}" for module, _line, expr in _cli_print_sites()}
+    assert not set(_CLI_PRINT_ALLOWED) - live
+
+
+def test_cli_does_not_escape_a_native_path() -> None:
+    """A path is rendered ``/``-separated before it is escaped, so nothing doubles.
+
+    Invisible on a POSIX runner, where a native path has no backslash to double —
+    hence a static sweep. ``escape_path`` does both steps; a bare escape of something
+    path-shaped has to show where it was made relative or ``/``-separated.
+    """
+    path_words = {"dest", "path", "target", "dir", "root", "destination", "wrapper"}
+    made_posix = ("_relative_name(", "display_path(", ".as_posix()")
+    offenders: list[str] = []
+    for path in sorted(_CLI.rglob("*.py")):
+        module = path.relative_to(_CLI).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or _call_name(node) not in {
+                "escape_member_name",
+                "escape_control_chars",
+            }:
+                continue
+            for arg in node.args:
+                expr = ast.unparse(arg)
+                if any(marker in expr for marker in made_posix):
+                    continue
+                if expr.endswith(".link_target"):
+                    continue  # the archive's own string, not a native path
+                if any(
+                    tok.lower() in path_words for tok in re.split(r"[^A-Za-z]+", expr)
+                ):
+                    offenders.append(
+                        f"{module}:{node.lineno} {_call_name(node)}({expr})"
+                    )
+    assert not offenders, (
+        "use escape_path() for a path, so Windows separators are not doubled:\n  "
+        + "\n  ".join(offenders)
+    )
