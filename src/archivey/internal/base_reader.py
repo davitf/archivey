@@ -51,6 +51,7 @@ from archivey.exceptions import (
     EncryptionError,
     LinkTargetNotFoundError,
     ReadError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
     UnsupportedOperationError,
@@ -1016,7 +1017,8 @@ class BaseArchiveReader(ArchiveReader):
             return
 
         # Under pedantic() (default=RAISE), a bare emit would raise DiagnosticRaisedError
-        # mid-raise and destroy the typed TruncatedError/CorruptionError. escalate_as
+        # mid-raise and destroy the typed TruncatedError/CorruptionError/
+        # ResourceLimitError. escalate_as
         # keeps that type when RAISE fires; under COLLECT we leave escalate_as unset so
         # the already-stamped ``exc`` is re-raised by the caller.
         escalate_as: type[BaseException] | None = None
@@ -2330,7 +2332,7 @@ class BaseArchiveReader(ArchiveReader):
         if (
             provenance is not None
             and provenance.probe_only
-            and isinstance(exc, (TruncatedError, CorruptionError))
+            and isinstance(exc, (TruncatedError, CorruptionError, ResourceLimitError))
         ):
             self._mark_format_unconfirmed(exc)
 

@@ -15,6 +15,7 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    DecoderLimits,
     DetectionConfidence,
     DiagnosticPolicy,
     detect_format,
@@ -24,6 +25,7 @@ from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
+    ResourceLimitError,
     TruncatedError,
 )
 from archivey.internal.detection import _extension_corroborates
@@ -101,13 +103,44 @@ def test_lzma_alone_probable_failure_sets_format_unconfirmed() -> None:
     assert info.detected_by == "content_probe"
     assert info.corroborated is False
 
-    with open_archive(io.BytesIO(blob)) as reader:
+    # The OLE header's bytes 1-4 read as a 2.7 GiB dictionary, over the default cap;
+    # this case lifts the cap to reach the decode failure, and the next one keeps it.
+    config = ArchiveyConfig(decoder_limits=DecoderLimits.UNLIMITED)
+    with open_archive(io.BytesIO(blob), config=config) as reader:
         with pytest.raises((TruncatedError, CorruptionError)) as caught:
             reader.open(next(iter(reader))).read()
         assert caught.value.format_unconfirmed is True
         codes = {d.code for d in reader.diagnostics.retained}
         assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in codes
         assert DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED not in codes
+
+
+def test_lzma_alone_probable_limit_refusal_sets_format_unconfirmed() -> None:
+    """A decoder-limit refusal on probe-only evidence is stamped like a decode failure.
+
+    The dictionary the refusal names is four bytes of an OLE header, so the ordinary
+    "raise the cap if the archive is trusted" advice would be about a file that was
+    never ``.lzma``.
+    """
+    blob = _ole_lzma_alone_residual()
+    with open_archive(io.BytesIO(blob)) as reader:
+        with pytest.raises(ResourceLimitError) as caught:
+            reader.open(next(iter(reader))).read()
+        assert caught.value.format_unconfirmed is True
+        assert "unconfirmed" in str(caught.value)
+        codes = {d.code for d in reader.diagnostics.retained}
+        assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in codes
+
+
+def test_lzma_alone_limit_refusal_with_extension_is_not_stamped(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "x.lzma"
+    path.write_bytes(_ole_lzma_alone_residual())
+    with open_archive(path) as reader:
+        with pytest.raises(ResourceLimitError) as caught:
+            reader.open(next(iter(reader))).read()
+        assert caught.value.format_unconfirmed is False
 
 
 @requires("brotli")

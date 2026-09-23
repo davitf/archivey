@@ -73,6 +73,7 @@ from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
+    ReadOnlyIOStream,
     ensure_binaryio,
     fix_stream_start_position,
     is_seekable,
@@ -1481,6 +1482,41 @@ def _peek_alone_header(source: CodecSource) -> tuple[CodecSource, bytes]:
     return peekable, peekable.peek(_ALONE_HEADER_SIZE)
 
 
+class _RefusedAloneStream(ReadOnlyIOStream):
+    """What ``.lzma`` opens as when its dictionary is over the cap: every read refuses.
+
+    The refusal is raised on read rather than on open, where xz and lzip raise theirs
+    and where ``LZMAFile`` would have raised a corrupt header. It matters because
+    ``.lzma`` has no magic: detection claims it by content probe alone, and a
+    probe-only claim's read errors are stamped ``format_unconfirmed``
+    (``error-handling``). The single-file reader opens a codec stream eagerly at
+    ``open_archive``, before that provenance is attached, so a refusal raised on open
+    would reach the caller unstamped — telling them to raise the cap for a file the
+    probe may have misread, measured on an OLE header whose bytes 1-4 read as 2.7 GiB.
+    Nothing is decoded, so no decoder is ever built.
+    """
+
+    def __init__(self, declared: int, limits: DecoderLimits) -> None:
+        super().__init__()
+        self._declared = declared
+        self._limits = limits
+
+    def read(self, n: int = -1, /) -> bytes:
+        check_decoder_memory(
+            self._declared, limits=self._limits, what="LZMA Alone dictionary size"
+        )
+        raise AssertionError("unreachable: the declared size is over the cap")
+
+    def seekable(self) -> bool:
+        return True
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        return 0
+
+    def tell(self) -> int:
+        return 0
+
+
 class LzmaAloneCodec(_LzmaErrorCodec):
     """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW."""
 
@@ -1492,13 +1528,12 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         source, header = _peek_alone_header(source)
+        # A shorter header is left for liblzma to call truncated.
         if len(header) == _ALONE_HEADER_SIZE:
-            # A shorter header is left for liblzma to call truncated.
-            check_decoder_memory(
-                int.from_bytes(header[1:5], "little"),
-                limits=config.decoder_limits,
-                what="LZMA Alone dictionary size",
-            )
+            declared = int.from_bytes(header[1:5], "little")
+            cap = config.decoder_limits.max_decoder_memory
+            if cap is not None and declared > cap:
+                return _RefusedAloneStream(declared, config.decoder_limits)
         # stdlib LZMAFile seeks by re-decompressing from the start; the outer ArchiveStream
         # warns on rewind (see rewind_warning).
         return ensure_binaryio(

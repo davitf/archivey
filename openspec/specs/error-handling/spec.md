@@ -366,8 +366,9 @@ escape: there `%r` is what makes an interpolated name inert and SHALL be kept.
 When a single-file member's format was chosen by a content probe and **nothing else
 agreed**, a decoding failure while reading that member SHALL:
 
-1. Keep the same exception **type** (`TruncatedError` / `CorruptionError` as today) — no
-   new subclass; callers catching those types must keep working.
+1. Keep the same exception **type** (`TruncatedError` / `CorruptionError` as today, or
+   `ResourceLimitError` when the read tripped a limit) — no new subclass; callers catching
+   those types must keep working.
 2. Set `format_unconfirmed=True` on the exception (see the standard-attributes
    requirement).
 3. Rewrite the **message** so it reports that the format identification was unconfirmed,
@@ -378,6 +379,15 @@ agreed**, a decoding failure while reading that member SHALL:
    is no longer what the stamp keys on.
 4. Emit diagnostic `PROBE_FORMAT_UNCONFIRMED` (see `diagnostics`) — a new code, not a
    stretch of `EXTENSION_FORMAT_UNCONFIRMED`.
+
+**A limit trip counts as a decoding failure here.** A `ResourceLimitError` raised while
+reading such a member SHALL be stamped the same way. The case that forces it is the LZMA
+dictionary cap (`DecoderLimits`): the Alone probe claims bytes that are not LZMA at all —
+an OLE/CFB header over zero padding is the measured example — and reads four arbitrary
+header bytes as a dictionary size, 2.7 GiB for that header. Left unstamped, the refusal
+tells the caller the archive asked for too much and to raise the cap if it is trusted,
+about a file that was never an archive of that format. Whether the probe's claim was the
+only evidence is the same question for every error the read raises.
 
 **The trigger is provenance, not confidence.** The question this signal answers is "was
 there any evidence besides one probe?", which `DetectionConfidence` does not track:
@@ -441,6 +451,7 @@ A corroborated result keeps today's type, message, and `format_unconfirmed=False
 | Probe-only Brotli result (`GUESS`), decode fails | Same `TruncatedError`/`CorruptionError` type; `format_unconfirmed is True`; message names unconfirmed identification; `PROBE_FORMAT_UNCONFIRMED` diagnostic |
 | Probe-only Brotli result, **compressed-first** (`PROBABLE`), decode fails | Same treatment — stamped. Confidence does not gate the signal |
 | Probe-only **LZMA Alone** result (`PROBABLE`), decode fails | Same treatment — stamped |
+| Probe-only **LZMA Alone** result whose header declares a dictionary over `max_decoder_memory` | `ResourceLimitError`, stamped: `format_unconfirmed is True`; message names unconfirmed identification; `PROBE_FORMAT_UNCONFIRMED` diagnostic |
 | Probe match corroborated by extension, decode fails | Ordinary truncation/corruption message; `format_unconfirmed is False`; no probe-unconfirmed diagnostic |
 | Probe hit upgraded to `TAR_BROTLI` via an inner-TAR header, decode fails | Corroborated: `format_unconfirmed is False` |
 | Probe-only result, decode succeeds | Success; no error and no diagnostic |

@@ -586,9 +586,15 @@ def test_lzma_alone_non_seekable_source_is_checked_and_replayed() -> None:
     config = dataclasses.replace(
         DEFAULT_STREAM_CONFIG, decoder_limits=DecoderLimits(max_decoder_memory=2**20)
     )
-    # 64 MiB (-6's dictionary) is over a 1 MiB cap.
-    with pytest.raises(ResourceLimitError, match="LZMA Alone dictionary size"):
-        open_codec_stream(Codec.LZMA_ALONE, NonSeekableBytesIO(written), config=config)
+    # 64 MiB (-6's dictionary) is over a 1 MiB cap. The refusal comes on read, as it
+    # does for xz and lzip; see ``_RefusedAloneStream`` for why not on open.
+    with (
+        pytest.raises(ResourceLimitError, match="LZMA Alone dictionary size"),
+        open_codec_stream(
+            Codec.LZMA_ALONE, NonSeekableBytesIO(written), config=config
+        ) as stream,
+    ):
+        stream.read()
     # Under the cap, the header the check read is still there for liblzma.
     with open_codec_stream(
         Codec.LZMA_ALONE, NonSeekableBytesIO(written), config=DEFAULT_STREAM_CONFIG
@@ -678,8 +684,10 @@ def test_refused_before_any_decoder_is_built(
     payload: bytes,
     params: CodecParams,
 ) -> None:
+    # Raw LZMA refuses on open; .lzma on the first read. Either way nothing is built.
     with pytest.raises(ResourceLimitError):
-        open_codec_stream(codec, io.BytesIO(payload), params=params)
+        with open_codec_stream(codec, io.BytesIO(payload), params=params) as stream:
+            stream.read()
     assert lzma_decoders_built == []
 
 
