@@ -887,6 +887,95 @@ def test_7z_cli_lzma1_bcj_avoids_liblzma_truncation(tmp_path: Path) -> None:
     _assert_roundtrip(archive, {src.name: payload_bytes})
 
 
+_A = CompressionAlgorithm
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize(
+    ("switches", "expected"),
+    [
+        pytest.param(("-m0=BCJ", "-m1=LZMA2"), (_A.BCJ, _A.LZMA2), id="bcj-lzma2"),
+        pytest.param(
+            ("-m0=Delta:2", "-m1=BCJ", "-m2=LZMA2"),
+            (_A.DELTA, _A.BCJ, _A.LZMA2),
+            id="delta-bcj-lzma2",
+        ),
+        pytest.param(
+            ("-m0=BCJ", "-m1=LZMA2", "-psecret"),
+            (_A.BCJ, _A.LZMA2),
+            id="bcj-lzma2-aes",
+        ),
+    ],
+)
+def test_member_compression_is_in_compress_order(
+    tmp_path: Path,
+    switches: tuple[str, ...],
+    expected: tuple[CompressionAlgorithm, ...],
+) -> None:
+    """``member.compression`` runs filters first, packing codec last, as 7-Zip lists it.
+
+    A folder stores its coders in decode order; a BCJ member used to read
+    ``(LZMA2, BCJ)``. The ``-mN`` switches name the chain in compress order too.
+    """
+    src = tmp_path / "payload.bin"
+    src.write_bytes(bytes(range(256)) * 64)
+    archive = tmp_path / "chain.7z"
+    result = subprocess.run(
+        ["7z", "a", "-t7z", *switches, str(archive), src.name, "-y"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot write {switches}: {result.stderr}")
+
+    with open_archive(archive) as reader:
+        (member,) = reader.members()
+        assert tuple(m.algo for m in member.compression) == expected
+
+
+@requires_binary("7z")
+def test_bcj2_member_compression_starts_with_bcj2(tmp_path: Path) -> None:
+    """BCJ2 is the last coder applied on decode, so it leads the compress-order tuple.
+
+    Only the head is pinned: which of BCJ2's side-branch coders belong in the tuple
+    is for BCJ2 decode support to settle, not this ordering fix.
+    """
+    src = tmp_path / "payload.bin"
+    src.write_bytes(bytes(range(256)) * 64)
+    archive = tmp_path / "bcj2.7z"
+    result = subprocess.run(
+        ["7z", "a", "-t7z", "-m0=BCJ2", "-m1=LZMA", "-m2=LZMA", "-m3=LZMA"]
+        + [str(archive), src.name, "-y"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot write a BCJ2 fixture: {result.stderr}")
+
+    with open_archive(archive) as reader:
+        (member,) = reader.members()
+        assert member.compression[0].algo is _A.BCJ2
+
+
+def test_py7zr_member_compression_is_in_compress_order(tmp_path: Path) -> None:
+    """py7zr's ``filters`` list is compress order; the member reads it back unchanged."""
+    archive = tmp_path / "delta-bcj-lzma2.7z"
+    _write_py7zr_archive(
+        archive, {"x.bin": b"x" * 4096}, filters=_filters("DELTA", "X86", "LZMA2")
+    )
+    with open_archive(archive) as reader:
+        (member,) = reader.members()
+        assert tuple(m.algo for m in member.compression) == (
+            _A.DELTA,
+            _A.BCJ,
+            _A.LZMA2,
+        )
+
+
 @requires_binary("7z")
 @requires("inflate64")
 def test_7z_cli_deflate64_fixture_roundtrip(tmp_path: Path) -> None:

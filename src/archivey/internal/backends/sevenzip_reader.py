@@ -393,11 +393,17 @@ class SevenZipReader(BaseArchiveReader):
     def _build_folder_compression(
         archive: SevenZipArchive,
     ) -> list[tuple[CompressionMethod, ...]]:
-        """One public compression-chain tuple per folder (shared by its members)."""
+        """One public compression-chain tuple per folder (shared by its members).
+
+        A folder stores its coders in decode order (the packed bytes feed the
+        first), but ``ArchiveMember.compression`` is in compress order, so walk
+        them backwards. That is also the order 7-Zip lists a member's ``Method``
+        in: ``-mf=BCJ`` reads ``BCJ LZMA2``.
+        """
         out: list[tuple[CompressionMethod, ...]] = []
         for folder in archive.folders:
             methods: list[CompressionMethod] = []
-            for coder in folder.coders:
+            for coder in reversed(folder.coders):
                 # Skip AES before lookup: METHOD_AES.algorithm is UNKNOWN, so the
                 # filter below would drop it too, but only after a registry hit.
                 if is_aes(coder.method):
