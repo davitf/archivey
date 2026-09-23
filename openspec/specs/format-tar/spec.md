@@ -134,14 +134,13 @@ observed_kind=...)` plus best-effort archive display name. `observed_kind` SHALL
 be `"absent"`, `"short"`, or `"nonzero"`; raw trailing bytes SHALL NOT be
 retained.
 
-The library default for `strict_archive_eof` SHALL remain `False`
-(Option F of `decide-strict-archive-eof-default`). Stdlib `tarfile` does not report
+Stdlib `tarfile` does not report
 *why* it stopped iterating (a real trailer, a corrupt non-first header treated as
 clean EOF, or exhausted data all return the same result), so the backend SHALL
 classify the end-of-archive from the block tarfile stopped on rather than from a
 single monolithic flag:
 
-- **Rejected header → `CorruptionError`, regardless of `strict_archive_eof`.** When a
+- **Rejected header → `CorruptionError`, whatever the diagnostic policy.** When a
   full non-null 512-byte block sits where the next header / end marker was expected,
   tarfile rejected it as a header — the detectable slice of "corrupt member header
   after the first = clean end of archive," a silently shortened listing. A conformant,
@@ -161,16 +160,16 @@ single monolithic flag:
     block following tarfile's stop being full and non-null. A rejected **final** header
     (no data after it) is NOT detectable this way and surfaces as a missing trailer
     instead — see the streaming limitation below.
-- **Missing / short trailer → flag-governed.** A stream that ended cleanly on a member
+- **Missing / short trailer → ordinary diagnostic.** A stream that ended cleanly on a member
   boundary with no valid two-block trailer (`observed_kind="absent"` for EOF,
   `"short"` for a partial block) is the irreducibly ambiguous residual: a
   complete-but-trailer-less tar and a tar truncated exactly at a member boundary are
-  byte-identical and not decidable without a native TAR header walker (post-v1). With
-  `strict_archive_eof=False` (default) this SHALL follow ordinary diagnostic disposition
-  (warn); with `strict_archive_eof=True` it SHALL escalate to `TruncatedError` after
-  delivery.
+  byte-identical and not decidable without a native TAR header walker (post-v1). It
+  SHALL follow ordinary diagnostic disposition with no escalation of its own: a warning
+  by default, `DiagnosticRaisedError` after delivery when the code resolves to `RAISE`
+  (as under `DiagnosticPolicy.strict()`), a count alone under `IGNORE`.
 
-Escalation (either `CorruptionError` or `TruncatedError`) SHALL take precedence over
+The rejected-header escalation to `CorruptionError` SHALL take precedence over
 `DiagnosticRaisedError`, including when the diagnostic disposition is `IGNORE` or
 `RAISE`. Logging-handler or callback exceptions propagate at their earlier ordered step.
 
@@ -192,32 +191,31 @@ The check SHALL raise the escalation from the member scan (so the report model r
 Truncation *inside* a member's data or across a partial header block is out of scope of
 this end-of-marker check: it already raises `TruncatedError` **during iteration** (stdlib
 `tarfile` raises `ReadError: unexpected end of data`, translated by the backend),
-independent of `strict_archive_eof`, in both random-access and streaming modes.
+whatever the diagnostic policy, in both random-access and streaming modes.
 
 **Streaming limitation (known):** stdlib `tarfile`'s streaming `_Stream` hides its
 header reads, so the random-access offset probe is unavailable and a rejected **final**
 header (a corrupt header as the archive's last block, nothing following) is misclassified
 as `observed_kind="absent"` — treated as a missing trailer (warn by default,
-`TruncatedError` under strict) rather than `CorruptionError`. Random access catches this
+`DiagnosticRaisedError` under `RAISE`) rather than `CorruptionError`. Random access catches this
 case. A native TAR walker (post-v1) that validates each header at its offset would close
 the gap for streaming too. The system SHALL NOT claim otherwise.
 
 #### Scenario: TAR EOF matrix
 
-| Case | Mode | `observed_kind` | Default (`False`) | `strict_archive_eof=True` |
+| Case | Mode | `observed_kind` | Default policy | Code set to `RAISE` |
 | --- | --- | --- | --- | --- |
 | Valid two-block null marker (incl. minimal `tar -b1`, trailing record padding) | both | — (OK) | No diagnostic or error | No diagnostic or error |
-| Missing marker / truncated at member boundary | both | `absent` | `ARCHIVE_EOF_MARKER_MISSING`; pass completes | `TruncatedError` after delivery |
-| Partial trailing block | both | `short` | Warn as above; pass completes | `TruncatedError` after delivery |
+| Missing marker / truncated at member boundary | both | `absent` | `ARCHIVE_EOF_MARKER_MISSING`; pass completes | `DiagnosticRaisedError` after delivery |
+| Partial trailing block | both | `short` | Warn as above; pass completes | `DiagnosticRaisedError` after delivery |
 | Rejected non-first header, data follows | both | `nonzero` | `CorruptionError` after delivery | `CorruptionError` after delivery |
 | Rejected **final** header, nothing after | random-access | `nonzero` (via probe) | `CorruptionError` after delivery | `CorruptionError` after delivery |
-| Rejected **final** header, nothing after | streaming | `absent` (limitation) | Warn; pass completes | `TruncatedError` after delivery |
+| Rejected **final** header, nothing after | streaming | `absent` (limitation) | Warn; pass completes | `DiagnosticRaisedError` after delivery |
 | Truncation inside member data / partial header | both | — | `TruncatedError` during iteration | `TruncatedError` during iteration |
 | Corruption during `extract_all` | random-access | `nonzero` | Fails closed: raises before any write (no partial output) | same |
 | Corruption during `extract_all` | streaming | `nonzero` | Salvageable members written, then `CorruptionError` | same |
 | Diagnostic code resolves to `IGNORE`, rejected header | both | `nonzero` | Count increments without delivery; `CorruptionError` raises | same |
-| Diagnostic code resolves to `IGNORE`, `absent`/`short`, strict | both | `absent`/`short` | (default: warn only) | Count increments without delivery; `TruncatedError` raises |
-| Diagnostic code resolves to `RAISE`, delivery succeeds, strict, `absent`/`short` | both | `absent`/`short` | (default: warn only) | `TruncatedError` after delivery instead of `DiagnosticRaisedError` |
+| Diagnostic code resolves to `IGNORE`, `absent`/`short` | both | `absent`/`short` | Count increments without delivery; no error | — |
 | Marker issue discovered after iteration | both | any | `reader.diagnostics` changes; frozen `ArchiveInfo` / `CostReceipt` unchanged | same |
 
 ### Requirement: Serialize shared tarfile handle operations for concurrent reads
@@ -255,49 +253,40 @@ does not gain random concurrent open.
 | `streaming=True` TAR | Forward-only contract unchanged; no concurrent random-open behavior |
 | Contention on shared handle | Correctness guaranteed; no correctness speed threshold |
 
-### Requirement: Under strict EOF, nothing but zeros may follow the trailer
+### Requirement: Report non-zero bytes past the trailer
 
-`strict_archive_eof` is documented as the knob for "a provably complete listing". With
-`strict_archive_eof=True`, after the two-block null end-of-archive trailer, **every
-remaining byte to EOF SHALL be zero**; the first non-zero byte SHALL emit
-`ARCHIVE_TRAILING_DATA` and escalate to `CorruptionError`, after the diagnostic's normal
-count/retention/log/callback ordering. With `strict_archive_eof=False` behaviour is
-unchanged, **including the cost**: no scan runs and no diagnostic is emitted.
+After a complete two-block null end-of-archive trailer, the backend SHALL scan the bytes
+that follow, up to 1 MiB past the trailer, whatever the configuration. The first
+non-zero byte in that window SHALL emit `ARCHIVE_TRAILING_DATA` under ordinary
+diagnostic disposition, with no escalation of its own: a warning by default,
+`DiagnosticRaisedError` after delivery when the code resolves to `RAISE` (as under
+`DiagnosticPolicy.strict()`), a count alone under `IGNORE`.
 
 The check SHALL run only on the success path of the trailer verification — after a
 complete two-block null trailer has been confirmed — so it never competes with the
 `absent` / `short` / `nonzero` classifications of the trailer itself.
 
-Consequences, all intended:
+The 1 MiB bound is an effort limit, not a ceiling: past it the scan SHALL stop and report
+nothing, and SHALL NOT refuse the archive. It is a module constant, not a configuration
+field. A tail that fails to decode — on a compressed tar, junk after the compressed
+stream or a missing footer — SHALL end the scan with no error and no diagnostic: every
+member was already read whole, and that is not trailing tar data.
 
-| Input, `strict_archive_eof=True` | Result | Why |
-| --- | --- | --- |
-| Trailer then zero padding (`tar` writes 10 KiB records) | Accepted | Padding is the overwhelmingly common case; this is why the rule is "nothing but zeros", not "EOF immediately" |
-| Trailer then any non-zero byte | `CorruptionError` | The file carries something the listing did not account for |
-| Two concatenated tars | `CorruptionError` | They *are* two archives and only the first was listed; a caller who asked for a provably complete listing should be told |
-| An ISO read as TAR | `CorruptionError` | Its zeros stop at 32768, where the volume descriptors begin; ~48 KiB of real data follows, so it is not zeros to EOF. Without the flag it stays an empty listing covered by `EMPTY_ARCHIVE` / `EXPLICIT_FORMAT_LISTED_EMPTY` |
-| A legitimately empty tar (10240 zero bytes) | Accepted | All zeros |
+The code is not a truncation: nothing is truncated, the file is *longer* than the
+listing accounts for.
 
-It SHALL raise `CorruptionError` rather than `TruncatedError`: nothing is truncated —
-the file is *longer* than the listing accounts for — and the adjacent rejected-header case
-in the same check already answers that shape of evidence with `CorruptionError`.
+#### Scenario: trailing-bytes matrix
 
-**Cost.** The check reads to EOF, so `strict_archive_eof` goes from O(512 bytes) to
-O(tail length). On a non-seekable source that is a real scan, and on a compressed tar the
-tail must be decompressed to be inspected. This is why the rule is gated on the flag
-rather than emitted unconditionally, and it SHALL be documented on the flag.
-
-#### Scenario: strict trailing-bytes matrix
-
-| Case | `strict_archive_eof=False` | `strict_archive_eof=True` |
+| Case | Default policy | `DiagnosticPolicy.strict()` |
 | --- | --- | --- |
 | Valid tar, trailer, EOF | No diagnostic | No diagnostic |
-| Valid tar + 4 KiB of zeros | No diagnostic | No diagnostic |
-| Valid tar + 4 KiB of `b"JUNK"` | No diagnostic *(unchanged)* | `ARCHIVE_TRAILING_DATA` → `CorruptionError` |
-| Valid tar + zeros + one non-zero byte + zeros | No diagnostic | `ARCHIVE_TRAILING_DATA` → `CorruptionError` |
-| Two tars concatenated | No diagnostic; first listed | `ARCHIVE_TRAILING_DATA` → `CorruptionError` |
-| Legitimately empty tar (10240 zeros) | No diagnostic | No diagnostic |
-| 32 KiB of zeros opened as TAR (a zero-filled file, not an ISO) | No diagnostic | No diagnostic; all zeros. `EMPTY_ARCHIVE` covers it |
-| A real ISO opened as TAR | No diagnostic; empty listing | `CorruptionError` — its data past the system area is not zeros |
-| Missing / short trailer | Existing `ARCHIVE_EOF_MARKER_MISSING` behaviour | Existing `TruncatedError`; the trailing-bytes scan does not run |
-| `.tar.gz` with trailing junk | No diagnostic and no decompression of the tail | Tail decompressed; `CorruptionError` |
+| Valid tar + 4 KiB of zeros (`tar` pads to 10 KiB records) | No diagnostic | No diagnostic |
+| Valid tar + 4 KiB of `b"JUNK"` | `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
+| Valid tar + zeros + one non-zero byte, within 1 MiB | `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
+| First non-zero byte more than 1 MiB past the trailer | No diagnostic; the scan stopped | No diagnostic |
+| Two tars concatenated | `ARCHIVE_TRAILING_DATA`; the first is listed | `DiagnosticRaisedError` |
+| Legitimately empty tar (10240 zeros), or 32 KiB of zeros | No diagnostic; all zeros | No diagnostic |
+| A real ISO opened as TAR | Empty listing plus `ARCHIVE_TRAILING_DATA`: its zeros stop at 32768 | Raises |
+| Missing / short trailer | `ARCHIVE_EOF_MARKER_MISSING`; the scan does not run | Raises on that code |
+| `.tar.gz`, junk inside the gzip stream after the trailer | Tail decompressed, at most 1 MiB; `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
+| `.tar.gz`, junk after the gzip stream or a missing gzip footer | No diagnostic, no error | No diagnostic, no error |

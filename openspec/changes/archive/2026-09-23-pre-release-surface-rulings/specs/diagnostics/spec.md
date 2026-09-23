@@ -1,8 +1,3 @@
-# diagnostics — cheap_key_check value delta
-
-> Pastes the post-`bounded-password-confirmation` taxonomy requirement, so archive that
-> change first. This delta adds one value to `check` and one scenario row.
-
 ## MODIFIED Requirements
 
 ### Requirement: Immutable diagnostic values with stable codes and safe typed context
@@ -33,9 +28,9 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker`, `expected_bytes`, `observed_bytes`, `observed_kind` |
 | `ARCHIVE_TRAILING_DATA` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker="zeros_to_eof"`, `expected_bytes=0`, `observed_bytes`, `observed_kind="nonzero"` |
 | `MEMBER_TIMESTAMP_INVALID` | `MemberTimestampContext`: `kind="member_timestamp"`, `archive_name`, `member_name`, `member_id`, `field`, `source`, `value_repr` |
+| `MEMBER_HEADER_RECORD_SKIPPED` | `MemberHeaderRecordContext`: `kind="member_header_record"`, `archive_name`, `member_name`, `member_id`, `record`, `record_id`, `reason`, `list_truncated` |
 | `SYMLINK_TARGET_UNAVAILABLE` | `SymlinkTargetContext`: `kind="symlink_target"`, `archive_name`, `member_name`, `member_id`, `reason` |
 | `DIGEST_UNVERIFIABLE` | `DigestContext`: `kind="digest"`, `archive_name`, `member_name`, `member_id`, `algorithm`, `reason` |
-| `ENCRYPTED_MEMBER_UNVERIFIED` | `EncryptedVerificationContext`: `kind="encrypted_verification"`, `archive_name`, `member_name`, `member_id`, `check`, `reason` |
 | `SEEK_INDEX_DEGRADED` | `SeekIndexContext`: `kind="seek_index"`, `archive_name`, `member_name`, `member_id`, `codec`, `scan`, `error_type` |
 | `STREAM_REWIND_REDECOMPRESSES` | `StreamRewindContext`: `kind="stream_rewind"`, `archive_name`, `member_name`, `member_id`, `codec`, `from_offset`, `to_offset`, `accelerator` |
 
@@ -79,14 +74,6 @@ never any candidate value.
 Copies on multiple surfaces MAY share `occurrence_id` by value; object identity
 and cross-run id stability are not promised.
 
-`ENCRYPTED_MEMBER_UNVERIFIED` SHALL be emitted when a member of an encrypted unit is
-closed before its declared digest was reached **and** the password behind those bytes was
-accepted on a check weaker than that digest. `check` names what accepted the password
-(`"weak_open_check"`, `"cheap_key_check"`, `"confirm_budget_exhausted"`); `reason` names
-why the digest was not reached (`"partial_read"`). It SHALL NOT be emitted for a partial
-read whose password was confirmed against an integrity anchor — that restates what the
-caller already knows, which the admission clause refuses.
-
 #### Scenario: value-model matrix
 
 | Case | Expected |
@@ -104,19 +91,6 @@ caller already knows, which the admission clause refuses.
 | Probe + `.br` (`PROBABLE`) read raises | No `PROBE_FORMAT_UNCONFIRMED` — the format was corroborated, and corroboration is still what matters |
 | Probe hit upgraded to `TAR_*` by the inner-TAR probe, read raises | No `PROBE_FORMAT_UNCONFIRMED` — the upgrade is independent corroboration |
 | Probe-only read succeeds | No diagnostic |
-
-#### Scenario: encrypted-member verification matrix
-
-| Case | Expected |
-| --- | --- |
-| ZipCrypto member, candidate accepted on the header check byte, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="weak_open_check"`, `reason="partial_read"`) |
-| 7z LZMA2, CRC at 200 MiB, correct password, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`) |
-| 7z store+AES, CRC at 200 MiB, correct password, stream closed before EOF | No diagnostic (walked to the CRC) |
-| 7z store+AES, no CRC, single candidate, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`) |
-| 7z folder accepted by the AES tail-padding check alone, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="cheap_key_check"`) |
-| Encrypted member whose password was confirmed against an integrity anchor, stream closed before EOF | No diagnostic |
-| Encrypted member read to EOF | No diagnostic; the digest decides |
-| Unencrypted member, stream closed before EOF | No diagnostic |
 
 #### Scenario: A malformed optional member-header record is reported, not raised
 

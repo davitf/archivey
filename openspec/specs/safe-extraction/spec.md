@@ -16,6 +16,7 @@ results. It is the caller-facing path for putting archive contents on disk.
 | `diagnostics` | Diagnostic values, retention budgets, watermarks, extraction outcome codes |
 | `error-handling` | Exception classes and ordered diagnostic/exception behavior |
 | `format-tar` | TAR hardlink ordering, link recovery, and TAR-specific extraction constraints |
+
 ## Requirements
 
 ### Requirement: One-Shot Extraction API
@@ -77,16 +78,15 @@ def extract_all(
     overwrite: OverwritePolicy = OverwritePolicy.ERROR,
     on_error: OnError = OnError.STOP,
     on_progress: Callable[[ExtractionProgress], None] | None = None,
-    config: ArchiveyConfig | None = None,
     limits: ExtractionLimits | None = None,
 ) -> ExtractionReport: ...
 ```
 
 The helper SHALL record a diagnostic watermark at call start and return a report
 whose summary contains exact count/retained deltas for this extraction call only.
-`reader.diagnostics` remains cumulative. A per-call config may change new-event
-policy/callback behavior but MUST use the reader's existing collector and
-retention maximum.
+`reader.diagnostics` remains cumulative. The call SHALL run under the reader's
+open config — its collector, diagnostic policy, callback and retention maximum —
+and SHALL NOT take a `config=`; `limits=` overrides only the extraction limits.
 
 Selection, filter ordering, one-pass selected extraction, reader-config
 inheritance, and per-call limits precedence retain their existing contracts.
@@ -99,7 +99,6 @@ There is no single-member `reader.extract()` method.
 | Reader emitted a diagnostic before `extract_all()` and another during extraction | Report summary includes only the extraction occurrence; `reader.diagnostics` includes both |
 | `reader.extract_all(dest, members=["a", "b"])` on a solid archive | Only selected members are extracted in one decompression pass |
 | Caller wants one file | Uses `reader.extract_all(dest, members=[name])`; no separate single-member API |
-| `extract_all(config=...)` overrides diagnostic policy/callback | New extraction events use the override while retention remains under the reader's original budget |
 
 ### Requirement: Extraction reads limits and strictness from the configuration object
 
