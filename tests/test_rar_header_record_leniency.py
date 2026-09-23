@@ -949,6 +949,55 @@ def test_an_undamaged_service_header_stays_quiet(tmp_path: Path) -> None:
         assert archive.diagnostics.total_count == 0
 
 
+def test_a_cut_short_quick_open_header_is_not_parsed_as_a_member_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``QO`` is the other SERVICE header, and it had the same hole as ``CMT``.
+
+    The quick-open path slices a ``QO`` payload straight out of the archive and
+    parses a member table from it. A header that stopped before it could rule
+    encryption out would have that table parsed out of bytes that may be
+    ciphertext. Refusing costs only the quick open, and the FILE-header walk
+    answers the same question from the headers themselves — which is what the
+    equal listings below show.
+    """
+    corpus = Path(__file__).parent / "fixtures" / "corpus" / "rar" / "large.rar"
+    if not corpus.is_file():
+        pytest.skip("missing corpus large.rar")
+
+    from archivey.internal.backends import rar_parser
+
+    calls: list[object] = []
+    original = rar_parser._parse_rar5_qo_payload
+
+    def wrapping(*args: object, **kwargs: object) -> object:
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rar_parser, "_parse_rar5_qo_payload", wrapping)
+
+    with open_archive(corpus) as archive:
+        undamaged = [m.name for m in archive.members()]
+        assert archive.diagnostics.total_count == 0
+    assert calls, (
+        "this fixture's QO table was never read, so the test below would pass "
+        "against an archive that never takes the quick-open path at all"
+    )
+    calls.clear()
+
+    path = tmp_path / "cut_short_quick_open.rar"
+    path.write_bytes(_graft_service_extra_area(corpus.read_bytes(), b"\x00\x00"))
+
+    with open_archive(path) as archive:
+        assert [m.name for m in archive.members()] == undamaged
+        codes = [d.code for d in archive.diagnostics.retained]
+        assert codes.count(DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED) == 2, codes
+    assert not calls, (
+        "the QO payload was parsed out of a header that stopped before its "
+        "extra records were read to the end"
+    )
+
+
 @pytest.mark.parametrize(
     ("prefix", "expected"),
     [
