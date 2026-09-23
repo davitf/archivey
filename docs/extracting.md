@@ -215,7 +215,7 @@ Archive order and identity matter more than “the” name.
 
 ## Limits
 
-Defaults (via `ExtractionLimits` / `ListingLimits` on `ArchiveyConfig`) cap:
+Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` on `ArchiveyConfig`) cap:
 
 - **Extraction bombs** — total extracted bytes, compression ratio, and entry count
   (`ExtractionLimits`). Trips raise `ResourceLimitError`.
@@ -226,10 +226,14 @@ Defaults (via `ExtractionLimits` / `ListingLimits` on `ArchiveyConfig`) cap:
   `open_archive`. Raise `listing_limits.max_members` to open a larger 7z or
   RAR. That parse bound is a member count, not a byte budget:
   `max_metadata_bytes` still fires when the list is materialized.
+- **Decoder memory** — the working set a codec allocates because the *archive's* header
+  said to, such as a 7z PPMd window (`DecoderLimits`, default 2 GiB). Checked before the
+  allocation, on `open()` / `read()` as much as on `extract()`, so it is neither a
+  listing nor an extraction cap. Trips raise `ResourceLimitError`.
 
-Loosen per call with `limits=` (extraction only), raise `listing_limits` at
-`open_archive(config=…)`, or use `ExtractionLimits.UNLIMITED` /
-`ListingLimits.UNLIMITED` for trusted inputs you control.
+Loosen per call with `limits=` (extraction only), raise `listing_limits` or
+`decoder_limits` at `open_archive(config=…)`, or use `ExtractionLimits.UNLIMITED` /
+`ListingLimits.UNLIMITED` / `DecoderLimits.UNLIMITED` for trusted inputs you control.
 
 Bomb guards apply during **extraction**. Listing caps apply when a full member list is
 materialized — prefer `stream_members()` for huge untrusted archives when you only need

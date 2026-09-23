@@ -50,6 +50,16 @@ promise with that line; treat `0.2.0` as the first release of this library.
   junction is in data that writer does not store. Not gated on the member's type: an entry
   the archive flags whose data turns out not to be a link buffer is presented as an
   ordinary file, and the flag still records what the archive said.
+- **`DecoderLimits`**, on `ArchiveyConfig.decoder_limits`, caps how much working
+  memory a decoder may allocate because the *archive's own header* asked for it —
+  the 7z PPMd window, the ZIP method-98 megabyte count, the LZMA dictionary size.
+  Those numbers are not bounded by the file's size (a 153-byte 7z can ask for 4 GiB)
+  and the allocation happens on `open()` and `read()`, which `ExtractionLimits` does
+  not cover, so it is a type of its own rather than another bomb guard. Default
+  2 GiB, `DecoderLimits.UNLIMITED` to opt out, `ResourceLimitError` when exceeded.
+  Enforced so far on both PPMd paths, where the refusal is not optional: under a
+  memory cap a rejected allocation kills the interpreter from inside pyppmd instead
+  of raising.
 
 ### Fixed
 

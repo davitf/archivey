@@ -504,6 +504,15 @@ class PpmdDecoder(BaseDecoder):
         self._fed_compressed = 0
         self._nul_injected = False
         self._compressed_eof = False
+        # ``mem_size`` is bounded one layer up, by ``check_decoder_memory`` in
+        # ``codecs.py``, against ``DecoderLimits.max_decoder_memory`` — not here,
+        # because these two constructor calls are the allocation and there is no
+        # catching it once it has been made (pyppmd 1.3.1 aborts the process rather
+        # than raising when it is refused). Two paths reach this class without
+        # passing that guard: a direct ``PpmdDecompressorStream`` in the tests, and
+        # ``recreate()`` below rebuilding from a ``mem_size`` the guard already
+        # passed. Anything new that constructs a decoder from an archive-declared
+        # number calls the guard first.
         if variant == 8:
             self._decomp: _PpmdNativeDecoder = pyppmd.Ppmd8Decoder(
                 order, mem_size, restore_method

@@ -42,6 +42,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
+    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
 )
@@ -1771,6 +1772,32 @@ class UnixCompressCodec(StreamCodec):
         return None
 
 
+def check_decoder_memory(declared: int, *, config: StreamConfig, what: str) -> None:
+    """Refuse an archive-declared decoder allocation above ``max_decoder_memory``.
+
+    ``declared`` is the number the *archive* asked for, read out of a header field —
+    not a measurement of anything, and not bounded by the file's own size. ``what``
+    names the field for the message, so a caller who raised the cap on purpose can
+    tell which archive is asking and for how much.
+
+    The check has to happen here, before the decoder object is constructed, because
+    the allocation it guards is made inside a C extension. When the request is merely
+    large the process swaps or is OOM-killed; when it is large enough to be refused,
+    the extension's own error handling is what runs, and pyppmd 1.3.1's is unsound —
+    measured, ``Ppmd7Decoder(6, 0xFFFFFFFF)`` under a 2 GiB ``RLIMIT_AS`` aborts on
+    ``double free or corruption`` with SIGABRT. There is no ``MemoryError`` to catch
+    and no frame left to catch it in, so a guard downstream of the constructor would
+    guard nothing.
+    """
+    cap = config.decoder_limits.max_decoder_memory
+    if cap is not None and declared > cap:
+        raise ResourceLimitError(
+            f"Decoder limit reached: max_decoder_memory={cap} "
+            f"({what} declares {declared} bytes). The archive chose this number; "
+            f"raise DecoderLimits.max_decoder_memory if the archive is trusted."
+        )
+
+
 def _parse_ppmd_var_h_properties(properties: bytes | None) -> tuple[int, int]:
     """Parse 7z PPMd var.H coder properties → ``(order, mem_size)``."""
 
@@ -1811,6 +1838,9 @@ class PpmdCodec(StreamCodec):
         if params.ppmd_order is not None:
             if params.ppmd_mem_size is None:
                 raise ValueError("ZIP PPMd requires ppmd_order and ppmd_mem_size")
+            check_decoder_memory(
+                params.ppmd_mem_size, config=config, what="ZIP PPMd8 memory size"
+            )
             return PpmdDecompressorStream(
                 source,
                 order=params.ppmd_order,
@@ -1821,6 +1851,7 @@ class PpmdCodec(StreamCodec):
                 pack_size=pack_size,
             )
         order, mem_size = _parse_ppmd_var_h_properties(params.properties)
+        check_decoder_memory(mem_size, config=config, what="7z PPMd var.H memory size")
         return PpmdDecompressorStream(
             source,
             order=order,

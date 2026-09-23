@@ -806,12 +806,18 @@ class ListingLimits:
     UNLIMITED: ClassVar["ListingLimits"]
 
 @dataclass(frozen=True)
+class DecoderLimits:
+    max_decoder_memory: int | None = 2 * 2**30
+    UNLIMITED: ClassVar["DecoderLimits"]
+
+@dataclass(frozen=True)
 class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
     strict_archive_eof: bool = False
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
+    decoder_limits: DecoderLimits = DecoderLimits()
     diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
     max_retained_diagnostic_references: int = 256
     on_diagnostic: Callable[[Diagnostic], None] | None = None
@@ -822,11 +828,15 @@ mappings and the dataclasses SHALL be defensively immutable. `config=None` →
 immutable library default. No mutable global/context-local diagnostic policy or
 callback.
 
-A reader carries its open config, including `listing_limits` for its lifetime.
+A reader carries its open config, including `listing_limits` and
+`decoder_limits` for its lifetime.
 Later `extract_all(config=...)` MAY override policy/callback/strictness/
 accelerators/`extraction_limits` for new work, but SHALL NOT change the
-reader's effective `listing_limits` or
-`max_retained_diagnostic_references` (see `diagnostics`). Per-call `limits`
+reader's effective `listing_limits`, `decoder_limits` or
+`max_retained_diagnostic_references` (see `diagnostics`).
+`decoder_limits` SHALL bound the working memory a codec allocates on the
+strength of a number the archive declares, and SHALL be enforced before that
+allocation is made. Per-call `limits`
 still beat `config.extraction_limits`, then reader/library default. Other
 per-call operational args stay outside `ArchiveyConfig`.
 

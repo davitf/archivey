@@ -240,6 +240,98 @@ ListingLimits.UNLIMITED = ListingLimits(
 
 
 @dataclass(frozen=True)
+class DecoderLimits:
+    """Caps on what a decoder may allocate because the *archive* said to.
+
+    Several codecs size their working memory from a number in the archive's own
+    header rather than from anything the caller chose: 7z PPMd var.H carries a
+    32-bit window size, ZIP method 98 an 8-bit megabyte count, LZMA a 32-bit
+    dictionary size. Those numbers are attacker-chosen, they are read before a
+    single byte of member data is, and the allocation that follows is not
+    proportional to the archive's size — a 153-byte 7z can ask for 4 GiB.
+
+    **What is capped today: both PPMd paths, and nothing else.** The LZMA
+    dictionary size is the same shape and is next; until it lands, setting this
+    field does not bound an LZMA member. PPMd came first because it is the
+    sharper hazard rather than the larger one — a refused allocation inside
+    pyppmd takes the process down, where liblzma has an error path.
+
+    This is not an :class:`ExtractionLimits` field, and the difference is not
+    cosmetic. The bomb guards there measure *output*: they count bytes as an
+    extraction produces them and stop when the total or the ratio says the
+    archive is lying about its size. A decoder's working memory is neither
+    output nor proportional to it, it is claimed up front, and it is claimed on
+    ``open()`` and ``read()`` as much as on ``extract()`` — paths
+    ``ExtractionLimits`` does not cover at all.
+
+    Applied from the reader's open :attr:`ArchiveyConfig.decoder_limits` for its
+    lifetime, as :class:`ListingLimits` is: the codec-layer view is built once
+    when the reader is, so a later ``extract_all(config=…)`` carrying different
+    decoder limits changes nothing.
+
+    ``None`` on a field disables that guard. :attr:`UNLIMITED` disables every
+    one. Exceeding a guard raises
+    :class:`~archivey.exceptions.ResourceLimitError` *before* the allocation,
+    which is the only place it can be raised: the process has no recourse once
+    the request is in the allocator's hands. Under a memory cap (a container
+    limit, ``RLIMIT_AS``, a small machine) a refused native allocation does not
+    surface as ``MemoryError`` — pyppmd 1.3.1 dies on ``double free or
+    corruption`` and takes the interpreter with it, so no ``try``/``except``
+    around the decode can contain it.
+
+    Attributes:
+        max_decoder_memory: Largest archive-declared working set a single
+            decoder may allocate. The default is 2 GiB.
+
+            That number is a policy choice, not a limit of the format, so here
+            is what it was chosen against. Measured on 7-Zip 23.01, a writer
+            declares whatever ``-m0=PPMd:mem=…`` asked for, reduced for a small
+            member to 16× its size rounded up to a power of two (floor 64 KiB).
+            Its presets never ask for much: plain ``-m0=PPMd`` declares 16 MiB
+            and ``-mx9`` 256 MiB, whatever the input. Reaching 2 GiB therefore
+            takes an explicit ``mem=2g``, which cannot go above it at any member
+            size; only ``mem=3g`` and ``mem=4g`` do. The field itself is
+            32 bits, so a header may declare just under 4 GiB — and a 153-byte
+            archive may declare it, which is the case the cap is really for,
+            since asking costs an attacker nothing and it is read before any
+            member data is.
+
+            2 GiB is the last round value below that 32-bit ceiling, matching
+            :attr:`ExtractionLimits.max_extracted_bytes`. It admits every
+            archive 7-Zip's own presets write, by a factor of eight, and admits
+            a deliberate ``mem=2g`` as well; it refuses the top of the field.
+            Reading archives written with ``mem=3g`` or above means raising it
+            or passing :attr:`UNLIMITED`.
+
+            What the default is *not* is a promise about the machine. The cap
+            bounds what an archive may ask for; whether an allocation succeeds
+            is a property of the host, and the two are independent. A process
+            with less headroom than the cap — a container under a memory limit,
+            a small VM — gets nothing from the default: a declaration below
+            2 GiB passes the guard, and the allocation that follows is the one
+            that fails, which is the unsurvivable case described above. Such a
+            process should set the cap under its own headroom, anchored on the
+            limit it runs with rather than on anything 7-Zip writes. Code that
+            opens files it did not choose — an upload endpoint, a mail scanner —
+            wants the same move for a different reason: 256 MiB still takes
+            everything the presets produce.
+    """
+
+    max_decoder_memory: int | None = 2 * 2**30
+
+    UNLIMITED: ClassVar[DecoderLimits]
+
+    def __post_init__(self) -> None:
+        cls = "DecoderLimits"
+        _check_limit(self.max_decoder_memory, cls=cls, field_name="max_decoder_memory")
+
+
+DecoderLimits.UNLIMITED = DecoderLimits(
+    max_decoder_memory=None,
+)
+
+
+@dataclass(frozen=True)
 class ArchiveyConfig:
     """Library tuning knobs passed as ``config=`` to :func:`open_archive` / :func:`extract`.
 
@@ -278,6 +370,7 @@ class ArchiveyConfig:
     rar_allow_glob_member_concatenation: bool = False
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
+    decoder_limits: DecoderLimits = DecoderLimits()
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
     max_retained_diagnostic_references: int = 256
     on_diagnostic: OnDiagnostic | None = None
@@ -323,6 +416,12 @@ class ArchiveyConfig:
             self.listing_limits,
             ListingLimits,
             call="ArchiveyConfig(listing_limits=…)",
+            allow_none=False,
+        )
+        check_instance(
+            self.decoder_limits,
+            DecoderLimits,
+            call="ArchiveyConfig(decoder_limits=…)",
             allow_none=False,
         )
         check_instance(

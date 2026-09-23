@@ -57,14 +57,14 @@ time, `StreamNotSeekableError` is an `OpenError`, and
 that cannot be provided, not a caller-code bug. `DiagnosticRaisedError` is direct
 because advisory escalation can happen during detection, open, read, stream, or
 extraction. `ResourceLimitError` is direct because configurable resource caps can
-trip during listing materialization or extraction bomb guarding; it is not an
-`ExtractionError` subclass.
+trip during listing materialization, extraction bomb guarding, or opening a
+member's codec; it is not an `ExtractionError` subclass.
 
 | Error split | Meaning |
 | --- | --- |
 | `UnsupportedOperationError` | Valid API call against a reader/backend/mode that cannot provide the requested operation: random access on `streaming=True`, write through read-only RAR, operation on closed reader. |
 | `UnsupportedFeatureError` | Valid archive uses a recognized feature Archivey does not implement: unsupported ZIP method, AES ZIP entry, 7z BCJ2, unknown coder. |
-| `ResourceLimitError` | A configured listing or extraction resource limit was exceeded (`ListingLimits` / `ExtractionLimits` bomb guards). |
+| `ResourceLimitError` | A configured resource limit was exceeded (`ListingLimits` materialization caps, `ExtractionLimits` bomb guards, or a `DecoderLimits` cap on archive-declared decoder memory). |
 
 The three name-related `FilterRejectionError` subclasses are kept apart because a caller
 triaging a batch of rejections acts differently on each:

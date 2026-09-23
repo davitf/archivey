@@ -78,6 +78,7 @@ spec for lifecycle, retention, and policy.
 ::: archivey.ArchiveyConfig
 ::: archivey.ExtractionLimits
 ::: archivey.ListingLimits
+::: archivey.DecoderLimits
 ::: archivey.AcceleratorMode
 ::: archivey.PasswordInput
 ::: archivey.PasswordRequest
