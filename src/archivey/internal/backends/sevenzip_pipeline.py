@@ -518,13 +518,20 @@ def unwrap_encoded_header(
     header_encrypted = False
     if isinstance(block, EncodedHeader):
         header_encrypted = encoded_header_needs_password(block)
-        decoded = decode(block)
-        block = parse_header_block(decoded, max_members=max_members)
-        if isinstance(block, EncodedHeader):
-            # A second EncodedHeader is hostile (COPY payload that is itself; O14).
-            raise CorruptionError("Encoded 7z header decoded to another encoded header")
+        block = parse_decoded_header(decode(block), max_members=max_members)
     assert isinstance(block, PlainHeader)
     return block, header_encrypted
+
+
+def parse_decoded_header(
+    decoded: bytes, *, max_members: int | None = None
+) -> PlainHeader:
+    """Parse the plaintext an encoded-header layer decoded to."""
+    block = parse_header_block(decoded, max_members=max_members)
+    if isinstance(block, EncodedHeader):
+        # A second EncodedHeader is hostile (COPY payload that is itself; O14).
+        raise CorruptionError("Encoded 7z header decoded to another encoded header")
+    return block
 
 
 def parse_sevenzip_archive(

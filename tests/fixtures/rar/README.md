@@ -32,6 +32,7 @@ Encrypted / hash fixtures of note:
 | Files | Notes |
 | --- | --- |
 | `encryption__.rar` | RAR5 `-ppassword`; HASHMAC tweaked CRC32 |
+| `encryption_solid__.rar` | RAR5 `-s -m3 -ppassword`; solid *and* encrypted, so one `unrar p` pass needs one password for both members |
 | `encryption_blake2sp.rar` | RAR5 `-m0 -htb -ppassword`; HASHMAC tweaked BLAKE2sp |
 | `blake2sp.rar` | RAR5 `-m0 -htb`; plaintext BLAKE2sp (no encryption) |
 | `encryption_stored__.rar` | RAR5 `-m0 -ppassword`; stored *and* encrypted with the default CRC32, so the digest sits in the fixed FILE header and survives damage to the extra area |

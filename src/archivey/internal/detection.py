@@ -267,14 +267,19 @@ def _probe_inner_tar(
     compressed input as it needs to reach the TAR header region and no more.
 
     Accelerators are forced ``OFF``: ``seekable=True`` must not flip AUTO rapidgzip /
-    IndexedBzip2File on for a short detection peek.
+    IndexedBzip2File on for a short detection peek. Decoder limits are lifted for the
+    same reason the codec content probes lift them (``_PROBE_STREAM_CONFIG`` in
+    ``codecs.py``): a capped probe would call a ``.tar.xz`` with a large dictionary a
+    bare ``.xz`` even for a caller who opened it with ``DecoderLimits.UNLIMITED``. The
+    read is bounded, so the dictionary cannot fill past it, but liblzma still reserves
+    the declared size. The open that follows applies the caller's limits.
 
     Returns ``False`` (deferring the determination to open time) when the codec backend is
     absent, the source is not decodable as this codec, or the decoded output carries no TAR
     header.
     """
     # Imported here rather than at module load to avoid a detection<->codecs import cycle.
-    from archivey.internal.config import StreamConfig
+    from archivey.internal.config import DecoderLimits, StreamConfig
     from archivey.internal.streams.codecs import (
         codec_for_stream_format,
         is_codec_available,
@@ -298,6 +303,7 @@ def _probe_inner_tar(
                 seekable=True,
                 use_rapidgzip=AcceleratorMode.OFF,
                 use_indexed_bzip2=AcceleratorMode.OFF,
+                decoder_limits=DecoderLimits.UNLIMITED,
             ),
         ) as stream:
             head = stream.read(_INNER_TAR_PROBE_BYTES)

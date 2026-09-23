@@ -39,6 +39,9 @@
 - [ ] 2.5 Encoded header: apply codec-error → `REJECTED` and (later) the tail check on
       the pass that already materialises the header. Do not `run_confirm_plan` and then
       decode the header again — the decoded bytes *are* the product. Cap is 64 MiB.
+      *Codec-error → rejected landed separately:* the reader's header attempt now decodes,
+      parses and applies the O8 empty-header check per candidate, so a wrong key's
+      `CorruptionError` moves to the next candidate. The tail check remains.
 
 ## 3. ZIP
 

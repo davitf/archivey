@@ -57,12 +57,25 @@ promise with that line; treat `0.2.0` as the first release of this library.
   and the allocation happens on `open()` and `read()`, which `ExtractionLimits` does
   not cover, so it is a type of its own rather than another bomb guard. Default
   2 GiB, `DecoderLimits.UNLIMITED` to opt out, `ResourceLimitError` when exceeded.
-  Enforced so far on both PPMd paths, where the refusal is not optional: under a
-  memory cap a rejected allocation kills the interpreter from inside pyppmd instead
-  of raising.
+  Enforced on both PPMd paths, where the refusal is not optional (under a memory
+  cap a rejected allocation kills the interpreter from inside pyppmd instead of
+  raising), and on the LZMA dictionary of 7z, ZIP, xz, `.lzma` and lzip, where the
+  dictionary fills as output is written and so bounds how much of it stays resident.
 
 ### Fixed
 
+- **A password list now works when the right password is not first**, on the two
+  formats where it did not: a header-encrypted 7z and RAR5 with encrypted data. On 7z, a
+  wrong key decodes the header to garbage, and that failure ended the attempt instead of
+  moving on to the next candidate; a password provider was not asked again either. On RAR5,
+  every `unrar` spawn was given the first candidate; the reader now tests each against the
+  member's password check and passes on the one that matches, and a provider is asked for
+  it when no listed password matches. RAR3/4 data carries no password check, so there the
+  first candidate is still the one used.
+- **Two threads that both need the password provider no longer fail.** Under
+  `MemberStreams.CONCURRENT`, a thread that needed the provider while another thread's call
+  was running got the `ArchiveyUsageError` meant for a provider that calls back into the
+  reader. It now waits for that call to finish; the reentry error stays for its real case.
 - **A 7z member's `compression` chain is now in compress order**, as documented on
   `ArchiveMember.compression` and the way 7-Zip itself lists it: a BCJ member reads
   `(BCJ, LZMA2)`, filters first and packing codec last. It used to come back reversed,

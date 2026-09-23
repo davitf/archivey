@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.config import DecoderLimits, check_decoder_memory
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
 from archivey.internal.streams.decompressor_stream import (
@@ -142,7 +143,8 @@ class _LzipState:
     _IN_MEMBER = 1
     _NEED_TRAILER = 2
 
-    def __init__(self) -> None:
+    def __init__(self, limits: DecoderLimits) -> None:
+        self._limits = limits
         self._state = self._NEED_HEADER
         self._buf = bytearray()
         self._dec: lzma.LZMADecompressor | None = None
@@ -267,6 +269,11 @@ class _LzipState:
                 f"Invalid lzip dict_size exponent {exp}: valid range is 12-29"
             )
         dict_size = 1 << exp
+        # The format's own ceiling is 512 MiB (exponent 29), under the default cap, so
+        # this refuses only for a caller who set a smaller one.
+        check_decoder_memory(
+            dict_size, limits=self._limits, what="lzip dictionary size"
+        )
         lzma_alone_header = _PROPS_BYTE + struct.pack("<I", dict_size) + _UNKNOWN_SIZE
         try:
             self._dec = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
@@ -309,8 +316,10 @@ class LzipDecoder(BaseDecoder):
         comp_cursor: int,
         decomp_cursor: int,
         collector: DiagnosticCollector | None,
+        limits: DecoderLimits,
     ) -> None:
         self._state = state
+        self._limits = limits
         self._comp_cursor = comp_cursor
         self._decomp_cursor = decomp_cursor
         self._collector = collector
@@ -318,10 +327,11 @@ class LzipDecoder(BaseDecoder):
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> LzipDecoder:
         del inner
         return LzipDecoder(
-            _LzipState(),
+            _LzipState(self._limits),
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
             collector=self._collector,
+            limits=self._limits,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -373,16 +383,22 @@ def LzipDecompressorStream(
     *,
     collector: DiagnosticCollector | None = None,
     seekable: bool = True,
+    decoder_limits: DecoderLimits = DecoderLimits(),
 ) -> DecompressorStream:
-    """Seekable lzip decompressor backed by stdlib ``lzma``."""
+    """Seekable lzip decompressor backed by stdlib ``lzma``.
+
+    ``decoder_limits`` caps each member header's dictionary size; it defaults to the
+    public default, not to no cap.
+    """
 
     def make_decoder(point: SeekPoint, inner: BinaryIO) -> LzipDecoder:
         del inner
         return LzipDecoder(
-            _LzipState(),
+            _LzipState(decoder_limits),
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
             collector=collector,
+            limits=decoder_limits,
         )
 
     return DecompressorStream(
