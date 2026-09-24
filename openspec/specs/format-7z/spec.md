@@ -251,7 +251,8 @@ sibling discovery in numeric order, or an explicit ordered source sequence. If a
 volume is missing or the stream cannot be reconstructed, the system SHALL raise
 `UnsupportedFeatureError` or a truncated/corrupt error, never a partial result.
 A lone numbered part (`name.7z.001` / `name.exe.001` with no siblings) SHALL
-raise `TruncatedError` naming the missing parts.
+raise `TruncatedError` naming the missing parts. A named part that is not on
+disk itself SHALL raise `FileNotFoundError`, like any other missing path.
 
 #### Scenario: volume matrix
 
@@ -260,6 +261,7 @@ raise `TruncatedError` naming the missing parts.
 | Open `name.7z.001` with complete siblings | Volumes join in numeric order; listing and reads match a single-file archive |
 | Open `name.exe.001` with complete `name.exe.00N` siblings | Same join; the stub `name.exe` is not a sibling |
 | Open `name.7z.001` or `name.exe.001` with no siblings | `TruncatedError` names the missing parts |
+| Open `name.7z.001` when that file does not exist | `FileNotFoundError`, not `TruncatedError` |
 | Open stub-only `name.exe` beside `name.exe.001` or `name.7z.001` | Same join as opening the first volume |
 | Open stub-only `name.exe` with `format=SEVEN_Z` beside `name.7z.001` | Same join |
 | Open stub-only `name.exe` with `format=SEVEN_Z` beside `name.zip.001` | `ArchiveyUsageError` |

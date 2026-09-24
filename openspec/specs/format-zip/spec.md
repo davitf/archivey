@@ -189,6 +189,8 @@ reporting
 A gap in the numbering SHALL raise `TruncatedError`. A lone `.zip.NNN` (or
 SFX `.exe.NNN`) part whose siblings are not on disk SHALL raise the same
 `TruncatedError`, naming the missing parts — not a ZIP spanned-set refusal.
+A named part that is not on disk itself SHALL raise `FileNotFoundError`, like
+any other missing path.
 
 Every other split/spanned signal SHALL raise `UnsupportedFeatureError` with a
 rejoin-first message rather than mis-read data or surface stdlib `BadZipFile`:

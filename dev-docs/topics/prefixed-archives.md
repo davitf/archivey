@@ -188,7 +188,7 @@ produced a confidently wrong one.
 | Choice | Why | Rejected |
 | --- | --- | --- |
 | One shared `SFX_MAX` for the detector and both native parsers | Separate bounds drift into a file that opens under `format=` and fails under auto-detect | A bound per call site |
-| `scan_for_magic` takes an optional `HitValidator` (same `(peek_more, remaining)` shape as the detector), returns earliest VALID else earliest identified, and caps rejected candidates at 256 | Parser scans had no hook, so a decoy ahead of the real payload made forced `format=` fail. Peek is served from the scan window (forward-only; source need not be seekable). The iterating detector path is left uncapped: its candidate walk is superlinear in planted decoys, a pre-existing detector bug (ARC-81, threat-model O11), not a reason to copy the parser cap into this diff | Seeking back to the origin to validate; applying the 256 cap to `iter_magic_in_prefix` in the same diff |
+| `scan_for_magic` takes an optional `HitValidator` (same `(peek_more, remaining)` shape as the detector), returns earliest VALID else earliest identified, and caps rejected candidates at 256 | Parser scans had no hook, so a decoy ahead of the real payload made forced `format=` fail. Peek is served from the scan window (forward-only; source need not be seekable). The iterating detector path is left uncapped: its search is linear in the window (`_EarliestFinder` carries each needle's next position), and what the detector spends per candidate belongs to the detection budget (threat-model O11), not to a structural candidate cap | Seeking back to the origin to validate; applying the 256 cap to `iter_magic_in_prefix` in the same diff |
 | Cue is a cost gate; validators are the correctness gate | Keeps two different questions from being answered by one mechanism, which is how the gate got reasoned about as false-positive defence | Treating the cue as the filter and skipping validation |
 | Two-tier cue, with `STRONG` suppressing content probes | `MZ` is two bytes; a real Brotli stream may start with it. Only a structurally confirmed executable is strong enough to overrule a probe | One boolean cue |
 | Mach-O raises no weak cue | `ca fe ba be` is Java class-file magic; a weak cue would scan every `.class` | Treating the magic as a weak cue like `MZ` |
@@ -200,7 +200,8 @@ produced a confidently wrong one.
 ## 8. Verify
 
 ```bash
-./scripts/test.sh tests/test_sfx.py tests/test_detection.py tests/test_detection_workspace.py
+./scripts/test.sh tests/test_sfx.py tests/test_sfx_scan.py tests/test_detection.py \
+    tests/test_detection_workspace.py
 ```
 
 Corpus counts in §3 and §4 are measurements, not assertions — their provenance is the
@@ -213,6 +214,8 @@ behaviour a test holds.
 | The scan is bounded, and a magic counts only when wholly inside the window | `::test_scan_stops_at_the_limit`, `::test_scan_requires_the_whole_magic_inside_the_limit` |
 | The cue is graded rather than boolean, and `STRONG` means the header structurally parses | `::test_executable_cue_grades_the_evidence`, `::test_pe_cue_does_not_require_alignment_and_does_not_reject_a_large_e_lfanew`, `::test_a_real_elf_binary_is_a_strong_cue` |
 | Mach-O parses or raises no cue at all, so a `.class` file is never scanned | `::test_mach_o_cue_requires_a_parsing_header`, `::test_class_file_does_not_enter_the_sfx_scan` |
+| A fat Mach-O 64 header is read as `fat_arch_64` (cputype, cpusubtype, 64-bit offset and size, align, reserved) | `tests/test_sfx_scan.py::test_fat_macho_64_header_parses`, `::test_fat_macho_64_with_implausible_align_is_refused` |
+| The magic search is linear in the window and finds the same hits, in the same order, as a from-scratch search | `tests/test_sfx_scan.py::test_iter_magic_in_prefix_is_linear_in_decoys`, `::test_finder_matches_a_from_scratch_search`, `::test_validated_scan_hits_are_unchanged` |
 | A `STRONG` cue suppresses the content probes; a `WEAK` one does not, and a real Brotli stream still answers | `::test_executable_prefix_with_a_pe_header_never_becomes_a_stream_codec`, `::test_a_weak_cue_still_lets_a_content_probe_answer`, `::test_a_real_brotli_stream_is_unaffected` |
 | The Mach-O defect in §6 is closed: a stub of each kind opens its real 7z members | `::test_thin_macho_stub_plus_7z_opens_real_members`, `::test_fat_macho_stub_plus_7z_opens_real_members`, `::test_sfx_7z_behind_a_low_entropy_stub_is_not_brotli` and its ZIP/RAR siblings |
 | A shebang non-archive costs at most the window, and detection leaves a non-seekable stream replayable | `::test_shebang_non_archive_reads_at_most_min_size_sfx_max`, `::test_detection_leaves_a_non_seekable_stream_replayable` |
