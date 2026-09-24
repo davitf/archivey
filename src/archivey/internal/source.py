@@ -35,7 +35,10 @@ on a caller's object (the fsspec convention) is a hint: it only steps a read, be
 clamping on a hint that understates would truncate a legitimate read. :attr:`size` is the
 fact alone, so every slice or shared view built over this object — which asks
 ``source_byte_size``, and that reads ``size`` first — clamps on a fact or steps too. The
-hint survives as :attr:`size_hint`, for ``compressed_source_size``, which reports it.
+hint survives as :attr:`size_hint` for the questions that want the cheap answer and
+bound nothing: ``compressed_source_size`` reports it, the same answer decides whether a
+live byte counter stands in for it (the two are complements, so they share one source of
+truth), and detection's cost receipt takes it as the total size.
 
 What stays outside, as wrappers over this object that keep its guarantees: measurement
 (``SeekCountingStream``), and ZIP's start offset (a ``SlicingStream``). Member-level
@@ -410,8 +413,9 @@ class ArchiveSource(ReadOnlyIOStream):
         """The source's total length when cheaply known, a caller's claim included.
 
         What ``source_byte_size`` said of the caller's object, measured once: an fsspec
-        ``size`` attribute counts here and not in :attr:`size`. For reporting
-        (``compressed_source_size``), never for bounding a read.
+        ``size`` attribute counts here and not in :attr:`size`. Read by
+        ``compressed_source_size``, by the choice of whether a byte counter stands in for
+        it, and by detection's total size; never for bounding a read.
         """
         return self._size
 

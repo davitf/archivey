@@ -78,8 +78,15 @@ class PrefixWorkspace:
             # path. Reading through the source here would open its handle before the
             # backend chose, and hold it for the reader's lifetime.
             source = source.path
-        # Total size of the underlying object from its own offset 0, when cheap.
-        self._total_size = source_byte_size(source)
+        # Total size of the underlying object from its own offset 0, when cheap. For an
+        # ``ArchiveSource`` that is its ``size_hint``, a caller's fsspec ``size`` included,
+        # as before the source existed; its ``size`` is the narrower fact, which is for
+        # clamping a read and would drop ``SIZE_KNOWN`` for a hint-sized stream.
+        self._total_size = (
+            source.size_hint
+            if isinstance(source, ArchiveSource)
+            else source_byte_size(source)
+        )
         self._kind: str
 
         if isinstance(source, (str, Path)):
@@ -169,7 +176,8 @@ class PrefixWorkspace:
 
         An overestimated total size never proves a later offset reachable — we only report
         a remaining length when it is measured from the entry position (or a short peek
-        that hit EOF). An abandoned spool truncated the pipe; more bytes may exist, so
+        that hit EOF). The one unverified total is a caller's fsspec ``size`` attribute,
+        which is taken at its word here as it always was. An abandoned spool truncated the pipe; more bytes may exist, so
         the buffered length is never reported as a proven remaining size.
         """
         if self._spool_abandoned:

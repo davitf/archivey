@@ -27,8 +27,9 @@
       (decision 4).
 - [x] 2.4 Size and name measured once at construction; `size` exposed only when it is a
       fact, with the fact/hint distinction recorded (decisions 5 and 6).
-      *As built:* `size` is the fact; the caller's hint is `size_hint`, read only by
-      `compressed_source_size`. A first build exposed the hint as `size`, and slices
+      *As built:* `size` is the fact; the caller's hint is `size_hint`, read by
+      `compressed_source_size`, its complement (whether a byte counter stands in) and
+      detection's total size, none of which bounds a read. A first build exposed the hint as `size`, and slices
       and shared views over the source clamped on it.
 - [x] 2.5 Bounded `read` and `readinto`: `read_within_reach` decides how many bytes may be
       requested and runs over the full-count strategy, never over the raw inner; clamp

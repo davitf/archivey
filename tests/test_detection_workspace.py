@@ -190,6 +190,27 @@ def test_peekable_pipe_detection_access_shape() -> None:
     )
 
 
+def test_a_hint_sized_archive_source_still_knows_its_size() -> None:
+    """Detection takes a caller's ``size`` hint through the source, as it did before.
+
+    ``ArchiveSource.size`` is the fact alone, so reading the workspace's total through
+    ``source_byte_size`` would drop ``SIZE_KNOWN`` and ``remaining_known()`` for a stream
+    whose only cheap size is an fsspec ``size`` attribute. Fails against that.
+    """
+    from archivey.internal.volumes import resolve_source
+    from tests.streams_util import ReadSizeRecorder
+
+    # Seekable and raw, with ``size`` its only cheap length: not a fact.
+    resolved = resolve_source(ReadSizeRecorder(bytes(5004)))
+    try:
+        assert resolved.source.size is None
+        with PrefixWorkspace(resolved.source, BALANCED_BUDGET) as ws:
+            assert ws.remaining_known() == 5004
+            assert DetectionCapability.SIZE_KNOWN in ws.capabilities()
+    finally:
+        resolved.source.close()
+
+
 def test_growing_prefix_fetches_each_byte_once() -> None:
     payload = bytes(range(256)) * (2 * 1024 * 1024 // 256)  # 2 MiB patterned
     src = InstrumentedBytesIO(payload)

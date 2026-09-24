@@ -182,8 +182,10 @@ parser would get the unbounded one, which is where the allocations were found.
 wrapper at the source. The peel flag stays for the member-level wrappers that still use
 it.
 
-*As built:* as designed. A caller's `size` hint is kept apart as `size_hint`, which only
-`compressed_source_size` reads. An earlier build exposed the hint as `size`; since
+*As built:* as designed. A caller's `size` hint is kept apart as `size_hint`, read where the
+cheap answer is wanted and nothing is bounded: `compressed_source_size`, the choice of
+whether a live byte counter stands in for it (the two are complements, so they must ask
+the same question), and detection's total size. An earlier build exposed the hint as `size`; since
 `source_byte_size` reads `size` first, every slice and shared view over the source then
 clamped on the hint, one layer above the source's own fact-only clamp (the design review
 of the implementation found it).

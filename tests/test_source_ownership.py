@@ -183,11 +183,13 @@ def test_open_stream_closes_the_source_it_built(
 
 
 def test_a_sequence_of_caller_streams_is_not_closed() -> None:
-    """Volume items go through the same boundary, one at a time.
+    """The join borrows the caller's stream parts directly, with no wrapper between.
 
-    ``ConcatenatedFile`` already borrows a ``BinaryIO`` volume, so this pins the
-    boundary's own handling rather than a bug it fixed: the items it joins are the
-    wrappers, not the caller's objects.
+    The items ``ConcatenatedFile`` joins here are the caller's own objects, so this is
+    the test that it never closes one. The other half of the same guarantee, that the
+    join gathers a short-reading part, is
+    ``test_a_joined_set_closes_with_the_source_and_borrows_its_stream_parts`` in
+    ``tests/test_archive_source.py``.
     """
     parts = [_CallerBytesIO(b"first half"), _CallerBytesIO(b"second half")]
     # A list of BytesIO is a valid source sequence at runtime; typeshed models
