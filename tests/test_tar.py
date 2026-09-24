@@ -9,7 +9,7 @@ import logging
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 from unittest import mock
 
 import pytest
@@ -1493,3 +1493,78 @@ def test_a_member_larger_than_the_read_step_still_reads_whole(tmp_path: Path) ->
         member = next(m for m in reader.members() if m.is_file)
         with reader.open(member) as stream:
             assert stream.read() == payload
+
+
+def _pax_tar(name: str) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        info = tarfile.TarInfo(name)
+        info.size = 3
+        t.addfile(info, io.BytesIO(b"abc"))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("encoding", [None, "utf-8", "latin-1", "ascii"])
+def test_pax_raw_name_is_the_stored_utf8_whatever_the_encoding(
+    encoding: str | None,
+) -> None:
+    """A PAX ``path`` record is UTF-8 whatever ``encoding=`` says; re-encoding it with
+    the caller's codec either crashed the listing or fabricated bytes."""
+    for name in ("日本語.txt", "café.txt"):
+        with open_archive(io.BytesIO(_pax_tar(name)), encoding=encoding) as ar:
+            (member,) = ar.members()
+            assert member.name == name
+            assert member.raw_name == name.encode("utf-8")
+
+
+def test_ustar_raw_name_follows_the_archive_encoding() -> None:
+    buf = io.BytesIO()
+    with tarfile.open(
+        fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT, encoding="latin-1"
+    ) as t:
+        info = tarfile.TarInfo("café.txt")
+        info.size = 1
+        t.addfile(info, io.BytesIO(b"x"))
+    with open_archive(io.BytesIO(buf.getvalue()), encoding="latin-1") as ar:
+        (member,) = ar.members()
+        assert member.name == "café.txt"
+        assert member.raw_name == b"caf\xe9.txt"
+
+
+def test_pax_raw_name_with_undecodable_bytes_round_trips() -> None:
+    """Bytes that are not UTF-8 fall back to the archive codec with surrogateescape;
+    the surrogates send the name back through that codec, recovering the bytes."""
+    raw = b"caf\xe9\xe9.txt"
+    data = bytearray(_pax_tar("café.txt"))
+    # Swap the PAX path value for non-UTF-8 bytes of the same length.
+    stored = "path=café.txt\n".encode()
+    at = data.index(stored)
+    data[at + 5 : at + len(stored) - 1] = raw
+    with open_archive(io.BytesIO(bytes(data))) as ar:
+        (member,) = ar.members()
+        assert member.raw_name == raw
+
+
+def test_close_releases_the_owned_stream_when_tarfile_close_raises(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "a.tar.gz"
+    with tarfile.open(path, "w:gz") as t:
+        info = tarfile.TarInfo("a")
+        info.size = 1
+        t.addfile(info, io.BytesIO(b"x"))
+    ar: Any = open_archive(path)
+    released: list[bool] = []
+    real_release = ar._release_owned_stream
+
+    def release() -> None:
+        released.append(True)
+        real_release()
+
+    with (
+        mock.patch.object(ar._tar, "close", side_effect=OSError("boom")),
+        mock.patch.object(ar, "_release_owned_stream", side_effect=release),
+    ):
+        with pytest.raises(OSError):
+            ar.close()
+    assert released == [True]

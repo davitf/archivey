@@ -336,7 +336,7 @@ class DiagnosticCollector:
 
         try:
             if should_deliver:
-                log.warning("%s", message)
+                log.warning("%s", diagnostic.message)
                 if self._on_diagnostic is not None:
                     self._on_diagnostic(diagnostic)
             # Only the raise this emit makes is part of what a replay repeats; one out of

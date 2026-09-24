@@ -190,6 +190,13 @@ behaviour. The complete list is on the two classes.
 - Needs `[recommended]` (`pycdlib`) and a seekable source.
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
+- Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty
+  extension), and `extra["iso.version"]` keeps the number. When a directory holds
+  several versions of one name, the highest takes the bare name and the others list as
+  `name;N` with `is_current=False`, the same shape as RAR file-version history.
+- A Rock Ridge device node, FIFO or socket lists as `MemberType.OTHER`, so extraction
+  skips it. The `rr_moved` directory that holds relocated deep subtrees is not listed;
+  those subtrees appear at their logical place.
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).

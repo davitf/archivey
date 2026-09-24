@@ -81,6 +81,7 @@ from archivey.types import (
     CompressionAlgorithm,
     CompressionMethod,
     MagicSignature,
+    MemberExtra,
     MemberStreams,
     MemberType,
     MissingComponent,
@@ -106,6 +107,8 @@ def _optional(name: str) -> ModuleType | None:
 
 pycdlib = _optional("pycdlib")
 _pycdlib_exc = _optional("pycdlib.pycdlibexception")
+_pycdlib_core = _optional("pycdlib.pycdlib")
+_pycdlib_io = _optional("pycdlib.pycdlibio")
 _PYCDLIB_CYCLE_GUARD_INSTALLED = False
 
 
@@ -214,7 +217,7 @@ _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
 
 
 # Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
-_VERSION_SUFFIX = re.compile(r";\d+$")
+_VERSION_SUFFIX = re.compile(r";(\d+)$")
 
 
 def _dr_date_to_datetime(date: Any) -> datetime | None:
@@ -238,6 +241,19 @@ def _dr_date_to_datetime(date: Any) -> datetime | None:
         )
     except (ValueError, AttributeError, TypeError, OverflowError):
         return None
+
+
+def _yield_children(record: Any, rock_ridge: bool) -> Iterator[Any]:
+    """A directory record's children, as pycdlib's own ``walk()`` enumerates them.
+
+    ``pycdlib.pycdlib._yield_children`` is private, but it is the one place pycdlib
+    skips the extra records of a multi-extent file and follows Rock Ridge CL/PL
+    relocation. The public ``list_children`` does the same only behind a path lookup,
+    which is the step the record walk exists to avoid. The ISO tests exercise it on
+    every supported pycdlib, so a rename there fails loudly rather than silently.
+    """
+    assert _pycdlib_core is not None
+    return cast("Iterator[Any]", _pycdlib_core._yield_children(record, rock_ridge))
 
 
 class _PyCdlibStream(DelegatingStream):
@@ -370,45 +386,178 @@ class IsoReader(BaseArchiveReader):
     def _join(self, dirpath: str, name: str) -> str:
         return "/" + name if dirpath == "/" else f"{dirpath}/{name}"
 
-    def _display_name(self, ns_path: str) -> str:
-        """The path to show the caller: leading ``/`` stripped, plain-ISO version suffix gone."""
+    def _split_version(self, ns_path: str) -> tuple[str, int | None]:
+        """The path to show the caller, and the plain-ISO file version if it had one.
+
+        The leading ``/`` is stripped. In the ``iso9660`` namespace a ``;N`` suffix is the
+        file *version*: it is removed and returned, and so is the ``.`` that separates an
+        empty extension (``FOO.;1`` is ``FOO``), since the two are one rule in ISO 9660.
+        """
         rel = ns_path.lstrip("/")
-        if self._namespace == "iso9660":
-            parent, sep, base = rel.rpartition("/")
-            rel = parent + sep + _VERSION_SUFFIX.sub("", base)
-        return rel
+        if self._namespace != "iso9660":
+            return rel, None
+        parent, sep, base = rel.rpartition("/")
+        match = _VERSION_SUFFIX.search(base)
+        if match is None:
+            return rel, None
+        stem = base[: match.start()]
+        if stem.endswith(".") and len(stem) > 1:
+            stem = stem[:-1]
+        if not stem:
+            return rel, None
+        return parent + sep + stem, int(match.group(1))
+
+    def _version_order(self, item: tuple[str, Any]) -> tuple[str, int]:
+        """Sort key putting each plain-ISO name's versions in ascending order."""
+        presented, version = self._split_version(item[0])
+        return presented, version or 0
+
+    def _record_name(self, record: Any) -> str:
+        """Decode one directory record's own name in the selected namespace.
+
+        Decoding never raises: a name that is not valid in its namespace's encoding is
+        rendered (surrogateescape for the byte namespaces, U+FFFD for Joliet's UTF-16)
+        rather than costing the listing.
+        """
+        if self._namespace == "rock_ridge":
+            return record.rock_ridge.name().decode("utf-8", errors="surrogateescape")
+        ident = record.file_identifier()
+        if self._namespace == "joliet":
+            return ident.decode("utf-16_be", errors="replace")
+        return ident.decode("utf-8", errors="surrogateescape")
+
+    def _is_rr_moved(self, record: Any) -> bool:
+        """Whether a root-level directory is Rock Ridge's ``rr_moved`` relocation parent.
+
+        ISO 9660 caps depth at eight, so writers park deeper subtrees under a root-level
+        directory and relink each one into place with CL/PL/RE records. That directory is
+        the workaround's scaffolding, not part of the tree anyone archived. It is known by
+        its contents rather than its name: every child is a relocated directory (its
+        ``..`` carries a PL record), which is the same test pycdlib uses to hide those
+        children from their parking place.
+        """
+        children = [
+            c
+            for c in record.children
+            if c is not None and not c.is_dot() and not c.is_dotdot()
+        ]
+        if not children:
+            return False
+        for child in children:
+            if not child.is_dir() or len(child.children) < 2:
+                return False
+            dotdot = child.children[1]
+            rr = getattr(dotdot, "rock_ridge", None)
+            if rr is None or not rr.parent_link_record_exists():
+                return False
+        return True
+
+    def _walk_records(self) -> Iterator[tuple[str, Any, bool]]:
+        """Yield ``(namespace path, directory record, superseded)`` for every entry.
+
+        The walk follows records, not names. ``PyCdlib.walk()`` yields names, and turning
+        a name back into a record with ``get_record()`` is not total: a Rock Ridge name
+        holding ``/``, or two entries sharing one Rock Ridge name, makes that lookup fail
+        and would cost the whole listing, and a duplicated directory name makes pycdlib
+        re-walk its subtree once per duplicate. Here the path is only a rendering of the
+        record. Each directory extent is descended once, so a crafted image whose records
+        close a cycle cannot loop.
+
+        Within a directory, subdirectories come first and then files, each in record
+        order, except that plain ISO 9660 files are ordered by (name, version).
+        ``superseded`` is true for a plain ISO 9660 file when the same directory holds
+        a higher version of the same name.
+        """
+        root = self._iso.get_record(**{self._path_kw: "/"})
+        use_rr = self._namespace == "rock_ridge"
+        seen_extents = {root.extent_location()}
+        stack: list[tuple[str, Any]] = [("/", root)]
+        while stack:
+            dirpath, dir_record = stack.pop()
+            dirs: list[tuple[str, Any]] = []
+            files: list[tuple[str, Any]] = []
+            for child in _yield_children(dir_record, use_rr):
+                if child is None or child.is_dot() or child.is_dotdot():
+                    continue
+                if use_rr and child.rock_ridge is None:
+                    continue
+                if (
+                    use_rr
+                    and dirpath == "/"
+                    and child.is_dir()
+                    and self._is_rr_moved(child)
+                ):
+                    continue
+                path = self._join(dirpath, self._record_name(child))
+                (dirs if child.is_dir() else files).append((path, child))
+            if self._namespace == "iso9660":
+                files.sort(key=self._version_order)
+            newest: dict[str, int] = {}
+            for path, _ in files:
+                presented, version = self._split_version(path)
+                if version is not None:
+                    newest[presented] = max(newest.get(presented, version), version)
+            for path, record in dirs:
+                yield path, record, False
+            for path, record in files:
+                presented, version = self._split_version(path)
+                yield path, record, version is not None and version < newest[presented]
+            for path, record in reversed(dirs):
+                extent = record.extent_location()
+                if extent in seen_extents:
+                    continue
+                seen_extents.add(extent)
+                stack.append((path, record))
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         # Pinned-pycdlib audit (tar-concurrent-open 2.7 / concurrent-member-streams 5.4):
-        # walk()/get_record() traverse in-memory parsed catalog records and do not touch
-        # _cdfp. Only open_file_from_iso / PyCdlibIO I/O need the handle lock. If a future
-        # pycdlib version gains handle access here, lock the complete call.
+        # the walk traverses in-memory parsed catalog records and does not touch _cdfp.
+        # Only PyCdlibIO I/O needs the handle lock. If a future pycdlib version gains
+        # handle access here, lock the complete call.
         with self._translated_errors():
             # ``index`` is each member's position in the walk, the id registration
             # stamps, so a diagnostic raised while typing can name it.
-            index = 0
-            for dirpath, dirnames, filenames in self._iso.walk(**{self._path_kw: "/"}):
-                for name in (*dirnames, *filenames):
-                    yield self._make_member(self._join(dirpath, name), index)
-                    index += 1
+            for index, (ns_path, record, superseded) in enumerate(self._walk_records()):
+                yield self._make_member(ns_path, record, index, superseded=superseded)
 
-    def _make_member(self, ns_path: str, index: int) -> ArchiveMember:
-        record: Any = self._iso.get_record(**{self._path_kw: ns_path})
+    def _make_member(
+        self, ns_path: str, record: Any, index: int, *, superseded: bool = False
+    ) -> ArchiveMember:
         rr = getattr(record, "rock_ridge", None)
+        raw_mode = self._px_mode(rr)
 
         if rr is not None and rr.is_symlink():
             member_type = MemberType.SYMLINK
         elif record.is_dir():
             member_type = MemberType.DIRECTORY
+        elif raw_mode is not None and not stat.S_ISREG(raw_mode):
+            # A Rock Ridge PX mode names a device, FIFO or socket: never a regular file,
+            # whatever bytes sit at the extent.
+            member_type = MemberType.OTHER
         else:
             member_type = MemberType.FILE
 
         # ISO 9660 / Joliet paths are POSIX-style ("/"): a backslash is a literal character.
-        presented = self._display_name(ns_path)
+        presented, version = self._split_version(ns_path)
+        if superseded:
+            # An older version keeps its ``;N``, as RAR presents a file-version history
+            # row: a distinct name to read it by, and ``is_current=False`` so extraction
+            # skips it. The newest version takes the bare name.
+            presented = f"{presented};{version}"
         name = normalize_member_name(
             presented, member_type, backslash_is_separator=False
         )
-        raw_name = ns_path.lstrip("/").encode("utf-8", errors="surrogateescape")
+        try:
+            raw_name: bytes | None = ns_path.lstrip("/").encode(
+                "utf-8", errors="surrogateescape"
+            )
+        except UnicodeEncodeError:
+            raw_name = None
+        extra = (
+            MemberExtra({"iso.version": version})
+            if version is not None
+            else MemberExtra()
+        )
 
         modified, accessed, created = self._timestamps(record, rr)
         mode, uid, gid = self._posix_metadata(rr)
@@ -436,7 +585,10 @@ class IsoReader(BaseArchiveReader):
             link_target=link_target,
             compression=compression,
             is_encrypted=False,
-            _raw=ns_path,  # the namespace path, so _open_member needs no lookup table
+            # The directory record itself, so _open_member needs no path lookup.
+            extra=extra,
+            is_current=not superseded,
+            _raw=record,
         )
         emit_member_name_normalized(
             self._diagnostics_collector,
@@ -475,6 +627,17 @@ class IsoReader(BaseArchiveReader):
                 )
         return modified, accessed, created
 
+    def _px_mode(self, rr: Any) -> int | None:
+        """The full POSIX mode from a Rock Ridge PX record, file-type bits included."""
+        if rr is None:
+            return None
+        for entries in (rr.dr_entries, rr.ce_entries):
+            px = getattr(entries, "px_record", None)
+            if px is not None:
+                mode = getattr(px, "posix_file_mode", None)
+                return mode if isinstance(mode, int) else None
+        return None
+
     def _posix_metadata(self, rr: Any) -> tuple[int | None, int | None, int | None]:
         # POSIX mode/uid/gid come only from a Rock Ridge PX record; Joliet/plain carry none,
         # so those namespaces correctly yield (None, None, None).
@@ -504,21 +667,36 @@ class IsoReader(BaseArchiveReader):
 
     # --- data ---------------------------------------------------------------------------
 
+    def _open_record(self, record: Any) -> "PyCdlibIO":
+        """Open a file's data from its directory record, with no path lookup.
+
+        The same checks ``PyCdlib.open_file_from_iso`` makes once it has the record.
+        """
+        assert _pycdlib_exc is not None and _pycdlib_io is not None
+        if not record.is_file():
+            raise _pycdlib_exc.PyCdlibInvalidInput("Path to open must be a file")
+        if record.inode is None:
+            raise _pycdlib_exc.PyCdlibInvalidInput("File has no data")
+        return cast(
+            "PyCdlibIO",
+            _pycdlib_io.PyCdlibIO(record.inode, self._iso.logical_block_size),
+        )
+
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
-        ns_path = member._raw
-        assert isinstance(ns_path, str), "ISO member is missing its namespace path"
+        record = member._raw
+        assert record is not None, "ISO member is missing its directory record"
         # Boundary outside the lock; _PyCdlibStream construction stays inside it so any
         # enter-time pycdlib seek/error is covered by both.
         with self._translated_errors(member.name):
             if self._handle_lock is not None:
                 with self._handle_lock:
-                    raw = self._iso.open_file_from_iso(**{self._path_kw: ns_path})
+                    raw = self._open_record(record)
                     # Construct under the lock so enter-time pycdlib seek is covered.
                     locked: BinaryIO = LockedStream(
                         _PyCdlibStream(raw), self._handle_lock
                     )
                 return self._wrap_member_stream(locked, member.name, size=member.size)
-            raw = self._iso.open_file_from_iso(**{self._path_kw: ns_path})
+            raw = self._open_record(record)
             # _PyCdlibStream enters the PyCdlibIO context in its __init__.
             stream = _PyCdlibStream(raw)
         return self._wrap_member_stream(stream, member.name, size=member.size)

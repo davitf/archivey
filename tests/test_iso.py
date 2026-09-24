@@ -9,9 +9,9 @@ import contextlib
 import io
 import os
 import struct
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 import pytest
 
@@ -655,3 +655,118 @@ def test_a_clean_image_is_unaffected(rock_ridge_iso: Path) -> None:
     with open_archive(rock_ridge_iso) as reader:
         names = [m.name for m in reader.members()]
     assert "file.txt" in names
+
+
+# --- listing follows records, not names ----------------------------------------------
+
+
+def _build_rr_iso(populate: Callable[[Any], None]) -> bytes:
+    """A Rock Ridge image whose contents ``populate(iso)`` adds."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3, rock_ridge="1.09")
+    populate(iso)
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+def _two_rr_files(iso: Any) -> None:
+    iso.add_fp(io.BytesIO(b"AAAA"), 4, "/AAA.;1", rr_name="aaa")
+    iso.add_fp(io.BytesIO(b"BBBB"), 4, "/BBB.;1", rr_name="bbb")
+
+
+def test_a_rock_ridge_name_holding_a_slash_costs_no_sibling() -> None:
+    """A name pycdlib's own path lookup cannot find again used to abort the listing."""
+    data = _build_rr_iso(_two_rr_files)
+    nm = b"NM\x08\x01\x00aaa"
+    assert data.count(nm) == 1
+    data = data.replace(nm, b"NM\x08\x01\x00a/a")
+    with open_archive(io.BytesIO(data)) as ar:
+        names = {m.name for m in ar.members()}
+        assert {"a/a", "bbb"} <= names
+        assert ar.read("bbb") == b"BBBB"
+        assert ar.read("a/a") == b"AAAA"
+
+
+def test_duplicate_rock_ridge_names_all_list() -> None:
+    def populate(iso: Any) -> None:
+        iso.add_directory("/AAA", rr_name="dup")
+        iso.add_directory("/BBB", rr_name="dup")
+        iso.add_fp(io.BytesIO(b"x"), 1, "/AAA/F.;1", rr_name="f")
+
+    with open_archive(io.BytesIO(_build_rr_iso(populate))) as ar:
+        members = ar.members()
+        assert [m.name for m in members].count("dup/") == 2
+        assert ar.read("dup/f") == b"x"
+
+
+def test_a_rock_ridge_device_node_is_other_not_file(tmp_path: Path) -> None:
+    """The PX file-type bits decide the type: a character device is never a FILE."""
+    data = _build_rr_iso(_two_rr_files)
+    # PX mode is a both-endian 32-bit field: 0o100444 (regular, r--r--r--).
+    regular = struct.pack("<I", 0o100444) + struct.pack(">I", 0o100444)
+    assert data.count(regular) == 2
+    device = struct.pack("<I", 0o020666) + struct.pack(">I", 0o020666)
+    data = data.replace(regular, device, 1)
+    with open_archive(io.BytesIO(data)) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert by_name["aaa"].type is MemberType.OTHER
+        assert by_name["aaa"].size is None
+        assert by_name["aaa"].mode == 0o666
+        assert by_name["bbb"].type is MemberType.FILE
+        ar.extract_all(tmp_path / "out")
+    assert not (tmp_path / "out" / "aaa").exists()
+    assert (tmp_path / "out" / "bbb").read_bytes() == b"BBBB"
+
+
+def test_plain_iso_versions_keep_the_newest_current(tmp_path: Path) -> None:
+    """The newest ``;N`` takes the bare name (the empty-extension dot goes too); an
+    older version keeps ``;N`` and ``is_current=False``, as a RAR history row does.
+    Every version records its number in ``iso.version``."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    iso.add_fp(io.BytesIO(b"OLD VERSION"), 11, "/FOO.;1")
+    iso.add_fp(io.BytesIO(b"NEW VERSION"), 11, "/FOO.;2")
+    iso.add_fp(io.BytesIO(b"text"), 4, "/BAR.TXT;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+
+    with open_archive(io.BytesIO(out.getvalue())) as ar:
+        rows = [(m.name, m.extra["iso.version"], m.is_current) for m in ar.members()]
+        assert sorted(rows) == [
+            ("BAR.TXT", 1, True),
+            ("FOO", 2, True),
+            ("FOO;1", 1, False),
+        ]
+        assert ar.read("FOO") == b"NEW VERSION"
+        assert ar.read("FOO;1") == b"OLD VERSION"
+        ar.extract_all(tmp_path / "out")
+    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["BAR.TXT", "FOO"]
+    assert (tmp_path / "out" / "FOO").read_bytes() == b"NEW VERSION"
+
+
+def test_rock_ridge_relocation_directory_is_not_listed() -> None:
+    """Deep trees are parked under ``rr_moved`` and relinked; only the logical tree lists."""
+
+    def populate(iso: Any) -> None:
+        path = ""
+        for depth in range(12):
+            path += f"/D{depth}"
+            iso.add_directory(path, rr_name=f"dir{depth}")
+        iso.add_fp(io.BytesIO(b"deep"), 4, path + "/F.;1", rr_name="f.txt")
+
+    data = _build_rr_iso(populate)
+    assert b"RR_MOVED" in data
+    with open_archive(io.BytesIO(data)) as ar:
+        names = [m.name for m in ar.members()]
+        assert not any(n.lower().startswith("rr_moved") for n in names)
+        deep = "/".join(f"dir{d}" for d in range(12)) + "/f.txt"
+        assert deep in names
+        assert len(names) == 13
+        assert ar.read(deep) == b"deep"

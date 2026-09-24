@@ -872,3 +872,22 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
         DiagnosticCode.PROBE_FORMAT_UNCONFIRMED,
     }
+
+
+def test_the_logged_line_is_the_escaped_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The WARNING line carries ``diagnostic.message``, which escaping has made inert,
+    not the raw text the emit site passed in."""
+    from archivey.diagnostics import EmptyArchiveContext
+
+    logger = logging.getLogger("archivey.test.escaped_log")
+    collector = DiagnosticCollector(logger=logger)
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        diagnostic = collector.emit(
+            code=DiagnosticCode.EMPTY_ARCHIVE,
+            message="Archive listed no members ev\x1b[2Kil\rSPOOF.txt",
+            context=EmptyArchiveContext(archive_name="x", format="zip"),
+        )
+    assert "\x1b" not in diagnostic.message and "\r" not in diagnostic.message
+    assert [r.getMessage() for r in caplog.records] == [diagnostic.message]
