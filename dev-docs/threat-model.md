@@ -675,7 +675,7 @@ digest, before seeking into it. A heuristic diagnostic for an ambiguous trailer 
 (an `LZIP` magic at a member start the walk skipped) was considered and not taken: an
 attacker who controls the trailers can avoid it.
 
-### O18. The archive chooses what a password attempt costs — open
+### O18. The archive chooses what a password attempt costs — closed
 
 Both password-based formats store the key-derivation cost in the archive: 7z's
 `NumCyclesPower` (SHA-256 rounds, `1 << n`) and RAR5's `kdf_count` (PBKDF2-HMAC-SHA256,
@@ -684,8 +684,9 @@ derivation, not the total. Measured on the dev container, one RAR5 check derivat
 0.013 s at the usual `n = 15` and **4.4 s at 24**.
 
 The total is derivations × candidates × distinct salts. Both readers cache by salt: 7z's
-`SevenZipKeyCache`, and RAR5's cache of the candidate each encryption record's PswCheck
-accepted (plus the HashKey derived from it). An honest `rar` run writes one salt, so an
+`SevenZipKeyCache`, and RAR's `RarKdfCache`, which one reader shares across its header
+parse, every volume and every member read (plus the candidate each encryption record's
+PswCheck accepted). An honest `rar` run writes one salt, so an
 archive costs one derivation per candidate tried. A crafted one does not cooperate: a
 fresh salt per member, `n = 24`, and a well-formed PswCheck that no password matches (its
 four checksum bytes are only `sha256(check[:8])[:4]`, which the writer controls) cost
@@ -693,10 +694,17 @@ four checksum bytes are only `sha256(check[:8])[:4]`, which the writer controls)
 not reach it, and the RAR5 data path pays it on every encrypted member read, as the
 tweaked-checksum HashKey already did before the candidate check existed.
 
-**Designed, not shipped:** a total derivation budget on `DecoderLimits`. What it is
-measured in and why is the open question in `dev-docs/formats/7z.md` §7, its one home; it
-needs a default number from the maintainer. Until then a caller reading untrusted
-encrypted archives bounds this with its own timeout.
+**Closed by `DecoderLimits.max_key_derivation_rounds`**, default `2**27` (maintainer,
+2026-09-23). It is measured in summed declared rounds, not in derivations: an archive
+that salts per folder or per member would make a derivation count refuse honest
+archives or admit hostile ones depending on the cost it declared. Rounds are charged per
+cache miss, before the derivation runs, so an honest archive spends one or two
+derivations; each candidate tried counts. `2**27` is eight derivations at `2**24`, about
+half a minute. A spent budget raises `ResourceLimitError`, which the RAR header walks
+let through their `EncryptionError` re-wrap so candidate iteration stops rather than
+reading it as a wrong password. RAR3 is charged its fixed `2**18`; ZIP AES's fixed 1000
+is not counted. A stricter preset (`2**24`, one maximum-cost derivation) is recorded in
+`dev-docs/IDEAS.md` with the other preset numbers.
 
 ### O19. A symlink target stored as member data sized listing's allocation — closed
 

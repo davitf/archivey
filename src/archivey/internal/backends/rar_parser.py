@@ -58,6 +58,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     raw_message_of,
 )
+from archivey.internal.config import KeyDerivationBudget
 from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
@@ -87,6 +88,8 @@ RAR_ID = b"Rar!\x1a\x07\x00"
 RAR5_ID = b"Rar!\x1a\x07\x01\x00"
 _RAR_MAX_PASSWORD = 127
 _RAR_MAX_KDF_SHIFT = 24
+# RAR3's fixed key-derivation cost: 16 x 0x4000 SHA-1 rounds in ``_rar3_s2k``.
+_RAR3_KDF_ROUNDS = 16 * 0x4000
 _RAR5_MAX_HEADER = 2 * 1024 * 1024
 # Most FILE extras are a handful of records (encryption, hash, time, version,
 # redir, owner). Each skipped record is one retained tuple plus one diagnostic,
@@ -1096,13 +1099,30 @@ class RarKdfCache:
     the per-derivation cost it already had. Two threads racing on one entry may both
     derive it, which costs time but never a wrong key. Neither this class nor the
     cache wrappers has a ``repr`` that shows passwords or keys.
+
+    Each miss is charged to ``budget``
+    (:attr:`~archivey.config.DecoderLimits.max_key_derivation_rounds`) before it
+    runs: RAR5 at its PBKDF2 round count, RAR3 at its fixed ``2**18``. The charge
+    sits inside the cached function, which ``functools.cache`` calls only on a miss,
+    so a hit costs nothing. Without a budget the cache charges one built from the
+    default limits.
     """
 
     __slots__ = ("_rar3", "_rar5")
 
-    def __init__(self) -> None:
-        self._rar5 = functools.cache(_rar5_pbkdf2)
-        self._rar3 = functools.cache(_rar3_key_iv)
+    def __init__(self, *, budget: KeyDerivationBudget | None = None) -> None:
+        charge = budget if budget is not None else KeyDerivationBudget()
+
+        def rar5(ustr: bytes, salt: bytes, iterations: int) -> bytes:
+            charge.spend(iterations, what="RAR5 key derivation")
+            return _rar5_pbkdf2(ustr, salt, iterations)
+
+        def rar3(wstr: bytes, salt: bytes) -> tuple[bytes, bytes]:
+            charge.spend(_RAR3_KDF_ROUNDS, what="RAR3 key derivation")
+            return _rar3_key_iv(wstr, salt)
+
+        self._rar5 = functools.cache(rar5)
+        self._rar3 = functools.cache(rar3)
 
     def rar5(self, password: str | bytes, salt: bytes, iterations: int) -> bytes:
         """:func:`_rar5_s2k`, derived once per distinct input."""
@@ -1350,7 +1370,9 @@ def _parse_rar3(
                 )
             try:
                 header_fd = _rar3_decrypt_header(source, password, kdf_cache)
-            except PackageNotInstalledError:
+            except (PackageNotInstalledError, ResourceLimitError):
+                # A spent key-derivation budget is not a wrong password: re-wrapped as
+                # EncryptionError it would send the reader on to the next candidate.
                 raise
             except Exception as exc:
                 raise EncryptionError(
@@ -2071,7 +2093,8 @@ def _parse_rar5(
                 )
             try:
                 header_fd = _rar5_decrypt_header(source, hdr_enc, password, kdf_cache)
-            except PackageNotInstalledError:
+            except (PackageNotInstalledError, ResourceLimitError):
+                # See the RAR3 walk: a spent budget must not read as a wrong password.
                 raise
             except EncryptionError:
                 raise

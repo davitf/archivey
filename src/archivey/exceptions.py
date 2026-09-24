@@ -249,7 +249,8 @@ class ResourceLimitError(ArchiveyError):
     Covers :class:`~archivey.config.ListingLimits` materialization caps,
     parse-time ``max_members`` on 7z and RAR,
     :class:`~archivey.config.ExtractionLimits` bomb guards, and
-    :class:`~archivey.config.DecoderLimits` caps on archive-declared decoder memory.
+    :class:`~archivey.config.DecoderLimits` caps on archive-declared decoder memory
+    and key-derivation work.
     Sibling of :class:`ExtractionError` (not a subclass): limit trips are not
     filter/path failures.
     """
