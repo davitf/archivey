@@ -11,10 +11,10 @@ import struct
 from collections.abc import Callable
 
 from archivey.internal.backends.sevenzip_parser import (
-    _MAX_NEXT_HEADER_SIZE,
-    _SIGNATURE_HEADER_SIZE,
     MAGIC_7Z,
-    _crc32,
+    MAX_NEXT_HEADER_SIZE,
+    SIGNATURE_HEADER_SIZE,
+    crc32,
 )
 from archivey.internal.sfx import HitOutcome
 
@@ -50,24 +50,24 @@ def validate_sevenzip_signature_header(
     preferring an exact end among several ``VALID`` hits is the unlanded
     remainder of task 2.3.
     """
-    header = peek_more(_SIGNATURE_HEADER_SIZE)
-    if len(header) < _SIGNATURE_HEADER_SIZE or header[: len(MAGIC_7Z)] != MAGIC_7Z:
+    header = peek_more(SIGNATURE_HEADER_SIZE)
+    if len(header) < SIGNATURE_HEADER_SIZE or header[: len(MAGIC_7Z)] != MAGIC_7Z:
         return HitOutcome.NOT_THIS_FORMAT
     major_version = header[6]
     if major_version != _MAJOR_VERSION:
         return HitOutcome.NOT_THIS_FORMAT
     start_header_crc = int.from_bytes(header[8:12], "little")
     start_header = header[12:32]
-    if _crc32(start_header) != start_header_crc:
+    if crc32(start_header) != start_header_crc:
         return HitOutcome.DAMAGED
     next_header_offset, next_header_size, _next_header_crc = struct.unpack(
         "<QQI", start_header
     )
     if next_header_size == 0:
         return HitOutcome.NOT_THIS_FORMAT
-    if next_header_size > _MAX_NEXT_HEADER_SIZE:
+    if next_header_size > MAX_NEXT_HEADER_SIZE:
         return HitOutcome.DAMAGED
-    declared = _SIGNATURE_HEADER_SIZE + next_header_offset + next_header_size
+    declared = SIGNATURE_HEADER_SIZE + next_header_offset + next_header_size
     if remaining is not None and declared > remaining:
         return HitOutcome.DAMAGED
     return HitOutcome.VALID
