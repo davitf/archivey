@@ -86,6 +86,7 @@ def test_public_symbols_are_in_all() -> None:
         "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
         "ScanRaceContext",
         "SeekIndexContext",
+        "SelectorUnmatchedContext",
         "StreamRewindContext",
         "SymlinkTargetContext",
         "UnconfirmedFormatContext",

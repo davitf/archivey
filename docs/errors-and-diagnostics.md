@@ -81,6 +81,7 @@ to an exception with a `DiagnosticPolicy` if your program would rather stop:
 | `EXPLICIT_FORMAT_LISTED_EMPTY` | You passed `format=`, the listing came back empty, and detection disagrees. `format=` stays an override — wrong extensions are exactly what it is for — so this tells you rather than refusing. |
 | `PASSWORD_ARGUMENT_UNUSED` | You passed `password=` to a format with no encryption. Passing a keyring across a batch of mixed archives is the intended use, so it is accepted and simply never consulted. |
 | `ENCODING_ARGUMENT_UNUSED` | You passed `encoding=` to a backend that decodes names another way — 7z stores UTF-16, RAR decodes in its own parser, directory and single-file names come from the filesystem. |
+| `MEMBER_SELECTOR_UNMATCHED` | An entry in your `members=` collection matched no member, so a typo does not look like an archive that lacks the file. One diagnostic for each such entry, reported once every member has been offered to the selector: by `stream_members()` only when you iterate to the end, and by `extract_all()` before it writes or creates anything when the listing is free, else at the end. A predicate selector is never reported. If you set this code to `RAISE`, `extract_all()` refuses with nothing written only when the listing is free. On TAR and forward-only streams the members before the end are already on disk, and the error replaces the report. |
 | `MEMBER_NAME_BIDI_CONTROL` | A member name contains a Unicode bidi formatting control. The context names the exact codepoints, because an *override* (U+202A–202E, U+2066–2069 — how `evil‮gnp.exe` displays as a `.png`) is a different thing from a *directional mark* (U+061C, U+200E, U+200F), which appears in ordinary Arabic and Hebrew filenames. |
 | `MEMBER_HEADER_RECORD_SKIPPED` | One optional record in a member's header was malformed and was dropped; the member is listed without whatever it carried. Today this is the RAR5 extra area — a checksum, a timestamp, a redirect target. The field it would have filled is **absent, never wrong**, and the context names the record and the parse failure. Refusing the whole archive over one bad checksum record would discard every member that parsed, and `unrar` itself lists such archives. A member header is attacker-sized, so how many records one member may drop is capped, and a record whose declared *size* cannot be used stops the walk outright — there is no way to find the next record. Either way one diagnostic reports it with `list_truncated` set and names which fault ended the walk, and a member whose header was cut short is reported as encrypted rather than as plaintext, since the walk may have stopped before the record that would have said so. That last part also decides how the member reads: a member archivey reads by slicing the archive (stored, not solid, not split) is sliced only once its bytes have been checked against a checksum that survived the damage — where no checksum survived, or the bytes fail it, the read raises `CorruptionError` naming the header. A cut-short member that needs `unrar` is decoded by it as before, with any surviving checksum checked as the member is read. The archive as a whole is not reported encrypted by one such member. A RAR5 archive's own `CMT` and `QO` service headers carry the same records and are reported the same way, in every volume; they are not members, so those diagnostics carry no member name and the message says what the archive does without — the comment, or the quick-open index. How many of them one archive may report is capped, because nothing lists them and `max_members` therefore never counted them; past the cap one more diagnostic says how many went undescribed. |
 
@@ -116,12 +117,15 @@ config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
   report the archive's own bytes or metadata as anomalous — and collects the rest.
 - **`DiagnosticPolicy.pedantic()`** raises on everything.
 
-Five codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive is
-legitimate), `PASSWORD_ARGUMENT_UNUSED` and `ENCODING_ARGUMENT_UNUSED` (argument
-hygiene — a pipeline passing a password to every call would otherwise raise on every
-unencrypted archive), `EXPLICIT_FORMAT_LISTED_EMPTY` (an override that halts you is not
-an override), and `STREAM_REWIND_REDECOMPRESSES` (your access pattern, not the archive
-— most useful as a targeted tripwire). `ARCHIVE_INTEGRITY_CODES` is exported, so you can
+Seven codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
+is legitimate), `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED` and
+`MEMBER_SELECTOR_UNMATCHED` (argument hygiene — a pipeline passing a password, or one
+list of names, to every call would otherwise raise on every archive they do not fit),
+`EXPLICIT_FORMAT_LISTED_EMPTY` (an override that halts you is not an override),
+`STREAM_REWIND_REDECOMPRESSES` (your access pattern, not the archive — most useful as a
+targeted tripwire), and `PROBE_FORMAT_UNCONFIRMED` (it is emitted while the matching
+`TruncatedError` or `CorruptionError` is raised, and that error already carries
+`format_unconfirmed=True`). `ARCHIVE_INTEGRITY_CODES` is exported, so you can
 build your own policy from it.
 
 **New codes may appear in minor releases.** A policy with `default=RAISE` is therefore

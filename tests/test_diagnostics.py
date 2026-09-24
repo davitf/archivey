@@ -871,6 +871,7 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
         DiagnosticCode.PROBE_FORMAT_UNCONFIRMED,
+        DiagnosticCode.MEMBER_SELECTOR_UNMATCHED,
     }
 
 

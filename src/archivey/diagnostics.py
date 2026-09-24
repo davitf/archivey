@@ -78,6 +78,7 @@ class DiagnosticCode(str, Enum):
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
+    MEMBER_SELECTOR_UNMATCHED = "member_selector_unmatched"
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -341,6 +342,22 @@ class StreamRewindContext(_JsonSafeContext):
     accelerator: str | None = None
 
 
+@dataclass(frozen=True)
+class SelectorUnmatchedContext(_JsonSafeContext):
+    """One ``members=`` selector entry matched no member of the archive.
+
+    ``entry`` is the name the caller passed (``entry_kind="name"``), or the name of
+    the ``ArchiveMember`` the caller passed (``entry_kind="member"``). A member entry
+    matches by identity, so it is unmatched when it came from another archive or
+    another reader, or was built by hand and carries no identity.
+    """
+
+    kind: Literal["selector_unmatched"] = "selector_unmatched"
+    archive_name: str | None = None
+    entry: str = ""
+    entry_kind: Literal["name", "member"] = "name"
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -357,6 +374,7 @@ DiagnosticContext = (
     | DigestContext
     | SeekIndexContext
     | StreamRewindContext
+    | SelectorUnmatchedContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -381,6 +399,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
+        DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
     }
 )
 
@@ -405,7 +424,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The membership of :meth:`DiagnosticPolicy.strict`. Six codes are deliberately **out**,
+The membership of :meth:`DiagnosticPolicy.strict`. Seven codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -422,6 +441,9 @@ and the reasons are part of the contract rather than an oversight:
   ``strict`` would replace that typed error with ``DiagnosticRaisedError`` mid-raise.
   Default disposition is COLLECT (via ``DiagnosticPolicy``'s default); it is not a
   member of :data:`ARCHIVE_INTEGRITY_CODES`.
+- ``MEMBER_SELECTOR_UNMATCHED`` — reports the caller's ``members=`` argument, not the
+  archive. A job that passes one fixed list of names to many archives would otherwise
+  raise on every archive that lacks one of them.
 """
 
 
@@ -693,6 +715,7 @@ __all__ = [
     "OnDiagnostic",
     "ScanRaceContext",
     "SeekIndexContext",
+    "SelectorUnmatchedContext",
     "StreamRewindContext",
     "SymlinkTargetContext",
     "UnconfirmedFormatContext",
