@@ -365,6 +365,35 @@ def test_info_and_detect(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -
     assert main(["detect", str(sample_zip)]) == EXIT_OK
 
 
+def test_info_on_a_directory_reports_the_directory_format(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`info <dir>` works: detect_format answers DIRECTORY, as open_archive reads it."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "a.txt").write_bytes(b"hello")
+    assert main(["info", str(tree)]) == EXIT_OK
+    captured = capsys.readouterr()
+    assert "directory" in captured.out
+    assert "cannot open" not in captured.err
+    assert "password" not in captured.err
+
+
+def test_default_run_on_tar_prints_no_password_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The CLI's own provider is not a password the user supplied."""
+    import tarfile
+
+    path = tmp_path / "a.tar"
+    with tarfile.open(path, mode="w") as tar:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 5
+        tar.addfile(info, io.BytesIO(b"hello"))
+    assert main(["list", str(path)]) == EXIT_OK
+    assert "password" not in capsys.readouterr().err
+
+
 def test_info_verbose_prints_cost_axes(
     sample_zip: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

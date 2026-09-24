@@ -891,3 +891,37 @@ def test_the_logged_line_is_the_escaped_message(
         )
     assert "\x1b" not in diagnostic.message and "\r" not in diagnostic.message
     assert [r.getMessage() for r in caplog.records] == [diagnostic.message]
+
+
+@pytest.mark.parametrize("kind", ["gz", "tar", "directory"])
+def test_password_provider_is_not_reported_unused(tmp_path: Path, kind: str) -> None:
+    """A provider on a format without encryption records nothing; a string still does.
+
+    The CLI passes a provider on every run, so reporting it made every TAR, gzip and
+    directory run print a warning about a password nobody typed.
+    """
+    import gzip
+    import tarfile
+
+    if kind == "gz":
+        source = tmp_path / "a.txt.gz"
+        source.write_bytes(gzip.compress(b"hello"))
+    elif kind == "tar":
+        source = tmp_path / "a.tar"
+        with tarfile.open(source, mode="w") as tar:
+            info = tarfile.TarInfo("a.txt")
+            info.size = 5
+            tar.addfile(info, io.BytesIO(b"hello"))
+    else:
+        source = tmp_path / "tree"
+        source.mkdir()
+        (source / "a.txt").write_bytes(b"hello")
+
+    def provider(_request: object) -> str:
+        raise AssertionError("a format without encryption must not ask")
+
+    with open_archive(source, password=provider) as reader:
+        reader.members()
+        assert DiagnosticCode.PASSWORD_ARGUMENT_UNUSED not in reader.diagnostics.counts
+    with open_archive(source, password="typed") as reader:
+        assert reader.diagnostics.counts[DiagnosticCode.PASSWORD_ARGUMENT_UNUSED] == 1

@@ -1215,3 +1215,16 @@ def test_sfx_miss_in_a_source_shorter_than_the_window_is_not_cut_short(
     info = detect_format(path, budget=FAST_BUDGET)
     assert info.detected_by == "extension"
     assert not any(s.tier == "sfx_scan" for s in info.unavailable_tiers)
+
+
+@pytest.mark.parametrize("as_str", [False, True])
+def test_detect_format_reports_directory_for_a_directory_path(
+    tmp_path: Path, as_str: bool
+) -> None:
+    """A directory is DIRECTORY, as open_archive reads it, not an IsADirectoryError."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    info = detect_format(str(tree) if as_str else tree)
+    assert info.format == ArchiveFormat.DIRECTORY
+    assert info.confidence is DetectionConfidence.CERTAIN
+    assert info.detected_by == "directory"
