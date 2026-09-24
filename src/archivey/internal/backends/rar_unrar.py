@@ -86,9 +86,15 @@ class _UnrarProbe:
 # Keyed by absolute path. A durable "not RARLAB" answer stores
 # ``is_rarlab=False`` so a lookalike costs one process, not one per attempted
 # read. A too-old (or unparseable) RARLAB banner stores ``is_rarlab=True`` and
-# is still refused. A ``which`` miss and a probe that could not *run* the
-# binary are not stored.
+# is still refused. A probe that timed out stores ``is_rarlab=False`` too: the
+# binary ran and did not answer, and re-probing would cost the full timeout on
+# every member read. A ``which`` miss and a probe that could not *run* the
+# binary (``OSError``, e.g. ``EMFILE``) are not stored.
 _cached_unrar: dict[str, _UnrarProbe] = {}
+
+# Seconds the identification probe may run. A binary that has not printed its
+# banner by then is cached as not RARLAB (see ``_cached_unrar``).
+_PROBE_TIMEOUT_SECONDS: float = 10
 
 # ``rar`` / ``unrar`` prepend ``switches=`` from ``~/.rarrc`` / ``~/.unrarrc``.
 # Archivey builds a complete argv; ``-cfg-`` keeps those files from injecting
@@ -142,7 +148,7 @@ def _is_rarlab_unrar(path: str) -> _UnrarBanner:
     completed = subprocess.run(
         [path, _RAR_DISABLE_CONFIG],
         capture_output=True,
-        timeout=10,
+        timeout=_PROBE_TIMEOUT_SECONDS,
         check=False,
     )
     banner = (completed.stdout or b"") + (completed.stderr or b"")
@@ -236,13 +242,29 @@ def find_rarlab_unrar() -> str:
                 _note_floor(candidate, cached.version)
             continue
 
+        st_dev, st_ino, st_mtime_ns, st_size = identity
         try:
             banner = _is_rarlab_unrar(candidate)
+        except subprocess.TimeoutExpired as exc:
+            # The binary ran and did not answer. Unlike a spawn failure, that is
+            # a property of this inode, so remember it: otherwise every member
+            # read pays the probe timeout again. A replaced binary changes the
+            # stat identity and is probed afresh.
+            run_cause = exc
+            _cached_unrar[candidate] = _UnrarProbe(
+                unrar_path=candidate,
+                is_rarlab=False,
+                version=None,
+                st_dev=st_dev,
+                st_ino=st_ino,
+                st_mtime_ns=st_mtime_ns,
+                st_size=st_size,
+            )
+            continue
         except (OSError, subprocess.SubprocessError) as exc:
             run_cause = exc
             continue
 
-        st_dev, st_ino, st_mtime_ns, st_size = identity
         _cached_unrar[candidate] = _UnrarProbe(
             unrar_path=candidate,
             is_rarlab=banner.is_rarlab,
@@ -535,7 +557,7 @@ def open_unrar_p(
     member: str | None = None,
     version_control: bool = False,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
-    """Spawn ``<unrar|rar> p -inul -cfg- [-ver] [-p|-p-] [-n./member] archive``.
+    """Spawn ``<unrar|rar> p -inul -cfg- [-ver] [-p|-p-] [-n./member] -- archive``.
 
     ``version_control`` adds ``-ver`` so the pipe includes WinRAR file-version history
     payloads (needed for solid demux when versioned FILE rows are present, and for a
@@ -562,6 +584,11 @@ def open_unrar_p(
     cmd.append(pass_arg)
     if member is not None:
         cmd.append(_member_include_switch(member))
+    # ``--`` ends switch parsing, so an archive path starting with ``-`` (a
+    # caller's ``-inul.rar``) is read as the archive and not as a switch. An
+    # ``@`` prefix needs no guard: unrar reads the first non-switch argument as
+    # the archive, and only later file-name arguments as listfiles.
+    cmd.append("--")
     cmd.append(str(archive_path))
     feed_password = pass_arg == "-p"
     # Encode before spawning: _password_stdin_bytes refuses a password unrar would
