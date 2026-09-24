@@ -23,7 +23,7 @@ React to specific cases with the subtypes:
 | Exception | Raised when |
 | --- | --- |
 | `OpenError` | the source can't be opened — `FormatDetectionError` (unknown format), `UnsupportedFormatError`, `StreamNotSeekableError` (a pipe, where the format or the access mode needs seek) |
-| `EncryptionError` | a password is required, missing, or wrong |
+| `EncryptionError` | a password is required, missing, or wrong; for a ZipCrypto member, also when its data fails its integrity check after the password passed the format's one-byte check, which a damaged member can cause too (see [Gotchas](gotchas.md)) |
 | `CorruptionError` / `TruncatedError` | the archive is malformed or cut short |
 | `PackageNotInstalledError` | an optional package or tool is absent, or RARLAB `unrar`/`rar` is older than 6.0 (see [Install](install.md#getting-rarlab-unrar-or-rar)) |
 | `FilterRejectionError` | extraction blocked an unsafe member — `PathTraversalError`, `SymlinkEscapeError`, `SpecialFileError` |

@@ -73,6 +73,11 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   plausible **non-empty** header can still parse; an empty one is rejected as
   `EncryptionError`, never a silent empty listing. Don't read "0 members" as proof of
   emptiness without checking diagnostics.
+- **A damaged ZipCrypto member reads as a password error.** ZipCrypto checks a password
+  against one byte, so about one wrong password in 256 passes and decrypts to garbage
+  that fails the CRC or the decompressor. Nothing in the archive tells that from a
+  damaged member read with the right password, so both raise `EncryptionError` with a
+  message naming both causes, not `CorruptionError`. → [ZIP](formats.md#zip)
 - **A RAR password cannot contain a line break.** `unrar` reads the password as a
   single line, so everything from the first newline on would be discarded — a wrong
   password would decrypt, with nothing downstream able to tell. Archivey refuses it

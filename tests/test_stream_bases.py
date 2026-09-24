@@ -358,6 +358,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.iso_reader as iso_reader
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.backends.zip_aes as zip_aes
+    import archivey.internal.backends.zip_reader as zip_reader
     import archivey.internal.detection as detection
     import archivey.internal.source as source_mod
     import archivey.internal.streams.archive_stream as archive_stream
@@ -400,6 +401,8 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # table is above it.
         source_mod.ArchiveSource,
         zip_aes.WinZipAesDecryptStream,
+        # Wraps a stdlib ZipExtFile, which keeps no seek-point table.
+        zip_reader._UnconfirmedZipCryptoStream,
         detection._BoundedPeekReader,
         # Stands in for a refused .lzma decoder: every read raises, so it produces no
         # bytes and has no seek-point table to forward to.
@@ -520,6 +523,7 @@ def test_delegating_stream_close_inventory() -> None:
 
     import archivey.internal.backends.iso_reader as iso_reader
     import archivey.internal.backends.rar_reader as rar_reader
+    import archivey.internal.backends.zip_reader as zip_reader
     import archivey.internal.streams.codecs as codecs
     import archivey.internal.streams.counting as counting
     import archivey.internal.streams.streamtools.locked as locked
@@ -532,6 +536,7 @@ def test_delegating_stream_close_inventory() -> None:
         counting.SeekCountingStream,
         iso_reader._PyCdlibStream,
         codecs._GzipTruncationCheckStream,
+        zip_reader._UnconfirmedZipCryptoStream,
     }
     subclass_closes_inner = {
         rar_reader._UnrarOwnedStream,
@@ -586,12 +591,12 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
     auto-detection of an overridden ``read`` is still rejected (base
     docstring) — a plain forward of ``read`` should keep the zero-copy path,
     and silent auto-detection would hide that choice. No such forward exists
-    today (the four classes that override ``read`` also override
+    today (the five classes that override ``read`` also override
     ``readinto``). A later one needs a declared exemption here, not a silent
     ``True``.
 
-    Mandatory-explicit ``True`` on the other seven would record a decision
-    that was never made: three never override ``read``, four already
+    Mandatory-explicit ``True`` on the other eight would record a decision
+    that was never made: three never override ``read``, five already
     implement ``readinto``. Those must leave the class flag at the default.
 
     The walk asserts the class flag. A production ``__init__`` that still

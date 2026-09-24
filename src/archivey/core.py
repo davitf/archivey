@@ -308,7 +308,10 @@ def open_archive(
     reject garbage the reader must scan the member once (CRC over every surviving
     candidate in parallel) to decide. That full pass is rare in practice (multiple
     passwords *and* a colliding wrong candidate *and* a STORED member) but can matter
-    for very large stored members.
+    for very large stored members. With a single password there is no confirmation
+    read, so a wrong ZipCrypto password that passes the one-byte check fails on the
+    member's own read, as an ``EncryptionError`` saying the password may be wrong or
+    the member corrupt.
 
     A password supplied for a *format* with no encryption at all (TAR, ISO, a
     directory, the single-file compressed streams) is **accepted, not refused** — it is

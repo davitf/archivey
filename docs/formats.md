@@ -77,6 +77,10 @@ behaviour. The complete list is on the two classes.
   parsing the central directory, so the failure is archive-wide rather than confined to
   the one bad name. A native ZIP reader could recover the other entries; today it
   cannot. Rare, and it fails loudly.
+- **ZipCrypto** checks a password against one byte, so a wrong one passes about one
+  time in 256. Its data then fails the CRC or the decompressor, and Archivey raises
+  `EncryptionError` saying the password may be wrong or the member corrupt, since a
+  damaged member read with the right password fails the same way.
 - ZipCrypto multi-password confirmation can be expensive on **STORED** members — see
   [access costs](access-and-cost.md). **WinZip AES** (method 99 / AE-1 and AE-2) decrypts via the
   `[recommended]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
