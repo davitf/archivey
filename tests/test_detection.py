@@ -1195,6 +1195,15 @@ def test_sfx_miss_in_a_budget_shortened_window_records_the_scan_as_cut_short(
     assert fast.detected_by == "extension"
     assert cut_short in fast.unavailable_tiers
 
+    # A BALANCED miss on a source longer than SFX_MAX: the structural bound ended
+    # the scan, not the budget, so nothing is recorded.
+    long_miss = tmp_path / "stub.zip"
+    long_miss.write_bytes(b"MZ" + b"\x00" * (3 * 1024 * 1024))
+    missed = detect_format(long_miss, budget=BALANCED_BUDGET)
+    assert missed.detected_by == "extension"
+    assert cut_short not in missed.unavailable_tiers
+    assert cut_short in detect_format(long_miss, budget=FAST_BUDGET).unavailable_tiers
+
 
 def test_sfx_miss_in_a_source_shorter_than_the_window_is_not_cut_short(
     tmp_path: Path,
