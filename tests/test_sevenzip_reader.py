@@ -1328,7 +1328,7 @@ def test_first_stage_bcj_does_not_close_pack_source() -> None:
     """A first-stage BCJ stage borrows the pack view (Copy+BCJ / BCJ-alone).
 
     Later BCJ stages wrap a private previous output and pass ``owns_inner=True``.
-    Hardcoding True on every ``_BcjStage`` closed a raw ``BytesIO`` here;
+    Hardcoding True on every ``_FilterStage`` closed a raw ``BytesIO`` here;
     production pack views are ``SharedView``, so the over-close was absorbed.
     """
 
@@ -1664,9 +1664,17 @@ def _sevenzip_uint64(value: int) -> bytes:
 
 
 def _num_unpack_stream_header(
-    count: int, *, crc_all_defined: bool = False, header_pad: int = 0
+    count: int,
+    *,
+    crc_all_defined: bool = False,
+    header_pad: int = 0,
+    with_sizes: bool = False,
 ) -> bytes:
     """HEADER + one COPY folder + ``kNumUnPackStream = count``, no SIZE (S2-F1).
+
+    A count that survives the bounds is refused without ``kSize`` (S2-F3), so the
+    cases that must parse set ``with_sizes``: ``count - 1`` zero sizes, the last
+    substream taking the folder's 10 bytes.
 
     When ``crc_all_defined`` is set, a ``kCRC`` / all-defined flag follows the count so
     the ``_load_boolean(..., check_all=True)`` ``[True] * count`` path is the one that
@@ -1678,6 +1686,8 @@ def _num_unpack_stream_header(
     """
     body = bytearray(bytes.fromhex("0104070b010001000c0a00080d"))
     body += _sevenzip_uint64(count)
+    if with_sizes:
+        body += b"\x09" + b"\x00" * (count - 1)
     if crc_all_defined:
         body += bytes.fromhex("0a01")
     else:
@@ -1700,7 +1710,7 @@ def test_files_info_count_is_bounded_against_header_size() -> None:
     huge = (1 << 40).to_bytes(8, "little")
     cur = _Cursor(b"\xff" + huge)  # a 9-byte "header" claiming 2**40 files
     with pytest.raises(CorruptionError, match="exceeds the .* header"):
-        _read_files_info(cur)
+        _read_files_info(cur, max_members=None)
 
 
 def test_num_unpack_streams_count_is_bounded() -> None:
@@ -1712,7 +1722,7 @@ def test_num_unpack_streams_count_is_bounded() -> None:
         parse_header_block,
     )
 
-    ok = parse_header_block(_num_unpack_stream_header(2))
+    ok = parse_header_block(_num_unpack_stream_header(2, with_sizes=True))
     assert isinstance(ok, PlainHeader)
     assert ok.streams.num_unpackstreams_folders == [2]
     assert ok.streams.digests == [None, None]
@@ -1721,7 +1731,9 @@ def test_num_unpack_streams_count_is_bounded() -> None:
     # for the count — the bound that used to reject this is the F1 regression.
     above_stream_cap = _MAX_NUM_STREAMS + 1
     at_scale = parse_header_block(
-        _num_unpack_stream_header(above_stream_cap, header_pad=above_stream_cap)
+        _num_unpack_stream_header(
+            above_stream_cap, header_pad=above_stream_cap, with_sizes=True
+        )
     )
     assert isinstance(at_scale, PlainHeader)
     assert at_scale.streams.num_unpackstreams_folders == [above_stream_cap]
@@ -1757,7 +1769,7 @@ def test_member_scaled_counts_respect_max_members() -> None:
     from archivey.exceptions import ResourceLimitError
     from archivey.internal.backends.sevenzip_parser import parse_header_block
 
-    header = _num_unpack_stream_header(200, header_pad=200)
+    header = _num_unpack_stream_header(200, header_pad=200, with_sizes=True)
     parse_header_block(header)
     parse_header_block(header, max_members=None)
     with pytest.raises(ResourceLimitError, match="max_members"):
@@ -1782,7 +1794,7 @@ def test_cursor_truncated_property_payload_raises() -> None:
     # with only a few bytes left → truncated at slice().
     cur = _Cursor(bytes([1, 0x11, 100]))
     with pytest.raises(CorruptionError, match="Truncated"):
-        _read_files_info(cur)
+        _read_files_info(cur, max_members=None)
 
 
 def test_cursor_fixed_width_field_at_eof_raises() -> None:
@@ -1843,13 +1855,13 @@ def test_next_header_size_cap_is_typed_corruption() -> None:
 
     from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_parser import (
-        _MAX_NEXT_HEADER_SIZE,
         MAGIC_7Z,
+        MAX_NEXT_HEADER_SIZE,
     )
     from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     next_offset = 0
-    next_size = _MAX_NEXT_HEADER_SIZE + 1
+    next_size = MAX_NEXT_HEADER_SIZE + 1
     next_crc = 0
     start_header = struct.pack("<QQI", next_offset, next_size, next_crc)
     start_crc = zlib.crc32(start_header) & 0xFFFFFFFF
@@ -1949,15 +1961,15 @@ def test_encoded_header_self_copy_is_typed_corruption() -> None:
 def test_encoded_header_folder_unpack_sizes_are_capped_in_total() -> None:
     """Per-folder unpack cap is not enough: two COPY folders can concatenate past it."""
     from archivey.exceptions import CorruptionError
-    from archivey.internal.backends.sevenzip_parser import _MAX_NEXT_HEADER_SIZE
+    from archivey.internal.backends.sevenzip_parser import MAX_NEXT_HEADER_SIZE
     from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
-    # Two COPY folders, unpack 1 + _MAX_NEXT_HEADER_SIZE. The running total
+    # Two COPY folders, unpack 1 + MAX_NEXT_HEADER_SIZE. The running total
     # is the bound; a per-folder check would let the first through.
     next_header = (
         bytes.fromhex("1706000209010100070b0200010001000c")
         + _sevenzip_uint64(1)
-        + _sevenzip_uint64(_MAX_NEXT_HEADER_SIZE)
+        + _sevenzip_uint64(MAX_NEXT_HEADER_SIZE)
         + bytes.fromhex("0000")
     )
     blob = _sevenzip_blob(packed=b"\x00\x00", next_header=next_header)
@@ -2277,11 +2289,11 @@ def test_bcj_decoder_accepts_an_unpack_size_above_two_gib() -> None:
     """
     import lzma
 
-    from archivey.internal.streams.decompress import BcjDecoder
+    from archivey.internal.streams.decompress import FilterDecoder
 
     payload = bytes(range(256)) * 8
-    small = BcjDecoder(lzma_filter_id=lzma.FILTER_X86, unpack_size=len(payload))
-    huge = BcjDecoder(lzma_filter_id=lzma.FILTER_X86, unpack_size=2**31)
+    small = FilterDecoder(lzma_filter={"id": lzma.FILTER_X86}, unpack_size=len(payload))
+    huge = FilterDecoder(lzma_filter={"id": lzma.FILTER_X86}, unpack_size=2**31)
     assert huge.feed(payload).data == small.feed(payload).data
     # The declared size still decides whether the stream finished, so the 2 GiB
     # decoder arms the truncation error that the correctly-sized one does not.

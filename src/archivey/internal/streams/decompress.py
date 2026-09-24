@@ -12,6 +12,7 @@ from __future__ import annotations
 import lzma
 import os
 import zlib
+from collections.abc import Mapping
 from typing import BinaryIO, Protocol
 
 from archivey.exceptions import CorruptionError, TruncatedError
@@ -845,33 +846,35 @@ class _Lzma2Framer:
         return b"\x00"
 
 
-class BcjDecoder(BaseDecoder):
-    """Apply a BCJ branch filter to an already-decompressed byte stream.
+class FilterDecoder(BaseDecoder):
+    """Apply a filter-only liblzma stage (a BCJ branch filter, or Delta) to plain bytes.
 
     The filter runs through liblzma, over an :class:`_Lzma2Framer` wrapper because
     liblzma needs a compression filter to close the chain. It must not be ``pybcj``:
     that decoder cannot be constructed for a member of 2 GiB or more, and its IA64
     filter truncates. See ``dev-docs/known-issues.md`` → "7z BCJ branch filters".
 
-    ``unpack_size`` is the coder's declared output length, used only to decide
-    whether the stream finished — never passed to the filter, which needs no bound.
+    ``lzma_filter`` is the liblzma filter dict, options included (a BCJ
+    ``start_offset``, a Delta ``dist``). ``unpack_size`` is the coder's declared
+    output length, used only to decide whether the stream finished — never passed
+    to the filter, which needs no bound.
     """
 
-    def __init__(self, *, lzma_filter_id: int, unpack_size: int) -> None:
-        self._lzma_filter_id = lzma_filter_id
+    def __init__(self, *, lzma_filter: Mapping[str, int], unpack_size: int) -> None:
+        self._lzma_filter = dict(lzma_filter)
         self._unpack_size = unpack_size
         self._produced = 0
         self._framer = _Lzma2Framer()
         self._decomp: lzma.LZMADecompressor = lzma.LZMADecompressor(
             format=lzma.FORMAT_RAW,
-            filters=[{"id": lzma_filter_id}, {"id": lzma.FILTER_LZMA2}],
+            filters=[self._lzma_filter, {"id": lzma.FILTER_LZMA2}],
         )
         self._pending = b""
 
-    def recreate(self, point: SeekPoint, inner: BinaryIO) -> BcjDecoder:
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> FilterDecoder:
         del point, inner
-        return BcjDecoder(
-            lzma_filter_id=self._lzma_filter_id, unpack_size=self._unpack_size
+        return FilterDecoder(
+            lzma_filter=self._lzma_filter, unpack_size=self._unpack_size
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -1066,16 +1069,16 @@ def PpmdDecompressorStream(
     )
 
 
-def BcjFilterStream(
+def FilterStream(
     path: str | os.PathLike[str] | BinaryIO,
     *,
-    lzma_filter_id: int,
+    lzma_filter: Mapping[str, int],
     unpack_size: int,
     seekable: bool = False,
     collector: DiagnosticCollector | None = None,
     owns_inner: bool = False,
 ) -> DecompressorStream:
-    """Apply a BCJ branch filter (forward-only).
+    """Apply a filter-only stage — BCJ branch filter or Delta (forward-only).
 
     ``owns_inner`` is True when this filter wraps a private previous stage
     (later 7z BCJ stages, including the LZMA1 cap slice). First-stage
@@ -1084,10 +1087,10 @@ def BcjFilterStream(
     del collector  # accepted for call-site uniformity; BCJ emits no diagnostics today
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: BcjDecoder(
-            lzma_filter_id=lzma_filter_id, unpack_size=unpack_size
+        make_decoder=lambda _p, _i: FilterDecoder(
+            lzma_filter=lzma_filter, unpack_size=unpack_size
         ),
-        codec_name="bcj",
+        codec_name="filter",
         seekable=seekable,
         owns_inner=owns_inner,
     )

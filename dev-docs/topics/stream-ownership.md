@@ -44,8 +44,8 @@ inventories below the per-class one.
 (it holds no OS handle). `owns_inner` defaults to borrow, matching
 `DecompressorStream`. Nothing in the 7z pipeline closes it on the common
 `[AES, LZMA]` shape except GC: stdlib `LZMAFile` does not close a passed-in
-fileobj, and `_execute_stage` forwards `owns_inner` only to `_BcjStage`
-(`[AES, BCJ]`). RAR headers use `_HeaderDecryptStream` (borrow, ciphertext
+fileobj, and `_execute_stage` forwards `owns_inner` only to `_FilterStage`
+(`[AES, BCJ]`, or a Delta with no LZMA). RAR headers use `_HeaderDecryptStream` (borrow, ciphertext
 `tell` as archive offset) and ZIP uses `WinZipAesDecryptStream` (hardcoded
 own, CTR). Two CBC streams share `DecryptStage`; WinZip AES shares only the
 availability check. What still blocks folding the RAR header stream in is

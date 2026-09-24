@@ -515,6 +515,9 @@ _CLI_PRINT_ALLOWED = {
     ),
     "info_cmd.py: key": "_field's key; its call sites are checked here",
     "info_cmd.py: text": "_field's text; its call sites are checked here",
+    "test_cmd.py: max(members_total - ok - failed, 0)": (
+        "_not_tested's return: arithmetic on int counts"
+    ),
     "list_cmd.py: report.error": "an ArchiveyError, which escapes itself",
     "main.py: archivey.__version__": "archivey's own version",
     "main.py: format_format_label(fmt)": "format label from the format registry",

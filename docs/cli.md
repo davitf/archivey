@@ -41,6 +41,14 @@ archivey extract photos.zip --policy trusted -d /tmp/out
 - Verbs are bare words (`x`, `list`); dash-prefixed forms like `-x` are not mode selectors.
 - A file whose name is a verb word (e.g. `./x`) is reached with an explicit verb:
   `archivey list ./x`.
+- A file whose name starts with `-` is reached after `--`: `archivey -- -weird.zip`
+  (or `archivey list -- -weird.zip`). Every word after `--` is a file or pattern, so
+  `archivey -- list` opens a file named `list`.
+- Without `-d`, `extract` may wrap the members in a folder named after the archive.
+  If a symlink already has that name, `extract` never writes through it, whatever
+  `--overwrite` says: it uses the next free `name (N)` instead. Pass `-d name` to
+  extract through the link on purpose.
+- `test` exits `1` when its summary reports members as not tested, even if none failed.
 - Exit codes: `0` success, `1` operation failed or extract aborted on a member
   failure (`--stop-on-error`), `2` usage error (argparse), `3` extract
   **completed** with ≥1 safety-policy block and no member failure (safe members
