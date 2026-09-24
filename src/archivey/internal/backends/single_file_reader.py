@@ -48,7 +48,6 @@ from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
     Codec,
     MetadataContext,
-    gzip_has_additional_member,
     open_codec_stream,
     resolve_codec,
     stream_codec_for_format,
@@ -64,8 +63,10 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    HashAlgorithm,
     MemberStreams,
     MemberType,
+    crc32_digest,
 )
 
 _T = TypeVar("_T")
@@ -141,6 +142,11 @@ class SingleFileReader(BaseArchiveReader):
             streaming=self._streaming or not self._seekable,
             seekable=seek_declared and self._seekable,
         )
+        if self._codec is Codec.GZIP:
+            self._codec_config = replace(
+                self._codec_config,
+                on_gzip_sole_member_end=self._on_gzip_sole_member_end,
+            )
 
         # Metadata probes answer a different question than member streams, so they get
         # their own config. `seekable_members` declares what the caller wants to do with
@@ -208,7 +214,6 @@ class SingleFileReader(BaseArchiveReader):
             peek_header=self._peek_header,
             peek_trailer=self._peek_trailer,
             probe_decompressed_size=self._probe_decompressed_size,
-            probe_gzip_stored_crc32=self._probe_gzip_stored_crc32,
             probe_lzip_index=self._probe_lzip_index,
         )
 
@@ -297,25 +302,27 @@ class SingleFileReader(BaseArchiveReader):
         src.seek(pos)
         return data
 
-    def _probe_gzip_stored_crc32(self) -> int | None:
-        """Trailer CRC-32 for a single-member gzip, in one seekable pass.
+    def _on_gzip_sole_member_end(self) -> None:
+        """Add the gzip trailer CRC-32 to ``member.hashes`` once a read proves it whole.
 
-        Returns ``None`` when the source is non-seekable, too short, or multi-member.
+        The stdlib gzip decoder calls this when a read reaches a clean end of input that
+        held exactly one member, so the source's last 8 bytes are that member's trailer
+        and its CRC-32 covers everything decoded. zlib has already checked the CRC
+        against the data. The listing does not show this CRC before such a read: proving
+        single-memberness at open meant scanning the whole compressed file. A
+        non-seekable source has no trailer left to peek, so it gets no CRC.
         """
-
-        def probe(f: BinaryIO) -> int | None:
-            size = f.seek(0, io.SEEK_END)
-            if size < 18:  # header(10) + min deflate + trailer(8)
-                return None
-            if gzip_has_additional_member(f):
-                return None
-            f.seek(-8, io.SEEK_END)
-            trailer = f.read(8)
-            if len(trailer) < 8:
-                return None
-            return struct.unpack_from("<I", trailer, 0)[0]
-
-        return self._with_seekable_source(probe)
+        member = self._member
+        if HashAlgorithm.CRC32 in member.hashes:
+            return
+        trailer = self._peek_trailer(8)
+        if trailer is None:
+            return
+        hashes = dict(member.hashes)
+        hashes[HashAlgorithm.CRC32] = crc32_digest(
+            struct.unpack_from("<I", trailer, 0)[0]
+        )
+        member.hashes = hashes
 
     def _probe_lzip_index(self) -> tuple[int, int] | None:
         """Decompressed size + combined CRC-32 from one seekable lzip index scan.

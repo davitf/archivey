@@ -876,9 +876,7 @@ class MetadataContext:
     bytes of the compressed source without consuming it; ``peek_trailer(n)`` returns the
     trailing ``n`` bytes when the source is seekable/path (else ``None``);
     ``probe_decompressed_size()`` returns the decompressed size from the stream
-    index/trailer when cheaply available (else ``None``); ``probe_gzip_stored_crc32()``
-    returns the single-member gzip trailer CRC when that is cheaply knowable (else
-    ``None``), in one seekable pass; ``probe_lzip_index()`` returns
+    index/trailer when cheaply available (else ``None``); ``probe_lzip_index()`` returns
     ``(decompressed_size, combined_crc32)`` from one seekable lzip index scan when
     available (else ``None``).
     """
@@ -886,7 +884,6 @@ class MetadataContext:
     peek_header: Callable[[int], bytes]
     peek_trailer: Callable[[int], bytes | None]
     probe_decompressed_size: Callable[[], int | None]
-    probe_gzip_stored_crc32: Callable[[], int | None]
     probe_lzip_index: Callable[[], tuple[int, int] | None]
 
 
@@ -1196,7 +1193,9 @@ class GzipCodec(StreamCodec):
         # Stdlib path: gzip-window DecompressorStream (not gzip.GzipFile). CRC/ISIZE
         # outcomes come from zlib's gzip window; multi-member chaining matches GzipFile
         # (NUL pad / trailing zeros / trailing junk). O(n) rewind with a warning.
-        return GzipDecompressorStream(source)
+        return GzipDecompressorStream(
+            source, on_sole_member_end=config.on_gzip_sole_member_end
+        )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, gzip.BadGzipFile):
@@ -1225,15 +1224,15 @@ class GzipCodec(StreamCodec):
         return _translate_rapidgzip(exc, "gzip")
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
-        """Surface gzip's stored filename (FNAME), mtime, and trailer CRC when cheap.
+        """Surface gzip's stored filename (FNAME) and mtime.
 
         RFC 1952 specifies the FNAME field as ISO-8859-1 (Latin-1), so the decoded value in
         ``extra`` uses that encoding; ``raw_name`` keeps the verbatim stored bytes.
 
-        The 8-byte trailer CRC-32 is surfaced as ``member.hashes[HashAlgorithm.CRC32]``
-        only when the header is a valid gzip magic *and* the stream is a single member on a
-        seekable/path source (multi-member trailers cover only the last member). Never
-        triggers a decompression pass.
+        The trailer CRC-32 is not surfaced here. It describes the whole member only when
+        the file holds one gzip member, and proving that at open means scanning the whole
+        compressed file. The single-file reader adds it to ``member.hashes`` after a read
+        shows the first member ending at the end of the source.
         """
         header = ctx.peek_header(_GZIP_HEADER_PEEK)
         if len(header) < 10 or header[:2] != b"\x1f\x8b":
@@ -1257,12 +1256,6 @@ class GzipCodec(StreamCodec):
                 name_bytes = header[pos:end]
                 member.raw_name = name_bytes
                 member.extra["gzip.original_filename"] = name_bytes.decode("latin-1")
-
-        crc32 = ctx.probe_gzip_stored_crc32()
-        if crc32 is not None:
-            hashes = dict(member.hashes)
-            hashes[HashAlgorithm.CRC32] = crc32_digest(crc32)
-            member.hashes = hashes
 
 
 class Bzip2Codec(StreamCodec):

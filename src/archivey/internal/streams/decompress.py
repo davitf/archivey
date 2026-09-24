@@ -12,7 +12,7 @@ from __future__ import annotations
 import lzma
 import os
 import zlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import BinaryIO, Protocol
 
 from archivey.exceptions import CorruptionError, TruncatedError
@@ -82,19 +82,45 @@ class GzipDecoder(BaseDecoder):
 
     Mid-member ``max_length`` remainder stays in ``decompressobj.unconsumed_tail``
     (same as :class:`ZlibDecoder`); ``_retained`` is only for post-member bytes.
+
+    ``on_sole_member_end`` is called once, at a clean end of input, when the input held
+    exactly one member and nothing after it — not even NUL padding. The member's
+    8-byte trailer is then the last 8 bytes of the input, so its CRC-32 describes the
+    whole decoded output. It is the only point where that is known without scanning
+    the compressed input for a second member header.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, on_sole_member_end: Callable[[], None] | None = None) -> None:
         self._decomp = zlib.decompressobj(_GZIP_WBITS)
         # Post-member bytes not yet resolved (NUL padding / next magic / junk).
         # Never store unconsumed_tail here — that lives on the decompressobj.
         self._retained = b""
         self._between_members = False
         self._finished = False
+        self._on_sole_member_end = on_sole_member_end
+        # Members started, and whether any byte followed a member's trailer. Together
+        # they say whether the first member ended at the end of the input.
+        self._members = 1
+        self._padded = False
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> GzipDecoder:
         del point, inner
-        return GzipDecoder()
+        return GzipDecoder(self._on_sole_member_end)
+
+    def _start_member(self) -> None:
+        self._decomp = zlib.decompressobj(_GZIP_WBITS)
+        self._members += 1
+
+    def _finish_clean(self) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        if (
+            self._on_sole_member_end is not None
+            and self._members == 1
+            and not self._padded
+        ):
+            self._on_sole_member_end()
 
     def _arm_trailing_junk(self, data: bytes) -> None:
         """Defer trailing-junk CorruptionError so already-decoded bytes can return.
@@ -116,13 +142,15 @@ class GzipDecoder(BaseDecoder):
         i = 0
         while i < len(data) and data[i] == 0:
             i += 1
+        if i:
+            self._padded = True
         data = data[i:]
         if not data:
             self._between_members = True
             self._retained = b""
             return b""
         if data.startswith(_GZIP_MAGIC):
-            self._decomp = zlib.decompressobj(_GZIP_WBITS)
+            self._start_member()
             self._between_members = False
             self._retained = b""
             return data
@@ -210,12 +238,14 @@ class GzipDecoder(BaseDecoder):
             i = 0
             while i < len(data) and data[i] == 0:
                 i += 1
+            if i:
+                self._padded = True
             data = data[i:]
             if not data:
-                self._finished = True
+                self._finish_clean()
                 return DecodeOut(bytes(out))
             if data.startswith(_GZIP_MAGIC):
-                self._decomp = zlib.decompressobj(_GZIP_WBITS)
+                self._start_member()
                 self._between_members = False
                 try:
                     produced = self._decomp.decompress(data)
@@ -235,11 +265,13 @@ class GzipDecoder(BaseDecoder):
                 j = 0
                 while j < len(trailing) and trailing[j] == 0:
                     j += 1
+                if j:
+                    self._padded = True
                 trailing = trailing[j:]
                 if trailing:
                     self._arm_trailing_junk(trailing)
                     return DecodeOut(bytes(out))
-                self._finished = True
+                self._finish_clean()
                 return DecodeOut(bytes(out))
             self._arm_trailing_junk(data)
             return DecodeOut(bytes(out))
@@ -259,6 +291,8 @@ class GzipDecoder(BaseDecoder):
             j = 0
             while j < len(trailing) and trailing[j] == 0:
                 j += 1
+            if j:
+                self._padded = True
             trailing = trailing[j:]
             if trailing == b"\x1f" or (
                 trailing and not trailing.startswith(_GZIP_MAGIC)
@@ -267,7 +301,7 @@ class GzipDecoder(BaseDecoder):
             elif trailing.startswith(_GZIP_MAGIC):
                 self._pending_error = TruncatedError("gzip stream is truncated")
             else:
-                self._finished = True
+                self._finish_clean()
         return DecodeOut(bytes(out))
 
     @property
@@ -1020,11 +1054,16 @@ def ZlibDecompressorStream(
 
 def GzipDecompressorStream(
     path: str | os.PathLike[str] | BinaryIO,
+    *,
+    on_sole_member_end: Callable[[], None] | None = None,
 ) -> DecompressorStream:
-    """Inflate a gzip stream with multi-member chaining (forward-only; O(n) rewind)."""
+    """Inflate a gzip stream with multi-member chaining (forward-only; O(n) rewind).
+
+    ``on_sole_member_end`` is passed to :class:`GzipDecoder`.
+    """
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: GzipDecoder(),
+        make_decoder=lambda _p, _i: GzipDecoder(on_sole_member_end),
         codec_name="gzip",
     )
 

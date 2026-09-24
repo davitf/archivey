@@ -225,9 +225,12 @@ behaviour. The complete list is on the two classes.
 
 - One synthetic member (name from the source path, or `data` for anonymous streams).
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries `FNAME`.
-- `.gz` surfaces the trailer CRC-32 as `member.hashes["crc32"]` for a **single-member**
-  file on a seekable/path source (omit for multi-member gzip — the trailer covers only
-  the last member — and for non-seekable sources).
+- `.gz` lists **no** `member.hashes` entry. The trailer CRC-32 covers the whole member
+  only when the file holds one gzip member, and proving that at open would mean reading
+  the whole compressed file. After a read reaches the end of a file that holds exactly one
+  member and nothing after it, `member.hashes["crc32"]` is the trailer CRC. That needs a
+  seekable/path source and the default decoder; the `[seekable]` rapidgzip path, a
+  multi-member file and a file with trailing NUL padding never get one.
 - With the `[seekable]` rapidgzip accelerator on a seekable `.gz`, truncation detection is
   **best-effort** (empty→stdlib fallback + single-member ISIZE) — stronger than naked
   rapidgzip, weaker than stdlib alone. Do **not** rely on it when you need certainty;

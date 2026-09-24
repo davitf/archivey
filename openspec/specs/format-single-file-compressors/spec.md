@@ -196,9 +196,16 @@ Whether a digest is cheaply readable SHALL depend only on the codec and **the so
 shape**, never on the caller's declared member-stream capability — the founding dedupe
 caller does a plain `open_archive()` and never asks to `seek()`.
 
-- **GZIP:** trailer `CRC32` only when exactly one member and the source is seekable/path.
-  Multi-member → omit (trailer covers only the last member; mid-member trailers are not
-  cheap without decompress).
+- **GZIP:** the listing SHALL NOT carry a digest, and opening SHALL NOT read the
+  compressed data to look for a second member. The trailer `CRC32` covers the whole
+  member only when the file holds one gzip member, and proving that at open costs a pass
+  over the whole file (a scan for the three-byte member magic that also false-matches in
+  large compressed data). The trailer `CRC32` SHALL be added to `member.hashes` after a
+  read reaches a clean end of the source through the stdlib decoder, when the input held
+  exactly one member and nothing after it (no second member, no NUL padding), so the last
+  8 bytes of the source are that member's trailer. The source must be seekable/path so
+  the trailer can be peeked. The rapidgzip accelerator path hides member boundaries and
+  SHALL NOT add it.
 - **LZIP:** on a seekable source, surface `CRC32` of the whole synthetic member from the
   lzip index. For multi-member files, the value SHALL equal
   `crc32(concat(member payloads))` derived by combining per-trailer CRC-32 values with
@@ -215,8 +222,11 @@ caller does a plain `open_archive()` and never asks to `seek()`.
 
 | Case | `member.hashes` |
 | --- | --- |
-| Single-member `.gz`, seekable/path | `CRC32` present |
-| Multi-member `.gz` | no digest key |
+| Single-member `.gz`, seekable/path, listed before any read | no digest key |
+| Single-member `.gz`, seekable/path, after a full read on the stdlib decoder | `CRC32` present (= trailer) |
+| Single-member `.gz`, after a partial read | no digest key |
+| `.gz` with a second member or NUL padding after the first, after a full read | no digest key |
+| Opening any `.gz` | no scan of the compressed data for a second member |
 | `.gz` non-seekable | no digest key |
 | Single-member `.lz`, seekable source | `CRC32` present (= trailer) |
 | Multi-member `.lz`, seekable source | `CRC32` present (= combine of per-member trailers) |

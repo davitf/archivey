@@ -162,18 +162,21 @@ def test_pipe_metadata_stays_absent_and_costs_no_decode(
 
 
 def test_gzip_crc32_is_not_gated_on_declared_seekability(tmp_path: Path) -> None:
-    """F1 (guardrail): gzip already does it the right way — keep it that way.
+    """F1 (guardrail): the gzip CRC does not depend on ``seekable_members``.
 
-    The gzip trailer CRC-32 is surfaced from a bounded peek regardless of
-    ``seekable_members``. This is the behaviour the lzip/xz rows should converge on,
-    so it is pinned rather than left to drift toward the gated shape.
+    The listing carries no gzip CRC-32 either way (proving a single member at open
+    meant scanning the whole file). A full read adds the trailer CRC, and that too must
+    not depend on the declared member-stream capability.
     """
     from archivey.types import HashAlgorithm
 
     path = _archive("single-file", "gz", tmp_path)
     for kwargs in ({}, {"seekable_members": True}):
         with open_archive(path, **kwargs) as reader:  # type: ignore[arg-type]
-            assert HashAlgorithm.CRC32 in reader.members()[0].hashes
+            member = reader.members()[0]
+            assert HashAlgorithm.CRC32 not in member.hashes
+            reader.read(member)
+            assert HashAlgorithm.CRC32 in member.hashes
 
 
 # ---------------------------------------------------------------------------
