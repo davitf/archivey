@@ -33,6 +33,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
     TruncatedError,
+    UnsupportedOperationError,
 )
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.measurement import enable_measurement
@@ -182,6 +183,73 @@ def test_extract_all_walks_once(
     with open_archive(_archive(kind, tmp_path), streaming=streaming) as reader:
         walks = _count_walks(monkeypatch, reader)
         reader.extract_all(tmp_path / "out", on_error="continue")
+        assert walks() == 1
+
+
+def _tar_gz(tmp_path: Path) -> Path:
+    path = tmp_path / "t.tar.gz"
+    with tarfile.open(path, "w:gz") as tar:
+        for name in ("a.txt", "b.txt", "c.txt"):
+            info = tarfile.TarInfo(name)
+            info.size = 3
+            tar.addfile(info, io.BytesIO(b"abc"))
+    return path
+
+
+_RESTART_KINDS = [*_KINDS, pytest.param("tar", id="tar")]
+
+
+def _restart_archive(kind: str, tmp_path: Path) -> Path:
+    return _tar_gz(tmp_path) if kind == "tar" else _archive(kind, tmp_path)
+
+
+def _dropped(reader: ArchiveReader, how: str) -> list[ArchiveMember]:
+    """Start a pass, take two members and drop it."""
+    if how == "iter":
+        members = iter(reader)
+        taken = [next(members), next(members)]
+    else:
+        passing = reader.stream_members()
+        taken = [next(passing)[0], next(passing)[0]]
+        passing.close()
+    return taken
+
+
+@pytest.mark.parametrize("kind", _RESTART_KINDS)
+@pytest.mark.parametrize("how", ["iter", "stream_members"])
+def test_a_dropped_pass_restarted_hands_out_the_same_members(
+    kind: str, how: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Random access: the restart yields the members already seen, then the rest."""
+    with open_archive(_restart_archive(kind, tmp_path)) as reader:
+        walks = _count_walks(monkeypatch, reader)
+        taken = _dropped(reader, how)
+        if how == "iter":
+            again = list(reader)
+        else:
+            again = [m for m, _ in reader.stream_members()]
+        assert again[:2] == taken
+        assert all(a is b for a, b in zip(taken, again[:2], strict=True))
+        assert [m.member_id for m in again] == list(range(len(again)))
+        assert again == reader.members()
+        assert walks() == 1
+
+
+@pytest.mark.parametrize("kind", _RESTART_KINDS)
+@pytest.mark.parametrize("how", ["iter", "stream_members"])
+def test_a_dropped_streaming_pass_is_finished_by_scan_members(
+    kind: str, how: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Streaming: a second pass is refused; ``scan_members()`` continues the walk."""
+    with open_archive(_restart_archive(kind, tmp_path), streaming=True) as reader:
+        walks = _count_walks(monkeypatch, reader)
+        taken = _dropped(reader, how)
+        with pytest.raises(UnsupportedOperationError, match="scan_members"):
+            list(reader)
+        listed = reader.scan_members()
+        assert all(a is b for a, b in zip(taken, listed[:2], strict=True))
+        assert [m.member_id for m in listed] == list(range(len(listed)))
+        assert len(listed) > 2
         assert walks() == 1
 
 
