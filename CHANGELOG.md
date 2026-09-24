@@ -192,7 +192,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   to list as its own `FILE`, so converting a directory to an archive stored the data once
   per name and lost the link. The first name the walk reaches is now the `FILE`, and each
   later name is a `HARDLINK` to it. On Windows this costs one extra `lstat` per regular
-  file, since the listing data there carries no inode or link count.
+  file, since the listing data there carries no inode or link count. As with a streamed
+  tar, extracting with `streaming=True` now fails a later name whose first name a filter
+  or selector left out.
 - **A link for which the archive records no target no longer fails extraction.** It is
   recorded as the new `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still
   extracts, under either `OnError` value — nothing can be written for such a member, and

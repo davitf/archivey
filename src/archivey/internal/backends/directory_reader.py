@@ -83,6 +83,14 @@ def _link_extra(member_type: MemberType, is_junction: bool) -> MemberExtra:
 _STAT_LACKS_IDENTITY = os.name == "nt"
 
 
+def _identity_stat(path: str) -> os.stat_result:
+    """A fresh ``lstat`` of ``path``, for the file identity scandir's data lacks.
+
+    A seam for tests: they replace it to simulate Windows without patching ``os.stat``.
+    """
+    return os.stat(path, follow_symlinks=False)
+
+
 def _is_junction(entry: os.DirEntry[str]) -> bool:
     """True if a scandir entry is a Windows NTFS junction.
 
@@ -206,14 +214,14 @@ class DirectoryReader(BaseArchiveReader):
             # there now and `readlink` only runs on something that is a link. Only the
             # junction test still reads the entry: a junction's reparse tag is not in
             # `st_mode`, which reports it as a directory. On Windows `DirEntry.stat`
-            # serves scandir's own data without a syscall, so this narrows the
-            # replacement window only on POSIX; a replaced entry there still fails.
+            # serves scandir's own data without a syscall; the identity stat below
+            # refreshes it for entries scandir saw as regular files, so there the
+            # window narrows for those only, and a directory or link replaced in it
+            # still fails.
             try:
                 st = entry.stat(follow_symlinks=False)
                 if _STAT_LACKS_IDENTITY and stat.S_ISREG(st.st_mode):
-                    # Windows' scandir data has st_ino, st_dev and st_nlink all zero,
-                    # and hardlink detection needs them: one lstat per regular file.
-                    st = os.stat(entry.path, follow_symlinks=False)
+                    st = self._stat_with_identity(entry.path, st)
                 is_symlink = stat.S_ISLNK(st.st_mode)
                 is_junction = not is_symlink and _is_junction(entry)
                 link_target = (
@@ -254,7 +262,9 @@ class DirectoryReader(BaseArchiveReader):
                 subdirs.append((member, Path(entry.path)))
             elif stat.S_ISREG(st.st_mode):
                 first_name = None
-                if st.st_nlink > 1:
+                # st_ino 0 is "no identity" (Windows' scandir data, some FUSE and
+                # network mounts): grouping on it would link unrelated files.
+                if st.st_nlink > 1 and st.st_ino != 0:
                     first_name = first_names.setdefault(
                         (st.st_dev, st.st_ino), rel_path
                     )
@@ -268,6 +278,23 @@ class DirectoryReader(BaseArchiveReader):
                 yield self._make_member(rel_path, st, MemberType.OTHER, None)
 
         pending.extend(reversed(subdirs))
+
+    @staticmethod
+    def _stat_with_identity(path: str, cached: os.stat_result) -> os.stat_result:
+        """Windows only: re-stat a regular file for st_ino, st_dev and st_nlink.
+
+        Hardlink detection needs them and scandir's data has them all zero. The fresh
+        stat takes a path where scandir needed none, so a path past ``MAX_PATH``
+        without long-path support can fail here with ``FileNotFoundError`` for a file
+        that exists. That is not a vanished entry: keep scandir's data, which lists it
+        as a plain ``FILE``, as before hardlinks were detected. A file that really did
+        vanish in this window lists the same way, as it did then; opening it fails
+        later. Any other ``OSError`` propagates like every genuine error in the walk.
+        """
+        try:
+            return _identity_stat(path)
+        except FileNotFoundError:
+            return cached
 
     @staticmethod
     def _read_link_target(path: str) -> str:
