@@ -79,12 +79,17 @@ def build_zipcrypto_zip(
     data: bytes,
     *,
     compression: int = zipfile.ZIP_DEFLATED,
+    unix_mode: int | None = None,
 ) -> bytes:
     """A single-entry ZIP whose one member is ZipCrypto-encrypted with ``password``.
 
     Supports the four compression methods decoded by stdlib ``zipfile``. No data
     descriptor is used, so the verification byte is the high byte of the payload CRC-32.
+    ``unix_mode`` marks the entry as made on Unix with that mode (``0o120777`` for a
+    symlink, whose data is then its target).
     """
+    made_by = 20 if unix_mode is None else (3 << 8) | 20
+    external_attr = 0 if unix_mode is None else unix_mode << 16
     crc = zlib.crc32(data) & 0xFFFFFFFF
     flags = 0x1  # bit 0: encrypted; no data descriptor
     if compression == zipfile.ZIP_STORED:
@@ -128,7 +133,7 @@ def build_zipcrypto_zip(
         struct.pack(
             "<IHHHHHHIIIHHHHHII",
             0x02014B50,
-            20,
+            made_by,
             version_needed,
             flags,
             compression,
@@ -142,7 +147,7 @@ def build_zipcrypto_zip(
             0,
             0,
             0,
-            0,
+            external_attr,
             0,
         )
         + name

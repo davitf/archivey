@@ -34,7 +34,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Any, BinaryIO, Iterator, Mapping, NoReturn, cast
+from typing import IO, TYPE_CHECKING, Any, BinaryIO, Iterator, Mapping, NoReturn, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -125,6 +125,9 @@ from archivey.types import (
     MemberType,
     crc32_digest,
 )
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
 
 # Comment decoding: try UTF-8 first, else fall back to cp437 (the ZIP appnote default,
 # which maps every byte and therefore never fails — no further fallbacks are reachable).
@@ -283,6 +286,27 @@ _UNCONFIRMED_PASSWORD_FAILURE = (
 )
 
 
+# Set on the ``EncryptionError`` that says the password may be wrong *or* the member
+# corrupt, so a caller inside the reader can tell it from "no correct password".
+_UNVERIFIED_DATA_MARK = "_archivey_zip_unverified_data"
+
+
+def _unverified_data_error(message: str) -> EncryptionError:
+    """The ``EncryptionError`` for data that failed integrity under an unconfirmed password.
+
+    A plain ``EncryptionError`` to the caller, carrying a mark instead of a subclass
+    (the same reasoning as ``wrong_password_error``). The symlink hook reads the mark,
+    so it does not report a damaged target as a missing password.
+    """
+    error = EncryptionError(message)
+    setattr(error, _UNVERIFIED_DATA_MARK, True)
+    return error
+
+
+def _is_unverified_data_error(error: BaseException) -> bool:
+    return getattr(error, _UNVERIFIED_DATA_MARK, False) is True
+
+
 class _UnconfirmedZipCryptoStream(DelegatingStream):
     """A ZipCrypto member opened with one password that only its check byte vouched for.
 
@@ -292,11 +316,16 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
     same ambiguity: as an ``EncryptionError`` that names both causes.
     """
 
-    readinto_passthrough = False
-
     def read(self, n: int = -1, /) -> bytes:
         try:
             return super().read(n)
+        except _ZIP_MEMBER_READ_ERRORS as exc:
+            self._reraise(exc)
+
+    def readinto(self, b: WriteableBuffer, /) -> int:
+        # Overridden too, so the zero-copy passthrough stays on and still translates.
+        try:
+            return super().readinto(b)
         except _ZIP_MEMBER_READ_ERRORS as exc:
             self._reraise(exc)
 
@@ -310,7 +339,7 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
     @staticmethod
     def _reraise(exc: Exception) -> NoReturn:
         if _is_candidate_integrity_failure(exc):
-            raise EncryptionError(_UNCONFIRMED_PASSWORD_FAILURE) from exc
+            raise _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE) from exc
         raise exc
 
 
@@ -1467,7 +1496,7 @@ class ZipReader(BaseArchiveReader):
             )
 
         if ambiguous_failure is not None:
-            ambiguous = EncryptionError(
+            ambiguous = _unverified_data_error(
                 "No password candidate produced integrity-verified data for "
                 "this ZIP member; the password(s) may be wrong, or "
                 "the encrypted member may be corrupt"
@@ -1498,7 +1527,7 @@ class ZipReader(BaseArchiveReader):
         except _PasswordCandidatesExhausted as exc:
             ambiguous_failure = ambiguous_holder[0] if ambiguous_holder else None
             if ambiguous_failure is not None:
-                ambiguous = EncryptionError(
+                ambiguous = _unverified_data_error(
                     "No password candidate produced integrity-verified data for "
                     "this ZIP member; the password(s) may be wrong, or "
                     "the encrypted member may be corrupt"
@@ -1536,7 +1565,8 @@ class ZipReader(BaseArchiveReader):
         # The zero-data case does not appear here: `_to_member` settles it while the
         # member is being typed, so this hook is never reached for one.
         # A symlink's target is its (possibly encrypted) file data. Listing must stay
-        # usable without a password, so a missing/wrong password leaves link_target
+        # usable without a password, so a missing/wrong password, or data that fails
+        # its check under an unconfirmed ZipCrypto password, leaves link_target
         # unset (following the link later fails with LinkTargetNotFoundError); other
         # errors surface translated like any member-read error.
         # The read is capped (`_read_link_target_data`): the data is compressed, so an
@@ -1553,14 +1583,27 @@ class ZipReader(BaseArchiveReader):
                 self._apply_reparse_data(member, data, fallback_type=fallback_type)
             else:
                 member.link_target = data.decode("utf-8", errors="surrogateescape")
-        except EncryptionError:
+        except EncryptionError as exc:
+            if _is_unverified_data_error(exc):
+                # Only ZipCrypto's check byte vouched for the password, and the data
+                # then failed: a wrong password or a damaged member, and nothing here
+                # can say which.
+                reason = "password_or_damage"
+                message = (
+                    f"The symlink target of {quoted(member.name)} failed its integrity "
+                    f"check; the password may be wrong or the member may be corrupt. "
+                    f"Leaving link_target unset."
+                )
+            else:
+                reason = "password_required"
+                message = (
+                    f"Cannot read the symlink target of {quoted(member.name)} without "
+                    f"the correct password; leaving link_target unset."
+                )
             self._emit_link_target_unavailable(
                 member,
-                reason="password_required",
-                message=(
-                    f"Cannot read the symlink target of {quoted(member.name)} without the "
-                    f"correct password; leaving link_target unset."
-                ),
+                reason=reason,
+                message=message,
                 # The archive does carry the target; it is locked, not missing. So this
                 # member fails the way the encrypted file next to it does, rather than
                 # disappearing from the output under a status that reads as success.

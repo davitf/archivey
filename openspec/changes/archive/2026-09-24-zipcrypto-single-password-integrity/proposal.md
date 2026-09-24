@@ -24,6 +24,10 @@ test's wrong password through the check byte.
   wrong password from a damaged member read with the right one, so it carries no
   wrong-password mark.
 - Stays lazy: still no confirmation read for one candidate.
+- The error carries an internal mark, so the ZIP symlink hook reports a target that
+  fails this way as `SYMLINK_TARGET_UNAVAILABLE` with reason `"password_or_damage"`
+  and a message naming both causes, not as `"password_required"`. That also covers the
+  multi-candidate ambiguous error, which reached the hook the same way before.
 - Unchanged: structural `BadZipFile`, WinZip AES members, unencrypted members, and a
   caller stream opened after a multi-candidate confirmation, where the password is known
   good and a later failure is still `CorruptionError`.
@@ -31,7 +35,11 @@ test's wrong password through the check byte.
 ## Impact
 
 - `format-zip` spec: the multi-candidate confirmation requirement's one-candidate
-  sentence and its matrix.
+  sentence and its matrix, and the symlink sentence and row in the metadata
+  requirement.
+- `diagnostics` spec: the encrypted-symlink row names the new reason.
+- Docs: the `EncryptionError` row in `errors-and-diagnostics.md`, and a `gotchas.md`
+  entry.
 - `archivey.internal.backends.zip_reader`: the lazy path wraps the member stream.
 - A right password on a damaged ZipCrypto member now reports `EncryptionError` rather
   than `CorruptionError`; the message says the member may be corrupt.

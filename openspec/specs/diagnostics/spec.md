@@ -99,7 +99,7 @@ and cross-run id stability are not promised.
 | --- | --- |
 | Name normalization | `MEMBER_NAME_NORMALIZED` + typed JSON-safe context; no backend/mutable mapping |
 | Same occurrence on aggregate + member | Same `occurrence_id`; value equality; no object-identity promise |
-| Encrypted symlink unavailable | May use reason `"password_required"` + member name; no secret material |
+| Encrypted symlink unavailable | May use reason `"password_required"` (or `"password_or_damage"` when a ZIP target's data failed its check under an unconfirmed password) + member name; no secret material |
 | Member blocked by a universal/policy check | No diagnostic; a `BLOCKED` `ExtractionResult` is the whole record |
 | `password=["a","b"]` on a format with no encryption | `PASSWORD_ARGUMENT_UNUSED`; context carries no candidate value and no count |
 | Non-zero byte within 1 MiB past a complete TAR trailer | `ARCHIVE_TRAILING_DATA` sharing `ArchiveEofContext`; distinguished by `expected_marker` |

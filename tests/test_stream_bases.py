@@ -591,12 +591,12 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
     auto-detection of an overridden ``read`` is still rejected (base
     docstring) — a plain forward of ``read`` should keep the zero-copy path,
     and silent auto-detection would hide that choice. No such forward exists
-    today (the four classes that override ``read`` also override
+    today (the five classes that override ``read`` also override
     ``readinto``). A later one needs a declared exemption here, not a silent
     ``True``.
 
-    Mandatory-explicit ``True`` on the other seven would record a decision
-    that was never made: three never override ``read``, four already
+    Mandatory-explicit ``True`` on the other eight would record a decision
+    that was never made: three never override ``read``, five already
     implement ``readinto``. Those must leave the class flag at the default.
 
     The walk asserts the class flag. A production ``__init__`` that still
