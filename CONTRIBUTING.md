@@ -80,6 +80,11 @@ Then two scripts cover the gates, split by how long they take and how often you 
 ./scripts/test.sh          # minutes — the everyday [all] test leg
 ```
 
+Before asking for review, also run `uv run python scripts/review_prep.py`. It is not a CI
+gate; it lists docs still naming what your branch removed or moved, fails on lines left
+far wider than their file, and its `red-on-base` subcommand checks a "fails on `main`"
+claim (`.claude/skills/address-review-findings/SKILL.md` §5).
+
 `check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs — `ruff check`,
 `ruff format --check`, **`pyrefly`**, **`ty`**, `check_openspec_archived.py`,
 `check_openspec_self_reference.py`, `openspec validate --all`, `check_docs_nav.py`, and

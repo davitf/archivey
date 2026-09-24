@@ -63,6 +63,7 @@ Gates **before pushing**:
 ```bash
 ./scripts/check.sh --fix
 ./scripts/test.sh
+uv run python scripts/review_prep.py   # before the review label, below
 ```
 
 `--all-configs` when extras or versions matter (`CONTRIBUTING.md` §"Before pushing…").

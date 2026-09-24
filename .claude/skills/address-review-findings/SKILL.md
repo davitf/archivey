@@ -203,6 +203,7 @@ to get half-right:
 ```bash
 ./scripts/check.sh --fix    # every fast gate: ruff, pyrefly, ty, openspec, docs
 ./scripts/test.sh           # the everyday [all] test leg
+uv run python scripts/review_prep.py   # before each review label; see the end of §5
 ```
 
 `check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs; it runs every gate even after
