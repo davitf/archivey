@@ -139,6 +139,23 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **Every public class and function reports `archivey` as its `__module__`.** Seventeen
+  names in `__all__` are defined under `archivey.internal` (the extraction types,
+  `detect_format`, the registry queries, `ArchiveStream`, `enable_measurement`). They
+  now report `archivey`, so a pickled `ExtractionResult` or policy enum records
+  `archivey.OverwritePolicy` rather than an internal path that could never move, and
+  `repr()` and `help()` agree. `typing.get_type_hints` still resolves on those classes.
+  `inspect.getsource` on the twelve pinned classes now raises `OSError`: Python finds a
+  class's source through its module, and there is no way to point it back.
+- **A raw CD sector image is refused by name.** The `.bin` of a `.bin`/`.cue` pair
+  used to fail detection with "no magic-byte match", which reads like a corrupt file. It
+  is now recognised by its sector sync pattern and refused with
+  `UnsupportedFeatureError` naming the layout (Mode 1, Mode 2 Form 1 or 2, sector size).
+  Reading one, by stripping its sectors to the 2048-byte payload, is not implemented.
+- **`ArchiveReader.extract_all()` no longer takes `config=`.** It honoured only the
+  extraction limits and silently dropped every other field, including a per-call
+  diagnostic policy or callback. A reader runs under the config it was opened with;
+  pass `limits=` to override the extraction limits for one call.
 - **`ArchiveMember.extra` / `ArchiveInfo.extra` are `MemberExtra` / `ArchiveInfoExtra`.**
   Known keys narrow on a subscript read. Assign a `MemberExtra({...})` rather than a
   bare dict; mutating the existing bag in place is unchanged. Only type-checking
@@ -176,15 +193,18 @@ promise with that line; treat `0.2.0` as the first release of this library.
   now report. The diagnostic is still **recorded** once per stream, but a `RAISE` policy
   is now evaluated on **every** qualifying seek: a tripwire that disarms after firing once
   is not a tripwire.
-- **`strict_archive_eof=True` now asserts what it documents.** It used to check only
-  that the two-block TAR trailer was present, so 4 KiB of arbitrary appended bytes passed
-  silently under the flag you set for "a provably complete listing". Every byte from the
-  trailer to EOF must now be zero; the first non-zero one emits the new
-  `ARCHIVE_TRAILING_DATA` diagnostic and raises `CorruptionError`. Zero padding still
-  passes (`tar` writes 10 KiB records), and concatenated archives now fail — deliberately,
-  since they are two archives and only the first was listed. **The flag is now
-  O(tail length)** rather than O(512 bytes), and on a compressed tar the tail is
-  decompressed to inspect it; `strict_archive_eof=False` is unchanged, including the cost.
+- **TAR trailing data is reported, and `ArchiveyConfig.strict_archive_eof` is gone.**
+  The end-of-archive check used to confirm only that the two-block trailer was present,
+  so 4 KiB of arbitrary appended bytes passed silently. It now looks up to 1 MiB past the
+  trailer, and the first non-zero byte there emits the new `ARCHIVE_TRAILING_DATA`
+  diagnostic. Zero padding still passes (`tar` writes 10 KiB records); a concatenated
+  archive is reported, since it is two archives and only the first was listed. A missing
+  trailer stays `ARCHIVE_EOF_MARKER_MISSING`. Both are ordinary diagnostics: a warning by
+  default, `DiagnosticRaisedError` when set to `RAISE` or under
+  `DiagnosticPolicy.strict()`. That replaces the `strict_archive_eof` flag, which raised
+  `TruncatedError` and gated the trailing scan, so `strict()` promised to raise on a code
+  nothing emitted without it. On a compressed tar the 1 MiB window is decompressed to
+  inspect it; a tail that does not decompress ends the check without an error.
 - Six new diagnostic codes (simplicity & consistency review): `EMPTY_ARCHIVE`,
   `EXTENSION_FORMAT_UNCONFIRMED`, `EXPLICIT_FORMAT_LISTED_EMPTY`,
   `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED`, and

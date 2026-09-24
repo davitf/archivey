@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Collection, Iterator
 
-from archivey.config import ArchiveyConfig, ExtractionLimits
+from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
 from archivey.internal.extraction_types import (
@@ -187,7 +187,6 @@ class ArchiveReader(ABC):
         on_error: OnError | OnErrorStr = OnError.STOP,
         abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
-        config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,
     ) -> ExtractionReport:
         """Extract members to ``dest`` (safe-by-default; see ``safe-extraction``).
@@ -195,9 +194,9 @@ class ArchiveReader(ABC):
         ``members`` selects which members to extract (names/``ArchiveMember``s, or a
         predicate; ``None`` = all). ``filter`` runs after the universal safety checks and
         the ``policy`` transform, and may rename/sanitize a member (return a
-        ``.replace()``d copy) or skip it (return ``None``). ``config`` defaults to the
-        config the reader was opened with; ``limits`` overrides its extraction limits for
-        this call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
+        ``.replace()``d copy) or skip it (return ``None``). The call runs under the config
+        the reader was opened with; ``limits`` overrides its extraction limits for this
+        call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
         summary is the delta for this extraction call.
 
         ``abort_on`` names events that end the whole call the first time they occur —

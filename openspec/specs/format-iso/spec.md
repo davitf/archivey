@@ -67,25 +67,6 @@ Fields unavailable in the selected namespace SHALL be `None`.
 | Image contains neither extension | Use plain ISO 9660 names; POSIX fields `None`; `iso.namespace="iso9660"` |
 | Rock Ridge symlink | Symlink metadata is available through the selected namespace |
 
-### Requirement: Read raw .bin CD images through sector stripping
-
-The ISO backend SHALL support raw `.bin` CD images whose ISO 9660 filesystem is
-stored in 2352-byte raw sectors by interposing a thin stream wrapper that strips
-each sector to the 2048-byte user-data payload before passing it to `pycdlib`.
-This lower-priority capability MAY be dropped if raw-sector detection or common
-Mode 1 / Mode 2 Form 1 layout support grows beyond a thin wrapper. A `.cue` sheet
-is not required; Mode 1 `.bin` can be detected from sector sync.
-
-Unsupported raw sector layouts SHALL raise `UnsupportedFeatureError` rather than
-misreading data.
-
-#### Scenario: raw-sector matrix
-
-| Case | Expected |
-| --- | --- |
-| Raw Mode 1 `.bin` with 2352-byte sectors | Strip to 2048-byte payloads and read through `pycdlib` like a plain `.iso` |
-| Unsupported `.bin` sector layout | `UnsupportedFeatureError` |
-
 ### Requirement: Serialize shared pycdlib handle operations for concurrent reads
 
 For ISO readers that allow concurrent member streams under
@@ -123,3 +104,28 @@ measurements; this baseline has no correctness speed threshold.
 | Materialization uses pinned `walk()` / `get_record()` | Regression probe confirms catalog-only behavior; future handle access receives the lock |
 | Operation raises or closes | Translation/logging/lifecycle/callback work runs without the ISO handle lock held |
 | Future throughput optimization proposed | Evidence compares wall/lock timing and practical seek/byte counters; adds peak memory only if buffering/materialization changes |
+
+### Requirement: Refuse raw CD sector images by name
+
+The ISO backend SHALL recognise a raw CD sector image — a dump whose sectors begin with
+the 12-byte sync pattern `00 FF×10 00`, as the `.bin` of a `.bin`/`.cue` pair does —
+and SHALL refuse it with `UnsupportedFeatureError` naming the layout found, rather than
+read it or let detection fail. Detection SHALL claim such a file as `ISO` from the sync
+pattern at offset 0 so that the refusal is reachable, and the refusal SHALL NOT depend on
+`pycdlib` being installed.
+
+The layout named SHALL be the sector mode (Mode 1, Mode 2 Form 1, Mode 2 Form 2, or an
+unknown mode byte) and, when a second sync is found, the sector size: 2352, or 2448 for a
+dump carrying subchannel data. Reading a raw image by stripping sectors to their payload
+is deferred past 0.2.0 and documentation SHALL NOT claim it.
+
+#### Scenario: raw-sector matrix
+
+| Case | Expected |
+| --- | --- |
+| Raw Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors | `UnsupportedFeatureError` naming the layout and pointing at converting to `.iso` |
+| Raw Mode 2 Form 2 image | `UnsupportedFeatureError` saying it holds no ISO 9660 filesystem |
+| Unknown mode byte | `UnsupportedFeatureError` naming the mode |
+| `detect_format` on a raw image | `ISO`, `CERTAIN`, `detected_by="magic"` |
+| `pycdlib` not installed | The same refusal |
+| Plain `.iso` | Unaffected: it starts with the zero-filled system area, never the sync |

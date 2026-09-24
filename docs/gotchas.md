@@ -84,14 +84,16 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   carries a trailing newline; strip it. → [RAR](formats.md#rar)
 - **TAR has two honesty residuals.** A trailer-less or `cat`-joined tar is *warned*
   about, not raised — it is byte-identical to a truncation at a member boundary; set
-  `strict_archive_eof=True` when you need a provably complete listing. And a corrupt
-  **final** header is caught in random access but not in forward-only streaming.
-  → [TAR](formats.md#tar-and-compressed-tar)
-- **`strict_archive_eof=True` reads to the end of the file.** It requires every byte
-  after the two-block trailer to be zero, so trailing junk and concatenated archives
-  raise instead of passing silently. Zero padding still passes — `tar` writes 10 KiB
-  records. The cost is the point of the flag being opt-in: the check is O(tail length),
-  and on a `.tar.gz` the tail is decompressed to inspect it.
+  `ARCHIVE_EOF_MARKER_MISSING` to `RAISE` (or use `DiagnosticPolicy.strict()`) when you
+  need a provably complete listing. And a corrupt **final** header is caught in random
+  access but not in forward-only streaming. → [TAR](formats.md#tar-and-compressed-tar)
+- **TAR trailing data is checked only 1 MiB past the trailer.** A non-zero byte in that
+  window emits `ARCHIVE_TRAILING_DATA` (trailing junk, or a second archive concatenated
+  on); zero padding passes, since `tar` writes 10 KiB records. A byte further out is not
+  seen. On a `.tar.gz` that window is decompressed to inspect it. On a forward-only
+  source (a pipe or socket) the listing reads up to 1 MiB past the trailer, so a
+  sender that keeps the connection open after the tar ends makes the listing wait for
+  more bytes or EOF. Close the sending side when the tar is done.
 - **Truncation detection on bare gzip/zlib through rapidgzip is best-effort.**
   Upstream soft-EOFs by design and Archivey backstops it, but a residual hole
   remains. Use `use_rapidgzip=OFF` when you need certainty. This is about **bare**

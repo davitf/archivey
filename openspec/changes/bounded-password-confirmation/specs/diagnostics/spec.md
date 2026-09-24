@@ -53,7 +53,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 (`str | None` / `int | None` as in the typed variants.) `DiagnosticContext` is
 exactly this union — no backend-defined variants. `observed_kind` ∈
 `{"absent","short","nonzero"}`. `expected_marker` is symbolic (`"two_zero_blocks"` for the trailer check,
-`"zeros_to_eof"` for the strict trailing-bytes check, whose `observed_bytes` is the
+`"zeros_to_eof"` for the trailing-bytes check, whose `observed_bytes` is the
 offset of the first non-zero byte past the trailer). `member_id` MAY be `None` only before registration.
 `controls` SHALL be the comma-joined `U+XXXX` spellings of the bidi codepoints
 found, in the order they occur, so a caller can tell an override from a mark
@@ -107,7 +107,7 @@ caller already knows, which the admission clause refuses.
 | Encrypted symlink unavailable | May use reason `"password_required"` + member name; no secret material |
 | Member blocked by a universal/policy check | No diagnostic; a `BLOCKED` `ExtractionResult` is the whole record |
 | `password=["a","b"]` on a format with no encryption | `PASSWORD_ARGUMENT_UNUSED`; context carries no candidate value and no count |
-| Non-zero byte past a complete TAR trailer under `strict_archive_eof` | `ARCHIVE_TRAILING_DATA` sharing `ArchiveEofContext`; distinguished by `expected_marker` |
+| Non-zero byte within 1 MiB past a complete TAR trailer | `ARCHIVE_TRAILING_DATA` sharing `ArchiveEofContext`; distinguished by `expected_marker` |
 | Probe-only single-file read raises, uncorroborated `GUESS` | `PROBE_FORMAT_UNCONFIRMED` with `chosen_by="content_probe"` |
 | Probe-only single-file read raises, uncorroborated **`PROBABLE`** (compressed-first Brotli) | `PROBE_FORMAT_UNCONFIRMED` too — **changed**; confidence is not the trigger |
 | Probe-only **LZMA Alone** read raises (always `PROBABLE`) | `PROBE_FORMAT_UNCONFIRMED` — **changed**; previously unsignalled |

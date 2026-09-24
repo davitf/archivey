@@ -37,6 +37,7 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     ArchiveyUsageError,
+    DiagnosticPolicy,
     StreamNotSeekableError,
     open_archive,
     open_stream,
@@ -231,13 +232,11 @@ def test_wrong_explicit_format_on_iso_yields_an_empty_listing(tmp_path: Path) ->
     — `format=` is an override — and the disagreement is now reported as data rather
     than nothing (see `test_wrong_explicit_format_does_not_silently_succeed`).
 
-    Only the default is pinned here; the ``strict_archive_eof=True`` half moved to
-    `test_wrong_explicit_format_on_iso_is_caught_by_strict_eof`, because that flag now
-    does catch it.
+    The trailing-data half is pinned in
+    `test_wrong_explicit_format_on_iso_reports_trailing_data`.
     """
     path = _archive("basic", "iso", tmp_path)
-    config = ArchiveyConfig(strict_archive_eof=False)
-    with open_archive(path, format=ArchiveFormat.TAR, config=config) as reader:
+    with open_archive(path, format=ArchiveFormat.TAR) as reader:
         assert reader.format == ArchiveFormat.TAR
         assert reader.members() == []
 
@@ -879,16 +878,12 @@ def test_content_detection_refuses_a_zero_filled_file(tmp_path: Path) -> None:
         detect_format(path)
 
 
-@pytest.mark.parametrize("strict_eof", [False, True])
-def test_zero_filled_dot_tar_opens_empty_via_extension(
-    strict_eof: bool, tmp_path: Path
-) -> None:
+def test_zero_filled_dot_tar_opens_empty_via_extension(tmp_path: Path) -> None:
     """F20 (pin): the *extension* path accepts what content detection refuses.
 
     32 KiB of zeros named ``z.tar`` opens as TAR with zero members, no error and no
-    diagnostic — and ``strict_archive_eof=True`` does not change that, because the two
-    null trailer blocks really are present. The knob asserts "the trailer is complete",
-    not "the archive ends here".
+    EOF diagnostic, because the two null trailer blocks really are present and nothing
+    but zeros follows them.
 
     This is the realistic form of the wrong-format problem: a zero-truncated file with a
     plausible extension is exactly the shape `VISION.md`'s founding corpus is full of.
@@ -903,8 +898,7 @@ def test_zero_filled_dot_tar_opens_empty_via_extension(
 
     path = tmp_path / "z.tar"
     path.write_bytes(b"\x00" * 32768)
-    config = ArchiveyConfig(strict_archive_eof=strict_eof)
-    with open_archive(path, config=config) as reader:
+    with open_archive(path) as reader:
         assert reader.format == ArchiveFormat.TAR
         assert reader.members() == []
         assert dict(reader.diagnostics.counts) == {
@@ -934,46 +928,98 @@ def _one_member_tar() -> bytes:
     ],
     ids=lambda v: v if isinstance(v, str) else "",
 )
-def test_strict_archive_eof_rejects_trailing_data(
-    tail: bytes, tail_id: str, tmp_path: Path
-) -> None:
-    """F20 (fixed): the knob now asserts what it documents.
+def test_trailing_data_is_reported(tail: bytes, tail_id: str, tmp_path: Path) -> None:
+    """F20 (fixed): a non-zero byte past the trailer is reported, by default.
 
-    It used to check exactly one thing — that the second null trailer block was present
-    — and never looked past it, so 4 KiB of arbitrary appended bytes passed silently
-    under the flag you set for a "provably complete listing". Now every byte from the
-    trailer to EOF must be zero.
+    The check used to look only for the second null trailer block, so 4 KiB of arbitrary
+    appended bytes passed silently. It then ran only under ``strict_archive_eof``, which
+    left ``DiagnosticPolicy.strict()`` promising to raise on a code nothing emitted. Now
+    the scan always runs, bounded, and the code follows the policy like any other.
 
     The concatenated case is deliberate: two tars really are two archives and the reader
     listed only the first.
     """
-    from archivey import CorruptionError
+    from archivey import DiagnosticRaisedError
+    from archivey.diagnostics import DiagnosticCode
 
     path = tmp_path / f"{tail_id}.tar"
     path.write_bytes(_one_member_tar() + tail)
 
-    # Unchanged without the flag — including the cost, since the scan does not run.
-    with open_archive(
-        path,
-        format=ArchiveFormat.TAR,
-        config=ArchiveyConfig(strict_archive_eof=False),
-    ) as reader:
+    with open_archive(path, format=ArchiveFormat.TAR) as reader:
         assert [m.name for m in reader.members()] == ["a.txt"]
-        assert dict(reader.diagnostics.counts) == {}
+        assert dict(reader.diagnostics.counts) == {
+            DiagnosticCode.ARCHIVE_TRAILING_DATA: 1
+        }
 
-    with pytest.raises(CorruptionError):
+    with pytest.raises(DiagnosticRaisedError):
         with open_archive(
             path,
             format=ArchiveFormat.TAR,
-            config=ArchiveyConfig(strict_archive_eof=True),
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict()),
         ) as reader:
             reader.members()
 
 
-@pytest.mark.parametrize("strict_eof", [False, True])
-def test_zero_padding_after_the_trailer_still_passes(
-    strict_eof: bool, tmp_path: Path
+def test_trailing_data_scan_is_bounded(tmp_path: Path) -> None:
+    """The scan stops ``_MAX_TRAILING_SCAN`` bytes past the trailer, reporting nothing.
+
+    It is an effort bound, not a ceiling: a byte beyond it goes unseen, which is the
+    documented trade for not reading an arbitrarily long zero tail to EOF.
+    """
+    from archivey.internal.backends.tar_reader import _MAX_TRAILING_SCAN
+
+    # Header, one data block and the two trailer blocks, without tarfile's record
+    # padding, so the offsets below are measured from the end of the trailer.
+    tar = _one_member_tar()[:2048]
+    inside = tmp_path / "inside.tar"
+    inside.write_bytes(tar + b"\x00" * (_MAX_TRAILING_SCAN - 1) + b"X")
+    beyond = tmp_path / "beyond.tar"
+    beyond.write_bytes(tar + b"\x00" * _MAX_TRAILING_SCAN + b"X")
+    with open_archive(inside, format=ArchiveFormat.TAR) as reader:
+        reader.members()
+        assert reader.diagnostics.total_count == 1
+    with open_archive(beyond, format=ArchiveFormat.TAR) as reader:
+        reader.members()
+        assert reader.diagnostics.total_count == 0
+
+
+@pytest.mark.parametrize(
+    ("damage", "expected"),
+    [
+        ("junk-inside-gzip", {"ARCHIVE_TRAILING_DATA": 1}),
+        ("junk-after-gzip", {}),
+        ("gzip-footer-missing", {}),
+    ],
+)
+def test_compressed_tail_that_will_not_decode_ends_the_scan_quietly(
+    damage: str, expected: dict[str, int], tmp_path: Path
 ) -> None:
+    """F20: on a ``.tar.gz``, only bytes the codec yields count as trailing data.
+
+    Bytes inside the gzip stream past the tar trailer are reported. Junk after the gzip
+    stream, or a missing gzip footer, makes the tail read fail to decode; the scan then
+    stops without a diagnostic or an error, because the tar itself was read whole.
+    Removing the ``except ReadError`` around the tail read makes the last two raise.
+    """
+    import gzip
+
+    tar = _one_member_tar()
+    data = {
+        "junk-inside-gzip": gzip.compress(tar + b"JUNK" * 1024),
+        "junk-after-gzip": gzip.compress(tar) + b"JUNKJUNK",
+        "gzip-footer-missing": gzip.compress(tar)[:-4],
+    }[damage]
+    path = tmp_path / f"{damage}.tar.gz"
+    path.write_bytes(data)
+
+    with open_archive(path, format=ArchiveFormat.TAR_GZ) as reader:
+        assert [m.name for m in reader.members()] == ["a.txt"]
+        assert {
+            code.name: count for code, count in reader.diagnostics.counts.items()
+        } == expected
+
+
+def test_zero_padding_after_the_trailer_still_passes(tmp_path: Path) -> None:
     """F20 (guardrail): the case the "nothing but zeros" rule exists to preserve.
 
     `tar` pads to 10 KiB records by default and other writers pad further, so "the file
@@ -981,14 +1027,14 @@ def test_zero_padding_after_the_trailer_still_passes(
     """
     path = tmp_path / "padded.tar"
     path.write_bytes(_one_member_tar() + b"\x00" * 4096)
-    config = ArchiveyConfig(strict_archive_eof=strict_eof)
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
     with open_archive(path, format=ArchiveFormat.TAR, config=config) as reader:
         assert [m.name for m in reader.members()] == ["a.txt"]
         assert dict(reader.diagnostics.counts) == {}
 
 
-def test_wrong_explicit_format_on_iso_is_caught_by_strict_eof(tmp_path: Path) -> None:
-    """F20: an ISO read as TAR now fails under strict — the review predicted otherwise.
+def test_wrong_explicit_format_on_iso_reports_trailing_data(tmp_path: Path) -> None:
+    """F20: an ISO read as TAR reports trailing data — the review predicted otherwise.
 
     O8b listed "the ISO case still passes" as a deliberate consequence, on the grounds
     that its 32 KiB system area is zeros and therefore reads as a valid empty TAR with
@@ -996,11 +1042,11 @@ def test_wrong_explicit_format_on_iso_is_caught_by_strict_eof(tmp_path: Path) ->
     where the volume descriptors begin (``\\x01CD001``) and ~48 KiB of real data follows,
     so the file is not zeros to EOF.
 
-    The outcome is the one a caller would want — someone who asserted `format=TAR` *and*
-    asked for a provably complete listing gets told — but it is not what the review
+    The outcome is the one a caller would want — someone who asserted `format=TAR` gets
+    told the file continues past what was listed — but it is not what the review
     expected, so it is asserted here rather than left to be rediscovered.
     """
-    from archivey import CorruptionError
+    from archivey.diagnostics import DiagnosticCode
 
     path = _archive("basic", "iso", tmp_path)
     data = path.read_bytes()
@@ -1008,10 +1054,9 @@ def test_wrong_explicit_format_on_iso_is_caught_by_strict_eof(tmp_path: Path) ->
     assert first_nonzero == 32768  # the system area ends; descriptors begin
     assert len(data) > first_nonzero  # ...and the file continues
 
-    config = ArchiveyConfig(strict_archive_eof=True)
-    with pytest.raises(CorruptionError):
-        with open_archive(path, format=ArchiveFormat.TAR, config=config) as reader:
-            reader.members()
+    with open_archive(path, format=ArchiveFormat.TAR) as reader:
+        assert reader.members() == []
+        assert reader.diagnostics.counts[DiagnosticCode.ARCHIVE_TRAILING_DATA] == 1
 
 
 def test_legitimately_empty_tar_stays_valid(tmp_path: Path) -> None:

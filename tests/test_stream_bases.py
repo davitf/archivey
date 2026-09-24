@@ -316,6 +316,13 @@ def _import_all_archivey_modules() -> None:
             ) from exc
 
 
+def _is_archivey_class(cls: type) -> bool:
+    # ``archivey`` itself counts: public classes defined under ``internal`` report the
+    # package root as their module (``archivey/__init__.py`` pins it for pickling).
+    module = getattr(cls, "__module__", "")
+    return module == "archivey" or module.startswith("archivey.")
+
+
 def _readonly_stream_subclasses() -> set[type]:
     found: set[type] = set()
     stack = [ReadOnlyIOStream]
@@ -325,9 +332,7 @@ def _readonly_stream_subclasses() -> set[type]:
             if sub not in found:
                 found.add(sub)
                 stack.append(sub)
-    found = {
-        cls for cls in found if getattr(cls, "__module__", "").startswith("archivey.")
-    }
+    found = {cls for cls in found if _is_archivey_class(cls)}
     # Seed is ReadOnlyIOStream; subclasses include DelegatingStream. Discard both
     # bases so the inventory is the wrappers that need a resume-offset decision.
     found.discard(ReadOnlyIOStream)
@@ -468,9 +473,7 @@ def _delegating_stream_subclasses() -> set[type]:
             if sub not in found:
                 found.add(sub)
                 stack.append(sub)
-    return {
-        cls for cls in found if getattr(cls, "__module__", "").startswith("archivey.")
-    }
+    return {cls for cls in found if _is_archivey_class(cls)}
 
 
 _INIT_KWARG_MISSING = object()

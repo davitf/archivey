@@ -312,7 +312,7 @@ instead of raising on terminal archive-level listing errors.
 | --- | --- |
 | Clean archive | `error is None`; `members` is the full fully-resolved list |
 | TAR rejected mid/final header after prefix (Option F) | `members` = recoverable prefix; `error` is `CorruptionError`; report stored incomplete |
-| Strict absent/short trailer after prefix | `members` = prefix; `error` is `TruncatedError`; report stored incomplete |
+| Absent/short TAR trailer with `ARCHIVE_EOF_MARKER_MISSING` set to `RAISE` | `DiagnosticRaisedError` raised: the caller's policy firing, not listing damage, so it is not carried on `error` |
 | `members_report()` then `members()` on same RA reader after incomplete | `members()` raises the terminal error (not a partial list) |
 | `open(report.members[i])` for a recovered FILE after incomplete | Succeeds by identity |
 | `get(name)` after incomplete | Raises terminal error / does not pretend completeness |
@@ -825,7 +825,6 @@ class DecoderLimits:
 class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
-    strict_archive_eof: bool = False
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
     decoder_limits: DecoderLimits = DecoderLimits()
@@ -839,20 +838,14 @@ mappings and the dataclasses SHALL be defensively immutable. `config=None` →
 immutable library default. No mutable global/context-local diagnostic policy or
 callback.
 
-A reader carries its open config, including `listing_limits` and
-`decoder_limits` for its lifetime.
-Later `extract_all(config=...)` MAY override policy/callback/strictness/
-accelerators/`extraction_limits` for new work, but SHALL NOT change the
-reader's effective `listing_limits`, `decoder_limits` or
-`max_retained_diagnostic_references` (see `diagnostics`).
+A reader carries its open config, all of it, for its lifetime. Reader methods
+SHALL NOT take a `config=`: `extract_all(limits=...)` is the one per-call
+override, and it replaces only the extraction limits for that call.
 `decoder_limits` SHALL bound the working memory a codec allocates on the
 strength of a number the archive declares, and SHALL be enforced before that
 allocation is made. Per-call `limits`
 still beat `config.extraction_limits`, then reader/library default. Other
 per-call operational args stay outside `ArchiveyConfig`.
-
-`strict_archive_eof=False` follows ordinary diagnostic policy for failed EOF check;
-`True` forces `TruncatedError` after ordered diagnostic rules in `error-handling`.
 
 `on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
 reads from a callback are allowed. Starting another operation on the same
@@ -864,10 +857,9 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 
 | Case | Expected |
 | --- | --- |
-| `ArchiveyConfig()` | AUTO accelerators; EOF strictness false; documented extraction and listing defaults; COLLECT; budget 256; no callback |
-| Reader budget 10, then `extract_all(config=…budget=1000)` | New policy/callback may apply; diagnostics still under budget 10 |
+| `ArchiveyConfig()` | AUTO accelerators; documented extraction and listing defaults; COLLECT; budget 256; no callback |
 | `extract(..., extraction_limits=ExtractionLimits(max_ratio=100))` | 100:1 per-member ratio enforced (`safe-extraction`) |
-| Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime even if later `extract_all(config=...)` omits listing_limits |
+| Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 
 ### Requirement: Reader-lifetime cumulative diagnostic snapshots
 
