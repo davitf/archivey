@@ -1370,8 +1370,9 @@ def _read_stream_exact(fp: BinaryIO, length: int, context: str) -> bytes:
             f"Claimed {context} length {length} is not representable as a read size"
         ) from exc
     if len(data) != length:
-        # The length came from a CRC-checked field (or is the fixed signature size),
-        # so a short read is the file ending early, not a damaged claim.
+        # The length came from a CRC-checked field, or is the fixed signature size
+        # read only after the caller matched the magic (find_signature_offset), so
+        # a short read is the file ending early, not a damaged claim.
         raise TruncatedError(f"Truncated {context}: expected {length} bytes")
     return data
 

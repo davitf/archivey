@@ -64,6 +64,18 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A 7z BCJ coder's start offset is no longer ignored.** Its 4-byte property now reaches
+  the branch filter; before, a folder with a non-zero offset decoded to wrong bytes and
+  failed its CRC. An offset the filter's alignment forbids raises
+  `UnsupportedFeatureError`.
+- **7z folders of Delta alone, or Delta with BCJ and no LZMA, now read.** 7-Zip writes
+  and reads them (`-m0=Delta:4 -m1=Copy`); archivey reported them as corrupt.
+- **The 7z header parser refuses malformed folder structures when it lists**, rather than
+  listing them and failing on the first read or reporting wrong sizes: a coder graph with
+  no coders, a bad bind pair or packed index, declared substreams no file consumes, a
+  multi-substream folder with no sizes, or a folder naming pack streams the header does
+  not hold. Each is `CorruptionError`. A 7z whose signature or next header is cut short
+  now raises `TruncatedError` where it raised `CorruptionError`.
 - **An encrypted RAR derives each key once per open.** RAR5 key derivation costs what
   the archive declares, up to 2²⁴ PBKDF2 rounds (a few seconds each). A header-encrypted
   volume set derived the header key and password check again on every part, so a

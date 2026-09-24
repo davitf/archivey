@@ -30,6 +30,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import BinaryIO
 
+from archivey.config import ListingLimits
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
@@ -66,8 +67,12 @@ from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
 from archivey.internal.streams.crypto import SevenZipKeyCache, open_aes_decrypt_stream
-from archivey.internal.streams.decompress import BcjFilterStream
+from archivey.internal.streams.decompress import FilterStream
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
+
+# Omitting max_members on the archive-level entry point means the ListingLimits
+# default, as in sevenzip_parser and rar_parser. None is the explicit UNLIMITED opt-out.
+_DEFAULT_MAX_MEMBERS = ListingLimits().max_members
 
 # stdlib exposes no public decoder for a raw LZMA1/LZMA2 property blob → filter dict;
 # py7zr relies on the same private `lzma._decode_filter_properties`. Bind once at import.
@@ -138,7 +143,7 @@ class _FilterStage:
     or a Delta with no LZMA1/LZMA2 in its run.
 
     ``lzma_filter`` is the liblzma filter dict with its options (BCJ
-    ``start_offset``, Delta ``dist``); :class:`BcjDecoder` runs it outside the
+    ``start_offset``, Delta ``dist``); :class:`FilterDecoder` runs it outside the
     folder's main chain, over its own LZMA2 framing.
     """
 
@@ -305,6 +310,11 @@ def _bcj_filter(coder: SevenZipCoder, filter_id: int) -> dict:
     7z BCJ properties are absent or a 4-byte little-endian start offset. Writers
     almost always omit it or write zero; a non-zero value shifts the addresses the
     filter converts, so dropping it would decode a well-formed archive wrongly.
+
+    The property is read as liblzma's ``start_offset`` (7-Zip's branch coders seed
+    their position from it the same way liblzma seeds ``now_pos``). That equivalence
+    is from reading both sources: the 7-Zip CLI cannot write a non-zero offset, so no
+    7-Zip-written archive checks it, and the tests encode their fixtures with liblzma.
     """
     if not coder.properties:
         return {"id": filter_id}
@@ -423,7 +433,7 @@ def _execute_stage(
         if stage.cap_size is not None:
             out = SlicingStream(out, length=stage.cap_size, owns_inner=True)
         return out
-    return BcjFilterStream(
+    return FilterStream(
         stream,
         lzma_filter=stage.lzma_filter,
         unpack_size=stage.unpack_size,
@@ -558,7 +568,7 @@ def unwrap_encoded_header(
     block: HeaderBlock,
     decode: Callable[[EncodedHeader], bytes],
     *,
-    max_members: int | None = None,
+    max_members: int | None,
 ) -> tuple[PlainHeader, bool]:
     """Decode at most one encoded-header layer. 7-Zip writes one.
 
@@ -572,9 +582,7 @@ def unwrap_encoded_header(
     return block, header_encrypted
 
 
-def parse_decoded_header(
-    decoded: bytes, *, max_members: int | None = None
-) -> PlainHeader:
+def parse_decoded_header(decoded: bytes, *, max_members: int | None) -> PlainHeader:
     """Parse the plaintext an encoded-header layer decoded to."""
     block = parse_header_block(decoded, max_members=max_members)
     if isinstance(block, EncodedHeader):
@@ -590,13 +598,15 @@ def parse_sevenzip_archive(
     key_cache: SevenZipKeyCache | None = None,
     stream_config: StreamConfig | None = None,
     collector: DiagnosticCollector | None = None,
-    max_members: int | None = None,
+    max_members: int | None = _DEFAULT_MAX_MEMBERS,
 ) -> SevenZipArchive:
     """Parse a 7z archive end-to-end (plain or encoded header).
 
     Used by fuzz harnesses and tests. The reader uses the same two-phase flow with
     password-candidate prompting instead of a single ``password``.
-    ``max_members`` is omitted by fuzz helpers (header-size still bounds bombs).
+    Omitting ``max_members`` applies the ``ListingLimits`` default, the same as
+    :func:`~archivey.internal.backends.sevenzip_parser.parse_header_block` and the RAR
+    parser's archive-level entry points; ``None`` is the explicit UNLIMITED opt-out.
     """
     cache = key_cache if key_cache is not None else SevenZipKeyCache()
     signature = read_signature_and_next_header(fp)

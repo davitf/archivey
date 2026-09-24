@@ -15,7 +15,7 @@ import lzma
 import struct
 import subprocess
 import zlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -24,6 +24,7 @@ from archivey import open_archive
 from archivey.config import ListingLimits
 from archivey.exceptions import (
     CorruptionError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -37,7 +38,10 @@ from archivey.internal.backends.sevenzip_parser import (
     parse_header_block,
     read_signature_and_next_header,
 )
-from archivey.internal.backends.sevenzip_pipeline import plan_folder
+from archivey.internal.backends.sevenzip_pipeline import (
+    parse_sevenzip_archive,
+    plan_folder,
+)
 from tests.conftest import requires_binary
 
 _COPY = b"\x00"
@@ -527,7 +531,35 @@ def test_internal_helpers_require_max_members(helper: str) -> None:
     assert param.default is inspect.Parameter.empty
 
 
-def test_parse_header_block_defaults_to_the_listing_limit() -> None:
-    param = inspect.signature(parse_header_block).parameters["max_members"]
+def test_archive_entry_point_applies_the_default_listing_limit() -> None:
+    # A header large enough to pass the header-size bound, declaring one unpack
+    # stream more than the default max_members. The count is refused before any
+    # size is read, so the rest of the header is padding.
+    count = ListingLimits().max_members + 1
+    header = bytes.fromhex("0104070b010001000c0a00080d") + _num(count) + b"\x00" * count
+    data = _signature(
+        next_offset=0,
+        next_size=len(header),
+        next_crc=zlib.crc32(header) & 0xFFFFFFFF,
+    )
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        parse_sevenzip_archive(io.BytesIO(data + header))
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        parse_header_block(header)
+
+
+@pytest.mark.parametrize("entry", [parse_header_block, parse_sevenzip_archive])
+def test_entry_points_default_to_the_listing_limit(
+    entry: Callable[..., object],
+) -> None:
+    param = inspect.signature(entry).parameters["max_members"]
     assert param.default == ListingLimits().max_members
     assert param.default is not None
+
+
+@pytest.mark.parametrize("helper", ["unwrap_encoded_header", "parse_decoded_header"])
+def test_pipeline_helpers_require_max_members(helper: str) -> None:
+    param = inspect.signature(getattr(sevenzip_pipeline, helper)).parameters[
+        "max_members"
+    ]
+    assert param.default is inspect.Parameter.empty

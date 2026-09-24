@@ -207,7 +207,7 @@ assert bcj.IA64Decoder(len(src)).decode(filtered) == src   # fails: 16 bytes of 
 | Measured | CPython 3.11.15, pybcj 1.0.7, py7zr 1.1.3, 7-Zip 23.01, Linux x86-64 |
 
 The regression tests are in `tests/test_sevenzip_reader.py`: the IA64 case round-trips a
-2911-byte member through `7z`, and the 2 GiB case pins `BcjDecoder` against an `unpack_size`
+2911-byte member through `7z`, and the 2 GiB case pins `FilterDecoder` against an `unpack_size`
 of 2^31 without building a fixture, since the size no longer reaches the filter.
 
 ## MacPaw `unar` / XADMaster: RAR5 solid + empty FILE is silent-wrong (open)

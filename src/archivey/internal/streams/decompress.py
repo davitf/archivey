@@ -846,7 +846,7 @@ class _Lzma2Framer:
         return b"\x00"
 
 
-class BcjDecoder(BaseDecoder):
+class FilterDecoder(BaseDecoder):
     """Apply a filter-only liblzma stage (a BCJ branch filter, or Delta) to plain bytes.
 
     The filter runs through liblzma, over an :class:`_Lzma2Framer` wrapper because
@@ -871,9 +871,11 @@ class BcjDecoder(BaseDecoder):
         )
         self._pending = b""
 
-    def recreate(self, point: SeekPoint, inner: BinaryIO) -> BcjDecoder:
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> FilterDecoder:
         del point, inner
-        return BcjDecoder(lzma_filter=self._lzma_filter, unpack_size=self._unpack_size)
+        return FilterDecoder(
+            lzma_filter=self._lzma_filter, unpack_size=self._unpack_size
+        )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         data = self._pending + chunk
@@ -1067,7 +1069,7 @@ def PpmdDecompressorStream(
     )
 
 
-def BcjFilterStream(
+def FilterStream(
     path: str | os.PathLike[str] | BinaryIO,
     *,
     lzma_filter: Mapping[str, int],
@@ -1085,10 +1087,10 @@ def BcjFilterStream(
     del collector  # accepted for call-site uniformity; BCJ emits no diagnostics today
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: BcjDecoder(
+        make_decoder=lambda _p, _i: FilterDecoder(
             lzma_filter=lzma_filter, unpack_size=unpack_size
         ),
-        codec_name="bcj",
+        codec_name="filter",
         seekable=seekable,
         owns_inner=owns_inner,
     )

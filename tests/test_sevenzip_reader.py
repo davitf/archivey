@@ -2260,11 +2260,11 @@ def test_bcj_decoder_accepts_an_unpack_size_above_two_gib() -> None:
     """
     import lzma
 
-    from archivey.internal.streams.decompress import BcjDecoder
+    from archivey.internal.streams.decompress import FilterDecoder
 
     payload = bytes(range(256)) * 8
-    small = BcjDecoder(lzma_filter={"id": lzma.FILTER_X86}, unpack_size=len(payload))
-    huge = BcjDecoder(lzma_filter={"id": lzma.FILTER_X86}, unpack_size=2**31)
+    small = FilterDecoder(lzma_filter={"id": lzma.FILTER_X86}, unpack_size=len(payload))
+    huge = FilterDecoder(lzma_filter={"id": lzma.FILTER_X86}, unpack_size=2**31)
     assert huge.feed(payload).data == small.feed(payload).data
     # The declared size still decides whether the stream finished, so the 2 GiB
     # decoder arms the truncation error that the correctly-sized one does not.
