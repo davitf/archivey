@@ -31,6 +31,20 @@
   `.shared()` factory on the source becomes possible (the class itself stays: the
   seek-index accelerators build one over an arbitrary stream).
 
+- **Let an `ArchiveSource` over a file hand out independent handles** — raised by
+  davitf on PR 419. Today a path source reaches the codecs by being unwrapped back to
+  `str(path)` in three places (`open_stream`, the single-file reader, compressed TAR),
+  because a path is what buys a fresh descriptor: rapidgzip opens its own fd (so a
+  source-side fault cannot abort the process), the gzip truncation backstop reopens the
+  file for its scan, and concurrent single-file opens each get their own handle. That
+  is why `CodecSource` still includes `str | os.PathLike` and `codecs.py` carries eight
+  path branches. An `ArchiveSource.open_independent()` (a fresh handle for a path
+  source, a lock-sharing view otherwise) would let codecs take the source itself and
+  ask it, and would let `SharedSource` give each view its own descriptor instead of one
+  shared locked handle. Measure first: the win is contention between concurrent views
+  on one lock, which may be small next to decompression; the cost is a descriptor per
+  live view.
+
 - **Read raw CD sector images (`.bin`) by stripping sectors** — 0.2.0 recognises a raw
   image and refuses it by name (`iso_reader.refuse_raw_sector_image`); davitf deferred
   reading one past the release (#315, S22-K6 thread, 2026-09-21). The layout was
