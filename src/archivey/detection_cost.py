@@ -138,6 +138,8 @@ class DetectionCostReceipt:
     """Bytes actually fetched from the source (each source byte counted once)."""
 
     far_bytes: int = 0
+    """Bytes the far-magic tier peeked. Bounded by ``max_far_bytes``."""
+
     tail_bytes: int = 0
     scanned_bytes: int = 0
     seeks: int = 0
@@ -181,6 +183,13 @@ class DetectionCostReceipt:
         growing the prefix. Those bytes are allowed up to
         ``max_probe_links * _PROBE_HEADER_READ_BYTES`` (aligned with
         ``brotli_framing.CHAIN_HEADER_READ``) on top of the prefix/far/scan ceiling.
+
+        ``prefix_bytes`` is the one counter not compared: it bills overlapping requests
+        in full, so ``unique_bytes_read`` stands in for it.
+
+        A receipt from ``detect_format`` that followed a stub to its sibling volume
+        sums two passes, each run under the full budget, so it can exceed ``budget``
+        with no tier cut short.
         """
         probe_allowance = budget.max_probe_links * _PROBE_HEADER_READ_BYTES
         return (
@@ -189,6 +198,7 @@ class DetectionCostReceipt:
             + budget.max_tail_bytes
             + budget.spool_non_seekable_up_to
             + probe_allowance
+            and self.far_bytes <= budget.max_far_bytes
             and self.seeks <= budget.max_seeks
             and self.tail_bytes <= budget.max_tail_bytes
             and self.scanned_bytes <= budget.max_scan_bytes

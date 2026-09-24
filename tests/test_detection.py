@@ -1005,3 +1005,127 @@ def test_sfx_conflict_names_the_stub_scan(tmp_path: Path) -> None:
     _assert_names_only(
         _conflict_message(path), "archive magic behind an executable stub indicates"
     )
+
+
+# --- the detection cost ledger charges what detection does ------------------------------
+
+
+def test_far_budget_below_the_iso_span_records_the_far_tier_as_cut_short(
+    tmp_path: Path,
+) -> None:
+    # S19-K1: a positive ``max_far_bytes`` too small for CD001 used to peek a window that
+    # could not match and record nothing, so a GUESS looked like a complete search.
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET, TierSkipReason
+
+    path = tmp_path / "disc.iso"
+    path.write_bytes(_iso_bytes(b""))
+    budget = replace(BALANCED_BUDGET, max_far_bytes=4096)
+    info = detect_format(path, budget=budget)
+    assert info.detected_by == "extension"
+    assert any(
+        s.tier == "far_magic" and s.reason is TierSkipReason.BUDGET_EXHAUSTED
+        for s in info.unavailable_tiers
+    ), info.unavailable_tiers
+    # The unmatchable window is not peeked at all.
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.far_bytes == 0
+
+
+def test_far_budget_skip_is_not_recorded_for_a_source_too_short_for_the_iso_span() -> (
+    None
+):
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET
+
+    budget = replace(BALANCED_BUDGET, max_far_bytes=4096)
+    info = detect_format(io.BytesIO(_zip_bytes()), budget=budget)
+    assert not any(s.tier == "far_magic" for s in info.unavailable_tiers)
+
+
+def test_stub_volume_fallback_keeps_the_stub_pass_cost(tmp_path: Path) -> None:
+    # S19-K3: the stub pass runs the full SFX scan; its receipt and skips used to be
+    # dropped in favour of the cheap second pass on the sibling volume.
+    from archivey.detection_cost import BALANCED_BUDGET
+
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(b"MZ" + b"\x00" * (3 * 1024 * 1024))
+    (tmp_path / "vol.7z.001").write_bytes(_sevenz_sig())
+    info = detect_format(stub)
+    assert info.format == ArchiveFormat.SEVEN_Z
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.scanned_bytes == BALANCED_BUDGET.max_scan_bytes
+    assert info.cost_receipt.unique_bytes_read > BALANCED_BUDGET.max_scan_bytes
+
+
+def _incompressible_tar_bz2(first_member: int) -> bytes:
+    import bz2
+    import os
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        data = os.urandom(first_member)
+        info = tarfile.TarInfo("first.bin")
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+    return bz2.compress(buf.getvalue(), 9)
+
+
+def test_inner_tar_probe_stays_inside_the_decode_budget() -> None:
+    # S19-K5: the probe read up to 1 MiB of compressed input whatever
+    # ``max_decode_input`` said, so FAST decoded ~900 KB against its 64 KiB.
+    from archivey.detection_cost import (
+        BALANCED_BUDGET,
+        FAST_BUDGET,
+        TierSkipReason,
+    )
+
+    data = _incompressible_tar_bz2(850_000)
+    fast = detect_format(io.BytesIO(data), budget=FAST_BUDGET)
+    assert fast.format == ArchiveFormat.BZ2
+    assert fast.cost_receipt is not None
+    assert fast.cost_receipt.decode_input <= FAST_BUDGET.max_decode_input
+    assert fast.cost_receipt.within_budget(FAST_BUDGET), fast.cost_receipt
+    assert any(
+        s.tier == "inner_tar" and s.reason is TierSkipReason.BUDGET_EXHAUSTED
+        for s in fast.unavailable_tiers
+    ), fast.unavailable_tiers
+
+    balanced = detect_format(io.BytesIO(data), budget=BALANCED_BUDGET)
+    assert balanced.format == ArchiveFormat.TAR_BZ2
+    assert not any(s.tier == "inner_tar" for s in balanced.unavailable_tiers)
+
+
+def test_inner_tar_probe_charges_a_decode_that_fails() -> None:
+    # S19-K5: the failure path returned before charging, so a decode that ran and then
+    # raised billed nothing.
+    import bz2
+
+    good = bz2.compress(_tar_bytes(), 9)
+    corrupt = bytearray(good)
+    for i in range(10, len(corrupt) - 10):
+        corrupt[i] ^= 0x5A
+    info = detect_format(io.BytesIO(bytes(corrupt)))
+    assert info.format == ArchiveFormat.BZ2
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.decode_input > 0
+
+
+def test_inner_tar_probe_is_off_when_the_decode_budget_is_zero() -> None:
+    import bz2
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET, TierSkipReason
+
+    budget = replace(BALANCED_BUDGET, max_decode_input=0, max_decode_output=0)
+    info = detect_format(io.BytesIO(bz2.compress(_tar_bytes(), 9)), budget=budget)
+    assert info.format == ArchiveFormat.BZ2
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.decode_input == 0
+    assert any(
+        s.tier == "inner_tar" and s.reason is TierSkipReason.NOT_ENABLED_BY_POLICY
+        for s in info.unavailable_tiers
+    )
