@@ -553,18 +553,27 @@ class DecompressorStream(ReadOnlyIOStream):
         self._seek_points[:] = spaced_subset(
             self._seek_points, lambda p: p.decompressed_offset, self._min_spacing
         )
+        message = (
+            f"{self._codec_name} seek table passed {MAX_SEEK_POINTS} entries; kept "
+            "a spaced subset, so seeks may decode further"
+        )
+        context = SeekIndexContext(
+            codec=self._codec_name, scan="seek_table", error_type=SEEK_TABLE_THINNED
+        )
+        collector = resolve_collector(self._diagnostics_collector)
         if self._table_thinned:
+            # Recorded once per stream; the policy still applies to every thinning.
+            collector.escalate_only(
+                code=DiagnosticCode.SEEK_INDEX_DEGRADED,
+                message=message,
+                context=context,
+            )
             return
         self._table_thinned = True
-        resolve_collector(self._diagnostics_collector).emit(
+        collector.emit(
             code=DiagnosticCode.SEEK_INDEX_DEGRADED,
-            message=(
-                f"{self._codec_name} seek table passed {MAX_SEEK_POINTS} entries; kept "
-                "a spaced subset, so seeks may decode further"
-            ),
-            context=SeekIndexContext(
-                codec=self._codec_name, scan="seek_table", error_type=SEEK_TABLE_THINNED
-            ),
+            message=message,
+            context=context,
             logger=logger,
         )
 
@@ -693,10 +702,13 @@ class DecompressorStream(ReadOnlyIOStream):
                     chunks.append(chunk)
             held = pending()
             if held is not None:
-                # Put back what was decoded, unconsumed, and forget a size the EOF
-                # branch derived from the emptied buffer.
-                self._buffer[:0] = b"".join(chunks)
-                self._size = size_before
+                # Put back what was decoded, unconsumed. The EOF branch derived its
+                # size from the emptied buffer; when it published one, the decode was
+                # complete and everything from _pos on is in chunks.
+                joined = b"".join(chunks)
+                self._buffer[:0] = joined
+                if self._size is not size_before:
+                    self._size = self._pos + len(joined)
                 raise held
         data = b"".join(chunks)
         # A read(-1)/readall() caller expects the complete stream and will not call

@@ -167,7 +167,8 @@ class DiagnosticCollector:
         through a read. Inside the block, an emit that would raise (a ``RAISE``
         disposition, ``escalate_as``, or an ``Exception`` out of ``on_diagnostic``)
         still counts, retains, logs and calls back, but hands the exception to the
-        block instead of raising it. The block calls the yielded function once its
+        block instead of raising it. :meth:`escalate_only` hands its raise over the
+        same way. The block calls the yielded function once its
         state is consistent and raises what it returns, the first exception held.
 
         Nested blocks on one thread share the outermost one's list: an inner block's
@@ -439,7 +440,7 @@ class DiagnosticCollector:
         validate_code_context(code, context)
         if self._policy.resolve(code) is not DiagnosticDisposition.RAISE:
             return
-        raise DiagnosticRaisedError(
+        raised = DiagnosticRaisedError(
             message,
             diagnostic=Diagnostic(
                 occurrence_id=uuid.uuid4().hex,
@@ -449,6 +450,8 @@ class DiagnosticCollector:
                 context=context,
             ),
         )
+        if not self._hold(threading.get_ident(), raised):
+            raise raised
 
 
 def _attach_diagnostic(member: ArchiveMember, diagnostic: Diagnostic) -> None:

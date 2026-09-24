@@ -1126,6 +1126,13 @@ def test_a_degraded_seek_index_reaches_the_readers_collector(
             stream.seek(0)
             assert stream.read() == data
 
+    with open_archive(path, config=strict, seekable_members=True) as reader:
+        with reader.open(reader.members()[0]) as stream:
+            with pytest.raises(DiagnosticRaisedError):
+                stream.size  # noqa: B018 - the size query is what raises
+            assert stream.read() == data
+            assert stream.size == len(data)
+
 
 def _strict_collector() -> Any:
     from archivey import DiagnosticPolicy
@@ -1138,8 +1145,9 @@ def _strict_collector() -> Any:
 def test_a_raise_mid_read_keeps_the_decoded_bytes(small_seek_cap: int, n: int) -> None:
     """Thinning escalates halfway through a read; nothing it decoded is lost.
 
-    The read raises before it consumes, so the next reads return every byte in order
-    and the stream's size stays the real one, not the length read so far.
+    Each read that raises does so before it consumes, so reading on returns every
+    byte in order. A whole-stream read that raised after decoding to the end keeps
+    the real size, not the length read so far.
     """
     from archivey.exceptions import DiagnosticRaisedError
 
@@ -1149,15 +1157,95 @@ def test_a_raise_mid_read_keeps_the_decoded_bytes(small_seek_cap: int, n: int) -
         io.BytesIO(compressed), collector=_strict_collector()
     ) as stream:
         pieces: list[bytes] = []
-        with pytest.raises(DiagnosticRaisedError):
-            while chunk := stream.read(n):
-                pieces.append(chunk)
-        pieces.append(stream.read())
+        raises = 0
+        while True:
+            try:
+                chunk = stream.read(n)
+            except DiagnosticRaisedError:
+                raises += 1
+                if n < 0:
+                    assert stream.try_get_size() == len(full)
+                continue
+            if not chunk:
+                break
+            pieces.append(chunk)
+        assert raises >= 1
         assert b"".join(pieces) == full
         assert stream.tell() == len(full)
+        assert stream.try_get_size() == len(full)
         stream.seek(0)
         assert stream.read() == full
         assert stream.seek(0, io.SEEK_END) == len(full)
+
+
+def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
+    small_seek_cap: int,
+) -> None:
+    """The public wrapper learns where a seek that raised left the stream.
+
+    The raise comes after the inner seek moved, so the verifier must drop the
+    digest and track the new position, or reading on reports a false truncation.
+    """
+    from archivey.exceptions import DiagnosticRaisedError
+    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.types import HashAlgorithm, crc32_digest
+
+    compressed = make_multi_member_lzip(LZIP_PARTS)
+    full = b"".join(LZIP_PARTS)
+    collector = _strict_collector()
+    stream = ArchiveStream(
+        lambda: LzipDecompressorStream(io.BytesIO(compressed), collector=collector),
+        translate=lambda _exc: None,
+        collector=collector,
+        expected_hashes={HashAlgorithm.CRC32: crc32_digest(zlib.crc32(full))},
+        expected_size=len(full),
+    )
+    with stream:
+        with pytest.raises(DiagnosticRaisedError):
+            stream.seek(500)
+        assert stream.tell() == 500
+        assert stream.read() == full[500:]
+
+
+def test_every_thinning_of_one_stream_escalates(small_seek_cap: int) -> None:
+    """Recorded once per stream, but strict() raises on each thinning."""
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.exceptions import DiagnosticRaisedError
+    from archivey.internal.streams import decompressor_stream
+
+    thinnings = 0
+    real_thin = decompressor_stream.DecompressorStream._thin_seek_table
+
+    def counting_thin(self: Any) -> None:
+        nonlocal thinnings
+        thinnings += 1
+        real_thin(self)
+
+    compressed = make_multi_member_lzip(LZIP_PARTS)
+    full = b"".join(LZIP_PARTS)
+    collector = _strict_collector()
+    raises = 0
+    pieces: list[bytes] = []
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            decompressor_stream.DecompressorStream, "_thin_seek_table", counting_thin
+        )
+        with LzipDecompressorStream(
+            io.BytesIO(compressed), collector=collector
+        ) as stream:
+            while True:
+                try:
+                    chunk = stream.read(700)
+                except DiagnosticRaisedError:
+                    raises += 1
+                    continue
+                if not chunk:
+                    break
+                pieces.append(chunk)
+    assert b"".join(pieces) == full
+    assert thinnings >= 2
+    assert raises == thinnings
+    assert collector.snapshot().counts[DiagnosticCode.SEEK_INDEX_DEGRADED] == 1
 
 
 @pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
