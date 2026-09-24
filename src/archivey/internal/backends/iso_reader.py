@@ -288,10 +288,7 @@ def _yield_children(
     every supported pycdlib, so a rename there fails loudly rather than silently.
     """
     assert _pycdlib_core is not None
-    return cast(
-        "Iterator[DirectoryRecord | None]",
-        _pycdlib_core._yield_children(record, rock_ridge),
-    )
+    return _pycdlib_core._yield_children(record, rock_ridge)
 
 
 class _PyCdlibStream(DelegatingStream):
@@ -756,10 +753,7 @@ class IsoReader(BaseArchiveReader):
             raise _pycdlib_exc.PyCdlibInvalidInput("Path to open must be a file")
         if record.inode is None:
             raise _pycdlib_exc.PyCdlibInvalidInput("File has no data")
-        return cast(
-            "PyCdlibIO",
-            _pycdlib_io.PyCdlibIO(record.inode, self._iso.logical_block_size),
-        )
+        return _pycdlib_io.PyCdlibIO(record.inode, self._iso.logical_block_size)
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         record = member._raw

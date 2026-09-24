@@ -431,6 +431,7 @@ class DecompressorStream(ReadOnlyIOStream):
                 self._inner: BinaryIO = open(os.fspath(path), "rb")
                 self._owned_inner = self._inner
             else:
+                # typeshed keeps BufferedIOBase and BinaryIO apart; at runtime it is one.
                 self._inner = cast("BinaryIO", ensure_bufferedio(path))
                 if owns_inner:
                     self._owned_inner = path

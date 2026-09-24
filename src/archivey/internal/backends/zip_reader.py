@@ -966,6 +966,8 @@ class ZipReader(BaseArchiveReader):
                     raise zipfile.BadZipFile("Bad magic number for file header")
                 name_len, extra_len = struct.unpack_from("<HH", fheader, 26)
                 body_start = info.header_offset + 30 + name_len + extra_len + header_len
+                # typeshed types ZipFile.fp as IO[bytes], not BinaryIO; it is the
+                # binary file ZipFile read its directory from.
                 yield SlicingStream(
                     cast("BinaryIO", fp), start=body_start, length=body_len
                 )
@@ -1166,6 +1168,8 @@ class ZipReader(BaseArchiveReader):
             if self._archive.fp is None:
                 raise _closed_archive_error()
 
+        # typeshed types ZipFile.fp as IO[bytes], not BinaryIO (as in
+        # _ciphertext_body_stream).
         return SharedView(
             cast("BinaryIO", fp),
             start=data_start,
@@ -1331,6 +1335,8 @@ class ZipReader(BaseArchiveReader):
         """``ZipFile.open`` under the CONCURRENT handle lock when present."""
         try:
             with self._handle_guard():
+                # typeshed types ZipFile.open's result as IO[bytes]; in read mode it
+                # is a ZipExtFile, a BufferedIOBase.
                 return cast("BinaryIO", self._archive.open(info, pwd=password))
         except IndexError as exc:
             # ZipExtFile._init_decrypter does ``self._decrypter(header)[11]``

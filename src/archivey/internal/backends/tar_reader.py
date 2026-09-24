@@ -385,7 +385,8 @@ class TarReader(BaseArchiveReader):
                 collector=self._diagnostics_collector,
             )
             # tarfile can mis-handle a short read() (fewer bytes than requested) from a
-            # decompressor; a BufferedReader in front guarantees full-sized reads.
+            # decompressor; a BufferedReader in front guarantees full-sized reads. The cast
+            # is typeshed's split: BufferedIOBase is not BinaryIO there, but is at runtime.
             self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
             return self._tarfile_open(
                 fileobj=self._wrap_eof_probe(self._owned_stream, streaming),

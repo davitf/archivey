@@ -19,6 +19,8 @@ The runtime check is the declared union. `os.PathLike` is an ABC;
 
 Param `Any` tightens to `object` (inventory A10). Keep the `TypeGuard`.
 
+**Status: G2 and G3 are done** (SUMMARY item 4).
+
 ## G2 — `is_stream` (`binaryio.py:452`) — leftover of #324
 
 ```python
