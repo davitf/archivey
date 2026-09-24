@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+import archivey
 from archivey import PasswordRequest, open_archive
 from archivey.exceptions import EncryptionError
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
-from archivey.internal.password import _PasswordCandidates, _WrongPassword
+from archivey.internal.password import _PasswordCandidates, wrong_password_error
 from archivey.measurement import enable_measurement
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
@@ -381,7 +383,7 @@ def test_zip_provider_receives_member(tmp_path: Path) -> None:
     [
         # The marker keeps the backend's message, whatever its wording.
         (
-            _WrongPassword("Incorrect key for this member"),
+            wrong_password_error("Incorrect key for this member"),
             "Incorrect key for this member",
         ),
         # Unmarked text that happens to say "wrong password" does not.
@@ -401,3 +403,36 @@ def test_exhaustion_message_follows_the_marker_not_the_wording(
     with pytest.raises(EncryptionError) as caught:
         candidates.attempt(None, decrypt)
     assert caught.value.message == expected
+
+
+@requires_binary("7z")
+def test_a_wrong_zip_password_raises_a_plain_encryption_error(tmp_path: Path) -> None:
+    """The mark rides on the exception; the type a caller sees stays public."""
+    archive = tmp_path / "secret.zip"
+    _make_multi_password_zip(archive)
+    with open_archive(archive, password="wrongpw") as reader:
+        member = next(m for m in reader.members() if m.name == "f1.txt")
+        with pytest.raises(EncryptionError) as caught:
+            reader.open(member).read()
+    assert type(caught.value) is EncryptionError
+    assert caught.value.message == "Wrong password for this ZIP member"
+
+
+# Wrong-password wording a raise site may use without the mark: the two unrar
+# exit-code sites, which never feed ``_PasswordCandidates.attempt``.
+_UNMARKED_WRONG_PASSWORD_MESSAGES = {
+    ("internal/backends/rar_reader.py", "Incorrect RAR password or encrypted member"),
+}
+
+
+def test_every_wrong_password_message_carries_the_mark() -> None:
+    src = Path(archivey.__file__).parent
+    raise_site = re.compile(r"""\bEncryptionError\(\s*f?["']([^"']*)["']""")
+    wording = re.compile(r"wrong password|incorrect .*password", re.IGNORECASE)
+    unmarked = {
+        (path.relative_to(src).as_posix(), message)
+        for path in src.rglob("*.py")
+        for message in raise_site.findall(path.read_text(encoding="utf-8"))
+        if wording.search(message)
+    }
+    assert unmarked == _UNMARKED_WRONG_PASSWORD_MESSAGES

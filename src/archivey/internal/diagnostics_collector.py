@@ -418,16 +418,24 @@ def collector_from_config(config: ArchiveyConfig) -> DiagnosticCollector:
 def resolve_collector(collector: DiagnosticCollector | None) -> DiagnosticCollector:
     """Return ``collector``, or a throwaway collector built from library defaults.
 
-    Used at emission sites that may not yet have a reader/stream-owned collector threaded
-    through (standalone codec streams). Every such site is reached with a real collector
-    today; the fallback is a guard, not a supported path. What falls through to it:
+    Used at emission sites that may not have a reader/stream-owned collector threaded
+    through. What falls through to the throwaway:
 
     - is judged by the **library default** policy, not the caller's, so a caller on
-      ``DiagnosticPolicy.strict()`` would not see an integrity code it expects to raise;
+      ``DiagnosticPolicy.strict()`` does not get the raise it asked for;
     - never reaches ``reader.diagnostics`` or the caller's ``on_diagnostic`` callback.
+      Only the WARNING log line survives.
 
-    The fallback logs at DEBUG, naming the call site, so a regression that drops the
-    collector shows up in a test run rather than as missing output.
+    This path is reached today: the codec layer builds its decompressor streams
+    without a collector, so the ``SEEK_INDEX_DEGRADED`` emissions in
+    ``decompressor_stream.py`` and ``xz.py`` land here even under ``open_archive``.
+    Threading the collector through ``StreamConfig`` is recorded in
+    ``review/backlog.md``. Prefer passing the shared collector wherever one exists.
+
+    The fallback logs at DEBUG on ``archivey.diagnostics`` with the caller's
+    ``file:line`` (``stacklevel=2``). An application or test that enables DEBUG on
+    that logger sees which site dropped the collector; with the default levels the
+    record is not emitted.
     """
     if collector is not None:
         return collector

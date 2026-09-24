@@ -15,7 +15,7 @@ table is illustrative: a logger missing from it is not a contract violation.
 | `archivey.detection` | Format detection events |
 | `archivey.normalization` | Path normalization changes, including warnings when `name` differs from `raw_name` |
 | `archivey.extraction` | Extraction events and filter decisions |
-| `archivey.diagnostics` | The WARNING projection of every diagnostic |
+| `archivey.diagnostics` | Default logger for a diagnostic's WARNING projection. An emit site that names a subsystem logger (`archivey.streams`, `archivey.integrity`, …) logs the WARNING there instead, and most do |
 | `archivey.backends.*` | Backend-specific debug messages |
 
 #### Scenario: logger-hierarchy matrix

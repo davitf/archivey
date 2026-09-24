@@ -84,7 +84,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
-    _WrongPassword,
+    wrong_password_error,
 )
 from archivey.internal.registry import register_reader
 from archivey.internal.sevenzip_detect import validate_sevenzip_signature_header
@@ -191,7 +191,7 @@ def _crc_exactly(
     while remaining > 0:
         chunk = stream.read(min(chunk_size, remaining))
         if not chunk:
-            raise _WrongPassword("Wrong password or corrupt 7z folder")
+            raise wrong_password_error("Wrong password or corrupt 7z folder")
         crc = zlib.crc32(chunk, crc)
         remaining -= len(chunk)
     return crc
@@ -215,7 +215,7 @@ def _verify_decoded_folder(
         actual = _crc_exactly(stream, expected_size)
         expected = (folder.crc if folder.crc is not None else 0) & 0xFFFFFFFF
         if actual & 0xFFFFFFFF != expected:
-            raise _WrongPassword("Wrong password or corrupt 7z folder")
+            raise wrong_password_error("Wrong password or corrupt 7z folder")
         return
     if not member_digests:
         _crc_exactly(stream, expected_size)
@@ -231,7 +231,7 @@ def _verify_decoded_folder(
         if raw_expected is None:
             continue
         if actual & 0xFFFFFFFF != raw_expected & 0xFFFFFFFF:
-            raise _WrongPassword("Wrong password or corrupt 7z folder")
+            raise wrong_password_error("Wrong password or corrupt 7z folder")
 
 
 class SevenZipReader(BaseArchiveReader):
@@ -930,7 +930,9 @@ class SevenZipReader(BaseArchiveReader):
                 # advances only on EncryptionError.
                 raise
             except ArchiveyError as exc:
-                raise _WrongPassword("Wrong password or corrupt 7z folder") from exc
+                raise wrong_password_error(
+                    "Wrong password or corrupt 7z folder"
+                ) from exc
             finally:
                 stream.close()
 

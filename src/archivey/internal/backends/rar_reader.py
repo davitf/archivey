@@ -92,7 +92,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
-    _WrongPassword,
+    wrong_password_error,
 )
 from archivey.internal.rar_detect import validate_rar_main_header
 from archivey.internal.registry import register_reader
@@ -1073,7 +1073,9 @@ class RarReader(BaseArchiveReader):
                     kdf_cache=self._kdf_cache,
                 )
             except (EncryptionError, UnicodeError):
-                raise _WrongPassword("Wrong password for this RAR member") from None
+                raise wrong_password_error(
+                    "Wrong password for this RAR member"
+                ) from None
             return password
 
         if ask_provider:

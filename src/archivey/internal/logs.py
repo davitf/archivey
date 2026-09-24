@@ -24,5 +24,7 @@ streams = logging.getLogger("archivey.streams")
 # Used by the decompressed-output digest verification stage to warn when an expected
 # digest cannot be checked (unknown algorithm, or its backend is not installed).
 integrity = logging.getLogger("archivey.integrity")
-# Carries the WARNING projection of every diagnostic (see the ``diagnostics`` spec).
+# The default logger for a diagnostic's WARNING projection. Most emit sites name a
+# subsystem logger instead (``streams``, ``normalization``, ``integrity``, ...), and
+# their diagnostics are logged there.
 diagnostics = logging.getLogger("archivey.diagnostics")

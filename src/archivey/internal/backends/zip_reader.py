@@ -73,7 +73,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
-    _WrongPassword,
+    wrong_password_error,
 )
 from archivey.internal.password_confirm import (
     CONFIRM_PREFIX_BYTES,
@@ -587,7 +587,7 @@ class ZipReader(BaseArchiveReader):
             if "password required" in text:
                 return EncryptionError("Password required to read this ZIP member")
             if "bad password" in text:
-                return _WrongPassword("Wrong password for this ZIP member")
+                return wrong_password_error("Wrong password for this ZIP member")
         if isinstance(exc, io.UnsupportedOperation) and "seek" in str(exc):
             return StreamNotSeekableError("ZIP archives require a seekable source")
         if isinstance(exc, NotImplementedError):
@@ -1437,7 +1437,7 @@ class ZipReader(BaseArchiveReader):
             required = EncryptionError("Password required to read this ZIP member")
             self._stamp_error_context(required, member_name)
             raise required
-        wrong = _WrongPassword("Wrong password for this ZIP member")
+        wrong = wrong_password_error("Wrong password for this ZIP member")
         self._stamp_error_context(wrong, member_name)
         raise wrong
 

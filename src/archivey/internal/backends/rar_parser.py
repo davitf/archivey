@@ -59,7 +59,7 @@ from archivey.exceptions import (
     raw_message_of,
 )
 from archivey.internal.config import KeyDerivationBudget
-from archivey.internal.password import _WrongPassword
+from archivey.internal.password import wrong_password_error
 from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
@@ -1402,7 +1402,7 @@ def _parse_rar3(
                 hdata = buf
         except (CorruptionError, TruncatedError) as exc:
             if block_encrypted:
-                raise EncryptionError(
+                raise wrong_password_error(
                     "Failed to decrypt RAR3 headers (wrong password?)"
                 ) from exc
             raise
@@ -1433,7 +1433,7 @@ def _parse_rar3(
             calc = _crc32(hdata[2:crc_pos]) & 0xFFFF
             if header_crc != calc:
                 if block_encrypted:
-                    raise EncryptionError(
+                    raise wrong_password_error(
                         "Failed to decrypt RAR3 headers (wrong password?)"
                     )
                 raise CorruptionError(
@@ -1448,7 +1448,7 @@ def _parse_rar3(
             calc = _crc32(hdata[2:header_size]) & 0xFFFF
             if header_crc != calc:
                 if block_encrypted:
-                    raise EncryptionError(
+                    raise wrong_password_error(
                         "Failed to decrypt RAR3 headers (wrong password?)"
                     )
                 raise CorruptionError("RAR3 ENDARC header CRC mismatch")
@@ -1471,7 +1471,7 @@ def _parse_rar3(
             calc = _crc32(hdata[2:crc_pos]) & 0xFFFF
             if header_crc != calc:
                 if block_encrypted:
-                    raise EncryptionError(
+                    raise wrong_password_error(
                         "Failed to decrypt RAR3 headers (wrong password?)"
                     )
                 raise CorruptionError(
@@ -2124,7 +2124,7 @@ def _parse_rar5(
             try:
                 parsed = _read_rar5_block(header_fd)
             except (CorruptionError, TruncatedError) as exc:
-                raise EncryptionError(
+                raise wrong_password_error(
                     "Failed to decrypt RAR5 headers (wrong password?)"
                 ) from exc
         else:
@@ -2391,7 +2391,7 @@ def _check_rar5_password(
     for i, v in enumerate(pwd_hash):
         pwd_check[i & 7] ^= v
     if not hmac.compare_digest(bytes(pwd_check), hdr_check):
-        raise _WrongPassword("Wrong password for RAR5 header encryption")
+        raise wrong_password_error("Wrong password for RAR5 header encryption")
     return True
 
 

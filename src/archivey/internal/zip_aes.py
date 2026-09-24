@@ -22,7 +22,7 @@ from archivey.exceptions import (
     CorruptionError,
     PackageNotInstalledError,
 )
-from archivey.internal.password import _WrongPassword
+from archivey.internal.password import wrong_password_error
 from archivey.internal.streams.crypto import CRYPTO_REQUIREMENT, _crypto_available
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, read_exact
 
@@ -241,7 +241,7 @@ def open_winzip_aes_member(
         password, salt=salt, key_len=aes.key_len
     )
     if not hmac.compare_digest(stored_verify, pw_verify):
-        raise _WrongPassword("Wrong password for this ZIP member")
+        raise wrong_password_error("Wrong password for this ZIP member")
 
     cipher_len = compress_size - overhead
     return WinZipAesDecryptStream(

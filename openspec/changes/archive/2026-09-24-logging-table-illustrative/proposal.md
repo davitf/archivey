@@ -3,8 +3,9 @@
 ## Why
 
 The `logging` spec listed four loggers as if the list were complete. The library also
-emits on `archivey.streams`, `archivey.integrity` and `archivey.diagnostics`, and the
-last one carries the WARNING projection of every diagnostic. The maintainer ruled that
+emits on `archivey.streams`, `archivey.integrity` and `archivey.diagnostics`. The
+last one is the default logger for a diagnostic's WARNING projection, though most
+emit sites name a subsystem logger instead. The maintainer ruled that
 nobody needs an exhaustive list of logger names: the table says it is illustrative, and
 gains the one row a reader configuring logging is most likely to need.
 
