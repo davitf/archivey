@@ -224,9 +224,9 @@ passes the byte check before accepting it, following `archive-reading` weak-chec
 confirmation and bounded-storage rules. With one distinct static candidate
 (duplicates included), the reader SHALL keep the normal lazy stream path, with no
 confirmation read. Because only the verification byte vouched for that password, a
-candidate failure (defined below) on the caller's `read` or forward `seek` SHALL raise
-`EncryptionError` explaining that the password may be wrong or the member may be
-corrupt, not `CorruptionError`. It SHALL NOT be marked as a wrong-password verdict:
+candidate failure (defined below) on the caller's `read`, `readinto` or forward
+`seek` SHALL raise `EncryptionError` explaining that the password may be wrong or
+the member may be corrupt, not `CorruptionError`. It SHALL NOT be marked as a wrong-password verdict:
 nothing in the archive tells a colliding wrong password from a damaged member.
 
 Compressed members (`DEFLATE`, `BZIP2`, `LZMA`) SHALL confirm by decompressing a
@@ -254,7 +254,7 @@ Rejected-candidate streams SHALL be closed before trying the next candidate.
 | --- | --- |
 | Wrong candidate passes verification byte before correct one (STORED / DEFLATE / BZIP2 / LZMA) | Wrong candidate rejected; fresh stream opened with correct candidate |
 | One distinct static candidate | No confirmation read; member streams lazily |
-| One distinct static candidate that passes the verification byte but is wrong, or right on a corrupt member | Caller `read`/`seek` raises `EncryptionError` saying the password may be wrong or the member corrupt; no wrong-password mark |
+| One distinct static candidate that passes the verification byte but is wrong, or right on a corrupt member | Caller `read`/`readinto`/`seek` raises `EncryptionError` saying the password may be wrong or the member corrupt; no wrong-password mark |
 | Large compressed member | At most bounded prefix decompressed per candidate; no proportional plaintext storage; caller stream still checks CRC at EOF |
 | STORED member with several surviving candidates | One shared ciphertext pass computes every candidate CRC; matching candidate accepted and reopened |
 | Multiple STORED CRC matches | Earliest matching candidate in order wins |

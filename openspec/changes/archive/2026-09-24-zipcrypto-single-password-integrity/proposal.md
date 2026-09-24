@@ -19,7 +19,7 @@ test's wrong password through the check byte.
 - On the single-password lazy path, a read-time candidate integrity failure (the same
   set the confirmation path treats as a candidate failure: CRC mismatch, `zlib.error`,
   `lzma.LZMAError`, BZIP2's `OSError("Invalid data stream")`) SHALL raise
-  `EncryptionError` naming both causes, on `read` and on a forward `seek`.
+  `EncryptionError` naming both causes, on `read`, `readinto` and a forward `seek`.
 - The error is not a wrong-password verdict: nothing in the archive can tell a colliding
   wrong password from a damaged member read with the right one, so it carries no
   wrong-password mark.
