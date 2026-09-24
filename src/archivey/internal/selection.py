@@ -38,10 +38,15 @@ class CollectionSelector:
     iterable, so ``normalize_member_selector`` passes it through as a predicate.
     """
 
-    __slots__ = ("_entries", "_identities", "_matched", "_names")
+    __slots__ = ("_entries", "_identities", "_matched", "_names", "_record")
 
-    def __init__(self, entries: list[str | ArchiveMember]) -> None:
+    def __init__(
+        self, entries: list[str | ArchiveMember], *, record: bool = True
+    ) -> None:
         self._entries = entries
+        # False for a selector nothing will report on (the extraction coordinator's
+        # own identity selectors), so it skips the per-member bookkeeping.
+        self._record = record
         # member name -> indexes of the str entries that select that name.
         self._names: dict[str, list[int]] = {}
         # (archive_id, member_id) -> indexes of the ArchiveMember entries with that id.
@@ -60,22 +65,27 @@ class CollectionSelector:
                 self._identities.setdefault(identity, []).append(index)
 
     def __call__(self, member: ArchiveMember) -> bool:
-        hits = self._names.get(member.name, [])
+        by_name = self._names.get(member.name)
+        by_identity = None
         if member._archive_id is not None and member._member_id is not None:
-            hits = hits + self._identities.get(
-                (member._archive_id, member._member_id), []
-            )
-        if not hits:
+            by_identity = self._identities.get((member._archive_id, member._member_id))
+        if by_name is None and by_identity is None:
             return False
-        self._matched.update(hits)
+        if self._record:
+            if by_name is not None:
+                self._matched.update(by_name)
+            if by_identity is not None:
+                self._matched.update(by_identity)
         return True
 
     def unmatched(self) -> list[str | ArchiveMember]:
         """The entries that no member has matched so far, in the caller's order.
 
-        A name that the caller repeated is listed once.
+        An entry that the caller repeated is listed once: a name by its text, a member
+        by its identity. Two hand-built members with no identity are two entries.
         """
         seen_names: set[str] = set()
+        seen_identities: set[tuple[str, int]] = set()
         result: list[str | ArchiveMember] = []
         for index, entry in enumerate(self._entries):
             if index in self._matched:
@@ -84,6 +94,11 @@ class CollectionSelector:
                 if entry in seen_names:
                     continue
                 seen_names.add(entry)
+            elif entry._archive_id is not None and entry._member_id is not None:
+                identity = (entry._archive_id, entry._member_id)
+                if identity in seen_identities:
+                    continue
+                seen_identities.add(identity)
             result.append(entry)
         return result
 

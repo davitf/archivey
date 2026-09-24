@@ -243,11 +243,12 @@ def test_extract_all_with_a_free_list_refuses_before_writing(tmp_path: Path) -> 
         )
     )
     data = _zip([("a.txt", b"a")])
+    dest = tmp_path / "out" / "deeper"
     with (
         open_archive(io.BytesIO(data), config=config) as ar,
         pytest.raises(DiagnosticRaisedError),
     ):
-        ar.extract_all(tmp_path, members=["a.txt", "typo.txt"])
+        ar.extract_all(dest, members=["a.txt", "typo.txt"])
     assert list(tmp_path.iterdir()) == []
 
 
@@ -265,3 +266,55 @@ def test_strict_policy_does_not_raise_on_an_unmatched_entry(tmp_path: Path) -> N
     with open_archive(io.BytesIO(_zip([("a.txt", b"a")])), config=config) as ar:
         report = ar.extract_all(tmp_path, members=["typo.txt"])
     assert _unmatched(report.diagnostics) == [("typo.txt", "name")]
+
+
+_RAISE_UNMATCHED = ArchiveyConfig(
+    diagnostic_policy=DiagnosticPolicy(
+        overrides={
+            DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: DiagnosticDisposition.RAISE
+        }
+    )
+)
+
+
+def test_extract_all_raise_on_a_scanned_format_keeps_what_was_written(
+    tmp_path: Path,
+) -> None:
+    """TAR knows the answer only at the end of the pass, so under RAISE the members
+    before it are already on disk when the error replaces the report."""
+    data = _tar([("a.txt", b"a"), ("b.txt", b"b")])
+    with (
+        open_archive(io.BytesIO(data), config=_RAISE_UNMATCHED) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        ar.extract_all(tmp_path, members=["a.txt", "typo.txt"])
+    assert (tmp_path / "a.txt").read_bytes() == b"a"
+    assert not (tmp_path / "b.txt").exists()
+
+
+def test_stream_members_raise_comes_after_the_last_member() -> None:
+    data = _tar([("a.txt", b"a"), ("b.txt", b"b")])
+    seen: list[str] = []
+    with open_archive(io.BytesIO(data), config=_RAISE_UNMATCHED) as ar:
+        with pytest.raises(DiagnosticRaisedError):
+            for member, _stream in ar.stream_members(members=["a.txt", "typo.txt"]):
+                seen.append(member.name)
+    assert seen == ["a.txt"]
+
+
+def test_get_matches_the_stored_directory_name_exactly() -> None:
+    """The directory spelling is a selector rule; get() still takes the stored name."""
+    with open_archive(io.BytesIO(_tar(_DIR_TAR))) as ar:
+        assert ar.get("dir") is None
+        member = ar.get("dir/")
+        assert member is not None
+        assert member.name == "dir/"
+
+
+def test_a_repeated_member_entry_is_reported_once() -> None:
+    data = _tar([("a.txt", b"a")])
+    with open_archive(io.BytesIO(data)) as other:
+        foreign = other.members()[0]
+    with open_archive(io.BytesIO(data)) as ar:
+        assert list(ar.stream_members(members=[foreign, foreign])) == []
+        assert _unmatched(ar.diagnostics) == [("a.txt", "member")]

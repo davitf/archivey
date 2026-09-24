@@ -2549,6 +2549,8 @@ class BaseArchiveReader(ArchiveReader):
                     stream.close()
             # Only a pass that reached the end has offered every member. A caller
             # that stops early never gets here (the generator is closed at a yield).
+            # Close the last stream first, so a diagnostic its close emits comes
+            # before the unmatched ones.
             if current is not None:
                 current.close()
                 current = None

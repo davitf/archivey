@@ -529,8 +529,8 @@ form of MemberSelector" names. `SelectorUnmatchedContext` is part of the
 
 `entry_kind` ∈ `{"name","member"}`. For a `str` entry, `entry` is the entry as the
 caller wrote it. For an `ArchiveMember` entry, `entry` is that member's name; a member
-entry is unmatched when it belongs to another reader or carries no identity. A `str`
-entry that the caller repeated is reported once.
+entry is unmatched when it belongs to another reader or carries no identity. An entry
+that the caller repeated is reported once: a name by its text, a member by its identity.
 
 `MEMBER_SELECTOR_UNMATCHED` SHALL NOT be in `ARCHIVE_INTEGRITY_CODES`: it reports the
 caller's argument, not the archive, and a job that passes one list of names to many

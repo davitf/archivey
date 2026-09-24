@@ -12,7 +12,8 @@ normalized to a predicate at the API boundary:
 - A `str` entry that does not end in `/` SHALL also match every member whose name is
   that entry plus `/`, because a directory member's normalized name carries a trailing
   `/`. An entry that ends in `/` SHALL match only that name. Link-target lookup uses the
-  same rule.
+  same rule. It is a selector rule only: `get(name)` and `open(name)` match the stored
+  name exactly, so `get("dir")` returns `None` for a member stored as `dir/`.
 - `ArchiveMember` matches by **identity** (`archive_id` + `member_id`; members are
   unhashable → id set, never member set)
 - String and member entries MAY mix
@@ -24,7 +25,11 @@ has been offered to the selector:
 - `stream_members()` reports at the end of a pass that reached the last member. A pass
   that the caller stops early SHALL NOT report, because a later member could match.
 - `extract_all()` reports before it writes any member when the member list is available
-  without a scan, and otherwise at the end of the pass.
+  without a scan, and otherwise at the end of the pass. Under a `RAISE` disposition the
+  first case refuses the call before the destination is created. In the second case the members
+  already written stay on disk and `DiagnosticRaisedError` replaces the report.
+- Under a `RAISE` disposition, `stream_members()` yields every selected member and
+  then raises `DiagnosticRaisedError` from the iterator.
 - A predicate selector SHALL NOT be reported.
 
 #### Scenario: selector matrix
@@ -39,3 +44,5 @@ has been offered to the selector:
 | Same selector, caller breaks after the first member | No `MEMBER_SELECTOR_UNMATCHED` |
 | `ArchiveMember` from another reader | Nothing selected; `MEMBER_SELECTOR_UNMATCHED` with `entry_kind="member"` |
 | `extract_all(members=["typo.txt"])` on ZIP with `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | `DiagnosticRaisedError` before any member is written |
+| `extract_all(members=["a.txt", "typo.txt"])` on TAR with the code set to `RAISE` | `a.txt` written, then `DiagnosticRaisedError`; no report |
+| `get("dir")` on an archive holding `dir/` | `None`: `get()` matches the stored name exactly |
