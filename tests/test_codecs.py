@@ -3,6 +3,7 @@ the digest-verification stage."""
 
 from __future__ import annotations
 
+import dataclasses
 import gzip
 import hashlib
 import importlib.util
@@ -11,6 +12,7 @@ import random
 import re
 import zlib
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -152,16 +154,19 @@ def test_brotli_without_brotli_raises() -> None:
         open_codec_stream(Codec.BROTLI, io.BytesIO(b""))
 
 
+_needs_crypto = pytest.mark.skipif(
+    importlib.util.find_spec("cryptography") is None,
+    reason="cryptography is not installed (core-only leg); the present-path cannot run",
+)
+
+
 def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(crypto, "_crypto_available", lambda: False)
     with pytest.raises(PackageNotInstalledError, match="cryptography"):
         crypto.get_crypto_backend()
 
 
-@pytest.mark.skipif(
-    importlib.util.find_spec("cryptography") is None,
-    reason="cryptography is not installed (core-only leg); the present-path cannot run",
-)
+@_needs_crypto
 def test_crypto_reachable_only_through_wrapper() -> None:
     """With cryptography present, the backend is reached via the wrapper (not a direct import)."""
     backend = crypto.get_crypto_backend()
@@ -181,10 +186,133 @@ def test_crypto_reachable_only_through_wrapper() -> None:
     assert stage.update(ciphertext) + stage.finalize() == plaintext
 
 
-@pytest.mark.skipif(
-    importlib.util.find_spec("cryptography") is None,
-    reason="cryptography is not installed (core-only leg); the present-path cannot run",
+def _ctr_reference(
+    key: bytes,
+    data: bytes,
+    *,
+    initial_counter: int,
+    byteorder: Literal["little", "big"],
+) -> bytes:
+    """One ECB call per counter block and a byte-by-byte XOR: slow and obviously right."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+    out = bytearray()
+    for block_index in range(-(-len(data) // 16)):
+        counter = (initial_counter + block_index) % (1 << 128)
+        keystream = encryptor.update(counter.to_bytes(16, byteorder))
+        chunk = data[block_index * 16 : block_index * 16 + 16]
+        out.extend(b ^ k for b, k in zip(chunk, keystream))
+    return bytes(out)
+
+
+def _ragged_chunks(data: bytes, sizes: tuple[int, ...]) -> list[bytes]:
+    chunks, pos, i = [], 0, 0
+    while pos < len(data):
+        size = sizes[i % len(sizes)]
+        chunks.append(data[pos : pos + size])
+        pos += size
+        i += 1
+    return chunks
+
+
+@_needs_crypto
+@pytest.mark.parametrize(
+    ("initial_counter", "byteorder"),
+    [
+        pytest.param(1, "little", id="winzip-le-from-1"),
+        pytest.param(0, "big", id="be-from-0"),
+        pytest.param((1 << 64) - 2, "little", id="le-carry-past-64-bits"),
+        pytest.param((1 << 128) - 2, "little", id="le-wraps-128-bits"),
+        pytest.param((1 << 128) - 2, "big", id="be-wraps-128-bits"),
+    ],
 )
+@pytest.mark.parametrize(
+    "sizes",
+    [(1, 15, 16, 17), (5000,), (3, 64 * 1024)],
+    ids=["ragged-1-15-16-17", "one-call", "3-then-64k"],
+)
+def test_aes_ctr_stage_matches_reference_across_chunkings(
+    initial_counter: int,
+    byteorder: Literal["little", "big"],
+    sizes: tuple[int, ...],
+) -> None:
+    """A call ending mid-block resumes at the same keystream offset (Z-K1)."""
+    key = bytes(range(32))
+    data = bytes((i * 7 + 3) % 256 for i in range(5000))
+    expected = _ctr_reference(
+        key, data, initial_counter=initial_counter, byteorder=byteorder
+    )
+    stage = crypto.open_aes_ctr_stage(
+        crypto.AesCtrParams(
+            key, initial_counter=initial_counter, counter_byteorder=byteorder
+        )
+    )
+    got = b"".join(stage.process(chunk) for chunk in _ragged_chunks(data, sizes))
+    assert got == expected
+
+
+@_needs_crypto
+def test_aes_ctr_big_endian_agrees_with_cryptography_ctr_mode() -> None:
+    """The big-endian convention is exactly ``modes.CTR``: the counter is the whole block."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    key = b"k" * 16
+    nonce = ((1 << 64) - 1).to_bytes(16, "big")
+    data = bytes(range(256)) * 3
+    expected = Cipher(algorithms.AES(key), modes.CTR(nonce)).encryptor().update(data)
+    stage = crypto.open_aes_ctr_stage(
+        crypto.AesCtrParams(key, initial_counter=(1 << 64) - 1, counter_byteorder="big")
+    )
+    assert stage.process(data) == expected
+
+
+@_needs_crypto
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        pytest.param(
+            crypto.AesCtrParams(
+                b"x" * 15, initial_counter=1, counter_byteorder="little"
+            ),
+            "16, 24, or 32",
+            id="key-length",
+        ),
+        pytest.param(
+            crypto.AesCtrParams(
+                b"x" * 16, initial_counter=-1, counter_byteorder="little"
+            ),
+            "128 bits",
+            id="negative-counter",
+        ),
+        pytest.param(
+            crypto.AesCtrParams(
+                b"x" * 16, initial_counter=1 << 128, counter_byteorder="big"
+            ),
+            "128 bits",
+            id="counter-too-wide",
+        ),
+        pytest.param(
+            # Built through replace() so the bad value needs no type-checker suppression.
+            dataclasses.replace(
+                crypto.AesCtrParams(
+                    b"x" * 16, initial_counter=1, counter_byteorder="big"
+                ),
+                **{"counter_byteorder": "middle"},
+            ),
+            "byteorder",
+            id="byteorder",
+        ),
+    ],
+)
+def test_aes_ctr_stage_rejects_bad_params(
+    params: crypto.AesCtrParams, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        crypto.open_aes_ctr_stage(params)
+
+
+@_needs_crypto
 def test_sevenzip_kdf_cache_reuses_derived_keys() -> None:
     password = "secret".encode("utf-16le")
     salt = b"salt"

@@ -364,13 +364,13 @@ encrypted 7z folder; [#344](https://github.com/davitf/archivey/pull/344) added `
 on a short final block. The "are the three decrypt streams mergeable?" half is answered in the
 class docstring and promoted to `fold-rar-header-decrypt-stream` in #347.
 
-The 3 of this cohort that remain (the five `solid.py` rows, the three `sevenzip_reader.py` rows and the two placement threads are done). `*` marks a thread whose follow-up narrowed it.
+The 2 of this cohort that remain (the five `solid.py` rows, the three `sevenzip_reader.py` rows, the two placement threads and the `zip_aes.py` layering thread are done). `*` marks a thread whose follow-up narrowed it.
 
 | File | Open | Threads | Character |
 | --- | --- | --- | --- |
 | ~~`streamtools/solid.py`~~ | 0 | five from 2026-09-14 | **Done** — [#439](https://github.com/davitf/archivey/pull/439): `_drain_chunks` folded into `skip_forward` (per-chunk `on_chunk` callback), `_skip_to` inlined, redundant check dropped, `_claim_offset` renamed `_check_can_open_at`, "Vend" reworded |
 | ~~`backends/sevenzip_reader.py`~~ | 0 | 51\*, 53, 54 | **Done** — [#440](https://github.com/davitf/archivey/pull/440): `_folder_unpack_size` renamed `_folder_members_total_size`, the timestamp aliases dropped from the 7z and ZIP readers, one `SlicingStream` call in `_open_member`. 51's substream-count half was closed by #424 |
-| `backends/zip_aes.py` | 1 | 15 | The one live layering violation; 14 (placement) was closed by the move in [#443](https://github.com/davitf/archivey/pull/443) |
+| ~~`backends/zip_aes.py`~~ | 0 | 15 | **Done** — [#445](https://github.com/davitf/archivey/pull/445): the AES-CTR keystream is a `CryptoBackend` stage with the counter convention as a parameter, written block-wise (Z-K1); `WinZipAesDecryptStream` stays as the ZIP AE boundary. 14 (placement) was closed by the move in [#443](https://github.com/davitf/archivey/pull/443) |
 | `volumes.py` | 1 | 12 | The docstring half; 13 was closed by #374 |
 | ~~`rar_detect.py`~~ | 0 | 10 | **Done** — [#443](https://github.com/davitf/archivey/pull/443) moved it under `backends/` |
 | `reader_state.py` | 1 | 11 | "I can't even begin to review it." Explanation, not code |
@@ -385,10 +385,13 @@ rejected. `detection.py`, `detection_workspace.py` and `sfx.py` stay where they 
 format-agnostic. The five modules now live in `internal/backends/`, every importer with them;
 `internal/` holds 27 top-level modules instead of 32 (not counting `__init__.py`).
 
-**Thread 15 is the only live defect in these, and it is a layering one.** `zip_aes.py:99`
-imports `cryptography` directly, under a comment that reads *"Local import: only the crypto
-wrapper may import cryptography"* — the code states the rule it is breaking. The question the
-thread asks is not "move it" but which of the two implementations should survive the merge.
+**Thread 15 is done ([#445](https://github.com/davitf/archivey/pull/445)).** `zip_aes.py` imported `cryptography` directly, under a
+comment saying only the crypto wrapper may. Ruled 2026-09-19: move the primitive, keep the
+framing. `CryptoBackend.aes_ctr_keystream_stage` takes the counter convention as a parameter
+(WinZip AE counts little-endian from 1, where `modes.CTR` counts big-endian), and builds the
+keystream block-wise — ~6 MiB/s became ~110 MiB/s on 4 MiB of random data in 64 KiB chunks (one
+container, not a `benchmarks/` run; Z-K1). `WinZipAesDecryptStream` stays in
+`zip_aes`, since its `read` also carries the HMAC.
 
 **Thread 51's corrected scope is a rename.** The original finding — a 7z folder decoding to
 more than its members account for, making a correct password read as wrong — was retracted by
@@ -1132,7 +1135,7 @@ Thread 56 (the post-drain orphan) closed with [#365](https://github.com/davitf/a
 | ~~C — binaryio + solid~~ | `binaryio.py`, `solid.py` | 22, 23, 25, 26, 40, 41, 55 | **Done** — [#329](https://github.com/davitf/archivey/pull/329) |
 | ~~D — RAR parser~~ | `backends/rar_parser.py` | 1, 2, 4, 5, 6, 7, 8, 9 | **Done** — [#332](https://github.com/davitf/archivey/pull/332). Threads 1 and 2 were the two possible header-decrypt bugs; both measured against fixtures and neither was one |
 | ~~E — RAR reader~~ | `backends/rar_reader.py` | 43, 44, 46, 47, 48, 49 | **Done** — [#336](https://github.com/davitf/archivey/pull/336) |
-| **F — placement + odds** | `backends/zip_aes.py`, `volumes.py`, `reader_state.py` | 11, 12, 15 | **Placement done** (threads 10/14, ruled 2026-09-19; the five modules moved under `backends/` in [#443](https://github.com/davitf/archivey/pull/443)). Three threads left. 51, 53 and 54 were closed by [#440](https://github.com/davitf/archivey/pull/440), 13 by #374, and thread 3 left when #342 answered it. |
+| **F — placement + odds** | `backends/zip_aes.py`, `volumes.py`, `reader_state.py` | 11, 12 | **Placement done** (threads 10/14, ruled 2026-09-19; the five modules moved under `backends/` in [#443](https://github.com/davitf/archivey/pull/443)). Thread 15 was closed by [#445](https://github.com/davitf/archivey/pull/445). Two threads left. 51, 53 and 54 were closed by [#440](https://github.com/davitf/archivey/pull/440), 13 by #374, and thread 3 left when #342 answered it. |
 | ~~(orphan)~~ | `streamtools/base.py` | 56 | **Done** — [#365](https://github.com/davitf/archivey/pull/365), merged 2026-09-21. Both flags now use the class-flag-plus-constructor-override pattern `_SUBCLASS_CLOSES_INNER` already had |
 | ~~(new)~~ | five `solid.py` questions from 2026-09-14 | — | **Done** — [#439](https://github.com/davitf/archivey/pull/439), together with S18-K8 (two asserts in `ArchiveStream._collapse_nested`) |
 

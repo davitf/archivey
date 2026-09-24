@@ -1,7 +1,10 @@
 """Cheap RAR main-header identity check for the SFX scan.
 
-Seven or eight bytes of ``Rar!\\x1a\\x07`` in a stub are not a RAR. The cued
-scan calls :func:`validate_rar_main_header` with a candidate-relative view.
+Seven or eight bytes of ``Rar!\\x1a\\x07`` in a stub are not a RAR when the main
+header that would confirm them is in hand and does not. The exception is a view
+clamped at the scan window: when ``remaining`` proves the header exists past the
+clamp, the candidate passes on the magic alone and the parser judges it. The
+cued scan calls :func:`validate_rar_main_header` with a candidate-relative view.
 """
 
 from __future__ import annotations
@@ -46,11 +49,17 @@ def validate_rar_main_header(
     (type ``0x73``) with a matching 16-bit header CRC.
 
     ``remaining`` distinguishes a genuine overrun from a scan-window clamp:
-    once the declared header size fits in ``remaining``, a short ``peek_more``
-    is not ``NOT_THIS_FORMAT``. ``peek_more`` stays outside the parse ``try``
-    so a workspace ``OSError`` propagates. A truncated vint before the CRC is
-    ``NOT_THIS_FORMAT``; after the CRC has matched, a later vint failure is
-    ``DAMAGED``.
+    once the bytes a check needs fit in ``remaining``, a short ``peek_more``
+    is not ``NOT_THIS_FORMAT``. Every short peek past the magic goes through
+    :func:`_header_in_hand`, including a RAR 5 ``hdrlen`` vint cut off by the
+    clamp, because the detector's view is clamped at ``scan_limit`` (see
+    :class:`HitValidator`). The magic peek itself does not need to: both
+    scans yield a candidate only when its whole magic lies inside the window.
+
+    ``peek_more`` stays outside the parse ``try`` so a workspace ``OSError``
+    propagates. A vint that is truncated with every existing byte in hand,
+    before the CRC, is ``NOT_THIS_FORMAT``; after the CRC has matched, a later
+    vint failure is ``DAMAGED``.
     """
     head = peek_more(len(RAR5_ID))
     if head.startswith(RAR5_ID):
@@ -77,14 +86,20 @@ def _validate_rar5(
     peek_more: Callable[[int], bytes], remaining: int | None
 ) -> HitOutcome:
     # Marker + CRC + a generous vint prefix, then the declared body.
-    prefix = peek_more(len(RAR5_ID) + 4 + 16)
-    if len(prefix) < len(RAR5_ID) + 5:
-        return HitOutcome.NOT_THIS_FORMAT
+    asked = len(RAR5_ID) + 4 + 16
+    prefix = peek_more(asked)
+    short = _header_in_hand(len(prefix), len(RAR5_ID) + 5, remaining)
+    if short is not None:
+        return short
     body = prefix[len(RAR5_ID) :]
     try:
         hdrlen, pos = load_vint(body, 4)
     except CorruptionError:
-        return HitOutcome.NOT_THIS_FORMAT
+        # A vint cut off by a clamped view is not evidence against the candidate.
+        # Only a prefix holding every byte that exists (up to ``asked``) proves it bad.
+        wanted = asked if remaining is None else min(asked, remaining)
+        clamped = _header_in_hand(len(prefix), wanted, remaining)
+        return HitOutcome.NOT_THIS_FORMAT if clamped is None else clamped
     if hdrlen > _RAR5_HEADER_CAP:
         return HitOutcome.NOT_THIS_FORMAT
     header_size = pos + hdrlen
@@ -113,8 +128,9 @@ def _validate_rar3(
     peek_more: Callable[[int], bytes], remaining: int | None
 ) -> HitOutcome:
     start = peek_more(len(RAR_ID) + _S_BLK_HDR.size)
-    if len(start) < len(RAR_ID) + _S_BLK_HDR.size:
-        return HitOutcome.NOT_THIS_FORMAT
+    short = _header_in_hand(len(start), len(RAR_ID) + _S_BLK_HDR.size, remaining)
+    if short is not None:
+        return short
     buf = start[len(RAR_ID) :]
     header_crc, block_type, flags, header_size = _S_BLK_HDR.unpack_from(buf)
     if block_type != _RAR3_MAIN:

@@ -121,6 +121,20 @@ class HitValidator(Protocol):
     source length is unknown. It is a length, not a peek budget — do not confuse
     it with ``scan_limit``. The scan always passes it; ``None`` is a value, not
     an omitted argument.
+
+    ``peek_more(n)`` may return fewer than ``n`` bytes, and a short answer does
+    not by itself mean the source ended. The two callers differ:
+
+    - :func:`scan_for_magic` escalates on demand: it reads the source forward
+      until it holds ``n`` bytes past the candidate, so a short answer is EOF.
+    - The detector's SFX scan hands out a
+      :meth:`~archivey.internal.detection_workspace.PrefixWorkspace.candidate_view`
+      clamped at ``scan_limit``, so a candidate near the end of the window gets
+      a short answer while the source continues past it.
+
+    A validator must therefore judge every short peek against ``remaining``:
+    when ``remaining`` covers the bytes it needs, the peek was clamped and the
+    shortfall is not evidence against the candidate.
     """
 
     def __call__(

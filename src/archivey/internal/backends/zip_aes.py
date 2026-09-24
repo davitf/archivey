@@ -23,7 +23,12 @@ from archivey.exceptions import (
     PackageNotInstalledError,
 )
 from archivey.internal.password import wrong_password_error
-from archivey.internal.streams.crypto import CRYPTO_REQUIREMENT, _crypto_available
+from archivey.internal.streams.crypto import (
+    CRYPTO_REQUIREMENT,
+    AesCtrParams,
+    _crypto_available,
+    open_aes_ctr_stage,
+)
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, read_exact
 
 # WinZip AES extra-field header id.
@@ -91,38 +96,6 @@ def derive_winzip_aes_keys(
     return enc_key, auth_key, pw_verify
 
 
-class _AesCtrLe:
-    """AES-CTR with a little-endian counter starting at 1 (WinZip AE convention)."""
-
-    def __init__(self, key: bytes) -> None:
-        if not _crypto_available():
-            raise PackageNotInstalledError(
-                CRYPTO_REQUIREMENT.message("WinZip AES decryption")
-            )
-
-        # Local import: only the crypto wrapper may import cryptography.
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
-        self._encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
-        self._counter = 1
-        self._keystream = b""
-        self._pos = 0
-
-    def process(self, data: bytes) -> bytes:
-        if not data:
-            return b""
-        out = bytearray(len(data))
-        for i, byte in enumerate(data):
-            if self._pos >= len(self._keystream):
-                block = self._counter.to_bytes(16, "little")
-                self._keystream = self._encryptor.update(block)
-                self._pos = 0
-                self._counter += 1
-            out[i] = byte ^ self._keystream[self._pos]
-            self._pos += 1
-        return bytes(out)
-
-
 class WinZipAesDecryptStream(ReadOnlyIOStream):
     """Decrypt an AE ciphertext body and verify the trailing HMAC-SHA1(10).
 
@@ -146,10 +119,18 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         cipher_len: int,
     ) -> None:
         super().__init__()
+        # First: close() reads it, and IOBase.__del__ runs close() on a refused instance.
+        self._source = source
         if cipher_len < 0:
             raise ValueError("cipher_len must be non-negative")
-        self._source = source
-        self._ctr = _AesCtrLe(enc_key)
+        if not _crypto_available():
+            raise PackageNotInstalledError(
+                CRYPTO_REQUIREMENT.message("WinZip AES decryption")
+            )
+        # WinZip AE: the whole 16-byte counter block, little-endian, starting at 1.
+        self._ctr = open_aes_ctr_stage(
+            AesCtrParams(enc_key, initial_counter=1, counter_byteorder="little")
+        )
         self._hmac = hmac.new(auth_key, digestmod=hashlib.sha1)
         self._cipher_remaining = cipher_len
         self._mac = b""
