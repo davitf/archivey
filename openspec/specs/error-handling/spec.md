@@ -166,23 +166,6 @@ central context mechanism. Escalation alone has no underlying exception, so
 | Code resolves to `RAISE` and delivery succeeds | `DiagnosticRaisedError` carries the exact emitted diagnostic plus stamped context |
 | Member diagnostic escalates during `OnError.CONTINUE` | Error propagates immediately; extraction does not record `FAILED`/`BLOCKED` or continue |
 
-### Requirement: Archive EOF strictness takes precedence
-
-For `ARCHIVE_EOF_MARKER_MISSING`, `ArchiveyConfig.strict_archive_eof=True`
-SHALL force `TruncatedError` after the diagnostic policy-controlled
-count/retention/log/callback steps. This terminal `TruncatedError` SHALL take
-precedence over `DiagnosticRaisedError`; with strict EOF disabled, ordinary
-diagnostic disposition applies. Logging-handler or callback exceptions still
-propagate at their earlier delivery step.
-
-#### Scenario: strict EOF matrix
-
-| Case | Expected |
-| --- | --- |
-| EOF code resolves to `IGNORE`, `strict_archive_eof=True` | Exact count increments; `TruncatedError` raised without retention/logging/callback delivery |
-| EOF code resolves to `RAISE`, delivery succeeds, strict EOF true | Retain/log/callback according to `RAISE`; raise `TruncatedError` instead of `DiagnosticRaisedError` |
-| EOF code resolves to `RAISE`, strict EOF false | `DiagnosticRaisedError` after delivery |
-
 ### Requirement: Terminal archive listing errors stay loud without hiding members
 
 When a listing pass recovers one or more members and then hits a terminal
@@ -524,7 +507,6 @@ truthiness are not covered, there being no wrong type to find.
 | `ArchiveyConfig(listing_limits="x")` then listing | `ArchiveyUsageError` at construction, not `AttributeError` mid-listing |
 | `ArchiveyConfig(max_retained_diagnostic_references="x")` | `ArchiveyUsageError` at construction |
 | `ArchiveyConfig(on_diagnostic=0)` | `ArchiveyUsageError` at construction, not when the first diagnostic fires |
-| `ArchiveyConfig(strict_archive_eof="no")` | Accepted; a truthiness flag has no wrong type |
 | `ListingLimits(max_members="x")` | `ArchiveyUsageError` at construction, not `TypeError` mid-listing |
 | `ExtractionLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
 | `ExtractionLimits(ratio_activation_threshold=None)` | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |

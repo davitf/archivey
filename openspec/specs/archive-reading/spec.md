@@ -312,7 +312,7 @@ instead of raising on terminal archive-level listing errors.
 | --- | --- |
 | Clean archive | `error is None`; `members` is the full fully-resolved list |
 | TAR rejected mid/final header after prefix (Option F) | `members` = recoverable prefix; `error` is `CorruptionError`; report stored incomplete |
-| Strict absent/short trailer after prefix | `members` = prefix; `error` is `TruncatedError`; report stored incomplete |
+| Absent/short TAR trailer with `ARCHIVE_EOF_MARKER_MISSING` set to `RAISE` | `DiagnosticRaisedError` raised: the caller's policy firing, not listing damage, so it is not carried on `error` |
 | `members_report()` then `members()` on same RA reader after incomplete | `members()` raises the terminal error (not a partial list) |
 | `open(report.members[i])` for a recovered FILE after incomplete | Succeeds by identity |
 | `get(name)` after incomplete | Raises terminal error / does not pretend completeness |
@@ -464,6 +464,12 @@ mirror an allocator — but the weight MUST NOT under-count UTF-8 size:
   `dict` value, nested `str` / `bytes` values only
 - Exclude: `_raw`, `hashes`, diagnostics, Python object overhead
 
+A field filled in after its member was registered SHALL be weighed when it is filled
+in, under the same enforcement as registration. The case that exists is a symlink
+target stored as member data (ZIP, 7z, RAR3/4), which is read only once every member is
+registered: a target resolved while materializing `members()` / `scan_members()` SHALL
+count toward `max_metadata_bytes` before that list is published.
+
 #### Scenario: metadata accounting matrix
 
 | Case | Expected |
@@ -473,6 +479,7 @@ mirror an allocator — but the weight MUST NOT under-count UTF-8 size:
 | `extra` holds opaque non-str/bytes object | Not counted |
 | ASCII-only name | Weight equals `len(name)` (exact UTF-8) |
 | Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
+| Symlink target read from member data after registration | Weighed when read; over the cap → `ResourceLimitError` naming `max_metadata_bytes` |
 
 ### Requirement: Name lookup and member identity
 
@@ -818,7 +825,6 @@ class DecoderLimits:
 class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
-    strict_archive_eof: bool = False
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
     decoder_limits: DecoderLimits = DecoderLimits()
@@ -832,20 +838,14 @@ mappings and the dataclasses SHALL be defensively immutable. `config=None` →
 immutable library default. No mutable global/context-local diagnostic policy or
 callback.
 
-A reader carries its open config, including `listing_limits` and
-`decoder_limits` for its lifetime.
-Later `extract_all(config=...)` MAY override policy/callback/strictness/
-accelerators/`extraction_limits` for new work, but SHALL NOT change the
-reader's effective `listing_limits`, `decoder_limits` or
-`max_retained_diagnostic_references` (see `diagnostics`).
+A reader carries its open config, all of it, for its lifetime. Reader methods
+SHALL NOT take a `config=`: `extract_all(limits=...)` is the one per-call
+override, and it replaces only the extraction limits for that call.
 `decoder_limits` SHALL bound the working memory a codec allocates on the
 strength of a number the archive declares, and SHALL be enforced before that
 allocation is made. Per-call `limits`
 still beat `config.extraction_limits`, then reader/library default. Other
 per-call operational args stay outside `ArchiveyConfig`.
-
-`strict_archive_eof=False` follows ordinary diagnostic policy for failed EOF check;
-`True` forces `TruncatedError` after ordered diagnostic rules in `error-handling`.
 
 `on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
 reads from a callback are allowed. Starting another operation on the same
@@ -857,10 +857,9 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 
 | Case | Expected |
 | --- | --- |
-| `ArchiveyConfig()` | AUTO accelerators; EOF strictness false; documented extraction and listing defaults; COLLECT; budget 256; no callback |
-| Reader budget 10, then `extract_all(config=…budget=1000)` | New policy/callback may apply; diagnostics still under budget 10 |
+| `ArchiveyConfig()` | AUTO accelerators; documented extraction and listing defaults; COLLECT; budget 256; no callback |
 | `extract(..., extraction_limits=ExtractionLimits(max_ratio=100))` | 100:1 per-member ratio enforced (`safe-extraction`) |
-| Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime even if later `extract_all(config=...)` omits listing_limits |
+| Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 
 ### Requirement: Reader-lifetime cumulative diagnostic snapshots
 
@@ -929,3 +928,51 @@ start-offset / SFX rules (`format-rar`, `format-7z`).
 | `payload_offset == 0` | Unchanged open-at-current-position behaviour |
 | Explicit `format=` | Detection skipped; backend SFX/start-offset rules apply |
 | Bare seek only (no start-offset / no offset view) | Insufficient for 7z; MUST NOT be the sole hand-off mechanism |
+
+### Requirement: Bounded symlink-target reads from member data
+
+A backend that reads a symlink's target from the member's data (ZIP, 7z, RAR3/4)
+SHALL bound that read. For a plain target, a member whose declared size is over
+`MAX_LINK_TARGET_BYTES` (4096) SHALL NOT be opened for its target at all, and any other
+read SHALL ask for at most 4096 + 1 bytes. A Windows reparse buffer is bounded
+differently, by its own header, as the paragraph after next says.
+
+A target longer than 4096 bytes SHALL be treated as corrupt or malicious: `link_target`
+SHALL stay unset, and `SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with
+`reason="target_too_long"`. The target SHALL NOT be truncated. The member keeps its
+link type, and since the archive does record a target, extraction SHALL fail that
+member (`LinkTargetNotFoundError`) rather than report `LINK_TARGET_UNAVAILABLE`.
+`SYMLINK_TARGET_UNAVAILABLE` is in `ARCHIVE_INTEGRITY_CODES`, so
+`DiagnosticPolicy.strict()` refuses the archive.
+
+A Windows reparse buffer stored as member data SHALL be read as far as its own header
+declares: the 8-byte header, then the payload length its 16-bit `ReparseDataLength`
+states (plus one byte, so a member that is exactly one buffer reaches end of stream and
+is verified). A header whose tag is not a symlink or a junction declares nothing to
+read. The buffer SHALL NOT be refused for its size, because a member flagged as a
+reparse point may turn out to hold ordinary file content. The target parsed from a
+buffer SHALL be held to the same 4096-byte cap, measured in UTF-8.
+
+A member whose data outruns a declared size under the cap is corrupt, not over-long:
+where the backend verifies data against the declared size (ZIP always, 7z whenever
+checksums are verified), the read SHALL fail with `CorruptionError` on reaching that
+size, as for any other member, and the cap does not decide the outcome.
+
+Targets stored in a header (TAR `linkname`, RAR5 redirection records, Rock Ridge) are
+outside this requirement: the header parser has already allocated them, and
+§"Listing metadata-byte accounting" weighs them at registration.
+
+#### Scenario: symlink-target cap matrix
+
+| Case | Expected |
+| --- | --- |
+| Data-stored target of exactly 4096 bytes | `link_target` set, no diagnostic |
+| Data-stored target of 4097 bytes | `link_target is None`; `SYMLINK_TARGET_UNAVAILABLE`, `reason="target_too_long"` |
+| Compressed target declaring 64 MiB | Refused without decoding any of it |
+| ZIP target whose data outruns a declared size under the cap | `CorruptionError` naming the declared size; nothing past it decoded |
+| No declared size, data longer than the cap | Read stops at 4097 bytes; refused as over-long |
+| Over-long target under `DiagnosticPolicy.strict()` | Listing raises `DiagnosticRaisedError` |
+| Over-long target, `extract_all(on_error=CONTINUE)` | That link `FAILED` with `LinkTargetNotFoundError`; other members extract |
+| Reparse buffer whose target is over 4096 UTF-8 bytes | Refused as over-long |
+| Reparse buffer followed by more data | Only the declared buffer and one byte are read |
+| Reparse-flagged member whose data is not a buffer, any size | Re-typed to its fallback with all its content readable; only its header read while listing |

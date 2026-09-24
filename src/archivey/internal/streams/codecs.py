@@ -53,6 +53,7 @@ from archivey.internal.config import (
     check_decoder_memory,
     exceeds_decoder_memory,
 )
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStream,
     ExceptionTranslator,
@@ -70,7 +71,6 @@ from archivey.internal.streams.decompress import (
     ZlibDecompressorStream,
 )
 from archivey.internal.streams.lzip import LzipDecompressorStream
-from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
@@ -1468,9 +1468,9 @@ def _peek_alone_header(source: CodecSource) -> tuple[CodecSource, bytes]:
 
     ``lzma.LZMAFile`` takes no ``memlimit``, so the dictionary size has to be read
     before it is built. Returns the source to decode from, which is ``source``
-    itself unless it could neither seek nor peek, in which case it is wrapped in a
-    :class:`PeekableStream` that replays the header — nothing is lost, since such a
-    source could not have been rewound anyway.
+    itself unless it could neither seek nor peek, in which case it is wrapped in an
+    :class:`~archivey.internal.source.ArchiveSource` that replays the header — nothing
+    is lost, since such a source could not have been rewound anyway.
 
     A path source is read twice, once here for the header and once by ``LZMAFile``,
     so the checked header and the decoded one come from two opens of the file. That
@@ -1481,7 +1481,7 @@ def _peek_alone_header(source: CodecSource) -> tuple[CodecSource, bytes]:
     if isinstance(source, (str, os.PathLike)):
         with open(os.fspath(source), "rb") as f:
             return source, read_exact(f, _ALONE_HEADER_SIZE)
-    if isinstance(source, PeekableStream):
+    if isinstance(source, ArchiveSource) and not source.seekable():
         return source, source.peek(_ALONE_HEADER_SIZE)
     if is_seekable(source):
         pos = source.tell()
@@ -1489,8 +1489,10 @@ def _peek_alone_header(source: CodecSource) -> tuple[CodecSource, bytes]:
             return source, read_exact(source, _ALONE_HEADER_SIZE)
         finally:
             source.seek(pos)
-    peekable = PeekableStream(source)
-    return peekable, peekable.peek(_ALONE_HEADER_SIZE)
+    # Non-seekable, so its length is never a fact and nothing here clamps: this only
+    # replays the header.
+    replay = ArchiveSource.for_stream(source)
+    return replay, replay.peek(_ALONE_HEADER_SIZE)
 
 
 class _RefusedAloneStream(ReadOnlyIOStream):
@@ -2110,6 +2112,7 @@ def open_codec_stream(
     stamp: Callable[[ArchiveyError], None] | None = None,
     collector: "DiagnosticCollector | None" = None,
     seekable: bool | None = None,
+    on_close: Callable[[], None] | None = None,
 ) -> ArchiveStream:
     """Open a decompressing stream for ``codec`` with exceptions translated/stamped.
 
@@ -2122,13 +2125,20 @@ def open_codec_stream(
     ``seekable`` is omitted the handle stays seekable so format backends that need
     positioning on an outer codec stream (compressed TAR) keep working — member-stream
     seekability is enforced by the reader wrapper instead.
+
+    ``on_close`` runs when the returned stream closes, after its inner: how a caller that
+    built something for this stream alone (``open_stream``'s source) ties it to the
+    stream's lifetime.
     """
     if not isinstance(source, (str, os.PathLike)):
         # A seekable stream positioned mid-file gets a clean tell()==0 origin (a
         # SlicingStream view), because codec backends address the source with absolute
         # offsets — the seekable XZ/lzip index, stdlib gzip's rewind — and would
         # otherwise read the wrong bytes. Streams at position 0 pass through unchanged
-        # (see the stream-position contract in ``format-detection``).
+        # (see the stream-position contract in ``format-detection``). Expected to be a
+        # no-op for every caller today: ``open_stream`` rebases its source first, and the
+        # readers hand in views that start at 0. It stays for a direct caller that does
+        # not.
         source = fix_stream_start_position(source)
     # Fill the AUTO size gate when the caller did not already supply a known length
     # (path ``stat``, ``SlicingStream.size``, ``BytesIO``, …). Unknown stays ``None``.
@@ -2154,4 +2164,5 @@ def open_codec_stream(
         seekable=stream_seekable,
         rewind_warning=backend.rewind_warning if stream_seekable else None,
         collector=collector,
+        on_close=on_close,
     )

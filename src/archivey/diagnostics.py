@@ -222,10 +222,10 @@ class ArchiveEofContext(_JsonSafeContext):
 
     - ``"two_zero_blocks"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the TAR trailer itself is
       missing, short, or a non-null block.
-    - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``, ``strict_archive_eof`` only) — the
-      trailer was complete but a non-zero byte follows it, so the file carries something
-      the listing did not account for. ``observed_bytes`` is that byte's offset past the
-      trailer.
+    - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — the trailer was complete but a
+      non-zero byte follows it within the first MiB past it, so the file carries
+      something the listing did not account for. ``observed_bytes`` is that byte's
+      offset past the trailer.
     """
 
     kind: Literal["archive_eof"] = "archive_eof"
@@ -310,7 +310,12 @@ class DigestContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class SeekIndexContext(_JsonSafeContext):
-    """Seek index build failed or was skipped; stream may redecompress on rewind."""
+    """Seek index build failed, was skipped, or was thinned.
+
+    A failed or skipped build means the stream may redecompress on rewind. A thinned
+    table (more entries than the seek-table cap) still works, with points further
+    apart, so a seek may decode further than it would otherwise.
+    """
 
     kind: Literal["seek_index"] = "seek_index"
     archive_name: str | None = None
@@ -318,6 +323,7 @@ class SeekIndexContext(_JsonSafeContext):
     member_id: int | None = None
     codec: str = ""
     scan: str = ""
+    # The failing exception's class name, or "SeekTableThinned" for a thinned table.
     error_type: str = ""
 
 

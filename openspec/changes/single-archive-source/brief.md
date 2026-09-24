@@ -1,6 +1,6 @@
 # single-archive-source — one object carries every guarantee the raw source must give
 
-**Status:** Ready to implement. Builds on the borrowed source streams and bounded header
+**Status:** Implemented; archives once the deltas are re-derived (task 7.3). Builds on the borrowed source streams and bounded header
 allocations work, both now on main. Not breaking: no public API changes. Effort is
 medium to large, since every backend moves.
 

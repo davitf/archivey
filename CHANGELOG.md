@@ -71,6 +71,43 @@ promise with that line; treat `0.2.0` as the first release of this library.
   header's password check for its member data. One cache per reader now serves the
   header parse, every volume and every member read. RAR3 volume sets re-derived per part
   the same way and are covered by the same cache.
+=======
+- **A `.Z`, `.xz` or `.lz` source that ends before its first header is now an error**,
+  never an empty stream. An empty `.Z`, and a 1–5 byte file read as lzip, used to decode
+  to `b""` with no error. The error type now follows the rule for every other codec:
+  `TruncatedError` when the source is empty or holds only the start of the format's magic,
+  `CorruptionError` when its bytes could not start that format. An empty `.xz` or `.lz`
+  therefore raises `TruncatedError` where it raised `CorruptionError` before. Short
+  trailing data *after* an lzip member is still allowed, as the lzip format specifies.
+- **A `.Z` file cut inside the padding after a CLEAR code now raises `TruncatedError`**
+  instead of ending cleanly with a short size. Compressors always write that padding in
+  full, so a stream that ends while it is owed was cut.
+- **A caller's file object that implements only `read` now works as a compressed source
+  of unknown size.** The input counter behind the live decompression-ratio guard called
+  the inherited `readinto` of such an `io.RawIOBase` subclass, which raises
+  `NotImplementedError`, instead of falling back to `read`; a non-blocking source with no
+  data got a bare `TypeError` rather than archivey's `BlockingIOError`.
+- **Opening an xz file with megabytes of stream padding no longer takes seconds**: the
+  padding is scanned backwards in reads that grow up to 64 KiB, rather than one 4-byte
+  read at a time. A stream with no padding still costs a single 4-byte read.
+  Listing a `.lz` file holds no per-member state however many members it declares, where it
+  used to take about nine times the file's size in memory for a file of empty members.
+- **The xz seek index is now as strict as the decoder**: an index whose records do not
+  fill its declared length, or a size field written in more bytes than it needs, is
+  refused, as liblzma already refused both when decoding.
+- **A compressed stream's seek table holds at most 262 144 entries.** A crafted `.lz` or
+  `.xz` declaring millions of tiny members, streams or blocks used to grow the table
+  without bound, both when a seek built the index and while a forward read recorded
+  resume points (the cap covers every codec that records them, `.Z` included). Past the
+  cap the table is thinned rather than dropped: points are kept a spacing apart so a
+  seek decodes a little further, and a `SEEK_INDEX_DEGRADED` diagnostic says so. The
+  data read is unchanged, and real files come nowhere near the cap: `xz -T0` writes
+  24 MiB blocks, so 262 144 of them is 6 TiB.
+- **Seeking in an `.xz` whose index scan failed no longer returns a short read with no
+  error.** When the file had data the index scan could not parse (trailing garbage, for
+  example), a seek resumed from block points an earlier forward read had recorded, and
+  the read stopped at the end of that stream. A seek into an `.xz` now resumes from one
+  block, needing only that block and its stream's footer, and decodes on to the end.
 - **A password list now works when the right password is not first**, on the two
   formats where it did not: a header-encrypted 7z and RAR5 with encrypted data. On 7z, a
   wrong key decodes the header to garbage, and that failure ended the attempt instead of
@@ -146,6 +183,23 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **Every public class and function reports `archivey` as its `__module__`.** Seventeen
+  names in `__all__` are defined under `archivey.internal` (the extraction types,
+  `detect_format`, the registry queries, `ArchiveStream`, `enable_measurement`). They
+  now report `archivey`, so a pickled `ExtractionResult` or policy enum records
+  `archivey.OverwritePolicy` rather than an internal path that could never move, and
+  `repr()` and `help()` agree. `typing.get_type_hints` still resolves on those classes.
+  `inspect.getsource` on the twelve pinned classes now raises `OSError`: Python finds a
+  class's source through its module, and there is no way to point it back.
+- **A raw CD sector image is refused by name.** The `.bin` of a `.bin`/`.cue` pair
+  used to fail detection with "no magic-byte match", which reads like a corrupt file. It
+  is now recognised by its sector sync pattern and refused with
+  `UnsupportedFeatureError` naming the layout (Mode 1, Mode 2 Form 1 or 2, sector size).
+  Reading one, by stripping its sectors to the 2048-byte payload, is not implemented.
+- **`ArchiveReader.extract_all()` no longer takes `config=`.** It honoured only the
+  extraction limits and silently dropped every other field, including a per-call
+  diagnostic policy or callback. A reader runs under the config it was opened with;
+  pass `limits=` to override the extraction limits for one call.
 - **`ArchiveMember.extra` / `ArchiveInfo.extra` are `MemberExtra` / `ArchiveInfoExtra`.**
   Known keys narrow on a subscript read. Assign a `MemberExtra({...})` rather than a
   bare dict; mutating the existing bag in place is unchanged. Only type-checking
@@ -183,15 +237,18 @@ promise with that line; treat `0.2.0` as the first release of this library.
   now report. The diagnostic is still **recorded** once per stream, but a `RAISE` policy
   is now evaluated on **every** qualifying seek: a tripwire that disarms after firing once
   is not a tripwire.
-- **`strict_archive_eof=True` now asserts what it documents.** It used to check only
-  that the two-block TAR trailer was present, so 4 KiB of arbitrary appended bytes passed
-  silently under the flag you set for "a provably complete listing". Every byte from the
-  trailer to EOF must now be zero; the first non-zero one emits the new
-  `ARCHIVE_TRAILING_DATA` diagnostic and raises `CorruptionError`. Zero padding still
-  passes (`tar` writes 10 KiB records), and concatenated archives now fail — deliberately,
-  since they are two archives and only the first was listed. **The flag is now
-  O(tail length)** rather than O(512 bytes), and on a compressed tar the tail is
-  decompressed to inspect it; `strict_archive_eof=False` is unchanged, including the cost.
+- **TAR trailing data is reported, and `ArchiveyConfig.strict_archive_eof` is gone.**
+  The end-of-archive check used to confirm only that the two-block trailer was present,
+  so 4 KiB of arbitrary appended bytes passed silently. It now looks up to 1 MiB past the
+  trailer, and the first non-zero byte there emits the new `ARCHIVE_TRAILING_DATA`
+  diagnostic. Zero padding still passes (`tar` writes 10 KiB records); a concatenated
+  archive is reported, since it is two archives and only the first was listed. A missing
+  trailer stays `ARCHIVE_EOF_MARKER_MISSING`. Both are ordinary diagnostics: a warning by
+  default, `DiagnosticRaisedError` when set to `RAISE` or under
+  `DiagnosticPolicy.strict()`. That replaces the `strict_archive_eof` flag, which raised
+  `TruncatedError` and gated the trailing scan, so `strict()` promised to raise on a code
+  nothing emitted without it. On a compressed tar the 1 MiB window is decompressed to
+  inspect it; a tail that does not decompress ends the check without an error.
 - Six new diagnostic codes (simplicity & consistency review): `EMPTY_ARCHIVE`,
   `EXTENSION_FORMAT_UNCONFIRMED`, `EXPLICIT_FORMAT_LISTED_EMPTY`,
   `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED`, and
@@ -240,6 +297,16 @@ promise with that line; treat `0.2.0` as the first release of this library.
   When a link cannot be made because the destination spans two filesystems, archivey
   copies the content instead; those copies were not counted, so a fan-out of links could
   write many times the cap.
+- **A symlink target stored as member data is capped at 4096 bytes.** ZIP, 7z and
+  RAR3/4 keep a symlink's target in the member's data, and listing read it whole: a
+  398 KiB ZIP whose one "target" was 400 MiB of deflated zeros peaked at 2 400 MiB
+  inside `members()` with every listing cap set. A member declaring more than 4096
+  bytes is not opened, a Windows reparse buffer is read only as far as its own header
+  says it runs, and an over-long target is left unset (never truncated) with
+  `SYMLINK_TARGET_UNAVAILABLE`, `reason="target_too_long"` — so
+  `DiagnosticPolicy.strict()` refuses the archive and extraction fails that link. A
+  target read this way now also counts toward `ListingLimits.max_metadata_bytes`,
+  which used to weigh it before it was read. Threat-model O19.
 - **7z `NumUnpackStreams` no longer allocates an unbounded list.** `kNumUnPackStream`
   was not bounded by remaining header bytes: with no `kSize`/`kCRC`, the parser did
   `[None] * N` (and `[True] * N` on the CRC all-defined path) from a few header

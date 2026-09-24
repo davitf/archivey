@@ -50,6 +50,7 @@ ENTRY_RE = re.compile(
 ARCHIVEY_NAMES = (
     "ArchiveReader",
     "ArchiveMember",
+    "ArchiveSource",
     "ArchiveStream",
     "ArchiveyError",
     "ArchiveyUsageError",
@@ -68,6 +69,8 @@ ARCHIVEY_NAMES = (
     "ExtractionResult",
     "MemberStreams",
     "OverwritePolicy",
+    # Deleted when ArchiveSource absorbed it, and kept on purpose: catalogue prose
+    # written before then can still reach for it, and it names this library all the same.
     "PeekableStream",
     "SharedSource",
     "SlicingStream",

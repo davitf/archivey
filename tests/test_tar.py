@@ -1,6 +1,6 @@
 """TAR backend tests — random-access read, forward-only streaming on non-seekable
 sources, PAX/GNU/ustar member mapping, cost, corrupt/truncated handling, and
-``strict_archive_eof`` end-of-archive verification."""
+end-of-archive verification."""
 
 from __future__ import annotations
 
@@ -24,15 +24,26 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticDisposition,
+    DiagnosticPolicy,
+)
 from archivey.exceptions import (
     CorruptionError,
+    DiagnosticRaisedError,
     ReadError,
     StreamNotSeekableError,
     TruncatedError,
 )
 from archivey.internal.backends import tar_reader as tar_reader_module
+from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
 from tests.conftest import requires_zstd, zstd_backend
-from tests.streams_util import NonSeekableBytesIO, ReadSizeRecorder
+from tests.streams_util import (
+    FactSizedReadRecorder,
+    NonSeekableBytesIO,
+    ReadSizeRecorder,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -500,8 +511,18 @@ def test_compressed_source_size_generalized(plain_tar: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# strict_archive_eof / end-of-archive truncation detection
+# end-of-archive truncation detection
 # ---------------------------------------------------------------------------
+
+# A missing trailer is an ordinary diagnostic; a caller who wants it fatal sets the code
+# to RAISE and gets DiagnosticRaisedError.
+_RAISE_ON_MISSING_EOF = ArchiveyConfig(
+    diagnostic_policy=DiagnosticPolicy(
+        overrides={
+            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.RAISE
+        }
+    )
+)
 
 
 def _eof_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
@@ -536,57 +557,66 @@ def test_missing_eof_blocks_warns_by_default(
     assert "truncated" in warnings[0].lower()
 
 
-def test_missing_eof_blocks_strict_archive_eof_raises() -> None:
+def test_missing_eof_blocks_raise_disposition_raises() -> None:
     data = _tar_missing_eof_block()
-    with pytest.raises(TruncatedError):
+    with pytest.raises(DiagnosticRaisedError):
         with open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
-            config=ArchiveyConfig(strict_archive_eof=True),
+            config=_RAISE_ON_MISSING_EOF,
         ) as ar:
             ar.members()
 
 
-def test_members_report_recovers_prefix_on_strict_eof() -> None:
+def test_members_report_recovers_prefix_on_corrupt_header() -> None:
     """Q7: members_report returns prefix + error; members() raises; iter yields then raises."""
-    data = _tar_missing_eof_block()
-    config = ArchiveyConfig(strict_archive_eof=True)
-    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR, config=config) as ar:
+    data = _tar_corrupt_mid_header()
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         report = ar.members_report()
         assert report.error is not None
-        assert isinstance(report.error, TruncatedError)
+        assert isinstance(report.error, CorruptionError)
         names = [m.name for m in report.members]
-        assert names == ["hello.txt", "dir/nested.txt", "dir/", "link.txt"]
+        assert names == ["a.txt"]
         assert ar.members_report_if_available() is report
-        with pytest.raises(TruncatedError):
+        with pytest.raises(CorruptionError):
             ar.members()
         yielded: list[str] = []
-        with pytest.raises(TruncatedError):
+        with pytest.raises(CorruptionError):
             for member in ar:
                 yielded.append(member.name)
         assert yielded == names
         first = report.members[0]
         assert first in ar
-        assert ar.open(first).read() == b"hello world"
+        assert ar.open(first).read() == b"aaa"
 
 
-def test_members_report_streaming_strict_eof_yield_then_raise() -> None:
-    data = _tar_missing_eof_block()
-    config = ArchiveyConfig(strict_archive_eof=True)
+def test_members_report_streaming_corrupt_header_yield_then_raise() -> None:
+    data = _tar_corrupt_mid_header()
     with open_archive(
         NonSeekableBytesIO(data),
         format=ArchiveFormat.TAR,
         streaming=True,
-        config=config,
     ) as ar:
         yielded: list[str] = []
-        with pytest.raises(TruncatedError):
+        with pytest.raises(CorruptionError):
             for member, _stream in ar.stream_members():
                 yielded.append(member.name)
-        assert yielded == ["hello.txt", "dir/nested.txt", "dir/", "link.txt"]
+        assert yielded == ["a.txt"]
         report = ar.members_report()
-        assert isinstance(report.error, TruncatedError)
+        assert isinstance(report.error, CorruptionError)
         assert [m.name for m in report.members] == yielded
+
+
+def test_members_report_raises_a_raised_eof_diagnostic() -> None:
+    # A missing trailer set to RAISE is the caller's policy firing, not listing damage,
+    # so members_report() raises it rather than folding it into report.error. This was
+    # TruncatedError-as-report under the removed ``strict_archive_eof`` flag.
+    data = _tar_missing_eof_block()
+    with open_archive(
+        io.BytesIO(data), format=ArchiveFormat.TAR, config=_RAISE_ON_MISSING_EOF
+    ) as ar:
+        with pytest.raises(DiagnosticRaisedError):
+            ar.members_report()
 
 
 def test_missing_eof_blocks_streaming_warns(
@@ -601,14 +631,14 @@ def test_missing_eof_blocks_streaming_warns(
     assert len(_eof_warnings(caplog)) == 1
 
 
-def test_missing_eof_blocks_streaming_strict_raises() -> None:
+def test_missing_eof_blocks_streaming_raise_disposition_raises() -> None:
     data = _tar_missing_eof_block()
-    with pytest.raises(TruncatedError):
+    with pytest.raises(DiagnosticRaisedError):
         with open_archive(
             NonSeekableBytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=True,
-            config=ArchiveyConfig(strict_archive_eof=True),
+            config=_RAISE_ON_MISSING_EOF,
         ) as ar:
             list(ar.stream_members())
 
@@ -638,19 +668,21 @@ def test_minimal_eof_trailer_streaming_silent(
 
 
 def test_minimal_eof_trailer_strict_does_not_raise() -> None:
-    # strict_archive_eof must accept the minimal valid trailer on both access modes.
+    # DiagnosticPolicy.strict() must accept the minimal valid trailer on both access
+    # modes: it raises on both EOF codes, and neither is emitted here.
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
     data = _tar_minimal_eof()
     with open_archive(
         io.BytesIO(data),
         format=ArchiveFormat.TAR,
-        config=ArchiveyConfig(strict_archive_eof=True),
+        config=strict,
     ) as ar:
         assert [m.name for m in ar.members()]
     with open_archive(
         NonSeekableBytesIO(data),
         format=ArchiveFormat.TAR,
         streaming=True,
-        config=ArchiveyConfig(strict_archive_eof=True),
+        config=strict,
     ) as ar:
         assert [m for m, _ in ar.stream_members()]
 
@@ -746,14 +778,15 @@ def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:
             ar.members()
 
 
-def test_corrupt_mid_header_strict_still_corruption() -> None:
-    # strict_archive_eof escalates absent/short only; nonzero stays CorruptionError.
+def test_corrupt_mid_header_raise_disposition_still_corruption() -> None:
+    # A RAISE disposition does not change the type for a rejected header: the nonzero
+    # case escalates as CorruptionError, which outranks DiagnosticRaisedError.
     data = _tar_corrupt_mid_header()
     with pytest.raises(CorruptionError):
         with open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
-            config=ArchiveyConfig(strict_archive_eof=True),
+            config=_RAISE_ON_MISSING_EOF,
         ) as ar:
             ar.members()
 
@@ -1386,9 +1419,9 @@ def _tar_with_oversized_metadata_header(typeflag: bytes, declared: int) -> bytes
 
 
 @pytest.mark.parametrize("typeflag", [b"x", b"L"])
-@pytest.mark.parametrize("advertise_size", [True, False], ids=["sized", "unsized"])
+@pytest.mark.parametrize("length", ["fact", "hint", "unknown"])
 def test_extended_header_size_does_not_drive_the_allocation(
-    typeflag: bytes, advertise_size: bool
+    typeflag: bytes, length: str
 ) -> None:
     """A 10 KB archive must not make the reader ask its source for 6 GiB.
 
@@ -1398,37 +1431,39 @@ def test_extended_header_size_does_not_drive_the_allocation(
     the bytes is the observable: whether the allocation then succeeds depends on the
     machine, so it is the request that is pinned, not a ``MemoryError``.
 
-    The two parameters are the two branches of the bound, and they are bounded by
-    different things. ``sized`` advertises the fsspec ``size`` attribute, so the
-    reader knows how many bytes are left and clamps to exactly that; it fails against
-    the unbounded ``self._inner.read(size)`` this wrapper used to do, which passes
-    6 442 450 944 straight through. ``unsized`` hides it, which is what every
-    compressed source and every ordinary caller-supplied file-like looks like: the
-    length is unknown, so the read is stepped instead, and this case fails against
-    treating an unknown length as an unlimited one (``remaining is None`` forwarding
-    ``size`` down), which passes the same 6 442 450 944. A bound tested only on the
-    advertised branch is untested on the branch most sources actually take.
+    The three parameters are the three things the source can know about its length,
+    and they take different branches of the bound. ``fact`` is a ``BytesIO``, whose
+    length the boundary reads from its buffer, so the read is clamped to exactly what
+    is left; it fails against an unbounded ``read(size)``, which passes 6 442 450 944
+    straight through. ``hint`` advertises the fsspec ``size`` attribute, a caller's
+    unverified claim, which must not clamp (an understating hint would truncate a
+    legitimate read), so the read is stepped. ``unknown`` has neither, which is what
+    every compressed source and every ordinary caller-supplied file-like looks like;
+    it is stepped too, and fails against treating an unknown length as an unlimited
+    one (``remaining is None`` forwarding ``size`` down), which passes the same
+    6 442 450 944. A bound tested only where the length is known is untested on the
+    branch most sources actually take.
     """
     declared = 6 * 1024**3
     data = _tar_with_oversized_metadata_header(typeflag, declared)
-    source = ReadSizeRecorder(data, advertise_size=advertise_size)
+    source: FactSizedReadRecorder | ReadSizeRecorder = (
+        FactSizedReadRecorder(data)
+        if length == "fact"
+        else ReadSizeRecorder(data, advertise_size=length == "hint")
+    )
 
     with pytest.raises(CorruptionError):
         with open_archive(source, format=ArchiveFormat.TAR) as reader:
             reader.members()
 
     assert source.requested, "the source was never read"
-    # The source sits under a ``BufferedReader``, whose refill size is a constant of
+    # A raw source sits under a ``BufferedReader``, whose refill size is a constant of
     # the runtime (``io.DEFAULT_BUFFER_SIZE``: 8 KiB through 3.13, 128 KiB from 3.14)
     # and has nothing to do with the archive. So the bound is one refill or, whichever
-    # is larger, the archive when its length is known and the step when it is not;
-    # what both assertions pin is that no read scales with ``declared``, which is six
+    # is larger, the archive when its length is a fact and the step when it is not;
+    # what every case pins is that no read scales with ``declared``, which is six
     # gigabytes.
-    reach = (
-        len(data)
-        if advertise_size
-        else tar_reader_module._EofProbeStream._UNKNOWN_LENGTH_READ_STEP
-    )
+    reach = len(data) if length == "fact" else DEFAULT_UNKNOWN_LENGTH_READ_STEP
     bound = max(reach, io.DEFAULT_BUFFER_SIZE)
     assert max(source.requested) <= bound, (
         f"asked the source for {max(source.requested)} bytes "

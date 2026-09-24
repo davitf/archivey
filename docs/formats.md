@@ -103,15 +103,18 @@ behaviour. The complete list is on the two classes.
       trailer** (a trailer-less or `cat`-joined tar, or a truncation exactly at a member
       boundary — these are byte-identical) is warned about via `ARCHIVE_EOF_MARKER_MISSING`,
       not raised. When a provably complete listing matters (inventory/dedupe sweeps), set
-      `ArchiveyConfig(strict_archive_eof=True)` to escalate that warning to `TruncatedError`.
-    - `strict_archive_eof=True` additionally requires **every byte after the trailer to be
-      zero**, so trailing junk and concatenated archives raise `CorruptionError` instead
-      of passing silently. Zero padding still passes — `tar` writes 10 KiB records, so
-      "nothing but zeros" is the strongest rule that does not reject what `tar` itself
-      produces. The check reads to EOF, which is why it is opt-in: the flag costs
-      O(tail length), and on a compressed tar the tail is decompressed to inspect it.
+      that code to `RAISE` in the diagnostic policy (`DiagnosticPolicy.strict()` does) to
+      turn the warning into `DiagnosticRaisedError`.
+    - A **non-zero byte after the trailer** — trailing junk, or a second archive
+      concatenated on — is reported as `ARCHIVE_TRAILING_DATA`, also a warning under the
+      default policy and raised under `strict()`. Zero padding passes — `tar` writes
+      10 KiB records, so "nothing but zeros" is the strongest rule that does not flag
+      what `tar` itself produces. The check looks at most 1 MiB past the trailer, so a
+      byte further out goes unseen; on a compressed tar that 1 MiB is decompressed to
+      inspect it. A tail that does not decompress (junk after the gzip stream, a missing
+      gzip footer) ends the check quietly rather than failing the listing.
     - Truncation *inside* a member's data always raises `TruncatedError` during iteration,
-      regardless of the flag.
+      whatever the policy.
   - **Streaming caveat:** a corrupt header as the *final* block is caught in random-access
     reads but not in forward-only streaming, where it surfaces as the missing-trailer
     warning instead. A future native TAR reader may close this gap.
@@ -187,8 +190,9 @@ behaviour. The complete list is on the two classes.
 - Needs `[recommended]` (`pycdlib`) and a seekable source.
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
-- Raw `.bin` Mode 1 sector images may be stripped to 2048-byte payloads; unsupported
-  layouts raise rather than mis-read.
+- Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
+  with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
+  one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).
 
 ## Directory
 

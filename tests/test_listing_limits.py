@@ -100,16 +100,19 @@ def test_matched_defaults_list_then_extract(tmp_path: Path) -> None:
     assert (dest / "f0.txt").exists()
 
 
-def test_extract_all_config_cannot_raise_listing_limits(tmp_path: Path) -> None:
+def test_extract_all_runs_under_the_open_time_listing_limits(tmp_path: Path) -> None:
+    # extract_all() takes no config=: the reader's open config governs the whole call,
+    # so nothing per call can raise the listing ceiling set at open.
     src = tmp_path / "a.zip"
     src.write_bytes(_zip_with_members([f"f{i}.txt" for i in range(5)]))
     dest = tmp_path / "out"
     tight = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
     loose = ArchiveyConfig(listing_limits=ListingLimits(max_members=1000))
     with open_archive(src, config=tight) as reader:
+        with pytest.raises(TypeError, match="config"):
+            reader.extract_all(dest, config=loose)  # type: ignore[call-arg]
         with pytest.raises(ResourceLimitError, match="max_members"):
-            # Materializing extract prep uses the open-time listing caps, not loose.
-            reader.extract_all(dest, config=loose)
+            reader.extract_all(dest)
 
 
 def test_tar_extract_all_enforces_listing_limits(tmp_path: Path) -> None:

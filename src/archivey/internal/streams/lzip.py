@@ -23,6 +23,7 @@ import lzma
 import os
 import struct
 import zlib
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -35,6 +36,7 @@ from archivey.internal.streams.decompressor_stream import (
     DecodeOut,
     DecompressorStream,
     SeekPoint,
+    SpacedCollector,
     build_index_backwards,
 )
 
@@ -54,28 +56,22 @@ class _MemberBounds:
     decompressed_start: int
     compressed_size: int
     decompressed_size: int
-    crc32: int
 
     @property
     def decompressed_end(self) -> int:
         return self.decompressed_start + self.decompressed_size
 
 
-def _read_index_backwards(
-    stream: BinaryIO,
-    file_size: int,
-    stop_at: int = 0,
-    start_decompressed_offset: int = 0,
-) -> list[_MemberBounds]:
-    """Build the member index by scanning trailers backwards (no decompression).
+def _iter_trailers_backwards(
+    stream: BinaryIO, file_size: int, stop_at: int = 0
+) -> Iterator[tuple[int, int, int, int]]:
+    """Yield ``(compressed_start, data_size, member_size, crc32)`` from the last member back.
 
-    A 4-byte magic check at each computed member start catches a corrupt ``member_size``
-    before it cascades into wrong offsets for every earlier member. Each entry retains the
-    trailer CRC-32 so callers can combine a whole-stream digest without decompressing.
+    Reads only trailers and the 4-byte magic at each computed member start — no
+    decompression. The magic check catches a corrupt ``member_size`` before it cascades
+    into wrong offsets for every earlier member.
     """
-    entries: list[tuple[int, int, int, int]] = []
     compressed_end = file_size
-
     while compressed_end > stop_at:
         if compressed_end < _TRAILER_SIZE:
             raise CorruptionError("Lzip file is too small to contain a valid trailer")
@@ -100,35 +96,59 @@ def _read_index_backwards(
                 f"Lzip magic not found at expected member start {compressed_start} "
                 f"(got {magic!r}); member_size in trailer may be corrupt"
             )
-        entries.append((compressed_start, int(data_size), int(member_size), int(crc32)))
+        yield compressed_start, int(data_size), int(member_size), int(crc32)
         compressed_end = compressed_start
 
-    result: list[_MemberBounds] = []
-    decompressed_offset = start_decompressed_offset
-    for comp_start, decomp_size, comp_size, crc32 in reversed(entries):
-        result.append(
-            _MemberBounds(
-                comp_start, decompressed_offset, comp_size, decomp_size, crc32
-            )
-        )
-        decompressed_offset += decomp_size
-    return result
 
+def _read_index_backwards(
+    stream: BinaryIO,
+    file_size: int,
+    stop_at: int = 0,
+    start_decompressed_offset: int = 0,
+    on_thinned: Callable[[], None] | None = None,
+) -> list[_MemberBounds]:
+    """Build the member index by scanning trailers backwards (no decompression).
 
-def combined_crc32_from_index(members: list[_MemberBounds]) -> int:
-    """Whole-stream CRC-32 = ``crc32(concat(payloads))`` via trailer combine."""
-    crc = 0
-    for member in members:
-        crc = crc32_combine(crc, member.crc32, member.decompressed_size)
-    return crc
+    A member can be as small as 26 bytes, so the members kept are thinned
+    (:class:`SpacedCollector`) once there are more than the seek-table cap; the last
+    member is always kept, so the total size stays exact. Callers that need only totals
+    use :func:`peek_index_summary`, which folds the walk and keeps nothing.
+    """
+    # Each entry is (decompressed distance from member start to the end, trailer).
+    # Walking backwards that distance only grows, which is what the collector needs.
+    kept: SpacedCollector[tuple[int, tuple[int, int, int, int]]] = SpacedCollector(
+        lambda e: e[0]
+    )
+    total = 0
+    for entry in _iter_trailers_backwards(stream, file_size, stop_at):
+        total += entry[1]
+        kept.add((total, entry))
+    if kept.thinned and on_thinned is not None:
+        on_thinned()
+    end = start_decompressed_offset + total
+    return [
+        _MemberBounds(comp_start, end - dist, comp_size, decomp_size)
+        for dist, (comp_start, decomp_size, comp_size, _crc) in reversed(kept.items)
+    ]
 
 
 def peek_index_summary(stream: BinaryIO, file_size: int) -> tuple[int, int]:
-    """One backward index scan → ``(total_decompressed_size, combined_crc32)``."""
-    members = _read_index_backwards(stream, file_size)
-    if not members:
-        return 0, 0
-    return members[-1].decompressed_end, combined_crc32_from_index(members)
+    """One backward index scan → ``(total_decompressed_size, combined_crc32)``.
+
+    Folds each trailer into a running suffix total as the walk goes, so the listing-time
+    probe holds no per-member state however many members the file declares.
+    """
+    total = 0
+    crc = 0
+    for _start, data_size, _member_size, member_crc in _iter_trailers_backwards(
+        stream, file_size
+    ):
+        # Walking backwards, the member goes in front of the suffix combined so far. An
+        # empty member contributes nothing, whatever CRC its trailer claims.
+        if data_size:
+            crc = crc32_combine(member_crc, crc, total)
+            total += data_size
+    return total, crc
 
 
 class _LzipState:
@@ -166,9 +186,18 @@ class _LzipState:
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         if self._state == self._NEED_HEADER:
-            if self._members_seen == 0 and not self._buf:
-                raise CorruptionError("Not a valid lzip file: no members found")
-            if len(self._buf) >= 4 and self._buf[:4] == _MAGIC:
+            head = bytes(self._buf[:4])
+            if self._members_seen == 0:
+                # The source ended before a first header. Nothing, or the start of the
+                # magic, is a cut-short lzip file; anything else was never one, since
+                # trailing data is allowed only *after* a member (lzip spec §7).
+                if head != _MAGIC[: len(head)]:
+                    raise CorruptionError(
+                        f"Not a valid lzip file: expected magic {_MAGIC!r}, got {head!r}"
+                    )
+                self.truncated = True
+                return b"", []
+            if head == _MAGIC:
                 self.truncated = True
                 return b"", []
             self._finished = True

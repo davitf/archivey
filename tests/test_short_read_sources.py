@@ -207,8 +207,8 @@ def test_open_stream_detects_short_read_non_seekable(
     """``open_stream`` with ``format=None`` over a short-returning pipe.
 
     Written on the detected path: the explicit-``format=`` variant is rescued by
-    ``ensure_bufferedio`` inside ``DecompressorStream`` even when ``PeekableStream``
-    does not own the full-count guarantee.
+    ``ensure_bufferedio`` inside ``DecompressorStream`` even when the source's replay
+    prefix is never filled.
     """
     payload = b"hello from a short-returning pipe"
     data = compress(payload)
@@ -234,8 +234,8 @@ def test_streaming_format_opens_from_short_read_non_seekable(
 ) -> None:
     """Each streaming-capable format, with and without ``format=``.
 
-    The explicit-``format=`` case skips ``PeekableStream`` in ``open_archive``, so
-    the source boundary is the only coalescing layer. Plain uncompressed TAR is
+    The explicit-``format=`` case skips detection, so the replay prefix is never
+    filled and the source's own full-count read is the only coalescing layer. Plain uncompressed TAR is
     in this matrix: that is the path that previously leaned on ``tarfile._Stream``.
     """
     skip_unless_runnable(entry, key)

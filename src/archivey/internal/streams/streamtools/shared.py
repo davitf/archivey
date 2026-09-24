@@ -24,13 +24,10 @@ itself; buffering inside the primitive would double-copy for everyone else.
 
 from __future__ import annotations
 
-import os
 import threading
-from pathlib import Path
 from typing import BinaryIO, Callable
 
 from archivey.internal.streams.streamtools.binaryio import (
-    is_filename,
     is_seekable,
     source_byte_size,
 )
@@ -40,37 +37,30 @@ from archivey.internal.streams.streamtools.slice import SharedView, _clamp_slice
 class SharedSource:
     """Factory for locked, per-view-position slices over one seekable source.
 
-    Construct from a :class:`~pathlib.Path` (opens and owns the handle) or an already-open
-    seekable ``BinaryIO`` (does **not** take ownership — the caller closes it).
+    Construct from an already-open seekable ``BinaryIO``. The factory never takes
+    ownership of it: closing the factory stops new views and closes nothing, and whoever
+    handed the source in closes it. That is one rule for every caller rather than one
+    per source shape; a reader hands in its archive source, which knows what it opened.
 
-    ``wrap_handle`` (optional) is applied once to the underlying file handle after it is
-    opened or accepted. Production readers use it to install a seek counter when
-    measurement is enabled, and identity otherwise.
+    ``wrap_handle`` (optional) is applied once to the underlying file handle it was
+    handed. Production readers use it to install a seek counter when measurement is
+    enabled, and identity otherwise.
     """
 
     def __init__(
         self,
-        source: Path | BinaryIO,
+        source: BinaryIO,
         *,
         wrap_handle: Callable[[BinaryIO], BinaryIO] | None = None,
     ) -> None:
         self._lock = threading.Lock()
         self._closed = False
-        self._owns_handle = False
 
-        if isinstance(source, Path) or is_filename(source):
-            # ``is_filename`` admits bytes; Path wants str/PathLike[str], so fsdecode.
-            path = source if isinstance(source, Path) else Path(os.fsdecode(source))
-            self._handle: BinaryIO = open(path, "rb")
-            self._owns_handle = True
-            # Frozen at construction: the source is assumed not to grow.
-            self._size: int | None = source_byte_size(path)
-        else:
-            if not is_seekable(source):
-                raise ValueError("SharedSource requires a seekable BinaryIO source")
-            self._handle = source
-            # Frozen at construction: the source is assumed not to grow.
-            self._size = source_byte_size(source)
+        if not is_seekable(source):
+            raise ValueError("SharedSource requires a seekable BinaryIO source")
+        self._handle: BinaryIO = source
+        # Frozen at construction: the source is assumed not to grow.
+        self._size: int | None = source_byte_size(source)
 
         if wrap_handle is not None:
             self._handle = wrap_handle(self._handle)
@@ -117,12 +107,8 @@ class SharedSource:
         )
 
     def close(self) -> None:
-        """Mark closed and close an owned path handle; never closes a caller-owned stream."""
-        if self._closed:
-            return
+        """Mark closed; the source it was built over stays open, as its owner's."""
         self._closed = True
-        if self._owns_handle:
-            self._handle.close()
 
     def __enter__(self) -> SharedSource:
         return self

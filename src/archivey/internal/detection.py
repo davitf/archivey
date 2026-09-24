@@ -9,9 +9,9 @@ registering its backend (see ``format-detection`` and ``backend-registry``).
 Detection never consumes bytes from the source: paths keep one detection handle; seekable
 streams are read forward once and restored to their **starting position** (the archive is
 taken to begin wherever the stream is positioned when handed in); a non-seekable stream
-must be wrapped in a
-:class:`~archivey.internal.streams.peekable.PeekableStream` first (the opener does this),
-which detection inspects via the shared prefix workspace.
+is peeked through the :class:`~archivey.internal.source.ArchiveSource` the opener built,
+whose replay prefix keeps the bytes for the backend. A raw non-seekable stream handed to
+``detect_format`` directly loses what detection read, unless the caller buffers it.
 
 Every front-of-source read goes through one detection-owned
 :class:`~archivey.internal.detection_workspace.PrefixWorkspace` that grows monotonically —
@@ -68,7 +68,7 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import ArchiveyError, FormatDetectionError
 from archivey.internal.arg_checks import check_config
-from archivey.internal.detection_workspace import PrefixWorkspace
+from archivey.internal.detection_workspace import DETECTION_LIMIT, PrefixWorkspace
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
@@ -85,11 +85,11 @@ from archivey.internal.sfx import (
     executable_cue,
     iter_magic_in_prefix,
 )
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.brotli_framing import (
     BrotliBlock,
     parse_metablock,
 )
-from archivey.internal.streams.peekable import DETECTION_LIMIT
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     require_source,
@@ -583,6 +583,10 @@ def detect_format(
 
 
 def _first_volume_beside_stub(source: str | Path | BinaryIO) -> Path | None:
+    if isinstance(source, ArchiveSource):
+        if source.path is None:
+            return None
+        source = source.path
     if isinstance(source, (str, Path)):
         path = Path(source)
         if path.is_file():

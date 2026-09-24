@@ -104,6 +104,10 @@ reports what it observed, and never refuses it on those grounds.**
    and concatenated archives. It deliberately does **not** fire on an empty archive,
    because zeros to EOF is exactly what one is.
 
+   *Amended 2026-09-23:* the flag was removed before 0.2.0. The trailing-bytes check now
+   always runs, bounded at 1 MiB past the trailer, and reports `ARCHIVE_TRAILING_DATA`
+   under the ordinary diagnostic policy. It still does not fire on an empty archive.
+
 ### Why not the canonical-size heuristic
 
 Restricting empty archives to 1024 or 10240 bytes would cover both dominant writers, and
@@ -129,8 +133,9 @@ guess on their behalf.
 
 Two shapes near this decision are already handled and are not affected:
 
-- **Short zero files** (under two blocks) get `ARCHIVE_EOF_MARKER_MISSING`, escalating
-  to `TruncatedError` under `strict_archive_eof`.
+- **Short zero files** (under two blocks) get `ARCHIVE_EOF_MARKER_MISSING`, raised as
+  `DiagnosticRaisedError` when that code is set to `RAISE` (originally `TruncatedError`
+  under `strict_archive_eof`, removed before 0.2.0).
 - **Non-block-aligned zero files** (e.g. 32775 bytes) are not valid under any blocking
   factor. They open with `EMPTY_ARCHIVE` + `EXTENSION_FORMAT_UNCONFIRMED`, so the caller
   is told. A dedicated alignment rule was considered and judged not to earn its keep:

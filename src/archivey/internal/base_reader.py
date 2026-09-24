@@ -58,7 +58,6 @@ from archivey.exceptions import (
 )
 from archivey.internal.arg_checks import (
     check_callable,
-    check_config,
     check_extraction_limits,
     describe_value,
 )
@@ -99,6 +98,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.reader_state import LiveStreamReservation, ReaderState
 from archivey.internal.selection import normalize_member_selector
 from archivey.internal.sfx import HitValidator
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
 from archivey.internal.streams.counting import (
     CountingReader,
@@ -106,11 +106,16 @@ from archivey.internal.streams.counting import (
     SeekCountingStream,
 )
 from archivey.internal.streams.streamtools import (
+    ReadableStream,
     is_seekable,
-    is_stream,
+    read_exact,
     source_byte_size,
 )
-from archivey.internal.windows_reparse import parse_reparse_data
+from archivey.internal.windows_reparse import (
+    REPARSE_HEADER_BYTES,
+    parse_reparse_data,
+    reparse_payload_length,
+)
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -122,6 +127,28 @@ from archivey.types import (
     MemberStreams,
     MemberType,
 )
+
+MAX_LINK_TARGET_BYTES = 4096
+"""Longest symlink target, in stored bytes, that a reader accepts from member data.
+
+ZIP, 7z and RAR4 store a symlink's target as the member's *data*, which can be
+compressed, so without a bound a few hundred KiB of archive decode to gigabytes inside
+``members()``. A target is a path: ``PATH_MAX`` is 4096 on Linux and 1024 on macOS, so
+no symlink a POSIX system wrote is longer. A longer one is treated as corrupt or
+malicious — left unset with a ``SYMLINK_TARGET_UNAVAILABLE`` diagnostic, never
+truncated, since a shortened path would point somewhere the archive did not say.
+
+On Windows the number is a policy, not a consequence of ``PATH_MAX``: an extended-length
+path runs to 32 767 UTF-16 units, so a genuine Windows symlink could carry a longer
+target, and the same cap applied to a reparse buffer's target refuses it. That is
+deliberate. The maintainer's ruling is about target length whatever format carries it —
+a target over 4096 bytes is rejected as corrupt or malicious — so it is not a bug on
+Windows input.
+
+Targets stored in a header (TAR's ``linkname``, RAR5's redirection record, Rock Ridge)
+are not read through this cap: the header parser has already allocated them, and
+``ListingLimits.max_metadata_bytes`` weighs them at registration.
+"""
 
 
 def _apply_last_entry_wins_is_current(members: list[ArchiveMember]) -> None:
@@ -243,7 +270,7 @@ class ReadBackend(ABC):
     @abstractmethod
     def open_read(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
         passwords: _PasswordCandidates | None,
@@ -256,7 +283,11 @@ class ReadBackend(ABC):
         start_offset: int = 0,
     ) -> "BaseArchiveReader":
         """Open ``source`` as ``format`` (the resolved format the registry selected this
-        backend for — either detected by ``open_archive`` or supplied by the caller). A
+        backend for — either detected by ``open_archive`` or supplied by the caller).
+
+        ``source`` is the :class:`ArchiveSource` the boundary built. The reader this
+        returns owns it and closes it on teardown; a constructor that raises leaves it to
+        ``open_archive``, which closes it. A
         multi-format backend uses it to pick its concrete codec/variant rather than
         re-inspecting the source.
 
@@ -394,9 +425,10 @@ class BaseArchiveReader(ArchiveReader):
             weakref.WeakValueDictionary()
         )
         self._public_stream_seq = 0
-        # The archive's source, recorded by backends that have one (path or stream);
-        # backs the generalized compressed_source_size property below.
-        self._source: Path | BinaryIO | None = None
+        # The archive's source, recorded by every backend's constructor. The reader owns
+        # it: teardown closes it after ``_close_archive``. Also backs
+        # ``compressed_source_size`` below.
+        self._source: ArchiveSource | None = None
         # A counter wrapping the raw compressed source, set by a backend that decompresses
         # a stream source; backs compressed_bytes_consumed (the live decompression-ratio
         # denominator for a source whose total size is not cheaply knowable).
@@ -559,7 +591,14 @@ class BaseArchiveReader(ArchiveReader):
             return
         teardown_exc: Exception | None = None
         try:
-            self._close_archive()
+            try:
+                self._close_archive()
+            finally:
+                # After the backend: whatever it built reads through the source, so the
+                # source goes last. It closes only what archivey opened or built.
+                source = self._source
+                if source is not None:
+                    source.close()
         except Exception as exc:  # noqa: BLE001 - combine with pending stream-close failure
             teardown_exc = exc
             self._state.complete_teardown()
@@ -759,15 +798,15 @@ class BaseArchiveReader(ArchiveReader):
             return None
         return lambda handle: SeekCountingStream(handle, counter)
 
-    def _track_source_seeks(self, source: Path | BinaryIO) -> Path | BinaryIO:
-        """Wrap a seekable BinaryIO source to count seeks; leave paths unchanged.
+    def _track_source_seeks(self, source: BinaryIO) -> BinaryIO:
+        """Wrap the source to count seeks when measurement is on; identity otherwise.
 
-        Path sources are instrumented via :meth:`_seek_handle_wrapper` on
-        ``SharedSource``, or by opening the path and wrapping before a library that
-        takes a file object (ZIP). Identity when measurement is off.
+        The counter owns its inner, but closing it only closes the
+        :class:`ArchiveSource` underneath, which the reader closes anyway and which
+        never closes the caller's object.
         """
         counter = self._seek_counter
-        if counter is None or not is_stream(source):
+        if counter is None:
             return source
         return SeekCountingStream(source, counter)
 
@@ -1096,6 +1135,7 @@ class BaseArchiveReader(ArchiveReader):
         error: ArchiveyError | None = None,
         child_scope: bool = False,
         is_current_first: bool = False,
+        enforce_listing_limits: bool = True,
     ) -> None:
         """Resolve hardlink/symlink targets with one double-fault policy.
 
@@ -1108,6 +1148,11 @@ class BaseArchiveReader(ArchiveReader):
         child scope + internal-open exemption for link-data reads. Progressive finalize
         stamps ``is_current`` *after* link resolve and does not open a child scope —
         preserve those orderings unless a failing test forces convergence.
+
+        A target read from member data here was still ``None`` when the member was
+        registered, so registration weighed it as nothing. It is added to the listing
+        tracker as it arrives, under ``enforce_listing_limits``, so
+        ``max_metadata_bytes`` covers every target the published list will carry.
         """
         if is_current_first:
             _apply_last_entry_wins_is_current(members)
@@ -1117,7 +1162,12 @@ class BaseArchiveReader(ArchiveReader):
         def _resolve() -> None:
             for member in members:
                 if member.is_link:
+                    had_target = member.link_target is not None
                     self._resolve_link_target(member)
+                    if not had_target and member.link_target is not None:
+                        self._listing_tracker.account_link_target(
+                            member.link_target, enforce=enforce_listing_limits
+                        )
             for member in members:
                 if member.is_link and member.link_target:
                     self._resolve_link(member, by_name_lists)
@@ -1191,6 +1241,7 @@ class BaseArchiveReader(ArchiveReader):
                     error=exc,
                     child_scope=True,
                     is_current_first=True,
+                    enforce_listing_limits=enforce_listing_limits,
                 )
                 holder = self._publish_materialized(
                     members,
@@ -1206,6 +1257,7 @@ class BaseArchiveReader(ArchiveReader):
                 error=None,
                 child_scope=True,
                 is_current_first=True,
+                enforce_listing_limits=enforce_listing_limits,
             )
             holder = self._publish_materialized(members, by_name_lists, error=None)
             self._state.complete_materialization()
@@ -1431,6 +1483,73 @@ class BaseArchiveReader(ArchiveReader):
             report_key=key,
         )
 
+    def _emit_link_target_too_long(
+        self, member: ArchiveMember, *, report_key: int | None = None
+    ) -> None:
+        """Report a data-stored link target over :data:`MAX_LINK_TARGET_BYTES`.
+
+        The archive does carry a target, so ``target_in_archive`` is true: extraction
+        fails the member rather than reporting it as a link the archive left empty, and
+        ``SYMLINK_TARGET_UNAVAILABLE`` being an integrity code makes a strict policy
+        refuse the whole archive.
+        """
+        self._emit_link_target_unavailable(
+            member,
+            reason="target_too_long",
+            message=(
+                f"The symlink target of {quoted(member.name)} is longer than "
+                f"{MAX_LINK_TARGET_BYTES} bytes; treating it as corrupt and leaving "
+                f"link_target unset."
+            ),
+            target_in_archive=True,
+            report_key=report_key,
+        )
+
+    def _read_link_target_data(
+        self,
+        member: ArchiveMember,
+        open_data: Callable[[], ContextManager[ReadableStream]],
+        *,
+        is_reparse_point: bool,
+    ) -> bytes | None:
+        """Read a symlink member's data for its target, never past the cap.
+
+        A member whose declared size is over :data:`MAX_LINK_TARGET_BYTES` is refused
+        without opening it: this reports the member and returns ``None``. That is the
+        path every over-long ZIP or 7z target takes, because both always declare a size.
+
+        Otherwise the read asks for at most the cap + 1 bytes, and an answer over the
+        cap is refused the same way. Where the backend's stream verifies the declared
+        size — ZIP always, 7z whenever checksums are verified, the default — a member
+        whose data runs past a size under the cap never gets that far: reaching its
+        declared size with data left over raises ``CorruptionError`` there, as for any
+        other member whose data disagrees with its header. The byte bound is what holds
+        where the size is unknown or not verified.
+
+        A Windows reparse buffer is never refused here, because its data may turn out to
+        be ordinary file content (see :meth:`_apply_reparse_data`) that stays readable at
+        any length. It is read as far as the buffer's own header says it runs — the
+        8-byte header, then the payload length it declares, at most 0xFFFF — which is
+        everything :func:`parse_reparse_data` looks at. The target it yields is held to
+        the cap there.
+
+        Both reads ask for one byte past what they need. On a member that is exactly
+        that long, the extra byte reaches end of stream, so its checksum is verified as
+        a whole read would.
+        """
+        if is_reparse_point:
+            with open_data() as stream:
+                header = read_exact(stream, REPARSE_HEADER_BYTES)
+                return header + read_exact(stream, reparse_payload_length(header) + 1)
+        declared = member.size
+        if declared is None or declared <= MAX_LINK_TARGET_BYTES:
+            with open_data() as stream:
+                data = read_exact(stream, MAX_LINK_TARGET_BYTES + 1)
+            if len(data) <= MAX_LINK_TARGET_BYTES:
+                return data
+        self._emit_link_target_too_long(member)
+        return None
+
     def _apply_reparse_data(
         self,
         member: ArchiveMember,
@@ -1483,22 +1602,35 @@ class BaseArchiveReader(ArchiveReader):
             # as the buffer parses — independently of whether a target came out of it.
             member.extra[EXTRA_IS_JUNCTION] = True
         if parsed is not None and parsed.target:
+            # Held to the same cap as a plain target. Measured in UTF-8, the form every
+            # other data-stored target arrives in, since the buffer's UTF-16 byte count
+            # is not what a POSIX path limit is written against.
+            encoded_size = len(parsed.target.encode("utf-8", errors="surrogatepass"))
+            if encoded_size > MAX_LINK_TARGET_BYTES:
+                self._emit_link_target_too_long(member, report_key=report_key)
+                return
             member.link_target = parsed.target
             return
 
+        # `data` may be only the prefix `_read_link_target_data` read, so the message
+        # names the size the archive declares for the member instead. Without one, all
+        # it can say is that there are at least this many bytes.
+        data_size = (
+            str(member.size) if member.size is not None else f"at least {len(data)}"
+        )
         if parsed is None and data and fallback_type is not MemberType.DIRECTORY:
             member.type = fallback_type
             reason = "reparse_data_unrecognized"
             message = (
                 f"{quoted(member.name)} is flagged as a Windows reparse point, but its "
-                f"{len(data)} bytes of data are not a symlink or junction buffer; "
+                f"{data_size} bytes of data are not a symlink or junction buffer; "
                 f"presenting it as a {fallback_type.value} with that data as its content."
             )
         elif parsed is None and data:
             reason = "reparse_data_unrecognized"
             message = (
                 f"{quoted(member.name)} is flagged as a Windows reparse point, but its "
-                f"{len(data)} bytes of data are not a symlink or junction buffer; "
+                f"{data_size} bytes of data are not a symlink or junction buffer; "
                 f"it is stored as a directory, whose content is not readable either "
                 f"way, so it stays a link with no target."
             )
@@ -1679,6 +1811,7 @@ class BaseArchiveReader(ArchiveReader):
             error=error,
             child_scope=False,
             is_current_first=False,
+            enforce_listing_limits=self._progressive_enforce_listing_limits,
         )
         self._publish_materialized(
             self._pass_scanned,
@@ -1789,7 +1922,8 @@ class BaseArchiveReader(ArchiveReader):
         source report ``None``.
         """
         self._state.require_open("compressed_source_size")
-        return source_byte_size(self._source) if self._source is not None else None
+        # The hint, not the fact: this reports, it bounds nothing.
+        return self._source.size_hint if self._source is not None else None
 
     @property
     def compressed_bytes_consumed(self) -> int | None:
@@ -1808,7 +1942,7 @@ class BaseArchiveReader(ArchiveReader):
         c = self._compressed_input_counter
         return c.bytes_read if c is not None else None
 
-    def _wrap_compressed_input(self, source: Path | BinaryIO) -> Path | BinaryIO:
+    def _wrap_compressed_input(self, source: BinaryIO) -> BinaryIO:
         """Wrap a stream source **whose byte size is not cheaply knowable** in a
         ``CountingReader`` (recorded for the live decompression-ratio guard) and return the
         wrapper; return the source unchanged for a path or a sizable stream, whose static
@@ -1822,7 +1956,14 @@ class BaseArchiveReader(ArchiveReader):
         scan, an accelerator); re-read bytes are counted again, which only ever inflates
         the denominator — the guard gets weaker, never a false positive.
         """
-        if is_stream(source) and source_byte_size(source) is None:
+        # Asked of the reader's source the way ``compressed_source_size`` asks it, hint
+        # included, so the two stay complements; ``source`` may be a view over it.
+        known = (
+            self._source.size_hint
+            if self._source is not None
+            else source_byte_size(source)
+        )
+        if known is None:
             counter = CountingReader(source)
             self._compressed_input_counter = counter
             return counter
@@ -2194,7 +2335,6 @@ class BaseArchiveReader(ArchiveReader):
         on_error: OnError | OnErrorStr = OnError.STOP,
         abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
-        config: ArchiveyConfig | None = None,
         limits: ExtractionLimits | None = None,
     ) -> ExtractionReport:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
@@ -2213,7 +2353,6 @@ class BaseArchiveReader(ArchiveReader):
             abort_on, AbortOn, call="extract_all()", param="abort_on="
         )
         self._state.require_open("extract_all()")
-        check_config(config, call="extract_all(config=…)")
         check_extraction_limits(limits, call="extract_all(limits=…)")
         check_callable(on_progress, call="extract_all(on_progress=…)")
         # ``filter`` is not consulted until the first member is offered, by which point
@@ -2233,12 +2372,10 @@ class BaseArchiveReader(ArchiveReader):
         # type-checks against BaseArchiveReader.
         from archivey.internal.extraction import ExtractionCoordinator
 
-        # Listing limits stay on the open-time reader config for the reader lifetime;
-        # a per-call config may override extraction_limits / policy / accelerators but
-        # must not replace self._config.listing_limits (see archive-reading).
-        effective_config = config if config is not None else self._config
+        # The reader's open config applies to the whole reader lifetime; only the
+        # extraction limits have a per-call override (see archive-reading).
         effective_limits = (
-            limits if limits is not None else effective_config.extraction_limits
+            limits if limits is not None else self._config.extraction_limits
         )
         collector = self._diagnostics_collector
         # This call's report covers only its own extraction-phase events. The one-shot

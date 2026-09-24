@@ -316,6 +316,13 @@ def _import_all_archivey_modules() -> None:
             ) from exc
 
 
+def _is_archivey_class(cls: type) -> bool:
+    # ``archivey`` itself counts: public classes defined under ``internal`` report the
+    # package root as their module (``archivey/__init__.py`` pins it for pickling).
+    module = getattr(cls, "__module__", "")
+    return module == "archivey" or module.startswith("archivey.")
+
+
 def _readonly_stream_subclasses() -> set[type]:
     found: set[type] = set()
     stack = [ReadOnlyIOStream]
@@ -325,9 +332,7 @@ def _readonly_stream_subclasses() -> set[type]:
             if sub not in found:
                 found.add(sub)
                 stack.append(sub)
-    found = {
-        cls for cls in found if getattr(cls, "__module__", "").startswith("archivey.")
-    }
+    found = {cls for cls in found if _is_archivey_class(cls)}
     # Seed is ReadOnlyIOStream; subclasses include DelegatingStream. Discard both
     # bases so the inventory is the wrappers that need a resume-offset decision.
     found.discard(ReadOnlyIOStream)
@@ -353,13 +358,12 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.iso_reader as iso_reader
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.detection as detection
+    import archivey.internal.source as source_mod
     import archivey.internal.streams.archive_stream as archive_stream
     import archivey.internal.streams.codecs as codecs
     import archivey.internal.streams.counting as counting
     import archivey.internal.streams.crypto as crypto
     import archivey.internal.streams.decompressor_stream as decompressor_stream
-    import archivey.internal.streams.peekable as peekable
-    import archivey.internal.streams.streamtools.full_count as streamtools_full_count
     import archivey.internal.streams.streamtools.locked as locked
     import archivey.internal.streams.streamtools.slice as slice_mod
     import archivey.internal.streams.streamtools.solid as solid
@@ -391,15 +395,10 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         rar_reader._UnrarOwnedStream,
         rar_reader._UnrarRespawnStream,
         iso_reader._PyCdlibStream,
-        # Sits on the raw image handle, above nothing that decompresses: an ISO
-        # stores members uncompressed, so there is no seek-point table below it.
-        iso_reader._ImageBoundedStream,
         solid._MemberSlice,
-        peekable.PeekableStream,
-        streamtools_full_count.FullCountStream,  # source boundary; not on the decompressed chain
-        # Same boundary, same reason: it wraps the archive source, and every
-        # seek-point table is above it.
-        streamtools_full_count.BorrowedStream,
+        # The source boundary: it wraps the archive source, and every seek-point
+        # table is above it.
+        source_mod.ArchiveSource,
         zip_aes.WinZipAesDecryptStream,
         detection._BoundedPeekReader,
         # Stands in for a refused .lzma decoder: every read raises, so it produces no
@@ -468,9 +467,7 @@ def _delegating_stream_subclasses() -> set[type]:
             if sub not in found:
                 found.add(sub)
                 stack.append(sub)
-    return {
-        cls for cls in found if getattr(cls, "__module__", "").startswith("archivey.")
-    }
+    return {cls for cls in found if _is_archivey_class(cls)}
 
 
 _INIT_KWARG_MISSING = object()
@@ -525,7 +522,6 @@ def test_delegating_stream_close_inventory() -> None:
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.streams.codecs as codecs
     import archivey.internal.streams.counting as counting
-    import archivey.internal.streams.streamtools.full_count as streamtools_full_count
     import archivey.internal.streams.streamtools.locked as locked
 
     owns_via_base = {
@@ -535,25 +531,20 @@ def test_delegating_stream_close_inventory() -> None:
         counting.OutputCountingStream,
         counting.SeekCountingStream,
         iso_reader._PyCdlibStream,
-        iso_reader._ImageBoundedStream,
         codecs._GzipTruncationCheckStream,
     }
     subclass_closes_inner = {
         rar_reader._UnrarOwnedStream,
         codecs._AcceleratorStream,
     }
-    borrows_inner = {
-        streamtools_full_count.BorrowedStream,
-    }
-
     found = _delegating_stream_subclasses()
-    leftover = found - owns_via_base - subclass_closes_inner - borrows_inner
+    leftover = found - owns_via_base - subclass_closes_inner
     assert leftover == set(), (
         "new DelegatingStream subclass needs a close-ownership decision "
-        "(rides the owning default, _SUBCLASS_CLOSES_INNER = True, or "
-        f"_OWNS_INNER = False): {leftover}"
+        "(rides the owning default, or _SUBCLASS_CLOSES_INNER = True): "
+        f"{leftover}"
     )
-    extra_classified = (owns_via_base | subclass_closes_inner | borrows_inner) - found
+    extra_classified = (owns_via_base | subclass_closes_inner) - found
     assert extra_classified == set(), (
         "classified a class the walk did not find (typo or it is no longer "
         f"a DelegatingStream): {extra_classified}"
@@ -567,23 +558,15 @@ def test_delegating_stream_close_inventory() -> None:
         "DelegatingStream subclass _SUBCLASS_CLOSES_INNER does not match "
         f"its inventory group: {wrong_flag}"
     )
-    wrong_ownership = {
-        cls for cls in found if cls._OWNS_INNER is not (cls not in borrows_inner)
-    }
-    assert wrong_ownership == set(), (
-        f"DelegatingStream subclass _OWNS_INNER does not match its inventory group: "
-        f"{wrong_ownership}"
-    )
     passed_kwarg = {
         cls
         for cls in found
-        for flag in ("subclass_closes_inner", "owns_inner")
-        if _init_keyword(cls, flag) is not _INIT_KWARG_MISSING
+        if _init_keyword(cls, "subclass_closes_inner") is not _INIT_KWARG_MISSING
     }
     assert passed_kwarg == set(), (
         "production DelegatingStream subclass __init__ must set "
-        "_SUBCLASS_CLOSES_INNER / _OWNS_INNER on the class and omit the "
-        f"constructor kwarg (kwarg is for ad-hoc tests): {passed_kwarg}"
+        "_SUBCLASS_CLOSES_INNER on the class and omit the constructor kwarg "
+        f"(kwarg is for ad-hoc tests): {passed_kwarg}"
     )
 
 
@@ -674,22 +657,16 @@ def test_delegating_stream_peel_inventory() -> None:
       ``super()`` → ``passed_kwarg``
     - ``OutputCountingStream.peel_for_source_size = True`` → True-set
 
-    ``FullCountStream`` is a ``ReadOnlyIOStream`` and is not in this walk.
+    ``ArchiveSource`` is a ``ReadOnlyIOStream`` and is not in this walk; it answers
+    ``source_byte_size`` from its own ``size`` rather than by being peeled.
     """
     _import_all_archivey_modules()
     import archivey.internal.streams.counting as counting
-    import archivey.internal.streams.streamtools.full_count as streamtools_full_count
 
     found = _delegating_stream_subclasses()
     peels = {cls for cls in found if cls.peel_for_source_size is True}
     assert peels == {
         counting.SeekCountingStream,
-        # The source boundary's borrow wrapper: a pure pass-through, so the
-        # cheap size it hides is the source's own. Without the peel a caller's
-        # BytesIO or open file stops answering ``source_byte_size``, and the
-        # header bounds that key on a known length silently take the
-        # unknown-length path.
-        streamtools_full_count.BorrowedStream,
     }, (
         "DelegatingStream subclass peel_for_source_size does not match "
         "the inventory (only a pass-through wrapper whose size is the "

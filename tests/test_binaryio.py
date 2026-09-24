@@ -18,7 +18,6 @@ from archivey.internal.streams.streamtools import (
     ReadableStream,
     ensure_binaryio,
     ensure_bufferedio,
-    ensure_full_count_reads,
     is_filename,
     is_seekable,
     is_stream,
@@ -675,9 +674,11 @@ def test_ensure_bufferedio_rejects_text_mode() -> None:
         ensure_bufferedio(io.StringIO("hello"))
 
 
-def test_ensure_full_count_reads_rejects_text_mode() -> None:
+def test_archive_source_rejects_text_mode() -> None:
+    from archivey.internal.source import ArchiveSource
+
     with pytest.raises(TypeError, match="text-mode"):
-        ensure_full_count_reads(io.StringIO("hello"))
+        ArchiveSource.for_stream(io.StringIO("hello"))  # type: ignore[arg-type]
 
 
 def test_open_archive_rejects_text_mode_handle(tmp_path) -> None:

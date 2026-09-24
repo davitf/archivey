@@ -14,6 +14,49 @@
 
 ## Backends & format coverage
 
+- **Let the source boundary join a RAR set, as it joins numbered parts** — today a RAR set
+  arrives at `RarReader` as volume 1's path, and the reader re-discovers the siblings and
+  builds its own `ConcatenatedFile` (`_owned_concat`); an explicit path list is joined by
+  `resolve_source`, detected through, then thrown away and reopened by name. Joining
+  RAR-named siblings in `resolve_source` would keep `.volume_paths` for `unrar` and let the
+  in-process header walk read the joined source, as 7z does. That deletes the RAR branch
+  in `core.py`, `_owned_concat`, the double discovery, the `volume_count` constructor
+  argument, and one of `_SourceSlot`'s two callers (after which it can become a local
+  `try`/`finally`). Two things to check first: the SFX-stub follower reads `.path`, which a
+  joined set does not have, so a `.exe` stub beside `.part1.rar` needs the stub path kept;
+  and an explicit list that omits parts is today overridden by discovery, which this
+  would change to honouring the list for the header walk while `unrar` still walks by
+  name. Raised by the design review of the single-archive-source change (PR 419).
+  Once it lands, every reader-level `SharedSource` sits over an `ArchiveSource`, and a
+  `.shared()` factory on the source becomes possible (the class itself stays: the
+  seek-index accelerators build one over an arbitrary stream).
+
+- **Let an `ArchiveSource` over a file hand out independent handles** — raised by
+  davitf on PR 419. Today a path source reaches the codecs by being unwrapped back to
+  `str(path)` in three places (`open_stream`, the single-file reader, compressed TAR),
+  because a path is what buys a fresh descriptor: rapidgzip opens its own fd (so a
+  source-side fault cannot abort the process), the gzip truncation backstop reopens the
+  file for its scan, and concurrent single-file opens each get their own handle. That
+  is why `CodecSource` still includes `str | os.PathLike` and `codecs.py` carries eight
+  path branches. An `ArchiveSource.open_independent()` (a fresh handle for a path
+  source, a lock-sharing view otherwise) would let codecs take the source itself and
+  ask it, and would let `SharedSource` give each view its own descriptor instead of one
+  shared locked handle. Measure first: the win is contention between concurrent views
+  on one lock, which may be small next to decompression; the cost is a descriptor per
+  live view.
+
+- **Read raw CD sector images (`.bin`) by stripping sectors** — 0.2.0 recognises a raw
+  image and refuses it by name (`iso_reader.refuse_raw_sector_image`); davitf deferred
+  reading one past the release (#315, S22-K6 thread, 2026-09-21). The layout was
+  prototyped on that thread and is all in the file: byte 15 is the mode, the submode's
+  `0x20` bit splits Mode 2 Form 1 from Form 2, and the sector size is where the second
+  sync lands (2352, or 2448 with subchannel data). Mode 1 and Mode 2 Form 1 strip to a
+  byte-identical `.iso` (payload at 16 and 24), as a slicing stream rather than a copy;
+  the sector walk also yields the image's valid length, which is the bound the
+  reader's `ArchiveSource` reads within. Two non-goals recorded there: multi-track
+  images that need the `.cue` (track 1 audio has no sync at offset 0), and EDC/ECC
+  verification — the trailing 288 bytes would be dropped unchecked, which the docs must
+  then say.
 - **Port `unrar`'s member-mask matcher faithfully, instead of probing it** — a RAR member's
   stored name is handed to `unrar` as an include mask (`-n./<name>`), so archivey has to
   predict which *other* members that mask will also match in order to skip their bytes back
@@ -519,7 +562,7 @@
   rather than a new one, and 256 MiB also covers it: xz `-9` and 7-Zip's presets declare
   64 MiB at most.) Adding a class attribute later is purely additive.
   **The name is open**, and davitf said so explicitly. `UNTRUSTED` is the suggestion on
-  the table: `STRICT` is taken in spirit by `strict_archive_eof` in the same file and by
+  the table: `STRICT` is taken in spirit by `DiagnosticPolicy.strict()` and by
   archivey's use of "strict" for how harshly corruption is treated, while `UNTRUSTED`
   names what the caller knows — the provenance of the input — rather than how tight the
   numbers are, and reads correctly beside `UNLIMITED`. It also happens to be the answer

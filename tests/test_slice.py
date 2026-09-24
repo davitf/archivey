@@ -19,11 +19,11 @@ import pytest
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.measurement import SeekCounter
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.counting import SeekCountingStream
 from archivey.internal.streams.streamtools import (
     SharedView,
     SlicingStream,
-    ensure_full_count_reads,
     fix_stream_start_position,
 )
 from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
@@ -158,13 +158,13 @@ class TestSlicingStream:
         """``read(n)`` returns ``n`` when the inner is full-count — the archive-source case.
 
         Every slice in the backends views a full-count inner: a ``SharedSource`` handle
-        (``open()``'s ``BufferedReader``, or a caller stream normalized by
-        ``ensure_full_count_reads``), or a decoder. A raw stream that shorts mid-stream
+        (``open()``'s ``BufferedReader``, or a caller stream behind an
+        ``ArchiveSource``), or a decoder. A raw stream that shorts mid-stream
         gets that full-count wrapper in front rather than a gathering loop inside the view — see
         ``test_sized_read_over_a_raw_short_inner_stops_on_short`` and ADR 0014.
         """
         sliced = SlicingStream(
-            ensure_full_count_reads(ShortReadBytesIO(DATA)), start=5, length=10
+            ArchiveSource.for_stream(ShortReadBytesIO(DATA)), start=5, length=10
         )
         assert sliced.read(7) == DATA[5:12]
         assert sliced.tell() == 7

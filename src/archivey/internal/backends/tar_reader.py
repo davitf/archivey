@@ -17,10 +17,12 @@ via ``_iter_with_data()`` / ``stream_members()``.
 After a full scan or streaming pass, :meth:`_verify_tar_eof` checks the end:
 
 - A rejected (non-null) header where ``tarfile`` stopped → ``CorruptionError``.
-- A missing two-block null trailer → ``ARCHIVE_EOF_MARKER_MISSING`` unless
-  ``config.strict_archive_eof`` escalates to ``TruncatedError``.
-- Under ``config.strict_archive_eof``, a non-zero byte anywhere between a *complete*
-  trailer and EOF → ``ARCHIVE_TRAILING_DATA`` → ``CorruptionError``. Zero padding passes.
+- A missing two-block null trailer → ``ARCHIVE_EOF_MARKER_MISSING``.
+- A non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of a *complete* trailer →
+  ``ARCHIVE_TRAILING_DATA``. Zero padding passes.
+
+Both codes follow the diagnostic policy like any other: a caller who wants either to
+fail sets it to ``RAISE`` (``DiagnosticPolicy.strict()`` does so for both).
 
 Note: after ``getmembers()`` / a walk, ``tarfile`` has typically already consumed the
 *first* trailer zero-block; the EOF probe therefore inspects the *next* 512 bytes.
@@ -33,7 +35,6 @@ import tarfile
 import threading
 from datetime import datetime, timezone
 from io import BytesIO
-from pathlib import Path
 from typing import BinaryIO, Iterator, Literal, Mapping, cast
 
 from archivey.config import ArchiveyConfig
@@ -52,6 +53,7 @@ from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    ReadError,
     TruncatedError,
 )
 from archivey.internal.base_reader import (
@@ -66,6 +68,7 @@ from archivey.internal.naming import emit_member_name_normalized, normalize_memb
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
@@ -77,10 +80,7 @@ from archivey.internal.streams.streamtools import (
     LockedStream,
     ensure_binaryio,
     ensure_bufferedio,
-    is_seekable,
-    is_stream,
     read_within_reach,
-    source_byte_size,
 )
 from archivey.types import (
     ArchiveFormat,
@@ -96,10 +96,21 @@ from archivey.types import (
     StreamFormat,
 )
 
-# Read size for the strict trailing-bytes scan. The tail past the trailer is unbounded
-# (a concatenated archive, a padded record, arbitrary junk), so it is consumed in chunks
+# Read size for the trailing-bytes scan. The tail past the trailer is unbounded (a
+# concatenated archive, a padded record, arbitrary junk), so it is consumed in chunks
 # rather than with one read().
 _TRAILING_SCAN_CHUNK = 64 * 1024
+
+# How far past the trailer the trailing-bytes scan looks before it stops. An effort
+# bound, not a ceiling: nothing is refused when it is reached, the scan only stops
+# looking. `tar` pads to 10 KiB records by default, so a concatenated archive's header
+# lands within ~10 KiB of the trailer in the ordinary case; this is a hundred times
+# that. Measured on a gzipped tar with an all-zero tail (the worst case, since the scan
+# stops at the first non-zero byte), 1 MiB costs ~5 ms. A constant rather than a config
+# field: promoting it later is backward compatible, demoting a field is not, and on
+# ``ListingLimits`` a ``None`` would have to mean "scan to EOF", inverting what ``None``
+# means on every other field there.
+_MAX_TRAILING_SCAN = 1 * 2**20
 
 # Every compressed-tar combination the codec layer can decode: TAR composed with each
 # standalone stream codec (gz/bz2/xz/zst/lz4/lzip/lzma-alone/zlib/brotli/unix-compress).
@@ -182,16 +193,19 @@ class _EofProbeStream:
     seeking backwards, which on a compressed source would force a re-decompression.
 
     tarfile treats this as an external fileobj (``read``/``seek``/``tell``/``seekable``
-    only) and never closes it; the reader closes the wrapped stream via ``_owned_stream``.
+    only) and never closes it; the reader closes what it wraps — the decompressor via
+    ``_owned_stream``, the source by closing the source.
 
-    Being the only thing between ``tarfile`` and the source makes it the one place a
-    read sized from the archive can be bounded. ``TarInfo._proc_pax`` and
-    ``_proc_gnulong`` each issue a single ``read(self._block(self.size))`` for a PAX
+    Over a decompressor it is the one place a read sized from the archive can be
+    bounded: the source's own bound sits under the codec, not in front of ``tarfile``.
+    Over the source itself (a plain tar) the source already bounds, so ``bounded=False``
+    passes reads straight through rather than bounding the raw case twice.
+    ``TarInfo._proc_pax`` and ``_proc_gnulong`` each issue a single ``read(self._block(self.size))`` for a PAX
     extended header or a GNU long name, where ``size`` is the 12-byte octal field of a
     ``typeflag`` ``x`` / ``L`` / ``K`` header — up to 8 GiB, and further through GNU
     base-256. ``BufferedReader.read(n)`` allocates ``n`` up front, so the allocation
     lands before the short read reveals the archive is three kilobytes. ``read`` below
-    therefore never asks the wrapped stream for more than it can still supply.
+    therefore asks the wrapped stream in steps rather than for the whole size at once.
     """
 
     # The step this backend reads in when the source's length is unknown: the
@@ -201,19 +215,13 @@ class _EofProbeStream:
     # :data:`DEFAULT_UNKNOWN_LENGTH_READ_STEP`, beside the branch it governs.
     _UNKNOWN_LENGTH_READ_STEP = DEFAULT_UNKNOWN_LENGTH_READ_STEP
 
-    def __init__(self, inner: BinaryIO, source_size: int | None = None) -> None:
+    def __init__(self, inner: BinaryIO, *, bounded: bool = True) -> None:
         self._inner = inner
+        self._bounded = bounded
         # Offsets share tarfile's coordinate space (both anchored at the wrapped
         # stream's current position), so they compare directly to TarInfo offsets.
         self._pos = inner.tell() if inner.seekable() else 0
         self.last_read: tuple[int, bytes] = (-1, b"")
-        # The wrapped stream's total length, or None when it is not known. It shares an
-        # origin with ``tell()`` — a whole file's size against an absolute position, a
-        # slice's length against a slice-relative one — so ``size - _pos`` is what is
-        # left either way. Only a length that is a fact belongs here: the caller passes
-        # None rather than a decompressor's estimate, which can understate (a gzip
-        # ISIZE wraps past 4 GiB) and would then truncate a legitimate read.
-        self._source_size = source_size
 
     def read(self, size: int = -1) -> bytes:
         offset = self._pos
@@ -225,16 +233,15 @@ class _EofProbeStream:
     def _read_within_reach(self, size: int) -> bytes:
         """``read`` without committing to the allocation the archive asked for.
 
-        The rule itself lives in :func:`read_within_reach`, because the ISO backend
-        bounds pycdlib's header-sized reads by exactly the same one.
+        The rule itself lives in :func:`read_within_reach`, because the source bounds
+        every raw read by exactly the same one.
         """
+        if not self._bounded:
+            return self._inner.read(size)
+        # Stepped, never clamped: the one bounded caller wraps a decompressor, whose
+        # length is not a fact (a gzip ISIZE wraps past 4 GiB and can understate).
         return read_within_reach(
-            self._inner,
-            size,
-            remaining=(
-                None if self._source_size is None else self._source_size - self._pos
-            ),
-            step=self._UNKNOWN_LENGTH_READ_STEP,
+            self._inner, size, remaining=None, step=self._UNKNOWN_LENGTH_READ_STEP
         )
 
     def seek(self, offset: int, whence: int = 0) -> int:
@@ -273,7 +280,7 @@ class TarReader(BaseArchiveReader):
 
     def __init__(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
         passwords: _PasswordCandidates | None,
@@ -301,10 +308,9 @@ class TarReader(BaseArchiveReader):
         # snapshotted into ``_eof_header_rejected`` right after the header scan.
         self._eof_probe_stream: _EofProbeStream | None = None
         self._eof_header_rejected: bool = False
-        # A stream we open and therefore must close: the decompression stream (compressed
-        # tars) or the plain-tar path handle we open ourselves (always fileobj=, so tarfile
-        # never owns the fp — RA needs that for the EOF probe; streaming shares the same
-        # ownership/close path for consistency).
+        # The decompression stream of a compressed tar, which this reader builds and so
+        # must close. tarfile is always handed ``fileobj=``, so it never owns what it
+        # reads; the source itself closes with the reader.
         self._owned_stream: BinaryIO | None = None
         # Shared-handle lock: CONCURRENT readers serialize every shared-fileobj op;
         # streaming readers also take a lock (exclusive / normally uncontended) so the
@@ -342,7 +348,7 @@ class TarReader(BaseArchiveReader):
 
     def _open_tarfile(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
         *,
@@ -350,15 +356,18 @@ class TarReader(BaseArchiveReader):
     ) -> tarfile.TarFile:
         if self._compressed:
             codec = codec_for_stream_format(format.stream)
-            # A non-seekable stream source is wrapped so the live decompression-ratio guard
-            # can see compressed bytes consumed; a path / seekable stream (cheap size known)
-            # is returned unchanged and uses the static ratio.
-            counted = self._wrap_compressed_input(source)
-            if self._measure and is_stream(counted):
-                counted = self._track_source_seeks(counted)
-            codec_source: str | BinaryIO = (
-                str(counted) if isinstance(counted, Path) else counted
-            )
+            codec_source: str | BinaryIO
+            if source.path is not None:
+                # A file goes to the codec as its path, as for a bare compressed file:
+                # the codec opens its own handle and may use path-only accelerators, and
+                # the static ratio applies because the size is known.
+                codec_source = str(source.path)
+            else:
+                # A stream whose size is not known is counted, so the live
+                # decompression-ratio guard can see compressed bytes consumed.
+                codec_source = self._track_source_seeks(
+                    self._wrap_compressed_input(source)
+                )
             stream = open_codec_stream(
                 codec,
                 codec_source,
@@ -374,41 +383,26 @@ class TarReader(BaseArchiveReader):
             # decompressor; a BufferedReader in front guarantees full-sized reads.
             self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
             return self._tarfile_open(
-                # No source size: the wrapped stream is our decompressor, whose
-                # length is not a fact we hold and would cost a pass to learn.
-                fileobj=self._wrap_eof_probe(
-                    self._owned_stream, streaming, source_size=None
-                ),
+                fileobj=self._wrap_eof_probe(self._owned_stream, streaming),
                 streaming=streaming,
             )
-        if isinstance(source, Path):
-            # Always open ourselves and pass fileobj= (never name=-only). Random access
-            # needs the handle for the EOF probe; streaming does not, but sharing one
-            # ownership/close path avoids a second mode and the init-failure leak that
-            # name= vs fileobj= divergence invited. name= is still passed for display.
-            # Do NOT slurp the path into a BytesIO — that would force the whole archive
-            # (and any compressed payload) into memory up front.
-            fp: BinaryIO = open(source, "rb")
-            if self._measure:
-                fp = cast("BinaryIO", self._track_source_seeks(fp))
-            self._owned_stream = fp
-            return self._tarfile_open(
-                name=str(source),
-                fileobj=self._wrap_eof_probe(
-                    fp, streaming, source_size=source_byte_size(fp)
-                ),
-                streaming=streaming,
-            )
-        tracked = cast("BinaryIO", self._track_source_seeks(source))
+        # A plain tar reads the source itself, which is full-count and bounded; the
+        # probe in front of it only watches. Do NOT slurp a path into a BytesIO — that
+        # would force the whole archive into memory up front.
         return self._tarfile_open(
+            name=str(source.path) if source.path is not None else None,
             fileobj=self._wrap_eof_probe(
-                tracked, streaming, source_size=source_byte_size(tracked)
+                self._track_source_seeks(source), streaming, bounded=False
             ),
             streaming=streaming,
         )
 
     def _wrap_eof_probe(
-        self, fileobj: BinaryIO, streaming: bool, *, source_size: int | None
+        self,
+        fileobj: BinaryIO,
+        streaming: bool,
+        *,
+        bounded: bool = True,
     ) -> BinaryIO:
         """Wrap a random-access fileobj so the end-of-archive check can inspect the block
         tarfile stopped on. Forward-only (streaming) opens get no probe — tarfile's
@@ -416,12 +410,13 @@ class TarReader(BaseArchiveReader):
 
         That is also why bounding a header-sized read only happens here: ``r|`` needs no
         bound, tarfile's own ``_Stream.read`` looping in ``bufsize`` chunks, and ``r:``
-        is the mode that hands a raw handle through. ``source_size`` is the wrapped
-        stream's length when that is a fact; see :class:`_EofProbeStream`.
+        is the mode that hands a raw handle through. Over a decompressor the read is
+        stepped (see :class:`_EofProbeStream`); a plain tar passes ``bounded=False``: the
+        source it wraps bounds its own reads.
         """
         if streaming:
             return fileobj
-        probe = _EofProbeStream(fileobj, source_size)
+        probe = _EofProbeStream(fileobj, bounded=bounded)
         self._eof_probe_stream = probe
         return cast("BinaryIO", probe)
 
@@ -570,7 +565,7 @@ class TarReader(BaseArchiveReader):
         tarfile stopped on. A full non-null block there means tarfile rejected a header —
         a corrupt member header after the first, treated as a silent early end, including
         when it is the archive's *final* block — which escalates to ``CorruptionError``
-        regardless of ``strict_archive_eof``.
+        whatever the diagnostic policy says.
 
         Otherwise (and for forward-only streaming, which has no probe) it inspects the
         block following tarfile's stop. ``tarfile`` has already consumed the *first* null
@@ -578,8 +573,8 @@ class TarReader(BaseArchiveReader):
         so we only confirm the *second*: reading two blocks here would demand a third
         block of trailing zeros and wrongly flag a minimal ``tar -b1`` trailer. Two null
         blocks are valid; a non-null block is corruption (a rejected trailer/header); a
-        short or empty read is a truncated or absent trailer, which stays a warning unless
-        ``strict_archive_eof`` escalates it to ``TruncatedError``.
+        short or empty read is a truncated or absent trailer, reported as
+        ``ARCHIVE_EOF_MARKER_MISSING`` under the ordinary diagnostic policy.
 
         Streaming cannot see a rejected *final* header (tarfile's ``_Stream`` hides the
         block and it cannot be recovered without re-reading), so that one case surfaces as
@@ -614,31 +609,42 @@ class TarReader(BaseArchiveReader):
         )
 
     def _verify_nothing_but_zeros_to_eof(self) -> None:
-        """Under ``strict_archive_eof``, require every byte past the trailer to be zero.
+        """Report a non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of the trailer.
 
-        The flag is documented as what you set for "a provably complete listing", and
-        without this it asserted only that the two trailer blocks were present — 4 KiB of
-        arbitrary appended bytes passed silently. Zeros still pass, deliberately: writers
-        pad to 10 KiB records routinely, so "nothing but zeros" is the strongest rule that
-        does not reject what ``tar(1)`` itself writes.
+        Without this, a complete trailer asserted only that the two trailer blocks were
+        present — 4 KiB of arbitrary appended bytes passed silently. Zeros still pass,
+        deliberately: writers pad to 10 KiB records routinely, so "nothing but zeros" is
+        the strongest rule that does not flag what ``tar(1)`` itself writes.
 
-        Concatenated archives fail here, which is the intended answer — they are two
-        archives and only the first was listed.
+        Concatenated archives are reported here, which is the intended answer — they are
+        two archives and only the first was listed.
 
-        **This is why the flag is opt-in.** The scan is O(tail length), and on a
-        compressed tar the tail must be decompressed to be inspected, so it cannot become
-        an unconditional advisory. Read in bounded chunks: the tail may be arbitrarily
-        long and must not be materialized.
+        The scan is bounded because it is not free: on a compressed tar the tail must be
+        decompressed to be inspected. Past the bound it stops looking and reports
+        nothing, so a second archive further out goes unseen; the bound is an effort
+        limit, not a claim that the rest is zero. Read in bounded chunks: the tail may be
+        arbitrarily long and must not be materialized. On a forward-only source the
+        reads go past the trailer too, so a pipe held open after the tar ends blocks
+        here until more bytes or EOF arrive; ``docs/gotchas.md`` says so to callers.
+
+        A tail that fails to *decode* ends the scan quietly. On a compressed tar the
+        bytes past the trailer can be a truncated gzip footer or junk after the
+        compressed stream, and the codec refuses both. Every member was already read
+        whole, and before this scan ran unconditionally such an archive listed without
+        complaint, so a decode failure out here must not turn a good listing into an
+        error. It is not trailing tar data either, so it is not reported as that.
         """
-        if not self._config.strict_archive_eof:
-            return
         fileobj = self._tar.fileobj
         if fileobj is None:
             return
         offset = 0
-        while True:
-            with self._handle_guard():
-                chunk = fileobj.read(_TRAILING_SCAN_CHUNK)
+        while offset < _MAX_TRAILING_SCAN:
+            want = min(_TRAILING_SCAN_CHUNK, _MAX_TRAILING_SCAN - offset)
+            try:
+                with self._translated_errors(), self._handle_guard():
+                    chunk = fileobj.read(want)
+            except ReadError:
+                return
             if not chunk:
                 return
             stripped = chunk.lstrip(b"\x00")
@@ -655,8 +661,7 @@ class TarReader(BaseArchiveReader):
             message=(
                 "TAR archive continues past its end-of-archive marker: a non-zero byte "
                 f"appears {observed_bytes} bytes after the trailer. The listing does not "
-                "account for it (this file may be two archives concatenated). Reported "
-                "because strict_archive_eof=True asked for a provably complete listing."
+                "account for it (this file may be two archives concatenated)."
             ),
             context=ArchiveEofContext(
                 archive_name=self._archive_name,
@@ -667,11 +672,6 @@ class TarReader(BaseArchiveReader):
                 observed_kind="nonzero",
             ),
             logger=backends_logger,
-            escalate_as=CorruptionError,
-            escalate_kwargs={
-                "source_format": self._format,
-                "archive_name": self._archive_name,
-            },
         )
 
     def _emit_eof_marker(
@@ -694,7 +694,7 @@ class TarReader(BaseArchiveReader):
                 "TAR archive may be truncated: missing or short end-of-archive marker "
                 "block(s)."
             )
-            escalate_as = TruncatedError if self._config.strict_archive_eof else None
+            escalate_as = None
         escalate_kwargs: dict[str, object] | None = None
         if escalate_as is not None:
             escalate_kwargs = {
@@ -718,9 +718,8 @@ class TarReader(BaseArchiveReader):
         )
 
     def _source_stream_capability(self) -> StreamCapability:
-        if isinstance(self._source, Path):
-            return StreamCapability.SEEKABLE
-        if is_seekable(self._source):
+        assert self._source is not None
+        if self._source.seekable():
             return StreamCapability.SEEKABLE
         return StreamCapability.FORWARD_ONLY
 
@@ -866,8 +865,8 @@ class TarReader(BaseArchiveReader):
     def _close_archive(self) -> None:
         with self._handle_guard():
             self._tar.close()
-            # tarfile never closes an external fileobj, so close the stream we opened
-            # ourselves — decompression stream or plain-tar path handle.
+            # tarfile never closes an external fileobj, so close the decompression
+            # stream we built. The source closes with the reader, after this.
             self._release_owned_stream()
 
 
@@ -889,7 +888,7 @@ class TarReadBackend(ReadBackend):
 
     def open_read(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
         passwords: _PasswordCandidates | None,

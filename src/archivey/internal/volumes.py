@@ -22,9 +22,10 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
-    ensure_full_count_reads,
     is_stream,
+    raise_if_text_stream,
     readinto_via_read,
     reject_source,
     source_name,
@@ -352,6 +353,10 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
 
     def __init__(self, sources: Sequence[Path | BinaryIO]) -> None:
         super().__init__()
+        # First, before anything that can raise: ``close()`` reads it, and
+        # ``IOBase.__del__`` calls ``close()`` on an instance whose ``__init__``
+        # refused its input.
+        self._path_handles: OrderedDict[int, _CachedPathHandle] = OrderedDict()
         if not sources:
             raise ArchiveyUsageError("at least one volume is required")
         # Retained so format-specific openers (RAR) can recover real volume paths —
@@ -403,7 +408,6 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
         self.volume_count = len(sources)
         self._vol_index = 0
         self._vol_offset = 0
-        self._path_handles: OrderedDict[int, _CachedPathHandle] = OrderedDict()
         self._recompute_cursor()
 
     @property
@@ -924,7 +928,7 @@ def incomplete_lone_numbered_volume_error(
     )
 
 
-def join_volumes(paths: Sequence[Path]) -> BinaryIO:
+def join_volumes(paths: Sequence[Path]) -> ConcatenatedFile:
     """Concatenate an ordered volume set into one seekable file-like object."""
 
     if not paths:
@@ -942,9 +946,9 @@ OpenSourceInput = SourceItem | SourceSequence
 
 @dataclass(frozen=True)
 class ResolvedSource:
-    """Single source to hand to detection/backends plus multi-volume metadata."""
+    """The one source detection and the backend read, plus multi-volume metadata."""
 
-    open_source: Path | BinaryIO
+    source: ArchiveSource
     archive_name: str | None
     volume_count: int
 
@@ -952,7 +956,12 @@ class ResolvedSource:
 def _coerce_path_or_stream(item: SourceItem) -> Path | BinaryIO:
     if isinstance(item, (str, Path)):
         return Path(item)
-    return ensure_full_count_reads(item)
+    # A caller stream goes into the join as it is: ``ConcatenatedFile`` gathers short
+    # reads itself and never closes a stream part, and the source over the join bounds.
+    raise_if_text_stream(item)
+    if not is_stream(item):
+        reject_source(item)
+    return item
 
 
 def _is_source_sequence(source: OpenSourceInput) -> TypeGuard[SourceSequence]:
@@ -964,52 +973,65 @@ def _is_source_sequence(source: OpenSourceInput) -> TypeGuard[SourceSequence]:
 
 
 def resolve_source(source: OpenSourceInput) -> ResolvedSource:
-    """Normalize ``source`` to one open target and record multi-volume detection.
+    """Turn ``source`` into the one :class:`ArchiveSource` every later step reads.
 
-    Normalizing includes making every caller-supplied stream **full-count** on ``read(n)``
-    (``ensure_full_count_reads``) before it reaches detection or a backend: this is the one
-    boundary every archive source crosses, and the header parsers downstream — archivey's
-    and the stdlib's alike — read fixed-size structures with a single ``read(n)``. Volume
-    items are normalized individually, so :class:`ConcatenatedFile` (whose own ``read``
-    already coalesces across volumes) stays the resolved source that the RAR/7z volume
-    handling recognizes.
+    This is the boundary every archive source crosses on its way to detection and a
+    backend: whatever the caller passed, what comes out carries full-count reads, the
+    ownership rule (archivey closes what it built, never the caller's object), bounded
+    reads and the cheap facts. A volume list becomes one source over a
+    :class:`ConcatenatedFile`, which gathers each caller stream in it to the full count
+    and borrows it.
+
+    The caller must close the returned source. A path source opens nothing until it is
+    read, so resolving one only to inspect it costs no descriptor.
     """
     if _is_source_sequence(source):
-        items = [_coerce_path_or_stream(item) for item in source]
-        if not items:
+        raw_items = list(source)
+        if not raw_items:
             raise ArchiveyUsageError("source sequence must not be empty")
-        if len(items) == 1:
-            return _resolve_single(items[0])
-        first = items[0]
-        if all(isinstance(item, Path) for item in items):
-            paths = [item for item in items if isinstance(item, Path)]
-            return ResolvedSource(join_volumes(paths), source_name(first), len(paths))
-        return ResolvedSource(ConcatenatedFile(items), source_name(first), len(items))
-    if isinstance(source, str):
-        return _resolve_single(Path(source))
-    if isinstance(source, Path):
-        return _resolve_single(source)
+        if len(raw_items) == 1:
+            return _resolve_single(raw_items[0])
+        items = [_coerce_path_or_stream(item) for item in raw_items]
+        paths = [item for item in items if isinstance(item, Path)]
+        joined = (
+            join_volumes(paths) if len(paths) == len(items) else ConcatenatedFile(items)
+        )
+        name = source_name(items[0])
+        return ResolvedSource(
+            ArchiveSource.for_volumes(joined, name=name),
+            name,
+            len(items),
+        )
+    return _resolve_single(source)
+
+
+def _resolve_single(source: object) -> ResolvedSource:
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        if path.is_dir():
+            return ResolvedSource(ArchiveSource.for_path(path), str(path), 1)
+        siblings = discover_volume_siblings(path)
+        if siblings is not None:
+            # Numbered parts are byte slices, so they are joined into one stream.
+            # RAR keeps volume 1's path instead: unrar walks the set itself and needs
+            # the sibling files on disk.
+            name = source_name(siblings[0])
+            if _NUMBERED_VOLUME_RE.match(siblings[0].name):
+                return ResolvedSource(
+                    ArchiveSource.for_volumes(join_volumes(siblings), name=name),
+                    name,
+                    len(siblings),
+                )
+            return ResolvedSource(
+                ArchiveSource.for_path(siblings[0], volume_count=len(siblings)),
+                name,
+                len(siblings),
+            )
+        return ResolvedSource(ArchiveSource.for_path(path), source_name(path), 1)
     if not is_stream(source):
         # str/Path are handled above, so anything left that is not a stream is a
         # source type archivey does not take. ``reject_source`` is NoReturn, which
         # is what keeps ``source`` narrowed to ``BinaryIO`` below.
         reject_source(source)
-    return _resolve_single(ensure_full_count_reads(source))
-
-
-def _resolve_single(source: Path | BinaryIO) -> ResolvedSource:
-    if isinstance(source, Path):
-        if source.is_dir():
-            return ResolvedSource(source, str(source), 1)
-        siblings = discover_volume_siblings(source)
-        if siblings is not None:
-            # Numbered parts are byte slices, so they are joined into one stream.
-            # RAR falls through with volume 1's path instead: unrar walks the set
-            # itself and needs the sibling files on disk.
-            if _NUMBERED_VOLUME_RE.match(siblings[0].name):
-                return ResolvedSource(
-                    join_volumes(siblings), source_name(siblings[0]), len(siblings)
-                )
-            return ResolvedSource(siblings[0], source_name(siblings[0]), len(siblings))
-        return ResolvedSource(source, source_name(source), 1)
-    return ResolvedSource(source, source_name(source), 1)
+    archive_source = ArchiveSource.for_stream(source)
+    return ResolvedSource(archive_source, source_name(archive_source), 1)

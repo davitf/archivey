@@ -5,10 +5,9 @@ codec library's file-like that is *almost* a ``BinaryIO`` (e.g. missing ``readin
 module is the single place that classifies those objects (``is_filename`` / ``is_stream`` /
 ``is_seekable``) and coerces them to a consistent ``BinaryIO`` (``ensure_binaryio`` /
 ``ensure_bufferedio`` / ``BinaryIOWrapper``), so the rest of the stream layer can assume
-one interface. Full-count ``read(n)`` at the archive-source boundary lives in
-``full_count.py`` (``ensure_full_count_reads``). That guarantee now comes from that
-boundary for both seekable and non-seekable sources; it no longer depends on
-``PeekableStream`` (a layer above) or ``tarfile`` internals.
+one interface. Full-count ``read(n)`` at the archive-source boundary is the job of
+``ArchiveSource`` (``archivey/internal/source.py``), which builds on the helpers here;
+this package does not know it exists.
 """
 
 from __future__ import annotations
@@ -106,6 +105,22 @@ def try_readinto(stream: object, b: "WriteableBuffer") -> int | None:
     return n
 
 
+def read_blocking(stream: ReadableStream, n: int = -1) -> bytes:
+    """``stream.read(n)``, refusing the ``None`` of a non-blocking stream.
+
+    A ``read()`` returns ``None`` only for a *non-blocking* stream that has no data
+    available right now — never at EOF, where blocking and non-blocking streams alike
+    return ``b""``. archivey's readers pull synchronously and cannot make progress on a
+    non-blocking source, so this raises ``BlockingIOError`` instead of fabricating
+    ``b""``, which would look like EOF and silently truncate the data. The ``readinto``
+    counterpart is :func:`try_readinto`.
+    """
+    data: bytes | None = stream.read(n)
+    if data is None:
+        raise BlockingIOError(_BLOCKING_READ_MESSAGE)
+    return data
+
+
 def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
     """Fill ``b`` from ``src.read``, for streams that have no ``readinto``.
 
@@ -145,13 +160,13 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
     only where the caller will not read again, so a short must be gathered here.
 
     When one read satisfies the ask the inner's own object is returned rather than
-    a copy, the same fast path :meth:`FullCountStream.read` has, so **callers must
+    a copy, the same fast path the source boundary's gathering read has, so **callers must
     not mutate the result**. ``ReadableStream.read`` is typed ``-> bytes``; an
     inner that breaks that and hands back a ``bytearray`` has it passed through
     here, where the gather path would have coerced it via ``join``. Guarding with
     ``type(data) is bytes`` was measured at +3% on this path and declined: it
     would buy conformance from an inner that is already violating the protocol,
-    at the cost of the fast path this exists for, and ``FullCountStream.read``
+    at the cost of the fast path this exists for, and the boundary's gathering read
     returns identically — a guard here alone would just move the inconsistency.
     """
     if n < 0:
@@ -169,8 +184,8 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
     if not data:
         return b""
 
-    # Fast path, and the common one now that ``ensure_full_count_reads`` makes
-    # every archive source full-count: one read satisfied the ask, so hand back
+    # Fast path, and the common one now that the source boundary makes every
+    # archive source full-count: one read satisfied the ask, so hand back
     # the inner's own object instead of copying it. On a large read — a whole
     # decoded 7z folder in ``sevenzip_pipeline`` — that is 1x peak memory where
     # copying out was 3x.
@@ -270,6 +285,10 @@ def is_seekable(stream: object) -> bool:
             stream,
         )
         return False
+    if getattr(type(stream), "_SEEKABLE_IS_SETTLED", False):
+        # A class that measured this once, from the object it wraps, with this same
+        # function. Asking ``fileno()`` again could open a handle nobody needs yet.
+        return True
     if _is_fifo_or_chardev(stream):
         logger.debug(
             "Stream %r reports seekable() but is a pipe/char device; treating as "
@@ -394,8 +413,8 @@ def _under_buffer(stream: object) -> object:
     """The stream a ``BufferedReader``/``BufferedRandom`` wraps, for metadata probes.
 
     A buffer forwards the I/O methods and nothing else, so a wrapped stream's ``size`` /
-    ``try_get_size()`` would vanish the moment the source boundary buffered it (see
-    :func:`ensure_full_count_reads`) — and with it the cheap source size a nested
+    ``try_get_size()`` would vanish the moment the source boundary buffered it (as it
+    buffers a seekable raw stream) — and with it the cheap source size a nested
     ``open_archive(reader.open("inner.zip"))`` reports. Both probes leave the wrapped
     stream's read position where they found it, so consulting them through the buffer
     cannot desync it. Probe 4's metadata path peels a ``BufferedReader`` the same way;
@@ -432,7 +451,7 @@ DEFAULT_UNKNOWN_LENGTH_READ_STEP = 16 * 2**20
 
 
 def read_within_reach(
-    inner: BinaryIO, size: int, *, remaining: int | None, step: int
+    inner: ReadableStream, size: int, *, remaining: int | None, step: int
 ) -> bytes:
     """``inner.read(size)`` without committing to an allocation ``size`` alone asked for.
 
@@ -547,6 +566,28 @@ def source_byte_size(source: Any) -> int | None:
     return None
 
 
+def source_size_fact(source: object) -> int | None:
+    """Total byte size when it is a **fact** about the object, else ``None``.
+
+    Narrower than :func:`source_byte_size`: a path's ``stat`` of a regular file, and the
+    metadata of a seekable ``BytesIO``, ``mmap`` or regular-file ``FileIO`` (also under a
+    buffer, and through a pass-through wrapper that opts into peeling). An integer
+    ``size`` attribute and ``try_get_size()`` do not count: the first is a caller's
+    unverified claim and the second a decoder's estimate, and a length that understates
+    would silently clamp a legitimate read. This is the length
+    :func:`read_within_reach` may clamp to.
+    """
+    if is_filename(source):
+        try:
+            st = os.stat(source)
+        except OSError:
+            return None
+        return st.st_size if stat.S_ISREG(st.st_mode) else None
+    if not is_seekable(source):
+        return None
+    return _metadata_end_size(_peel_passthrough(source))
+
+
 def is_stream(obj: object) -> TypeGuard[BinaryIO]:
     """Whether ``obj`` already satisfies the ``BinaryIO`` interface we rely on.
 
@@ -640,15 +681,7 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         self._raw = raw
 
     def read(self, size: int = -1, /) -> bytes:
-        data = self._raw.read(size)
-        if data is None:
-            # A read() returns None only for a *non-blocking* stream that has no data
-            # available right now — never at EOF, where blocking and non-blocking streams
-            # alike return b"". archivey's readers pull synchronously and cannot make
-            # progress on a non-blocking source, so surface that explicitly instead of
-            # fabricating b"" (which would look like EOF and silently truncate the data).
-            raise BlockingIOError(_BLOCKING_READ_MESSAGE)
-        return data
+        return read_blocking(self._raw, size)
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
         n = try_readinto(self._raw, b)
@@ -680,11 +713,10 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         runtime property whose body returns ``None``. pycdlib does
         ``'b' not in fp.mode``, which raises ``TypeError`` on that ``None``.
         Copied from :class:`ReadOnlyIOStream` rather than subclassing it
-        (``base.py`` imports this module). Four wrappers forward ``name`` via
-        ``source_name`` (this class, :class:`DelegatingStream`,
-        ``PeekableStream``, ``FullCountStream``) on three different inner
-        attributes (``_raw`` / ``_inner`` / ``_underlying``); parked as #329 C4
-        rather than a mixin in this PR.
+        (``base.py`` imports this module). This class and
+        :class:`DelegatingStream` both forward ``name`` via ``source_name``, on
+        different inner attributes (``_raw`` / ``_inner``); parked as #329 C4
+        rather than a mixin.
         This class must stay an ``io.RawIOBase`` so :func:`ensure_bufferedio`
         can feed ``io.BufferedReader``.
         """
