@@ -394,6 +394,36 @@ def test_tests_do_not_invent_undeclared_extra_keys() -> None:
     )
 
 
+def test_extra_key_constants_are_final_and_registered() -> None:
+    # Without ``Final`` mypy widens the constant to ``str``, so
+    # ``extra[EXTRA_FOO]`` falls through to the ``str → object`` overload.
+    # _CONST_KEYS must also list every constant or its writes go unseen.
+    tree = ast.parse((REPO_SRC / "types.py").read_text(encoding="utf-8"))
+    declared: dict[str, bool] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            ann = stmt.annotation
+            is_final = (isinstance(ann, ast.Name) and ann.id == "Final") or (
+                isinstance(ann, ast.Attribute) and ann.attr == "Final"
+            )
+            declared[stmt.target.id] = is_final
+        elif isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    declared[target.id] = False
+    constants = {
+        name: final for name, final in declared.items() if name.startswith("EXTRA_")
+    }
+    not_final = sorted(name for name, final in constants.items() if not final)
+    assert not not_final, f"EXTRA_* constants not annotated Final: {not_final}"
+    assert set(constants) == set(_CONST_KEYS), (
+        f"_CONST_KEYS out of step with types.py: {sorted(set(constants) ^ set(_CONST_KEYS))}"
+    )
+    declared_keys = _literal_keys(MemberExtra) | _literal_keys(ArchiveInfoExtra)
+    unknown = sorted(set(_CONST_KEYS.values()) - declared_keys)
+    assert not unknown, f"EXTRA_* constants with no overload: {unknown}"
+
+
 def test_docstring_keys_match_overloads() -> None:
     _assert_doc_matches_overloads(MemberExtra)
     _assert_doc_matches_overloads(ArchiveInfoExtra)
