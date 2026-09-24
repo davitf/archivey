@@ -259,13 +259,13 @@ def test_kdf_cache_carries_header_keys_between_parses(
 
     rounds = _count_rar5_derivations(monkeypatch)
     rar3_calls: list[bytes] = []
-    real_rar3 = rar_parser._rar3_s2k
+    real_rar3 = rar_parser._rar3_key_iv
 
-    def counting_rar3(password: str | bytes, salt: bytes) -> tuple[bytes, bytes]:
+    def counting_rar3(wstr: bytes, salt: bytes) -> tuple[bytes, bytes]:
         rar3_calls.append(salt)
-        return real_rar3(password, salt)
+        return real_rar3(wstr, salt)
 
-    monkeypatch.setattr(rar_parser, "_rar3_s2k", counting_rar3)
+    monkeypatch.setattr(rar_parser, "_rar3_key_iv", counting_rar3)
     cache = RarKdfCache()
     path = _fixture(name)
     with path.open("rb") as handle:

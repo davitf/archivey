@@ -35,6 +35,7 @@ Marko Kreen, used under the ISC License (see the notice at the bottom of this fi
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import hmac
 import io
@@ -1034,7 +1035,11 @@ def _rar3_s2k(password: str | bytes, salt: bytes) -> tuple[bytes, bytes]:
     Uses :class:`_Rar3Sha1` so a long ``password + salt`` seed is mutated between
     rounds the way WinRAR's SHA-1 mutates its block buffer.
     """
-    wstr = _normalize_password_utf16le(password)
+    return _rar3_key_iv(_normalize_password_utf16le(password), salt)
+
+
+def _rar3_key_iv(wstr: bytes, salt: bytes) -> tuple[bytes, bytes]:
+    """:func:`_rar3_s2k` for a password already in UTF-16LE."""
     seed = bytearray(wstr + salt)
     h = _Rar3Sha1()
     iv = bytearray()
@@ -1050,22 +1055,18 @@ def _rar3_s2k(password: str | bytes, salt: bytes) -> tuple[bytes, bytes]:
     return key_le, bytes(iv)
 
 
-def _rar5_s2k(
-    password: str | bytes,
-    salt: bytes,
-    iterations: int,
-    *,
-    kdf_cache: RarKdfCache | None = None,
-) -> bytes:
+def _rar5_s2k(password: str | bytes, salt: bytes, iterations: int) -> bytes:
     """PBKDF2-HMAC-SHA256 for RAR5 (returns 32-byte AES-256 key material)."""
-    if kdf_cache is not None:
-        return kdf_cache.rar5(password, salt, iterations)
-    ustr = _normalize_password_utf8(password)
+    return _rar5_pbkdf2(_normalize_password_utf8(password), salt, iterations)
+
+
+def _rar5_pbkdf2(ustr: bytes, salt: bytes, iterations: int) -> bytes:
+    """:func:`_rar5_s2k` for a password already normalized to UTF-8."""
     return pbkdf2_hmac("sha256", ustr, salt, iterations, dklen=32)
 
 
 class RarKdfCache:
-    """Derived RAR key material, so each distinct derivation runs once.
+    """RAR key derivations, each behind a per-instance ``functools.cache``.
 
     RAR5's cost is the archive's choice: ``2**kdf_count`` PBKDF2 rounds, accepted up
     to ``2**24`` (about 3-4 s each). RAR3's is a fixed 2**18-round SHA-1 loop that
@@ -1073,51 +1074,43 @@ class RarKdfCache:
     header-encrypted set repeats the same derivation; without a cache each volume
     paid it again.
 
-    Keyed by the normalized password, the salt and (RAR5) the round count, so a
-    wrong candidate never answers for a right one and the three RAR5 outputs
-    (AES key, HashKey, PswCheck at ``+0``/``+16``/``+32`` rounds) stay distinct.
-    ``RarReader`` holds one for its lifetime and passes it to every parse and
-    member-side derivation; :func:`parse_rar_archive` and :func:`parse_rar_volumes`
-    make a fresh one per call when none is passed.
+    The caches are built in ``__init__``, not with ``@functools.cache`` on a method:
+    that one cache would live on the class, keyed on ``self``, and keep every reader,
+    password and key alive until the process exits. ``RarReader`` holds one instance
+    for its lifetime and passes it to every parse and member-side derivation, so the
+    keys go when the reader does. :func:`parse_rar_archive` and
+    :func:`parse_rar_volumes` run without a reader, which is why the cache is an
+    object passed in; they make a fresh one per call when none is.
 
-    The dict has no size bound, and needs none: an entry is added only on a miss,
+    The methods only normalize the password before the cache lookup: the reader
+    passes ``bytes`` on the header walk and ``str`` on member reads, and both must
+    hit one entry. Keyed by the normalized password, the salt and (RAR5) the round
+    count, so a wrong candidate never answers for a right one and the three RAR5
+    outputs (AES key, HashKey, PswCheck at ``+0``/``+16``/``+32`` rounds) stay
+    distinct.
+
+    The caches have no size bound, and need none: an entry is added only on a miss,
     and a miss runs the derivation the caller was about to run anyway, at the
     archive's declared cost. Entries cannot grow faster than the CPU work that
-    produces them, so an archive that varies its salts gains no amplification
-    over the per-derivation cost it already had.
-
-    Entries are key material and passwords, so ``repr`` shows only a count. There
-    is no lock: two threads racing on one entry both derive it and store equal
-    bytes, which costs time but never a wrong key.
+    produces them, so an archive that varies its salts gains no amplification over
+    the per-derivation cost it already had. Two threads racing on one entry may both
+    derive it, which costs time but never a wrong key. Neither this class nor the
+    cache wrappers has a ``repr`` that shows passwords or keys.
     """
 
     __slots__ = ("_rar3", "_rar5")
 
     def __init__(self) -> None:
-        self._rar5: dict[tuple[bytes, bytes, int], bytes] = {}
-        self._rar3: dict[tuple[bytes, bytes], tuple[bytes, bytes]] = {}
-
-    def __repr__(self) -> str:
-        return f"<RarKdfCache: {len(self._rar5) + len(self._rar3)} entries>"
+        self._rar5 = functools.cache(_rar5_pbkdf2)
+        self._rar3 = functools.cache(_rar3_key_iv)
 
     def rar5(self, password: str | bytes, salt: bytes, iterations: int) -> bytes:
-        """PBKDF2-HMAC-SHA256 of the normalized ``password``, as :func:`_rar5_s2k`."""
-        normalized = _normalize_password_utf8(password)
-        key = (normalized, salt, iterations)
-        derived = self._rar5.get(key)
-        if derived is None:
-            derived = pbkdf2_hmac("sha256", normalized, salt, iterations, dklen=32)
-            self._rar5[key] = derived
-        return derived
+        """:func:`_rar5_s2k`, derived once per distinct input."""
+        return self._rar5(_normalize_password_utf8(password), salt, iterations)
 
     def rar3(self, password: str | bytes, salt: bytes) -> tuple[bytes, bytes]:
-        """RAR3 AES key and IV for ``password``, as :func:`_rar3_s2k`."""
-        key = (_normalize_password_utf16le(password), salt)
-        derived = self._rar3.get(key)
-        if derived is None:
-            derived = _rar3_s2k(password, salt)
-            self._rar3[key] = derived
-        return derived
+        """:func:`_rar3_s2k`, derived once per distinct input."""
+        return self._rar3(_normalize_password_utf16le(password), salt)
 
 
 def rar5_hash_key(
@@ -1134,7 +1127,8 @@ def rar5_hash_key(
     """
     if kdf_count_shift > _RAR_MAX_KDF_SHIFT:
         raise CorruptionError(f"RAR5 kdf_count too large: {kdf_count_shift}")
-    return _rar5_s2k(password, salt, (1 << kdf_count_shift) + 16, kdf_cache=kdf_cache)
+    derive = kdf_cache.rar5 if kdf_cache is not None else _rar5_s2k
+    return derive(password, salt, (1 << kdf_count_shift) + 16)
 
 
 def convert_crc_to_mac(crc: int, hash_key: bytes) -> int:
@@ -2337,7 +2331,7 @@ def _rar5_decrypt_header(
 ) -> _HeaderDecryptStream:
     if hdr_enc.kdf_count > _RAR_MAX_KDF_SHIFT:
         raise CorruptionError(f"RAR5 kdf_count too large: {hdr_enc.kdf_count}")
-    key = _rar5_s2k(password, hdr_enc.salt, 1 << hdr_enc.kdf_count, kdf_cache=kdf_cache)
+    key = kdf_cache.rar5(password, hdr_enc.salt, 1 << hdr_enc.kdf_count)
     iv = _require_exact(source, 16, "RAR5 header IV")
     return _HeaderDecryptStream(source, key, iv)
 
@@ -2367,7 +2361,8 @@ def _check_rar5_password(
     if not hmac.compare_digest(hashlib.sha256(hdr_check).digest()[:4], hdr_sum):
         return False
     kdf_count = (1 << kdf_count_shift) + 32
-    pwd_hash = _rar5_s2k(password, salt, kdf_count, kdf_cache=kdf_cache)
+    derive = kdf_cache.rar5 if kdf_cache is not None else _rar5_s2k
+    pwd_hash = derive(password, salt, kdf_count)
     pwd_check = bytearray(8)
     for i, v in enumerate(pwd_hash):
         pwd_check[i & 7] ^= v
