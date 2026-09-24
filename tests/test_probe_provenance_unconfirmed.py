@@ -362,9 +362,24 @@ def test_argument_provenance_records_the_resolved_volume() -> None:
 
 
 def test_argument_provenance_of_a_stream_has_no_source() -> None:
+    """A regression guard, not a red-green repro: ``main`` already passed this.
+
+    It fails if the provenance falls back to the caller's argument for a source that
+    has no single path, which would make the empty-listing check reach into a stream.
+    """
     blob = (_RAR_FIXTURES / "stored_m0.rar").read_bytes()
     with open_archive(io.BytesIO(blob), format=ArchiveFormat.RAR) as archive:
         provenance = archive._format_provenance  # type: ignore[attr-defined]
         assert provenance is not None
         assert provenance.chosen_by == "argument"
         assert provenance.source is None
+
+
+def test_empty_directory_with_format_directory_is_not_unconfirmed(
+    tmp_path: Path,
+) -> None:
+    """``format=DIRECTORY`` on a directory is confirmed by the filesystem, not asserted."""
+    with open_archive(tmp_path, format=ArchiveFormat.DIRECTORY) as archive:
+        assert archive.members() == []
+        codes = [d.code for d in archive.diagnostics.retained]
+    assert codes == [DiagnosticCode.EMPTY_ARCHIVE]

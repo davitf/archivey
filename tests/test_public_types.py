@@ -134,3 +134,8 @@ def test_archive_format_unknown_spelling_raises_at_construction() -> None:
         ArchiveFormat("nope", StreamFormat.GZIP)  # type: ignore[arg-type]
     with pytest.raises(ArchiveyUsageError, match="StreamFormat"):
         ArchiveFormat(ContainerFormat.RAW_STREAM, "nope")  # type: ignore[arg-type]
+
+
+def test_archive_format_refuses_a_foreign_enum_as_container() -> None:
+    with pytest.raises(ArchiveyUsageError, match="ContainerFormat"):
+        ArchiveFormat(StreamFormat.GZIP, StreamFormat.GZIP)  # type: ignore[arg-type]

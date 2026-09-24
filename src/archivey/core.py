@@ -127,11 +127,15 @@ def _format_provenance(
     source_path: Path | None,
     requested_format: ArchiveFormat | None,
     detected: FormatInfo | None,
+    *,
+    is_directory: bool = False,
 ) -> FormatProvenance:
     """Record where the resolved format came from, for the empty-listing check.
 
     ``detected is None`` means detection never ran: either the caller asserted a format,
     or the source is a directory path (which resolves to ``DIRECTORY`` before detection).
+    A directory path is ``"directory"`` even with ``format=DIRECTORY`` passed: the
+    filesystem decided it, and any other ``format=`` is refused before this point.
     The re-detection source is kept only for the asserted case, and only when the
     opened source is one file (``source_path``) — reopening a file cannot disturb the
     reader, while seeking a live stream back to its origin can. It is the source as
@@ -146,7 +150,7 @@ def _format_provenance(
             detected.detected_by == "content_probe" and not detected.corroborated
         )
         return FormatProvenance(chosen_by=chosen_by, probe_only=probe_only)
-    if requested_format is None:
+    if requested_format is None or is_directory:
         return FormatProvenance(chosen_by="directory")
     return FormatProvenance(chosen_by="argument", source=source_path)
 
@@ -599,7 +603,10 @@ def _open_resolved(
     # That is known here and the listing is not, so carry it to the reader rather than
     # adding a parameter to every backend's open_read for a fact none of them reads.
     reader._format_provenance = _format_provenance(
-        archive_source.path, format, detected
+        archive_source.path,
+        format,
+        detected,
+        is_directory=archive_source.is_directory,
     )
     return reader
 

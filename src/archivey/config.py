@@ -191,8 +191,10 @@ class ExtractionLimits:
     """Largest decompressed-to-compressed ratio allowed. ``1000.0``.
 
     Checked per member (a member over it fails on its own, and ``on_error="continue"``
-    moves on) and across the archive (which stops the extraction). Neither check starts
-    before :attr:`ratio_activation_threshold` bytes of output.
+    moves on) and across the archive (which stops the extraction). The per-member check
+    needs the member's compressed size; where the format or access mode does not give
+    one, only the archive-wide check applies. Neither check starts before
+    :attr:`ratio_activation_threshold` bytes of output.
     """
 
     ratio_activation_threshold: int = 5 * 2**20
@@ -253,8 +255,8 @@ class ListingLimits:
     max_metadata_bytes: int | None = 64 * 2**20
     """Most bytes of text a listing may retain across its members. 64 MiB.
 
-    Counts names (and raw names), comments, link targets, owner and group names and the
-    string or bytes values in ``extra``. Non-ASCII text counts four bytes per character,
+    Counts member names (and raw names), comments, link targets, owner and group names
+    and the string or bytes values in ``extra``, plus the archive comment. Non-ASCII text counts four bytes per character,
     so it is an upper bound rather than an exact size.
     """
 
@@ -327,6 +329,9 @@ class DecoderLimits:
     surface as ``MemoryError`` — pyppmd 1.3.1 dies on ``double free or
     corruption`` and takes the interpreter with it, so no ``try``/``except``
     around the decode can contain it.
+
+    (The ``Attributes:`` block below is the older form; new fields in this module get
+    an attribute docstring after the assignment, as :class:`ArchiveyConfig` has.)
 
     Attributes:
         max_decoder_memory: Largest archive-declared working set a single
@@ -580,9 +585,10 @@ class ArchiveyConfig:
             allow_none=False,
         )
         # These two are coerced at a public boundary with no ``Literal`` alias beside
-        # them (as are ``ArchiveFormat``'s two fields), and that is deliberate: the annotation is read by every
-        # consumer of the attribute, not only by the constructor's callers, and after
-        # construction the field always holds a member. ``tests/test_enum_arguments.py``
+        # them (as are ``ArchiveFormat``'s two fields), and that is deliberate: the
+        # annotation is read by every consumer of the attribute, not only by the
+        # constructor's callers, and after construction the field always holds a
+        # member. ``tests/test_enum_arguments.py``
         # records the exemption so the gap is not "fixed" back into a union.
         for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
             object.__setattr__(

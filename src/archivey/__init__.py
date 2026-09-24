@@ -317,4 +317,4 @@ def __getattr__(name: str) -> object:
             value = "0.0.0+unknown"
         globals()["__version__"] = value
         return value
-    raise AttributeError(f"module 'archivey' has no attribute '{name}'")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

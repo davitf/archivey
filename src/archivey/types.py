@@ -111,11 +111,12 @@ class ArchiveFormat:
         # Converted, not only checked: both enums mix in ``str``, so a string pair
         # compares and hashes equal to the named format, while the code that decides
         # behaviour tests ``container is ContainerFormat.RAW_STREAM`` and would take
-        # the other branch for it. Holding members makes the two agree. An enum
-        # member is left as it is, including one of another class: the codec
-        # registry is keyed on these pairs, and a codec registered from outside
-        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum.
-        if not isinstance(self.container, Enum):
+        # the other branch for it. Holding members makes the two agree. A member
+        # of another enum is refused as a container, but left as it is as a
+        # stream: the codec registry is keyed on these pairs, and a codec
+        # registered from outside (``tests/test_codec_descriptor.py`` does) brings
+        # its own stream enum.
+        if not isinstance(self.container, ContainerFormat):
             object.__setattr__(
                 self,
                 "container",

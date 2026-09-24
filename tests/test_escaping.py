@@ -153,7 +153,15 @@ def test_diagnostic_message_is_escaped_and_context_is_raw() -> None:
 
 _SRC = pathlib.Path(__file__).resolve().parent.parent / "src" / "archivey"
 _ESCAPING_CALL = re.compile(r"Error$|^emit$|Issue$")
-_FOREIGN = {"FileNotFoundError", "KeyError", "TypeError", "ValueError", "OSError"}
+# Builtins escape nothing, so ``!r`` is the safe form in their messages.
+_FOREIGN = {
+    "FileNotFoundError",
+    "KeyError",
+    "TypeError",
+    "ValueError",
+    "OSError",
+    "AttributeError",
+}
 _ARCHIVE_WORDS = {
     "name",
     "filename",
