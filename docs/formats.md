@@ -183,6 +183,13 @@ behaviour. The complete list is on the two classes.
   in order when you can. With `seekable_members=True`, a backward `seek()` on a compressed
   member is the same cost: a new `unrar` run from the start. `CostReceipt.access_cost` is
   `SOLID` to say so.
+- **A member read waits as long as `unrar` does.** `read()` on a RAR member stream has
+  no time bound: archivey does not stop an `unrar` process that stalls. A solid archive
+  can produce no bytes for a long time while `unrar` decodes the members ahead of the
+  one you asked for, so no idle timeout would be safe.
+- **Encrypted old-style comments are not decoded.** A RAR 1.5 / 2.x comment block with
+  its password or salt flag set gives `comment` as `None`. No available tool writes such
+  a comment, so there is nothing to test a decode path against.
 - Read-only — no RAR writer.
 
 ## ISO 9660
