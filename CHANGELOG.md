@@ -119,11 +119,13 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `MemberStreams.CONCURRENT`, a thread that needed the provider while another thread's call
   was running got the `ArchiveyUsageError` meant for a provider that calls back into the
   reader. It now waits for that call to finish; the reentry error stays for its real case.
-- **A password provider is asked again after repeating a password already tried.** It
-  used to stop on the first repeat, so a provider that offered the password that had
-  opened an earlier member, and had the right one next, never got to give it; the member
-  failed with a wrong-password error. A repeat is still never tried twice, and a provider
-  that repeats itself 16 times in a row is taken to have no more answers.
+- **A password provider is asked again after answering with a password already tried.**
+  It used to stop on the first such answer, so a provider that offered the password that
+  had opened an earlier member, and had the right one next, never got to give it; the
+  member failed with a wrong-password error. A password that already failed for a member
+  is still not tried on it again, and a provider that gives the same answer twice for one
+  member is taken to have no more. This covers 7z, RAR and ZIP, except a ZipCrypto ZIP
+  member that is stored uncompressed, which still stops on the first repeat.
 - **Windows timestamps land on the right microsecond.** `modified`, `accessed` and
   `created` read from a ZIP NTFS field, a 7z, or a RAR5 FILETIME were converted through a
   float, which put more than half of present-day values one or two microseconds off.

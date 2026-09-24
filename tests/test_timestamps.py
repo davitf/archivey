@@ -20,10 +20,11 @@ _EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
         (116444736000000000, datetime(1970, 1, 1, tzinfo=timezone.utc)),
         (116444736000000009, datetime(1970, 1, 1, 0, 0, 0, 0, timezone.utc)),
         (116444736000000010, datetime(1970, 1, 1, 0, 0, 0, 1, timezone.utc)),
-        # The first tick after the FILETIME epoch, and a pre-1970 value.
+        # The first tick after the FILETIME epoch, and a pre-1970 value (checked with
+        # divmod and time.gmtime, not with this module's expression).
         (1, _EPOCH),
         (10, _EPOCH + timedelta(microseconds=1)),
-        (1 << 56, _EPOCH + timedelta(microseconds=(1 << 56) // 10)),
+        (1 << 56, datetime(1829, 5, 5, 23, 50, 3, 792793, timezone.utc)),
     ],
 )
 def test_filetime_converts_exactly(ticks: int, expected: datetime) -> None:
@@ -31,7 +32,8 @@ def test_filetime_converts_exactly(ticks: int, expected: datetime) -> None:
 
 
 def test_filetime_microsecond_matches_integer_truncation_across_a_year() -> None:
-    # A sweep of modern values: every one must land on value // 10 microseconds.
+    # A differential sweep of modern values against the float path this replaced: every
+    # one must land on value // 10 microseconds. The literal rows above pin the values.
     start = 133_800_000_000_000_000
     for ticks in range(start, start + 315_360_000_000_000, 9_876_543_210_987):
         dt, issue = filetime_to_datetime(ticks, "f", field="modified")

@@ -37,6 +37,14 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#430 K4 — the ZIP reader's own provider loop still stops on the first repeat.**
+  `_open_stored_confirmed` in `internal/backends/zip_reader.py` (phase 3, STORED
+  ZipCrypto) asks the provider through `ask_provider` and `break`s when an answer is in
+  its `tried` set, which is the S25-K6 defect #430 fixed in
+  `_PasswordCandidates.attempt`. Move it onto `_PasswordCandidates.iter_provider_answers`
+  (skip an answer already tried, stop when the provider repeats its own answer) and add
+  the two-unit test from `tests/test_password.py` against a STORED ZipCrypto archive.
+  Parked because open PRs were editing `zip_reader.py` when #430 was written.
 - **#389 K7 — `p7zip 16.02` is a mislabelled writer version in two active changes.**
   `scripts/setup-dev-env.sh` installs `p7zip-full`, which on a current Debian or Ubuntu
   base is `16.02+transitional.1` and ships no binary of its own: the `7z` it pulls in is

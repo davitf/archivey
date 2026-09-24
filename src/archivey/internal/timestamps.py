@@ -3,10 +3,10 @@
 The NTFS FILETIME conversion (100 ns ticks since 1601-01-01 UTC → ``datetime``) is used by
 every backend that reads Windows-origin timestamps — ZIP's NTFS extra field, the native
 7z reader, and RAR5 FILETIME extras — so it lives here rather than being copy-pasted per
-backend. The out-of-range guard is the load-bearing part: ``datetime.fromtimestamp``
-raises ``ValueError``/``OverflowError`` on POSIX but ``OSError`` on Windows for
-negative/huge inputs, and a hostile FILETIME must degrade to ``None`` + a reported
-issue, never sink the whole listing.
+backend. The conversion is integer ``datetime`` + ``timedelta`` arithmetic, which is exact
+to the microsecond and raises ``OverflowError`` on every platform for a value outside
+``datetime``'s range. That guard is the load-bearing part: a hostile FILETIME must
+degrade to ``None`` + a reported issue, never sink the whole listing.
 """
 
 from __future__ import annotations
@@ -49,8 +49,9 @@ def filetime_to_datetime(
         # float leaves ~2 us of precision, so the microsecond would often be wrong.
         # Sub-microsecond ticks are truncated, as the stored value is.
         return _FILETIME_EPOCH + timedelta(microseconds=value // 10), None
-    except (ValueError, OverflowError, OSError):
-        # timedelta/datetime arithmetic raises OverflowError outside datetime's range.
+    except OverflowError:
+        # Raised by timedelta() for a huge tick count, or by the addition for a result
+        # outside datetime's range (negative values included).
         return None, TimestampIssue(
             field=field,
             source=source,

@@ -11,10 +11,7 @@ import pytest
 from archivey import PasswordRequest, open_archive
 from archivey.exceptions import EncryptionError
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
-from archivey.internal.password import (
-    _MAX_CONSECUTIVE_PROVIDER_REPEATS,
-    _PasswordCandidates,
-)
+from archivey.internal.password import _PasswordCandidates
 from archivey.measurement import enable_measurement
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
@@ -131,9 +128,8 @@ def test_password_candidates_provider_repeat_terminates() -> None:
     candidates = _PasswordCandidates.from_input(provider)
     with pytest.raises(EncryptionError):
         candidates.attempt(None, decrypt)
-    # The password is tried once; each repeat after it costs a provider call and no
-    # decrypt, and the run of repeats is bounded.
-    assert calls == 1 + _MAX_CONSECUTIVE_PROVIDER_REPEATS
+    # The password is tried once; the provider's second, identical answer ends the loop.
+    assert calls == 2
     assert decrypt_calls == 1
 
 
@@ -164,14 +160,37 @@ def test_password_candidates_provider_repeat_does_not_end_the_provider() -> None
     assert asks == [1, 2]
 
 
-def test_password_candidates_provider_repeat_count_resets_on_a_new_answer() -> None:
-    # The bound is on consecutive repeats: a new answer between runs of repeats keeps
-    # the provider going, so a long run of cached answers cannot hide a later one.
-    run = _MAX_CONSECUTIVE_PROVIDER_REPEATS - 1
-    script = [b"a"] + [b"a"] * run + [b"b"] + [b"b"] * run + [b"right"]
+def test_password_candidates_provider_keyring_longer_than_known_good() -> None:
+    # Each opened unit adds one known-good password, which the next unit tries before
+    # the provider and the provider then repeats. However many there are, a provider
+    # walking its keyring by attempt must still reach the right one.
+    keyring = [f"pw{i}".encode() for i in range(1, 41)]
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        return keyring[request.attempt - 1] if request.attempt <= len(keyring) else None
+
+    def decrypt_for(right: bytes) -> Callable[[bytes], bytes]:
+        def decrypt(password: bytes) -> bytes:
+            if password != right:
+                raise EncryptionError("Wrong password")
+            return password
+
+        return decrypt
+
+    candidates = _PasswordCandidates(provider=provider)
+    for right in keyring:
+        assert candidates.attempt(None, decrypt_for(right)) == right
+
+
+def test_password_candidates_provider_repeating_its_own_answer_stops() -> None:
+    # The loop ends when the provider gives an answer it already gave for this unit,
+    # even with new answers in between: it is cycling, and "right" is never asked for.
+    script = [b"a", b"b", b"a", b"right"]
+    asks: list[int] = []
     tried: list[bytes] = []
 
     def provider(request: PasswordRequest) -> bytes | None:
+        asks.append(request.attempt)
         return script[request.attempt - 1] if request.attempt <= len(script) else None
 
     def decrypt(password: bytes) -> bytes:
@@ -181,8 +200,10 @@ def test_password_candidates_provider_repeat_count_resets_on_a_new_answer() -> N
         return b"data"
 
     candidates = _PasswordCandidates(provider=provider)
-    assert candidates.attempt(None, decrypt) == b"data"
-    assert tried == [b"a", b"b", b"right"]
+    with pytest.raises(EncryptionError):
+        candidates.attempt(None, decrypt)
+    assert asks == [1, 2, 3]
+    assert tried == [b"a", b"b"]
 
 
 def test_password_candidates_provider_repeat_of_candidate_terminates() -> None:

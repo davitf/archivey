@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Container, Iterator
 from collections.abc import Sequence as ABCSequence
-from collections.abc import Set as AbstractSet
 from contextvars import ContextVar
 from typing import TypeVar, cast
 
@@ -15,11 +14,6 @@ from archivey.internal.arg_checks import describe_value
 from archivey.types import ArchiveMember
 
 _T = TypeVar("_T")
-
-# How many already-tried answers in a row the provider may give before the loop stops.
-# A repeat costs one provider call and no decrypt, so the bound only has to end a
-# provider stuck on one answer, not to save work; it resets on every new answer.
-_MAX_CONSECUTIVE_PROVIDER_REPEATS = 16
 
 # The provider call running in this context, if any. The reentry check reads it as
 # well as the thread: a provider that hands reader work to a helper thread which
@@ -150,32 +144,33 @@ class _PasswordCandidates:
         return self._call_provider(member, attempt)
 
     def iter_provider_answers(
-        self, member: ArchiveMember | None, tried: AbstractSet[bytes]
+        self, member: ArchiveMember | None, tried: Container[bytes]
     ) -> Iterator[bytes]:
-        """Yield the provider's answers not already in ``tried``, until it returns ``None``.
+        """Yield the provider's answers for one unit that are not in ``tried``.
 
-        A repeated answer is never tried again (that would re-run an expensive decrypt
-        or key derivation on an input already known to fail), but it does not end the
-        loop either: the provider is asked again with the next ``attempt``, because a
-        provider that leads with a password it already knows, often the one promoted to
-        known-good by an earlier unit, may have the right one next. The loop stops after
-        :data:`_MAX_CONSECUTIVE_PROVIDER_REPEATS` repeats in a row, which ends a
-        provider that returns the same answer forever. The caller adds each yielded
-        password to ``tried``.
+        Every password in ``tried`` has already failed for this unit, so an answer found
+        there is skipped rather than decrypted again (that would re-run an expensive
+        decrypt or key derivation), and the provider is asked again with the next
+        ``attempt``. Skipping must not end the loop: a provider that leads with a
+        password it already knows, often the one an earlier unit promoted to known-good,
+        may have the right one next.
+
+        The loop ends when the provider returns ``None``, or when it gives an answer it
+        already gave for this unit. The second is the exact "no progress" signal: a
+        provider stuck on one answer stops on its second call, while a provider walking
+        a list of any length is never cut off. Termination depends only on the
+        provider's answers, not on the caller updating ``tried``.
         """
+        answered: set[bytes] = set()
         attempt = 1
-        repeats = 0
         while self._provider is not None:
             password = self._call_provider(member, attempt)
             attempt += 1
-            if password is None:
+            if password is None or password in answered:
                 return
+            answered.add(password)
             if password in tried:
-                repeats += 1
-                if repeats >= _MAX_CONSECUTIVE_PROVIDER_REPEATS:
-                    return
                 continue
-            repeats = 0
             yield password
 
     def _call_provider(

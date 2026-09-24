@@ -716,14 +716,17 @@ Lease/token/teardown once-guards and dual-failure `ExceptionGroup` rules:
 @dataclass(frozen=True)
 class PasswordRequest:
     member: ArchiveMember | None  # None for archive-level (header) decryption
-    attempt: int                  # 1 on first ask for this unit; increments on failure
+    attempt: int                  # 1 on first ask for this unit; increments on each later ask
 ```
 
 Per encrypted unit (member / 7z folder / archive header), try in order: per-archive
 **known-good** list (successes this open, most recent first), then remaining sequence
 candidates, then provider repeatedly until `None`. Successful passwords SHALL join
 known-good for the rest of the operation so a provider is consulted once per *new*
-password rather than once per member. Exhaustion (or provider `None`) →
+password rather than once per member. A provider answer that already failed for the
+unit SHALL NOT be decrypted again; the provider SHALL be asked again, with the next
+`attempt`. A provider that gives an answer it already gave for the unit SHALL be
+treated as having no more answers, the same as `None`. Exhaustion (or provider `None`) →
 `EncryptionError`. No per-call password on `open()`/`read()`.
 
 **Concurrent use (observable):** After materialization, workers MAY open
@@ -741,6 +744,8 @@ helper thread gets, is in `reader-concurrency`.
 | `password=[pw_a, pw_b]`, members use different passwords, one streaming pass | Each unit matches; pass completes without RA |
 | Provider + unknown password needed | Called with that member's `PasswordRequest`; success → known-good; later same-pw members skip provider |
 | Provider password fails, consulted again | New request has incremented `attempt` |
+| Provider answers with a password that already failed for this unit (known-good from an earlier unit, or a listed candidate) | Not decrypted again; provider asked again with incremented `attempt` |
+| Provider gives the same answer twice for one unit | Treated as `None`: `EncryptionError` for that unit, no second decrypt |
 | Provider returns `None` | `EncryptionError` for that unit |
 | Header-encrypted archive, provider only | Request with `member is None` |
 | Concurrent opens of different encrypted units (post-materialization) | Each decrypts correctly; promotions shared without races |
