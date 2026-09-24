@@ -1,9 +1,10 @@
 # PR Review Template
 
 The fill-in form for a review in this repo. **The rules are not here** — they are in
-[addendum §0](../reference/archivey-review-addendum.md) (output shape, verdicts, round
-budget, severity × confidence) and §10 (posting, IDs, headers, re-reviews). This file is a
-shape to copy, and is deliberately not a second copy of §0.
+[`SKILL.md`](../SKILL.md): §2 and §5 (finding discipline, severity × confidence), §3 (output
+shape), §4 (verdicts, round budget) and §6 (posting, IDs, headers); re-reviews are
+[`reference/fix-round.md`](../reference/fix-round.md). This file is a shape to copy, and is
+deliberately not a second copy of §3.
 
 Two things about the shape, because they are what people get wrong:
 
@@ -30,7 +31,7 @@ Two things about the shape, because they are what people get wrong:
 ### What this change is
 
 [2–4 sentences: intent, areas touched, behaviour delta — readable without the diff.
-Once per PR, not once per round and not once per reviewer (§0).]
+Once per PR, not once per round and not once per reviewer (`SKILL.md` §3).]
 ```
 
 ### Round 2+ — what happened to the last round
@@ -52,7 +53,7 @@ All re-derived at `[head]` rather than taken from the replies.
 
 The only list of findings in the body. Ranked by severity, then confidence. 🟢 and 💡
 included. Post the inline comments **before** the body, so their URLs exist to link to
-(§0). A finding whose URL you cannot get is listed with its `file:line` alone.
+(`SKILL.md` §3). A finding whose URL you cannot get is listed with its `file:line` alone.
 
 ```markdown
 ### Findings
@@ -72,7 +73,11 @@ under the index, still with its ID.
 
 ~[X] added / [Y] removed, [small|medium|large]. Gates: [green | CI pending | what is red
 and whether it is in scope] — glanced, not re-run.
+
+**Pass 1 (cold).** [What the code alone did not explain, each with its finding ID] | nothing
 ```
+
+The `Pass 1 (cold)` line is for a first look at a code PR only; leave it out of a fix round.
 
 ### Block 3 — maintainer decisions
 
@@ -107,7 +112,7 @@ required or GitHub will not render the markdown.
 <details><summary>Measured this round · what's fine · outward trace</summary>
 
 **Measured this round.** One line per command with its result, so the next round inherits
-it instead of re-deriving it (§10). Ran nothing? `None.`
+it instead of re-deriving it (`SKILL.md` §6). Ran nothing? `None.`
 
 - `[command]` → [result]
 

@@ -92,7 +92,7 @@ _FIELD = re.compile(r"(\w+)=(\S+)")
 
 #: What a round's verdict says about whether another round is wanted.
 #:
-#: The reviewer decides this, per `code-review-skill`'s addendum §0: a plain approval,
+#: The reviewer decides this, per `code-review-skill` §4: a plain approval,
 #: a conditional approval whose open findings have an obvious fix, and a comment all
 #: mean "I do not need to see the result". Only "request changes" asks for another
 #: look. In the two weeks to 2026-09-19 every 🔴 in this repository was raised in
@@ -435,7 +435,7 @@ def finish(event: dict) -> Finish:
         )
     elif v.stop:
         # Not "the review approved it": this covers ✅ Approve, the conditional
-        # approval and 💬 Comment, and §0 is explicit that a comment is not an approval.
+        # approval and 💬 Comment, and SKILL.md §4 is explicit that a comment is not an approval.
         body = (
             f"**Round {rnd}: the review does not need to see the result.**{summary}\n\n"
             "Work through any findings it posted with `address-review-findings`. No "
