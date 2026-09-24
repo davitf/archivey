@@ -539,14 +539,14 @@ def test_xz_boundary_matches_the_other_paths(
 
 
 @pytest.mark.skipif(not xz_cli_available(), reason="xz CLI not on PATH")
-def test_xz_block_chain_after_a_seek_is_capped_too() -> None:
+def test_xz_block_resume_after_a_seek_is_capped_too() -> None:
     """A seek into a multi-block xz resumes through a second decoder; it is capped.
 
     ``xz -0`` declares 256 KiB in every block, so a 64 KiB cap refuses them all,
     overhead allowance included.
     Seeking to the end builds the index from the trailer without decoding anything;
     the read after the seek back is the first decode, and it goes through the
-    block-chain engine rather than the sequential one.
+    block-resume engine rather than the sequential one.
     """
     data = bytes(range(256)) * 4096
     compressed = subprocess.run(
@@ -738,15 +738,15 @@ def test_xz_decoder_carries_the_cap_as_its_memlimit(
         assert cap <= memlimit <= cap + 128 * 1024
 
 
-def test_xz_hand_off_after_a_block_chain_keeps_the_cap(
+def test_xz_hand_off_after_a_block_resume_keeps_the_cap(
     monkeypatch: pytest.MonkeyPatch,
     lzma_decoders_built: list[dict[str, object]],
 ) -> None:
-    """The sequential decoder a finished block chain hands off to is capped too.
+    """The sequential decoder a finished block resume hands off to is capped too.
 
-    Stream B's block scan is made to fail, so a resume in stream A runs a block chain
-    to B's start and then continues sequentially; every decoder on that path, the
-    hand-off's included, must carry the caller's cap as its memlimit.
+    Stream B's block scan is made to fail, so a resume in stream A decodes to the end
+    of A and then continues sequentially; every decoder on that path, the hand-off's
+    included, must carry the caller's cap as its memlimit.
     """
     from archivey.internal.streams import xz
 
@@ -771,7 +771,7 @@ def test_xz_hand_off_after_a_block_chain_keeps_the_cap(
         lzma_decoders_built.clear()
         stream.seek(70_000)
         assert stream.read() == content[70_000:]
-    # The chain's blocks in A, then the hand-off's sequential decoder for B onwards.
+    # The resume through A, then the hand-off's sequential decoder for B onwards.
     assert len(lzma_decoders_built) >= 2
     for kwargs in lzma_decoders_built:
         memlimit = kwargs.get("memlimit")

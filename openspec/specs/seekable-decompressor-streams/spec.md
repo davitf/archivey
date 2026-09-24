@@ -16,7 +16,9 @@ forward-only streams free of seek machinery.
 | `access-mode-and-cost` | Declared capabilities vs access modes |
 | `diagnostics` | Rewind and seek-index diagnostic policy/retention |
 | `error-handling` | Codec exception translation and `DiagnosticRaisedError` |
+
 ## Requirements
+
 ### Requirement: Seek machinery is demand-driven
 
 The system SHALL construct seek support only when seekability is declared:
@@ -274,6 +276,22 @@ policy escalates. The occurrence SHALL be aggregate-only on stream/reader
 operation summaries. Unsafe corruption SHALL remain a typed
 `CorruptionError`/`TruncatedError`, not a recoverable diagnostic.
 
+Every seek point SHALL resume on its own, whatever other points the table holds.
+An XZ block point SHALL carry its stream's check type, where the stream's blocks
+end, and the stream's decompressed and compressed ends; resuming from it SHALL
+decode to where the blocks end, SHALL raise `CorruptionError` when the decoded
+size disagrees with the stream index, and SHALL then continue sequentially past
+the stream.
+
+A stream's seek table SHALL hold at most a fixed number of entries (262 144). Past
+it the table SHALL be thinned, not dropped: points kept at least a spacing apart in
+decompressed bytes, chosen so the table falls to half the cap, with later points
+kept at that spacing. A backward scan SHALL thin as it walks, never holding more
+than the cap (nor a whole stream's blocks), and SHALL keep the last unit so the
+size it reports stays exact. Thinning SHALL emit `SEEK_INDEX_DEGRADED` (failure
+type `SeekTableThinned`). The cap is structural rather than a config field
+because passing it costs seek speed, never a readable file.
+
 #### Scenario: seek-index degradation matrix
 
 | Case | Expected |
@@ -281,6 +299,12 @@ operation summaries. Unsafe corruption SHALL remain a typed
 | Recoverable XZ index scan failure | `SEEK_INDEX_DEGRADED` collected/logged; stream falls back sequentially |
 | Same issue resolves to `RAISE` | `DiagnosticRaisedError`; no fallback |
 | Corruption prevents correct sequential decoding | `CorruptionError` / `TruncatedError`, not diagnostic fallback |
+| XZ index scan fails after a forward read recorded block points | A later seek from those points reads the right bytes to the end |
+| Backward scan finds more units than the cap (lzip members, xz streams or blocks) | Kept units thinned by spacing, last one kept; `SEEK_INDEX_DEGRADED`; seeks read the right bytes |
+| A thinned xz index leaves out streams after block points a forward read recorded | A seek from those points reads every stream after them |
+| A forward read's per-stream xz scan finds more blocks than the cap | That stream's blocks thinned by spacing; `SEEK_INDEX_DEGRADED`; seeks read the right bytes |
+| Forward read records more points than the cap | Table thinned by spacing; `SEEK_INDEX_DEGRADED`; later seeks read the right bytes |
+| XZ blocks after a resume point decode to a size other than the stream index declares | `CorruptionError` |
 
 ### Requirement: Unix-compress uses CLEAR seek points
 
@@ -298,10 +322,14 @@ is not seekable, the decompressor stream SHALL report `seekable() is False` and
 
 Unix-compress has no length or checksum trailer. At source EOF, after all
 decoded bytes have been delivered, the system SHALL best-effort detect
-truncation: if any leftover bits remain after the last complete LZW code and
-those bits are nonzero (finished compressors zero-pad), the next `read()` SHALL
-raise `TruncatedError`. Zero leftover bits (including a cut exactly on a code
-boundary) SHALL end successfully — such truncation remains undetectable.
+truncation, and the next `read()` SHALL raise `TruncatedError` when any of these
+holds: the source ended inside the 3-byte header (see `compressed-streams` for a
+short source that is not `.Z` at all); the source ended while a CLEAR's
+realignment padding was still owed (compressors write that padding in full); or
+leftover bits remain after the last complete LZW code and those bits are nonzero
+(finished compressors zero-pad). Zero leftover bits outside CLEAR padding
+(including a cut exactly on a code boundary) SHALL end successfully — such
+truncation remains undetectable.
 
 Unknown reserved header flag bits (`0x60` in the third header byte) SHALL raise
 `UnsupportedFeatureError` when the header is parsed.
@@ -314,7 +342,8 @@ Unknown reserved header flag bits (`0x60` in the third header byte) SHALL raise
 | Seekable `.Z`, `seekable=False` | Forward-only; no CLEAR table retained |
 | Non-seekable `.Z` pipe, forward read | Decompresses; `seekable()` false |
 | Truncated `.Z` with nonzero leftover bits | Yields available bytes; next `read()` raises `TruncatedError` |
-| Truncated `.Z` with only zero leftover bits | Yields fewer bytes; no `TruncatedError` (undetectable) |
+| Truncated `.Z` cut inside the padding after a CLEAR | Yields available bytes; next `read()` raises `TruncatedError` |
+| Empty `.Z` source, or one cut inside the header | `TruncatedError`, never a clean empty stream |
+| Truncated `.Z` with only zero leftover bits, outside CLEAR padding | Yields fewer bytes; no `TruncatedError` (undetectable) |
 | Header flag byte has reserved bits `0x60` set | `UnsupportedFeatureError` |
 | Corrupt LZW codes | `CorruptionError` |
-

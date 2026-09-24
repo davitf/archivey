@@ -21,6 +21,11 @@ from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
+from archivey.internal.streams.streamtools.binaryio import (
+    read_blocking,
+    readinto_via_read,
+    try_readinto,
+)
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -48,17 +53,18 @@ class CountingReader(DelegatingStream):
         return self._bytes_read
 
     def read(self, n: int = -1, /) -> bytes:
-        data = self._inner.read(n)
+        data = read_blocking(self._inner, n)
         self._bytes_read += len(data)
         return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        inner_readinto = getattr(self._inner, "readinto", None)
-        if inner_readinto is None:
-            # No inner readinto: DelegatingStream routes through self.read(), which already
-            # counts — so return its result without double-counting here.
-            return super().readinto(b)
-        n = inner_readinto(b)
+        n = try_readinto(self._inner, b)
+        if n is None:
+            # No usable inner readinto (missing, or advertised and refused): fill from
+            # self.read(), which already counts, so nothing is added here. Calling it
+            # directly rather than through super() keeps the inner from being probed a
+            # second time.
+            return readinto_via_read(self, b)
         self._bytes_read += n
         return n
 
@@ -76,15 +82,15 @@ class OutputCountingStream(DelegatingStream):
         self._counter = counter
 
     def read(self, n: int = -1, /) -> bytes:
-        data = self._inner.read(n)
+        data = read_blocking(self._inner, n)
         self._counter.add(len(data))
         return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        inner_readinto = getattr(self._inner, "readinto", None)
-        if inner_readinto is None:
-            return super().readinto(b)
-        n = inner_readinto(b)
+        n = try_readinto(self._inner, b)
+        if n is None:
+            # Same fallback as CountingReader: self.read() already counts.
+            return readinto_via_read(self, b)
         self._counter.add(n)
         return n
 

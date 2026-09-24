@@ -310,7 +310,12 @@ class DigestContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class SeekIndexContext(_JsonSafeContext):
-    """Seek index build failed or was skipped; stream may redecompress on rewind."""
+    """Seek index build failed, was skipped, or was thinned.
+
+    A failed or skipped build means the stream may redecompress on rewind. A thinned
+    table (more entries than the seek-table cap) still works, with points further
+    apart, so a seek may decode further than it would otherwise.
+    """
 
     kind: Literal["seek_index"] = "seek_index"
     archive_name: str | None = None
@@ -318,6 +323,7 @@ class SeekIndexContext(_JsonSafeContext):
     member_id: int | None = None
     codec: str = ""
     scan: str = ""
+    # The failing exception's class name, or "SeekTableThinned" for a thinned table.
     error_type: str = ""
 
 

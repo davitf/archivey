@@ -106,6 +106,22 @@ def try_readinto(stream: object, b: "WriteableBuffer") -> int | None:
     return n
 
 
+def read_blocking(stream: ReadableStream, n: int = -1) -> bytes:
+    """``stream.read(n)``, refusing the ``None`` of a non-blocking stream.
+
+    A ``read()`` returns ``None`` only for a *non-blocking* stream that has no data
+    available right now — never at EOF, where blocking and non-blocking streams alike
+    return ``b""``. archivey's readers pull synchronously and cannot make progress on a
+    non-blocking source, so this raises ``BlockingIOError`` instead of fabricating
+    ``b""``, which would look like EOF and silently truncate the data. The ``readinto``
+    counterpart is :func:`try_readinto`.
+    """
+    data: bytes | None = stream.read(n)
+    if data is None:
+        raise BlockingIOError(_BLOCKING_READ_MESSAGE)
+    return data
+
+
 def readinto_via_read(src: ReadableStream, b: "WriteableBuffer") -> int:
     """Fill ``b`` from ``src.read``, for streams that have no ``readinto``.
 
@@ -640,15 +656,7 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         self._raw = raw
 
     def read(self, size: int = -1, /) -> bytes:
-        data = self._raw.read(size)
-        if data is None:
-            # A read() returns None only for a *non-blocking* stream that has no data
-            # available right now — never at EOF, where blocking and non-blocking streams
-            # alike return b"". archivey's readers pull synchronously and cannot make
-            # progress on a non-blocking source, so surface that explicitly instead of
-            # fabricating b"" (which would look like EOF and silently truncate the data).
-            raise BlockingIOError(_BLOCKING_READ_MESSAGE)
-        return data
+        return read_blocking(self._raw, size)
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
         n = try_readinto(self._raw, b)

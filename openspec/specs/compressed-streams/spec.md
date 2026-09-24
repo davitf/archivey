@@ -17,6 +17,7 @@ byte accounting are implemented once.
 | `error-handling` | Typed exception hierarchy and cause preservation |
 | `diagnostics` | Digest, rewind, and seek-index diagnostic policy/retention |
 | `backend-registry` | Codec availability and install hints for format support |
+
 ## Requirements
 
 ### Requirement: Format parsers use the shared decompressor-stream layer
@@ -183,6 +184,12 @@ error. No raw backend exception SHALL escape. For zstd specifically,
 `compression.zstd.ZstdError` SHALL map to `CorruptionError`, and its truncation
 `EOFError` SHALL map to `TruncatedError`.
 
+A source that ends before its first complete header is end-of-input too. For the
+native xz, lzip and unix-compress decoders, a source that is empty, or holds only a
+prefix of the format's magic bytes, SHALL raise `TruncatedError`; a short source whose
+bytes cannot begin that format SHALL raise `CorruptionError`. Neither SHALL decode as a
+valid empty stream.
+
 #### Scenario: decompression error matrix
 
 | Case | Expected |
@@ -191,6 +198,8 @@ error. No raw backend exception SHALL escape. For zstd specifically,
 | Compressed stream ends mid-data | `TruncatedError` |
 | Zstd stream ends before end-of-frame marker | `TruncatedError`, not a silent short read |
 | Zstd checksum frame is corrupted | `CorruptionError` with backend `ZstdError` as `__cause__` |
+| Empty source, or only a prefix of the magic, to xz / lzip / unix-compress | `TruncatedError` |
+| Source shorter than a header whose bytes are not the format's magic (xz / lzip / unix-compress) | `CorruptionError`, never `b""` |
 
 ### Requirement: Content faults raise from read, never from close
 
