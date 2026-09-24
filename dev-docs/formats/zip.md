@@ -171,7 +171,8 @@ are sized with `stat()` and the joiner keeps a small cache of Path handles
 
 A lone numbered part (`.zip.NNN` / `.exe.NNN` / `.7z.NNN` with no siblings) is
 `TruncatedError` naming the missing parts — the same incomplete-set error as a
-gap, not the ZIP "not supported" message. Info-ZIP `.zNN` stays
+gap, not the ZIP "not supported" message. A part that is not on disk itself is
+`FileNotFoundError`, like any other missing path. Info-ZIP `.zNN` stays
 `UnsupportedFeatureError` with the rejoin-first text. Both run in `open_archive`
 before detection, because middle parts have no magic at offset 0 and detection
 alone would raise `FormatDetectionError`. After stdlib opens the archive:
@@ -543,7 +544,7 @@ behaviour a caller already sees.
 ```bash
 ./scripts/test.sh tests/test_zip.py tests/test_zip_aes.py \
     tests/test_zip_native_codecs.py tests/test_zip_multipassword.py \
-    tests/test_volumes.py
+    tests/test_volumes.py tests/test_volume_missing_part.py
 ```
 
 | Claim | Pinned by |
@@ -551,6 +552,7 @@ behaviour a caller already sees.
 | Cost receipt, central-directory lookup without I/O | `tests/test_zip.py::test_cost_receipt`, `::test_central_directory_lookup_no_io` |
 | Non-seekable refused at open | `::test_non_seekable_zip_fails_fast`, `::test_non_seekable_zip_fails_fast_via_detection` |
 | Spanned set and unjoinable segment refused | `::test_split_segment_name_rejected`, `::test_infozip_spanned_set_still_refused`, `::test_sevenzip_split_segment_without_siblings_rejected`, `::test_eocd_nonzero_disk_fields_rejected`, `::test_volume_shaped_name_honours_explicit_non_zip_format`, `tests/test_volumes.py::test_lone_numbered_volume_names_missing_parts` |
+| A numbered part that is not on disk is `FileNotFoundError`, not an incomplete set | `tests/test_volume_missing_part.py` |
 | Split checks do not fire on single-volume archives | `::test_eocd_zip64_disk_sentinel_still_opens`, `::test_plain_prefixed_and_empty_zip_still_open` |
 | `7z -v` set joined, read across a part boundary, opened from any part | `::test_sevenzip_split_zip_set_is_joined_and_read`, `::test_sevenzip_split_zip_set_opens_from_a_middle_part`, `::test_sevenzip_split_zip_set_with_missing_part_is_truncated` |
 | Numbered-part discovery, ordering and gap rejection, `.zNN` left alone | `tests/test_volumes.py::test_discover_zip_volume_siblings_natural_order`, `::test_discover_orders_parts_when_base_contains_partN`, `::test_discover_infozip_zNN_is_not_a_numbered_volume_set`, `::test_join_volumes_rejects_numbering_gaps` |

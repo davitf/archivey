@@ -71,16 +71,21 @@ def test_finder_matches_a_from_scratch_search(seed: int) -> None:
 
 @pytest.mark.parametrize("seed", range(40))
 def test_finder_sees_bytes_appended_between_calls(seed: int) -> None:
-    """The validated scan's window grows under the finder when a validator peeks."""
+    """The validated scan's window grows under the finder when a validator peeks.
+
+    ``scan_for_magic`` builds each chunk's finder with ``searched`` carried from the
+    previous chunk and then appends to that window, so both are exercised together.
+    """
     rng = random.Random(1000 + seed)
     full = _random_haystack(rng, rng.randrange(20, 400))
     data = bytearray(full[: rng.randrange(0, len(full))])
-    finder = _EarliestFinder(data, _NEEDLES)
+    searched = rng.choice([0, rng.randrange(0, len(data) + 1)])
+    finder = _EarliestFinder(data, _NEEDLES, searched=searched)
     start = 0
     while True:
         if len(data) < len(full) and rng.random() < 0.5:
             data += full[len(data) : len(data) + rng.randrange(1, 32)]
-        expected = _reference_earliest(data, _NEEDLES, start, 0)
+        expected = _reference_earliest(data, _NEEDLES, start, searched)
         assert finder.find(start) == expected
         if expected is None:
             if len(data) == len(full):

@@ -413,8 +413,11 @@ class _EarliestFinder:
         # was computed. A ``-1`` goes stale only when ``data`` grows.
         self._next = [-1] * len(needles)
         self._scanned_len = [-1] * len(needles)
+        self._last_start = 0
 
     def find(self, start: int = 0) -> tuple[int, ScanNeedle] | None:
+        assert start >= self._last_start, "_EarliestFinder.find: start went back"
+        self._last_start = start
         data = self._data
         size = len(data)
         best: tuple[int, ScanNeedle] | None = None
@@ -569,6 +572,8 @@ def scan_for_magic(
         consumed += len(chunk)
         window.extend(chunk)
 
+        # Rebuilt per chunk: the finder's remembered positions are window-relative,
+        # and the trim below shifts them. Validator peeks inside the loop only append.
         finder = _EarliestFinder(window, normalized, searched=searched)
         while True:
             hit = finder.find(search_from)
