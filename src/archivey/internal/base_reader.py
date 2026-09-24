@@ -28,12 +28,6 @@ if TYPE_CHECKING:
     from archivey.internal.registry import ContentProbe
     from archivey.measurement import IoStats
 
-from archivey.cli_helpers import (
-    coerce_enum,
-    coerce_enum_collection,
-    escape_control_chars,
-    quoted,
-)
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.diagnostics import (
@@ -68,6 +62,7 @@ from archivey.internal.diagnostics_collector import (
     EmitLog,
     collector_from_config,
 )
+from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
 from archivey.internal.logs import backends as logger
@@ -107,6 +102,7 @@ from archivey.internal.windows_reparse import (
     reparse_payload_length,
 )
 from archivey.reader import ArchiveReader, MemberSelector
+from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     AbortOn,

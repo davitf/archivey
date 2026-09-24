@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import ClassVar
 
-from archivey.cli_helpers import coerce_enum
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
 from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.arg_checks import (
@@ -17,6 +16,7 @@ from archivey.internal.arg_checks import (
     check_instance,
     describe_value,
 )
+from archivey.internal.enum_args import coerce_enum
 from archivey.types import ArchiveMember
 
 

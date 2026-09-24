@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Mapping
 
-from archivey.cli_helpers import quoted
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
     AccessCost,
@@ -36,6 +35,7 @@ from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     EXTRA_IS_REPARSE_POINT,

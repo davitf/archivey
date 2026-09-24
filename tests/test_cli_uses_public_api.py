@@ -3,7 +3,7 @@
 ``archivey.cli`` is the first consumer of the library and the example other front ends
 copy. If it reaches into ``archivey.internal``, it can depend on something no caller can
 rely on, and an internal refactor can break it without touching any public name. The
-pieces a front end needs beyond the core surface live in :mod:`archivey.cli_helpers`.
+display helpers a front end needs beyond the core surface live in :mod:`archivey.terminal`.
 See CONTRIBUTING.md, "The CLI uses only public API."
 """
 
@@ -42,7 +42,7 @@ def test_cli_imports_nothing_from_internal() -> None:
     offending = [hit for path in files for hit in _internal_imports(path)]
     assert offending == [], (
         "archivey.cli must use only public API; move what it needs to a public module "
-        f"(archivey.cli_helpers for front-end helpers): {offending}"
+        f"(archivey.terminal for display helpers): {offending}"
     )
 
 

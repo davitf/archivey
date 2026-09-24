@@ -31,7 +31,6 @@ from archivey.cli.filters import (
 from archivey.cli.format import escape_member_name, escape_path, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
-from archivey.cli_helpers import coerce_enum, coerce_enum_collection
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
 from archivey.reader import ArchiveReader
@@ -508,6 +507,11 @@ def _exit_for_outcomes(*, blocked: int, failed: int, hoist_ok: bool) -> int:
     return EXIT_OK
 
 
+def _enum_value(cli_spelling: str) -> str:
+    """The enum value behind a ``--policy`` / ``--overwrite`` / ``--abort-on`` choice."""
+    return cli_spelling.replace("-", "_")
+
+
 def run_extract(
     *,
     archive: str,
@@ -531,32 +535,14 @@ def run_extract(
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
     pred = member_predicate(patterns, exclude)
-    # One shared vocabulary with the library: ``cli_helpers`` treats ``-`` and ``_`` as
-    # the same, so the hand-rolled ``.replace("-", "_")`` this used to carry is gone,
-    # and ``main.py`` derives its argparse ``choices=`` from these same enums. Converted
-    # here rather than passed through as strings so the CLI's own helpers below stay
-    # typed. These refusals are unreachable from the command line, where argparse has
-    # already checked the spelling; they are the guard for a direct caller of
-    # ``run_extract``.
-    policy_enum = coerce_enum(
-        policy,
-        ExtractionPolicy,
-        call="archivey extract",
-        param="--policy",
-    )
-    overwrite_enum = coerce_enum(
-        overwrite,
-        OverwritePolicy,
-        call="archivey extract",
-        param="--overwrite",
-    )
+    # argparse has already checked each spelling against ``choices=``, which ``main.py``
+    # derives from the enums' values with ``_`` written as ``-``. Undoing that one
+    # substitution gives the value back, so the lookup below cannot miss on anything
+    # the parser let through.
+    policy_enum = ExtractionPolicy(_enum_value(policy))
+    overwrite_enum = OverwritePolicy(_enum_value(overwrite))
     on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
-    abort_on_enum = coerce_enum_collection(
-        abort_on,
-        AbortOn,
-        call="archivey extract",
-        param="--abort-on",
-    )
+    abort_on_enum = frozenset(AbortOn(_enum_value(item)) for item in abort_on or ())
     archive_path = Path(archive)
 
     with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:

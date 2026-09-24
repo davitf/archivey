@@ -3,8 +3,8 @@
 ### Requirement: The CLI uses only public API
 
 The `archivey.cli` package SHALL import nothing from `archivey.internal`. What it
-needs beyond `archivey.__all__` SHALL come from a public module, and a helper any
-front end would need SHALL live in `archivey.cli_helpers`. The CLI is the example other
+needs beyond `archivey.__all__` SHALL come from a public module, such as
+`archivey.terminal` for terminal-safe display. The CLI is the example other
 front ends copy, and an internal import would let an internal refactor break it
 without touching any public name.
 

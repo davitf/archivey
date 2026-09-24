@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionStatus, open_archive
-from archivey.cli_helpers import display_path
 from archivey.config import (
     REWIND_REDECODE_WARN_BYTES,
     ArchiveyConfig,
@@ -48,6 +47,7 @@ from archivey.internal.backends.rar_parser import (
     load_vint,
     parse_rar_archive,
 )
+from archivey.terminal import display_path
 from archivey.types import (
     EXTRA_RAR_CREATED_IS_CTIME,
     EXTRA_RAR_EXTRACT_VERSION,

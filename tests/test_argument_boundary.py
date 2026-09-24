@@ -175,7 +175,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         ]
 
     # Object shape of budget=, not preset spellings. ``"balanced"`` is a real
-    # DetectionBudgetPreset value, coerced by ``cli_helpers`` and asserted in
+    # DetectionBudgetPreset value, coerced by ``enum_args`` and asserted in
     # ``tests/test_enum_arguments.py``; the values below are none of the three types.
     for bad in (0, object(), "x"):
         rows.append(
@@ -518,7 +518,7 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("open_archive", "format"): "coerced by format_args; test_format_arguments.py",
     ("open_stream", "format"): "coerced by format_args; test_format_arguments.py",
     ("extract", "format"): "coerced by format_args; test_format_arguments.py",
-    # The enum-typed arguments, owned by ``cli_helpers``, which **coerces**
+    # The enum-typed arguments, owned by ``internal/enum_args``, which **coerces**
     # them: a recognised spelling becomes the member, so a refusal here would
     # contradict it. ``tests/test_enum_arguments.py`` asserts what they do; this
     # module must not assert the opposite.
@@ -533,29 +533,29 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     # ``overwrite=0``, ``on_error="halt"``, ``abort_on="blocked"`` and ``abort_on=0``
     # all answer ``ArchiveyUsageError``. Anything that turns out not to be covered
     # belongs in _cases, not here.
-    ("extract", "policy"): "coerced by cli_helpers; test_enum_arguments.py",
-    ("extract", "overwrite"): "coerced by cli_helpers; test_enum_arguments.py",
-    ("extract", "on_error"): "coerced by cli_helpers; test_enum_arguments.py",
+    ("extract", "policy"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract", "overwrite"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract", "on_error"): "coerced by enum_args; test_enum_arguments.py",
     # Collection[AbortOn], not an enum, so the container shape is a second way to get
     # it wrong. ``coerce_enum_collection`` refuses both: a bare string, which would
     # otherwise iterate into characters and silently disable every abort, and a
     # non-iterable, which would otherwise be a raw TypeError.
     ("extract", "abort_on"): (
         "Collection[AbortOn]; container-shape refusal is coerce_enum_collection "
-        "in cli_helpers"
+        "in enum_args"
     ),
-    ("extract_all", "policy"): "coerced by cli_helpers; test_enum_arguments.py",
-    ("extract_all", "overwrite"): "coerced by cli_helpers; test_enum_arguments.py",
-    ("extract_all", "on_error"): "coerced by cli_helpers; test_enum_arguments.py",
+    ("extract_all", "policy"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract_all", "overwrite"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract_all", "on_error"): "coerced by enum_args; test_enum_arguments.py",
     ("extract_all", "abort_on"): (
         "Collection[AbortOn]; container-shape refusal is coerce_enum_collection "
-        "in cli_helpers"
+        "in enum_args"
     ),
-    ("ArchiveyConfig", "use_rapidgzip"): "coerced by cli_helpers, in __post_init__",
+    ("ArchiveyConfig", "use_rapidgzip"): "coerced by enum_args, in __post_init__",
     (
         "ArchiveyConfig",
         "use_indexed_bzip2",
-    ): "coerced by cli_helpers, in __post_init__",
+    ): "coerced by enum_args, in __post_init__",
     # Flags read for their truthiness. There is no wrong type to find: every value
     # means something, and ``streaming="no"`` opening in streaming mode is Python
     # behaving as written, not a leak.

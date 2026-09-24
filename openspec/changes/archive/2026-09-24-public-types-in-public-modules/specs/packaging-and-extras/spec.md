@@ -45,23 +45,24 @@ public extraction types and `extract()` live on the public surface.
 
 ## ADDED Requirements
 
-### Requirement: Front-end helpers live in the public archivey.cli_helpers submodule
+### Requirement: Terminal-safe display helpers live in the public archivey.terminal module
 
-The package SHALL provide a public submodule, `archivey.cli_helpers`, holding the
-helpers a command-line front end needs beyond the core API:
-`escape_control_chars`, `display_path` and `quoted` for terminal-safe display of
-archive-derived text, and `coerce_enum`, `coerce_enum_collection` and
-`normalize_spelling` for the enum-argument spellings the library accepts. Names in its
-`__all__` SHALL carry the same compatibility promise as `archivey.__all__`. The
-submodule SHALL NOT be re-exported from `archivey`, so it does not crowd the root
-namespace or the generated API reference for the package root. It SHALL import no
-other archivey module at import time, since `archivey.exceptions` imports it.
+The package SHALL provide a public module, `archivey.terminal`, holding
+`escape_control_chars`, `display_path` and `quoted`: the helpers for showing
+archive-derived text to a person without letting it control the terminal. Names in its
+`__all__` SHALL carry the same compatibility promise as `archivey.__all__`. The module
+SHALL NOT be re-exported from `archivey`, so it does not crowd the root namespace or the
+generated API reference for the package root. It SHALL import no other archivey module,
+since `archivey.exceptions` imports it.
 
-#### Scenario: cli_helpers surface
+The enum-argument coercion the library's entry points apply
+(`archivey.internal.enum_args`) is not part of this module and not public: a caller
+passes the string spelling to the entry point, which converts it.
+
+#### Scenario: terminal surface
 
 | Case | Expected |
 | --- | --- |
-| `from archivey.cli_helpers import escape_control_chars, coerce_enum` | Works |
-| `hasattr(archivey, "escape_control_chars")` / `"cli_helpers" in archivey.__all__` | `False` / `False` |
-| `coerce_enum("skip", OverwritePolicy, call=..., param=...)` | `OverwritePolicy.SKIP`, the same coercion the library's entry points apply |
-| `coerce_enum("bogus", OverwritePolicy, call=..., param=...)` | `ArchiveyUsageError` naming the accepted spellings |
+| `from archivey.terminal import escape_control_chars, display_path, quoted` | Works |
+| `hasattr(archivey, "escape_control_chars")` / `"terminal" in archivey.__all__` | `False` / `False` |
+| `escape_control_chars("ev\x1b[2Kil")` | `ev\x1b[2Kil` with the escape as four literal characters |

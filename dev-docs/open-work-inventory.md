@@ -64,7 +64,7 @@ internally as one decision item.
 | [`threat-model.md`](threat-model.md) | `O*` register | O15 (tar extended header) and O16 (ISO directory record) were added and closed by #396. O12's memory half is mitigated; the rest closes with `sevenzip-aes-tail-key-check`. The PPMd window #398 capped has **no row yet** — #398 left it out because the file belonged to another open PR |
 | [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
 | **Linear** (`Archivey` team) | seeded 2026-09-17, added to continuously | **The state layer.** Labels: `sweep`, `decision`, `openspec`, `docs`, `review`, `pr-315`, `pr-open`. Not a replacement for any register below |
-| **The #315 sweep** — *the `SWEPT` markers on #315* | First pass complete 2026-09-20; **94 of 97 files on 2026-09-23** | 40 178 of 40 662 lines, **98.8%**. Three files arrived after the pass: `internal/enum_args.py` (#380), `internal/arg_checks.py` (#382) and `internal/windows_reparse.py` (#386). Since then `enum_args.py` has moved into the new `cli_helpers.py`, and `detection.py` is new too ([#448](https://github.com/davitf/archivey/pull/448)); both are unswept. What is open now is draining the threads, not reading. Count it from the markers, not from this row |
+| **The #315 sweep** — *the `SWEPT` markers on #315* | First pass complete 2026-09-20; **94 of 97 files on 2026-09-23** | 40 178 of 40 662 lines, **98.8%**. Three files arrived after the pass: `internal/enum_args.py` (#380), `internal/arg_checks.py` (#382) and `internal/windows_reparse.py` (#386). Since then [#448](https://github.com/davitf/archivey/pull/448) added `terminal.py` (the former `escaping.py`, already swept, under a new name) and `detection.py` (moved classes). What is open now is draining the threads, not reading. Count it from the markers, not from this row |
 | **`dev-docs/formats/`** — *no register* | 3 of ~7 handbook pages written | ZIP, RAR and 7z done. `rar.md` alone produced the 21-item `§10` register |
 | **`docs/`** — *tracked in `review/docs-content/`* | ~174 lines of prose + `how-it-works.md` | Skeleton, scope and verified claim inventory all done; the writing is not |
 
@@ -295,7 +295,7 @@ later the same day.
 | S20-K16 `members="a.txt"` | #382 | `selection.py:21` refuses a bare `str`/`bytes` |
 | S18-K7 short read on a truncated member | — | **Withdrawn by its own author**: today's behaviour is ADR 0014 |
 | 56 `DelegatingStream` flag style | [#365](https://github.com/davitf/archivey/pull/365) | `peel_for_source_size` and `readinto_passthrough` both class-flag-plus-constructor-override, like `_SUBCLASS_CLOSES_INNER` |
-| S19-K8 `overwrite=`/`on_error=` strings | [#380](https://github.com/davitf/archivey/pull/380) | `core.py:727-732` coerces at the boundary; `cli_helpers.py` names this failure in its enum-spellings section |
+| S19-K8 `overwrite=`/`on_error=` strings | [#380](https://github.com/davitf/archivey/pull/380) | `core.py:727-732` coerces at the boundary; `internal/enum_args.py` names this failure in its docstring |
 | S19-K6 `_optional()` re-walks `sys.path` | #380 | `@functools.cache` at `registry.py:132`, with the ~46 µs vs ~0.6 µs measurement in the docstring |
 
 **Three threads that looked closeable were not, and the difference was one grep each.**
@@ -509,9 +509,9 @@ files arrived after the pass finished: `internal/enum_args.py` (183 lines, #380)
 `internal/arg_checks.py` (165, #382) and `internal/windows_reparse.py` (136, #386). The
 previous revision's count was taken before `enum_args.py` merged. A sweep covers a tree at a moment; new code arrives unswept by default and nothing
 flags it except running the count. The three are one small batch (484 lines), tracked
-internally. [#448](https://github.com/davitf/archivey/pull/448) then moved `enum_args.py`
-into the new public `cli_helpers.py` and added `detection.py`, so the unswept files are
-now `cli_helpers.py`, `detection.py`, `arg_checks.py` and `windows_reparse.py`. The move of five modules under `backends/` ([#443](https://github.com/davitf/archivey/pull/443)) orphans
+internally. [#448](https://github.com/davitf/archivey/pull/448) then renamed the swept
+`escaping.py` to `terminal.py` and added `detection.py`, which holds classes moved from
+swept files; a recount will list both as new. The move of five modules under `backends/` ([#443](https://github.com/davitf/archivey/pull/443)) orphans
 their markers, which name the old paths: `internal/rar_detect.py`, `zip_detect.py`,
 `sevenzip_detect.py`, `zip_aes.py` and `zipcrypto.py`. `sweep_coverage.py` reports a marker
 whose path is gone and does not count it, so the figure drops by those five files until a sweep

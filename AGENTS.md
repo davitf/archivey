@@ -309,7 +309,7 @@ new tests and new message-formatting code for all four:
   existing `_ANSI_ONLY` marker.
 - **Path separators in compared strings.** A native `Path` interpolated into a message
   renders `C:\Users\…` on Windows, and backslashes double once the text is escaped for
-  terminal display. Render paths through `cli_helpers.display_path()` before they enter a
+  terminal display. Render paths through `terminal.display_path()` before they enter a
   message, and compare against `as_posix()` rather than `str(path)`.
 - **Filesystem case-insensitivity.** macOS and Windows collapse `A.txt` / `a.txt`, which
   changes name-collision behaviour. If a test depends on two members differing only by

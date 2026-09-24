@@ -36,7 +36,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, BinaryIO, Iterator, Mapping, NoReturn, cast
 
-from archivey.cli_helpers import quoted
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
     AccessCost,
@@ -108,6 +107,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
+from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,

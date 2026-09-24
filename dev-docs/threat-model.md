@@ -285,7 +285,7 @@ complete — see *Print sites after the second audit* below.
 **Implemented** (`escape-cli-log-records`): archive-derived text is escaped where it
 **becomes a message**, not where a message is displayed. `ArchiveyError` and
 `ArchiveyUsageError` escape their `message` at construction, `Diagnostic` escapes its
-`message`, and the primitive lives in `archivey/cli_helpers.py` so both can reach it. The
+`message`, and the primitive lives in `archivey/terminal.py` so both can reach it. The
 guarantee is written down as the `error-handling` and `diagnostics` requirements
 *"… messages are inert for terminal display"* and the `cli` requirement *"Archive-derived
 text is escaped before terminal display"*. The same change escaped the print sites that
@@ -344,7 +344,7 @@ Escaping at construction closes it: that line is the escaped message.
 
 *Native paths in messages.* Escaping doubles a backslash, so a native Windows path
 interpolated raw would render `C:\\Users\\out\\a.txt`. Every path in a message is
-rendered `/`-separated first by `cli_helpers.display_path()`, leaving the escape nothing to
+rendered `/`-separated first by `terminal.display_path()`, leaving the escape nothing to
 double; a backslash that survives is then a character in a *name*, which is what the
 escape is for. Guarded by a static sweep, since the failure is invisible on Linux. Print
 sites follow the same rule: a member-derived path is rendered relative to the extraction
@@ -356,7 +356,7 @@ hoist's collision lines escaped `str(dest)`, a native path.
 escape wrote. Review found this was not a rare cosmetic edge: **52 message sites**
 interpolated an archive-derived name with `{name!r}`, which `repr` escapes before the
 message escape escapes its backslashes — essentially every safety error in `filters.py`,
-`extraction.py`, `base_reader.py` and `reader_state.py`. `cli_helpers.quoted()` supplies the
+`extraction.py`, `base_reader.py` and `reader_state.py`. `terminal.quoted()` supplies the
 delimiting quotes without escaping, and all 52 were converted; `raw_message` /
 `raw_message_of()` do the same job for a caught exception embedded in a new message (two
 broad `except Exception` sites in `rar_parser.py` can catch an `ArchiveyError`). `!r`

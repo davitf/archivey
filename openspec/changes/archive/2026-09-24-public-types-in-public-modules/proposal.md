@@ -5,8 +5,8 @@ Twelve public classes were defined under `archivey.internal` and re-exported, wi
 cost `inspect.getsource` on those classes and needed a type-hint workaround. The
 maintainer asked on the pin's PR whether the classes could live where they are declared
 instead. Separately, the CLI imported two internal helper modules, and the review-hub
-ruling S25-K8 put those helpers in a public submodule, with a rule that the CLI uses only
-public API.
+ruling S25-K8 asked for a public submodule for what the CLI needs, with a rule that the CLI
+uses only public API.
 
 ## What Changes
 
@@ -16,11 +16,11 @@ public API.
   pickles that name `archivey` keep working. `inspect.getsource` works on them again.
 - The pin stays as the safety net, and now covers only `ArchiveStream` and five
   functions. A test fails on any other public class defined under `internal`.
-- New public submodule `archivey.cli_helpers`, not re-exported from `archivey`:
-  `escape_control_chars`, `display_path`, `quoted` (from the former `archivey/escaping.py`)
-  and `coerce_enum`, `coerce_enum_collection`, `normalize_spelling` (from the former
-  `archivey/internal/enum_args.py`). Both old modules are removed.
-- The CLI imports nothing from `archivey.internal`. A CONTRIBUTING rule says so, and a
+- `archivey/escaping.py` becomes the public module `archivey.terminal`, not re-exported
+  from `archivey`: `escape_control_chars`, `display_path`, `quoted`, with a stability
+  promise. The enum-spelling helpers in `archivey/internal/enum_args.py` stay internal.
+- The CLI imports nothing from `archivey.internal`. It stops using the enum-spelling
+  helpers: argparse has already checked each spelling. A CONTRIBUTING rule says so, and a
   test enforces it.
 
 ## Capabilities
@@ -30,6 +30,6 @@ public API.
 ### Modified Capabilities
 
 - `packaging-and-extras`: public classes defined in public modules; the pin narrows; the
-  `archivey.cli_helpers` submodule
+  `archivey.terminal` module
 - `cli`: the CLI uses only public API
 - `error-handling`: the escaping helpers are named at their new path

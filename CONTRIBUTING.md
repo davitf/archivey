@@ -318,9 +318,10 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   enforces this; `ArchiveStream` is the one listed exception.
 - **The CLI uses only public API.** Nothing under `src/archivey/cli/` imports from
   `archivey.internal`; `tests/test_cli_uses_public_api.py` fails on one that does. The
-  CLI needing something internal means the public API has a gap. Fix the gap: a helper
-  any front end would need goes in `archivey.cli_helpers` (public, but not re-exported
-  from `archivey`), anything else goes through the ordinary `__all__` decision above.
+  CLI needing something internal means the public API has a gap. Close the gap through
+  the ordinary `__all__` decision above, or in a public module that is not re-exported
+  (`archivey.terminal` holds the display helpers any front end needs), or do without:
+  the enum spellings are internal, and the CLI passes strings the library converts.
 - **Cost signals stay honest, and nothing silently re-decompresses.** `ListingCost` and
   `AccessCost` are promises a caller plans against, so a change that makes a path more
   expensive updates them. Reading two members out of one solid block must not decode the

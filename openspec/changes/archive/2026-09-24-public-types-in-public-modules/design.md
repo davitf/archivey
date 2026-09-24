@@ -24,14 +24,15 @@ is.
 base, and streams are never pickled. The five pinned functions lose nothing to the pin,
 because a function carries its own code object.
 
-**`archivey.cli_helpers` holds both helper groups, the library's own users included.**
-The ruling put the helpers in one public submodule. `archivey.exceptions` escapes its
-messages with `escape_control_chars`, and `coerce_enum` raises `ArchiveyUsageError`. So
-`cli_helpers` imports `archivey.exceptions` inside the function that raises, not at
-module level, and the module still imports nothing from archivey at import time.
-
-The name `cli_helpers` is the one the ruling suggested. It is still open. Renaming it
-before 0.2.0 is one mechanical commit.
+**Only the display helpers are public, as `archivey.terminal`.** The ruling first
+suggested one `cli_helpers` submodule for everything the CLI used from internal code:
+the three display helpers and the three enum-spelling helpers. Review showed that only
+the display helpers have a use outside archivey. A caller never needs the enum helpers,
+because every entry point already converts a string spelling. The CLI used them in two
+places, and both are one line without them. The maintainer then ruled: enum helpers
+private, the CLI changed to avoid them, and the display module named `terminal`. The
+library imports `archivey.terminal` too, since `archivey.exceptions` escapes its
+messages with it, which is why the name describes what it does rather than who uses it.
 
 ## Risks
 

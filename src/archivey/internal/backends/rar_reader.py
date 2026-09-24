@@ -34,7 +34,6 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import BinaryIO, Literal
 
-from archivey.cli_helpers import quoted
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
@@ -109,6 +108,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.streams.verify import build_member_verifier
 from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
+from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     EXTRA_IS_REPARSE_POINT,

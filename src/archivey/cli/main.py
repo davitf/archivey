@@ -30,8 +30,8 @@ from archivey.cli.info_cmd import run_info
 from archivey.cli.list_cmd import run_list
 from archivey.cli.logging_config import cli_logging
 from archivey.cli.test_cmd import run_test
-from archivey.cli_helpers import display_path, normalize_spelling, quoted
 from archivey.exceptions import ArchiveyError
+from archivey.terminal import display_path, quoted
 
 # Registered verbs + aliases + reserved unimplemented verbs (known-verb-wins).
 _VERBS = frozenset(
@@ -217,7 +217,7 @@ def _cli_spelling(enum_cls: type[Enum]) -> Callable[[str], str]:
     choices = _cli_choices(enum_cls)
 
     def fold(value: str) -> str:
-        folded = normalize_spelling(value).replace("_", "-")
+        folded = value.strip().lower().replace("_", "-")
         return folded if folded in choices else value
 
     return fold
@@ -480,7 +480,7 @@ def _format_os_error(exc: OSError) -> str:
     """Human prose for missing paths / I/O errors (cli-product P6).
 
     Returned **unescaped**: the caller escapes it once, at the print site. The filename
-    is therefore delimited with :func:`~archivey.cli_helpers.quoted`, not ``!r`` — ``repr``
+    is therefore delimited with :func:`~archivey.terminal.quoted`, not ``!r`` — ``repr``
     would escape it here and the print site would escape those backslashes again — and
     rendered ``/``-separated so a Windows path's separators are not doubled either.
     """

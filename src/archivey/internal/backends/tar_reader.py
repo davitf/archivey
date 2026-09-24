@@ -37,7 +37,6 @@ from datetime import datetime, timezone
 from io import BytesIO
 from typing import BinaryIO, Iterator, Literal, Mapping, cast
 
-from archivey.cli_helpers import quoted
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
     AccessCost,
@@ -82,6 +81,7 @@ from archivey.internal.streams.streamtools import (
     ensure_bufferedio,
     read_within_reach,
 )
+from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,

@@ -11,7 +11,7 @@ Two helpers exist so that call sites do not each have to reason about it, and us
 is a requirement rather than a style preference:
 
 - A member name, link target or member-derived path SHALL be interpolated with
-  `archivey.cli_helpers.quoted()`, which supplies the delimiting quotes **without** escaping. `!r`
+  `archivey.terminal.quoted()`, which supplies the delimiting quotes **without** escaping. `!r`
   SHALL NOT be used: it escapes first, and the message escape then escapes the
   backslashes it introduced. `quoted()` SHALL *choose* its delimiter (`"` when the text
   contains `'` and no `"`) rather than escape one, since escaping would reintroduce the
@@ -25,7 +25,7 @@ call site wrote it — alongside the escaped `message`, since the escaped form c
 embedded in another message without doubling.
 
 A filesystem path interpolated into a message SHALL be rendered `/`-separated first
-(`archivey.cli_helpers.display_path()`). Escaping doubles a backslash, so a native Windows path
+(`archivey.terminal.display_path()`). Escaping doubles a backslash, so a native Windows path
 would otherwise have every separator doubled; after this rendering a surviving
 backslash is a character in a *name*, which is what the escape is for.
 

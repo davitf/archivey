@@ -29,7 +29,6 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import BinaryIO, ContextManager
 
-from archivey.cli_helpers import quoted
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode, DigestContext, MemberTimestampContext
@@ -102,6 +101,7 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
+from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,

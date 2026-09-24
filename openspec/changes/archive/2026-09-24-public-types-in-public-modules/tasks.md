@@ -4,10 +4,11 @@
 - [x] 1.2 `FormatInfo`, `DetectionConfidence` into new `archivey/detection.py`
 - [x] 1.3 Pin docstring and tests: only `ArchiveStream` among classes stays pinned; `getsource` works on the moved classes
 
-## 2. `archivey.cli_helpers`
+## 2. `archivey.terminal`
 
-- [x] 2.1 New public module with the escaping and enum-spelling helpers; `archivey/escaping.py` and `internal/enum_args.py` removed; importers updated
-- [x] 2.2 CONTRIBUTING rule; `tests/test_cli_uses_public_api.py` guard
+- [x] 2.1 `archivey/escaping.py` becomes public `archivey/terminal.py`; importers updated; `internal/enum_args.py` stays internal
+- [x] 2.2 The CLI stops using the enum-spelling helpers
+- [x] 2.3 CONTRIBUTING rule; `tests/test_cli_uses_public_api.py` guard
 
 ## 3. Docs and archive
 

@@ -29,7 +29,7 @@ class DetectionBudgetPreset(Enum):
 
 # The string spellings of ``DetectionBudgetPreset``, so a type checker flags a bad one at the
 # call rather than leaving it to the runtime. Deliberately narrower than what
-# ``cli_helpers`` accepts: coercion also takes the member *name* and ignores
+# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
 # case, and a literal can express neither, so this is the canonical spelling.
 # Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
 DetectionBudgetPresetStr = Literal["balanced", "fast", "thorough"]

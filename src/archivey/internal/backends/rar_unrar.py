@@ -21,12 +21,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, cast
 
-from archivey.cli_helpers import display_path
 from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
     UnsupportedOperationError,
 )
+from archivey.terminal import display_path
 
 # Inclusive major.minor floor. ``-n`` glob demux and ``-ver`` were checked
 # against RARLAB unrar 6.02, 6.12, 6.24, and 7.00 (RAR data tests plus

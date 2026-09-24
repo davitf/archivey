@@ -70,8 +70,8 @@ The public package root and the modules it re-exports from:
 
 - `__init__.py` — `__all__` (89 names) plus the 17 `# noqa: F401` imports that are
   importable but undocumented. Both halves are the surface.
-- `detection_cost.py` and `cli_helpers.py` — two top-level modules, **not** under
-  `internal/` and not re-exported from `archivey`. See §A. (`cli_helpers.py` replaced
+- `detection_cost.py` and `terminal.py` — two top-level modules, **not** under
+  `internal/` and not re-exported from `archivey`. See §A. (`terminal.py` replaced
   `escaping.py` in #448, which also added `detection.py`, the new home of `FormatInfo` and
   `DetectionConfidence`.)
 - `core.py` — `open_archive` / `open_stream` / `extract`, detection entry points.
@@ -145,10 +145,9 @@ states its real size.** Counted on `main` at `b0fe664`:
 | `archivey.detection_cost` — `DetectionBudget`, `DetectionCostReceipt`, `DetectionCapability`, `TierSkip`, `TierSkipReason`, `DetectionBudgetPreset`, `MutableDetectionCostReceipt`, the three budget presets, `default_detection_budget` | 11 | Not in the layout list |
 | `archivey.escaping` — `display_path`, `escape_control_chars`, `quoted` | 3 | Not in the layout list |
 
-*Updated for #448:* the `escaping` row is now `archivey.cli_helpers` with six names
-(`display_path`, `escape_control_chars`, `quoted`, `coerce_enum`,
-`coerce_enum_collection`, `normalize_spelling`), documented in `docs/api.md` and in the
-layout list, with a stability promise and a `packaging-and-extras` requirement. Recount
+*Updated for #448:* the `escaping` row is now `archivey.terminal`, the same three names,
+documented in `docs/api.md` and in the layout list, with a stability promise and a
+`packaging-and-extras` requirement. Recount
 before relying on the total below, which was taken at `b0fe664`.
 
 That is **120 importable names**, against a package docstring that describes eight modules
@@ -159,10 +158,10 @@ documented surface or move it under `internal/` — but not after the tag.
 
 `escaping` carried the smaller version of the same question, with history: the July
 review's O7 residual parked "a public un-escape helper" as addable later. #448 settled it
-(ruling on hub thread S25-K8): the helpers are the public `archivey.cli_helpers`. What is
-left to judge is the module's name and whether its six names belong together.
+(ruling on hub thread S25-K8 and on #448): the three helpers are the public
+`archivey.terminal`, and the enum-spelling helpers stay internal.
 
-Also in `cli_helpers`: `os` is importable as `archivey.cli_helpers.os`. Trivial, and the kind of
+Also in `terminal`: `os` is importable as `archivey.terminal.os`. Trivial, and the kind of
 thing worth one line in "what is actually fine" if you judge it harmless.
 
 ### B. Do `diagnostics` and `cost` mean one thing?
