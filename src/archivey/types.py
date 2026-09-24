@@ -342,9 +342,10 @@ class CreateSystem(Enum):
     UNKNOWN = 255
 
 
-# Key in ArchiveMember.extra marking a member as a Windows NTFS junction. Junctions
-# are a cross-format concept (ZIP, 7z and RAR can all carry them), so this key is
-# deliberately NOT namespaced under a single format like "zip.".
+# Key in ArchiveMember.extra marking a member as a Windows NTFS junction. The formats
+# ZIP, 7z and RAR can all describe a junction, so this key is deliberately NOT
+# namespaced under a single format like "zip.". Which readers actually set it is a
+# narrower list: see ArchiveMember.is_junction.
 # Final keeps an overloaded ``__getitem__`` subscript with this constant a literal
 # key; without it a checker that widens the assignment to ``str`` falls through
 # to the ``str → object`` fallback.
@@ -635,10 +636,10 @@ class ArchiveMember:
     omission, and only the first is an extraction outcome rather than a failure, so the
     backend that knows which it is says so here. Not part of the public contract."""
 
-    # Mutable members are intentionally unhashable. Annotated `-> int` (the call
-    # always raises) so the override stays compatible with object.__hash__.
-    def __hash__(self) -> int:
-        raise TypeError(f"unhashable type: '{type(self).__name__}'")
+    # Mutable members are intentionally unhashable. ``@dataclass`` (``eq=True``, not
+    # frozen) sets ``__hash__ = None``, which is what makes ``isinstance(m, Hashable)``
+    # False. Do not add a ``__hash__`` method that raises: it makes the class claim to
+    # be hashable while every hash fails.
 
     @property
     def diagnostics(self) -> tuple["Diagnostic", ...]:
@@ -701,6 +702,20 @@ class ArchiveMember:
 
     @property
     def is_junction(self) -> bool:
+        """The archive recorded this symlink as a Windows NTFS junction.
+
+        ``False`` means no junction was detected, not that the entry is not one. The
+        answer needs the reparse *tag*, which lives in the member's reparse buffer:
+
+        - RAR, and a directory source scanned on Windows, report junctions.
+        - ZIP and 7z report one only when the writer stored the reparse buffer. 7-Zip
+          stores none for a directory reparse point, and a junction is always one,
+          so a junction in an archive 7-Zip wrote reads ``False`` here.
+        - TAR and ISO have no junction concept and always read ``False``.
+
+        :attr:`is_reparse_point` comes from metadata the archive always carries, and
+        is the check to use when a Windows link of either kind matters.
+        """
         return self.type == MemberType.SYMLINK and bool(
             self.extra.get(EXTRA_IS_JUNCTION)
         )
