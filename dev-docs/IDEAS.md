@@ -614,19 +614,6 @@
   round-trip pricing is still open — detection should eventually ask the source rather
   than keying on `ArchiveStream` identity.
 
-- **Reuse the index-only pass's members instead of rebuilding them** — on backends with
-  `_MEMBER_LIST_UPFRONT`, `extract_all` lists twice: `_get_members_index_only()` for the
-  extraction prep, then `_materialize_members()`. Both call `_iter_members()` afresh and
-  the first pass's list is never cached, so the backend re-walks its index and builds a
-  second set of `ArchiveMember` objects for the same members. Nothing decided this — it
-  falls out of the index-only result not being stored — and it is unrelated to ADR 0007,
-  which makes members *mutable and filled in place*. Two consequences today: the wasted
-  re-walk, and a correctness trap where per-member work deduped on object identity fires
-  twice (that bug shipped; see #232, now deduped on `member_id`). Caching the index-only
-  list so materialization enriches those same objects would remove both. Wants care around
-  the listing tracker, which deliberately *does* re-account on the second pass, and around
-  `_materialize_members`'s concurrency gate. Raised while writing `dev-docs/code-map.md`;
-  no decision taken.
 
 - **RAR5 QO leftover-copy report.** Skip-walk listing emits a QO FILE only when
   `tell()` lands on its `header_offset`. Copies the walk never hits are dropped.

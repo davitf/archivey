@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import sys
 import threading
 import uuid
@@ -32,9 +31,7 @@ if TYPE_CHECKING:
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.diagnostics import (
-    Diagnostic,
     DiagnosticCode,
-    DiagnosticContext,
     DiagnosticDisposition,
     DiagnosticSummary,
     EmptyArchiveContext,
@@ -63,6 +60,7 @@ from archivey.internal.arg_checks import (
 )
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
+    EmitLog,
     collector_from_config,
 )
 from archivey.internal.enum_args import (
@@ -376,7 +374,9 @@ class BaseArchiveReader(ArchiveReader):
       ``_iter_with_data()`` **MUST** route their forward metadata pass through the shared
       instance-held progressive pass (``_begin_forward_pass``) so
       ``scan_members()`` can finish an interrupted pass and the resolved cache is
-      finalized on completion. Native 7z/RAR readers will need the same contract.
+      finalized on completion. A backend whose own pass walks a cached list (7z, solid
+      RAR) iterates ``_listed_members()``, which does that in streaming and drains the
+      shared walk in random access, so its members are the reader's own objects.
 
     Everything else here (``_get_members_registered``, ``_resolve_link``,
     ``_open_with_link_follow``, ``_stamp_error_context``) is internal plumbing and is not
@@ -443,21 +443,29 @@ class BaseArchiveReader(ArchiveReader):
             SeekCounter() if self._measure else None
         )
         self._materialized: _Materialized | None = None
-        # Member ids whose backend-independent presentation checks have already run, so a
-        # second listing pass over fresh ArchiveMember objects for the same members does
-        # not re-emit their diagnostics (see ``_register_member``).
-        self._presentation_checked: set[int] = set()
-        # Diagnostics already reported for a member while it was being typed, keyed by
-        # the member's position in the listing and the code, so a backend that types the
-        # same member again re-attaches the first report instead of emitting a second
-        # (see ``_report_member_diagnostic``). The value is None for a report that never
-        # attached, which still has to be remembered: under an IGNORE disposition, or
-        # once the retention budget is spent, nothing attaches, and forgetting it there
-        # would count the member twice in exactly the configuration where ``counts`` is
-        # the only channel left.
-        self._member_reports: dict[
-            tuple[object, DiagnosticCode], Diagnostic | None
-        ] = {}
+        # The one member walk (see ``_pull_member``). Every listing method and every
+        # pass reads ``_listed``, so each member is one object, registered once, and
+        # ``_iter_members()`` runs once for a walk that completes. ``_walk`` is the
+        # backend's generator while the walk is unfinished; ``_walk_done`` is set when it
+        # ends, cleanly or on terminal damage, and ``_walk_error`` holds that damage.
+        # ``_walk_failure`` poisons a streaming walk that failed any other way, since
+        # its prefix was already handed out and cannot be walked again. Until a
+        # random-access walk ends, ``_walk_built`` keeps every member object it produced
+        # and ``_walk_emits`` a log of what the backend emitted typing each position
+        # (see ``_pull_replayable``): a walk started over after a failure replays those
+        # positions onto the same objects, with their diagnostics already emitted and
+        # attached. A streaming walk keeps neither.
+        # ``_walk_presented`` counts the positions whose presentation checks have run.
+        self._listed: list[ArchiveMember] = []
+        self._listed_by_name: dict[str, list[ArchiveMember]] = {}
+        self._walk: Iterator[ArchiveMember] | None = None
+        self._walk_done: bool = False
+        self._walk_error: CorruptionError | TruncatedError | None = None
+        self._walk_failure: BaseException | None = None
+        self._walk_pulling: bool = False
+        self._walk_built: list[ArchiveMember] = []
+        self._walk_emits: dict[int, EmitLog] = {}
+        self._walk_presented: int = 0
         # Set by open_archive on the reader it is about to return; read only by the
         # empty-listing check in _publish_materialized. None for a reader built directly.
         self._format_provenance: FormatProvenance | None = None
@@ -470,8 +478,6 @@ class BaseArchiveReader(ArchiveReader):
         # stream_members leaves this false so iteration stays the unguarded escape hatch.
         self._progressive_enforce_listing_limits: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
-        self._pass_scanned: list[ArchiveMember] = []
-        self._pass_by_name_lists: dict[str, list[ArchiveMember]] = {}
         self._closed = False
         # A backend that shares one underlying handle across member streams (zipfile fp,
         # tarfile fileobj, pycdlib _cdfp) sets this to a lock under CONCURRENT (and TAR
@@ -618,12 +624,14 @@ class BaseArchiveReader(ArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         """Yield every member once, in archive order.
 
-        **Order stability is load-bearing:** repeated calls MUST yield the same members
-        in the same order. ``member_id`` is a stamp of enumeration position, and
-        selection/extraction match members from *separate* enumerations by
-        ``(archive_id, member_id)`` (``members_report_if_available()`` re-enumerates for
-        some backends while ``stream_members()`` serves the materialized cache) — an
-        order that varies between calls would silently select the wrong members.
+        The base calls this once per reader for a walk that completes, and every listing
+        method and pass reads what it yielded (see ``_pull_member``), so a member is typed
+        once and is one object.
+
+        **Order stability is still required:** a random-access walk that fails part-way
+        on anything but archive damage (a listing limit, an interrupt) is discarded, and
+        the next call walks again. ``member_id`` is the enumeration position, so that
+        second walk must yield the same members in the same order.
         """
         ...
 
@@ -1134,7 +1142,6 @@ class BaseArchiveReader(ArchiveReader):
         *,
         error: ArchiveyError | None = None,
         child_scope: bool = False,
-        is_current_first: bool = False,
         enforce_listing_limits: bool = True,
     ) -> None:
         """Resolve hardlink/symlink targets with one double-fault policy.
@@ -1144,27 +1151,42 @@ class BaseArchiveReader(ArchiveReader):
         swallowed so the recovered prefix stays publishable. When ``error is None``
         (clean EOF / complete listing), secondary faults propagate.
 
-        Eager materialization stamps ``is_current`` *before* link resolve and uses a
-        child scope + internal-open exemption for link-data reads. Progressive finalize
-        stamps ``is_current`` *after* link resolve and does not open a child scope —
-        preserve those orderings unless a failing test forces convergence.
+        Eager materialization uses a child scope + internal-open exemption for
+        link-data reads; a streaming pass's finalization does not open a child scope.
+        ``is_current`` is not stamped here: the walk stamps it once, when it ends
+        (``_end_walk``), and link resolution never reads it.
+
+        Targets stored as member data are read here only under
+        ``ArchiveyConfig.read_link_targets``. With it off this is listing, or a pass
+        advancing, and neither reads member data on its own: the target stays unset,
+        nothing is emitted, and ``_link_target_resolved`` stays unset too, so a read the
+        caller asks for later (``extract_all``, ``open()``) is not swallowed by the memo.
+        The targets a header carries were set while the member was typed, so they need
+        no read and are resolved to members below either way.
 
         A target read from member data here was still ``None`` when the member was
         registered, so registration weighed it as nothing. It is added to the listing
         tracker as it arrives, under ``enforce_listing_limits``, so
         ``max_metadata_bytes`` covers every target the published list will carry.
         """
-        if is_current_first:
-            _apply_last_entry_wins_is_current(members)
-            if not any(member.is_link for member in members):
-                return
+        if not any(member.is_link for member in members):
+            return
+        read_targets = self._config.read_link_targets
 
         def _resolve() -> None:
-            for member in members:
-                if member.is_link:
-                    had_target = member.link_target is not None
+            if read_targets:
+                unread = [
+                    member
+                    for member in members
+                    if member.is_link
+                    and member.link_target is None
+                    and not member._link_target_resolved
+                ]
+                if unread:
+                    self._prepare_link_target_reads(unread)
+                for member in unread:
                     self._resolve_link_target(member)
-                    if not had_target and member.link_target is not None:
+                    if member.link_target is not None:
                         self._listing_tracker.account_link_target(
                             member.link_target, enforce=enforce_listing_limits
                         )
@@ -1196,8 +1218,191 @@ class BaseArchiveReader(ArchiveReader):
             if error is None:
                 raise
 
-        if not is_current_first:
-            _apply_last_entry_wins_is_current(members)
+    def _prepare_link_target_reads(self, members: list[ArchiveMember]) -> None:
+        """Hook: ``members`` are about to have their data-stored targets read.
+
+        Called by link finalization with every link it is about to read, before the
+        first read, so a backend whose link data sits inside a shared decode (a 7z
+        solid folder) can read them in one sweep instead of one decode per link. The
+        base does nothing.
+        """
+        return
+
+    # --- The member walk -------------------------------------------------------------
+    #
+    # One ``_iter_members()`` walk per reader, owned here. Everything reads ``_listed``
+    # by position and pulls the next member when it reaches the end of what has been
+    # walked: the index-only peek, materialization, the streaming pass, and a backend's
+    # own data pass. A member is stamped, checked and counted once, when it is pulled.
+
+    def _pull_member(self, *, enforce: bool) -> ArchiveMember | None:
+        """Pull the next member from the walk, or ``None`` once the walk has ended.
+
+        Registers the member (id stamp, presentation checks, listing accounting under
+        ``enforce``), indexes its name and appends it to ``_listed``.
+
+        The walk ends when the backend's generator is exhausted or raises terminal
+        archive damage (``CorruptionError`` / ``TruncatedError``); the damage is kept in
+        ``_walk_error`` and the prefix stays listed. Any other failure is
+        ``_abandon_walk``'s: discarded in random access, where no member has been handed
+        out yet, and poisoned in streaming, where the prefix already has.
+        """
+        if self._walk_done:
+            return None
+        if self._walk_failure is not None:
+            raise ReadError(
+                "The archive scan previously failed "
+                f"({type(self._walk_failure).__name__}); the member list is incomplete "
+                "and cannot be resumed. Reopen the archive to retry."
+            ) from self._walk_failure
+        if self._walk_pulling:
+            # A diagnostic callback fired while the backend was typing a member, and it
+            # called back into this reader for a listing. The generator is suspended
+            # mid-``next``; pulling again would raise "generator already executing".
+            raise ArchiveyUsageError(
+                "Reader re-entered while it is listing its members on this same "
+                "thread (e.g. from a diagnostic callback). Callbacks must not call "
+                "back into the reader that triggered them."
+            )
+        self._walk_pulling = True
+        try:
+            if self._walk is None:
+                self._account_archive_comment(enforce=enforce)
+                self._walk = self._iter_members()
+            position = len(self._listed)
+            try:
+                if self._streaming:
+                    # A streaming walk is never started over (``_abandon_walk`` poisons
+                    # it), so it has nothing to replay and keeps no log.
+                    member = next(self._walk)
+                else:
+                    member = self._pull_replayable(position)
+            except StopIteration:
+                self._end_walk(None)
+                return None
+            except (CorruptionError, TruncatedError) as exc:
+                self._end_walk(exc)
+                return None
+            self._register_member(position, member, enforce_listing_limits=enforce)
+            self._index_member_name(self._listed_by_name, member)
+            self._listed.append(member)
+            return member
+        except BaseException as exc:
+            self._abandon_walk(exc)
+            raise
+        finally:
+            self._walk_pulling = False
+
+    def _pull_replayable(self, position: int) -> ArchiveMember:
+        """Advance a random-access walk to ``position``, replaying what a failed one did.
+
+        Each position's emits are logged while the backend types it. A walk started
+        over after a discarded failure types it again, and a backend that builds fresh
+        objects (ZIP, ISO, TAR) emits again: those replay from the log, including a
+        position the failed walk was part way through, so each finding is recorded
+        once. Once the backend has built the member, the log keeps only its codes: the
+        object built first is the one kept, and it carries its attachments itself. A
+        position that emitted nothing keeps no log. So until the walk ends it holds a
+        code per emit, bounded by the listing limits like the member list, and a
+        diagnostic only for the member being typed.
+        """
+        assert self._walk is not None
+        log = self._walk_emits.get(position)
+        if log is None:
+            log = self._walk_emits[position] = EmitLog()
+        with self._diagnostics_collector.replaying(log):
+            member = next(self._walk)
+        log.settle()
+        if not log.codes:
+            del self._walk_emits[position]
+        if position < len(self._walk_built):
+            return self._walk_built[position]
+        self._walk_built.append(member)
+        return member
+
+    def _end_walk(self, error: CorruptionError | TruncatedError | None) -> None:
+        """Record that the walk ended, and stamp last-entry-wins once, over what it listed.
+
+        This is the only place ``is_current`` is stamped for duplicate names, whichever
+        consumer ended the walk. On terminal damage it covers the recovered prefix the
+        incomplete report holds: ``is_current`` defaults to ``True``, so an unstamped
+        prefix would read every shadowed duplicate as current.
+        """
+        self._walk = None
+        self._walk_done = True
+        self._walk_error = error
+        self._walk_built = []
+        self._walk_emits = {}
+        if error is not None:
+            self._stamp_error_context(error)
+        _apply_last_entry_wins_is_current(self._listed)
+
+    def _abandon_walk(self, exc: BaseException) -> None:
+        """A pull failed without terminal damage: discard the walk, or poison it."""
+        close = getattr(self._walk, "close", None)
+        self._walk = None
+        if close is not None:
+            close()
+        if self._streaming:
+            # The pass has already yielded the prefix, so it cannot be walked again
+            # without handing the caller a second object for the same member.
+            self._walk_failure = exc
+            return
+        # Random access hands out no member before the walk ends, so nobody holds the
+        # prefix. A later call starts over, and ``_iter_members`` yields the same order;
+        # ``_pull_member`` replays the positions the failed walk reached.
+        self._listed = []
+        self._listed_by_name = {}
+        self._listing_tracker.reset()
+
+    def _drain_walk(self, *, enforce: bool) -> None:
+        """Pull to the end of the walk; with ``enforce``, check the running totals too.
+
+        The check covers members a non-enforcing pull (a ``stream_members`` pass)
+        already counted, which no enforcing pull saw cross a limit.
+        """
+        while self._pull_member(enforce=enforce) is not None:
+            pass
+        if enforce:
+            self._listing_tracker.assert_within_limits()
+
+    def _ensure_walked(self, *, enforce: bool) -> None:
+        """Drain the walk under the first-touch election, without resolving links.
+
+        For the consumers that need the whole list but not its link targets: the peek
+        and a backend's own random-access data pass. Under ``CONCURRENT`` a caller that
+        overlaps another thread's walk or materialization waits for it; without it the
+        overlap raises, as materialization does. The election is handed back unpublished
+        afterwards, so ``members()`` can still resolve links and publish.
+        """
+        if self._walk_done:
+            if enforce:
+                self._listing_tracker.assert_within_limits()
+            return
+        if not self._state.begin_materialization():
+            # Published while we waited: that walk has ended.
+            if enforce:
+                self._listing_tracker.assert_within_limits()
+            return
+        try:
+            self._drain_walk(enforce=enforce)
+        finally:
+            self._state.fail_materialization()
+
+    def _listed_members(self) -> Iterator[ArchiveMember]:
+        """The listed members for a backend's own data pass, then the walk's damage.
+
+        Streaming pulls through the shared forward pass, so the pass registers,
+        finalizes and publishes like every other backend's. Random access drains the
+        walk first and resolves no links, which is today's timing for a solid pass.
+        """
+        if self._streaming:
+            yield from self._begin_forward_pass()
+            return
+        self._ensure_walked(enforce=False)
+        yield from list(self._listed)
+        if self._walk_error is not None:
+            raise self._walk_error
 
     def _materialize_members(
         self, *, enforce_listing_limits: bool = True
@@ -1206,7 +1411,9 @@ class BaseArchiveReader(ArchiveReader):
 
         ``CorruptionError`` / ``TruncatedError`` during listing publish an incomplete
         report. Resource limits, interrupts, and all other failures leave the reader
-        unmaterialized and propagate unchanged.
+        unmaterialized and propagate unchanged. A failure in link resolution keeps the
+        walk: the members may already have been handed out by a peek, and a retry
+        resolves the links that were not finished.
         """
         if self._materialized is not None:
             if enforce_listing_limits:
@@ -1220,46 +1427,21 @@ class BaseArchiveReader(ArchiveReader):
                 self._listing_tracker.assert_within_limits()
             return self._materialized
 
-        members: list[ArchiveMember] = []
-        by_name_lists: dict[str, list[ArchiveMember]] = {}
         try:
-            self._listing_tracker.reset()
-            self._account_archive_comment(enforce=enforce_listing_limits)
-            try:
-                for idx, member in enumerate(self._iter_members()):
-                    self._register_member(
-                        idx, member, enforce_listing_limits=enforce_listing_limits
-                    )
-                    self._index_member_name(by_name_lists, member)
-                    members.append(member)
-            except (CorruptionError, TruncatedError) as exc:
-                # Prefer the original listing error on the report; leave unresolved
-                # links as-is when a secondary link-target fault is swallowed.
-                self._finalize_links(
-                    members,
-                    by_name_lists,
-                    error=exc,
-                    child_scope=True,
-                    is_current_first=True,
-                    enforce_listing_limits=enforce_listing_limits,
-                )
-                holder = self._publish_materialized(
-                    members,
-                    by_name_lists,
-                    error=exc,
-                )
-                self._state.complete_materialization()
-                return holder
-
+            self._drain_walk(enforce=enforce_listing_limits)
+            # Prefer the original listing error on the report; leave unresolved links
+            # as-is when a secondary link-target fault is swallowed.
+            error = self._walk_error
             self._finalize_links(
-                members,
-                by_name_lists,
-                error=None,
+                self._listed,
+                self._listed_by_name,
+                error=error,
                 child_scope=True,
-                is_current_first=True,
                 enforce_listing_limits=enforce_listing_limits,
             )
-            holder = self._publish_materialized(members, by_name_lists, error=None)
+            holder = self._publish_materialized(
+                self._listed, self._listed_by_name, error=error
+            )
             self._state.complete_materialization()
             return holder
         except BaseException:
@@ -1269,9 +1451,9 @@ class BaseArchiveReader(ArchiveReader):
             # reader then raises a misleading "materialization already in progress", and a
             # CONCURRENT waiter blocks on the CV with no owner left to notify it. We reset
             # the election state and re-raise so the interrupt still propagates unchanged.
-            # (mark_reader_closed's drain path handles BaseException the same way.)
+            # (mark_reader_closed's drain path handles BaseException the same way.) The
+            # walk has already discarded itself, if it was the walk that failed.
             self._materialized = None
-            self._listing_tracker.reset()
             self._state.fail_materialization()
             raise
 
@@ -1286,16 +1468,6 @@ class BaseArchiveReader(ArchiveReader):
             raise report.error
         return list(report.members)
 
-    def _get_members_index_only(self) -> list[ArchiveMember]:
-        """Index-only member list: stamp ids, no link resolution, no member-data reads."""
-        self._listing_tracker.reset()
-        self._account_archive_comment(enforce=True)
-        members = list(self._iter_members())
-        _apply_last_entry_wins_is_current(members)
-        for idx, member in enumerate(members):
-            self._register_member(idx, member, enforce_listing_limits=True)
-        return members
-
     def _account_archive_comment(self, *, enforce: bool) -> None:
         comment = self._get_archive_info().comment
         self._listing_tracker.account_archive_comment(comment, enforce=enforce)
@@ -1307,32 +1479,25 @@ class BaseArchiveReader(ArchiveReader):
         *,
         enforce_listing_limits: bool = False,
     ) -> None:
-        """Assign identity and run backend-independent presentation checks once."""
-        if member._member_id is not None:
-            # Already stamped (e.g. by ``_get_members_index_only``). Still re-account
-            # after a tracker ``reset()`` so totals match the member list — otherwise
-            # extract-prep then full materialization on 7z/RAR leaves the tracker at 0
-            # while the cache holds every member.
-            self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
-            return
+        """Assign identity, run backend-independent presentation checks, and account.
+
+        Runs when the walk pulls the member at ``idx``. A walk started over after a
+        discarded failure (``_abandon_walk``) pulls the same positions onto the same
+        objects (``_pull_member``); their presentation checks, counted by position in
+        ``_walk_presented``, are not repeated, so one deceptive name is one finding
+        whichever backend built it. A check whose emit raised is not counted as run, so
+        a strict policy refuses again on the retry. The listing tracker was reset with
+        the discarded walk, so the member is counted again.
+        """
         member._member_id = idx
         member._archive_id = self._archive_id
-        # Dedupe on the member *id*, not on this object. ``extract_all`` walks the list
-        # twice — ``_get_members_index_only`` for the extraction prep, then
-        # ``_materialize_members`` — and the two passes build *different* ArchiveMember
-        # objects for the same member, so the ``_member_id is not None`` guard above
-        # never sees the second one. The listing tracker wants that re-accounting (see
-        # its comment above); a presentation diagnostic does not: one member with one
-        # deceptive name is one finding, and counting it twice inflates
-        # ``DiagnosticSummary.counts``, burns two retention slots and fires the caller's
-        # callback twice.
-        if idx not in self._presentation_checked:
-            self._presentation_checked.add(idx)
+        if idx >= self._walk_presented:
             emit_member_name_bidi_control(
                 self._diagnostics_collector,
                 member=member,
                 archive_name=self._archive_name,
             )
+            self._walk_presented = idx + 1
         self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
@@ -1360,69 +1525,22 @@ class BaseArchiveReader(ArchiveReader):
         # case this memo exists for is still covered.
         member._link_target_resolved = True
 
-    def _report_member_diagnostic(
-        self,
-        *,
-        code: DiagnosticCode,
-        message: str,
-        context: DiagnosticContext,
-        member: ArchiveMember,
-        report_key: object | None,
-        diagnostic_logger: logging.Logger | None = None,
-    ) -> None:
-        """Emit one diagnostic about one member, at most once however often it is typed.
+    def _read_link_target_on_request(self, member: ArchiveMember) -> None:
+        """Read ``member``'s target because the caller asked for this link.
 
-        One member with one deceptive name is one finding, and a second report of it
-        inflates ``DiagnosticSummary.counts``, burns a second retention slot and fires
-        the caller's callback again. That is easy to get wrong here because a member can
-        be typed more than once per archive: ``extract_all`` lists an indexed backend
-        twice, once for the totals and the selector and once to drive the extraction,
-        and a backend that builds its ``ArchiveMember`` objects from the header each
-        time (ZIP, ISO) produces a different object for the same member on the second
-        pass. One that caches them (7z, RAR) hands the same object back and reaches here
-        with the same key, which is the same answer by a shorter route.
-
-        ``report_key`` is what identifies the member across those passes — its position
-        in the listing, and for a diagnostic a member can raise more than once (an
-        invalid timestamp in two separate fields) the position paired with whatever
-        tells the two apart. ``None`` disables the memo, for a caller with nothing
-        stable to key on.
-
-        ``diagnostic_logger`` keeps a code that belongs to another logging category on
-        its own logger — ``archivey.normalization`` for a normalized name — since
-        routing every diagnostic through this one method would otherwise re-label them
-        all as ``archivey.backends``.
-
-        A repeat sighting re-attaches the first report to the object this pass produced,
-        because the caller holds that one and an empty ``member.diagnostics`` on it is no
-        report at all. Where there is nothing to re-attach — an IGNORE disposition and a
-        spent retention budget both emit without attaching — the repeat is still
-        suppressed, which is the case ``counts`` depends on most: under IGNORE it is the
-        only channel the caller has left.
+        The read ``ArchiveyConfig.read_link_targets=False`` leaves to the caller:
+        ``extract_all`` on a link its selector and filter accepted, and ``open()``
+        following one. It fills ``link_target`` in place, and under either setting it
+        is the same read link finalization would make, so a filled target is never
+        read twice. The target is weighed by the listing tracker like one finalization
+        reads, without enforcing: this is not a listing call, and the published report
+        will carry it.
         """
-        memo = (report_key, code) if report_key is not None else None
-        if memo is not None and memo in self._member_reports:
-            reported = self._member_reports[memo]
-            if reported is not None:
-                self._diagnostics_collector.reattach_to_member(member, reported)
+        if member.link_target is not None or member._link_target_resolved:
             return
-        diagnostic = self._diagnostics_collector.emit(
-            code=code,
-            message=message,
-            context=context,
-            member=member,
-            attach_to_member=True,
-            logger=diagnostic_logger if diagnostic_logger is not None else logger,
-        )
-        if memo is not None:
-            # Only a report that landed on the member can be handed to a later object:
-            # re-attaching one that did not would give the second object a record the
-            # first never got.
-            self._member_reports[memo] = (
-                diagnostic
-                if any(attached is diagnostic for attached in member._diagnostics)
-                else None
-            )
+        self._resolve_link_target(member)
+        if member.link_target is not None:
+            self._listing_tracker.account_link_target(member.link_target, enforce=False)
 
     def _emit_link_target_unavailable(
         self,
@@ -1431,17 +1549,25 @@ class BaseArchiveReader(ArchiveReader):
         reason: str,
         message: str,
         target_in_archive: bool,
-        report_key: int | None = None,
+        member_id: int | None = None,
     ) -> None:
         """Report that a link's target could not be read, and why.
 
-        Every path that leaves ``link_target`` unset on a member the archive calls a
-        link goes through here. That is the whole guarantee `safe-extraction` and
+        Every path that *looks* for a link's target and leaves ``link_target`` unset
+        goes through here. That is the whole guarantee `safe-extraction` and
         ``docs/extracting.md`` make about the ``LINK_TARGET_UNAVAILABLE`` outcome: it says
         only that extraction wrote nothing, so the *reason* has to reach the caller on
         the diagnostics channel, and ``SYMLINK_TARGET_UNAVAILABLE`` is in
         ``ARCHIVE_INTEGRITY_CODES`` so a strict policy refuses the archive outright.
         A backend that returns quietly instead makes that guarantee false.
+
+        One path leaves the target unset without looking and does not come here:
+        ``ArchiveyConfig.read_link_targets=False``, under which listing and a pass
+        skip data-stored targets (``_finalize_links``). Nothing was read and nothing
+        failed, and an integrity code there would have a strict policy refuse an
+        archive over a setting the caller chose. A read the caller then asks for
+        (``extract_all`` on an accepted link, ``open()`` following one) does look, and
+        reports here like any other.
 
         ``target_in_archive`` says whether the archive carries a target this reader
         could not reach — compressed, split across volumes, encrypted — as against
@@ -1452,39 +1578,30 @@ class BaseArchiveReader(ArchiveReader):
         knows; inferring it downstream from "the lookup finished" is what this
         parameter replaced.
 
-        ``report_key`` is for a backend calling this while the member is still being
-        *typed*, before :meth:`_register_member` has given it an id: it is the member's
-        position in the archive's listing, which is what registration takes the id from.
-        It is passed rather than waited for because typing time is the only moment every
-        path shares. Link finalization does not run in a progressive pass a caller
-        abandons early, and registration does not run at all in a 7z one, which streams
-        straight off its cached member list — so anything held back for either loses the
-        report on exactly the archives this outcome exists for. On that 7z path nothing
-        ever stamps the id: the report names the position and the member's own public
-        ``member_id`` stays unset, so a caller reading both sees an id on one and not on
-        the other.
-
-        One member reported once is what the caller's ``counts``, retention budget and
-        callback all assume; :meth:`_report_member_diagnostic` is what holds that, here
-        and for the other diagnostics a member can be typed into twice.
+        ``member_id`` is for a backend calling this while the member is still being
+        *typed*, before :meth:`_register_member` has stamped it: the member's position
+        in the walk, which is the id registration will stamp, so the report names the
+        member the caller will see.
         """
         member._link_target_absent = not target_in_archive
-        key = member._member_id if member._member_id is not None else report_key
-        self._report_member_diagnostic(
+        self._diagnostics_collector.emit(
             code=DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
             message=message,
             context=SymlinkTargetContext(
                 archive_name=self._archive_name,
                 member_name=member.name,
-                member_id=key,
+                member_id=member._member_id
+                if member._member_id is not None
+                else member_id,
                 reason=reason,
             ),
             member=member,
-            report_key=key,
+            attach_to_member=True,
+            logger=logger,
         )
 
     def _emit_link_target_too_long(
-        self, member: ArchiveMember, *, report_key: int | None = None
+        self, member: ArchiveMember, *, member_id: int | None = None
     ) -> None:
         """Report a data-stored link target over :data:`MAX_LINK_TARGET_BYTES`.
 
@@ -1502,7 +1619,7 @@ class BaseArchiveReader(ArchiveReader):
                 f"link_target unset."
             ),
             target_in_archive=True,
-            report_key=report_key,
+            member_id=member_id,
         )
 
     def _read_link_target_data(
@@ -1537,18 +1654,44 @@ class BaseArchiveReader(ArchiveReader):
         that long, the extra byte reaches end of stream, so its checksum is verified as
         a whole read would.
         """
-        if is_reparse_point:
+        if not self._link_data_refused_by_size(
+            member, is_reparse_point=is_reparse_point
+        ):
             with open_data() as stream:
-                header = read_exact(stream, REPARSE_HEADER_BYTES)
-                return header + read_exact(stream, reparse_payload_length(header) + 1)
-        declared = member.size
-        if declared is None or declared <= MAX_LINK_TARGET_BYTES:
-            with open_data() as stream:
-                data = read_exact(stream, MAX_LINK_TARGET_BYTES + 1)
-            if len(data) <= MAX_LINK_TARGET_BYTES:
+                data = self._read_bounded_link_data(
+                    stream, is_reparse_point=is_reparse_point
+                )
+            if is_reparse_point or len(data) <= MAX_LINK_TARGET_BYTES:
                 return data
         self._emit_link_target_too_long(member)
         return None
+
+    @staticmethod
+    def _link_data_refused_by_size(
+        member: ArchiveMember, *, is_reparse_point: bool
+    ) -> bool:
+        """Whether ``_read_link_target_data`` refuses ``member`` without opening it."""
+        declared = member.size
+        return (
+            not is_reparse_point
+            and declared is not None
+            and declared > MAX_LINK_TARGET_BYTES
+        )
+
+    @staticmethod
+    def _read_bounded_link_data(
+        stream: ReadableStream, *, is_reparse_point: bool
+    ) -> bytes:
+        """The bytes ``_read_link_target_data`` reads from an opened link member.
+
+        Split out so a backend that reads a link's bytes ahead of its resolution (7z,
+        from a shared folder decode) reads exactly what a direct read would, and the
+        later resolution over those bytes answers the same.
+        """
+        if is_reparse_point:
+            header = read_exact(stream, REPARSE_HEADER_BYTES)
+            return header + read_exact(stream, reparse_payload_length(header) + 1)
+        return read_exact(stream, MAX_LINK_TARGET_BYTES + 1)
 
     def _apply_reparse_data(
         self,
@@ -1556,7 +1699,7 @@ class BaseArchiveReader(ArchiveReader):
         data: bytes,
         *,
         fallback_type: MemberType,
-        report_key: int | None = None,
+        member_id: int | None = None,
     ) -> None:
         """Set ``link_target`` (and ``is_junction``) from a Windows reparse buffer.
 
@@ -1607,7 +1750,7 @@ class BaseArchiveReader(ArchiveReader):
             # is not what a POSIX path limit is written against.
             encoded_size = len(parsed.target.encode("utf-8", errors="surrogatepass"))
             if encoded_size > MAX_LINK_TARGET_BYTES:
-                self._emit_link_target_too_long(member, report_key=report_key)
+                self._emit_link_target_too_long(member, member_id=member_id)
                 return
             member.link_target = parsed.target
             return
@@ -1653,7 +1796,7 @@ class BaseArchiveReader(ArchiveReader):
             reason=reason,
             message=message,
             target_in_archive=False,
-            report_key=report_key,
+            member_id=member_id,
         )
 
     @staticmethod
@@ -1806,50 +1949,62 @@ class BaseArchiveReader(ArchiveReader):
         if self._progressive_enforce_listing_limits:
             self._listing_tracker.assert_within_limits()
         self._finalize_links(
-            self._pass_scanned,
-            self._pass_by_name_lists,
+            self._listed,
+            self._listed_by_name,
             error=error,
             child_scope=False,
-            is_current_first=False,
             enforce_listing_limits=self._progressive_enforce_listing_limits,
         )
-        self._publish_materialized(
-            self._pass_scanned,
-            self._pass_by_name_lists,
-            error=error,
-        )
+        self._publish_materialized(self._listed, self._listed_by_name, error=error)
 
-    def _stamp_progressive_member(self, idx: int, member: ArchiveMember) -> None:
-        # stream_members: account without enforcing (O(1) escape hatch).
-        # scan_members: enforce per registration via ``_progressive_enforce_listing_limits``.
-        self._register_member(
-            idx,
-            member,
-            enforce_listing_limits=self._progressive_enforce_listing_limits,
+    @staticmethod
+    def _last_named_member_before(
+        target_name: str,
+        before_id: int,
+        by_name_lists: Mapping[str, list[ArchiveMember]],
+    ) -> ArchiveMember | None:
+        """``_last_named_member``, looking only at members listed before ``before_id``."""
+        for name in BaseArchiveReader._target_name_keys(target_name):
+            for candidate in reversed(by_name_lists.get(name, [])):
+                candidate_id = candidate._member_id
+                if candidate_id is not None and candidate_id < before_id:
+                    return candidate
+        return None
+
+    def _link_progressive_member(self, member: ArchiveMember) -> None:
+        """Point a link the pass is about to yield at a member the pass already passed.
+
+        Only earlier members count, as if the list ended here: a peek into an upfront
+        index can have walked past this member already, and a target found among later
+        members is for finalization to set, not this yield.
+        """
+        if not member.is_link or member.link_target_member is not None:
+            return
+        member_id = member._member_id
+        if member_id is None or not member.link_target:
+            return
+        target_name = resolve_link_target_name(
+            member.name, member.link_target, member.type
         )
-        if member.is_link and member.link_target_member is None:
-            target = self._lookup_link_target_for_member(
-                member,
-                self._pass_by_name_lists,
-                allow_forward_fallback=False,
+        if target_name is None:
+            return
+        if member.type == MemberType.HARDLINK:
+            target = self._latest_prior_named_member(
+                target_name, member_id, self._listed_by_name
             )
-            if target is not None and target is not member:
-                if target.is_link:
-                    target = target.link_target_member
-                if target is not None:
-                    member.link_target_member = target
-        self._index_member_name(self._pass_by_name_lists, member)
-        self._pass_scanned.append(member)
+        else:
+            target = self._last_named_member_before(
+                target_name, member_id, self._listed_by_name
+            )
+        if target is not None and target is not member:
+            if target.is_link:
+                target = target.link_target_member
+            if target is not None:
+                member.link_target_member = target
 
     def _begin_forward_pass(self) -> Iterator[ArchiveMember]:
         """Return the shared instance-held progressive pass, creating it if needed."""
         if self._progressive_gen is None:
-            self._pass_scanned = []
-            self._pass_by_name_lists = {}
-            self._listing_tracker.reset()
-            self._account_archive_comment(
-                enforce=self._progressive_enforce_listing_limits
-            )
             self._progressive_gen = _ProgressivePassIterator(self)
         return self._progressive_gen
 
@@ -2101,19 +2256,30 @@ class BaseArchiveReader(ArchiveReader):
         backend's upfront index when ``_MEMBER_LIST_UPFRONT`` is set. It never triggers
         a forward scan, never reads member data, and never consumes the forward pass.
         Link targets stored in member data (e.g. ZIP symlinks) may be unset; use
-        :meth:`members` or :meth:`scan_members` for a fully-resolved list.
+        :meth:`members` or :meth:`scan_members` for a fully-resolved list. The members
+        are the reader's own objects, the same ones every other listing method and pass
+        returns, so a later ``members()`` fills those link fields in place.
+
+        On an upfront index this drains the reader's one member walk, which reads no
+        member data. A walk that ends in terminal archive damage is returned as the
+        incomplete report (prefix plus ``error``), not raised.
         """
         self._state.require_open("members_report_if_available()")
         if self._materialized is not None:
             self._listing_tracker.assert_within_limits()
             return self._materialized.report
-        if self._MEMBER_LIST_UPFRONT:
-            return MemberListReport(
-                members=tuple(self._get_members_index_only()),
-                error=None,
-                diagnostics=self._diagnostics_collector.snapshot(),
-            )
-        return None
+        if not self._MEMBER_LIST_UPFRONT:
+            return None
+        self._ensure_walked(enforce=True)
+        materialized = self._materialized
+        if materialized is not None:
+            # Published while this call waited on another thread's materialization.
+            return materialized.report
+        return MemberListReport(
+            members=tuple(self._listed),
+            error=self._walk_error,
+            diagnostics=self._diagnostics_collector.snapshot(),
+        )
 
     def __contains__(self, member: object) -> bool:
         # Identity membership for ArchiveMembers: O(1), no scan, so it works in any
@@ -2251,7 +2417,7 @@ class BaseArchiveReader(ArchiveReader):
             if member.link_target_member is not None:
                 return self._open_with_link_follow(member.link_target_member, visited)
             if member.link_target is None:
-                self._resolve_link_target(member)
+                self._read_link_target_on_request(member)
             if member.link_target is None:
                 raise LinkTargetNotFoundError(
                     "Link target is unknown",
@@ -2505,18 +2671,23 @@ class BaseArchiveReader(ArchiveReader):
 
 
 class _ProgressivePassIterator(Iterator[ArchiveMember]):
-    """Instance-held streaming pass.
+    """Instance-held streaming pass: a cursor over the reader's one member walk.
 
     A generator would be closed (and its post-loop tail skipped) when a consumer
     breaks out of ``for member in reader``; this iterator survives early exit so
     :meth:`BaseArchiveReader.scan_members` can drain the remainder.
+
+    The cursor reads ``_listed`` and pulls from the walk only when it reaches the end
+    of what has been walked, so a peek that drained the walk ahead of it hands the pass
+    the same objects. It finalizes when *it* steps past the last member of an ended
+    walk, not when the walk ends: a pass abandoned after a peek drained the walk
+    resolves no links and publishes nothing.
     """
 
     def __init__(self, reader: BaseArchiveReader) -> None:
         self._reader = reader
-        self._members_source = reader._iter_members()
-        self._next_id = 0
-        self._exhausted = False
+        self._pos = 0
+        self._finished = False
         self._error: BaseException | None = None
 
     def __iter__(self) -> _ProgressivePassIterator:
@@ -2524,54 +2695,52 @@ class _ProgressivePassIterator(Iterator[ArchiveMember]):
 
     def __next__(self) -> ArchiveMember:
         if self._error is not None:
-            # The pass previously failed. Its generator is closed, so a plain retry
-            # would see StopIteration and finalize the PARTIAL scan as the complete,
-            # resolved member cache — scan_members() would then silently return a
-            # truncated listing after the caller caught the original error. Fail loud
-            # and keep the cache unpublished instead.
+            # The pass previously failed. A plain retry could step past the end of a
+            # PARTIAL listing and finalize it as the complete, resolved member cache —
+            # scan_members() would then silently return a truncated listing after the
+            # caller caught the original error. Fail loud and keep the cache unpublished.
             err = ReadError(
                 "The archive scan previously failed "
                 f"({type(self._error).__name__}); the member list is incomplete and "
                 "cannot be resumed. Reopen the archive to retry."
             )
             raise err from self._error
-        if self._exhausted:
+        if self._finished:
             raise StopIteration
+        reader = self._reader
         try:
-            member = next(self._members_source)
-        except StopIteration:
-            self._exhausted = True
+            if self._pos < len(reader._listed):
+                member: ArchiveMember | None = reader._listed[self._pos]
+            else:
+                member = reader._pull_member(
+                    enforce=reader._progressive_enforce_listing_limits
+                )
+        except BaseException as exc:
+            # A failed pull poisons the walk as well (``_abandon_walk``); this keeps the
+            # pass's own answer the same whichever of the two a retry reaches first.
+            self._error = exc
+            raise
+        if member is None:
+            # The cursor stepped past the last member of an ended walk.
+            self._finished = True
+            error = reader._walk_error
             try:
-                self._reader._finalize_pass_links()
+                reader._finalize_pass_links(error=error)
             except BaseException as exc:
                 # Listing-limit refusal (or link finalize failure) must not leave a
                 # half-published cache retryable as success via a second StopIteration.
+                # Secondary Corruption/Truncated during link finalization after terminal
+                # listing damage is swallowed inside _finalize_links so the recovered
+                # prefix stays published.
                 self._error = exc
                 raise
-            raise
-        except (CorruptionError, TruncatedError) as exc:
-            self._exhausted = True
-            try:
-                self._reader._finalize_pass_links(error=exc)
-            except BaseException as finalize_exc:
-                # Non-archive-damage finalize failures (e.g. listing-limit refusal) must
-                # not leave a half-published cache. Secondary Corruption/Truncated during
-                # link finalization after terminal listing damage is swallowed inside
-                # _finalize_links so the recovered prefix stays published.
-                self._error = finalize_exc
-                raise
-            raise
-        except BaseException as exc:
-            self._error = exc
-            raise
-        idx = self._next_id
-        self._next_id += 1
+            if error is not None:
+                raise error
+            raise StopIteration
+        self._pos += 1
         try:
-            self._reader._stamp_progressive_member(idx, member)
+            reader._link_progressive_member(member)
         except BaseException as exc:
-            # Registration/link bookkeeping failed mid-pass (e.g. a RAISE-disposition
-            # diagnostic or ListingLimits): the pass state is inconsistent, so poison
-            # it the same way.
             self._error = exc
             raise
         return member

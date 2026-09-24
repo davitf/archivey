@@ -24,6 +24,7 @@ from archivey.exceptions import (
     EncryptionError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends import sevenzip_aes
 from archivey.internal.backends.rar_parser import (
     RarEncryptionInfo,
     RarMemberInfo,
@@ -52,7 +53,6 @@ from archivey.internal.backends.sevenzip_reader import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing.blake2sp import Blake2sp
-from archivey.internal.streams import crypto
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import ReadSizeSpy, requires, requires_binary
@@ -489,7 +489,7 @@ def test_f2_normal_aes_archive_has_crc_anchor_no_diagnostic(tmp_path: Path) -> N
 @requires("cryptography")
 @pytest.mark.parametrize("cycles", [0, 1, 19, 24, 0x3F])
 def test_f3_accepted_num_cycles_power(cycles: int) -> None:
-    key = crypto.derive_sevenzip_aes_key(b"pw", salt=b"salt", cycles=cycles)
+    key = sevenzip_aes.derive_sevenzip_aes_key(b"pw", salt=b"salt", cycles=cycles)
     assert len(key) == 32
 
 
@@ -497,7 +497,7 @@ def test_f3_accepted_num_cycles_power(cycles: int) -> None:
 @pytest.mark.parametrize("cycles", [25, 40, 62])
 def test_f3_rejected_num_cycles_power(cycles: int) -> None:
     with pytest.raises(UnsupportedFeatureError, match="NumCyclesPower"):
-        crypto.derive_sevenzip_aes_key(b"pw", salt=b"salt", cycles=cycles)
+        sevenzip_aes.derive_sevenzip_aes_key(b"pw", salt=b"salt", cycles=cycles)
 
 
 @requires("cryptography")
@@ -510,13 +510,13 @@ def test_f3_parse_properties_rejects_hostile_cycles(cycles: int) -> None:
     first = 0xC0 | cycles
     properties = bytes([first, 0x00, 0x00, 0x00])
     with pytest.raises(UnsupportedFeatureError, match="NumCyclesPower"):
-        crypto.parse_sevenzip_aes_properties(properties)
+        sevenzip_aes.parse_sevenzip_aes_properties(properties)
 
 
 @requires("cryptography")
 def test_f3_parse_properties_allows_0x3f_sentinel() -> None:
     properties = bytes([0xC0 | 0x3F, 0x00, 0x00, 0x00])
-    cycles, salt, iv = crypto.parse_sevenzip_aes_properties(properties)
+    cycles, salt, iv = sevenzip_aes.parse_sevenzip_aes_properties(properties)
     assert cycles == 0x3F
     assert len(salt) == 1 and len(iv) == 16
 
@@ -524,9 +524,9 @@ def test_f3_parse_properties_allows_0x3f_sentinel() -> None:
 @requires("cryptography")
 def test_f3_out_of_range_still_value_error() -> None:
     with pytest.raises(ValueError, match="out of range"):
-        crypto.derive_sevenzip_aes_key(b"pw", salt=b"s", cycles=0x40)
+        sevenzip_aes.derive_sevenzip_aes_key(b"pw", salt=b"s", cycles=0x40)
     with pytest.raises(ValueError, match="out of range"):
-        crypto.derive_sevenzip_aes_key(b"pw", salt=b"s", cycles=-1)
+        sevenzip_aes.derive_sevenzip_aes_key(b"pw", salt=b"s", cycles=-1)
 
 
 # --- F4: unrar password via stdin ------------------------------------------------------
