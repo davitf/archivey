@@ -119,6 +119,14 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `MemberStreams.CONCURRENT`, a thread that needed the provider while another thread's call
   was running got the `ArchiveyUsageError` meant for a provider that calls back into the
   reader. It now waits for that call to finish; the reentry error stays for its real case.
+- **A password provider is asked again after repeating a password already tried.** It
+  used to stop on the first repeat, so a provider that offered the password that had
+  opened an earlier member, and had the right one next, never got to give it; the member
+  failed with a wrong-password error. A repeat is still never tried twice, and a provider
+  that repeats itself 16 times in a row is taken to have no more answers.
+- **Windows timestamps land on the right microsecond.** `modified`, `accessed` and
+  `created` read from a ZIP NTFS field, a 7z, or a RAR5 FILETIME were converted through a
+  float, which put more than half of present-day values one or two microseconds off.
 - **A 7z member's `compression` chain is now in compress order**, as documented on
   `ArchiveMember.compression` and the way 7-Zip itself lists it: a BCJ member reads
   `(BCJ, LZMA2)`, filters first and packing codec last. It used to come back reversed,

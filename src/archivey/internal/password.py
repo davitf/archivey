@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterator
 from collections.abc import Sequence as ABCSequence
+from collections.abc import Set as AbstractSet
 from contextvars import ContextVar
 from typing import TypeVar, cast
 
@@ -14,6 +15,11 @@ from archivey.internal.arg_checks import describe_value
 from archivey.types import ArchiveMember
 
 _T = TypeVar("_T")
+
+# How many already-tried answers in a row the provider may give before the loop stops.
+# A repeat costs one provider call and no decrypt, so the bound only has to end a
+# provider stuck on one answer, not to save work; it resets on every new answer.
+_MAX_CONSECUTIVE_PROVIDER_REPEATS = 16
 
 # The provider call running in this context, if any. The reentry check reads it as
 # well as the thread: a provider that hands reader work to a helper thread which
@@ -143,6 +149,35 @@ class _PasswordCandidates:
             return None
         return self._call_provider(member, attempt)
 
+    def iter_provider_answers(
+        self, member: ArchiveMember | None, tried: AbstractSet[bytes]
+    ) -> Iterator[bytes]:
+        """Yield the provider's answers not already in ``tried``, until it returns ``None``.
+
+        A repeated answer is never tried again (that would re-run an expensive decrypt
+        or key derivation on an input already known to fail), but it does not end the
+        loop either: the provider is asked again with the next ``attempt``, because a
+        provider that leads with a password it already knows, often the one promoted to
+        known-good by an earlier unit, may have the right one next. The loop stops after
+        :data:`_MAX_CONSECUTIVE_PROVIDER_REPEATS` repeats in a row, which ends a
+        provider that returns the same answer forever. The caller adds each yielded
+        password to ``tried``.
+        """
+        attempt = 1
+        repeats = 0
+        while self._provider is not None:
+            password = self._call_provider(member, attempt)
+            attempt += 1
+            if password is None:
+                return
+            if password in tried:
+                repeats += 1
+                if repeats >= _MAX_CONSECUTIVE_PROVIDER_REPEATS:
+                    return
+                continue
+            repeats = 0
+            yield password
+
     def _call_provider(
         self, member: ArchiveMember | None, attempt: int
     ) -> bytes | None:
@@ -240,21 +275,10 @@ class _PasswordCandidates:
             if result is not None:
                 return result
 
-        attempt = 1
-        while self._provider is not None:
-            raw = self._call_provider(member, attempt)
-            if raw is None:
-                break
-            password = raw
-            # A provider that repeats a password we already tried can make no further
-            # progress; stop rather than re-running an expensive decrypt (and, for 7z,
-            # an expensive key derivation) on the same input forever.
-            if password in tried:
-                break
+        for password in self.iter_provider_answers(member, tried):
             result = try_password(password)
             if result is not None:
                 return result
-            attempt += 1
 
         message = (
             (

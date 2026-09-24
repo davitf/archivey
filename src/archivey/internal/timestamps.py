@@ -12,12 +12,12 @@ issue, never sink the whole listing.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from archivey.escaping import quoted
 
-# Seconds between the NTFS FILETIME epoch (1601-01-01) and the Unix epoch (1970-01-01).
-NTFS_EPOCH_OFFSET = 11_644_473_600
+# The NTFS FILETIME epoch.
+_FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -45,15 +45,12 @@ def filetime_to_datetime(
     if value is None or value == 0:
         return None, None
     try:
-        return (
-            datetime.fromtimestamp(
-                value / 10_000_000 - NTFS_EPOCH_OFFSET, tz=timezone.utc
-            ),
-            None,
-        )
+        # Integer arithmetic throughout: dividing a modern FILETIME (~1.3e17 ticks) as a
+        # float leaves ~2 us of precision, so the microsecond would often be wrong.
+        # Sub-microsecond ticks are truncated, as the stored value is.
+        return _FILETIME_EPOCH + timedelta(microseconds=value // 10), None
     except (ValueError, OverflowError, OSError):
-        # fromtimestamp rejects out-of-range values with ValueError/OverflowError, and on
-        # some platforms (notably Windows) with OSError for negative/huge inputs.
+        # timedelta/datetime arithmetic raises OverflowError outside datetime's range.
         return None, TimestampIssue(
             field=field,
             source=source,
