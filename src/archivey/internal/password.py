@@ -51,8 +51,9 @@ def wrong_password_error(message: str) -> EncryptionError:
     ``attempt`` keeps this message on exhaustion ("Wrong password for this ZIP
     member") and replaces any other ``EncryptionError`` text with a generic one. The
     decision reads the mark, not the wording, so rewording a backend's message cannot
-    change what exhaustion reports. ``tests/test_password.py`` fails on a
-    wrong-password message raised without it.
+    change what exhaustion reports. ``tests/test_password.py`` fails on an
+    ``EncryptionError`` whose literal or f-string message says the password is wrong
+    and that does not carry the mark.
     """
     error = EncryptionError(message)
     setattr(error, _WRONG_PASSWORD_MARK, True)

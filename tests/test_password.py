@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 from collections.abc import Callable
@@ -425,14 +426,41 @@ _UNMARKED_WRONG_PASSWORD_MESSAGES = {
 }
 
 
+def _message_text(node: ast.expr) -> str:
+    """The literal text of a message argument, with ``{…}`` for interpolated parts."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            part.value
+            if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            else "{…}"
+            for part in node.values
+        )
+    return ""
+
+
 def test_every_wrong_password_message_carries_the_mark() -> None:
+    """Every ``EncryptionError(...)`` whose message says the password is wrong uses the mark.
+
+    Walks the AST, so a message split over several literals (what the formatter does
+    to a long one) is joined before matching, and f-string text counts too. A message
+    built entirely from an expression (``raw_message_of(exc)``) has no text to match
+    and is not checked.
+    """
     src = Path(archivey.__file__).parent
-    raise_site = re.compile(r"""\bEncryptionError\(\s*f?["']([^"']*)["']""")
     wording = re.compile(r"wrong password|incorrect .*password", re.IGNORECASE)
-    unmarked = {
-        (path.relative_to(src).as_posix(), message)
-        for path in src.rglob("*.py")
-        for message in raise_site.findall(path.read_text(encoding="utf-8"))
-        if wording.search(message)
-    }
+    unmarked: set[tuple[str, str]] = set()
+    for path in src.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "EncryptionError"
+                and node.args
+            ):
+                message = _message_text(node.args[0])
+                if wording.search(message):
+                    unmarked.add((path.relative_to(src).as_posix(), message))
     assert unmarked == _UNMARKED_WRONG_PASSWORD_MESSAGES
