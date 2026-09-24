@@ -558,7 +558,10 @@
   not the one that added the type**: with a single field on `DecoderLimits` the preset is
   an alias for `DecoderLimits(max_decoder_memory=256 * 2**20)`, which a caller can already
   write, and a name that promises a tuned bundle should arrive with a bundle — the total
-  KDF budget is heading for this type. (The LZMA dictionary cap landed on the same field
+  KDF budget is heading for this type. **The bundle now exists**: the KDF budget landed as
+  `max_key_derivation_rounds` (default `2**27`), and davitf set the preset's value on
+  2026-09-23 at `2**24`, one maximum-cost derivation. So the preset's numbers are
+  256 MiB and `2**24`; only the name is left. (The LZMA dictionary cap landed on the same field
   rather than a new one, and 256 MiB also covers it: xz `-9` and 7-Zip's presets declare
   64 MiB at most.) Adding a class attribute later is purely additive.
   **The name is open**, and davitf said so explicitly. `UNTRUSTED` is the suggestion on

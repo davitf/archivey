@@ -323,7 +323,8 @@ the list, then the provider, per `archive-reading`) and hands `unrar` the one it
 The winner is cached per salt, KDF cost and check; `rar` writes one salt per run, so an
 archive usually costs one key derivation per candidate tried, not one per member. The
 cost of each derivation is the archive's `kdf_count`, and an archive that salts every
-member defeats the cache: threat-model O18. The tweaked-digest HashKey comes from the
+member defeats the cache; `DecoderLimits.max_key_derivation_rounds` bounds the total
+(threat-model O18). The tweaked-digest HashKey comes from the
 same winner. A pass (`stream_members`, one `unrar p` for the whole archive) and a plain
 member of a solid archive use the first RAR5 member's winner. **RAR3/4 data has no check value**, so there is nothing to test a
 candidate against short of decoding: `unrar` gets the first candidate, and a list whose

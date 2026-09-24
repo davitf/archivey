@@ -331,6 +331,12 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 bad,
                 lambda b=bad: DecoderLimits(max_decoder_memory=b),
             ),
+            _case(
+                "DecoderLimits",
+                "max_key_derivation_rounds",
+                bad,
+                lambda b=bad: DecoderLimits(max_key_derivation_rounds=b),
+            ),
         ]
 
     # ``ratio_activation_threshold`` is the one limit field that is not ``| None``, so
@@ -583,7 +589,7 @@ def _public_surface() -> list[tuple[str, list[str]]]:
     for method in ("open", "read", "extract_all", "stream_members", "get"):
         names = list(inspect.signature(getattr(ArchiveReader, method)).parameters)
         surface.append((method, [n for n in names if n != "self"]))
-    for cls in (ArchiveyConfig, ExtractionLimits, ListingLimits):
+    for cls in (ArchiveyConfig, DecoderLimits, ExtractionLimits, ListingLimits):
         surface.append((cls.__name__, [f.name for f in dataclasses.fields(cls)]))
     return surface
 

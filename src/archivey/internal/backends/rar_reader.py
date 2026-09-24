@@ -83,6 +83,7 @@ from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
 )
+from archivey.internal.config import KeyDerivationBudget
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
@@ -732,7 +733,9 @@ class RarReader(BaseArchiveReader):
         # Every RAR key this reader derives: the header parse, each PswCheck and each
         # tweaked-digest HashKey. An ``-hp`` archive's members repeat the header's
         # salt, so their PswCheck is the header's own derivation.
-        self._kdf_cache = RarKdfCache()
+        self._kdf_cache = RarKdfCache(
+            budget=KeyDerivationBudget(self._config.decoder_limits)
+        )
         # The first member whose PswCheck can judge a candidate, found once on first
         # use; ``False`` until looked for, ``None`` when there is none.
         self._archive_check_member: ArchiveMember | None | Literal[False] = False
