@@ -1,4 +1,4 @@
-"""AES decrypt stage via the ``[recommended]`` extra (``cryptography`` package).
+"""AES stages via the ``[recommended]`` extra (``cryptography`` package).
 
 Format parsers must not import ``cryptography`` directly — only this module does
 (the backend stays swappable). AES is a *pipeline stage* ahead of a decompressor
@@ -8,6 +8,9 @@ Layers here:
 
 - :class:`DecryptStage` / :func:`open_aes_decrypt_stage` — feed ciphertext chunks,
   get plaintext (used when composing inside a larger open).
+- :class:`KeystreamStage` / :func:`open_aes_ctr_stage` — AES-CTR with the counter
+  convention as a parameter (WinZip AE counts little-endian from 1). CTR is its own
+  inverse, so one stage both encrypts and decrypts.
 - :class:`AesDecryptStream` / :func:`open_aes_decrypt_stream` — pull ``BinaryIO``
   wrapper over a ciphertext source (7z member data: CBC, optional seek).
   RAR headers and WinZip AES keep their own pull streams; see the class
@@ -24,7 +27,7 @@ import importlib.util
 import io
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
-from typing import BinaryIO, Protocol
+from typing import BinaryIO, Literal, Protocol
 
 from archivey.exceptions import (
     PackageNotInstalledError,
@@ -78,6 +81,32 @@ class DecryptStage(Protocol):
     def finalize(self) -> bytes: ...
 
 
+@dataclass(frozen=True)
+class AesCtrParams:
+    """Inputs to an AES-CTR keystream stage: the key and the counter convention.
+
+    The counter is the whole 16-byte block — there is no separate nonce. Block
+    ``i`` of the keystream is ``AES(key, (initial_counter + i) mod 2**128)``
+    encoded in ``counter_byteorder``. Formats disagree on the convention, so
+    neither field has a default: WinZip AE counts ``"little"`` from ``1``;
+    NIST SP 800-38A and ``cryptography``'s ``modes.CTR`` count ``"big"``.
+    """
+
+    key: bytes = field(repr=False)
+    initial_counter: int
+    counter_byteorder: Literal["little", "big"]
+
+
+class KeystreamStage(Protocol):
+    """A streaming XOR transform: ``process`` maps input to output of the same length.
+
+    Calls may split the input anywhere; the output is the same as one call over
+    the concatenation. There is nothing to flush.
+    """
+
+    def process(self, data: bytes) -> bytes: ...
+
+
 class CryptoBackend(ABC):
     """Abstraction over a crypto library. The only thing format code may depend on."""
 
@@ -86,6 +115,11 @@ class CryptoBackend(ABC):
     @abstractmethod
     def aes_cbc_decrypt_stage(self, params: AesParams) -> DecryptStage:
         """Create an AES-256-CBC decrypt stage for ``params``."""
+        ...
+
+    @abstractmethod
+    def aes_ctr_keystream_stage(self, params: AesCtrParams) -> KeystreamStage:
+        """Create an AES-CTR stage for ``params`` (see :class:`AesCtrParams`)."""
         ...
 
 
@@ -142,11 +176,67 @@ class _CryptographyDecryptStage:
         return self._decryptor.finalize()
 
 
+# Counter blocks are 128-bit; the counter wraps modulo this.
+_CTR_MODULUS = 1 << 128
+
+
+class _CryptographyCtrStage:
+    """AES-CTR keystream stage backed by ``cryptography``'s ECB primitive.
+
+    ``modes.CTR`` only counts big-endian, so the counter blocks are built here and
+    encrypted in one ECB ``update`` per call. The XOR is one big-integer operation
+    over the whole call, not a Python loop per byte. A call that ends mid-block
+    keeps the unused keystream bytes for the next call.
+    """
+
+    def __init__(self, params: AesCtrParams) -> None:
+        # Local import: format parsers never import cryptography; only this wrapper does.
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+        if len(params.key) not in (16, 24, 32):
+            raise ValueError(
+                f"AES key must be 16, 24, or 32 bytes, got {len(params.key)}"
+            )
+        if not 0 <= params.initial_counter < _CTR_MODULUS:
+            raise ValueError("AES-CTR initial_counter must fit in 128 bits")
+        if params.counter_byteorder not in ("little", "big"):
+            raise ValueError(
+                f"AES-CTR counter_byteorder must be 'little' or 'big', "
+                f"got {params.counter_byteorder!r}"
+            )
+        self._encryptor = Cipher(algorithms.AES(params.key), modes.ECB()).encryptor()
+        self._byteorder: Literal["little", "big"] = params.counter_byteorder
+        self._counter = params.initial_counter
+        # Keystream left over from a call that ended mid-block (< AES_BLOCK_SIZE bytes).
+        self._spare = b""
+
+    def process(self, data: bytes) -> bytes:
+        n = len(data)
+        if n == 0:
+            return b""
+        keystream = self._spare
+        if len(keystream) < n:
+            nblocks = -(-(n - len(keystream)) // AES_BLOCK_SIZE)
+            counter, order = self._counter, self._byteorder
+            blocks = b"".join(
+                ((counter + i) % _CTR_MODULUS).to_bytes(AES_BLOCK_SIZE, order)
+                for i in range(nblocks)
+            )
+            self._counter = (counter + nblocks) % _CTR_MODULUS
+            keystream += self._encryptor.update(blocks)
+        self._spare = keystream[n:]
+        mixed = int.from_bytes(data, "little") ^ int.from_bytes(keystream[:n], "little")
+        return mixed.to_bytes(n, "little")
+
+
 class _CryptographyBackend(CryptoBackend):
     name = CRYPTO_PACKAGE
 
     def aes_cbc_decrypt_stage(self, params: AesParams) -> DecryptStage:
         return _CryptographyDecryptStage(params)
+
+    def aes_ctr_keystream_stage(self, params: AesCtrParams) -> KeystreamStage:
+        return _CryptographyCtrStage(params)
 
 
 def _crypto_available() -> bool:
@@ -174,6 +264,11 @@ def open_aes_decrypt_stage(params: AesParams) -> DecryptStage:
     return get_crypto_backend().aes_cbc_decrypt_stage(params)
 
 
+def open_aes_ctr_stage(params: AesCtrParams) -> KeystreamStage:
+    """Convenience: resolve the crypto backend and build an AES-CTR keystream stage."""
+    return get_crypto_backend().aes_ctr_keystream_stage(params)
+
+
 class AesDecryptStream(ReadOnlyIOStream):
     """Pull ``BinaryIO`` that decrypts an underlying ciphertext stream via AES-CBC.
 
@@ -187,8 +282,9 @@ class AesDecryptStream(ReadOnlyIOStream):
     ``io.UnsupportedOperation``. Mid-stream ``seek`` still works.
 
     Two AES-CBC pull streams share :class:`DecryptStage`.
-    ``WinZipAesDecryptStream`` is CTR and builds its own cipher; it shares
-    only the availability check.
+    ``WinZipAesDecryptStream`` is CTR: it takes a :class:`KeystreamStage` from
+    the same backend and keeps its own pull loop, because its ``read`` also
+    feeds the HMAC and checks it at the end.
 
     Folding ``_HeaderDecryptStream`` in is blocked by the header walk, not by
     flags this class is missing:

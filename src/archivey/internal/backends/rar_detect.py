@@ -46,8 +46,10 @@ def validate_rar_main_header(
     (type ``0x73``) with a matching 16-bit header CRC.
 
     ``remaining`` distinguishes a genuine overrun from a scan-window clamp:
-    once the declared header size fits in ``remaining``, a short ``peek_more``
-    is not ``NOT_THIS_FORMAT``. ``peek_more`` stays outside the parse ``try``
+    once the bytes a check needs fit in ``remaining``, a short ``peek_more``
+    is not ``NOT_THIS_FORMAT``. Every short-peek site goes through
+    :func:`_header_in_hand`, including the first fixed-size peeks, because the
+    detector's view is clamped at ``scan_limit`` (see :class:`HitValidator`). ``peek_more`` stays outside the parse ``try``
     so a workspace ``OSError`` propagates. A truncated vint before the CRC is
     ``NOT_THIS_FORMAT``; after the CRC has matched, a later vint failure is
     ``DAMAGED``.
@@ -78,8 +80,9 @@ def _validate_rar5(
 ) -> HitOutcome:
     # Marker + CRC + a generous vint prefix, then the declared body.
     prefix = peek_more(len(RAR5_ID) + 4 + 16)
-    if len(prefix) < len(RAR5_ID) + 5:
-        return HitOutcome.NOT_THIS_FORMAT
+    short = _header_in_hand(len(prefix), len(RAR5_ID) + 5, remaining)
+    if short is not None:
+        return short
     body = prefix[len(RAR5_ID) :]
     try:
         hdrlen, pos = load_vint(body, 4)
@@ -113,8 +116,9 @@ def _validate_rar3(
     peek_more: Callable[[int], bytes], remaining: int | None
 ) -> HitOutcome:
     start = peek_more(len(RAR_ID) + _S_BLK_HDR.size)
-    if len(start) < len(RAR_ID) + _S_BLK_HDR.size:
-        return HitOutcome.NOT_THIS_FORMAT
+    short = _header_in_hand(len(start), len(RAR_ID) + _S_BLK_HDR.size, remaining)
+    if short is not None:
+        return short
     buf = start[len(RAR_ID) :]
     header_crc, block_type, flags, header_size = _S_BLK_HDR.unpack_from(buf)
     if block_type != _RAR3_MAIN:

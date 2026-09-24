@@ -105,5 +105,5 @@ its edge cases, not the cipher construction.
 
 ## Rejected: fold `WinZipAesDecryptStream` in as well
 
-It is CTR, not CBC: it builds its own cipher and shares only the availability check. No
-block-restart or IV-chaining semantics to unify.
+It is CTR, not CBC: it takes a keystream stage from the same backend and keeps its own pull
+loop, which also feeds the HMAC. No block-restart or IV-chaining semantics to unify.

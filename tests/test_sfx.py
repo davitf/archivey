@@ -1317,6 +1317,25 @@ def test_rar_clamped_header_peek_is_valid_when_remaining_is_known(
     assert validate_rar_main_header(_peek_view(payload), None) is HitOutcome.VALID
 
 
+@pytest.mark.parametrize(
+    ("filename", "magic"),
+    [("stored_m0.rar", RAR5_ID), ("basic_nonsolid__rar4.rar", RAR_ID)],
+    ids=["rar5", "rar4"],
+)
+def test_rar_magic_only_peek_is_valid_when_remaining_is_known(
+    filename: str, magic: bytes
+) -> None:
+    """A window clamped right after the magic is judged against remaining (R3-K9)."""
+    payload = (_RAR_FIXTURES / filename).read_bytes()
+
+    def clamped(n: int) -> bytes:
+        return payload[: min(n, len(magic))]
+
+    assert validate_rar_main_header(clamped, len(payload)) is HitOutcome.VALID
+    assert validate_rar_main_header(clamped, None) is HitOutcome.NOT_THIS_FORMAT
+    assert validate_rar_main_header(clamped, len(magic)) is HitOutcome.NOT_THIS_FORMAT
+
+
 def test_shebang_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:
     """A ``#!`` stub whose text contains ``PK\\x03\\x04`` is not reported as ZIP."""
     path = tmp_path / "script.sh"
