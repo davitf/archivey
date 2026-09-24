@@ -271,16 +271,9 @@ def _is_candidate_integrity_failure(exc: Exception) -> bool:
     )
 
 
-# NTFS FILETIME conversion + the shared TimestampIssue type live in internal.timestamps
-# (also used by the native 7z reader). Local aliases keep this module's call sites —
-# including the DOS date_time issue below — and test imports of the underscored names.
-_TimestampIssue = TimestampIssue
-_filetime_to_datetime = filetime_to_datetime
-
-
 def _zip_timestamps(
     info: zipfile.ZipInfo,
-) -> tuple[datetime | None, datetime | None, datetime | None, list[_TimestampIssue]]:
+) -> tuple[datetime | None, datetime | None, datetime | None, list[TimestampIssue]]:
     """Return ``(modified, accessed, created, issues)`` for a member.
 
     Sources, lowest to highest precedence (each layer overrides only the times it
@@ -296,7 +289,7 @@ def _zip_timestamps(
        signed 32-bit Unix time interpreted as UTC. The central directory typically
        carries only the modification time even when the flags advertise more.
     """
-    issues: list[_TimestampIssue] = []
+    issues: list[TimestampIssue] = []
     if info.date_time == (1980, 0, 0, 0, 0, 0):
         modified: datetime | None = None
     else:
@@ -304,7 +297,7 @@ def _zip_timestamps(
             modified = datetime(*info.date_time)
         except ValueError:
             issues.append(
-                _TimestampIssue(
+                TimestampIssue(
                     field="date_time",
                     source="dos",
                     value_repr=repr(info.date_time),
@@ -354,7 +347,7 @@ def _zip_timestamps(
                     (atime, "atime"),
                     (ctime, "ctime"),
                 ):
-                    dt, issue = _filetime_to_datetime(
+                    dt, issue = filetime_to_datetime(
                         value, info.filename, field=field_name
                     )
                     if issue is not None:
@@ -388,7 +381,7 @@ def _zip_timestamps(
                     # or merely old) can legitimately carry. Degrade to an issue, never
                     # sink the listing with a raw platform error.
                     issues.append(
-                        _TimestampIssue(
+                        TimestampIssue(
                             field=ut_name,
                             source="extended",
                             value_repr=repr(ts),
