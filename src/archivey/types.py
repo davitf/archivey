@@ -393,9 +393,9 @@ class MemberExtra(dict[str, object]):
 
     Known keys:
 
-    * ``is_junction`` (``bool``) — a Windows NTFS junction. Set only where the
-      archive carries the reparse tag, which 7-Zip does not store for one; implies
-      ``is_reparse_point``.
+    * ``is_junction`` (``bool``) — ZIP, 7z, RAR, directory. A Windows NTFS
+      junction; ZIP and 7z set it only when the writer stored the junction's
+      reparse data, and 7-Zip does not. Implies ``is_reparse_point``.
     * ``is_reparse_point`` (``bool``) — ZIP, 7z, RAR, directory. The weaker,
       metadata-only sibling of ``is_junction``: a Windows symlink or junction
       rather than a POSIX one.

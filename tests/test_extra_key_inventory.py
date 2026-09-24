@@ -394,34 +394,74 @@ def test_tests_do_not_invent_undeclared_extra_keys() -> None:
     )
 
 
+def _is_final(annotation: ast.expr) -> bool:
+    # Bare ``Final`` only: ``Final[str]`` widens the constant just like no annotation.
+    return (isinstance(annotation, ast.Name) and annotation.id == "Final") or (
+        isinstance(annotation, ast.Attribute) and annotation.attr == "Final"
+    )
+
+
+def _extra_key_constants(source: str, known_keys: set[str]) -> dict[str, bool]:
+    """Every ``NAME = "<str>"`` in *source* that names an extra key, and if it is Final.
+
+    Walks the whole tree, so a constant declared inside an ``if`` or ``try`` counts,
+    and selects by the ``EXTRA_`` prefix *or* by a value that is a known key, so a
+    constant named off-convention is still seen.
+    """
+    found: dict[str, bool] = {}
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.AnnAssign):
+            targets, value, final = (
+                [node.target],
+                node.value,
+                _is_final(node.annotation),
+            )
+        elif isinstance(node, ast.Assign):
+            targets, value, final = node.targets, node.value, False
+        else:
+            continue
+        if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name) and (
+                target.id.startswith("EXTRA_") or value.value in known_keys
+            ):
+                found[target.id] = found.get(target.id, True) and final
+    return found
+
+
 def test_extra_key_constants_are_final_and_registered() -> None:
     # Without ``Final`` mypy widens the constant to ``str``, so
     # ``extra[EXTRA_FOO]`` falls through to the ``str → object`` overload.
     # _CONST_KEYS must also list every constant or its writes go unseen.
-    tree = ast.parse((REPO_SRC / "types.py").read_text(encoding="utf-8"))
-    declared: dict[str, bool] = {}
-    for stmt in tree.body:
-        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-            ann = stmt.annotation
-            is_final = (isinstance(ann, ast.Name) and ann.id == "Final") or (
-                isinstance(ann, ast.Attribute) and ann.attr == "Final"
-            )
-            declared[stmt.target.id] = is_final
-        elif isinstance(stmt, ast.Assign):
-            for target in stmt.targets:
-                if isinstance(target, ast.Name):
-                    declared[target.id] = False
-    constants = {
-        name: final for name, final in declared.items() if name.startswith("EXTRA_")
-    }
-    not_final = sorted(name for name, final in constants.items() if not final)
-    assert not not_final, f"EXTRA_* constants not annotated Final: {not_final}"
-    assert set(constants) == set(_CONST_KEYS), (
-        f"_CONST_KEYS out of step with types.py: {sorted(set(constants) ^ set(_CONST_KEYS))}"
+    known_keys = _literal_keys(MemberExtra) | _literal_keys(ArchiveInfoExtra)
+    constants = _extra_key_constants(
+        (REPO_SRC / "types.py").read_text(encoding="utf-8"), known_keys
     )
-    declared_keys = _literal_keys(MemberExtra) | _literal_keys(ArchiveInfoExtra)
-    unknown = sorted(set(_CONST_KEYS.values()) - declared_keys)
-    assert not unknown, f"EXTRA_* constants with no overload: {unknown}"
+    not_final = sorted(name for name, final in constants.items() if not final)
+    assert not not_final, f"extra-key constants not annotated Final: {not_final}"
+    unlisted = sorted(set(constants) - set(_CONST_KEYS))
+    assert not unlisted, f"types.py constants missing from _CONST_KEYS: {unlisted}"
+    stale = sorted(set(_CONST_KEYS) - set(constants))
+    assert not stale, f"_CONST_KEYS names constants types.py lacks: {stale}"
+    unknown = sorted(set(_CONST_KEYS.values()) - known_keys)
+    assert not unknown, f"extra-key constants with no overload: {unknown}"
+
+
+def test_extra_key_constant_scan_sees_nested_and_off_prefix() -> None:
+    source = (
+        "from typing import Final\n"
+        "if True:\n"
+        "    EXTRA_NESTED = 'zip.nested'\n"
+        "JUNCTION_KEY = 'is_junction'\n"
+        "EXTRA_OK: Final = 'rar.extract_version'\n"
+        "OTHER = 'unrelated'\n"
+    )
+    assert _extra_key_constants(source, {"is_junction"}) == {
+        "EXTRA_NESTED": False,
+        "JUNCTION_KEY": False,
+        "EXTRA_OK": True,
+    }
 
 
 def test_docstring_keys_match_overloads() -> None:

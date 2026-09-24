@@ -475,6 +475,7 @@ def test_a_stored_junction_buffer_sets_the_flag(tmp_path: Path) -> None:
         assert member.type is MemberType.SYMLINK
         assert member.is_junction
         assert member.extra["is_junction"] is True
+        assert member.is_reparse_point
         assert member.link_target == "C:/tree/target"
 
 
