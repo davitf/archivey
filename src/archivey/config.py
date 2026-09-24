@@ -497,7 +497,14 @@ class PasswordRequest:
     """The member being decrypted, or ``None`` for archive-level (header) decryption."""
 
     attempt: int
-    """1 on the first ask for this unit; increments after a wrong-password retry."""
+    """1 on the first ask for this unit; increments on every later ask for it.
+
+    Each ask follows a failure: either the previous answer failed to decrypt the unit,
+    or it was a password that had already failed for this unit (a known-good password
+    from an earlier unit, a listed candidate) and was skipped without a second try.
+    Asking stops when the provider returns ``None`` or gives an answer it already gave
+    for this unit.
+    """
 
 
 PasswordProvider = Callable[[PasswordRequest], str | bytes | None]
