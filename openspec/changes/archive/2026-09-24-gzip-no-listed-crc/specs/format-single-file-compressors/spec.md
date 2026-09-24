@@ -13,24 +13,15 @@ the existing path; stored/derived values are metadata only.
 
 Whether a digest is cheaply readable SHALL depend only on the codec and **the source's
 shape**, never on the caller's declared member-stream capability — the founding dedupe
-caller does a plain `open_archive()` and never asks to `seek()`. The one stated
-exception is gzip's read-time CRC, below: it needs the stdlib decoder, and a declared
-seekable member stream can select the accelerator instead.
+caller does a plain `open_archive()` and never asks to `seek()`.
 
-- **GZIP:** the listing SHALL NOT carry a digest, and opening SHALL NOT read the
-  compressed data to look for a second member. The trailer `CRC32` covers the whole
-  member only when the file holds one gzip member, and proving that at open costs a pass
-  over the whole file (a scan for the three-byte member magic that also false-matches in
-  large compressed data). The trailer `CRC32` SHALL be added to `member.hashes` after a
-  read reaches a clean end of the source through the stdlib decoder, when the input held
-  exactly one member and nothing after it (no second member, no NUL padding), so the last
-  8 bytes of the source are that member's trailer. The source must be seekable/path so
-  the trailer can be peeked. The rapidgzip accelerator path hides member boundaries and
-  SHALL NOT add it. That path runs when `use_rapidgzip=ON`, or under `AUTO` when the
-  caller declares `seekable_members=True`, the `[seekable]` extra is installed and the
-  compressed input is at least `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`; so with the extra
-  installed, the same large `.gz` gains a CRC after a plain read and none after a read
-  with `seekable_members=True`.
+- **GZIP:** SHALL NOT carry a digest, before or after a read, and opening SHALL NOT
+  read the compressed data to look for a second member. The trailer `CRC32` covers the
+  whole member only when the file holds one gzip member, and proving that at open costs
+  a pass over the whole file (a scan for the three-byte member magic that also
+  false-matches in large compressed data). After a full read it would add nothing: the
+  decoder has already checked every member's CRC, and a digest is worth having only
+  before a read (to skip one) or to verify one.
 - **LZIP:** on a seekable source, surface `CRC32` of the whole synthetic member from the
   lzip index. For multi-member files, the value SHALL equal
   `crc32(concat(member payloads))` derived by combining per-trailer CRC-32 values with
@@ -47,11 +38,7 @@ seekable member stream can select the accelerator instead.
 
 | Case | `member.hashes` |
 | --- | --- |
-| Single-member `.gz`, seekable/path, listed before any read | no digest key |
-| Single-member `.gz`, seekable/path, after a full read on the stdlib decoder | `CRC32` present (= trailer) |
-| Single-member `.gz`, after a full read on the rapidgzip accelerator | no digest key |
-| Single-member `.gz`, after a partial read | no digest key |
-| `.gz` with a second member or NUL padding after the first, after a full read | no digest key |
+| Any `.gz` (one member or several), listed or after a full read | no digest key |
 | Opening any `.gz` | no scan of the compressed data for a second member |
 | `.gz` non-seekable | no digest key |
 | Single-member `.lz`, seekable source | `CRC32` present (= trailer) |

@@ -8,8 +8,7 @@ for the backends.
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -54,11 +53,7 @@ class StreamConfig:
     carried down so a codec can refuse an archive-declared allocation before making
     it; it defaults to the public default rather than to "unlimited", because a
     :class:`StreamConfig` built directly (detection, tests) is still decoding a file
-    someone else wrote. ``on_gzip_sole_member_end`` is called when the stdlib gzip
-    decoder reaches a clean end of input that held exactly one member and nothing
-    after it, so the source's last 8 bytes are that member's trailer (see
-    :class:`~archivey.internal.streams.decompress.GzipDecoder`). The rapidgzip path
-    does not call it: it hides member boundaries.
+    someone else wrote.
     """
 
     streaming: bool = False
@@ -69,9 +64,6 @@ class StreamConfig:
     expected_decompressed_size: int | None = None
     gzip_isize_backstop: bool = False
     decoder_limits: DecoderLimits = DecoderLimits()
-    on_gzip_sole_member_end: Callable[[], None] | None = field(
-        default=None, compare=False
-    )
 
 
 def stream_config_from_archivey(

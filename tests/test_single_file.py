@@ -284,50 +284,28 @@ def test_cheap_size_still_needs_seekability(suffix: str = ".lz") -> None:
 
 
 @pytest.mark.parametrize("source_kind", ["path", "bytesio"])
-def test_single_member_gzip_crc32_appears_after_a_full_read(
-    tmp_path: Path, source_kind: str
-) -> None:
-    """The listing shows no gzip CRC; a read that ends the sole member adds it."""
-    payload = b"stored-crc-payload"
-    data = gzip.compress(payload)
-    path = tmp_path / "one.gz"
-    path.write_bytes(data)
-    source: Path | io.BytesIO = path if source_kind == "path" else io.BytesIO(data)
-    with open_archive(source) as ar:
-        member = ar.members()[0]
-        assert HashAlgorithm.CRC32 not in member.hashes
-        assert ar.read(member) == payload
-        assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(payload))
-        assert ar.members()[0].hashes[HashAlgorithm.CRC32] == crc32_digest(
-            zlib.crc32(payload)
-        )
-
-
-def test_gzip_partial_read_adds_no_crc32(tmp_path: Path) -> None:
-    payload = b"partial-read-payload" * 100
-    path = tmp_path / "one.gz"
-    path.write_bytes(gzip.compress(payload))
-    with open_archive(path) as ar:
-        member = ar.members()[0]
-        with ar.open(member) as stream:
-            assert stream.read(10) == payload[:10]
-        assert HashAlgorithm.CRC32 not in member.hashes
-
-
 @pytest.mark.parametrize(
     "tail",
     [
+        pytest.param(b"", id="single-member"),
         pytest.param(gzip.compress(b"second"), id="second-member"),
         pytest.param(b"\0" * 8, id="nul-padding"),
     ],
 )
-def test_gzip_crc32_stays_absent_unless_the_first_member_ends_the_file(
-    tmp_path: Path, tail: bytes
+def test_gzip_never_reports_a_crc32(
+    tmp_path: Path, source_kind: str, tail: bytes
 ) -> None:
-    """Anything after the first member keeps the CRC off, even after a full read."""
-    path = tmp_path / "multi.gz"
-    path.write_bytes(gzip.compress(b"first") + tail)
-    with open_archive(path) as ar:
+    """A gzip has no digest, before or after a full read.
+
+    The trailer CRC covers the whole member only when the file holds one member, and
+    proving that at open means scanning the whole file. After a read it is useless: the
+    decoder has already checked each member's CRC.
+    """
+    data = gzip.compress(b"first") + tail
+    path = tmp_path / "one.gz"
+    path.write_bytes(data)
+    source: Path | io.BytesIO = path if source_kind == "path" else io.BytesIO(data)
+    with open_archive(source) as ar:
         member = ar.members()[0]
         assert HashAlgorithm.CRC32 not in member.hashes
         ar.read(member)
@@ -436,14 +414,13 @@ def test_zlib_omits_hashes_but_verifies_adler_on_read(tmp_path: Path) -> None:
             ar.read(member)
 
 
-def test_stored_gzip_crc32_does_not_change_read_or_verification(tmp_path: Path) -> None:
+def test_gzip_reads_and_rereads_without_a_listed_crc32(tmp_path: Path) -> None:
     payload = b"verify-unchanged"
     path = tmp_path / "ok.gz"
     path.write_bytes(gzip.compress(payload))
     with open_archive(path) as ar:
         member = ar.members()[0]
         assert ar.read(member) == payload
-        assert HashAlgorithm.CRC32 in member.hashes
         # Second open still succeeds (path source; codec verifies its own trailer).
         assert ar.read(member) == payload
 

@@ -162,42 +162,30 @@ def test_pipe_metadata_stays_absent_and_costs_no_decode(
 
 
 def test_gzip_crc32_is_not_gated_on_declared_seekability(tmp_path: Path) -> None:
-    """F1 (guardrail): on the stdlib decoder the gzip CRC ignores ``seekable_members``.
+    """F1 (guardrail): gzip reports no CRC, with or without ``seekable_members``.
 
-    The listing carries no gzip CRC-32 either way (proving a single member at open
-    meant scanning the whole file). A full read adds the trailer CRC. The accelerator
-    is pinned OFF so both legs really run the stdlib decoder in every dependency
-    configuration; this fails if the read-time CRC is wired to the declaration.
+    Neither the listing nor a full read adds one, on either decoder (the accelerator
+    is pinned ON and OFF so the legs really differ). Fails if a gzip digest comes back
+    on any path, which would reopen the question of whether it depends on the flag.
     """
     from archivey.config import AcceleratorMode, ArchiveyConfig
     from archivey.types import HashAlgorithm
 
     path = _archive("single-file", "gz", tmp_path)
-    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
-    for kwargs in ({}, {"seekable_members": True}):
-        with open_archive(path, config=config, **kwargs) as reader:  # type: ignore[arg-type]
-            member = reader.members()[0]
-            assert HashAlgorithm.CRC32 not in member.hashes
-            reader.read(member)
-            assert HashAlgorithm.CRC32 in member.hashes
+    modes = [AcceleratorMode.OFF]
+    try:
+        import rapidgzip  # noqa: F401
 
-
-def test_gzip_crc32_is_absent_after_an_accelerated_read(tmp_path: Path) -> None:
-    """F1 (stated exception): the rapidgzip path hides member boundaries, so no CRC.
-
-    Pins the documented exception in ``format-single-file-compressors``: if the
-    accelerator path ever starts adding the CRC, the spec and docs must change with it.
-    """
-    pytest.importorskip("rapidgzip")
-    from archivey.config import AcceleratorMode, ArchiveyConfig
-    from archivey.types import HashAlgorithm
-
-    path = _archive("single-file", "gz", tmp_path)
-    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
-    with open_archive(path, config=config, seekable_members=True) as reader:
-        member = reader.members()[0]
-        reader.read(member)
-        assert HashAlgorithm.CRC32 not in member.hashes
+        modes.append(AcceleratorMode.ON)
+    except ImportError:
+        pass
+    for mode in modes:
+        config = ArchiveyConfig(use_rapidgzip=mode)
+        for kwargs in ({}, {"seekable_members": True}):
+            with open_archive(path, config=config, **kwargs) as reader:  # type: ignore[arg-type]
+                member = reader.members()[0]
+                reader.read(member)
+                assert HashAlgorithm.CRC32 not in member.hashes
 
 
 # ---------------------------------------------------------------------------

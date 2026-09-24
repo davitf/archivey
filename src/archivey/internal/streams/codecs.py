@@ -1191,9 +1191,7 @@ class GzipCodec(StreamCodec):
         # Stdlib path: gzip-window DecompressorStream (not gzip.GzipFile). CRC/ISIZE
         # outcomes come from zlib's gzip window; multi-member chaining matches GzipFile
         # (NUL pad / trailing zeros / trailing junk). O(n) rewind with a warning.
-        return GzipDecompressorStream(
-            source, on_sole_member_end=config.on_gzip_sole_member_end
-        )
+        return GzipDecompressorStream(source)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, gzip.BadGzipFile):
@@ -1227,10 +1225,11 @@ class GzipCodec(StreamCodec):
         RFC 1952 specifies the FNAME field as ISO-8859-1 (Latin-1), so the decoded value in
         ``extra`` uses that encoding; ``raw_name`` keeps the verbatim stored bytes.
 
-        The trailer CRC-32 is not surfaced here. It describes the whole member only when
-        the file holds one gzip member, and proving that at open means scanning the whole
-        compressed file. The single-file reader adds it to ``member.hashes`` after a read
-        shows the first member ending at the end of the source.
+        The trailer CRC-32 is never surfaced. It describes the whole member only when the
+        file holds one gzip member, and proving that at open means scanning the whole
+        compressed file. After a full read it would be useless: the decoder has already
+        checked every member's CRC, and a digest is only worth having before a read
+        (to skip it) or to verify one.
         """
         header = ctx.peek_header(_GZIP_HEADER_PEEK)
         if len(header) < 10 or header[:2] != b"\x1f\x8b":

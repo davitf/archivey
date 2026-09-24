@@ -18,7 +18,6 @@ codecs is tracked under Phase 8 in ``PLAN.md``.
 from __future__ import annotations
 
 import io
-import struct
 from collections.abc import Callable
 from dataclasses import replace
 from typing import BinaryIO, Iterator, TypeVar
@@ -63,10 +62,8 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
-    HashAlgorithm,
     MemberStreams,
     MemberType,
-    crc32_digest,
 )
 
 _T = TypeVar("_T")
@@ -142,11 +139,6 @@ class SingleFileReader(BaseArchiveReader):
             streaming=self._streaming or not self._seekable,
             seekable=seek_declared and self._seekable,
         )
-        if self._codec is Codec.GZIP:
-            self._codec_config = replace(
-                self._codec_config,
-                on_gzip_sole_member_end=self._on_gzip_sole_member_end,
-            )
 
         # Metadata probes answer a different question than member streams, so they get
         # their own config. `seekable_members` declares what the caller wants to do with
@@ -269,45 +261,6 @@ class SingleFileReader(BaseArchiveReader):
         """
         return self._with_seekable_source(lambda f: f.seek(0, io.SEEK_END))
 
-    def _peek_trailer(self, length: int) -> bytes | None:
-        """The last ``length`` bytes of the compressed source, when cheaply readable.
-
-        Returns ``None`` for a non-seekable source (never forces a decode pass) or when the
-        source is shorter than ``length``.
-        """
-
-        def read_trailer(f: BinaryIO) -> bytes | None:
-            size = f.seek(0, io.SEEK_END)
-            if size < length:
-                return None
-            f.seek(-length, io.SEEK_END)
-            return f.read(length)
-
-        return self._with_seekable_source(read_trailer)
-
-    def _read_trailer_during_read(self, length: int) -> bytes | None:
-        """The last ``length`` bytes, safe to call while member streams are live.
-
-        A seekable stream source is shared by every member stream through
-        ``SharedSource``, whose views seek and read under one lock. Seeking the source
-        directly here could land between another view's locked seek and its read, so
-        read through a view of our own. Any other source goes through
-        ``_peek_trailer``: a path opens an independent handle and needs no lock, and a
-        non-seekable source gives ``None``.
-        """
-        shared = self._shared
-        if shared is None:
-            return self._peek_trailer(length)
-        size = shared.size
-        if size is None or size < length:
-            return None
-        try:
-            with shared.view(size - length, length) as view:
-                data = read_exact(view, length)
-        except OSError:
-            return None
-        return data if len(data) == length else None
-
     def _read_source_prefix(self, length: int) -> bytes:
         src = self._source
         assert src is not None  # always set in __init__
@@ -323,28 +276,6 @@ class SingleFileReader(BaseArchiveReader):
         data = read_exact(src, length)
         src.seek(pos)
         return data
-
-    def _on_gzip_sole_member_end(self) -> None:
-        """Add the gzip trailer CRC-32 to ``member.hashes`` once a read proves it whole.
-
-        The stdlib gzip decoder calls this when a read reaches a clean end of input that
-        held exactly one member, so the source's last 8 bytes are that member's trailer
-        and its CRC-32 covers everything decoded. zlib has already checked the CRC
-        against the data. The listing does not show this CRC before such a read: proving
-        single-memberness at open meant scanning the whole compressed file. A
-        non-seekable source has no trailer left to peek, so it gets no CRC.
-        """
-        member = self._member
-        if HashAlgorithm.CRC32 in member.hashes:
-            return
-        trailer = self._read_trailer_during_read(8)
-        if trailer is None:
-            return
-        hashes = dict(member.hashes)
-        hashes[HashAlgorithm.CRC32] = crc32_digest(
-            struct.unpack_from("<I", trailer, 0)[0]
-        )
-        member.hashes = hashes
 
     def _probe_lzip_index(self) -> tuple[int, int] | None:
         """Decompressed size + combined CRC-32 from one seekable lzip index scan.
