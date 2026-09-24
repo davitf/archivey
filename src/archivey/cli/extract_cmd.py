@@ -19,6 +19,7 @@ from archivey import (
     OnError,
     OverwritePolicy,
 )
+from archivey.cli.choices import from_cli_choice
 from archivey.cli.common import open_for_cli, reject_salvage
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_POLICY
 from archivey.cli.filters import (
@@ -507,11 +508,6 @@ def _exit_for_outcomes(*, blocked: int, failed: int, hoist_ok: bool) -> int:
     return EXIT_OK
 
 
-def _enum_value(cli_spelling: str) -> str:
-    """The enum value behind a ``--policy`` / ``--overwrite`` / ``--abort-on`` choice."""
-    return cli_spelling.replace("-", "_")
-
-
 def run_extract(
     *,
     archive: str,
@@ -535,14 +531,10 @@ def run_extract(
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
     pred = member_predicate(patterns, exclude)
-    # argparse has already checked each spelling against ``choices=``, which ``main.py``
-    # derives from the enums' values with ``_`` written as ``-``. Undoing that one
-    # substitution gives the value back, so the lookup below cannot miss on anything
-    # the parser let through.
-    policy_enum = ExtractionPolicy(_enum_value(policy))
-    overwrite_enum = OverwritePolicy(_enum_value(overwrite))
+    policy_enum = from_cli_choice(ExtractionPolicy, policy)
+    overwrite_enum = from_cli_choice(OverwritePolicy, overwrite)
     on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
-    abort_on_enum = frozenset(AbortOn(_enum_value(item)) for item in abort_on or ())
+    abort_on_enum = frozenset(from_cli_choice(AbortOn, item) for item in abort_on or ())
     archive_path = Path(archive)
 
     with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:

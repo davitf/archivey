@@ -21,7 +21,7 @@ to CLI output).
 | H-14 | **Exit codes:** `0` success · `1` operation failed or extract aborted on a member failure · `2` usage (argparse) · `3` extract **completed** with ≥1 policy block and no member failure, under CONTINUE or STOP · **`≥4` reserved** | `cli.md:44-47` | `cli:277`, `src/archivey/cli/exit_codes.py:5-11` | Keep — exit `3` is the one an automation author must handle | |
 | H-15 | `--salvage`, stdin (`-`), and `hash` / `create` / `convert` are **reserved for later** | `cli.md:48`, `errors-and-diagnostics.md:130-131`, `migrating.md:173-174` | `cli:247`, `cli:261`, `cli:308` | Keep | |
 | H-16 | **Unwritten, `scope.md` §10 item:** **passwords on argv are visible to `ps`** | *no page states it* | `src/archivey/cli/password.py`, `format-rar:145` | **Guide, ~2 lines** | |
-| H-17 | **Unwritten, `scope.md` §10 item (`#236`):** the CLI prints archive-derived names and messages, and escaping happens at message construction, so its output is terminal-safe | *no page states it* | `cli:164`, `error-handling:311`, `src/archivey/escaping.py` | **Guide, ~1 line + link** | |
+| H-17 | **Unwritten, `scope.md` §10 item (`#236`):** the CLI prints archive-derived names and messages, and escaping happens at message construction, so its output is terminal-safe | *no page states it* | `cli:164`, `error-handling:311`, `src/archivey/terminal.py` | **Guide, ~1 line + link** | |
 
 ## H — problems and gaps met while extracting
 

@@ -18,6 +18,7 @@ from archivey import (
     format_availability,
     list_known_formats,
 )
+from archivey.cli.choices import cli_choices
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.extract_cmd import run_extract
@@ -189,16 +190,6 @@ def _common_parent(*, suppress_defaults: bool) -> _ArchiveyArgumentParser:
     return p
 
 
-def _cli_choices(enum_cls: type[Enum]) -> list[str]:
-    """The spellings this CLI advertises for an enum, derived from the enum itself.
-
-    Written down in one place so a member added to ``AbortOn`` or ``OverwritePolicy``
-    reaches the command line the day it is declared. A literal list here would silently
-    make the CLI accept less than the library does, which is what it used to do.
-    """
-    return [str(member.value).replace("_", "-") for member in enum_cls]
-
-
 def _cli_spelling(enum_cls: type[Enum]) -> Callable[[str], str]:
     """Build the ``type=`` fold that lets this CLI accept the library's spellings.
 
@@ -214,7 +205,7 @@ def _cli_spelling(enum_cls: type[Enum]) -> Callable[[str], str]:
     keeps the message about what they actually typed, which is the whole point of a fold
     that says case and separator are not the mistake.
     """
-    choices = _cli_choices(enum_cls)
+    choices = cli_choices(enum_cls)
 
     def fold(value: str) -> str:
         folded = value.strip().lower().replace("_", "-")
@@ -317,14 +308,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_extract.add_argument(
         "--policy",
-        choices=_cli_choices(ExtractionPolicy),
+        choices=cli_choices(ExtractionPolicy),
         type=_cli_spelling(ExtractionPolicy),
         default="strict",
         help="extraction safety policy (default: strict)",
     )
     p_extract.add_argument(
         "--overwrite",
-        choices=_cli_choices(OverwritePolicy),
+        choices=cli_choices(OverwritePolicy),
         type=_cli_spelling(OverwritePolicy),
         default="rename",
         help="collision policy (CLI default: rename; library default remains error)",
@@ -341,7 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_extract.add_argument(
         "--abort-on",
         action="append",
-        choices=_cli_choices(AbortOn),
+        choices=cli_choices(AbortOn),
         type=_cli_spelling(AbortOn),
         default=None,
         metavar="EVENT",

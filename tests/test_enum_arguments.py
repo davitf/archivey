@@ -38,6 +38,8 @@ from archivey import (
     OverwritePolicy,
     extract,
 )
+from archivey.cli.choices import cli_choices, from_cli_choice
+from archivey.cli.errors import CliError
 from archivey.cli.main import build_parser
 from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.detection_cost import DetectionBudgetPreset, DetectionBudgetPresetStr
@@ -536,7 +538,31 @@ def test_the_cli_accepts_every_spelling_the_library_accepts(
             args = parser.parse_args(["extract", archive, option, spelling])
             parsed = getattr(args, option.lstrip("-").replace("-", "_"))
             got = parsed[-1] if isinstance(parsed, list) else parsed
-            assert coerce_enum(got, enum_cls, call="t()", param=option) is member
+            # The conversion ``run_extract`` performs, not the library's own.
+            assert from_cli_choice(enum_cls, got) is member
+
+
+def test_a_cli_choice_maps_back_even_when_the_value_holds_a_dash() -> None:
+    """The way back is a lookup, not the substitution run in reverse.
+
+    Undoing ``_`` -> ``-`` would turn a value that already holds a dash into one no
+    member has, and the enum constructor would raise a bare ``ValueError`` that
+    ``main()`` does not catch.
+    """
+
+    class Toy(Enum):
+        DRY_RUN = "dry_run"
+        NO_OP = "no-op"
+
+    assert cli_choices(Toy) == ["dry-run", "no-op"]
+    assert from_cli_choice(Toy, "dry-run") is Toy.DRY_RUN
+    assert from_cli_choice(Toy, "no-op") is Toy.NO_OP
+
+
+def test_an_unknown_cli_choice_is_a_usage_error() -> None:
+    """A caller that skips the parser gets the accepted spellings, not ``ValueError``."""
+    with pytest.raises(CliError, match="invalid choice 'nope' \\(choose from "):
+        from_cli_choice(ExtractionPolicy, "nope")
 
 
 @pytest.mark.parametrize(("option", "enum_cls"), CLI_ENUM_OPTIONS, ids=lambda x: str(x))
