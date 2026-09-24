@@ -418,7 +418,9 @@ def lzma_error_to_archivey(exc: lzma.LZMAError, context: str) -> ArchiveyError:
     apart only by message text, the same on 3.10 to 3.14, so the text is what there
     is to match on. An options error names a filter or filter property this liblzma
     cannot decode (a block header with a valid CRC naming an unknown filter gets
-    here), an unsupported check names an integrity check it does not implement, and a
+    here). liblzma gives the same message for corrupt filter properties, but the
+    callers that decode properties themselves (the ZIP and 7z readers) classify that
+    as corruption before it can arrive here. An unsupported check names an integrity check it does not implement, and a
     memlimit error is a configured cap refusing a declared dictionary. None of those
     is damage. Anything else (corrupt data, a header that is not LZMA, an unrecognized
     code) stays :class:`CorruptionError`. ``LZMA_MEM_ERROR`` never gets here: CPython

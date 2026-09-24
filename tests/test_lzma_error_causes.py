@@ -8,8 +8,10 @@ change in CPython's wording fails here rather than silently turning into corrupt
 
 from __future__ import annotations
 
+import io
 import lzma
 import struct
+import tarfile
 import zlib
 from pathlib import Path
 
@@ -28,9 +30,9 @@ from archivey.internal.streams.xz import lzma_error_to_archivey
 _PAYLOAD = b"hello " * 200
 
 
-def _xz_with_unknown_filter() -> bytes:
+def _xz_with_unknown_filter(payload: bytes = _PAYLOAD) -> bytes:
     """xz whose first block header names filter id 0x7F, with the header CRC repaired."""
-    data = bytearray(lzma.compress(_PAYLOAD, format=lzma.FORMAT_XZ))
+    data = bytearray(lzma.compress(payload, format=lzma.FORMAT_XZ))
     header_start = 12  # after the 12-byte stream header
     header_size = (data[header_start] + 1) * 4
     assert data[header_start + 2] == 0x21  # the LZMA2 filter id liblzma wrote
@@ -102,3 +104,30 @@ def test_the_lzma_codecs_translate_by_cause() -> None:
     assert isinstance(options, UnsupportedFeatureError)
     corrupt = codec.translate(lzma.LZMAError("Corrupt input data"))
     assert isinstance(corrupt, CorruptionError)
+
+
+def test_an_unknown_filter_mid_tar_xz_aborts_the_listing(tmp_path: Path) -> None:
+    """Not damage, so no salvaged partial listing.
+
+    ``_materialize_members`` publishes an incomplete report only for
+    ``CorruptionError`` / ``TruncatedError``; everything else propagates. A second xz
+    stream naming a filter liblzma cannot decode is an unsupported feature, the same
+    as an unsupported 7z coder, so the listing fails outright rather than returning
+    the members before it as if the rest were damaged.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for i in range(40):
+            data = bytes([i]) * 30000
+            info = tarfile.TarInfo(f"f{i:02d}.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    tar_bytes = buf.getvalue()
+    cut = (len(tar_bytes) // 2) // 512 * 512
+    archive = tmp_path / "a.tar.xz"
+    archive.write_bytes(
+        lzma.compress(tar_bytes[:cut], format=lzma.FORMAT_XZ)
+        + _xz_with_unknown_filter(tar_bytes[cut:])
+    )
+    with open_archive(archive) as reader, pytest.raises(UnsupportedFeatureError):
+        reader.members_report()
