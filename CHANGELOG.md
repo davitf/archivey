@@ -61,9 +61,37 @@ promise with that line; treat `0.2.0` as the first release of this library.
   cap a rejected allocation kills the interpreter from inside pyppmd instead of
   raising), and on the LZMA dictionary of 7z, ZIP, xz, `.lzma` and lzip, where the
   dictionary fills as output is written and so bounds how much of it stays resident.
+- `ArchiveyConfig.read_link_targets` (default `True`). ZIP, 7z and RAR4 store a symlink's
+  target as member data, so reading it while listing can decompress data and consult the
+  password provider. Set it to `False` and the reader reads none of those targets on its
+  own: the links list with `link_target=None`, `extract_all` reads the target of each link
+  its selector and filter accept, and `open()` reads the target of a link it follows.
+  When extraction is the first to read a link's data, under this setting or in any
+  streaming pass, and the data shows a reparse-flagged "link" is really a file,
+  `extract_all` calls the filter again on the file and writes it; a streaming pass,
+  already past its content, fails that member under `on_error`.
 
 ### Fixed
 
+- **A reader builds each member once, and every listing method hands out the same
+  objects.** `members_report_if_available()`, `members()`, `get()`, `stream_members()`
+  and `extract_all()` now share one member list filled by one walk of the archive's
+  index, where `extract_all` used to walk it twice and a peek returned objects that
+  `members()` then replaced. A `member_id` is set on every member a 7z or solid RAR
+  stream pass yields, a link target is filled in on the member you already hold, and
+  per-member diagnostics are counted once. Each typing-time diagnostic now carries the
+  member's `member_id` on every backend.
+- **Streaming extraction of a ZIP, 7z or RAR handles a name stored twice** the way random
+  access does: the earlier entry is `SUPERSEDED` and the later one extracted, where it
+  used to raise `ExtractionError` on the second copy. It relies on the archive's index
+  listing every member before the pass starts. A streaming TAR has no index, so it
+  still writes the first copy and raises `ExtractionError` on the second.
+- **Streaming extraction writes symlinks whose target is stored as member data.** A ZIP
+  or 7z link reached by a streaming pass before its target had been read failed as
+  having no target; the target is now read before the link is written.
+- **Listing a 7z reads each folder's link targets in one decode**, up to the folder's
+  last link, instead of re-decoding from the folder start for every link. A streaming
+  pass reads a link's bytes from its own decoder as it passes the link.
 - **An encrypted RAR derives each key once per open.** RAR5 key derivation costs what
   the archive declares, up to 2²⁴ PBKDF2 rounds (a few seconds each). A header-encrypted
   volume set derived the header key and password check again on every part, so a

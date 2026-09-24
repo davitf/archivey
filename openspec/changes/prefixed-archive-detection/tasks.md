@@ -1,3 +1,8 @@
+> **Re-derive the `archive-reading` "Explicit configuration object" block before archiving.**
+> `one-member-listing-per-reader` archived a version of that block adding
+> `read_link_targets` (and the two fields the schema had missed). This change's MODIFIED
+> block predates it and would delete those lines on archive.
+
 ## Implementation blocks
 
 Four PRs, in order. Details and the decisions behind the split: `design.md`

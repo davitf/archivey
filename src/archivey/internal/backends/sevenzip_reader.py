@@ -27,7 +27,7 @@ import stat
 import zlib
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import BinaryIO, ContextManager
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -160,6 +160,13 @@ def _infer_nameless_member_name(archive_name: str | None) -> str:
     )
 
 
+def _folder_position(member: ArchiveMember) -> int:
+    """``member``'s index among its folder's members (its data order in the folder)."""
+    raw = member._raw
+    assert isinstance(raw, _MemberRaw) and raw.file_in_folder is not None
+    return raw.file_in_folder
+
+
 def _member_stream_size(member: ArchiveMember) -> int:
     return member.size if member.size is not None else 0
 
@@ -258,6 +265,18 @@ class SevenZipReader(BaseArchiveReader):
         self._passwords = passwords or _PasswordCandidates()
         self._key_cache = SevenZipKeyCache()
         self._folder_passwords: dict[int, bytes | None] = {}
+        # A symlink's target is its member data, usually mid-way through a solid
+        # folder, so link bytes are read ahead of resolution, a folder at a time
+        # (``format-7z``, "A 7z folder is decoded at most once for its link targets"):
+        # by listing's folder sweep, or by a streaming pass as its cursor reaches the
+        # link. Keyed by member id. A value that is an exception is the failed read,
+        # raised again when the link resolves, so it gets the handling a direct read
+        # would have got.
+        self._link_data: dict[int, bytes | ArchiveyError] = {}
+        # The link member a data pass is on, and how to open it from that pass's own
+        # folder decode. Valid only until the pass moves on; ``extract_all`` reads an
+        # accepted link through it (``_link_data_stream``).
+        self._pass_link: tuple[ArchiveMember, Callable[[], ArchiveStream]] | None = None
         self._stream_config = stream_config_from_archivey(
             self._config,
             streaming=streaming,
@@ -467,36 +486,177 @@ class SevenZipReader(BaseArchiveReader):
                 )
             return solid
 
-        def _open(member: ArchiveMember) -> ArchiveStream | None:
+        def _enter_folder(folder_index: int) -> None:
             nonlocal current_folder, solid
-            if not member.is_file:
-                return None
+            if folder_index != current_folder:
+                if solid is not None:
+                    solid.close()
+                    solid = None
+                current_folder = folder_index
+
+        def _open(member: ArchiveMember) -> ArchiveStream | None:
+            self._pass_link = None
             raw = member._raw
             assert isinstance(raw, _MemberRaw)
+            if not member.is_file:
+                if member.type is MemberType.SYMLINK and raw.folder_index is not None:
+                    _enter_folder(raw.folder_index)
+                    self._reach_pass_link(member, raw.folder_index, _folder_reader)
+                return None
             if raw.folder_index is None:
                 return self._wrap_member_stream(
                     io.BytesIO(b""), member.name, size=member.size
                 )
-            if raw.folder_index != current_folder:
-                if solid is not None:
-                    solid.close()
-                    solid = None
-                current_folder = raw.folder_index
+            _enter_folder(raw.folder_index)
             folder_index = raw.folder_index
             return self._member_stream_from_solid(
                 lambda: _folder_reader(folder_index, member), member
             )
 
         def _cleanup() -> None:
+            self._pass_link = None
+            # A finished pass has applied what it captured; an abandoned one never will,
+            # and a later read of those links opens them directly.
+            self._link_data.clear()
             if solid is not None:
                 solid.close()
 
         yield from self._drive_pass_streams(
-            iter(self._members),
+            self._listed_members(),
             open_member=_open,
             close_previous=True,
             cleanup=_cleanup,
         )
+
+    def _reach_pass_link(
+        self,
+        member: ArchiveMember,
+        folder_index: int,
+        folder_reader: Callable[[int, ArchiveMember], SolidBlockReader],
+    ) -> None:
+        """A data pass has reached ``member``, a symlink whose target is its data.
+
+        The pass yields no stream for it, and its folder decoder only moves when a later
+        member is read, so without this the bytes go by unread and EOF finalization
+        would decode the folder again to get them. A streaming pass under
+        ``read_link_targets`` reads them now, through its own decoder, and keeps them
+        for finalization. Otherwise the pass only offers its decoder for this one
+        member, which is how ``extract_all`` reads an accepted link without a second
+        decode.
+        """
+
+        def opener() -> ArchiveStream:
+            return self._member_stream_from_solid(
+                lambda: folder_reader(folder_index, member), member
+            )
+
+        if (
+            self._streaming
+            and self._config.read_link_targets
+            and member.link_target is None
+            and not member._link_target_resolved
+        ):
+            self._capture_link_data(member, opener)
+        else:
+            self._pass_link = (member, opener)
+
+    def _capture_link_data(
+        self, member: ArchiveMember, opener: Callable[[], ArchiveStream]
+    ) -> None:
+        """Read ``member``'s link bytes now and keep them for its resolution.
+
+        Reads what ``_read_link_target_data`` would (and nothing for a member it refuses
+        by size), so resolving over the kept bytes answers exactly as a direct read.
+        A read that fails is kept as its exception and raised again then.
+        """
+        member_id = member._member_id
+        assert member_id is not None
+        if member_id in self._link_data:
+            return
+        raw = member._raw
+        assert isinstance(raw, _MemberRaw)
+        is_reparse_point = _is_windows_reparse_point(raw.record.attributes)
+        if self._link_data_refused_by_size(member, is_reparse_point=is_reparse_point):
+            return
+        try:
+            with opener() as stream:
+                data = self._read_bounded_link_data(
+                    stream, is_reparse_point=is_reparse_point
+                )
+        except ArchiveyError as exc:
+            self._link_data[member_id] = exc
+            return
+        self._link_data[member_id] = data
+
+    def _prepare_link_target_reads(self, members: list[ArchiveMember]) -> None:
+        """Sweep each folder holding one of ``members`` once, up to its last link.
+
+        Link finalization calls this with every link it is about to resolve. Without
+        it, each link's read decoded its folder from the start up to that link, which
+        on 7-Zip's default solid layout decodes a folder once per link.
+        """
+        by_folder: dict[int, list[ArchiveMember]] = {}
+        for member in members:
+            raw = member._raw
+            if (
+                member.type is not MemberType.SYMLINK
+                or not isinstance(raw, _MemberRaw)
+                or raw.folder_index is None
+                or raw.file_in_folder is None
+                or member._member_id in self._link_data
+            ):
+                continue
+            by_folder.setdefault(raw.folder_index, []).append(member)
+        for folder_index, links in by_folder.items():
+            self._sweep_folder_links(folder_index, links)
+
+    def _sweep_folder_links(
+        self, folder_index: int, links: list[ArchiveMember]
+    ) -> None:
+        """Decode ``folder_index`` once, from its start, keeping each link's bytes."""
+        links.sort(key=_folder_position)
+        solid: SolidBlockReader | None = None
+
+        def folder_reader(index: int, member: ArchiveMember) -> SolidBlockReader:
+            nonlocal solid
+            if solid is None:
+                solid = SolidBlockReader(
+                    self._track_decompressed(self._open_folder_stream(index, member))
+                )
+            return solid
+
+        try:
+            for link in links:
+                self._capture_link_data(
+                    link,
+                    lambda link=link: self._member_stream_from_solid(
+                        lambda: folder_reader(folder_index, link), link
+                    ),
+                )
+        finally:
+            if solid is not None:
+                solid.close()
+
+    def _link_data_stream(
+        self, member: ArchiveMember
+    ) -> ContextManager[ReadableStream]:
+        """Where ``_ensure_link_target`` reads ``member``'s bytes from.
+
+        Bytes read ahead (a listing sweep, a streaming pass) come first; then the data
+        pass sitting on this member, through its own decoder; then a direct open, which
+        decodes the folder from its start (``open()`` following a link, a listing of
+        one link).
+        """
+        member_id = member._member_id
+        kept = self._link_data.pop(member_id, None) if member_id is not None else None
+        if isinstance(kept, ArchiveyError):
+            raise kept
+        if kept is not None:
+            return io.BytesIO(kept)
+        pass_link = self._pass_link
+        if pass_link is not None and pass_link[0] is member:
+            return pass_link[1]()
+        return self._open_member(member)
 
     def _to_member(self, record: SevenZipFileRecord, index: int) -> ArchiveMember:
         member_type = self._member_type(record)
@@ -567,11 +727,14 @@ class SevenZipReader(BaseArchiveReader):
             else MemberExtra(),
             _raw=_MemberRaw(record, folder_index, record.file_in_folder),
         )
+        # Every report below names the member by `index`, its position in the walk,
+        # which is the id registration will stamp on it.
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,
             presented_name=presented_name,
             archive_name=self._archive_name,
+            member_id=index,
         )
         if is_reparse_point and member.size == 0:
             # A writer that stores no data for a reparse point has recorded no target
@@ -584,7 +747,7 @@ class SevenZipReader(BaseArchiveReader):
                 member,
                 b"",
                 fallback_type=self._member_type_ignoring_reparse(record),
-                report_key=index,
+                member_id=index,
             )
         for issue in ts_issues:
             self._diagnostics_collector.emit(
@@ -593,7 +756,7 @@ class SevenZipReader(BaseArchiveReader):
                 context=MemberTimestampContext(
                     archive_name=self._archive_name,
                     member_name=member.name,
-                    member_id=member._member_id,
+                    member_id=index,
                     field=issue.field,
                     source="ntfs",
                     value_repr=issue.value_repr,
@@ -622,7 +785,7 @@ class SevenZipReader(BaseArchiveReader):
                 context=DigestContext(
                     archive_name=self._archive_name,
                     member_name=member.name,
-                    member_id=member._member_id,
+                    member_id=index,
                     algorithm="",
                     reason="no_integrity_anchor",
                 ),
@@ -843,7 +1006,7 @@ class SevenZipReader(BaseArchiveReader):
         try:
             data = self._read_link_target_data(
                 member,
-                lambda: self._open_member(member),
+                lambda: self._link_data_stream(member),
                 is_reparse_point=is_reparse_point,
             )
         except EncryptionError:
