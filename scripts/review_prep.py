@@ -13,16 +13,17 @@ by three shapes that a script can find faster than a reviewer:
 67 of the 70 findings raised after round 1 were caused by the previous round's fix, so the
 same checks apply to the fix commits before the label goes on again.
 
-    python3 scripts/review_prep.py                      # sweep + width against origin/main
-    python3 scripts/review_prep.py --base HEAD~1        # just the last commit's fixes
-    python3 scripts/review_prep.py red-on-base tests/test_x.py::test_y ...
+    uv run python scripts/review_prep.py                 # sweep + width against origin/main
+    uv run python scripts/review_prep.py --base HEAD~1   # just the last commit's fixes
+    uv run python scripts/review_prep.py red-on-base tests/test_x.py::test_y ...
 
 ``sweep`` only reports: whether a hit is stale needs reading. ``width`` exits 1 when an
 added line is wider than its file allows. ``red-on-base`` prints a table to paste into the
 PR body in place of a prose "fails on main" claim.
 
-Stdlib only, so it runs outside the project environment; ``red-on-base`` needs the
-project's environment because it runs pytest.
+``sweep`` and ``width`` are stdlib only and run under any Python 3.10+;
+``red-on-base`` runs pytest, so it needs the project's environment and refuses to start
+without one.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,6 +49,10 @@ DOC_ROOTS = (
     "dev-docs",
     "CHANGELOG.md",
     "README.md",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "VISION.md",
+    ".claude/skills",
 )
 DOC_SUFFIXES = {".md", ".yml", ".yaml"}
 # An archived change records what was true when it landed; it is not stale when code moves.
@@ -66,6 +71,8 @@ _DEF_RE = re.compile(r"^\s*(?:async\s+def|def|class)\s+([A-Za-z_]\w*)")
 _CONST_RE = re.compile(r"^([A-Z][A-Z0-9_]{2,})\s*(?::[^=]+)?=")
 _RAISE_RE = re.compile(r"\braise\s+([A-Z]\w*(?:Error|Exception|Warning))\b")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@\s?(.*)$")
+# `.gitattributes` sets `*.py diff=python`, so a hunk header names the enclosing def, not
+# the last column-0 line (the class).
 _HUNK_DEF_RE = re.compile(r"(?:def|class)\s+([A-Za-z_]\w*)")
 _URL_RE = re.compile(r"https?://")
 
@@ -86,6 +93,8 @@ class FileDiff:
         default_factory=list
     )  # (new line number, text)
     removed: list[tuple[str, str]] = field(default_factory=list)  # (hunk context, text)
+    renamed_from: str = ""  # the old path, when git paired a deletion with an addition
+    deleted: bool = False
 
 
 def parse_diff(text: str) -> list[FileDiff]:
@@ -99,17 +108,27 @@ def parse_diff(text: str) -> list[FileDiff]:
         if line.startswith("diff --git "):
             current = None
             continue
+        if current is None and line.startswith("rename from "):
+            old_path = line.removeprefix("rename from ")
+            continue
+        if current is None and line.startswith("rename to "):
+            # A pure rename has no ---/+++ lines and no hunks; this is all of it.
+            current = FileDiff(line.removeprefix("rename to "), renamed_from=old_path)
+            files.append(current)
+            continue
         if line.startswith("--- "):
-            old_path = line[4:].removeprefix("a/")
+            if current is None:
+                old_path = line[4:].removeprefix("a/")
             continue
         if line.startswith("+++ "):
-            # A deleted file's removed lines count too: deleting a module is the
-            # commonest way a name disappears.
             path = line[4:]
-            current = FileDiff(
-                old_path if path == "/dev/null" else path.removeprefix("b/")
-            )
-            files.append(current)
+            if current is None:
+                current = FileDiff(path.removeprefix("b/"))
+                files.append(current)
+            if path == "/dev/null":
+                # A deleted file's removed lines count too: deleting a module is the
+                # commonest way a name disappears.
+                current.path, current.deleted = old_path, True
             continue
         if current is None:
             continue
@@ -131,15 +150,34 @@ def parse_diff(text: str) -> list[FileDiff]:
 
 @dataclass(frozen=True)
 class Moved:
-    kind: str  # "name" or "raise"
+    kind: str  # "name", "raise" or "module"
     old: str
     where: str  # file, and for a raise the enclosing function
     near: str = ""  # a raise: the function whose docs should mention the new type
 
 
-def moved_claims(files: Iterable[FileDiff]) -> list[Moved]:
-    """Names defined in removed `src/` lines that no added line defines again, and
-    exception types a function stopped raising."""
+def _module_patterns(path: str) -> list[str]:
+    """How docs name a module: dotted, or by its path from the package's parent down."""
+    parts = Path(path.removeprefix("src/")).with_suffix("").parts
+    return [".".join(parts), "/".join(parts[-2:]) + ".py"]
+
+
+def moved_claims(
+    files: Iterable[FileDiff], head_text: Callable[[str], str | None] = lambda p: None
+) -> list[Moved]:
+    """Names defined in removed `src/` lines that no added line defines again, exception
+    types a file stopped raising, and `src/` modules renamed or deleted.
+
+    ``head_text(path)`` returns the file as it stands after the change, so a type still
+    raised from an untouched line is not reported as gone.
+    """
+    files = list(files)
+    out: list[Moved] = []
+    for f in files:
+        old = f.renamed_from or (f.path if f.deleted else "")
+        if old.startswith("src/") and old.endswith(".py"):
+            where = f"moved to {f.path}" if f.renamed_from else "deleted"
+            out.extend(Moved("module", pat, where) for pat in _module_patterns(old))
     files = [f for f in files if f.path.startswith("src/") and f.path.endswith(".py")]
     defined_now = {
         m.group(1)
@@ -148,11 +186,13 @@ def moved_claims(files: Iterable[FileDiff]) -> list[Moved]:
         for m in (_DEF_RE.match(text) or _CONST_RE.match(text),)
         if m
     }
-    out: list[Moved] = []
     seen: set[tuple[str, str]] = set()
     for f in files:
+        now = "" if f.deleted else (head_text(f.path) or "")
         raised_now = {
-            m.group(1) for _, text in f.added for m in _RAISE_RE.finditer(text)
+            m.group(1)
+            for text in [now, *(t for _, t in f.added)]
+            for m in _RAISE_RE.finditer(text)
         }
         for context, text in f.removed:
             m = _DEF_RE.match(text) or _CONST_RE.match(text)
@@ -195,7 +235,7 @@ def sweep(moved: list[Moved], docs: list[Path]) -> list[str]:
     report: list[str] = []
     texts = {p: p.read_text(encoding="utf-8", errors="replace") for p in docs}
     for m in moved:
-        word = re.compile(rf"\b{re.escape(m.old)}\b")
+        word = re.compile(rf"(?<!\w){re.escape(m.old)}(?!\w)")
         hits: list[str] = []
         for p, text in texts.items():
             # A raise is only worth a look where the doc also names the function.
@@ -212,6 +252,8 @@ def sweep(moved: list[Moved], docs: list[Path]) -> list[str]:
             head = (
                 f"`{m.old}` is no longer defined in src/ ({m.where}), still named in:"
             )
+        elif m.kind == "module":
+            head = f"`{m.old}` was {m.where}, still named in:"
         else:
             head = (
                 f"`{m.near or '?'}` in {m.where} no longer raises `{m.old}`; docs naming "
@@ -227,17 +269,18 @@ def sweep(moved: list[Moved], docs: list[Path]) -> list[str]:
 # --- width: added lines wider than their file ------------------------------------------
 
 
-def _md_prose(lines: Iterable[str]) -> list[str]:
-    """Lines a rewrap would touch: outside code fences, not tables, not bare URLs."""
-    out: list[str] = []
+def _md_prose(text: str) -> dict[int, str]:
+    """Lines a rewrap would touch, by line number: outside code fences, not tables, not
+    bare URLs. Needs the whole file: fence state cannot be read from a fragment."""
+    out: dict[int, str] = {}
     fenced = False
-    for line in lines:
+    for n, line in enumerate(text.splitlines(), 1):
         if line.lstrip().startswith(("```", "~~~")):
             fenced = not fenced
             continue
         if fenced or line.lstrip().startswith("|") or _URL_RE.search(line):
             continue
-        out.append(line)
+        out[n] = line
     return out
 
 
@@ -249,7 +292,7 @@ def md_limit(base_text: str | None) -> int | None:
     """
     if base_text is None:
         return None
-    prose = [line for line in _md_prose(base_text.splitlines()) if line.strip()]
+    prose = [line for line in _md_prose(base_text).values() if line.strip()]
     if len(prose) < 10:
         return None
     fitting = sorted(len(line) for line in prose if len(line) <= MD_WRAPPED_BELOW)
@@ -259,13 +302,14 @@ def md_limit(base_text: str | None) -> int | None:
 
 
 def base_text(base: str, path: str) -> str | None:
+    """``path`` as it is at ``base`` (any revision), or None where it does not exist."""
     try:
         return git("show", f"{base}:{path}")
     except subprocess.CalledProcessError:
         return None
 
 
-def width(files: Iterable[FileDiff], base: str) -> list[str]:
+def width(files: Iterable[FileDiff], base: str, head: str = "HEAD") -> list[str]:
     report: list[str] = []
     for f in files:
         if f.path.endswith(".py"):
@@ -277,8 +321,8 @@ def width(files: Iterable[FileDiff], base: str) -> list[str]:
             candidates = f.added
         elif f.path.endswith(".md"):
             limit = md_limit(base_text(base, f.path))
-            prose = set(_md_prose(text for _, text in f.added))
-            candidates = [(n, text) for n, text in f.added if text in prose]
+            prose = _md_prose(base_text(head, f.path) or "")
+            candidates = [(n, text) for n, text in f.added if n in prose]
         else:
             continue
         if limit is None:
@@ -307,6 +351,21 @@ def red_on_base(base: str, test_ids: list[str]) -> int:
         shutil.rmtree(tree / "tests")
         shutil.copytree(ROOT / "tests", tree / "tests")
         env = dict(os.environ, PYTHONPATH=str(tree / "src"))
+        # `python -m pytest` exits 1 both for a failing test and for no pytest at all;
+        # without this, the second prints "fails" for a run that never happened.
+        probe = subprocess.run(
+            [sys.executable, "-m", "pytest", "--version"],
+            cwd=tree,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if probe.returncode != 0:
+            sys.exit(
+                f"red-on-base: pytest is not importable from {sys.executable}.\n"
+                "Run it in the project's environment: "
+                "uv run python scripts/review_prep.py red-on-base ..."
+            )
         rows: list[tuple[str, str]] = []
         for test_id in test_ids:
             proc = subprocess.run(
@@ -345,10 +404,14 @@ def red_on_base(base: str, test_ids: list[str]) -> int:
     return 1 if passing else 0
 
 
+_FAILED_RE = re.compile(r"^=*\s*\d+ failed\b", re.MULTILINE)
+
+
 def _outcome(returncode: int, output: str) -> str:
     if returncode == 0:
         return "passes"
-    if returncode == 1:
+    # Exit 1 alone is not evidence: pytest's summary must say something failed.
+    if returncode == 1 and _FAILED_RE.search(output):
         return "fails"
     # A collection error is most often an import of a name this PR adds. That is red, but
     # it proves the import, not the behaviour the test names.
@@ -364,7 +427,7 @@ def _outcome(returncode: int, output: str) -> str:
         return f"errors at collection: {why[:90]}"
     if returncode in (4, 5) or "ERROR: not found" in output:
         return "not found (check the id)"
-    return "errors at collection"
+    return f"did not run (exit {returncode}; read the output)"
 
 
 # --- entry point ------------------------------------------------------------------------
@@ -393,13 +456,14 @@ def main(argv: list[str] | None = None) -> int:
     files = parse_diff(git("diff", "-U0", f"{args.base}...{args.head}"))
     status = 0
     if args.command in ("all", "sweep"):
-        found = sweep(moved_claims(files), doc_files())
+        moved = moved_claims(files, lambda path: base_text(args.head, path))
+        found = sweep(moved, doc_files())
         print(
             "=== sweep: docs still naming what this branch moved (read each; may be fine)"
         )
         print("\n".join(found) if found else "nothing found")
     if args.command in ("all", "width"):
-        found = width(files, args.base)
+        found = width(files, args.base, args.head)
         print("=== width: added lines wider than their file (rewrap the paragraph)")
         print("\n".join(found) if found else "nothing found")
         status = 1 if found else 0

@@ -1,14 +1,19 @@
 """`scripts/review_prep.py`, the checks an implementer runs before adding the `review` label.
 
-The diff parsing and the two reports are pure functions over text, so they are tested
-here on hand-written diffs; the git and pytest calls around them are not.
+The diff parsing runs on a real ``git diff`` from a scratch repository; the reports are pure
+functions over text and are tested on it directly. The pytest call in ``red-on-base`` is
+not run here.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import shutil
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "review_prep.py"
@@ -20,54 +25,117 @@ prep = importlib.util.module_from_spec(_spec)
 sys.modules["review_prep"] = prep
 _spec.loader.exec_module(prep)
 
-DIFF = """\
-diff --git a/src/archivey/a.py b/src/archivey/a.py
---- a/src/archivey/a.py
-+++ b/src/archivey/a.py
-@@ -10,2 +10,2 @@ def open_member(self):
--        raise TruncatedError("short")
--class OldName:
-+        raise CorruptionError("short")
-+class NewName:
-@@ -40,0 +41,1 @@ def other():
-+    x = 1
-diff --git a/src/archivey/gone.py b/src/archivey/gone.py
-deleted file mode 100644
---- a/src/archivey/gone.py
-+++ /dev/null
-@@ -1,3 +0,0 @@
--MAX_THING = 4
--def helper():
--    raise ValueError("x")
-diff --git a/docs/x.md b/docs/x.md
---- a/docs/x.md
-+++ b/docs/x.md
-@@ -3,0 +4,1 @@
-+new line
-"""
+BEFORE = {
+    "src/archivey/a.py": """\
+class Reader:
+    def open_member(self):
+        if short:
+            raise TruncatedError("short")
+        return 1
 
 
-def test_parse_diff_keeps_line_numbers_and_deleted_files() -> None:
-    files = {f.path: f for f in prep.parse_diff(DIFF)}
-    assert set(files) == {"src/archivey/a.py", "src/archivey/gone.py", "docs/x.md"}
-    assert files["src/archivey/a.py"].added[-1] == (41, "    x = 1")
+class OldName:
+    pass
+
+
+def other():
+    return 2
+""",
+    "src/archivey/gone.py": """\
+MAX_THING = 4
+
+
+def helper():
+    raise ValueError("x")
+""",
+    "src/archivey/old_mod.py": "".join(f"LINE_{i} = {i}\n" for i in range(20)),
+    "docs/x.md": "one\ntwo\nthree\n",
+}
+AFTER = {
+    "src/archivey/a.py": BEFORE["src/archivey/a.py"]
+    .replace("TruncatedError", "CorruptionError")
+    .replace("OldName", "NewName")
+    .replace("return 2", "x = 1\n    return 2"),
+    "src/archivey/sub/new_mod.py": BEFORE["src/archivey/old_mod.py"],
+    "docs/x.md": "one\ntwo\nthree\nnew line\n",
+}
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+def _write(repo: Path, files: dict[str, str]) -> None:
+    for path, text in files.items():
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(text)
+
+
+@pytest.fixture(scope="module")
+def diff(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """A real ``git diff -U0`` under this repo's `.gitattributes`, not a hand-written one:
+    the hunk header the raise filter keys on is whatever git emits here."""
+    repo = tmp_path_factory.mktemp("repo")
+    _git(repo, "init", "-q")
+    shutil.copy(ROOT / ".gitattributes", repo / ".gitattributes")
+    _write(repo, BEFORE)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    for path in BEFORE:
+        (repo / path).unlink()
+    _write(repo, AFTER)
+    _git(repo, "add", "-A")
+    return _git(repo, "diff", "-U0", "-M", "--cached")
+
+
+def test_parse_diff_keeps_line_numbers_deletions_and_renames(diff: str) -> None:
+    files = {f.path: f for f in prep.parse_diff(diff)}
+    assert set(files) == {
+        "src/archivey/a.py",
+        "src/archivey/gone.py",
+        "src/archivey/sub/new_mod.py",
+        "docs/x.md",
+    }
     assert files["docs/x.md"].added == [(4, "new line")]
+    assert (13, "    x = 1") in files["src/archivey/a.py"].added
     # Deleting a module is the commonest way a name disappears; its lines must count.
-    assert [t for _, t in files["src/archivey/gone.py"].removed][0] == "MAX_THING = 4"
+    gone = files["src/archivey/gone.py"]
+    assert gone.deleted and gone.removed[0][1] == "MAX_THING = 4"
+    # A pure rename has no hunks at all.
+    moved = files["src/archivey/sub/new_mod.py"]
+    assert moved.renamed_from == "src/archivey/old_mod.py" and not moved.removed
 
 
-def test_moved_claims_finds_removed_names_and_dropped_raises() -> None:
-    moved = prep.moved_claims(prep.parse_diff(DIFF))
+def test_moved_claims_finds_removed_names_dropped_raises_and_modules(diff: str) -> None:
+    moved = prep.moved_claims(prep.parse_diff(diff))
     names = {m.old for m in moved if m.kind == "name"}
     assert names == {"OldName", "MAX_THING", "helper"}
     raises = {(m.old, m.near) for m in moved if m.kind == "raise"}
-    # ValueError is not an archivey error type and matches the pattern only by suffix;
-    # it is reported, and filtered later by needing a doc that names `helper`.
+    # The method, not the class: needs `*.py diff=python` in `.gitattributes`.
     assert ("TruncatedError", "open_member") in raises
+    modules = {(m.old, m.where) for m in moved if m.kind == "module"}
+    assert modules == {
+        ("archivey.old_mod", "moved to src/archivey/sub/new_mod.py"),
+        ("archivey/old_mod.py", "moved to src/archivey/sub/new_mod.py"),
+        ("archivey.gone", "deleted"),
+        ("archivey/gone.py", "deleted"),
+    }
 
 
-def test_a_name_defined_again_is_not_moved() -> None:
-    diff = DIFF.replace("+class NewName:", "+class OldName(Base):")
+def test_a_type_still_raised_elsewhere_in_the_file_has_not_stopped(diff: str) -> None:
+    head = {"src/archivey/a.py": "def f():\n    raise TruncatedError('other site')\n"}
+    moved = prep.moved_claims(prep.parse_diff(diff), head.get)
+    assert "TruncatedError" not in {m.old for m in moved if m.kind == "raise"}
+
+
+def test_a_name_defined_again_is_not_moved(diff: str) -> None:
+    diff = diff.replace("+class NewName:", "+class OldName(Base):")
     names = {
         m.old for m in prep.moved_claims(prep.parse_diff(diff)) if m.kind == "name"
     }
@@ -123,7 +191,7 @@ def test_md_limit_ignores_tables_code_and_urls() -> None:
 
 
 def test_width_flags_only_lines_far_past_their_file(monkeypatch) -> None:
-    monkeypatch.setattr(prep, "base_text", lambda base, path: _wrapped(88))
+    monkeypatch.setattr(prep, "base_text", lambda rev, path: _wrapped(88))
     limit = 88 + prep.SLACK
     diff = prep.FileDiff("docs/x.md", added=[(1, "a" * limit), (2, "b" * (limit + 1))])
     source = prep.FileDiff("src/archivey/x.py", added=[(7, "# " + "c" * 120)])
@@ -136,9 +204,24 @@ def test_width_flags_only_lines_far_past_their_file(monkeypatch) -> None:
     ]
 
 
+def test_width_leaves_lines_inside_an_existing_code_fence(monkeypatch) -> None:
+    base = _wrapped(88) + "```\nshort\n```\n"
+    head = _wrapped(88) + "```\n" + "c" * 148 + "\n```\n" + "p" * 148 + "\n"
+    texts = {"base": base, "HEAD": head}
+    monkeypatch.setattr(prep, "base_text", lambda rev, path: texts[rev])
+    # Line 22 is inside the fence, whose markers are not in the diff; 24 is prose after it.
+    diff = prep.FileDiff("docs/x.md", added=[(22, "c" * 148), (24, "p" * 148)])
+    assert prep.width([diff], "base") == ["docs/x.md:24: 148 > 88 columns"]
+
+
 def test_outcome_names_what_a_non_red_run_means() -> None:
     assert prep._outcome(0, "") == "passes"
-    assert prep._outcome(1, "") == "fails"
+    assert prep._outcome(1, "F\n1 failed in 0.12s\n") == "fails"
+    # Exit 1 is also `python -m pytest` with no pytest installed: not a failure.
+    assert prep._outcome(1, "/usr/bin/python3: No module named pytest").startswith(
+        "errors at collection"
+    )
+    assert prep._outcome(1, "").startswith("did not run")
     assert (
         prep._outcome(4, "ERROR: not found: tests/x.py::nope")
         == "not found (check the id)"

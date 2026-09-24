@@ -166,7 +166,8 @@ Standard repo rules apply — they are not relaxed because the change is review-
 - **Check every "every", "all", "never", "always" and "only" you write.** A comment,
   docstring, spec line or CHANGELOG entry with one of those words is a claim about every
   path, and the path you were looking at is one of them. Check it against the axes this
-  repo's claims keep failing on — the six backends (ZIP, 7z, RAR, TAR, ISO, directory),
+  repo's claims keep failing on — the seven backends (ZIP, 7z, RAR, TAR, ISO, directory, single-file
+  compressors),
   streaming vs random access, seekable vs non-seekable sources, detection probes vs the
   reader, and Python 3.11 — or narrow the sentence to what you checked. Claims wider than
   the code were 33 findings in the same window: "the LZMA dictionary is capped" while
@@ -235,16 +236,21 @@ moving under review, leave the trailing task unchecked instead, and say so in yo
 Run it before you add the label, and again before every re-label:
 
 ```bash
-python3 scripts/review_prep.py                     # sweep + width against origin/main
-python3 scripts/review_prep.py --base <reviewed-sha>   # a round's fixes only
+uv run python scripts/review_prep.py                        # sweep + width vs origin/main
+uv run python scripts/review_prep.py --base <reviewed-sha>  # a round's fixes only
 uv run python scripts/review_prep.py red-on-base tests/test_x.py::test_new ...
 ```
 
-- **sweep** lists every doc, spec and handbook line that still names a symbol this branch
-  removed or renamed, or an exception type a function stopped raising. It only reports:
-  read each hit and fix the ones that describe current behaviour. This is the mechanical
-  half of "when you change a claim, grep for every place that states it" (§4), which the
-  reviews showed prose alone does not get done.
+`red-on-base` needs the project environment for pytest and stops if it cannot import it;
+the other two run under any Python.
+
+- **sweep** lists doc, spec, handbook and skill lines that still name a `src/` class,
+  function or constant this branch removed or renamed, a `src/` module it moved or
+  deleted, or an exception type a file stopped raising (only in docs that also name the
+  enclosing function). It only reports: read each hit and fix the ones that describe
+  current behaviour. This is the mechanical half of "when you change a claim, grep for
+  every place that states it" (§4), which the reviews showed prose alone does not get
+  done.
 - **width** fails on an added line far wider than its file, the mark of a paragraph
   edited in place and not rewrapped. Rewrap the paragraph, not just the line.
 - **red-on-base** runs the named tests against `src/` at the merge base. Paste its table
@@ -252,9 +258,9 @@ uv run python scripts/review_prep.py red-on-base tests/test_x.py::test_new ...
   "passes" does not pin the change, and a collection error proves only an import.
 
 **A round's fixes are a new diff and get the same treatment.** Of the 70 findings raised
-after round 1 on 2026-09-23/24, 67 were caused by the previous round's fix — a claim the fix moved
-and did not propagate, a gap narrowed rather than closed, a comment edited and left
-stale. So before you add the label again, and equally before you stop after an
+after round 1 on 2026-09-23/24, 67 were caused by the previous round's fix — a claim
+the fix moved and did not propagate, a gap narrowed rather than closed, a comment edited
+and left stale. So before you add the label again, and equally before you stop after an
 approving verdict, run `review_prep.py --base <the sha the round reviewed>`, re-read
 that fix-diff the way a reviewer would, and update the PR body in the same push: a PR
 body still describing round 1 was its own finding twice.

@@ -97,7 +97,7 @@ request, which is why step 1 now has to be done deliberately.
 Once the PR is up and the fix is on the remote, put it in the loop and stop.
 Do not start this step on uncommitted work, and do not review the diff yourself.
 
-**Run `python3 scripts/review_prep.py` first** (`address-review-findings` §5): it
+**Run `uv run python scripts/review_prep.py` first** (`address-review-findings` §5): it
 lists docs still naming what you removed and lines left unwrapped, and its
 `red-on-base` table backs any "fails on `main`" line in the PR body.
 
