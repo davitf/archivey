@@ -389,7 +389,8 @@ format-agnostic. The five modules now live in `internal/backends/`, every import
 comment saying only the crypto wrapper may. Ruled 2026-09-19: move the primitive, keep the
 framing. `CryptoBackend.aes_ctr_keystream_stage` takes the counter convention as a parameter
 (WinZip AE counts little-endian from 1, where `modes.CTR` counts big-endian), and builds the
-keystream block-wise — ~6 MiB/s became ~110 MiB/s (Z-K1). `WinZipAesDecryptStream` stays in
+keystream block-wise — ~6 MiB/s became ~110 MiB/s on 4 MiB of random data in 64 KiB chunks (one
+container, not a `benchmarks/` run; Z-K1). `WinZipAesDecryptStream` stays in
 `zip_aes`, since its `read` also carries the HMAC.
 
 **Thread 51's corrected scope is a rename.** The original finding — a 7z folder decoding to

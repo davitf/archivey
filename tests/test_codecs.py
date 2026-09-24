@@ -154,16 +154,19 @@ def test_brotli_without_brotli_raises() -> None:
         open_codec_stream(Codec.BROTLI, io.BytesIO(b""))
 
 
+_needs_crypto = pytest.mark.skipif(
+    importlib.util.find_spec("cryptography") is None,
+    reason="cryptography is not installed (core-only leg); the present-path cannot run",
+)
+
+
 def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(crypto, "_crypto_available", lambda: False)
     with pytest.raises(PackageNotInstalledError, match="cryptography"):
         crypto.get_crypto_backend()
 
 
-@pytest.mark.skipif(
-    importlib.util.find_spec("cryptography") is None,
-    reason="cryptography is not installed (core-only leg); the present-path cannot run",
-)
+@_needs_crypto
 def test_crypto_reachable_only_through_wrapper() -> None:
     """With cryptography present, the backend is reached via the wrapper (not a direct import)."""
     backend = crypto.get_crypto_backend()
@@ -181,12 +184,6 @@ def test_crypto_reachable_only_through_wrapper() -> None:
     plaintext = b"0123456789abcdef"
     ciphertext = encryptor.update(plaintext) + encryptor.finalize()
     assert stage.update(ciphertext) + stage.finalize() == plaintext
-
-
-_needs_crypto = pytest.mark.skipif(
-    importlib.util.find_spec("cryptography") is None,
-    reason="cryptography is not installed (core-only leg); the present-path cannot run",
-)
 
 
 def _ctr_reference(
@@ -315,10 +312,7 @@ def test_aes_ctr_stage_rejects_bad_params(
         crypto.open_aes_ctr_stage(params)
 
 
-@pytest.mark.skipif(
-    importlib.util.find_spec("cryptography") is None,
-    reason="cryptography is not installed (core-only leg); the present-path cannot run",
-)
+@_needs_crypto
 def test_sevenzip_kdf_cache_reuses_derived_keys() -> None:
     password = "secret".encode("utf-16le")
     salt = b"salt"

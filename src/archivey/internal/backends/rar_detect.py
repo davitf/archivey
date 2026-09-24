@@ -53,11 +53,13 @@ def validate_rar_main_header(
     is not ``NOT_THIS_FORMAT``. Every short peek past the magic goes through
     :func:`_header_in_hand`, including a RAR 5 ``hdrlen`` vint cut off by the
     clamp, because the detector's view is clamped at ``scan_limit`` (see
-    :class:`HitValidator`). The magic peek itself does not need to: both scans
-    yield a candidate only when its whole magic lies inside the window. ``peek_more`` stays outside the parse ``try``
-    so a workspace ``OSError`` propagates. A truncated vint before the CRC is
-    ``NOT_THIS_FORMAT``; after the CRC has matched, a later vint failure is
-    ``DAMAGED``.
+    :class:`HitValidator`). The magic peek itself does not need to: both
+    scans yield a candidate only when its whole magic lies inside the window.
+
+    ``peek_more`` stays outside the parse ``try`` so a workspace ``OSError``
+    propagates. A vint that is truncated with every existing byte in hand,
+    before the CRC, is ``NOT_THIS_FORMAT``; after the CRC has matched, a later
+    vint failure is ``DAMAGED``.
     """
     head = peek_more(len(RAR5_ID))
     if head.startswith(RAR5_ID):
