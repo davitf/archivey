@@ -213,14 +213,27 @@ class TestSharedSourceMisuse:
         assert shared.view(0, 5).read() == DATA[:5]
         assert not buf.closed
 
-    def test_path_source_owns_and_closes_handle(self, tmp_path: Path) -> None:
+    def test_a_path_source_is_borrowed_and_closed_by_its_owner(
+        self, tmp_path: Path
+    ) -> None:
+        """A path reaches ``SharedSource`` as an ``ArchiveSource``, which owns the handle.
+
+        ``SharedSource`` used to open and own a path itself; the handle is now the
+        source's, so closing the shared source leaves it to the reader that owns it.
+        """
+        from archivey.internal.source import ArchiveSource
+
         path = tmp_path / "blob.bin"
         path.write_bytes(DATA)
-        shared = SharedSource(path)
+        source = ArchiveSource.for_path(path)
+        shared = SharedSource(source)
         assert shared.view(10, 5).read() == DATA[10:15]
         shared.close()
         with pytest.raises(ValueError, match="closed"):
             shared.view(0, 1)
+        assert not source.closed
+        source.close()
+        assert source.closed
 
     def test_relative_seek_underflow_clamps_like_bytesio(self) -> None:
         # BytesIO clamps a SEEK_CUR/SEEK_END result past the origin to 0 (only a negative

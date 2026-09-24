@@ -27,7 +27,6 @@ import stat
 import zlib
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig
@@ -83,6 +82,7 @@ from archivey.internal.password import (
 )
 from archivey.internal.registry import register_reader
 from archivey.internal.sevenzip_detect import validate_sevenzip_signature_header
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.crypto import SevenZipKeyCache, _AesCbcTruncatedError
 from archivey.internal.streams.streamtools import (
@@ -91,7 +91,6 @@ from archivey.internal.streams.streamtools import (
     SlicingStream,
     SolidBlockReader,
     is_seekable,
-    is_stream,
     skip_forward,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
@@ -234,7 +233,7 @@ class SevenZipReader(BaseArchiveReader):
 
     def __init__(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         streaming: bool,
         passwords: _PasswordCandidates | None,
         encoding: str | None,
@@ -264,7 +263,7 @@ class SevenZipReader(BaseArchiveReader):
             streaming=streaming,
             seekable=MemberStreams.SEEKABLE in member_streams,
         )
-        if is_stream(source) and not is_seekable(source):
+        if not source.seekable():
             raise StreamNotSeekableError(
                 "7z archives require a seekable source: the header and packed streams "
                 "are addressed by offsets.",
@@ -283,7 +282,7 @@ class SevenZipReader(BaseArchiveReader):
             self._origin = start_offset + find_signature_offset(probe)
         finally:
             probe.close()
-        self._volume_count = getattr(source, "volume_count", 1)
+        self._volume_count = source.volume_count
         self._archive = self._load_archive()
         self._init_folder_caches(self._archive)
         self._members = self._build_members()
@@ -961,7 +960,7 @@ class SevenZipReadBackend(ReadBackend):
 
     def open_read(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
         passwords: _PasswordCandidates | None,

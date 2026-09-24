@@ -66,7 +66,7 @@ from archivey.internal.format_args import (
     coerce_stream_or_archive_format,
 )
 from archivey.internal.format_provenance import FormatProvenance
-from archivey.internal.open_site import capture_open_site
+from archivey.internal.open_site import OpenSite, capture_open_site
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import (
     FormatAvailability,
@@ -77,18 +77,14 @@ from archivey.internal.registry import (
     list_known_formats,
     list_supported_formats,
 )
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
-from archivey.internal.streams.peekable import PeekableStream
 from archivey.internal.streams.streamtools import (
-    ensure_full_count_reads,
-    fix_stream_start_position,
-    is_seekable,
     is_stream,
     raise_if_text_stream,
 )
 from archivey.internal.volumes import (
-    ConcatenatedFile,
     OpenSourceInput,
     ResolvedSource,
     first_volume_for_stub,
@@ -281,12 +277,12 @@ def open_archive(
 
     The format is auto-detected from the source's magic bytes (then its extension) unless
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
-    A non-seekable stream is wrapped in a :class:`PeekableStream` so detection never
-    consumes bytes the backend still needs.
+    A non-seekable stream keeps the bytes detection peeked in a replay prefix that the
+    backend's first reads drain, so detection never consumes bytes the backend needs.
 
     A seekable stream source is taken to hold the archive **starting at its current
     position**: detection peeks from there and restores the position, and the opener
-    then wraps a mid-positioned stream in a zero-origin view so every backend sees the
+    then rebases a mid-positioned stream to a zero origin so every backend sees the
     archive begin at ``tell() == 0`` (an archive embedded mid-file works uniformly,
     without manual slicing).
 
@@ -351,8 +347,61 @@ def open_archive(
     # whole call without cross-call plumbing.
     collector = collector_from_config(effective_config)
     resolved = resolve_source(source)
-    # Mutated below (peekable wrap, RAR volume reopen, mid-stream origin fix).
-    reader_source = resolved.open_source
+    slot = _SourceSlot(resolved.source)
+    try:
+        return _open_resolved(
+            slot,
+            resolved,
+            source=source,
+            format=format,
+            streaming=streaming,
+            passwords=passwords,
+            encoding=encoding,
+            config=effective_config,
+            collector=collector,
+            member_streams=member_streams,
+            open_site=open_site,
+        )
+    except BaseException:
+        # Once a reader exists it closes its source; until then nobody else will.
+        slot.current.close()
+        raise
+
+
+class _SourceSlot:
+    """The source an open is working on, closing each one it is replaced by."""
+
+    def __init__(self, source: ArchiveSource) -> None:
+        self.current = source
+
+    def replace(self, source: ArchiveSource) -> ArchiveSource:
+        old = self.current
+        self.current = source
+        old.close()
+        return source
+
+
+def _open_resolved(
+    slot: _SourceSlot,
+    resolved: ResolvedSource,
+    *,
+    source: OpenSourceInput,
+    format: ArchiveFormat | None,
+    streaming: bool,
+    passwords: _PasswordCandidates,
+    encoding: str | None,
+    config: ArchiveyConfig,
+    collector: DiagnosticCollector,
+    member_streams: MemberStreams,
+    open_site: OpenSite | None,
+) -> ArchiveReader:
+    """Detect the format of a resolved source and hand it to its backend.
+
+    ``slot`` holds the one source detection and the backend read. It changes when a
+    self-extracting stub is followed to its volume or a RAR set is reopened from volume
+    1; ``open_archive`` closes whatever it holds if this raises.
+    """
+    archive_source = slot.current
     archive_name = resolved.archive_name
 
     # Numbered 7-Zip parts (``.7z.NNN`` / ``.zip.NNN`` / ``.exe.NNN``) and Info-ZIP
@@ -370,13 +419,14 @@ def open_archive(
     # --- Resolve format: a directory path is DIRECTORY (and a conflicting explicit
     # format= is rejected, not ignored); else caller format, else magic detect. ---
     resolved_format = format
-    if isinstance(reader_source, Path) and reader_source.is_dir():
+    if archive_source.is_directory:
         # Silently overruling format= here would hand back a reader over the directory
         # tree for a caller who asserted something else -- the wrong data, succeeding.
         # Every other explicit-format conflict is refused loudly; so is this one.
         if format is not None and format != ArchiveFormat.DIRECTORY:
+            assert archive_source.path is not None  # the directory form has a path
             raise ArchiveyUsageError(
-                f"{archive_name or reader_source} is a directory, but format="
+                f"{archive_name or display_path(archive_source.path)} is a directory, but format="
                 f"{format!r} was requested. Pass a path to an archive file, or "
                 f"format=ArchiveFormat.DIRECTORY to read the directory tree."
             )
@@ -384,41 +434,37 @@ def open_archive(
 
     detected: FormatInfo | None = None
     if resolved_format is None:
-        # Non-seekable streams: wrap before detection so the peeked prefix is
-        # replayed to the backend; the same wrapper is handed over.
-        if is_stream(reader_source) and not is_seekable(reader_source):
-            reader_source = PeekableStream(reader_source)
+        # A non-seekable source keeps what detection peeks in its own replay prefix,
+        # so the backend gets the same object and reads those bytes first.
         # Probe *this* file only. Public detect_format follows a stub-only exe to
         # the volume beside it; doing that here would report 7z/ZIP while still
         # handing the stub bytes to the backend.
         try:
             detected = detect_format(
-                reader_source, collector=collector, follow_stub_volumes=False
+                archive_source, collector=collector, follow_stub_volumes=False
             )
         except FormatDetectionError:
-            followed = (
-                _follow_stub_volume(reader_source, format)
-                if isinstance(reader_source, Path)
-                else None
-            )
+            stub = archive_source.path
+            followed = _follow_stub_volume(stub, format) if stub is not None else None
             if followed is None:
                 raise
             resolved = followed
-            reader_source = resolved.open_source
+            archive_source = slot.replace(resolved.source)
             archive_name = resolved.archive_name
-            detected = detect_format(reader_source, collector=collector)
+            detected = detect_format(archive_source, collector=collector)
         resolved_format = detected.format
-    elif isinstance(reader_source, Path) and is_sfx_stub_name(reader_source.name):
+    elif archive_source.path is not None and is_sfx_stub_name(archive_source.path.name):
         # format= still follows a stub-only miss. Skipping this made
         # detect_format(p); open_archive(p, format=info.format) open the MZ
         # bytes as ZIP/7z while auto-detect joined the split set.
+        stub = archive_source.path
         try:
-            detect_format(reader_source, follow_stub_volumes=False)
+            detect_format(stub, follow_stub_volumes=False)
         except FormatDetectionError:
-            followed = _follow_stub_volume(reader_source, resolved_format)
+            followed = _follow_stub_volume(stub, resolved_format)
             if followed is not None:
                 resolved = followed
-                reader_source = resolved.open_source
+                archive_source = slot.replace(resolved.source)
                 archive_name = resolved.archive_name
 
     # ZIP is here for 7-Zip's ``-v`` byte slices, which rejoin into an ordinary ZIP.
@@ -434,21 +480,16 @@ def open_archive(
 
     # RAR multi-volume: unrar needs real sibling files on disk. When resolve_source
     # concatenated an explicit path sequence, reopen volume 1 only.
-    if resolved_format.container == ContainerFormat.RAR and isinstance(
-        reader_source, ConcatenatedFile
-    ):
-        volume_paths = reader_source.volume_paths
-        if volume_paths:
-            reader_source.close()
-            reader_source = volume_paths[0]
+    if resolved_format.container == ContainerFormat.RAR:
+        volume_paths = archive_source.volume_paths
+        if archive_source.joined is not None and volume_paths:
+            archive_source = slot.replace(ArchiveSource.for_path(volume_paths[0]))
 
     # A raw CD sector image is claimed as ISO only so it can be refused by name. Ahead
     # of the availability check, so the answer does not depend on pycdlib; a
     # non-seekable source is left to the seekability refusal below.
-    if resolved_format == ArchiveFormat.ISO and (
-        not is_stream(reader_source) or is_seekable(reader_source)
-    ):
-        refuse_raw_sector_image(reader_source, resolved_format, archive_name)
+    if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
+        refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
     registry = get_registry()
     backend_cls = registry.reader_for_format(resolved_format)
@@ -496,7 +537,7 @@ def open_archive(
     # Access-mode contract: streaming=False never implicitly buffers a pipe.
     # streaming=True still needs a front-to-back format (TAR, raw codecs); trailing
     # indexes (ZIP CD, ISO) cannot.
-    if is_stream(reader_source) and not is_seekable(reader_source):
+    if not archive_source.is_directory and not archive_source.seekable():
         # Capability first, mode second: for a format that needs seek in *either* mode
         # the requested mode is not what went wrong, so both modes get the one message
         # naming the only fix. Proposing streaming=True here would send the caller into
@@ -519,10 +560,10 @@ def open_archive(
                 archive_name=archive_name,
             )
 
-    # Mid-file seekable streams: wrap so every backend sees tell()==0 at the first
+    # Mid-file seekable streams: rebase so every backend sees tell()==0 at the first
     # archive byte (done after detection, which peeked from the same origin).
-    if is_stream(reader_source) and is_seekable(reader_source):
-        reader_source = fix_stream_start_position(reader_source)
+    if archive_source.seekable():
+        archive_source.rebase_to_current_position()
 
     # Explicit encoding wins; else detector hint; else backend auto-detect.
     effective_encoding = encoding
@@ -539,13 +580,13 @@ def open_archive(
 
     backend = backend_cls()
     reader = backend.open_read(
-        reader_source,
+        archive_source,
         format=resolved_format,
         streaming=streaming,
         passwords=passwords,
         encoding=effective_encoding,
         archive_name=archive_name,
-        config=effective_config,
+        config=config,
         collector=collector,
         member_streams=member_streams,
         open_site=open_site,
@@ -604,25 +645,44 @@ def open_stream(
                 f"{display_path(path)} is a directory, not a compressed stream; "
                 f"use open_archive() to read a directory tree"
             )
-        if not path.is_file():
+        if not path.exists():
             raise FileNotFoundError(f"Compressed stream not found: {path}")
-        codec_input: Path | BinaryIO = path
-        source_is_seekable = True
+        # A FIFO or device path is a non-seekable source with no path, read once
+        # through the source, exactly as open_archive reads it.
+        codec_input = ArchiveSource.for_path(path)
     else:
         if not is_stream(source):
             raise_if_text_stream(source)
             raise TypeError(
                 f"open_stream source must be a path or binary stream, got {type(source)!r}"
             )
-        source_is_seekable = is_seekable(source)
-        if not source_is_seekable:
-            codec_input = PeekableStream(source)
-        else:
-            # Same source-boundary contract as open_archive (``resolve_source``): coalesce
-            # legal short ``read(n)`` returns before a codec — or a seek-index accelerator
-            # reading the source itself — mistakes one for a truncated stream. Then the
-            # mid-stream origin contract.
-            codec_input = fix_stream_start_position(ensure_full_count_reads(source))
+        # The same boundary open_archive uses: full-count, borrowed, bounded, and a
+        # replay prefix for detection when the stream cannot be rewound. A codec — or a
+        # seek-index accelerator reading the source itself — must not mistake a legal
+        # short ``read(n)`` for a truncated stream.
+        codec_input = ArchiveSource.for_stream(source)
+        # The mid-stream origin contract: the payload starts where the caller left it.
+        codec_input.rebase_to_current_position()
+    # The returned stream owns the source from here, as a reader does: closing it closes
+    # the source (which never closes the caller's object), and so does any refusal
+    # before there is a stream to close.
+    try:
+        return _open_stream_from_source(
+            codec_input, format, seekable, effective_config, collector
+        )
+    except BaseException:
+        codec_input.close()
+        raise
+
+
+def _open_stream_from_source(
+    codec_input: ArchiveSource,
+    format: StreamFormat | ArchiveFormat | None,
+    seekable: bool,
+    effective_config: ArchiveyConfig,
+    collector: DiagnosticCollector,
+) -> ArchiveStream:
+    source_is_seekable = codec_input.seekable()
 
     if seekable and not source_is_seekable:
         raise StreamNotSeekableError(
@@ -644,8 +704,10 @@ def open_stream(
         streaming=False,
         seekable=seekable and source_is_seekable,
     )
+    # A path goes to the codec as a path: it opens its own handles and can use
+    # path-only accelerator features, and the source then never opens one.
     codec_source: str | BinaryIO = (
-        str(codec_input) if isinstance(codec_input, Path) else codec_input
+        str(codec_input.path) if codec_input.path is not None else codec_input
     )
     return open_codec_stream(
         codec,
@@ -653,12 +715,13 @@ def open_stream(
         config=stream_config,
         collector=collector,
         seekable=seekable and source_is_seekable,
+        on_close=codec_input.close,
     )
 
 
 def _resolve_stream_format(
     format: StreamFormat | ArchiveFormat | None,
-    open_source: Path | BinaryIO,
+    open_source: ArchiveSource,
     collector: DiagnosticCollector,
 ) -> StreamFormat:
     """Map open_stream's ``format=`` argument (or auto-detect) to a StreamFormat.
@@ -747,9 +810,10 @@ def extract(
     check_encoding(encoding, call="extract(encoding=…)")
     check_callable(on_progress, call="extract(on_progress=…)")
 
-    # Peek only to choose access mode; open_archive re-resolves ``source`` (cheap).
-    peek_target = resolve_source(source).open_source
-    streaming = is_stream(peek_target) and not is_seekable(peek_target)
+    # Peek only to choose access mode; open_archive re-resolves ``source`` (cheap: a
+    # path source opens nothing until it is read).
+    with resolve_source(source).source as peek_target:
+        streaming = not peek_target.is_directory and not peek_target.seekable()
 
     with open_archive(
         source,

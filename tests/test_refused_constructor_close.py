@@ -198,17 +198,13 @@ def test_archive_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
 # ``close()`` reads. A new stream class fails here until someone makes that call.
 _REFUSALS_TESTED_ABOVE = {
     "archivey.internal.volumes.ConcatenatedFile",
-    "archivey.internal.streams.archive_stream.ArchiveStream",
+    "archivey.ArchiveStream",  # its __module__ is pinned to the public package
     "archivey.internal.streams.decompressor_stream.DecompressorStream",
     "archivey.internal.streams.verify.VerifyingStream",
 }
 _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.streamtools.base.DelegatingStream": (
-        "assigns _inner, _owns_inner and _subclass_closes_inner before its assert "
-        "and is_seekable()"
-    ),
-    "archivey.internal.streams.streamtools.full_count.BorrowedStream": (
-        "refuses in __new__, before an instance exists"
+        "assigns _inner and _subclass_closes_inner before is_seekable()"
     ),
     "archivey.internal.streams.streamtools.locked.LockedStream": (
         "DelegatingStream.__init__, then a plain _lock assignment"
@@ -225,9 +221,6 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.codecs._AcceleratorStream": (
         "ensure_binaryio() runs before DelegatingStream.__init__ but raises only on a "
         "text stream, and the inner is always a rapidgzip reader"
-    ),
-    "archivey.internal.backends.iso_reader._ImageBoundedStream": (
-        "inner.tell() runs after DelegatingStream.__init__ has set what close() reads"
     ),
     "archivey.internal.backends.iso_reader._PyCdlibStream": (
         "raw.__enter__() runs after DelegatingStream.__init__ has set what close() reads"

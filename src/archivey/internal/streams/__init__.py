@@ -26,5 +26,4 @@ Package map:
   length backstops).
 - :mod:`.crypto` — AES decrypt stage (``[recommended]``) + 7z-local KDF helpers.
 - :mod:`.counting` — measurement wrappers (bytes / seeks).
-- :mod:`.peekable` — non-seekable detection peek/replay (used by ``open_archive``).
 """

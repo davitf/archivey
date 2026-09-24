@@ -42,7 +42,7 @@ from archivey.internal.naming import (
     normalize_member_name,
     resolve_link_target_name,
 )
-from archivey.internal.streams.peekable import PeekableStream
+from archivey.internal.source import ArchiveSource
 from archivey.internal.volumes import (
     _NUMBERED_VOLUME_RE,
     _RAR_PART_RE,
@@ -617,7 +617,7 @@ def test_discover_volume_siblings_missing_path(tmp_path: Path) -> None:
 
 @given(data=st.binary(min_size=0, max_size=512))
 def test_detect_format_peekable_total_and_unadvanced(data: bytes) -> None:
-    stream = PeekableStream(NonSeekableBytesIO(data))
+    stream = ArchiveSource.for_stream(NonSeekableBytesIO(data))
     try:
         detect_format(stream)
     except ArchiveyError:

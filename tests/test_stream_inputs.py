@@ -1,7 +1,7 @@
 """Cross-library matrix: the stream helpers vs. every stream type a caller might supply.
 
 The ``streams/streamtools`` helpers (``is_stream`` / ``is_seekable`` / ``ensure_binaryio`` /
-``ensure_bufferedio`` / ``ensure_full_count_reads`` / ``BinaryIOWrapper``) are core
+``ensure_bufferedio`` / ``BinaryIOWrapper``, plus the ``ArchiveSource`` boundary) are core
 infrastructure: every backend feeds them whatever stream the *source* produced. This module
 verifies they behave correctly against the real objects those sources return — local files,
 every stdlib codec stream, zip/tar member streams, archivey's own decompressor streams,
@@ -39,15 +39,14 @@ from typing import BinaryIO, Callable
 import pytest
 
 from archivey.internal.config import StreamConfig
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
 from archivey.internal.streams.decompress import ZlibDecompressorStream
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.streamtools import (
     BinaryIOWrapper,
-    BorrowedStream,
     ensure_binaryio,
     ensure_bufferedio,
-    ensure_full_count_reads,
     is_seekable,
     is_stream,
     read_exact,
@@ -322,7 +321,7 @@ CASES: dict[str, Case] = {
     # --- already-conforming io.IOBase streams (passed through unwrapped) ---
     "buffered_file": Case(_buffered_file, seekable=True, passes_is_stream=True),
     "raw_fileio": Case(_raw_file, seekable=True, passes_is_stream=True),
-    # A raw stream may legally return short from read(n); ensure_full_count_reads is what
+    # A raw stream may legally return short from read(n); the ArchiveSource is what
     # keeps the header parsers from reading that as EOF (see test_short_read_sources.py).
     "short_read_bytesio": Case(
         _short_read_bytesio, seekable=True, passes_is_stream=True
@@ -466,19 +465,17 @@ def test_ensure_bufferedio_yields_content(case: Case, tmp_path: Path) -> None:
         _close(stream)
 
 
-def test_ensure_full_count_reads_returns_the_full_count(
-    case: Case, tmp_path: Path
-) -> None:
+def test_archive_source_returns_the_full_count(case: Case, tmp_path: Path) -> None:
     """The archive-source boundary guarantee: ``read(n)`` yields ``n`` short of EOF.
 
-    A non-seekable raw source is wrapped in ``FullCountStream`` (not returned
+    A non-seekable raw source is read through a gathering loop (not returned
     unchanged, and not a ``BufferedReader`` — that would over-read a pipe). An
-    already-buffered non-seekable source needs no full-count layer, so it goes on as
-    itself under a ``BorrowedStream``, which forwards everything but ``close``.
+    already-buffered non-seekable source needs no full-count layer, so the source
+    reads it directly, and closing the source leaves it open.
     """
     stream = ensure_binaryio(case.build(tmp_path))
     try:
-        normalized = ensure_full_count_reads(stream)
+        normalized = ArchiveSource.for_stream(stream)
         # Whatever the branch, the caller's object is never what goes downstream.
         assert normalized is not stream
         if not case.seekable:
@@ -486,13 +483,13 @@ def test_ensure_full_count_reads_returns_the_full_count(
             # BufferedReader reports True while is_seekable() is False, and the
             # boundary forwards that verdict rather than the buffer's claim.
             assert is_seekable(normalized) is False
+            assert normalized.seekable() is False
             if isinstance(stream, (io.BufferedReader, io.BufferedRandom)):
-                assert isinstance(normalized, BorrowedStream)
-                assert normalized._inner is stream
-            else:
-                assert normalized.seekable() is False
+                assert normalized._reader is stream
         assert normalized.read(128) == CONTENT[:128]
         assert normalized.read(4000) == CONTENT[128:4128]
+        normalized.close()
+        assert not getattr(stream, "closed", False)
     finally:
         _close(stream)
 
@@ -506,7 +503,7 @@ def test_seek_rewind_when_seekable(case: Case, tmp_path: Path) -> None:
             return
         # read_exact, not a bare read(100): a raw source may legally return short, and this
         # test is about rewinding, not about the full-count guarantee
-        # (test_ensure_full_count_reads_returns_the_full_count covers that).
+        # (test_archive_source_returns_the_full_count covers that).
         assert read_exact(stream, 100) == CONTENT[:100]
         stream.seek(0)
         assert read_exact(stream, 100) == CONTENT[:100]

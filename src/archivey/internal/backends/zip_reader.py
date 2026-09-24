@@ -79,6 +79,7 @@ from archivey.internal.password_confirm import (
     first_crc_match,
 )
 from archivey.internal.registry import register_reader
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import (
     Codec,
@@ -89,8 +90,6 @@ from archivey.internal.streams.streamtools import (
     CloseLockedStream,
     SharedView,
     SlicingStream,
-    is_seekable,
-    is_stream,
     read_exact,
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
@@ -439,7 +438,7 @@ class ZipReader(BaseArchiveReader):
 
     def __init__(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         streaming: bool,
         passwords: _PasswordCandidates | None,
         encoding: str | None,
@@ -475,24 +474,13 @@ class ZipReader(BaseArchiveReader):
         self._handle_lock: threading.Lock | None = (
             threading.Lock() if MemberStreams.CONCURRENT in member_streams else None
         )
-        # When measurement is on we open a Path ourselves to install a seek counter;
-        # ZipFile does not close a caller-supplied file object, so we own it.
-        self._owned_fp: BinaryIO | None = None
-        # >1 when the source is a joined volume set (ConcatenatedFile). 7-Zip's
-        # ``-v`` on a ZIP is a raw byte split, so the join is an ordinary ZIP and the
-        # count is reported rather than acted on.
-        #
-        # This reads the attribute off the source object, so it only survives while
-        # ``core.open_archive`` hands the joined stream through unwrapped. That holds
-        # today by three separate accidents — ``ConcatenatedFile`` is seekable so the
-        # ``PeekableStream`` branch is skipped, the RAR reopen is container-gated, and
-        # detection leaves the position at 0 so ``fix_stream_start_position`` returns
-        # the same object. A new wrapper added between the two would read back 1, and
-        # the symptom is not a crash: the split-name refuse below would fire on a set
-        # that had just been joined successfully.
-        self._volume_count: int = getattr(source, "volume_count", 1)
+        # >1 when the source is a joined volume set. 7-Zip's ``-v`` on a ZIP is a raw
+        # byte split, so the join is an ordinary ZIP and the count is reported rather
+        # than acted on. The source states it, so no wrapper between the boundary and
+        # here can hide it.
+        self._volume_count: int = source.volume_count
 
-        if is_stream(source) and not is_seekable(source):
+        if not source.seekable():
             raise StreamNotSeekableError(
                 "ZIP archives cannot be read from a non-seekable source: the central "
                 "directory lives at the end of the file.",
@@ -512,14 +500,19 @@ class ZipReader(BaseArchiveReader):
                 source_format=ArchiveFormat.ZIP,
             )
 
+        # A plain file goes to zipfile as its path: zipfile opens and closes its own
+        # handle, and reads it with no archivey frame in between. That is safe for the
+        # bound too: zipfile sizes its central-directory read from the end record's own
+        # position and refuses a directory that would start before offset 0, so no
+        # declared size can exceed the file. Measurement and a start offset need a
+        # handle archivey controls, so those read through the source.
         zip_source: Path | BinaryIO = source
+        if source.path is not None and not (self._measure or start_offset):
+            zip_source = source.path
         if self._measure or start_offset:
-            handle: BinaryIO
-            if isinstance(source, Path):
-                self._owned_fp = open(source, "rb")
-                handle = cast("BinaryIO", self._track_source_seeks(self._owned_fp))
-            else:
-                handle = cast("BinaryIO", self._track_source_seeks(source))
+            # zipfile never closes a file object it was handed; the reader closes the
+            # source, and the counter and slice over it close nothing of the caller's.
+            handle = self._track_source_seeks(source)
             if start_offset:
                 # stdlib zipfile finds the central directory from the tail and
                 # self-adjusts past a stub on its own, but "adjust past whatever
@@ -586,9 +579,6 @@ class ZipReader(BaseArchiveReader):
         fp = self._archive.fp
         if fp is not None and _classic_eocd_declares_split(fp):
             self._archive.close()
-            if self._owned_fp is not None:
-                self._owned_fp.close()
-                self._owned_fp = None
             raise UnsupportedFeatureError(
                 ZIP_MULTI_VOLUME_MSG,
                 archive_name=archive_name,
@@ -1601,9 +1591,6 @@ class ZipReader(BaseArchiveReader):
     def _close_archive(self) -> None:
         with self._handle_guard():
             self._archive.close()
-        if self._owned_fp is not None:
-            self._owned_fp.close()
-            self._owned_fp = None
 
 
 def _classic_eocd_declares_split(fp: IO[bytes]) -> bool:
@@ -1683,7 +1670,7 @@ class ZipReadBackend(ReadBackend):
 
     def open_read(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
         passwords: _PasswordCandidates | None,

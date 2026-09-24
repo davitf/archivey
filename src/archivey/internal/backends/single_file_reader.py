@@ -21,7 +21,6 @@ import io
 import struct
 from collections.abc import Callable
 from dataclasses import replace
-from pathlib import Path
 from typing import BinaryIO, Iterator, TypeVar
 
 from archivey.config import ArchiveyConfig
@@ -43,6 +42,7 @@ from archivey.internal.naming import infer_member_name_from_archive
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
@@ -58,8 +58,6 @@ from archivey.internal.streams.lzip import peek_index_summary
 from archivey.internal.streams.streamtools import (
     SharedSource,
     SlicingStream,
-    is_seekable,
-    is_stream,
     read_exact,
 )
 from archivey.types import (
@@ -105,7 +103,7 @@ class SingleFileReader(BaseArchiveReader):
 
     def __init__(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
         passwords: _PasswordCandidates | None,
@@ -129,12 +127,12 @@ class SingleFileReader(BaseArchiveReader):
         self._source = source
         self._stream_codec = stream_codec_for_format(format.stream)
         self._codec = self._stream_codec.codec
-        self._seekable = not is_stream(source) or is_seekable(source)
+        self._seekable = source.seekable()
 
         # A non-seekable source cannot be randomly accessed, so engaging a random-access
         # accelerator (rapidgzip) is pointless — and would in fact fail at *open*: rapidgzip
-        # needs either a seekable stream or a real OS fileno, and archivey wraps a non-seekable
-        # source in a PeekableStream that has neither (so it raises StreamNotSeekableError).
+        # needs either a seekable stream or a real OS fileno, and a non-seekable source
+        # offers neither (so it raises StreamNotSeekableError).
         # Keep the codec sequential for such a source regardless of the archive's streaming flag.
         # Declared seek demand (MemberStreams.SEEKABLE) also gates accelerator AUTO resolution.
         seek_declared = MemberStreams.SEEKABLE in member_streams
@@ -174,11 +172,10 @@ class SingleFileReader(BaseArchiveReader):
         # - Non-seekable: one forward pass; a second open fails loudly once consumed.
         self._shared: SharedSource | None = None
         self._pending_stream: ArchiveStream | None = None
-        if self._seekable and is_stream(source):
-            self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
-        elif self._seekable and self._measure and isinstance(source, Path):
-            # Path sources normally hand the path to the codec (independent FDs). Under
-            # measurement, share one instrumented handle so source seeks are visible.
+        if self._seekable and (source.path is None or self._measure):
+            # A stream source always shares its one handle, handing out views. A path
+            # source normally hands the path to the codec (independent FDs) and shares
+            # only under measurement, so the source's seeks are visible.
             self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         if self._seekable:
             # Eagerly open+close a codec stream so format/seekability errors surface at
@@ -220,8 +217,9 @@ class SingleFileReader(BaseArchiveReader):
 
         The first call (or one needing more than is cached) reads the source a single time;
         later calls serve from the cache without re-opening or re-seeking. For a non-seekable
-        source this reuses the prefix detection already buffered in the ``PeekableStream``; for
-        a path it opens a fresh handle; for a seekable stream it reads and rewinds once.
+        source this reuses the prefix detection already buffered in the source's replay
+        prefix; for a path it opens a fresh handle; for a seekable stream it reads and rewinds
+        once.
         """
         if self._header_cache is None or len(self._header_cache) < length:
             self._header_cache = self._read_source_prefix(length)
@@ -237,10 +235,10 @@ class SingleFileReader(BaseArchiveReader):
         src = self._source
         assert src is not None
         try:
-            if isinstance(src, Path):
-                with open(src, "rb") as f:
+            if src.path is not None:
+                with open(src.path, "rb") as f:
                     return fn(f)
-            if is_seekable(src):
+            if src.seekable():
                 pos = src.tell()
                 try:
                     return fn(src)
@@ -284,24 +282,20 @@ class SingleFileReader(BaseArchiveReader):
         return self._with_seekable_source(read_trailer)
 
     def _read_source_prefix(self, length: int) -> bytes:
-        from archivey.internal.streams.peekable import PeekableStream
-
         src = self._source
         assert src is not None  # always set in __init__
-        if isinstance(src, Path):
-            with open(src, "rb") as f:
+        if src.path is not None:
+            with open(src.path, "rb") as f:
                 return f.read(length)
-        if isinstance(src, PeekableStream):
+        if not src.seekable():
             return src.peek(length)
-        if is_seekable(src):
-            # open_archive normalizes the origin (a mid-positioned stream arrives wrapped
-            # with tell() == 0 at the archive's first byte), so 0 is the archive start.
-            pos = src.tell()
-            src.seek(0)
-            data = read_exact(src, length)
-            src.seek(pos)
-            return data
-        return b""
+        # open_archive normalizes the origin (a mid-positioned stream is rebased so
+        # tell() == 0 at the archive's first byte), so 0 is the archive start.
+        pos = src.tell()
+        src.seek(0)
+        data = read_exact(src, length)
+        src.seek(pos)
+        return data
 
     def _probe_gzip_stored_crc32(self) -> int | None:
         """Trailer CRC-32 for a single-member gzip, in one seekable pass.
@@ -390,7 +384,6 @@ class SingleFileReader(BaseArchiveReader):
             # single-file archive). The view is non-owning; the SharedSource outlives it.
             view = self._shared.view(0)
             counted = self._wrap_compressed_input(view)
-            assert not isinstance(counted, Path)  # view is always a stream
             raw = open_codec_stream(
                 self._codec,
                 counted,
@@ -400,10 +393,14 @@ class SingleFileReader(BaseArchiveReader):
         else:
             src = self._source
             assert src is not None  # always set in __init__
-            # Count compressed bytes pulled from a non-seekable stream so the live ratio
-            # guard has a denominator (a path / seekable stream keeps its cheap static size).
-            counted = self._wrap_compressed_input(src)
-            codec_source = str(counted) if isinstance(counted, Path) else counted
+            codec_source: str | BinaryIO
+            if src.path is not None:
+                codec_source = str(src.path)
+            else:
+                # Count compressed bytes pulled from a non-seekable stream so the live
+                # ratio guard has a denominator (a path / seekable stream keeps its cheap
+                # static size).
+                codec_source = self._wrap_compressed_input(src)
             raw = open_codec_stream(
                 self._codec,
                 codec_source,
@@ -491,7 +488,7 @@ class SingleFileBackend(ReadBackend):
 
     def open_read(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
         passwords: _PasswordCandidates | None,

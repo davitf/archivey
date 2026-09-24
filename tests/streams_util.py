@@ -174,6 +174,28 @@ class CountingBytesIO(io.RawIOBase):
         return self._inner.tell()
 
 
+class FactSizedReadRecorder(io.BytesIO):
+    """A ``BytesIO`` that records the size asked of every ``read`` / ``readinto``.
+
+    Its length is a fact to the source boundary — ``BytesIO``'s own buffer says how
+    big it is — so a read against it is clamped to what is left, where the same bytes
+    behind :class:`ReadSizeRecorder`'s ``size`` attribute, a caller's unverified claim,
+    are only stepped.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.requested: list[int] = []
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        self.requested.append(-1 if n is None else n)
+        return super().read(n)
+
+    def readinto(self, b, /) -> int:  # type: ignore[override]  # test double
+        self.requested.append(len(b))
+        return super().readinto(b)
+
+
 class ReadSizeRecorder(io.RawIOBase):
     """A seekable in-memory stream that records the size asked of every ``read``.
 

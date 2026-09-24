@@ -564,12 +564,20 @@ Streaming (`mode="r|"`) is unaffected — tarfile's own `_Stream.read` loops in
 `bufsize` chunks — so this is `streaming=False`, the default. The compressed
 random-access path is affected too.
 
-*Closed:* `_EofProbeStream`, which already wraps the fileobj on exactly this path,
-never asks its inner stream for more than it can still supply. Where the source's
-length is a fact (a file, a sized stream) the read is clamped to what is left; where
-it is not — our own decompressor, whose length would cost a pass to learn, and any
-caller-supplied stream that advertises none — the request is served in bounded steps,
-so the peak tracks the bytes the stream really has. A
+*Closed:* the read is bounded where it reaches bytes. On the plain path tarfile reads
+the archive source itself, an `ArchiveSource` (`internal/source.py`), whose ordinary
+`read(n)` never asks the source for more than it can still supply; on the compressed
+path it reads our decompressor through `_EofProbeStream`, which applies the same rule
+(the two share `read_within_reach`). Where the length is a fact (a file's `stat`, a
+`BytesIO`'s buffer) the read is clamped to what is left. Where it is not, the request
+is served in bounded steps, so the peak tracks the bytes the stream really has; that
+covers our own decompressor, whose length would cost a pass to learn, any
+caller-supplied stream that advertises none, and one that advertises an fsspec `size`
+attribute, which is an unverified claim and would truncate a legitimate read if it
+understated. The same holds one layer up: the source reports only a fact as its `size`,
+so a slice or shared view a backend builds over it clamps on a fact or steps too, never
+on the hint. A path naming a FIFO or a device is read once, through the source, with no
+`.path`, so no backend can reopen it and read different bytes. A
 flat metadata cap was the obvious fix and is wrong: member data reads go through the
 same wrapper, so a 40 MiB member arrives as one 41 943 040-byte request. Found on
 PR #315 (S18-K1); tracked internally.
@@ -590,27 +598,28 @@ against that boundary's own docstring. A `Path` source also went to `PyCdlib.ope
 which opens its own handle with nothing of archivey's underneath it, so there was
 nowhere to put a bound.
 
-*Closed:* every source goes through `open_fp` with archivey's own handle, wrapped in
-`_ImageBoundedStream`, which applies the same rule as O15's — the two share
-`read_within_reach`. The wrap is **unconditional**, because the image's length often
-is not knowable: being seekable is not the same as being cheaply measurable, and
-`source_byte_size` answers only from a path `stat`, an integer `size` attribute,
-`try_get_size()`, or a whitelist of types whose end-seek is provably O(1). An ordinary
-caller-supplied file-like matches none of those, so it returns `None` — and a wrapper
-applied only when the size is known would have left exactly that source unbounded.
-Where the length is a fact the read is clamped to the bytes left in the image; where
-it is not, the request is served in bounded steps, so the peak tracks the bytes the
-stream really has rather than the field. Stepping is also what keeps this correct when
+*Closed:* every source goes through `open_fp` as the `ArchiveSource` itself, whose
+ordinary `read` applies O15's rule — a path included, whose handle the source opens
+itself, so there is always something of archivey's under pycdlib. The bound is
+**unconditional**, because the image's length often is not knowable: being seekable
+is not the same as being cheaply measurable. The source clamps only on a length that
+is a fact (a path `stat`, a `BytesIO`'s buffer, a regular file's `fstat`); an ordinary
+caller-supplied file-like has none, and an fsspec `size` attribute is a hint, so both
+are stepped — a bound applied only when the size is known would have left exactly
+those sources unbounded. Where the length is a fact the read is clamped to the bytes
+left in the image; where it is not, the request is served in bounded steps, so the
+peak tracks the bytes the stream really has rather than the field. Stepping is also what keeps this correct when
 the source is a nested member stream, whose `SEEK_END` would decompress the payload a
 probe here was trying to avoid. pycdlib then gets a short read and raises
 `PyCdlibInvalidISO`, which `_translate_exception` maps to `CorruptionError`. The cap
 is generic, so it also closes any other pycdlib read sized from a header field.
 
-Opening the handle here brings its release with it: a failure between the `open` and
-the constructor returning leaves no reader for the caller to close, and the
-exception's traceback pins the frame — and the fp — for as long as a
-catch-and-continue loop holds it, one descriptor per refused image. The open is
-wrapped so the handle is closed before the exception leaves. Found on PR #315
+Opening the handle in archivey brings its release with it: a failure before the
+reader's constructor returns leaves no reader for the caller to close, and the
+exception's traceback pins the frame — and the handle — for as long as a
+catch-and-continue loop holds it, one descriptor per refused image. `open_archive`
+closes the source on any exception before a reader exists, and once one does, the
+reader closes it in its own teardown. Found on PR #315
 (S22-K1); tracked internally.
 
 ### O17. A seek trusts the format's own index, so a crafted `.xz` or `.lz` can misplace bytes — accepted

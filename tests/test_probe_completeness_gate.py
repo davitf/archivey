@@ -15,6 +15,8 @@ from archivey import (
     detect_format,
 )
 from archivey.exceptions import FormatDetectionError
+from archivey.internal.detection_workspace import DETECTION_LIMIT
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.brotli_framing import (
     CHAIN_MAX_LINKS,
     BrotliBlock,
@@ -23,7 +25,6 @@ from archivey.internal.streams.brotli_framing import (
     parse_metablock,
 )
 from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec, ZlibCodec
-from archivey.internal.streams.peekable import DETECTION_LIMIT, PeekableStream
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO, brotli_compressed_metablock_header
 
@@ -288,7 +289,7 @@ def test_unknown_length_keeps_today_behaviour_for_both_rules() -> None:
 @requires("brotli")
 def test_nonseekable_unknown_length_skips_both_rules() -> None:
     stub = b"MZ" + b"\x90" * 4094
-    info = detect_format(PeekableStream(NonSeekableBytesIO(stub)))
+    info = detect_format(ArchiveSource.for_stream(NonSeekableBytesIO(stub)))
     assert info.format == ArchiveFormat.BROTLI
 
 

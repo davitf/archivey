@@ -98,6 +98,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.reader_state import LiveStreamReservation, ReaderState
 from archivey.internal.selection import normalize_member_selector
 from archivey.internal.sfx import HitValidator
+from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
 from archivey.internal.streams.counting import (
     CountingReader,
@@ -107,7 +108,6 @@ from archivey.internal.streams.counting import (
 from archivey.internal.streams.streamtools import (
     ReadableStream,
     is_seekable,
-    is_stream,
     read_exact,
     source_byte_size,
 )
@@ -270,7 +270,7 @@ class ReadBackend(ABC):
     @abstractmethod
     def open_read(
         self,
-        source: Path | BinaryIO,
+        source: ArchiveSource,
         format: ArchiveFormat,
         streaming: bool,
         passwords: _PasswordCandidates | None,
@@ -283,7 +283,11 @@ class ReadBackend(ABC):
         start_offset: int = 0,
     ) -> "BaseArchiveReader":
         """Open ``source`` as ``format`` (the resolved format the registry selected this
-        backend for — either detected by ``open_archive`` or supplied by the caller). A
+        backend for — either detected by ``open_archive`` or supplied by the caller).
+
+        ``source`` is the :class:`ArchiveSource` the boundary built. The reader this
+        returns owns it and closes it on teardown; a constructor that raises leaves it to
+        ``open_archive``, which closes it. A
         multi-format backend uses it to pick its concrete codec/variant rather than
         re-inspecting the source.
 
@@ -421,9 +425,10 @@ class BaseArchiveReader(ArchiveReader):
             weakref.WeakValueDictionary()
         )
         self._public_stream_seq = 0
-        # The archive's source, recorded by backends that have one (path or stream);
-        # backs the generalized compressed_source_size property below.
-        self._source: Path | BinaryIO | None = None
+        # The archive's source, recorded by every backend's constructor. The reader owns
+        # it: teardown closes it after ``_close_archive``. Also backs
+        # ``compressed_source_size`` below.
+        self._source: ArchiveSource | None = None
         # A counter wrapping the raw compressed source, set by a backend that decompresses
         # a stream source; backs compressed_bytes_consumed (the live decompression-ratio
         # denominator for a source whose total size is not cheaply knowable).
@@ -586,7 +591,14 @@ class BaseArchiveReader(ArchiveReader):
             return
         teardown_exc: Exception | None = None
         try:
-            self._close_archive()
+            try:
+                self._close_archive()
+            finally:
+                # After the backend: whatever it built reads through the source, so the
+                # source goes last. It closes only what archivey opened or built.
+                source = self._source
+                if source is not None:
+                    source.close()
         except Exception as exc:  # noqa: BLE001 - combine with pending stream-close failure
             teardown_exc = exc
             self._state.complete_teardown()
@@ -786,15 +798,15 @@ class BaseArchiveReader(ArchiveReader):
             return None
         return lambda handle: SeekCountingStream(handle, counter)
 
-    def _track_source_seeks(self, source: Path | BinaryIO) -> Path | BinaryIO:
-        """Wrap a seekable BinaryIO source to count seeks; leave paths unchanged.
+    def _track_source_seeks(self, source: BinaryIO) -> BinaryIO:
+        """Wrap the source to count seeks when measurement is on; identity otherwise.
 
-        Path sources are instrumented via :meth:`_seek_handle_wrapper` on
-        ``SharedSource``, or by opening the path and wrapping before a library that
-        takes a file object (ZIP). Identity when measurement is off.
+        The counter owns its inner, but closing it only closes the
+        :class:`ArchiveSource` underneath, which the reader closes anyway and which
+        never closes the caller's object.
         """
         counter = self._seek_counter
-        if counter is None or not is_stream(source):
+        if counter is None:
             return source
         return SeekCountingStream(source, counter)
 
@@ -1910,7 +1922,8 @@ class BaseArchiveReader(ArchiveReader):
         source report ``None``.
         """
         self._state.require_open("compressed_source_size")
-        return source_byte_size(self._source) if self._source is not None else None
+        # The hint, not the fact: this reports, it bounds nothing.
+        return self._source.size_hint if self._source is not None else None
 
     @property
     def compressed_bytes_consumed(self) -> int | None:
@@ -1929,7 +1942,7 @@ class BaseArchiveReader(ArchiveReader):
         c = self._compressed_input_counter
         return c.bytes_read if c is not None else None
 
-    def _wrap_compressed_input(self, source: Path | BinaryIO) -> Path | BinaryIO:
+    def _wrap_compressed_input(self, source: BinaryIO) -> BinaryIO:
         """Wrap a stream source **whose byte size is not cheaply knowable** in a
         ``CountingReader`` (recorded for the live decompression-ratio guard) and return the
         wrapper; return the source unchanged for a path or a sizable stream, whose static
@@ -1943,7 +1956,14 @@ class BaseArchiveReader(ArchiveReader):
         scan, an accelerator); re-read bytes are counted again, which only ever inflates
         the denominator — the guard gets weaker, never a false positive.
         """
-        if is_stream(source) and source_byte_size(source) is None:
+        # Asked of the reader's source the way ``compressed_source_size`` asks it, hint
+        # included, so the two stay complements; ``source`` may be a view over it.
+        known = (
+            self._source.size_hint
+            if self._source is not None
+            else source_byte_size(source)
+        )
+        if known is None:
             counter = CountingReader(source)
             self._compressed_input_counter = counter
             return counter

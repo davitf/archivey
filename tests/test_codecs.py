@@ -1073,7 +1073,7 @@ def test_archive_stream_passthrough_read_stops_on_short_inner() -> None:
     The full count comes from the inner being fill-or-EOF, not from a gather here
     (ADR 0014 / ``compressed-streams``): retrying a short would pull a decoder's
     deferred truncation into the same call and drop the recoverable prefix. An inner
-    that shorts mid-stream is fixed with ``ensure_full_count_reads`` in front.
+    that shorts mid-stream is fixed by the ``ArchiveSource`` in front.
     """
     from archivey.internal.streams.archive_stream import ArchiveStream
 

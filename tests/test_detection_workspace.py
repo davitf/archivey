@@ -40,7 +40,7 @@ from archivey.internal.sfx import (
     find_magic_in_prefix,
     iter_magic_in_prefix,
 )
-from archivey.internal.streams.peekable import PeekableStream
+from archivey.internal.source import ArchiveSource
 from archivey.types import ArchiveFormat
 from tests.streams_util import NonSeekableBytesIO
 
@@ -178,7 +178,7 @@ def test_path_detection_access_shape(tmp_path: Path) -> None:
 
 
 def test_peekable_pipe_detection_access_shape() -> None:
-    stream = PeekableStream(NonSeekableBytesIO(_gzip_bytes()))
+    stream = ArchiveSource.for_stream(NonSeekableBytesIO(_gzip_bytes()))
     info = detect_format(stream)
     assert info.format == ArchiveFormat.GZ
     assert info.cost_receipt is not None
@@ -188,6 +188,27 @@ def test_peekable_pipe_detection_access_shape() -> None:
         s.tier == "zip_tail" and s.reason is TierSkipReason.NOT_ENABLED_BY_POLICY
         for s in info.unavailable_tiers
     )
+
+
+def test_a_hint_sized_archive_source_still_knows_its_size() -> None:
+    """Detection takes a caller's ``size`` hint through the source, as it did before.
+
+    ``ArchiveSource.size`` is the fact alone, so reading the workspace's total through
+    ``source_byte_size`` would drop ``SIZE_KNOWN`` and ``remaining_known()`` for a stream
+    whose only cheap size is an fsspec ``size`` attribute. Fails against that.
+    """
+    from archivey.internal.volumes import resolve_source
+    from tests.streams_util import ReadSizeRecorder
+
+    # Seekable and raw, with ``size`` its only cheap length: not a fact.
+    resolved = resolve_source(ReadSizeRecorder(bytes(5004)))
+    try:
+        assert resolved.source.size is None
+        with PrefixWorkspace(resolved.source, BALANCED_BUDGET) as ws:
+            assert ws.remaining_known() == 5004
+            assert DetectionCapability.SIZE_KNOWN in ws.capabilities()
+    finally:
+        resolved.source.close()
 
 
 def test_growing_prefix_fetches_each_byte_once() -> None:
@@ -324,7 +345,7 @@ def test_spool_policy_grants_tail_to_a_pipe() -> None:
 
 
 def test_pipe_without_spool_records_tail_unavailable() -> None:
-    stream = PeekableStream(NonSeekableBytesIO(_zip_bytes()))
+    stream = ArchiveSource.for_stream(NonSeekableBytesIO(_zip_bytes()))
     info = detect_format(stream, budget=THOROUGH_BUDGET)
     # Every shipping preset leaves ZIP tail off (Decision 1B) — policy, not capability.
     assert any(
@@ -517,7 +538,7 @@ def test_read_at_nonseekable_past_cap_records_budget_exhausted() -> None:
     )
 
     payload = b"\x00" * (PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE + 100)
-    stream = PeekableStream(NonSeekableBytesIO(payload))
+    stream = ArchiveSource.for_stream(NonSeekableBytesIO(payload))
     with PrefixWorkspace(stream, BALANCED_BUDGET) as ws:
         assert ws.read_at(PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE, 4) is None
         assert any(
