@@ -505,7 +505,7 @@ def read_within_reach(
     return b"".join(parts)
 
 
-def source_byte_size(source: Any) -> int | None:
+def source_byte_size(source: object) -> int | None:
     """Total byte size of a path or stream source when **cheaply** knowable, else ``None``.
 
     Cheap means no data is read or decompressed. Probe order:
@@ -556,13 +556,19 @@ def source_byte_size(source: Any) -> int | None:
     if metadata_end is not None:
         return metadata_end
     if _seek_end_is_cheap(peeled):
+        # ``outer`` is seekable (checked above), so these exist; getattr keeps the
+        # parameter an honest ``object`` rather than a claim about every caller.
+        tell = getattr(outer, "tell", None)
+        seek = getattr(outer, "seek", None)
+        if not (callable(tell) and callable(seek)):
+            return None
         try:
-            pos = outer.tell()
-            end = outer.seek(0, io.SEEK_END)
-            outer.seek(pos)
+            pos = tell()
+            end = seek(0, io.SEEK_END)
+            seek(pos)
         except OSError:
             return None
-        return end
+        return end if isinstance(end, int) else None
     return None
 
 
@@ -693,6 +699,9 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
     temporary view onto a stream someone else owns).
     """
 
+    # ``Any``, not a Protocol: the wrapper exists for objects with a partial file API,
+    # and its callers (``ensure_binaryio``, ``ensure_bufferedio``) take ``object``. A
+    # "has read" Protocol would move the claim to them without making it true.
     def __init__(self, raw: Any) -> None:
         super().__init__()
         self._raw = raw

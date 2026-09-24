@@ -30,11 +30,11 @@ import threading
 import zipfile
 import zlib
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, BinaryIO, Iterator, Mapping, NoReturn, cast
+from typing import IO, TYPE_CHECKING, BinaryIO, Iterator, Mapping, NoReturn, cast
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -935,7 +935,7 @@ class ZipReader(BaseArchiveReader):
             return (int(raw_time) >> 8) & 0xFF
         return (info.CRC >> 24) & 0xFF
 
-    def _zipfile_lock(self) -> Any:
+    def _zipfile_lock(self) -> AbstractContextManager[object]:
         # stdlib ZipFile serializes fp access via a private lock; typeshed omits it.
         return getattr(self._archive, "_lock")
 
