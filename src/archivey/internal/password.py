@@ -39,6 +39,16 @@ class _PasswordCandidatesExhausted(EncryptionError):
         self.last_error = last_error
 
 
+class _WrongPassword(EncryptionError):
+    """Internal marker: the backend checked this password and it is the wrong one.
+
+    ``attempt`` keeps this message on exhaustion ("Wrong password for this ZIP
+    member") and replaces any other ``EncryptionError`` text with a generic one. The
+    decision reads the type, not the wording, so rewording a backend's message cannot
+    change what exhaustion reports. Public callers still see ``EncryptionError``.
+    """
+
+
 def _to_bytes(password: str | bytes) -> bytes:
     return password.encode() if isinstance(password, str) else password
 
@@ -278,8 +288,7 @@ class _PasswordCandidates:
         message = (
             (
                 last_error.message
-                if last_error is not None
-                and "wrong password" in last_error.message.lower()
+                if isinstance(last_error, _WrongPassword)
                 else "Password(s) rejected for this encrypted member"
             )
             if tried

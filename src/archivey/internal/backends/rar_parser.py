@@ -59,6 +59,7 @@ from archivey.exceptions import (
     raw_message_of,
 )
 from archivey.internal.config import KeyDerivationBudget
+from archivey.internal.password import _WrongPassword
 from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
@@ -2390,7 +2391,7 @@ def _check_rar5_password(
     for i, v in enumerate(pwd_hash):
         pwd_check[i & 7] ^= v
     if not hmac.compare_digest(bytes(pwd_check), hdr_check):
-        raise EncryptionError("Wrong password for RAR5 header encryption")
+        raise _WrongPassword("Wrong password for RAR5 header encryption")
     return True
 
 

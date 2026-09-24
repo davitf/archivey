@@ -5,6 +5,11 @@ Modules import the named logger they need from here (e.g.
 ``logging.getLogger("archivey.normalization")`` with a hand-typed string, so the
 hierarchy is defined in exactly one place and importing any module establishes it.
 
+Two sites name a logger themselves, on purpose: the CLI configures the root
+``archivey`` logger to install its handler, and ``streams.streamtools`` stays free of
+archivey imports so it could be lifted out as its own library, so it spells
+``archivey.streams`` itself. ``tests/test_logs.py`` fails on any other hand-typed name.
+
 The library never installs handlers, levels, or formatters — that is left entirely to
 the application (see the ``logging`` spec).
 """
@@ -19,3 +24,5 @@ streams = logging.getLogger("archivey.streams")
 # Used by the decompressed-output digest verification stage to warn when an expected
 # digest cannot be checked (unknown algorithm, or its backend is not installed).
 integrity = logging.getLogger("archivey.integrity")
+# Carries the WARNING projection of every diagnostic (see the ``diagnostics`` spec).
+diagnostics = logging.getLogger("archivey.diagnostics")

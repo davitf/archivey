@@ -11,7 +11,7 @@ import pytest
 from archivey import PasswordRequest, open_archive
 from archivey.exceptions import EncryptionError
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
-from archivey.internal.password import _PasswordCandidates
+from archivey.internal.password import _PasswordCandidates, _WrongPassword
 from archivey.measurement import enable_measurement
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
@@ -374,3 +374,30 @@ def test_zip_provider_receives_member(tmp_path: Path) -> None:
     assert seen[0].member is not None
     assert seen[0].member.name == "only.txt"
     assert seen[0].attempt == 1
+
+
+@pytest.mark.parametrize(
+    ("raised", "expected"),
+    [
+        # The marker keeps the backend's message, whatever its wording.
+        (
+            _WrongPassword("Incorrect key for this member"),
+            "Incorrect key for this member",
+        ),
+        # Unmarked text that happens to say "wrong password" does not.
+        (
+            EncryptionError("Wrong password, or so it seems"),
+            "Password(s) rejected for this encrypted member",
+        ),
+    ],
+)
+def test_exhaustion_message_follows_the_marker_not_the_wording(
+    raised: EncryptionError, expected: str
+) -> None:
+    def decrypt(_password: bytes) -> bytes:
+        raise raised
+
+    candidates = _PasswordCandidates.from_input("guess")
+    with pytest.raises(EncryptionError) as caught:
+        candidates.attempt(None, decrypt)
+    assert caught.value.message == expected

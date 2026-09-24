@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-import traceback
 from dataclasses import dataclass
 from types import FrameType
 
@@ -39,35 +38,21 @@ class OpenSite:
 def capture_open_site(
     *, skip_module_prefixes: tuple[str, ...] = ("archivey.",)
 ) -> OpenSite:
-    """Return the first non-archivey caller's ``file:line`` (cheap frame walk only)."""
-    frame: FrameType | None = None
-    try:
-        # Start from the caller of this function.
-        frame = sys._getframe(1)
-    except ValueError:
-        frame = None
+    """Return the first non-archivey caller's ``file:line`` (cheap frame walk only).
 
-    filename = "<unknown>"
-    lineno = 0
+    ``sys._getframe`` exists on every interpreter archivey supports (CPython and PyPy),
+    and the walk always stops: the bottom frame of a real stack is ``__main__``,
+    ``runpy``, ``threading``, a test module or an ``exec`` with no ``__name__``, none of
+    them under ``archivey.``. ``<unknown>:0`` is kept only as the result for a stack
+    made entirely of archivey frames.
+    """
+    # Start from the caller of this function.
+    frame: FrameType | None = sys._getframe(1)
     while frame is not None:
         mod = frame.f_globals.get("__name__", "")
         if not any(
             mod == p.rstrip(".") or mod.startswith(p) for p in skip_module_prefixes
         ):
-            filename = frame.f_code.co_filename
-            lineno = frame.f_lineno
-            break
+            return OpenSite(filename=frame.f_code.co_filename, lineno=frame.f_lineno)
         frame = frame.f_back
-    else:
-        # Frame introspection is unavailable (e.g. a Python without sys._getframe): fall
-        # back to the more expensive extracted stack, taken only on this rare path.
-        for summary in reversed(traceback.extract_stack()[:-1]):
-            # extract_stack has no module name; use path heuristics.
-            if "/archivey/" not in summary.filename.replace(
-                "\\", "/"
-            ) and not summary.filename.endswith("open_site.py"):
-                filename = summary.filename
-                lineno = summary.lineno or 0
-                break
-
-    return OpenSite(filename=filename, lineno=lineno)
+    return OpenSite(filename="<unknown>", lineno=0)
