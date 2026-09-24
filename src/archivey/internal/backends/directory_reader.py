@@ -78,6 +78,19 @@ def _link_extra(member_type: MemberType, is_junction: bool) -> MemberExtra:
     return extra
 
 
+# `os.DirEntry.stat` on Windows serves the data scandir already has, in which st_ino,
+# st_dev and st_nlink are always zero.
+_STAT_LACKS_IDENTITY = os.name == "nt"
+
+
+def _identity_stat(path: str) -> os.stat_result:
+    """A fresh ``lstat`` of ``path``, for the file identity scandir's data lacks.
+
+    A seam for tests: they replace it to simulate Windows without patching ``os.stat``.
+    """
+    return os.stat(path, follow_symlinks=False)
+
+
 def _is_junction(entry: os.DirEntry[str]) -> bool:
     """True if a scandir entry is a Windows NTFS junction.
 
@@ -133,18 +146,24 @@ class DirectoryReader(BaseArchiveReader):
         # Order is a depth-first preorder: at each level the non-directory entries
         # (sorted by name), then each subdirectory's own member followed by its whole
         # subtree. Subdirectories are pushed in reverse so they pop in name order.
+        #
+        # `first_names` maps a multiply-linked file's (st_dev, st_ino) to the first name
+        # the walk gave it, so later names list as HARDLINK members pointing there, the
+        # way a tar records them. It lives for one walk: each pass decides afresh.
         pending: list[tuple[ArchiveMember, Path]] = []
-        yield from self._scan_level(self._root, "", pending)
+        first_names: dict[tuple[int, int], str] = {}
+        yield from self._scan_level(self._root, "", pending, first_names)
         while pending:
             member, path = pending.pop()
             yield member
-            yield from self._scan_level(path, member.name, pending)
+            yield from self._scan_level(path, member.name, pending, first_names)
 
     def _scan_level(
         self,
         directory: Path,
         rel_prefix: str,
         pending: list[tuple[ArchiveMember, Path]],
+        first_names: dict[tuple[int, int], str],
     ) -> Iterator[ArchiveMember]:
         """Yield one directory's non-directory entries; push its subdirectories.
 
@@ -195,10 +214,14 @@ class DirectoryReader(BaseArchiveReader):
             # there now and `readlink` only runs on something that is a link. Only the
             # junction test still reads the entry: a junction's reparse tag is not in
             # `st_mode`, which reports it as a directory. On Windows `DirEntry.stat`
-            # serves scandir's own data without a syscall, so this narrows the
-            # replacement window only on POSIX; a replaced entry there still fails.
+            # serves scandir's own data without a syscall; the identity stat below
+            # refreshes it for entries scandir saw as regular files, so there the
+            # window narrows for those only, and a directory or link replaced in it
+            # still fails.
             try:
                 st = entry.stat(follow_symlinks=False)
+                if _STAT_LACKS_IDENTITY and stat.S_ISREG(st.st_mode):
+                    st = self._stat_with_identity(entry.path, st)
                 is_symlink = stat.S_ISLNK(st.st_mode)
                 is_junction = not is_symlink and _is_junction(entry)
                 link_target = (
@@ -238,11 +261,40 @@ class DirectoryReader(BaseArchiveReader):
                 )
                 subdirs.append((member, Path(entry.path)))
             elif stat.S_ISREG(st.st_mode):
-                yield self._make_member(rel_path, st, MemberType.FILE, None)
+                first_name = None
+                # st_ino 0 is "no identity" (Windows' scandir data, some FUSE and
+                # network mounts): grouping on it would link unrelated files.
+                if st.st_nlink > 1 and st.st_ino != 0:
+                    first_name = first_names.setdefault(
+                        (st.st_dev, st.st_ino), rel_path
+                    )
+                if first_name is not None and first_name != rel_path:
+                    yield self._make_member(
+                        rel_path, st, MemberType.HARDLINK, first_name
+                    )
+                else:
+                    yield self._make_member(rel_path, st, MemberType.FILE, None)
             else:
                 yield self._make_member(rel_path, st, MemberType.OTHER, None)
 
         pending.extend(reversed(subdirs))
+
+    @staticmethod
+    def _stat_with_identity(path: str, cached: os.stat_result) -> os.stat_result:
+        """Windows only: re-stat a regular file for st_ino, st_dev and st_nlink.
+
+        Hardlink detection needs them and scandir's data has them all zero. The fresh
+        stat takes a path where scandir needed none, so a path past ``MAX_PATH``
+        without long-path support can fail here with ``FileNotFoundError`` for a file
+        that exists. That is not a vanished entry: keep scandir's data, which lists it
+        as a plain ``FILE``, as before hardlinks were detected. A file that really did
+        vanish in this window lists the same way, as it did then; opening it fails
+        later. Any other ``OSError`` propagates like every genuine error in the walk.
+        """
+        try:
+            return _identity_stat(path)
+        except FileNotFoundError:
+            return cached
 
     @staticmethod
     def _read_link_target(path: str) -> str:

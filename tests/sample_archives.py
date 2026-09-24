@@ -259,6 +259,18 @@ _HARDLINKS_FORWARD = (
     H("e_double_hardlink.txt", "d_hardlink.txt", link_contents=b"Hello!"),
 )
 
+# Names where a directory walk reaches each group's data-holding name first (a level's
+# files by name, then its subdirectories), so a directory lists the same FILE/HARDLINK
+# direction a tar records. `_HARDLINKS` does not: its root-level link sorts ahead of
+# `subdir/file2.txt`.
+_HARDLINKS_WALK_ORDER = (
+    F("a_file.txt", b"Hello 1!"),
+    H("b_link.txt", "a_file.txt", link_contents=b"Hello 1!"),
+    H("subdir/c_link.txt", "a_file.txt", link_contents=b"Hello 1!"),
+    F("subdir/d_file.txt", b"Hello 2!"),
+    H("subdir/deeper/e_link.txt", "subdir/d_file.txt", link_contents=b"Hello 2!"),
+)
+
 _PERMISSIONS = (
     F("standard.txt", b"Standard permissions.", mode=0o644),
     F("readonly.txt", b"Read-only permissions.", mode=0o444),
@@ -362,6 +374,7 @@ CORPUS: tuple[CorpusEntry, ...] = (
     CorpusEntry("hardlinks", _HARDLINKS, ("tar", "tar.gz", "rar")),
     CorpusEntry("hardlinks-duplicate", _HARDLINKS_DUP, ("tar",)),
     CorpusEntry("hardlinks-forward", _HARDLINKS_FORWARD, ("tar", "tar.gz")),
+    CorpusEntry("hardlinks-walk-order", _HARDLINKS_WALK_ORDER, ("tar", "dir")),
     CorpusEntry("permissions", _PERMISSIONS, ("zip", "tar", "dir", "7z")),
     CorpusEntry("zip-compression-methods", _ZIP_METHODS, ("zip",)),
     CorpusEntry("duplicates", _DUPLICATES, ("zip", "tar")),

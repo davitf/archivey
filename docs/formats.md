@@ -199,6 +199,12 @@ behaviour. The complete list is on the two classes.
 - A filesystem tree as a pseudo-archive (uniform API for tests and dir↔archive flows).
 - Same default stream contract as archives: forward-only, one live stream, until you
   declare `SEEKABLE` / `CONCURRENT`.
+- Hardlinks list as a tar lists them. When several names inside the root share one
+  file, the first name the walk reaches is a `FILE` and each later name is a `HARDLINK`
+  to it, with `size` `None`. The walk visits a directory's files by name, then its
+  subdirectories, so which name keeps the data is fixed. With `streaming=True`,
+  extracting a later name whose first name a filter left out fails, as for a streamed
+  tar.
 
 ## Single-file compressors
 

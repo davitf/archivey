@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -692,3 +693,130 @@ def test_symlink_replaced_by_file_mid_scan_lists_as_file(
         "link": MemberType.FILE,
         "z.txt": MemberType.FILE,
     }
+
+
+# ---------------------------------------------------------------------------
+# Hardlinks: later names of one file list as HARDLINK, as a tar records them
+# ---------------------------------------------------------------------------
+
+
+def test_hardlinked_names_list_as_hardlink_to_the_first(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_bytes(b"shared")
+    (tmp_path / "sub").mkdir()
+    os.link(tmp_path / "a.txt", tmp_path / "b.txt")
+    os.link(tmp_path / "a.txt", tmp_path / "sub" / "c.txt")
+    with open_archive(tmp_path) as reader:
+        members = {m.name: m for m in reader.members()}
+        assert members["a.txt"].type == MemberType.FILE
+        assert members["a.txt"].size == 6
+        for name in ("b.txt", "sub/c.txt"):
+            assert members[name].type == MemberType.HARDLINK
+            assert members[name].link_target == "a.txt"
+            assert members[name].size is None
+            assert reader.read(name) == b"shared"
+
+
+def test_link_count_from_outside_the_tree_is_a_plain_file(tmp_path: Path) -> None:
+    # The file's other name is outside the root, so inside the tree it has one name.
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"x")
+    os.link(root / "a.txt", tmp_path / "outside.txt")
+    with open_archive(root) as reader:
+        assert [(m.name, m.type) for m in reader.members()] == [
+            ("a.txt", MemberType.FILE)
+        ]
+
+
+def test_hardlinked_directory_extracts_both_names(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_bytes(b"shared")
+    os.link(src / "a.txt", src / "b.txt")
+    dest = tmp_path / "dest"
+    with open_archive(src) as reader:
+        reader.extract_all(dest)
+    assert (dest / "a.txt").read_bytes() == b"shared"
+    assert (dest / "b.txt").read_bytes() == b"shared"
+
+
+def _hardlinked_pair(root: Path) -> None:
+    root.mkdir(exist_ok=True)
+    (root / "a.txt").write_bytes(b"shared")
+    os.link(root / "a.txt", root / "b.txt")
+
+
+def test_zero_inode_is_no_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A filesystem reporting st_ino 0 (some FUSE and network mounts) with a link count
+    # above one must not group files on it: both names list as FILE.
+    from archivey.internal.backends import directory_reader
+
+    _hardlinked_pair(tmp_path)
+
+    def zero_inode(path: str) -> os.stat_result:
+        fields = list(os.stat(path, follow_symlinks=False))
+        fields[stat.ST_INO] = 0
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(directory_reader, "_STAT_LACKS_IDENTITY", True)
+    monkeypatch.setattr(directory_reader, "_identity_stat", zero_inode)
+    with open_archive(tmp_path) as reader:
+        types = {m.name: m.type for m in reader.members()}
+    assert types == {"a.txt": MemberType.FILE, "b.txt": MemberType.FILE}
+
+
+def test_identity_stat_path_failure_keeps_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On Windows the identity stat takes a path, which can fail past MAX_PATH for a file
+    # scandir did list. The file stays listed, as a plain FILE, not skipped as vanished.
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.internal.backends import directory_reader
+
+    _hardlinked_pair(tmp_path)
+
+    def unreachable(path: str) -> os.stat_result:
+        raise FileNotFoundError(2, "path too long", path)
+
+    monkeypatch.setattr(directory_reader, "_STAT_LACKS_IDENTITY", True)
+    monkeypatch.setattr(directory_reader, "_identity_stat", unreachable)
+    with open_archive(tmp_path) as reader:
+        names = [m.name for m in reader.members()]
+        counts = reader.diagnostics.counts
+    assert names == ["a.txt", "b.txt"]
+    assert DiagnosticCode.SCAN_ENTRY_VANISHED not in counts
+
+
+def test_identity_stat_genuine_error_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from archivey.internal.backends import directory_reader
+
+    _hardlinked_pair(tmp_path)
+
+    def denied(path: str) -> os.stat_result:
+        raise PermissionError(13, "denied", path)
+
+    monkeypatch.setattr(directory_reader, "_STAT_LACKS_IDENTITY", True)
+    monkeypatch.setattr(directory_reader, "_identity_stat", denied)
+    with open_archive(tmp_path) as reader:
+        with pytest.raises(PermissionError):
+            reader.members()
+
+
+def test_streaming_extract_with_first_name_filtered_out_fails_the_link(
+    tmp_path: Path,
+) -> None:
+    # The accepted cost of listing hardlinks as a tar does: on a forward-only pass, a
+    # later name whose first name was filtered out cannot be written, exactly as for a
+    # streamed tar.
+    from archivey.exceptions import ExtractionError
+
+    src = tmp_path / "src"
+    _hardlinked_pair(src)
+    dest = tmp_path / "dest"
+    with open_archive(src, streaming=True) as reader:
+        with pytest.raises(ExtractionError, match="forward-only"):
+            reader.extract_all(dest, filter=lambda m: None if m.name == "a.txt" else m)
