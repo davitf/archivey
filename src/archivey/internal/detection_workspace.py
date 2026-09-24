@@ -52,9 +52,14 @@ class PrefixWorkspace:
         self,
         source: str | Path | BinaryIO,
         budget: DetectionBudget,
+        receipt: MutableDetectionCostReceipt | None = None,
     ) -> None:
         self._budget = budget
-        self._receipt = MutableDetectionCostReceipt()
+        # A caller-supplied receipt accumulates across workspaces: ``detect_format``
+        # passes one to both the stub pass and the sibling-volume pass.
+        self._receipt = (
+            receipt if receipt is not None else MutableDetectionCostReceipt()
+        )
         self._buf = bytearray()
         self._closed = False
         self._entry_pos: int | None = None
@@ -116,6 +121,17 @@ class PrefixWorkspace:
     @property
     def budget(self) -> DetectionBudget:
         return self._budget
+
+    @property
+    def read_ceiling(self) -> int:
+        """Most bytes from the origin any buffered tier may pull into the prefix.
+
+        The same prefix/far/scan maximum that bounds ``unique_bytes_read`` in
+        :meth:`~archivey.detection_cost.DetectionCostReceipt.within_budget`, so a tier
+        that stays under it cannot push the receipt over budget.
+        """
+        b = self._budget
+        return max(b.max_prefix_bytes, b.max_far_bytes, b.max_scan_bytes)
 
     @property
     def receipt(self) -> DetectionCostReceipt:
@@ -275,9 +291,9 @@ class PrefixWorkspace:
         ``offset``, read ``length`` bytes, and restore the handle — they do **not** grow
         the prefix buffer through ``[0, offset)``. Non-seekable sources, and seekable
         streams whose seek is known to be expensive (:class:`~archivey.ArchiveStream`
-        re-decode), grow the prefix under
-        :data:`PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` and return ``None`` past that cap
-        (recorded as ``BUDGET_EXHAUSTED``).
+        re-decode), grow the prefix under the smaller of
+        :data:`PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` and :attr:`read_ceiling`, and return
+        ``None`` past that cap (recorded as ``BUDGET_EXHAUSTED``).
 
         Probe seeks are intentionally independent of ``DetectionCapability.SEEK`` /
         ``max_seeks``: that quota is reserved for the future ZIP tail tier (currently 0
@@ -296,7 +312,7 @@ class PrefixWorkspace:
         if handle is not None:
             return self._read_at_via_seek(handle, offset, length)
 
-        if end > PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE:
+        if end > min(PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE, self.read_ceiling):
             self.record_skip("content_probe_read_at", TierSkipReason.BUDGET_EXHAUSTED)
             return None
         return self.peek_range(offset, length)

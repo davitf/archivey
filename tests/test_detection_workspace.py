@@ -563,3 +563,166 @@ def test_large_brotli_detection_does_not_read_most_of_file(tmp_path: Path) -> No
     # Seek-based probes: unique bytes stay near the near-prefix + small chain walks.
     assert info.cost_receipt.unique_bytes_read < 512 * 1024
     assert info.cost_receipt.within_budget(BALANCED_BUDGET)
+
+
+# ---------------------------------------------------------------------------
+# The ledger: a receipt over budget always names the tier that was cut short
+# ---------------------------------------------------------------------------
+
+
+def test_read_at_buffered_fallback_stays_inside_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # S19-K2: the buffered fallback used to grow the prefix to the 1 MiB constant
+    # whatever the budget said, so FAST (256 KiB scan ceiling) went over budget with no
+    # skip. ``_seek_is_expensive`` stands in for an ``ArchiveStream``.
+    from archivey.detection_cost import FAST_BUDGET
+    from archivey.internal.detection_workspace import (
+        PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
+    )
+
+    monkeypatch.setattr(
+        PrefixWorkspace, "_seek_is_expensive", staticmethod(lambda stream: True)
+    )
+    payload = io.BytesIO(b"\x00" * (PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE + 100))
+    with PrefixWorkspace(payload, FAST_BUDGET) as ws:
+        assert ws.read_at(PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE - 24, 24) is None
+        assert ws.receipt.unique_bytes_read <= FAST_BUDGET.max_scan_bytes
+        assert ws.receipt.within_budget(FAST_BUDGET)
+        assert any(
+            s.tier == "content_probe_read_at"
+            and s.reason is TierSkipReason.BUDGET_EXHAUSTED
+            for s in ws.skips
+        )
+        # Inside the ceiling the fallback still serves the read.
+        assert ws.read_at(FAST_BUDGET.max_scan_bytes - 24, 24) == b"\x00" * 24
+
+
+def test_within_budget_checks_far_bytes() -> None:
+    # S19-K7: far_bytes was the one bounded counter within_budget never compared.
+    from archivey.detection_cost import DetectionCostReceipt
+
+    limit = BALANCED_BUDGET.max_far_bytes
+    assert DetectionCostReceipt(far_bytes=limit).within_budget(BALANCED_BUDGET)
+    assert not DetectionCostReceipt(far_bytes=limit + 1).within_budget(BALANCED_BUDGET)
+
+
+def _mz_stub_bytes() -> bytes:
+    return b"MZ" + b"\x00" * 62 + b"\x00" * (3 * 1024 * 1024)
+
+
+def _big_tar_bz2() -> bytes:
+    import bz2
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        data = os.urandom(850_000)
+        info = tarfile.TarInfo("first.bin")
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+    return bz2.compress(buf.getvalue(), 9)
+
+
+def _corrupt_bz2() -> bytes:
+    import bz2
+
+    data = bytearray(bz2.compress(os.urandom(4096) * 4, 9))
+    for i in range(10, len(data) - 10):
+        data[i] ^= 0x5A
+    return bytes(data)
+
+
+_INVARIANT_PAYLOADS = {
+    "gzip.gz": _gzip_bytes(),
+    "zip.zip": _zip_bytes(),
+    "iso.iso": _iso_bytes(),
+    "stub.zip": _mz_stub_bytes(),
+    "big.tar.bz2": _big_tar_bz2(),
+    "corrupt.bz2": _corrupt_bz2(),
+}
+
+
+def _tight_budget() -> DetectionBudget:
+    from dataclasses import replace
+
+    return replace(
+        BALANCED_BUDGET,
+        max_far_bytes=4096,
+        max_scan_bytes=8192,
+        max_decode_input=4096,
+        max_decode_output=4096,
+    )
+
+
+@pytest.mark.parametrize("kind", ["path", "seekable", "pipe"])
+@pytest.mark.parametrize("budget_name", ["balanced", "fast", "thorough", "tight"])
+@pytest.mark.parametrize("name", sorted(_INVARIANT_PAYLOADS))
+def test_over_budget_receipt_always_names_a_cut_short_tier(
+    tmp_path: Path, name: str, budget_name: str, kind: str
+) -> None:
+    # The property a caller reads the receipt for: a receipt that fails
+    # ``within_budget`` has a BUDGET_EXHAUSTED or CAPABILITY_UNAVAILABLE skip saying which
+    # tier did it. Every payload here stays in budget today; the assertion is written as
+    # the invariant so a future tier that overspends has to record why.
+    from archivey.detection_cost import FAST_BUDGET
+    from archivey.exceptions import FormatDetectionError
+
+    budget = {
+        "balanced": BALANCED_BUDGET,
+        "fast": FAST_BUDGET,
+        "thorough": THOROUGH_BUDGET,
+        "tight": _tight_budget(),
+    }[budget_name]
+    payload = _INVARIANT_PAYLOADS[name]
+    source: object
+    if kind == "path":
+        source = tmp_path / name
+        source.write_bytes(payload)
+    elif kind == "seekable":
+        source = io.BytesIO(payload)
+    else:
+        source = ArchiveSource.for_stream(NonSeekableBytesIO(payload))
+    try:
+        info = detect_format(source, budget=budget)  # type: ignore[arg-type]
+    except FormatDetectionError:
+        return  # extensionless stub: nothing to inspect, and nothing claimed
+    receipt = info.cost_receipt
+    assert receipt is not None
+    incomplete = {
+        TierSkipReason.BUDGET_EXHAUSTED,
+        TierSkipReason.CAPABILITY_UNAVAILABLE,
+    }
+    assert receipt.within_budget(budget) or any(
+        s.reason in incomplete for s in info.unavailable_tiers
+    ), (receipt, info.unavailable_tiers)
+
+
+@pytest.mark.parametrize("budget_name", ["balanced", "fast", "thorough", "tight"])
+def test_two_pass_receipt_over_budget_also_names_a_cut_short_tier(
+    tmp_path: Path, budget_name: str
+) -> None:
+    # The same invariant over the one receipt that sums two passes: a stub-only
+    # ``vol.exe`` followed to its sibling ``vol.7z.001``.
+    from archivey.detection_cost import FAST_BUDGET
+
+    budget = {
+        "balanced": BALANCED_BUDGET,
+        "fast": FAST_BUDGET,
+        "thorough": THOROUGH_BUDGET,
+        "tight": _tight_budget(),
+    }[budget_name]
+    (tmp_path / "vol.exe").write_bytes(_mz_stub_bytes())
+    (tmp_path / "vol.7z.001").write_bytes(b"7z\xbc\xaf\x27\x1c" + b"\x00" * 8192)
+    info = detect_format(tmp_path / "vol.exe", budget=budget)
+    assert info.format == ArchiveFormat.SEVEN_Z
+    receipt = info.cost_receipt
+    assert receipt is not None
+    assert receipt.passes == 2
+    incomplete = {
+        TierSkipReason.BUDGET_EXHAUSTED,
+        TierSkipReason.CAPABILITY_UNAVAILABLE,
+    }
+    assert receipt.within_budget(budget) or any(
+        s.reason in incomplete for s in info.unavailable_tiers
+    ), (receipt, info.unavailable_tiers)
