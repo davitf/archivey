@@ -76,16 +76,20 @@ def _enclosing_dir(
     format: ArchiveFormat,
     overwrite: OverwritePolicy,
 ) -> Path:
-    """Always-wrap destination used when no cheap member index is available (D1)."""
+    """Always-wrap destination used when no cheap member index is available (D1).
+
+    The CLI picks this directory on the user's behalf, so it never picks a symlink:
+    a link named like the stem, dangling or live, is treated as taken under every
+    overwrite policy and the next free ``stem (N)`` is used. A user who wants to
+    extract through the link names it with ``-d``. Probes use ``lexists`` so a
+    dangling link counts as present, matching :func:`_free_name`.
+    """
     stem = _archive_stem(archive, format=format)
     dest = Path(stem)
-    if not dest.exists():
+    if not os.path.lexists(dest):
         return dest
-    if overwrite is OverwritePolicy.RENAME:
-        n = 1
-        while Path(f"{stem} ({n})").exists():
-            n += 1
-        return Path(f"{stem} ({n})")
+    if overwrite is OverwritePolicy.RENAME or dest.is_symlink():
+        return _free_name(dest, is_dir=True)
     return dest
 
 

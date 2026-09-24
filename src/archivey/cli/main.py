@@ -90,6 +90,10 @@ _VERB_FLAG_HINTS = {
 }
 
 
+# The include-pattern positional's metavar; ``_ArchiveyArgumentParser.error`` matches it.
+_PATTERNS_METAVAR = "pattern"
+
+
 def _inject_default_list(argv: list[str]) -> list[str]:
     """If the first positional is not a known verb, insert ``list`` (known-verb-wins)."""
     i = 0
@@ -101,9 +105,9 @@ def _inject_default_list(argv: list[str]) -> list[str]:
             continue
         tok = argv[i]
         if tok == "--":
-            if i + 1 < len(argv) and argv[i + 1] not in _VERBS:
-                return argv[: i + 1] + ["list"] + argv[i + 1 :]
-            return argv
+            # Everything after ``--`` is a positional, so no verb can follow it: the
+            # default verb goes ahead of the separator (``list -- -weird.zip``).
+            return argv[:i] + ["list"] + argv[i:]
         # Bare "-" is the reserved stdin positional, not an option (F6).
         if tok.startswith("-") and tok != "-":
             key = tok.split("=", 1)[0]
@@ -121,9 +125,13 @@ class _ArchiveyArgumentParser(argparse.ArgumentParser):
     """argparse tweaks for product-facing error messages (P12 / P13)."""
 
     def error(self, message: str) -> NoReturn:
-        # bpo-26240: nargs='*' positionals are wrongly listed as required.
-        if "the following arguments are required:" in message:
-            message = message.replace(", patterns", "").replace("patterns, ", "")
+        # bpo-26240: nargs='*' positionals are wrongly listed as required. argparse
+        # names them by metavar, so drop the include-pattern one by that name.
+        required = "the following arguments are required: "
+        if message.startswith(required):
+            names = message[len(required) :].split(", ")
+            kept = [name for name in names if name != _PATTERNS_METAVAR]
+            message = required + ", ".join(kept or names)
         # Tar users type -x/-l/-t; verbs here are bare words.
         for flag, verb in _VERB_FLAG_HINTS.items():
             if flag in message and "unrecognized arguments" in message:
@@ -220,7 +228,7 @@ def _add_filter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "patterns",
         nargs="*",
-        metavar="pattern",
+        metavar=_PATTERNS_METAVAR,
         help="fnmatch include patterns (omit to select all members)",
     )
     parser.add_argument(
@@ -524,7 +532,11 @@ def main(
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
-    """CLI entry point. Returns a process exit code."""
+    """CLI entry point. Returns a process exit code.
+
+    ``out`` and ``err`` carry the operation's own output. argparse's usage errors
+    (unknown flags, a missing archive) still print to the process ``sys.stderr``.
+    """
     out_stream = out if out is not None else sys.stdout
     err_stream = err if err is not None else sys.stderr
     raw = list(sys.argv[1:] if argv is None else argv)

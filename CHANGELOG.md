@@ -64,6 +64,14 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **CLI: four fixes to argument handling, the default destination and `test`.**
+  `archivey -- -weird.zip` lists the archive; it used to be a usage error because the
+  default `list` verb went after the `--`. A missing archive argument says
+  `required: archive` again, without the optional include patterns. The wrap directory
+  `extract` picks by itself never goes through a symlink: a link named like the archive
+  stem, dangling or live, is skipped for the next free `stem (N)`. And `test` exits `1`
+  when its summary reports members as not tested, not only when one failed.
+
 - **An encrypted RAR derives each key once per open.** RAR5 key derivation costs what
   the archive declares, up to 2²⁴ PBKDF2 rounds (a few seconds each). A header-encrypted
   volume set derived the header key and password check again on every part, so a

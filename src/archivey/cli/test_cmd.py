@@ -150,7 +150,9 @@ def run_test(
             return EXIT_FAIL
 
     print(_test_summary(ok=ok, failed=failed, members_total=members_total), file=err)
-    return EXIT_FAIL if failed else EXIT_OK
+    # An untested remainder is an incomplete verification, whatever ended the stream.
+    incomplete = members_total is not None and members_total > ok + failed
+    return EXIT_FAIL if failed or incomplete else EXIT_OK
 
 
 def _test_summary(*, ok: int, failed: int, members_total: int | None) -> str:
