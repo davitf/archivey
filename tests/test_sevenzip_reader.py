@@ -28,6 +28,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends import sevenzip_aes
 from archivey.internal.backends.sevenzip_parser import SevenZipCoder, SevenZipFolder
 from archivey.internal.backends.sevenzip_reader import (
     SevenZipReader,
@@ -1277,7 +1278,7 @@ def _reader_for_unit_tests() -> SevenZipReader:
     reader = object.__new__(SevenZipReader)
     reader._stream_config = DEFAULT_STREAM_CONFIG  # noqa: SLF001 - focused unit test
     reader._diagnostics_collector = None  # noqa: SLF001 - focused unit test
-    reader._key_cache = crypto.SevenZipKeyCache()  # noqa: SLF001 - focused unit test
+    reader._key_cache = sevenzip_aes.SevenZipKeyCache()  # noqa: SLF001 - focused unit test
     return reader
 
 
@@ -1396,7 +1397,7 @@ def test_truncated_aes_pack_raises_truncated_error() -> None:
 
     password = b"pw"
     properties = b"\xc0\x00\x00\x00"
-    cache = crypto.SevenZipKeyCache()
+    cache = sevenzip_aes.SevenZipKeyCache()
     params = cache.aes_params_from_properties(password, properties)
     plaintext = bytes(range(64))
     encryptor = Cipher(algorithms.AES(params.key), modes.CBC(params.iv)).encryptor()

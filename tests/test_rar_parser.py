@@ -17,7 +17,7 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_archive,
     parse_rar_volumes,
 )
-from archivey.internal.streams.crypto import SevenZipKeyCache
+from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
 from tests.conftest import requires, requires_binary
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
