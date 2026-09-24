@@ -318,7 +318,8 @@ def test_lone_later_numbered_volume_names_earlier_parts(tmp_path: Path) -> None:
 def test_multi_volume_7z_is_joined_before_parse(tmp_path: Path) -> None:
     for name in ("vol.7z.001", "vol.7z.002"):
         (tmp_path / name).write_bytes(_7Z_MAGIC)
-    with pytest.raises(CorruptionError, match="signature header"):
+    # Twelve joined bytes that open with the magic: a signature header cut short.
+    with pytest.raises(TruncatedError, match="signature header"):
         open_archive(tmp_path / "vol.7z.002", format=ArchiveFormat.SEVEN_Z)
 
 

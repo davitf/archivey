@@ -34,6 +34,7 @@ from archivey.detection_cost import (
 from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_parser import RAR5_ID, RAR_ID
@@ -467,7 +468,7 @@ def test_find_signature_offset_names_the_candidate_cap() -> None:
 def test_forced_format_truncated_7z_names_the_truncation() -> None:
     payload = _sevenzip_signature(next_size=100) + b"\x00" * 10
     with pytest.raises(
-        CorruptionError, match="Truncated 7z next header: expected 100 bytes"
+        TruncatedError, match="Truncated 7z next header: expected 100 bytes"
     ):
         open_archive(io.BytesIO(_STUB + payload), format=ArchiveFormat.SEVEN_Z)
 
