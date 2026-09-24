@@ -181,9 +181,36 @@ class ExtractionLimits:
     """
 
     max_extracted_bytes: int | None = 2 * 2**30
+    """Most bytes one extraction may write in total, across every member. 2 GiB.
+
+    Bytes copied rather than decoded (the cross-device hardlink fallback) count too.
+    Crossing it stops the whole extraction, even under ``on_error="continue"``.
+    """
+
     max_ratio: float | None = 1000.0
+    """Largest decompressed-to-compressed ratio allowed. ``1000.0``.
+
+    Checked per member (a member over it fails on its own, and ``on_error="continue"``
+    moves on) and across the archive (which stops the extraction). The per-member check
+    needs the member's compressed size; where the format or access mode does not give
+    one, only the archive-wide check applies. Neither check starts before
+    :attr:`ratio_activation_threshold` bytes of output.
+    """
+
     ratio_activation_threshold: int = 5 * 2**20
+    """Output bytes before :attr:`max_ratio` is checked. 5 MiB.
+
+    Small members compress extremely well without being bombs, so the ratio is only
+    judged once a member (or the archive, for the archive-wide check) has produced this
+    much. It cannot be ``None``; set :attr:`max_ratio` to ``None`` to turn the ratio
+    guard off.
+    """
+
     max_entries: int | None = 1_048_576
+    """Most entries one extraction may create: files, directories and links.
+
+    Crossing it stops the whole extraction, even under ``on_error="continue"``.
+    """
 
     UNLIMITED: ClassVar[ExtractionLimits]
 
@@ -223,7 +250,15 @@ class ListingLimits:
     """
 
     max_members: int | None = 1_048_576
-    max_metadata_bytes: int | None = 64 * 2**20  # 64 MiB
+    """Most members a listing may hold."""
+
+    max_metadata_bytes: int | None = 64 * 2**20
+    """Most bytes of text a listing may retain across its members. 64 MiB.
+
+    Counts member names (and raw names), comments, link targets, owner and group names
+    and the string or bytes values in ``extra``, plus the archive comment. Non-ASCII text counts four bytes per character,
+    so it is an upper bound rather than an exact size.
+    """
 
     UNLIMITED: ClassVar[ListingLimits]
 
@@ -294,6 +329,9 @@ class DecoderLimits:
     surface as ``MemoryError`` — pyppmd 1.3.1 dies on ``double free or
     corruption`` and takes the interpreter with it, so no ``try``/``except``
     around the decode can contain it.
+
+    (The ``Attributes:`` block below is the older form; new fields in this module get
+    an attribute docstring after the assignment, as :class:`ArchiveyConfig` has.)
 
     Attributes:
         max_decoder_memory: Largest archive-declared working set a single
@@ -404,45 +442,83 @@ class ArchiveyConfig:
     ``members``/``filter``/``policy``/…) stay keyword arguments — not fields here.
     """
 
-    # Tri-state for the [seekable] rapidgzip accelerator (gzip / zlib / raw deflate).
-    # Under AUTO, also requires known compressed input ≥ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
-    # and a verifiable decompressed size (so truncation cannot be silently swallowed).
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
-    # Tri-state for rapidgzip's bundled bzip2 random-access backend.
+    """Whether to use the ``rapidgzip`` accelerator for gzip, zlib and raw deflate.
+
+    It gives seekable member streams over those codecs. Under ``AUTO`` it is used only
+    when the compressed input is known to be at least
+    ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`` bytes and the decompressed size can be
+    verified, so a truncated stream cannot be swallowed silently.
+    """
+
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
-    # Legacy encoding for a ZIP member name stored without the UTF-8 flag whose bytes are
-    # also not valid UTF-8 (the sniff prefers UTF-8 first). Default cp437 per APPNOTE; set a
-    # local codepage (e.g. "cp1252", "shift_jis") for a known-legacy corpus. An explicit
-    # ``encoding=`` on ``open_archive`` overrides this and disables the sniff entirely.
+    """Whether to use rapidgzip's bundled bzip2 backend for random access into bzip2."""
+
     zip_unflagged_fallback_encoding: str = "cp437"
-    # Escape hatch for RAR members whose *stored name* contains ``*`` or ``?``.
-    # ``unrar`` is addressed by an include mask, so such a name can also match other
-    # members. Names like this are almost always constructed, so the read is refused
-    # by default. On a nonsolid archive the extra decode is also unbounded and
-    # unadvertised (``ExtractionLimits`` do not cover ``open()`` / ``read()``); on a
-    # solid archive those bytes are already inside ``AccessCost.SOLID``. Set True to
-    # read it anyway. A glob name that matches no other member is unaffected either way.
+    """Encoding for a ZIP member name that is neither flagged nor valid UTF-8.
+
+    A name stored without the UTF-8 flag is tried as UTF-8 first; this encoding is used
+    when those bytes are not valid UTF-8. The default is cp437, as the ZIP specification
+    (APPNOTE) says. Set a local code page (for example ``"cp1252"`` or ``"shift_jis"``)
+    for archives known to come from one. An explicit ``encoding=`` on
+    :func:`~archivey.open_archive` overrides this and turns off the UTF-8 attempt.
+    """
+
     rar_allow_glob_member_concatenation: bool = False
-    # Whether the reader reads a symlink's target when the format stores it as member
-    # data (ZIP, 7z, RAR3/4) rather than in the header. True: listing and a finished
-    # ``stream_members()`` pass read every such target, selected or not, so the report
-    # matches random access — on ZIP and 7z that can decompress data nobody selected and
-    # consult the password provider. False: the reader reads none of them on its own;
-    # ``extract_all`` reads the targets of links its selector and filter accept, and
-    # ``open()`` reads the target of a link it follows. Fixed for the reader's lifetime.
+    """Read a RAR member whose stored name contains ``*`` or ``?`` even when that name
+    also matches other members.
+
+    ``unrar`` selects members by an include mask, so such a name can match other
+    members as well. Names like this are almost always constructed, so the read is
+    refused by default. On a nonsolid archive the extra decode is also unbounded and not
+    reported (:class:`ExtractionLimits` does not cover ``open()`` or ``read()``); on a
+    solid archive those bytes are already inside ``AccessCost.SOLID``. Set ``True`` to
+    read it anyway. A glob name that matches no other member is unaffected either way.
+    """
+
     read_link_targets: bool = True
+    """Whether the reader reads a symlink's target when the format stores it as member
+    data (ZIP, 7z, RAR3/4) rather than in the header.
+
+    ``True``: listing and a finished ``stream_members()`` pass read every such target,
+    selected or not, so the report matches random access. On ZIP and 7z that can
+    decompress data nobody selected and consult the password provider. ``False``: the
+    reader reads none of them on its own; ``extract_all`` reads the targets of links its
+    selector and filter accept, and ``open()`` reads the target of a link it follows.
+    Fixed for the reader's lifetime.
+    """
+
     extraction_limits: ExtractionLimits = ExtractionLimits()
+    """Decompression-bomb guards for extraction. See :class:`ExtractionLimits`."""
+
     listing_limits: ListingLimits = ListingLimits()
+    """Caps on the size of a member listing. See :class:`ListingLimits`."""
+
     decoder_limits: DecoderLimits = DecoderLimits()
+    """Caps on what the archive may make a decoder allocate or compute.
+
+    See :class:`DecoderLimits`.
+    """
+
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
-    # How many references to diagnostics the library keeps per collector: each one
-    # retained in the summary takes a slot, and each attached to a member another.
-    # Counts stay exact past it. A random-access member walk also keeps, until it ends,
-    # a record a walk started over after a failure replays: the codes of the
-    # diagnostics emitted for the members it has built, and the full diagnostics only
-    # for the member being typed. That record takes no slot.
+    """Whether each diagnostic code is ignored, collected or raised.
+
+    See :class:`~archivey.DiagnosticPolicy`.
+    """
+
     max_retained_diagnostic_references: int = 256
+    """How many references to diagnostics the library keeps per collector.
+
+    Each diagnostic retained in the summary takes a slot, and each one attached to a
+    member takes another. Counts stay exact past the cap. A random-access member walk
+    also keeps, until it ends, a record that a walk started over after a failure
+    replays: the codes of the diagnostics emitted for the members it has built, and the
+    full diagnostics only for the member being typed. That record takes no slot.
+    """
+
     on_diagnostic: OnDiagnostic | None = None
+    """A callback called with each diagnostic the policy collects or raises, as it is
+    emitted, or ``None``."""
 
     def __post_init__(self) -> None:
         """Check the fields at construction, and convert the two that hold enums.
@@ -508,10 +584,11 @@ class ArchiveyConfig:
             field_name="max_retained_diagnostic_references",
             allow_none=False,
         )
-        # These two are the one enum coerced at a public boundary with no ``Literal``
-        # alias beside it, and that is deliberate: the annotation is read by every
-        # consumer of the attribute, not only by the constructor's callers, and after
-        # construction the field always holds a member. ``tests/test_enum_arguments.py``
+        # These two are coerced at a public boundary with no ``Literal`` alias beside
+        # them (as are ``ArchiveFormat``'s two fields), and that is deliberate: the
+        # annotation is read by every consumer of the attribute, not only by the
+        # constructor's callers, and after construction the field always holds a
+        # member. ``tests/test_enum_arguments.py``
         # records the exemption so the gap is not "fixed" back into a union.
         for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
             object.__setattr__(

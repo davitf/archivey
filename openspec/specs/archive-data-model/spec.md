@@ -36,6 +36,13 @@ exist for `GZ`, `BZ2`, `XZ`, `ZST`, `LZ4`, `LZIP`, `LZMA_ALONE`, `ZLIB`,
 rather than receiving named constants. `file_extension()` SHALL derive from the
 stream for raw streams and from `container.codec` for containers.
 
+Constructing `ArchiveFormat` SHALL convert string fields to the enum members,
+accepting the same spellings as the other public enum arguments (value or member
+name, any case, `-` and `_` interchangeable), so the constructed value holds
+members and behaves as the matching named format everywhere, including where
+code compares with `is`. An unknown spelling SHALL raise `ArchiveyUsageError`
+at construction.
+
 `StreamFormat.LZMA_ALONE` SHALL name the legacy LZMA Alone file format
 (`lzma.FORMAT_ALONE`: 13-byte header with properties, dictionary size, and
 uncompressed size — not raw LZMA). Its enum value SHALL be `"lzma"` so
@@ -51,6 +58,8 @@ uncompressed size — not raw LZMA). Its enum value SHALL be `"lzma"` so
 | Open `tar.lz` | Equal to `ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP)`; `file_extension() == "tar.lz"` |
 | Open a `.lzma` Alone stream | `ArchiveFormat.LZMA_ALONE`; container `RAW_STREAM`; stream `LZMA_ALONE` |
 | Open `tar.lzma` | Equal to `ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZMA_ALONE)`; `file_extension() == "tar.lzma"` |
+| `ArchiveFormat("raw_stream", "gz")` | `container is ContainerFormat.RAW_STREAM`, `stream is StreamFormat.GZIP`; equal to `ArchiveFormat.GZ` |
+| `ArchiveFormat("nope", StreamFormat.GZIP)` | `ArchiveyUsageError` at construction, naming `ContainerFormat` |
 
 ### Requirement: MemberType describes filesystem object kind
 

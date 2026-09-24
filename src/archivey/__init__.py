@@ -16,12 +16,9 @@ here (so ``from archivey import …`` keeps working) but omitted from ``__all__`
 they do not crowd the generated API reference — see the ``# noqa: F401`` imports.
 """
 
-from importlib.metadata import PackageNotFoundError, version
-
-try:
-    __version__ = version("archivey")
-except PackageNotFoundError:
-    __version__ = "0.0.0+unknown"
+# Declared here so type checkers see a ``str``; the value comes from the module
+# ``__getattr__`` at the end of this file, on first access.
+__version__: str
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -277,6 +274,8 @@ def _pin_public_module() -> None:
 
     namespace = globals()
     for name in __all__:
+        if name == "__version__":
+            continue  # a str, and not bound until first access (``__getattr__`` below)
         obj = namespace[name]
         if not isinstance(obj, (type, FunctionType)):
             continue
@@ -299,5 +298,23 @@ def _pin_public_module() -> None:
 _pin_public_module()
 del _pin_public_module
 
-# Keep importlib.metadata helpers out of the public namespace (__all__ is authoritative).
-del PackageNotFoundError, version
+
+def __getattr__(name: str) -> object:
+    """Compute ``__version__`` on first access (PEP 562).
+
+    ``importlib.metadata`` is a measurable part of ``import archivey`` on a core-only
+    install, for a string most callers never read. (Some optional codec packages import
+    it for their own version, so with those installed the saving is smaller.) The value
+    is cached in the module globals, so this runs once; the import stays inside the
+    function so nothing from it reaches the public namespace.
+    """
+    if name == "__version__":
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            value = version("archivey")
+        except PackageNotFoundError:
+            value = "0.0.0+unknown"
+        globals()["__version__"] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

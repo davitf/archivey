@@ -360,7 +360,10 @@ when that choice was not confirmed against the bytes:
 `EXPLICIT_FORMAT_LISTED_EMPTY` re-detection SHALL run **only** on an empty listing, and
 only when the source is a filesystem path, where reopening it cannot disturb the reader;
 for a stream source the check is skipped rather than reaching into a live source's
-position.
+position. The path re-detected is the source as resolution left it — the first volume
+of a multi-volume set, the volume a self-extracting stub was followed to — not the name
+the caller passed; a joined set has no single path and skips the check. A directory
+path opened with `format=DIRECTORY` counts as chosen by the filesystem, not by argument.
 
 #### Scenario: empty listing matrix
 
@@ -370,6 +373,7 @@ position.
 | 32 KiB of zeros named `z.tar` | Opens, 0 members, `EMPTY_ARCHIVE` **and** `EXTENSION_FORMAT_UNCONFIRMED` |
 | `open_archive(iso_path, format=TAR)` | Opens, 0 members, `EMPTY_ARCHIVE` **and** `EXPLICIT_FORMAT_LISTED_EMPTY` with `detected_format="ISO"` |
 | `open_archive(tar_path, format=TAR)` on a real one-member tar | No diagnostic |
+| Empty directory opened with `format=DIRECTORY` | `EMPTY_ARCHIVE` only |
 | Empty ZIP / empty 7z | `EMPTY_ARCHIVE`; no format code (magic confirmed the bytes) |
 | A legitimately empty tar (all zeros, so no magic) | `EMPTY_ARCHIVE` **and** `EXTENSION_FORMAT_UNCONFIRMED` — truthful: the bytes really did not confirm it |
 | Listing published with an error and zero members | No `EMPTY_ARCHIVE` |

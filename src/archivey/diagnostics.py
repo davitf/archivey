@@ -561,6 +561,12 @@ class DiagnosticPolicy:
     def __post_init__(self) -> None:
         object.__setattr__(self, "overrides", _freeze_mapping(self.overrides))
 
+    def __hash__(self) -> int:
+        # The generated frozen-dataclass hash would hash ``overrides``, and a
+        # ``MappingProxyType`` is unhashable, so ``hash(ArchiveyConfig())`` raised.
+        # Hash the frozen mapping's items instead; equality is unchanged.
+        return hash((self.default, frozenset(self.overrides.items())))
+
     def resolve(self, code: DiagnosticCode) -> DiagnosticDisposition:
         return self.overrides.get(code, self.default)
 

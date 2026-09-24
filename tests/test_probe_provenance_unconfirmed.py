@@ -342,3 +342,44 @@ def test_exact_magic_failure_untouched_by_probe_channel(tmp_path: Path) -> None:
         assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in {
             d.code for d in reader.diagnostics.retained
         }
+
+
+_RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
+
+
+def test_argument_provenance_records_the_resolved_volume() -> None:
+    """``format=`` with a later RAR part records the first volume that was opened.
+
+    The empty-listing check re-detects ``provenance.source`` by name, so it must be the
+    file the reader read, not the name the caller passed.
+    """
+    later_part = _RAR_FIXTURES / "tinyvol_rnn.r00"
+    with open_archive(later_part, format=ArchiveFormat.RAR) as archive:
+        provenance = archive._format_provenance  # type: ignore[attr-defined]
+        assert provenance is not None
+        assert provenance.chosen_by == "argument"
+        assert provenance.source == _RAR_FIXTURES / "tinyvol_rnn.rar"
+
+
+def test_argument_provenance_of_a_stream_has_no_source() -> None:
+    """A regression guard, not a red-green repro: ``main`` already passed this.
+
+    It fails if the provenance falls back to the caller's argument for a source that
+    has no single path, which would make the empty-listing check reach into a stream.
+    """
+    blob = (_RAR_FIXTURES / "stored_m0.rar").read_bytes()
+    with open_archive(io.BytesIO(blob), format=ArchiveFormat.RAR) as archive:
+        provenance = archive._format_provenance  # type: ignore[attr-defined]
+        assert provenance is not None
+        assert provenance.chosen_by == "argument"
+        assert provenance.source is None
+
+
+def test_empty_directory_with_format_directory_is_not_unconfirmed(
+    tmp_path: Path,
+) -> None:
+    """``format=DIRECTORY`` on a directory is confirmed by the filesystem, not asserted."""
+    with open_archive(tmp_path, format=ArchiveFormat.DIRECTORY) as archive:
+        assert archive.members() == []
+        codes = [d.code for d in archive.diagnostics.retained]
+    assert codes == [DiagnosticCode.EMPTY_ARCHIVE]

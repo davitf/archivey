@@ -8,6 +8,8 @@ is the safety net that keeps the hand-maintained list from drifting.
 from __future__ import annotations
 
 import inspect
+import subprocess
+import sys
 import typing
 from types import FunctionType
 
@@ -174,3 +176,17 @@ def test_pinning_leaves_the_internal_objects_shared() -> None:
 
     assert extraction_types.OverwritePolicy is archivey.OverwritePolicy
     assert archivey.ExtractionResult.__module__ == "archivey"
+
+
+def test_version_is_computed_on_first_access() -> None:
+    code = (
+        "import archivey\n"
+        "assert '__version__' not in vars(archivey)\n"
+        "v = archivey.__version__\n"
+        "assert isinstance(v, str) and v, v\n"
+        "assert vars(archivey)['__version__'] == v\n"
+        "assert not hasattr(archivey, 'PackageNotFoundError')\n"
+        "assert not hasattr(archivey, 'version')\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+    assert "__version__" in archivey.__all__

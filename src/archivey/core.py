@@ -124,17 +124,24 @@ __all__ = [
 
 
 def _format_provenance(
-    source: OpenSourceInput,
+    source_path: Path | None,
     requested_format: ArchiveFormat | None,
     detected: FormatInfo | None,
+    *,
+    is_directory: bool = False,
 ) -> FormatProvenance:
     """Record where the resolved format came from, for the empty-listing check.
 
     ``detected is None`` means detection never ran: either the caller asserted a format,
     or the source is a directory path (which resolves to ``DIRECTORY`` before detection).
-    The re-detection source is kept only for the asserted case, and only when it is a
-    ``Path`` — reopening a file cannot disturb the reader, while seeking a live stream
-    back to its origin can.
+    A directory path is ``"directory"`` even with ``format=DIRECTORY`` passed: the
+    filesystem decided it, and any other ``format=`` is refused before this point.
+    The re-detection source is kept only for the asserted case, and only when the
+    opened source is one file (``source_path``) — reopening a file cannot disturb the
+    reader, while seeking a live stream back to its origin can. It is the source as
+    resolution left it, not the caller's argument: a later RAR part, a followed stub
+    and a joined set all open something other than the name the caller passed, and
+    re-detecting that name would judge a different file.
     """
     if detected is not None:
         chosen_by = "extension" if detected.detected_by == "extension" else "content"
@@ -143,10 +150,9 @@ def _format_provenance(
             detected.detected_by == "content_probe" and not detected.corroborated
         )
         return FormatProvenance(chosen_by=chosen_by, probe_only=probe_only)
-    if requested_format is None:
+    if requested_format is None or is_directory:
         return FormatProvenance(chosen_by="directory")
-    path = Path(source) if isinstance(source, (str, Path)) else None
-    return FormatProvenance(chosen_by="argument", source=path)
+    return FormatProvenance(chosen_by="argument", source=source_path)
 
 
 def _raise_multi_volume_not_supported(
@@ -355,7 +361,6 @@ def open_archive(
         return _open_resolved(
             slot,
             resolved,
-            source=source,
             format=format,
             streaming=streaming,
             passwords=passwords,
@@ -388,7 +393,6 @@ def _open_resolved(
     slot: _SourceSlot,
     resolved: ResolvedSource,
     *,
-    source: OpenSourceInput,
     format: ArchiveFormat | None,
     streaming: bool,
     passwords: _PasswordCandidates,
@@ -598,7 +602,12 @@ def _open_resolved(
     # An empty listing is only interesting when the bytes never confirmed the format.
     # That is known here and the listing is not, so carry it to the reader rather than
     # adding a parameter to every backend's open_read for a fact none of them reads.
-    reader._format_provenance = _format_provenance(source, format, detected)
+    reader._format_provenance = _format_provenance(
+        archive_source.path,
+        format,
+        detected,
+        is_directory=archive_source.is_directory,
+    )
     return reader
 
 
