@@ -335,13 +335,6 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Security
 
-- **The key-derivation work an encrypted archive can ask for is capped in total.** RAR5
-  and 7z headers choose how many hashing rounds a password costs, up to `2**24` each (a
-  few seconds), and an archive could salt every member so each one cost that again, times
-  every candidate password. The new `DecoderLimits.max_key_derivation_rounds` caps the
-  sum per open archive at `2**27` rounds by default (about half a minute) and raises
-  `ResourceLimitError` before the derivation that would cross it. Keys already derived
-  are reused and cost nothing, so ordinary archives spend one or two derivations.
 - **`repr()` of a 7z reader's key cache no longer prints passwords or keys.** The cache
   is a dataclass whose generated `repr` showed every candidate password tried and every
   AES key derived from them, so a traceback with locals, a debugger dump or a debug log
