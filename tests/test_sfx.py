@@ -1336,6 +1336,32 @@ def test_rar_magic_only_peek_is_valid_when_remaining_is_known(
     assert validate_rar_main_header(clamped, len(magic)) is HitOutcome.NOT_THIS_FORMAT
 
 
+@pytest.mark.parametrize("clamp", range(len(RAR5_ID) + 5, len(RAR5_ID) + 7))
+def test_rar5_clamp_inside_the_hdrlen_vint_is_valid_when_remaining_is_known(
+    clamp: int,
+) -> None:
+    """A clamp that cuts a two-byte ``hdrlen`` vint is a clamp, not a decoy (R3-K9)."""
+    # CRC, then hdrlen 0x80 0x01 = 128: the vint spans candidate bytes 12-13.
+    payload = RAR5_ID + b"\xaa\xbb\xcc\xdd" + b"\x80\x01" + bytes(200)
+
+    def clamped(n: int) -> bytes:
+        return payload[: min(n, clamp)]
+
+    assert validate_rar_main_header(clamped, len(payload)) is HitOutcome.VALID
+    assert validate_rar_main_header(clamped, None) is HitOutcome.NOT_THIS_FORMAT
+    # With every byte in hand the same bytes are judged, and the CRC fails.
+    assert validate_rar_main_header(_peek_view(payload), None) is HitOutcome.DAMAGED
+
+
+def test_rar5_truncated_vint_with_every_byte_in_hand_is_not_a_rar() -> None:
+    """An unterminated vint in a prefix holding all ``remaining`` bytes stays a reject."""
+    payload = RAR5_ID + b"\xaa\xbb\xcc\xdd" + b"\x80" * 16
+    assert (
+        validate_rar_main_header(_peek_view(payload), len(payload))
+        is HitOutcome.NOT_THIS_FORMAT
+    )
+
+
 def test_shebang_decoy_pk_bytes_are_not_a_zip(tmp_path: Path) -> None:
     """A ``#!`` stub whose text contains ``PK\\x03\\x04`` is not reported as ZIP."""
     path = tmp_path / "script.sh"

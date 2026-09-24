@@ -119,13 +119,14 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         cipher_len: int,
     ) -> None:
         super().__init__()
+        # First: close() reads it, and IOBase.__del__ runs close() on a refused instance.
+        self._source = source
         if cipher_len < 0:
             raise ValueError("cipher_len must be non-negative")
         if not _crypto_available():
             raise PackageNotInstalledError(
                 CRYPTO_REQUIREMENT.message("WinZip AES decryption")
             )
-        self._source = source
         # WinZip AE: the whole 16-byte counter block, little-endian, starting at 1.
         self._ctr = open_aes_ctr_stage(
             AesCtrParams(enc_key, initial_counter=1, counter_byteorder="little")

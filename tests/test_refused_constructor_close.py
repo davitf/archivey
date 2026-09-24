@@ -26,8 +26,11 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     DiagnosticRaisedError,
     OpenError,
+    PackageNotInstalledError,
     StreamNotSeekableError,
 )
+from archivey.internal.backends import zip_aes
+from archivey.internal.backends.zip_aes import WinZipAesDecryptStream
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.decompressor_stream import (
@@ -191,6 +194,29 @@ def test_archive_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
     assert opened == []  # refused before the member was opened
 
 
+@pytest.mark.parametrize(
+    ("cipher_len", "crypto_present", "refusal"),
+    [
+        pytest.param(-1, True, ValueError, id="negative-cipher-len"),
+        pytest.param(0, False, PackageNotInstalledError, id="cryptography-missing"),
+    ],
+)
+def test_winzip_aes_stream_refusals_close_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+    cipher_len: int,
+    crypto_present: bool,
+    refusal: type[Exception],
+) -> None:
+    monkeypatch.setattr(zip_aes, "_crypto_available", lambda: crypto_present)
+    source = io.BytesIO(b"")
+    with pytest.raises(refusal) as caught:
+        WinZipAesDecryptStream(
+            source, enc_key=b"\0" * 32, auth_key=b"\0" * 32, cipher_len=cipher_len
+        )
+    _assert_closes_cleanly(_refused(WinZipAesDecryptStream, caught))
+    assert source.closed  # close always owns the member payload slice
+
+
 # The inventory. ``close()`` on an instance built by ``__new__`` alone is the worst case: an
 # ``__init__`` that raised on its first line. A class that survives it needs no entry. Every
 # other ``IOBase`` subclass in ``src/`` is listed below, either because a test above covers
@@ -201,6 +227,7 @@ _REFUSALS_TESTED_ABOVE = {
     "archivey.ArchiveStream",  # its __module__ is pinned to the public package
     "archivey.internal.streams.decompressor_stream.DecompressorStream",
     "archivey.internal.streams.verify.VerifyingStream",
+    "archivey.internal.backends.zip_aes.WinZipAesDecryptStream",
 }
 _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.streamtools.base.DelegatingStream": (
@@ -235,10 +262,6 @@ _CLOSE_STATE_FIRST = {
     ),
     "archivey.internal.streams.crypto.AesDecryptStream": (
         "assigns _source and _owns_inner before source.tell() and the stage build"
-    ),
-    "archivey.internal.backends.zip_aes.WinZipAesDecryptStream": (
-        "its negative cipher_len refusal precedes _source, but open_winzip_aes_member "
-        "refuses compress_size < overhead first, so cipher_len is never negative"
     ),
 }
 
