@@ -589,7 +589,7 @@ def _public_surface() -> list[tuple[str, list[str]]]:
     for method in ("open", "read", "extract_all", "stream_members", "get"):
         names = list(inspect.signature(getattr(ArchiveReader, method)).parameters)
         surface.append((method, [n for n in names if n != "self"]))
-    for cls in (ArchiveyConfig, ExtractionLimits, ListingLimits):
+    for cls in (ArchiveyConfig, DecoderLimits, ExtractionLimits, ListingLimits):
         surface.append((cls.__name__, [f.name for f in dataclasses.fields(cls)]))
     return surface
 

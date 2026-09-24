@@ -38,6 +38,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
+    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -913,10 +914,12 @@ class SevenZipReader(BaseArchiveReader):
             except (
                 UnsupportedFeatureError,
                 PackageNotInstalledError,
+                ResourceLimitError,
                 _AesCbcTruncatedError,
             ):
-                # Hostile NumCyclesPower / missing cryptography / an AES-CBC
-                # mid-block truncation must not look like a wrong password.
+                # Hostile NumCyclesPower / missing cryptography / a spent
+                # key-derivation budget / an AES-CBC mid-block truncation must
+                # not look like a wrong password.
                 # Other TruncatedError (PPMd "File is truncated" on
                 # wrong-key garbage) remaps below: PasswordManager.attempt
                 # advances only on EncryptionError.

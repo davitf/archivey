@@ -144,3 +144,32 @@ def test_sevenzip_encrypted_archive_is_refused_over_budget(tmp_path: Path) -> No
         assert a.read("a.txt") == b"hello budget"
     with pytest.raises(ResourceLimitError, match="7z key derivation"):
         open_archive(archive, password="secret", config=_config((1 << 19) - 1))
+
+
+@requires("cryptography")
+@requires_binary("7z")
+@pytest.mark.parametrize(
+    ("password", "rounds"),
+    [
+        pytest.param("secret", (1 << 19) - 1, id="one-derivation-short"),
+        # The wrong candidate spends the whole budget; the right one is refused
+        # for the budget, not reported as a wrong password.
+        pytest.param(["wrong", "secret"], 1 << 19, id="wrong-candidate-spends-it"),
+    ],
+)
+def test_sevenzip_folder_confirm_reports_the_budget_not_a_wrong_password(
+    tmp_path: Path, password: str | list[str], rounds: int
+) -> None:
+    """Plain headers: the key is derived when the folder opens, inside the
+    password-confirm callback, which maps other errors to EncryptionError."""
+    source = tmp_path / "a.txt"
+    source.write_bytes(b"hello budget")
+    archive = tmp_path / "enc.7z"
+    subprocess.run(
+        ["7z", "a", "-t7z", "-psecret", "-mhe=off", str(archive), str(source)],
+        check=True,
+        capture_output=True,
+    )
+    with open_archive(archive, password=password, config=_config(rounds)) as a:
+        with pytest.raises(ResourceLimitError, match="7z key derivation"):
+            a.read("a.txt")

@@ -1108,9 +1108,9 @@ class RarKdfCache:
     default limits.
     """
 
-    __slots__ = ("_budget", "_rar3", "_rar5")
+    __slots__ = ("_rar3", "_rar5")
 
-    def __init__(self, budget: KeyDerivationBudget | None = None) -> None:
+    def __init__(self, *, budget: KeyDerivationBudget | None = None) -> None:
         charge = budget if budget is not None else KeyDerivationBudget()
 
         def rar5(ustr: bytes, salt: bytes, iterations: int) -> bytes:
@@ -1121,7 +1121,6 @@ class RarKdfCache:
             charge.spend(_RAR3_KDF_ROUNDS, what="RAR3 key derivation")
             return _rar3_key_iv(wstr, salt)
 
-        self._budget = charge
         self._rar5 = functools.cache(rar5)
         self._rar3 = functools.cache(rar3)
 

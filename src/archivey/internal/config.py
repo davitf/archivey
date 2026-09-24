@@ -1,4 +1,9 @@
-"""Internal stream-layer view derived from :class:`ArchiveyConfig`."""
+"""Internal views of :class:`ArchiveyConfig` and the limits it carries.
+
+:class:`StreamConfig` is the stream layer's view of the config. The decoder-memory
+checks and :class:`KeyDerivationBudget` enforce :class:`~archivey.config.DecoderLimits`
+for the backends.
+"""
 
 from __future__ import annotations
 
