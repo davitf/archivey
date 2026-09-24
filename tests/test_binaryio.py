@@ -348,22 +348,41 @@ def test_is_stream_rejects_write_only_handle(tmp_path) -> None:
         assert not is_stream(f.raw)
 
 
-def test_is_stream_accepts_closed_binary_handle() -> None:
-    """``readable()`` raises on a closed handle; the stream still qualifies, so the
-    caller's first read reports the closed file rather than a type error."""
+def test_is_stream_accepts_closed_binary_handle(tmp_path) -> None:
+    """A handle that can no longer answer still qualifies, so the caller's first read
+    reports the closed file rather than a type error. That includes a closed buffered
+    writer, whose ``writable()`` raises."""
     stream = io.BytesIO(b"x")
     stream.close()
     assert is_stream(stream)
+    with open(tmp_path / "out.bin", "wb") as f:
+        pass
+    assert is_stream(f)
 
 
-def test_open_archive_names_a_write_only_source(tmp_path) -> None:
+def test_is_stream_accepts_subclass_that_never_declares_readable() -> None:
+    """``IOBase.readable()`` defaults to ``False``; a subclass that reads but does not
+    override it is not a writer and keeps passing through."""
+
+    class _MinimalBuffered(io.BufferedIOBase):
+        def __init__(self, data: bytes) -> None:
+            self._d = io.BytesIO(data)
+
+        def read(self, n: int | None = -1) -> bytes:
+            return self._d.read(n)
+
+    assert is_stream(_MinimalBuffered(b"x"))
+
+
+@pytest.mark.parametrize("entry", ["open_archive", "open_stream", "detect_format"])
+def test_entry_points_name_a_write_only_source(entry) -> None:
+    """The same words at every entry point, including ``open_stream``, which keeps its
+    own message for other wrong types."""
     import archivey
 
-    with open(tmp_path / "out.zip", "wb") as f:
-        with pytest.raises(TypeError, match="BufferedWriter is not open for reading"):
-            archivey.open_archive(f)
-        with pytest.raises(TypeError, match="not open for reading"):
-            archivey.detect_format(f)
+    writer = io.BufferedWriter(io.BytesIO())
+    with pytest.raises(TypeError, match="BufferedWriter is write-only"):
+        getattr(archivey, entry)(writer)
 
 
 @pytest.mark.parametrize("buffer_type", [bytearray, memoryview])

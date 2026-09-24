@@ -964,14 +964,15 @@ def _coerce_path_or_stream(item: object) -> Path | BinaryIO:
     return item
 
 
-def _is_source_sequence(source: OpenSourceInput) -> TypeGuard[Sequence[object]]:
+def _is_source_sequence(source: object) -> TypeGuard[Sequence[object]]:
     """Whether ``source`` is a list of volumes rather than one source.
 
     Narrows to ``Sequence[object]``, not ``Sequence[SourceItem]``: the elements are
     not checked here. Each one is checked where it is used, by
     :func:`_coerce_path_or_stream` or :func:`_resolve_single`. The byte-buffer types
     are excluded because they are sequences of ``int``, never of sources; they reach
-    the single-source refusal and are named there.
+    the single-source refusal and are named there. The parameter is ``object`` because
+    the caller's value arrives unchecked, byte buffers included.
     """
     if isinstance(source, (str, Path, bytes, bytearray, memoryview)):
         return False

@@ -259,7 +259,16 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
             ),
         ]
 
-    for bad in (0, object(), b"PK\x03\x04", None, io.StringIO("x")):
+    for bad in (
+        0,
+        object(),
+        b"PK\x03\x04",
+        bytearray(b"PK\x03\x04"),
+        memoryview(b"PK\x03\x04"),
+        None,
+        io.StringIO("x"),
+        io.BufferedWriter(io.BytesIO()),
+    ):
         rows += [
             _case(
                 "open_archive",

@@ -868,3 +868,28 @@ def test_rock_ridge_long_form_tf_time_is_read() -> None:
     assert _dr_date_to_datetime(short_form) == datetime(
         2024, 3, 5, 6, 7, 8, tzinfo=timezone(timedelta(hours=2))
     )
+
+
+def test_rock_ridge_tf_modification_time_wins_over_record_date() -> None:
+    """Through the reader: a TF modification time that differs from the directory
+    record's date is the one ``modified`` reports. The record date used to win,
+    because it is always present."""
+    from datetime import datetime, timezone
+
+    import pycdlib
+    from pycdlib.dates import DirectoryRecordDate
+
+    iso = pycdlib.PyCdlib()
+    iso.new(rock_ridge="1.09")
+    iso.add_fp(io.BytesIO(b"hi"), 2, "/A.TXT;1", rr_name="a.txt")
+    tf_date = DirectoryRecordDate()
+    tf_date.parse(struct.pack("=BBBBBBb", 101, 1, 2, 3, 4, 5, 0))
+    record = iso.get_record(rr_path="/a.txt")
+    record.rock_ridge.dr_entries.tf_record.modification_time = tf_date
+    image = io.BytesIO()
+    iso.write_fp(image)
+    iso.close()
+
+    with open_archive(io.BytesIO(image.getvalue())) as archive:
+        (member,) = [m for m in archive.members() if m.name == "a.txt"]
+    assert member.modified == datetime(2001, 1, 2, 3, 4, 5, tzinfo=timezone.utc)

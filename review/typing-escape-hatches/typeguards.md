@@ -19,8 +19,6 @@ The runtime check is the declared union. `os.PathLike` is an ABC;
 
 Param `Any` tightens to `object` (inventory A10). Keep the `TypeGuard`.
 
-**Status: G2 and G3 are done** (SUMMARY item 4).
-
 ## G2 — `is_stream` (`binaryio.py:452`) — leftover of #324
 
 ```python
@@ -63,6 +61,18 @@ def is_stream(obj: Any) -> TypeGuard[BinaryIO]:
 Recommendation: readable-`IOBase` cut + `bytes` check in `BinaryIOWrapper.read`
 (and `readinto`). Needs tests; this PR is inventory only.
 
+**Status: done** (SUMMARY item 4), in a different shape from the recommendation:
+
+- The `IOBase` cut refuses only a handle that answers `writable()` True and
+  `readable()` False. A plain `readable()` test was too strict: `IOBase.readable()`
+  defaults to False and neither `RawIOBase` nor `BufferedIOBase` overrides it, so a
+  caller's subclass that reads but never declares `readable()` would be refused.
+- The `bytes` check in `BinaryIOWrapper.read` was dropped. It cannot fire for the
+  text duck it is aimed at: `is_stream` passes a duck with the full method set
+  through unwrapped, so `BinaryIOWrapper` never sees it. The backstop only works
+  together with the other option above (wrap unless `RawIOBase`/`BufferedIOBase`),
+  which was not taken. The text duck stays a documented caller bug.
+
 ## G3 — `_is_source_sequence` (`volumes.py:470`) — element type unproved
 
 ```python
@@ -88,3 +98,8 @@ explicitly (they are the realistic False-friend), or inspect the first element
 against `SourceItem`. Empty sequence is already an `ArchiveyUsageError`. Staged
 PR 4; add a test for `open_archive(bytearray(…))` so the error stays an
 `ArchiveyUsageError` rather than a TypeError from `ensure_full_count_reads`.
+
+**Status: done** (SUMMARY item 4). The guard excludes `bytearray` and `memoryview`,
+so they reach the single-source refusal: the error-handling spec's `TypeError`
+("unsupported source type"), naming the buffer's type. They are rows in the
+wrong-typed-source sweep in `tests/test_argument_boundary.py`.

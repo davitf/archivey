@@ -63,7 +63,7 @@ Tree restored after each probe.
 | **S1** | 🟡 | `CONTRIBUTING.md` offered `# type: ignore[attr-defined]` as a *specific* suppression | rewrite the rule to pyrefly/ty native forms | **done in this PR** |
 | **S6** | 🟢 | "12 warnings not shown" | `--min-severity=warn`; list below | **answered** |
 | **C-del** | 🟢 | 5 casts both checkers accept without | DELETE | staged PR 1 |
-| **G2** | 🟡 | `is_stream` still True for write-only `IOBase` and duck objects whose `read()` returns `str` | FIX-IN-CODE the predicate | **done** — write-only `IOBase` refused by name; the text duck is documented as a caller bug (proving `bytes` needs a read) |
+| **G2** | 🟡 | `is_stream` still True for write-only `IOBase` and duck objects whose `read()` returns `str` | FIX-IN-CODE the predicate | **done** — write-only `IOBase` refused by name; the text duck is documented as a caller bug (see typeguards.md G2 for why the `bytes` backstop was dropped) |
 | **G3** | 🟡 | `_is_source_sequence` proves `Sequence`, not `Sequence[SourceItem]` (`bytearray` is True) | TIGHTEN the predicate | **done** — byte buffers excluded; the guard narrows to `Sequence[object]` |
 | **C-overload** | 🟢 | 4 casts exist only because `_track_source_seeks: Path \| BinaryIO -> Path \| BinaryIO` | `@overload` | **moot** — #419 narrowed the signature to `BinaryIO -> BinaryIO` and the four casts went with it |
 | **C-typeshed** | 🟢 | ~10 casts are `IO[bytes]` / `BufferedIOBase` / `SpooledTemporaryFile` / `PyCdlibIO` vs `BinaryIO` | KEEP-WITH-REASON (S5b gap) | **done** — every surviving cast carries its reason |
@@ -101,9 +101,9 @@ one category.
      through a `TypeGuard` too.
    - **C16** (`password.py`) went in the same change. The `callable()` check
      added ahead of it narrows on both checkers, so the cast was dead.
-4. ~~**TypeGuard predicates**~~ **done.** G2: `is_stream` asks `readable()` (a
-   closed handle still qualifies) and `reject_source` names a write-only handle.
-   The text duck stays a documented caller bug. G3: `bytearray`/`memoryview` are
+4. ~~**TypeGuard predicates**~~ **done.** G2: `is_stream` refuses a handle that
+   is writable and not readable (a closed one still qualifies), and every entry
+   point names it. The text duck stays a documented caller bug. G3: `bytearray`/`memoryview` are
    excluded, and the guard narrows to `Sequence[object]` because the elements are
    checked where they are used. Both refusals stay `TypeError`, the contract for a
    wrong-typed source.

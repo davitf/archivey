@@ -50,7 +50,7 @@ Honesty analysis: [`typeguards.md`](typeguards.md).
 | ID | Site | Guard target | Without `TypeGuard` (→ `bool`) | Honest? | Disposition |
 |---|---|---|---|---|---|
 | G1 | `binaryio.py:276` `is_filename` | `str \| bytes \| os.PathLike` | callers lose narrowing (`fsdecode` etc.) | **yes** — `isinstance` matches the target | KEEP. Param `Any` → `object` (A-bin-filename) |
-| G2 | `binaryio.py:452` `is_stream` | `BinaryIO` | callers lose narrowing (`PeekableStream` etc.) | **no** — True for write-only `IOBase`; True for duck objects whose `read()` returns `str`. #324 closed `TextIOBase` only | **done** — `readable()` checked; text duck documented |
+| G2 | `binaryio.py:452` `is_stream` | `BinaryIO` | callers lose narrowing (`PeekableStream` etc.) | **no** — True for write-only `IOBase`; True for duck objects whose `read()` returns `str`. #324 closed `TextIOBase` only | **done** — write-only handles refused; text duck documented |
 | G3 | `volumes.py:470` `_is_source_sequence` | `SourceSequence` (`Sequence[SourceItem]`) | `_coerce_path_or_stream` sees the un-narrowed union | **partial** — excludes `str`/`Path`/`bytes`/`is_stream`, then `isinstance(Sequence)`. `bytearray` is True | **done** — byte buffers excluded; narrows to `Sequence[object]` |
 
 ## `typing.cast` (22)

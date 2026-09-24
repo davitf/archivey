@@ -556,8 +556,9 @@ def source_byte_size(source: object) -> int | None:
     if metadata_end is not None:
         return metadata_end
     if _seek_end_is_cheap(peeled):
-        # ``outer`` is seekable (checked above), so these exist; getattr keeps the
-        # parameter an honest ``object`` rather than a claim about every caller.
+        # ``is_seekable`` only asked ``seekable()``, so ``tell`` / ``seek`` may still be
+        # missing, and ``seek`` may return a non-int. A size probe answers "unknown"
+        # for such a broken source instead of raising; the first real read reports it.
         tell = getattr(outer, "tell", None)
         seek = getattr(outer, "seek", None)
         if not (callable(tell) and callable(seek)):
@@ -597,12 +598,14 @@ def source_size_fact(source: object) -> int | None:
 def is_stream(obj: object) -> TypeGuard[BinaryIO]:
     """Whether ``obj`` already satisfies the ``BinaryIO`` interface we rely on.
 
-    ``io.RawIOBase`` / ``io.BufferedIOBase`` instances qualify when they are readable.
-    ``io.TextIOBase`` (``TextIOWrapper``, ``StringIO``) does not — ``read()``
-    returns ``str``, not ``bytes`` — and neither does a write-only handle such as
-    ``open(path, "wb")``. A closed handle still qualifies: it is a binary stream, and
-    its first read reports the closed file. Anything else must expose the full
-    method set in :data:`_IO_METHODS` and a ``closed`` attribute.
+    ``io.RawIOBase`` / ``io.BufferedIOBase`` instances qualify unless they are
+    write-only (see :func:`_is_write_only`). ``io.TextIOBase`` (``TextIOWrapper``,
+    ``StringIO``) does not — ``read()`` returns ``str``, not ``bytes``. A handle that
+    can no longer answer, such as a closed one, still qualifies: its first read
+    reports the closed file as the raw ``ValueError`` the error-handling spec lets
+    escape. A closed *buffered* writer is the exception, because its ``readable()``
+    still answers ``False`` while ``writable()`` raises; it passes too. Anything else
+    must expose the full method set in :data:`_IO_METHODS` and a ``closed`` attribute.
 
     The duck-typed branch checks names, not return types, so a duck whose ``read()``
     returns ``str`` passes. That is a caller bug this does not catch: proving
@@ -611,16 +614,26 @@ def is_stream(obj: object) -> TypeGuard[BinaryIO]:
     if isinstance(obj, io.TextIOBase):
         return False
     if isinstance(obj, io.IOBase):
-        try:
-            return obj.readable()
-        except ValueError:
-            # ``readable()`` on a closed handle raises; see the docstring.
-            return True
+        return not _is_write_only(obj)
     if is_filename(obj):
         return False
     if not all(callable(getattr(obj, m, None)) for m in _IO_METHODS):
         return False
     return hasattr(obj, "closed")
+
+
+def _is_write_only(obj: io.IOBase) -> bool:
+    """Whether ``obj`` positively says it writes and does not read.
+
+    Both answers are needed: ``io.IOBase.readable()`` defaults to ``False`` and
+    neither ``io.RawIOBase`` nor ``io.BufferedIOBase`` overrides it, so a caller's
+    subclass that implements ``read`` but never declares ``readable()`` still reads
+    fine. A handle that raises instead of answering (a closed one) is not refused here.
+    """
+    try:
+        return obj.writable() and not obj.readable()
+    except ValueError:
+        return False
 
 
 def require_source(obj: object) -> None:
@@ -646,14 +659,21 @@ def reject_source(obj: object) -> NoReturn:
     by the time it gets here — keeps a call the type checkers can see never returns.
     """
     raise_if_text_stream(obj)
-    if isinstance(obj, io.IOBase):
-        # Only a readable-false handle gets here: is_stream accepts every other
-        # binary IOBase.
-        raise TypeError(
-            f"{type(obj).__name__} is not open for reading; a readable binary source "
-            f"is required (open the file with mode 'rb')"
-        )
+    raise_if_write_only_stream(obj)
     raise TypeError(f"unsupported source type: {type(obj)!r}")
+
+
+def raise_if_write_only_stream(obj: object) -> None:
+    """Raise :class:`TypeError` if ``obj`` is an ``io.IOBase`` that only writes.
+
+    Split out, like :func:`raise_if_text_stream`, so ``open_stream`` — which keeps its
+    own message for other wrong types — names this case in the same words.
+    """
+    if isinstance(obj, io.IOBase) and _is_write_only(obj):
+        raise TypeError(
+            f"{type(obj).__name__} is write-only; a readable binary source is "
+            f"required (for a file, open it with mode 'rb')"
+        )
 
 
 def raise_if_text_stream(obj: object) -> None:

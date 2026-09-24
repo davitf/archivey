@@ -115,6 +115,7 @@ _pycdlib_exc = _optional("pycdlib.pycdlibexception")
 _pycdlib_core = _optional("pycdlib.pycdlib")
 _pycdlib_io = _optional("pycdlib.pycdlibio")
 _pycdlib_dr = _optional("pycdlib.dr")
+_pycdlib_dates = _optional("pycdlib.dates")
 _PYCDLIB_CYCLE_GUARD_INSTALLED = False
 
 
@@ -226,6 +227,20 @@ _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
 _VERSION_SUFFIX = re.compile(r";(\d+)$")
 
 
+def _is_long_form_date(date: object) -> TypeGuard[VolumeDescriptorDate]:
+    """Whether ``date`` is pycdlib's 17-byte date, a Rock Ridge ``TF`` long form."""
+    return _pycdlib_dates is not None and isinstance(
+        date, _pycdlib_dates.VolumeDescriptorDate
+    )
+
+
+def _is_short_form_date(date: object) -> TypeGuard[DirectoryRecordDate]:
+    """Whether ``date`` is pycdlib's 7-byte directory-record date."""
+    return _pycdlib_dates is not None and isinstance(
+        date, _pycdlib_dates.DirectoryRecordDate
+    )
+
+
 def _dr_date_to_datetime(
     date: DirectoryRecordDate | VolumeDescriptorDate | None,
 ) -> datetime | None:
@@ -240,12 +255,9 @@ def _dr_date_to_datetime(
     """
     if date is None:
         return None
-    # Both classes come from pycdlib, so it is installed whenever a date exists.
-    from pycdlib.dates import VolumeDescriptorDate
-
     try:
         tz = timezone(timedelta(minutes=date.gmtoffset * 15))
-        if isinstance(date, VolumeDescriptorDate):
+        if _is_long_form_date(date):
             hundredths = date.hundredthsofsecond
             return datetime(
                 date.year,
@@ -258,6 +270,8 @@ def _dr_date_to_datetime(
                 hundredths * 10_000 if 0 <= hundredths <= 99 else 0,
                 tzinfo=tz,
             )
+        if not _is_short_form_date(date):
+            return None
         return datetime(
             1900 + date.years_since_1900,
             date.month,
@@ -676,12 +690,13 @@ class IsoReader(BaseArchiveReader):
     def _timestamps(
         self, record: DirectoryRecord, rr: RockRidge | None
     ) -> tuple[datetime | None, datetime | None, datetime | None]:
-        modified = _dr_date_to_datetime(getattr(record, "date", None))
+        modified: datetime | None = None
         accessed: datetime | None = None
         created: datetime | None = None
         if rr is not None:
-            # Rock Ridge TF entries carry precise POSIX times (in dr_entries, or the CE
-            # overflow area). They refine the directory-record date and add access/creation.
+            # Rock Ridge TF entries carry the POSIX times (in dr_entries, or the CE
+            # overflow area). A TF modification time wins over the directory-record
+            # date, which cannot hold hundredths or the long form's four-digit year.
             for entries in (rr.dr_entries, rr.ce_entries):
                 tf = getattr(entries, "tf_record", None)
                 if tf is None:
@@ -692,11 +707,15 @@ class IsoReader(BaseArchiveReader):
                 accessed = accessed or _dr_date_to_datetime(
                     getattr(tf, "access_time", None)
                 )
+                # Without a TF creation time, ``created`` falls back to the POSIX
+                # attribute-change time (st_ctime), as RAR's Unix members do. Nothing in
+                # ``extra`` marks the difference for ISO yet.
                 created = (
                     created
                     or _dr_date_to_datetime(getattr(tf, "creation_time", None))
                     or _dr_date_to_datetime(getattr(tf, "attribute_change_time", None))
                 )
+        modified = modified or _dr_date_to_datetime(getattr(record, "date", None))
         return modified, accessed, created
 
     def _px_mode(self, rr: RockRidge | None) -> int | None:
