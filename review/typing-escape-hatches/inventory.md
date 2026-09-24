@@ -126,7 +126,9 @@ heuristic in the first census pass and are included here.
 
 Per-format aliases are a later option; not the field type. See [`QUESTIONS.md`](QUESTIONS.md).
 
-### FIX-IN-CODE (both-error with `object`) — staged PR 5 (**done**; A46 kept with its reason, see SUMMARY item 5)
+### FIX-IN-CODE (both-error with `object`) — staged PR 5, done
+
+A46 is kept, with its reason beside it; see SUMMARY item 5.
 
 | ID | Site | Without `Any` (`object`) | Proposed type |
 |---|---|---|---|
