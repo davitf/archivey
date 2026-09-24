@@ -840,3 +840,31 @@ def test_listing_reads_nothing_from_the_image() -> None:
         before = Counting.calls
         assert len(ar.members()) == 2
         assert Counting.calls == before
+
+
+def test_rock_ridge_long_form_tf_time_is_read() -> None:
+    """A TF record with LONG_FORM set carries 17-byte dates (``VolumeDescriptorDate``:
+    four-digit year, ``dayofmonth``, hundredths). They used to come back as ``None``
+    because only the 7-byte field names were read."""
+    from datetime import datetime, timedelta, timezone
+
+    from pycdlib.dates import DirectoryRecordDate, VolumeDescriptorDate
+
+    from archivey.internal.backends.iso_reader import _dr_date_to_datetime
+
+    long_form = VolumeDescriptorDate()
+    # 2024-03-05 06:07:08.09, gmtoffset +8 (15-minute units: UTC+2).
+    long_form.parse(b"2024030506070809" + struct.pack("=b", 8))
+    assert _dr_date_to_datetime(long_form) == datetime(
+        2024, 3, 5, 6, 7, 8, 90_000, tzinfo=timezone(timedelta(hours=2))
+    )
+
+    unspecified = VolumeDescriptorDate()
+    unspecified.parse(b"0" * 16 + b"\x00")
+    assert _dr_date_to_datetime(unspecified) is None
+
+    short_form = DirectoryRecordDate()
+    short_form.parse(struct.pack("=BBBBBBb", 124, 3, 5, 6, 7, 8, 8))
+    assert _dr_date_to_datetime(short_form) == datetime(
+        2024, 3, 5, 6, 7, 8, tzinfo=timezone(timedelta(hours=2))
+    )

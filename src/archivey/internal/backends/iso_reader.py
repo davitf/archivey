@@ -39,10 +39,13 @@ import threading
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, BinaryIO, Iterator, Mapping, cast
+from typing import TYPE_CHECKING, BinaryIO, Iterator, Mapping, TypeGuard, cast
 
 if TYPE_CHECKING:
+    from pycdlib.dates import DirectoryRecordDate, VolumeDescriptorDate
+    from pycdlib.dr import DirectoryRecord
     from pycdlib.pycdlibio import PyCdlibIO
+    from pycdlib.rockridge import RockRidge
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -111,6 +114,7 @@ pycdlib = _optional("pycdlib")
 _pycdlib_exc = _optional("pycdlib.pycdlibexception")
 _pycdlib_core = _optional("pycdlib.pycdlib")
 _pycdlib_io = _optional("pycdlib.pycdlibio")
+_pycdlib_dr = _optional("pycdlib.dr")
 _PYCDLIB_CYCLE_GUARD_INSTALLED = False
 
 
@@ -167,10 +171,10 @@ def _install_pycdlib_directory_cycle_guard() -> None:
         """A ``deque`` that drops a directory record whose extent it has already scheduled."""
 
         def __init__(
-            self, iterable: Iterable[object] = (), *args: Any, **kwargs: Any
+            self, iterable: Iterable[object] = (), maxlen: int | None = None
         ) -> None:
             items = list(iterable)
-            super().__init__(items, *args, **kwargs)
+            super().__init__(items, maxlen)
             # Seed from the initial contents (which bypass ``append``) so a cycle back to a
             # root/seed extent is caught too.
             self._visited_extents: set[int] = {
@@ -222,16 +226,38 @@ _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
 _VERSION_SUFFIX = re.compile(r";(\d+)$")
 
 
-def _dr_date_to_datetime(date: Any) -> datetime | None:
-    """Convert a pycdlib ``DirectoryRecordDate`` (or Rock Ridge ``TF`` time) to a datetime.
+def _dr_date_to_datetime(
+    date: DirectoryRecordDate | VolumeDescriptorDate | None,
+) -> datetime | None:
+    """Convert a pycdlib directory-record date or Rock Ridge ``TF`` time to a datetime.
 
-    ``gmtoffset`` is in 15-minute units. Returns ``None`` on a missing or malformed record
-    rather than raising — a bad date field must not sink the whole listing.
+    A directory record carries the 7-byte form (``DirectoryRecordDate``, years since
+    1900). A ``TF`` record carries it too, or the 17-byte long form
+    (``VolumeDescriptorDate``, a four-digit year and hundredths of a second) when its
+    LONG_FORM flag is set. ``gmtoffset`` is in 15-minute units in both. Returns
+    ``None`` on a missing, unspecified (all zeros) or malformed date rather than
+    raising: a bad date field must not sink the whole listing.
     """
     if date is None:
         return None
+    # Both classes come from pycdlib, so it is installed whenever a date exists.
+    from pycdlib.dates import VolumeDescriptorDate
+
     try:
         tz = timezone(timedelta(minutes=date.gmtoffset * 15))
+        if isinstance(date, VolumeDescriptorDate):
+            hundredths = date.hundredthsofsecond
+            return datetime(
+                date.year,
+                date.month,
+                date.dayofmonth,
+                date.hour,
+                date.minute,
+                date.second,
+                # MagicISO writes binary junk here; only 0-99 is a hundredth.
+                hundredths * 10_000 if 0 <= hundredths <= 99 else 0,
+                tzinfo=tz,
+            )
         return datetime(
             1900 + date.years_since_1900,
             date.month,
@@ -245,7 +271,14 @@ def _dr_date_to_datetime(date: Any) -> datetime | None:
         return None
 
 
-def _yield_children(record: Any, rock_ridge: bool) -> Iterator[Any]:
+def _is_directory_record(obj: object) -> TypeGuard[DirectoryRecord]:
+    """Whether ``obj`` is a pycdlib directory record, the handle ISO members carry."""
+    return _pycdlib_dr is not None and isinstance(obj, _pycdlib_dr.DirectoryRecord)
+
+
+def _yield_children(
+    record: DirectoryRecord, rock_ridge: bool
+) -> Iterator[DirectoryRecord | None]:
     """A directory record's children, as pycdlib's own ``walk()`` enumerates them.
 
     ``pycdlib.pycdlib._yield_children`` is private, but it is the one place pycdlib
@@ -255,7 +288,10 @@ def _yield_children(record: Any, rock_ridge: bool) -> Iterator[Any]:
     every supported pycdlib, so a rename there fails loudly rather than silently.
     """
     assert _pycdlib_core is not None
-    return cast("Iterator[Any]", _pycdlib_core._yield_children(record, rock_ridge))
+    return cast(
+        "Iterator[DirectoryRecord | None]",
+        _pycdlib_core._yield_children(record, rock_ridge),
+    )
 
 
 class _PyCdlibStream(DelegatingStream):
@@ -415,12 +451,12 @@ class IsoReader(BaseArchiveReader):
             return rel, None
         return parent + sep + stem, int(match.group(1))
 
-    def _version_order(self, item: tuple[str, Any]) -> tuple[str, int]:
+    def _version_order(self, item: tuple[str, object]) -> tuple[str, int]:
         """Sort key putting each plain-ISO name's versions in ascending order."""
         presented, version = self._split_version(item[0])
         return presented, version or 0
 
-    def _record_name(self, record: Any) -> str:
+    def _record_name(self, record: DirectoryRecord) -> str:
         """Decode one directory record's own name in the selected namespace.
 
         Decoding never raises: a name that is not valid in its namespace's encoding is
@@ -444,7 +480,7 @@ class IsoReader(BaseArchiveReader):
             return ident.decode("utf-16_be", errors="replace")
         return ident.decode("utf-8", errors="surrogateescape")
 
-    def _is_rr_moved(self, record: Any) -> bool:
+    def _is_rr_moved(self, record: DirectoryRecord) -> bool:
         """Whether a root-level directory is Rock Ridge's ``rr_moved`` relocation parent.
 
         ISO 9660 caps depth at eight, so writers park deeper subtrees under a root-level
@@ -470,7 +506,7 @@ class IsoReader(BaseArchiveReader):
                 return False
         return True
 
-    def _walk_records(self) -> Iterator[tuple[str, Any, bool]]:
+    def _walk_records(self) -> Iterator[tuple[str, DirectoryRecord, bool]]:
         """Yield ``(namespace path, directory record, superseded)`` for every entry.
 
         The walk follows records, not names. ``PyCdlib.walk()`` yields names, and turning
@@ -489,11 +525,11 @@ class IsoReader(BaseArchiveReader):
         root = self._iso.get_record(**{self._path_kw: "/"})
         use_rr = self._namespace == "rock_ridge"
         seen_extents = {root.extent_location()}
-        stack: list[tuple[str, Any]] = [("/", root)]
+        stack: list[tuple[str, DirectoryRecord]] = [("/", root)]
         while stack:
             dirpath, dir_record = stack.pop()
-            dirs: list[tuple[str, Any]] = []
-            files: list[tuple[str, Any]] = []
+            dirs: list[tuple[str, DirectoryRecord]] = []
+            files: list[tuple[str, DirectoryRecord]] = []
             for child in _yield_children(dir_record, use_rr):
                 if child is None or child.is_dot() or child.is_dotdot():
                     continue
@@ -537,7 +573,12 @@ class IsoReader(BaseArchiveReader):
                 yield self._make_member(ns_path, record, index, superseded=superseded)
 
     def _make_member(
-        self, ns_path: str, record: Any, index: int, *, superseded: bool = False
+        self,
+        ns_path: str,
+        record: DirectoryRecord,
+        index: int,
+        *,
+        superseded: bool = False,
     ) -> ArchiveMember:
         rr = getattr(record, "rock_ridge", None)
         raw_mode = self._px_mode(rr)
@@ -635,10 +676,8 @@ class IsoReader(BaseArchiveReader):
             )
         return member
 
-    # rr stays Any: dr_entries / ce_entries (and symlink_path) are real
-    # attribute access, not getattr. Same at _posix_metadata and _symlink_target.
     def _timestamps(
-        self, record: object, rr: Any
+        self, record: DirectoryRecord, rr: RockRidge | None
     ) -> tuple[datetime | None, datetime | None, datetime | None]:
         modified = _dr_date_to_datetime(getattr(record, "date", None))
         accessed: datetime | None = None
@@ -663,7 +702,7 @@ class IsoReader(BaseArchiveReader):
                 )
         return modified, accessed, created
 
-    def _px_mode(self, rr: Any) -> int | None:
+    def _px_mode(self, rr: RockRidge | None) -> int | None:
         """The full POSIX mode from a Rock Ridge PX record, file-type bits included."""
         if rr is None:
             return None
@@ -674,7 +713,9 @@ class IsoReader(BaseArchiveReader):
                 return mode if isinstance(mode, int) else None
         return None
 
-    def _posix_metadata(self, rr: Any) -> tuple[int | None, int | None, int | None]:
+    def _posix_metadata(
+        self, rr: RockRidge | None
+    ) -> tuple[int | None, int | None, int | None]:
         # POSIX mode/uid/gid come only from a Rock Ridge PX record; Joliet/plain carry none,
         # so those namespaces correctly yield (None, None, None).
         if rr is None:
@@ -692,7 +733,9 @@ class IsoReader(BaseArchiveReader):
             )
         return None, None, None
 
-    def _symlink_target(self, member_type: MemberType, rr: Any) -> str | None:
+    def _symlink_target(
+        self, member_type: MemberType, rr: RockRidge | None
+    ) -> str | None:
         if member_type != MemberType.SYMLINK or rr is None:
             return None
         try:
@@ -703,7 +746,7 @@ class IsoReader(BaseArchiveReader):
 
     # --- data ---------------------------------------------------------------------------
 
-    def _open_record(self, record: Any) -> "PyCdlibIO":
+    def _open_record(self, record: DirectoryRecord) -> "PyCdlibIO":
         """Open a file's data from its directory record, with no path lookup.
 
         The same checks ``PyCdlib.open_file_from_iso`` makes once it has the record.
@@ -720,7 +763,9 @@ class IsoReader(BaseArchiveReader):
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         record = member._raw
-        assert record is not None, "ISO member is missing its directory record"
+        assert _is_directory_record(record), (
+            "ISO member is missing its directory record"
+        )
         # Boundary outside the lock; _PyCdlibStream construction stays inside it so any
         # enter-time pycdlib seek/error is covered by both.
         with self._translated_errors(member.name):
