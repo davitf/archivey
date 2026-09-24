@@ -72,7 +72,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   that timed out was not remembered, so it was probed again, for another 10 seconds, on
   every member read. A timeout is now remembered for that binary, and a `rar` further
   along `PATH` is used instead when there is one. A binary replaced on disk is probed
-  again.
+  again. When no usable binary is left, the `PackageNotInstalledError` names the one
+  that did not answer instead of saying none was found.
 - **An encrypted RAR derives each key once per open.** RAR5 key derivation costs what
   the archive declares, up to 2²⁴ PBKDF2 rounds (a few seconds each). A header-encrypted
   volume set derived the header key and password check again on every part, so a

@@ -72,6 +72,8 @@ class _UnrarProbe:
     The lookup does not key cwd or ``PATHEXT`` (Windows ``which`` consults both).
     ``version`` is parsed from the same banner as ``is_rarlab`` — a genuine
     RARLAB binary that is too old (or unparseable) stays ``is_rarlab=True``.
+    ``timed_out`` marks a binary that ran and printed no banner within
+    ``_PROBE_TIMEOUT_SECONDS``; it is ``is_rarlab=False`` and the refusal names it.
     """
 
     unrar_path: str
@@ -81,15 +83,19 @@ class _UnrarProbe:
     st_ino: int
     st_mtime_ns: int
     st_size: int
+    timed_out: bool = False
 
 
 # Keyed by absolute path. A durable "not RARLAB" answer stores
 # ``is_rarlab=False`` so a lookalike costs one process, not one per attempted
 # read. A too-old (or unparseable) RARLAB banner stores ``is_rarlab=True`` and
-# is still refused. A probe that timed out stores ``is_rarlab=False`` too: the
-# binary ran and did not answer, and re-probing would cost the full timeout on
-# every member read. A ``which`` miss and a probe that could not *run* the
-# binary (``OSError``, e.g. ``EMFILE``) are not stored.
+# is still refused. A probe that timed out stores ``is_rarlab=False`` with
+# ``timed_out=True``: the binary ran and did not answer, and re-probing would
+# cost the full timeout on every member read. That makes a one-off slow start
+# permanent for the process unless the binary changes on disk; the refusal
+# names the binary and the timeout on every lookup, so the cause stays visible.
+# A ``which`` miss and a probe that could not *run* the binary (``OSError``,
+# e.g. ``EMFILE``) are not stored.
 _cached_unrar: dict[str, _UnrarProbe] = {}
 
 # Seconds the identification probe may run. A binary that has not printed its
@@ -176,6 +182,18 @@ def _unrar_floor_message(
     )
 
 
+def _unrar_timeout_message(paths: list[str]) -> str:
+    shown = " and ".join(display_path(path) for path in paths)
+    them = "it" if len(paths) == 1 else "them"
+    return (
+        f"RARLAB unrar or rar is required to read RAR member data. Found {shown} on "
+        f"PATH, but the identification probe got no answer from {them} within "
+        f"{_PROBE_TIMEOUT_SECONDS:g} seconds. archivey does not probe an unchanged "
+        "binary again in this process; fix or replace it, or put a working RARLAB "
+        "unrar or rar on PATH."
+    )
+
+
 def _stat_identity(path: str) -> tuple[int, int, int, int]:
     """``(st_dev, st_ino, st_mtime_ns, st_size)``, or ``PackageNotInstalledError``.
 
@@ -209,6 +227,7 @@ def find_rarlab_unrar() -> str:
     # Sample PATH once and pass it to ``which`` so a concurrent ``os.environ``
     # rewrite cannot stamp a new lookup with the old key.
     floor_refusals: list[tuple[str, tuple[int, int] | None]] = []
+    timed_out: list[str] = []
     run_cause: BaseException | None = None
 
     def _note_floor(path: str, version: tuple[int, int] | None) -> None:
@@ -240,31 +259,26 @@ def find_rarlab_unrar() -> str:
                 return candidate
             if cached.is_rarlab:
                 _note_floor(candidate, cached.version)
+            elif cached.timed_out and candidate not in timed_out:
+                timed_out.append(candidate)
             continue
 
-        st_dev, st_ino, st_mtime_ns, st_size = identity
+        probe_timed_out = False
         try:
             banner = _is_rarlab_unrar(candidate)
         except subprocess.TimeoutExpired as exc:
-            # The binary ran and did not answer. Unlike a spawn failure, that is
-            # a property of this inode, so remember it: otherwise every member
-            # read pays the probe timeout again. A replaced binary changes the
-            # stat identity and is probed afresh.
+            # The binary ran and did not answer. Unlike a spawn failure, remember
+            # it: otherwise every member read pays the probe timeout again. A
+            # replaced binary changes the stat identity and is probed afresh.
             run_cause = exc
-            _cached_unrar[candidate] = _UnrarProbe(
-                unrar_path=candidate,
-                is_rarlab=False,
-                version=None,
-                st_dev=st_dev,
-                st_ino=st_ino,
-                st_mtime_ns=st_mtime_ns,
-                st_size=st_size,
-            )
-            continue
+            probe_timed_out = True
+            banner = _UnrarBanner(is_rarlab=False, version=None)
+            timed_out.append(candidate)
         except (OSError, subprocess.SubprocessError) as exc:
             run_cause = exc
             continue
 
+        st_dev, st_ino, st_mtime_ns, st_size = identity
         _cached_unrar[candidate] = _UnrarProbe(
             unrar_path=candidate,
             is_rarlab=banner.is_rarlab,
@@ -273,6 +287,7 @@ def find_rarlab_unrar() -> str:
             st_ino=st_ino,
             st_mtime_ns=st_mtime_ns,
             st_size=st_size,
+            timed_out=probe_timed_out,
         )
         if _banner_meets_floor(banner):
             return candidate
@@ -281,6 +296,11 @@ def find_rarlab_unrar() -> str:
 
     if floor_refusals:
         raise PackageNotInstalledError(_unrar_floor_message(floor_refusals))
+    if timed_out:
+        message = _unrar_timeout_message(timed_out)
+        if run_cause is not None:
+            raise PackageNotInstalledError(message) from run_cause
+        raise PackageNotInstalledError(message)
     if run_cause is not None:
         raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from run_cause
     raise PackageNotInstalledError(_NOT_INSTALLED_MSG)

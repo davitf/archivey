@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from archivey import open_archive
+from archivey.escaping import display_path
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.backends import rar_unrar
 from tests.conftest import requires_binary
@@ -73,6 +74,12 @@ def test_archive_path_follows_a_switch_terminator(
 
 @requires_binary("unrar")
 @pytest.mark.parametrize(
+    # ``@`` is the listfile prefix. No guard is added for it: unrar reads the
+    # first non-switch argument as the archive, and this row pins that.
+    "copy_name",
+    ["-inul.rar", "@inul.rar"],
+)
+@pytest.mark.parametrize(
     "fixture",
     [
         # Nonsolid, compressed members: each read spawns ``unrar p -n./member``.
@@ -83,7 +90,7 @@ def test_archive_path_follows_a_switch_terminator(
     ],
 )
 def test_archive_named_like_a_switch_reads_its_members(
-    fixture: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    fixture: str, copy_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A relative ``-inul.rar`` reads the same bytes as the fixture it copies.
 
@@ -93,9 +100,9 @@ def test_archive_named_like_a_switch_reads_its_members(
     source = _fixture(fixture)
     expected = _read_all(source)
     assert any(expected.values())
-    shutil.copyfile(source, tmp_path / "-inul.rar")
+    shutil.copyfile(source, tmp_path / copy_name)
     monkeypatch.chdir(tmp_path)
-    assert _read_all("-inul.rar") == expected
+    assert _read_all(copy_name) == expected
 
 
 # --- the identification probe cache -------------------------------------------
@@ -162,12 +169,18 @@ def test_timed_out_only_candidate_is_not_installed_without_reprobing(
         raise subprocess.TimeoutExpired([path], 10)
 
     monkeypatch.setattr(rar_unrar, "_is_rarlab_unrar", probe)
-    with pytest.raises(PackageNotInstalledError, match="RARLAB") as first:
+    with pytest.raises(PackageNotInstalledError) as first:
         rar_unrar.find_rarlab_unrar()
     assert isinstance(first.value.__cause__, subprocess.TimeoutExpired)
-    with pytest.raises(PackageNotInstalledError, match="RARLAB"):
+    with pytest.raises(PackageNotInstalledError) as second:
         rar_unrar.find_rarlab_unrar()
     assert calls == 1
+    # Every lookup, not only the one that ran the probe, says what happened.
+    for raised in (first.value, second.value):
+        message = str(raised)
+        assert display_path(os.path.abspath(hung)) in message
+        assert "no answer" in message
+        assert "not found" not in message and "neither was found" not in message
 
 
 @pytest.mark.usefixtures("empty_cache")
@@ -217,6 +230,6 @@ def test_real_hung_unrar_costs_one_probe_timeout(
 
     monkeypatch.setattr(rar_unrar, "_is_rarlab_unrar", counting_probe)
     for _ in range(3):
-        with pytest.raises(PackageNotInstalledError):
+        with pytest.raises(PackageNotInstalledError, match="0.2 seconds"):
             rar_unrar.find_rarlab_unrar()
     assert spawned == 1
