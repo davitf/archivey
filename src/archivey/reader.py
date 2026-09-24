@@ -9,9 +9,12 @@ from typing import TYPE_CHECKING, Callable, Collection, Iterator
 from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
-from archivey.internal.extraction_types import (
+from archivey.types import (
     AbortOn,
     AbortOnStr,
+    ArchiveFormat,
+    ArchiveInfo,
+    ArchiveMember,
     ExtractionPolicy,
     ExtractionPolicyStr,
     ExtractionProgress,
@@ -21,7 +24,6 @@ from archivey.internal.extraction_types import (
     OverwritePolicy,
     OverwritePolicyStr,
 )
-from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember
 
 if TYPE_CHECKING:
     from archivey.internal.streams.archive_stream import ArchiveStream

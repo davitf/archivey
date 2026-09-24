@@ -44,17 +44,6 @@ from archivey.exceptions import (
     ResourceLimitError,
     SymlinkEscapeError,
 )
-from archivey.internal.extraction_types import (
-    AbortOn,
-    ExtractionPolicy,
-    ExtractionProgress,
-    ExtractionResult,
-    ExtractionStatus,
-    MemberFilter,
-    MemberSelectorArg,
-    OnError,
-    OverwritePolicy,
-)
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
     apply_name_policy,
@@ -66,7 +55,19 @@ from archivey.internal.selection import (
     CollectionSelector,
     normalize_member_selector,
 )
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import (
+    AbortOn,
+    ArchiveMember,
+    ExtractionPolicy,
+    ExtractionProgress,
+    ExtractionResult,
+    ExtractionStatus,
+    MemberFilter,
+    MemberSelectorArg,
+    MemberType,
+    OnError,
+    OverwritePolicy,
+)
 
 if TYPE_CHECKING:
     from archivey.internal.base_reader import BaseArchiveReader

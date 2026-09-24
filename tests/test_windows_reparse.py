@@ -37,14 +37,13 @@ from archivey.internal.backends.rar_parser import RarMemberInfo
 from archivey.internal.backends.rar_reader import _rar_member_extra_and_link
 from archivey.internal.backends.zip_reader import ZipReader
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
-from archivey.internal.extraction_types import OnError
 from archivey.internal.windows_reparse import (
     FILE_ATTRIBUTE_REPARSE_POINT,
     IO_REPARSE_TAG_MOUNT_POINT,
     IO_REPARSE_TAG_SYMLINK,
     parse_reparse_data,
 )
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import ArchiveMember, MemberType, OnError
 from tests.conftest import requires_binary
 
 _JUNCTION_DIR = Path(__file__).parent / "fixtures" / "external" / "junction"

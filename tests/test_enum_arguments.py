@@ -47,13 +47,14 @@ from archivey.internal.enum_args import (
     coerce_enum_collection,
     normalize_spelling,
 )
-from archivey.internal.extraction_types import (
+from archivey.types import (
     AbortOnStr,
+    ContainerFormat,
     ExtractionPolicyStr,
     OnErrorStr,
     OverwritePolicyStr,
+    StreamFormat,
 )
-from archivey.types import ContainerFormat, StreamFormat
 
 # Every enum reachable from a public argument.
 PUBLIC_ENUMS: tuple[type[Enum], ...] = (

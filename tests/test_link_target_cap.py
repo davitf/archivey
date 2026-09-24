@@ -39,9 +39,8 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.rar_parser import RarMemberInfo
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
-from archivey.internal.extraction_types import OnError
 from archivey.reader import ArchiveReader
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import ArchiveMember, MemberType, OnError
 from tests.conftest import requires_binary
 
 _MODES = [pytest.param(False, id="random-access"), pytest.param(True, id="streaming")]

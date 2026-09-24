@@ -67,19 +67,6 @@ from archivey.internal.enum_args import (
     coerce_enum,
     coerce_enum_collection,
 )
-from archivey.internal.extraction_types import (
-    AbortOn,
-    AbortOnStr,
-    ExtractionPolicy,
-    ExtractionPolicyStr,
-    ExtractionProgress,
-    MemberFilter,
-    MemberSelectorArg,
-    OnError,
-    OnErrorStr,
-    OverwritePolicy,
-    OverwritePolicyStr,
-)
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
 from archivey.internal.logs import backends as logger
@@ -121,13 +108,24 @@ from archivey.internal.windows_reparse import (
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
     EXTRA_IS_JUNCTION,
+    AbortOn,
+    AbortOnStr,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    ExtractionPolicy,
+    ExtractionPolicyStr,
+    ExtractionProgress,
     HashAlgorithm,
     MagicSignature,
+    MemberFilter,
+    MemberSelectorArg,
     MemberStreams,
     MemberType,
+    OnError,
+    OnErrorStr,
+    OverwritePolicy,
+    OverwritePolicyStr,
 )
 
 MAX_LINK_TARGET_BYTES = 4096

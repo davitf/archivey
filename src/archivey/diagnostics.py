@@ -25,7 +25,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, TypeVar
 
 from archivey.escaping import escape_control_chars
-from archivey.internal.extraction_types import ExtractionResult
+from archivey.types import ExtractionResult
 
 if TYPE_CHECKING:
     from archivey.exceptions import ArchiveyError

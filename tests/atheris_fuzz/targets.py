@@ -20,12 +20,12 @@ from archivey.internal.backends.rar_parser import parse_rar_archive
 from archivey.internal.backends.rar_unrar import find_rarlab_unrar
 from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 from archivey.internal.config import StreamConfig
-from archivey.internal.registry import FormatSupport
 from archivey.internal.streams.codecs import (
     Codec,
     is_codec_available,
     open_codec_stream,
 )
+from archivey.types import FormatSupport
 from tests.atheris_fuzz.crc_fixup import (
     fixup_rar_header_crcs,
     fixup_sevenzip_header_crcs,

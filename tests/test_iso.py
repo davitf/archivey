@@ -31,9 +31,10 @@ from archivey.exceptions import (
     UnsupportedOperationError,
 )
 from archivey.internal.backends.iso_reader import IsoReader
-from archivey.internal.registry import FormatSupport, get_registry
+from archivey.internal.registry import get_registry
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
+from archivey.types import FormatSupport
 from tests.conftest import requires
 from tests.streams_util import (
     FactSizedReadRecorder,
