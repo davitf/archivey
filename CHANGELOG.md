@@ -71,7 +71,6 @@ promise with that line; treat `0.2.0` as the first release of this library.
   header's password check for its member data. One cache per reader now serves the
   header parse, every volume and every member read. RAR3 volume sets re-derived per part
   the same way and are covered by the same cache.
-=======
 - **A `.Z`, `.xz` or `.lz` source that ends before its first header is now an error**,
   never an empty stream. An empty `.Z`, and a 1–5 byte file read as lzip, used to decode
   to `b""` with no error. The error type now follows the rule for every other codec:
