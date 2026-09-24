@@ -89,7 +89,8 @@ Everything about that boundary is a consequence:
   once the solid prefix plus discarded member progress meets the 1 MiB floor. The unnamed
   ALL-pipe used by `stream_members()` stays forward-only (§2.3, §5).
 - **Identity of the binary costs a process.** `find_rarlab_unrar` looks up `unrar`
-  first, then `rar`, runs the candidate with no arguments, and sniffs the banner.
+  first, then `rar`, runs the candidate with only `-cfg-` (so `~/.unrarrc` cannot inject
+  `-idq` and empty the banner), and sniffs the banner.
   Major.minor is parsed from that same text (`UNRAR 6.02` / `UNRAR 7.00` /
   `RAR 7.00`) and cached with the probe — not re-read per member. A `RAR` token
   does not match inside `UNRAR`. Below 6.0, or a RARLAB banner whose version cannot be
@@ -101,9 +102,13 @@ Everything about that boundary is a consequence:
   cached for the resolved (absolute) candidate together with its stat identity
   (`st_dev` / `st_ino` / `st_mtime_ns` / `st_size`); a hit, a durable "not RARLAB"
   answer, or a too-old RARLAB answer is reused only while that identity is
-  unchanged. A probe that cannot *run* the binary (`OSError`, timeout) is not
-  cached. The cache is one entry, so alternating two `PATH`s re-probes. The lookup
-  does not key cwd or `PATHEXT`.
+  unchanged. A probe that times out (10 s) is cached as "not RARLAB" with a
+  `timed_out` mark, so a hung binary costs one timeout per process rather than one per
+  member read; the refusal names the binary and says it did not answer, on every lookup.
+  The trade is that a one-off slow start stays refused until the binary changes on disk
+  or the process restarts. A probe that cannot *run* the binary (`OSError`, e.g.
+  `EMFILE`) is not cached. There is one entry per resolved absolute path, so
+  alternating two `PATH`s does not re-probe. The lookup does not key cwd or `PATHEXT`.
 
 **Blocks chain forward and each header states its own size.** Without a usable RAR5 `QO`
 the walk reads a header, uses its declared size to find the next, and stops at `ENDARC`. So:
@@ -435,7 +440,14 @@ solid archive through `stream_members()` — or an extraction whose selector mat
 never starts `unrar` and is never asked for a password.
 
 **The argv is constructed defensively, because the member name is attacker-controlled.**
-`unrar p -inul [-ver] (-p | -p-) [-n./<member>] <archive>`:
+`unrar p -inul -cfg- [-ver] (-p | -p-) [-n./<member>] -- <archive>`:
+
+- **The archive path follows `--`.** The caller chooses it, and a relative path such as
+  `-inul.rar` was otherwise parsed as a switch: `unrar` exited 7 with no output and every
+  compressed member read as truncated. `--` is RARLAB's documented end-of-switches marker;
+  measured on `unrar` 7.00 and `rar` 7.00. An `@` prefix needs no guard in this position:
+  `unrar` reads the first non-switch argument as the archive, and only later file-name
+  arguments as list-files (also measured on 7.00, and pinned below).
 
 - **The member is never positional.** It is the value of the `-n` include mask, prefixed
   `./`. Passed positionally, a member literally named `-inul` is parsed by `unrar` as a
@@ -741,7 +753,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Native metadata parser; `unrar` for member data only | Listing works with no binary and no `rarfile` dependency, and archivey's cost and streaming model is not bent to another library's | `rarfile`, which couples listing to its own decompressor stack — kept as a test oracle (ADR [0002](../decisions/0002-native-rar-metadata-unrar-data.md)) |
 | RARLAB `unrar` **or** `rar`, no silent fallback to other tools | The alternatives are measurably worse in ways a caller cannot see: `unar` returns empty files with a success exit on a whole archive class, `7z` depends on a plugin that may or may not be installed, `bsdtar` writes gigabytes on a stored member. A degraded backend chosen behind the caller's back is the failure mode `PackageNotInstalledError` exists to prevent. Accepting RARLAB `rar` is the same vendor's `p` command, not a second engine | Probing `PATH` the way `rarfile` does (threat-model C1, [`alternative-rar-decompressors.md`](../investigations/alternative-rar-decompressors.md)) |
 | Refuse RARLAB `unrar` older than **6.0** at the banner probe | `-n` glob demux and `-ver` were checked from 6.02 up. 5.91 passed those RAR data tests but hangs on an anonymous-fd multi-volume probe that 6.12+ exits 3 on — a path archivey does not use. Floor 6.0 so Debian 12 / Ubuntu 22.04 apt packages work. Parsed from the same identification banner as the RARLAB sniff, cached with the probe, not re-read per member. Open and stored reads do not require it; compressed old-style comments stay `None` | Floor 7.0, which would refuse those distro packages; checking per member; treating a RARLAB banner with no parseable version as 6.0 |
-| Pass the member as `-n./<name>`, never positionally | It is the only construction that neutralizes both hostile prefixes; `--` handles the switch case and leaves `@listfile` expansion intact | `--` alone; shell quoting (there is no shell — argv is a list) |
+| Pass the member as `-n./<name>`, never positionally | It is the only construction that neutralizes both hostile prefixes; `--` handles the switch case and leaves `@listfile` expansion intact | `--` alone as the member guard; shell quoting (there is no shell — argv is a list). `--` *is* passed, before the archive path, where the only hostile prefix is `-` |
 | Honour `seekable_members=True` on named `unrar` by respawning the process | A flag that seeks on stored members and raises on compressed ones is a broken contract, and buffering the decoded member would hide the cost VISION forbids | Buffering the member in memory; teaching `ArchiveStream` to reopen every non-seekable inner (the blast radius is every backend for one pipe) |
 | Declare a `RewindWarning` cost floor for the solid prefix | The member stream's `tell()` is only this member; named `unrar` of a solid member re-decodes everything before it. Maxing the predicate against that prefix keeps one diagnostic path | Lowering the global 1 MiB threshold; emitting the diagnostic from the RAR wrapper |
 | Pass a basename glob as the `-n./` mask and skip other matches from the parsed list; refuse a glob in a directory component or a backslash | The refusal was the conservative half of this; the list needed to demux a basename glob is already in archive order. Directory-glob and literal-backslash matching is not the matcher we reimplemented, and guessing there reported a valid archive as truncated | Demuxing those names from a guessed skip; treating CRC mismatch as the only safety net |
@@ -912,6 +924,8 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | The finder caches hits and misses for one `PATH`, then re-probes after `PATH` changes or a cached binary vanishes | `::test_non_rarlab_unrar_negative_probe_is_cached`, `::test_missing_unrar_negative_probe_is_cached`, `::test_path_change_invalidates_cached_unrar_miss`, `::test_deleted_cached_unrar_is_not_returned` |
 | A solid pass spawns `unrar` only on the first read | `::test_solid_pass_spawns_unrar_only_on_the_first_read` |
 | Hostile member names (`-inul`, `@atfile`) read **their own** bytes, RAR4 and RAR5 | `::test_hostile_member_name_reads_its_own_bytes` |
+| An archive path starting with `-` or `@` reads its members; `--` sits directly before the path | `tests/test_rar_unrar_argv.py::test_archive_named_like_a_switch_reads_its_members`, `::test_archive_path_follows_a_switch_terminator` |
+| A probe that times out is cached for that binary, the next name is still tried, a replaced binary is re-probed, and every refusal names the timeout | `tests/test_rar_unrar_argv.py::test_timed_out_probe_is_cached_and_the_next_name_is_used`, `::test_timed_out_only_candidate_is_not_installed_without_reprobing`, `::test_replaced_binary_after_a_timeout_is_probed_again`, `::test_real_hung_unrar_costs_one_probe_timeout` |
 | A wildcard member name reads its own bytes, including the solid prefix-skip case | `::test_wildcard_member_name_reads_its_own_bytes`, `::test_wildcard_solid_stream_members_reads_all`, `::test_seekable_wildcard_respawn_still_skips_glob_prefix` |
 | Listing a stream-volume set writes nothing; the first compressed read writes the whole set once and close removes it | `::test_stream_volume_listing_writes_nothing`, `::test_stream_volume_read_materializes_once` |
 | A glob name whose mask also matches earlier members is refused; the flag reads it anyway; a glob matching nothing else is untouched; a solid streaming pass is untouched | `::test_glob_member_with_earlier_matches_is_refused`, `::test_glob_member_matching_nothing_else_still_reads`, `::test_glob_concatenation_flag_names_itself_in_the_refusal`, `::test_wildcard_nonsolid_stream_members_hits_the_refusal` |
