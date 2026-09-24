@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -60,6 +62,72 @@ def test_output_counting_stream_forwards_resume_offset() -> None:
         OutputCountingStream(io.BytesIO(b"x"), ByteCounter()).nearest_resume_offset(0)
         is None
     )
+
+
+class _RefusingReadinto(io.RawIOBase):
+    """A minimal file-like: ``read`` only, so the inherited ``readinto`` raises."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self._data = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._data.read(n)
+
+
+class _NonBlocking(io.RawIOBase):
+    """A non-blocking source with nothing available: ``read``/``readinto`` give None."""
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> None:
+        return None
+
+    def readinto(self, b: object, /) -> None:
+        return None
+
+
+def _wrap_counting(which: str, inner: io.RawIOBase) -> tuple[Any, Callable[[], int]]:
+    """Return ``(wrapper, count)`` for one of the two byte-counting wrappers."""
+    if which == "CountingReader":
+        reader = CountingReader(inner)  # type: ignore[arg-type]
+        return reader, lambda: reader.bytes_read
+    counter = ByteCounter()
+    return OutputCountingStream(inner, counter), lambda: counter.total  # type: ignore[arg-type]
+
+
+_COUNTING_WRAPPERS = ["CountingReader", "OutputCountingStream"]
+
+
+@pytest.mark.parametrize("which", _COUNTING_WRAPPERS)
+def test_counting_readinto_falls_back_when_inner_refuses(which: str) -> None:
+    """An inner that advertises ``readinto`` and refuses it falls back to ``read``."""
+    wrapped, count = _wrap_counting(which, _RefusingReadinto(b"0123456789"))
+    buf = bytearray(4)
+    assert wrapped.readinto(buf) == 4
+    assert bytes(buf) == b"0123"
+    assert count() == 4
+
+
+def test_counting_reader_under_buffered_reader_counts_a_refusing_inner() -> None:
+    """The production composition: ``BufferedReader`` drives ``raw.readinto``."""
+    reader = CountingReader(_RefusingReadinto(b"0123456789"))
+    assert io.BufferedReader(reader).read(4) == b"0123"  # type: ignore[arg-type]
+    assert reader.bytes_read == 10  # one buffered fill pulls the whole source
+
+
+@pytest.mark.parametrize("which", _COUNTING_WRAPPERS)
+def test_counting_wrappers_refuse_a_non_blocking_inner(which: str) -> None:
+    """``None`` from the inner is "no data yet", never EOF: refuse it by name."""
+    wrapped, _ = _wrap_counting(which, _NonBlocking())
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.readinto(bytearray(4))
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        wrapped.read(4)
 
 
 def test_seek_counting_stream_records_seeks_only() -> None:

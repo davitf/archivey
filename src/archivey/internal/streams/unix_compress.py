@@ -133,10 +133,18 @@ class LzwState:
 
     @property
     def needs_input(self) -> bool:
-        """False while retained compressed bytes (or CLEAR padding) remain to drain."""
+        """False only when ``feed(b"")`` can make progress without new input.
+
+        That is: a complete header is buffered but not yet parsed, or any bytes are
+        buffered after it. Every buffered byte past the header either feeds the bit
+        buffer or pays down CLEAR padding, so both count as progress. A partial header,
+        or padding still owed with nothing buffered, needs more input.
+        """
         if self._finished:
             return True
-        return not self._buf and not self._pending_skip
+        if self._need_header:
+            return len(self._buf) < _HEADER_SIZE
+        return not self._buf
 
     def _init_dictionary(self, max_width: int, block_mode: bool) -> None:
         self._max_width = max_width
@@ -163,7 +171,9 @@ class LzwState:
 
         if self._need_header:
             if len(self._buf) < _HEADER_SIZE:
-                if eof and self._buf:
+                if eof:
+                    # Zero bytes included: an empty source is not a valid empty .Z
+                    # (zcat refuses it too), it is a stream with no header.
                     raise CorruptionError(
                         "unix-compress (.Z) stream is too short (missing header)"
                     )

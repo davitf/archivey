@@ -418,6 +418,74 @@ def test_xz_index_unpadded_overflow_raises() -> None:
         _read_xz_index_backwards(io.BytesIO(blob), len(blob))
 
 
+def _xz_padding_end_bytewise(data: bytes, end: int, stop_at: int) -> int:
+    """Reference: the group-at-a-time padding walk the chunked scan replaced."""
+    while end > stop_at:
+        if end < 4:
+            raise CorruptionError("XZ file too small to contain a valid stream")
+        if data[end - 4 : end] != b"\x00\x00\x00\x00":
+            break
+        end -= 4
+    return end
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_xz_padding_scan_matches_the_group_walk(
+    seed: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from archivey.internal.streams import xz as xz_mod
+
+    # A small chunk so seams between chunks are crossed on every case.
+    monkeypatch.setattr(xz_mod, "_PADDING_SCAN_CHUNK", 16)
+    rng = random.Random(seed)
+    head = bytes(rng.choice([0, 0, 1, 255]) for _ in range(rng.randrange(0, 40)))
+    data = head + b"\x00" * rng.randrange(0, 80)
+    end = len(data)
+    stop_at = rng.randrange(0, end + 1) if end else 0
+    try:
+        expected: int | Exception = _xz_padding_end_bytewise(data, end, stop_at)
+    except CorruptionError as e:
+        expected = e
+    if isinstance(expected, Exception):
+        with pytest.raises(CorruptionError, match="too small"):
+            xz_mod._skip_stream_padding_backwards(io.BytesIO(data), end, stop_at)
+    else:
+        got = xz_mod._skip_stream_padding_backwards(io.BytesIO(data), end, stop_at)
+        # Past stop_at the walk's exact overshoot is not observable to the caller.
+        assert got == expected or (got <= stop_at and expected <= stop_at)
+
+
+def test_xz_padding_scan_reads_in_chunks() -> None:
+    """Megabytes of stream padding cost a handful of reads, not one per 4 bytes."""
+    compressed = lzma.compress(b"hello") + b"\x00" * (4 << 20)
+    source = CountingBytesIO(compressed)
+    blocks = _read_xz_index_backwards(source, len(compressed))
+    assert blocks[-1].decompressed_end == 5
+    assert source.read_calls < 200
+
+
+def test_xz_index_with_room_for_more_records_is_rejected() -> None:
+    """Records plus padding must fill the index the footer declared, exactly."""
+    from archivey.internal.streams.xz import _parse_xz_index
+
+    # Indicator, zero records, then 4 bytes of zeros past the padding.
+    with pytest.raises(CorruptionError, match="length mismatch"):
+        _parse_xz_index(b"\x00\x00\x00\x00" + b"\x00" * 4)
+    # Index cut short of its padding.
+    with pytest.raises(CorruptionError, match="length mismatch"):
+        _parse_xz_index(b"\x00\x00")
+    assert _parse_xz_index(b"\x00\x00\x00\x00") == []
+
+
+def test_xz_index_rejects_a_non_minimal_multibyte_integer() -> None:
+    from archivey.internal.streams.xz import _decode_mbi
+
+    assert _decode_mbi(b"\x00", 0) == (0, 1)
+    assert _decode_mbi(b"\x80\x01", 0) == (128, 2)
+    with pytest.raises(CorruptionError, match="not minimally encoded"):
+        _decode_mbi(b"\x80\x00", 0)
+
+
 def test_lzip_trailer_member_size_past_start_raises() -> None:
     """Corrupt member_size that walks before offset 0 must not become seek points."""
     good = make_lzip_member(b"hello-lzip-payload")
@@ -587,6 +655,66 @@ def test_lzip_index_backwards_parses_members() -> None:
     assert [m.decompressed_size for m in members] == [500, 700]
     assert members[0].decompressed_start == 0
     assert members[1].decompressed_start == 500
+
+
+@pytest.mark.parametrize("data", [b"", b"a", b"abc", b"LZI", b"LZIx"])
+def test_lzip_source_with_no_member_raises(data: bytes) -> None:
+    """Fewer bytes than a header and no member: not lzip, not a valid empty stream.
+
+    Trailing data is allowed only after a member, so a short non-lzip source must not
+    decode to ``b""``.
+    """
+    with LzipDecompressorStream(io.BytesIO(data)) as stream:
+        with pytest.raises(CorruptionError, match="no members found"):
+            stream.read()
+
+
+def test_lzip_bare_magic_is_truncated() -> None:
+    with LzipDecompressorStream(io.BytesIO(b"LZIP")) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+
+
+@pytest.mark.parametrize("trailing", [b"a", b"abc", b"abcde"])
+def test_lzip_short_trailing_data_after_a_member_is_allowed(trailing: bytes) -> None:
+    compressed = make_lzip_member(b"hi") + trailing
+    with LzipDecompressorStream(io.BytesIO(compressed)) as stream:
+        assert stream.read() == b"hi"
+
+
+def test_lzip_peek_index_summary_matches_the_payload() -> None:
+    from archivey.internal.streams.lzip import peek_index_summary
+
+    parts = [b"alpha" * 300, b"", b"beta" * 700, b"gamma"]
+    compressed = make_multi_member_lzip(parts)
+    full = b"".join(parts)
+    assert peek_index_summary(io.BytesIO(compressed), len(compressed)) == (
+        len(full),
+        zlib.crc32(full),
+    )
+
+
+def test_lzip_peek_index_summary_holds_no_per_member_state() -> None:
+    """The listing-time probe folds the trailer walk; it keeps no per-member list.
+
+    26 bytes is the smallest member the scan accepts, so a file of them declares one
+    member per 26 bytes; the probe must not allocate in proportion to that count.
+    """
+    import tracemalloc
+
+    from archivey.internal.streams.lzip import peek_index_summary
+
+    block = b"LZIP" + bytes([1, 20]) + struct.pack("<IQQ", 0, 0, 26)
+    count = 20_000
+    data = block * count
+    tracemalloc.start()
+    try:
+        assert peek_index_summary(io.BytesIO(data), len(data)) == (0, 0)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # A per-member list costs well over 100 bytes an entry (~2 MB here).
+    assert peak < 200_000, peak
 
 
 # --- accelerator backends present / absent ---------------------------------------------

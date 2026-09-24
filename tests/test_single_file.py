@@ -355,7 +355,7 @@ def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
     full = b"".join(parts)
 
     with patch.object(
-        lzip_mod, "_read_index_backwards", wraps=lzip_mod._read_index_backwards
+        lzip_mod, "_iter_trailers_backwards", wraps=lzip_mod._iter_trailers_backwards
     ) as scanned:
         with open_archive(path, seekable_members=True) as ar:
             member = ar.members()[0]

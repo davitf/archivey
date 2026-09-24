@@ -64,6 +64,23 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **An empty `.Z` file, or a file of fewer than six bytes read as lzip, is now an
+  error** instead of one empty member. Both decoders already refused a longer non-archive;
+  the short case slipped through as a valid empty stream. Short trailing data *after* an
+  lzip member is still allowed, as the lzip format specifies.
+- **A caller's file object that implements only `read` now works as a compressed source
+  of unknown size.** The input counter behind the live decompression-ratio guard called
+  the inherited `readinto` of such an `io.RawIOBase` subclass, which raises
+  `NotImplementedError`, instead of falling back to `read`; a non-blocking source with no
+  data got a bare `TypeError` rather than archivey's `BlockingIOError`.
+- **Opening an xz file with megabytes of stream padding no longer takes seconds**: the
+  padding is scanned backwards in 64 KiB reads rather than one 4-byte read at a time.
+  Listing a `.lz` file holds no per-member state however many members it declares, where it
+  used to take about nine times the file's size in memory for a file of empty members.
+- **The xz seek index is now as strict as the decoder**: an index whose records do not
+  fill its declared length, or a size field written in more bytes than it needs, is
+  refused, as liblzma already refused both when decoding.
+
 - **A password list now works when the right password is not first**, on the two
   formats where it did not: a header-encrypted 7z and RAR5 with encrypted data. On 7z, a
   wrong key decodes the header to garbage, and that failure ended the attempt instead of

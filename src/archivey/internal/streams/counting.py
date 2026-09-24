@@ -21,11 +21,28 @@ from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
+from archivey.internal.streams.streamtools.binaryio import (
+    _BLOCKING_READ_MESSAGE,
+    try_readinto,
+)
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
     from archivey.internal.measurement import ByteCounter, SeekCounter
+
+
+def _read_blocking(inner: BinaryIO, n: int) -> bytes:
+    """``inner.read(n)``, refusing the ``None`` a non-blocking stream returns.
+
+    ``None`` is "no data right now", never EOF; counting it as ``b""`` would fake an EOF,
+    and ``len(None)`` is a bare ``TypeError``. Same message as
+    :class:`~archivey.internal.streams.streamtools.BinaryIOWrapper`.
+    """
+    data = inner.read(n)
+    if data is None:
+        raise BlockingIOError(_BLOCKING_READ_MESSAGE)
+    return data
 
 
 class CountingReader(DelegatingStream):
@@ -48,17 +65,17 @@ class CountingReader(DelegatingStream):
         return self._bytes_read
 
     def read(self, n: int = -1, /) -> bytes:
-        data = self._inner.read(n)
+        data = _read_blocking(self._inner, n)
         self._bytes_read += len(data)
         return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        inner_readinto = getattr(self._inner, "readinto", None)
-        if inner_readinto is None:
-            # No inner readinto: DelegatingStream routes through self.read(), which already
-            # counts — so return its result without double-counting here.
+        n = try_readinto(self._inner, b)
+        if n is None:
+            # No usable inner readinto (missing, or advertised and refused):
+            # DelegatingStream routes through self.read(), which already counts — so
+            # return its result without double-counting here.
             return super().readinto(b)
-        n = inner_readinto(b)
         self._bytes_read += n
         return n
 
@@ -76,15 +93,15 @@ class OutputCountingStream(DelegatingStream):
         self._counter = counter
 
     def read(self, n: int = -1, /) -> bytes:
-        data = self._inner.read(n)
+        data = _read_blocking(self._inner, n)
         self._counter.add(len(data))
         return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        inner_readinto = getattr(self._inner, "readinto", None)
-        if inner_readinto is None:
+        n = try_readinto(self._inner, b)
+        if n is None:
+            # Same fallback as CountingReader: self.read() already counts.
             return super().readinto(b)
-        n = inner_readinto(b)
         self._counter.add(n)
         return n
 

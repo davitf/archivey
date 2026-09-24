@@ -70,6 +70,10 @@ def _decode_mbi(data: bytes, offset: int) -> tuple[int, int]:
         byte = data[offset + i]
         value |= (byte & 0x7F) << shift
         if not (byte & 0x80):
+            if byte == 0 and i > 0:
+                # XZ spec §1.2 requires the shortest encoding; liblzma rejects a
+                # trailing 0x00 byte, so the seek index does too.
+                raise CorruptionError("XZ index MBI is not minimally encoded")
             return value, i + 1
         shift += 7
     raise CorruptionError("XZ index MBI exceeds 9 bytes")
@@ -165,13 +169,55 @@ def _parse_xz_index(data: bytes) -> list[tuple[int, int]]:
         if unpadded_size == 0:
             raise CorruptionError("XZ index: unpadded_size must be > 0")
         records.append((unpadded_size, uncompressed_size))
+    # The footer's backward size fixes the index length, so the records plus padding
+    # must fill it exactly: fewer records than the index carries, or padding cut short,
+    # is a malformed index (liblzma, which does the decoding, rejects both).
     padded_len = _round_up_4(offset)
+    if padded_len != len(data):
+        raise CorruptionError(
+            f"XZ index length mismatch: records end at {padded_len}, "
+            f"index is {len(data)} bytes"
+        )
     for i in range(offset, padded_len):
-        if i < len(data) and data[i] != 0:
+        if data[i] != 0:
             raise CorruptionError(
                 f"XZ index padding byte {i} is non-zero: {data[i]:#04x}"
             )
     return records
+
+
+# Stream padding is scanned backwards this many bytes per read; a multiple of 4.
+_PADDING_SCAN_CHUNK = 64 * 1024
+
+
+def _skip_stream_padding_backwards(
+    stream: BinaryIO, compressed_end: int, stop_at: int
+) -> int:
+    """Return the end of the stream before any zero padding that ends at ``compressed_end``.
+
+    Stream padding (XZ spec §2.2) is 4-byte groups of zeros, aligned to the end being
+    walked back from, and unbounded on a well-formed file. Groups are tested in chunks of
+    :data:`_PADDING_SCAN_CHUNK`, not one ``seek`` + ``read(4)`` each. The result is the
+    offset just past the last group holding a non-zero byte, or a value ``<= stop_at``
+    when every group down to ``stop_at`` is zero. As with a group-at-a-time walk, the
+    lowest group may reach up to 3 bytes below ``stop_at``, and a group that would start
+    before offset 0 is an error.
+    """
+    while compressed_end > stop_at:
+        groups = -(-(compressed_end - stop_at) // 4)
+        groups = min(groups, _PADDING_SCAN_CHUNK // 4, compressed_end // 4)
+        if groups == 0:
+            raise CorruptionError("XZ file too small to contain a valid stream")
+        start = compressed_end - 4 * groups
+        stream.seek(start)
+        chunk = stream.read(4 * groups)
+        if len(chunk) < 4 * groups:
+            raise CorruptionError("XZ file truncated during backward scan")
+        nonzero_end = len(chunk.rstrip(b"\x00"))
+        if nonzero_end:
+            return start + _round_up_4(nonzero_end)
+        compressed_end = start
+    return compressed_end
 
 
 def _read_xz_index_backwards(
@@ -189,16 +235,7 @@ def _read_xz_index_backwards(
     compressed_end = file_size
 
     while compressed_end > stop_at:
-        while compressed_end > stop_at:
-            if compressed_end < 4:
-                raise CorruptionError("XZ file too small to contain a valid stream")
-            stream.seek(compressed_end - 4)
-            tail = stream.read(4)
-            if len(tail) < 4:
-                raise CorruptionError("XZ file truncated during backward scan")
-            if tail != b"\x00\x00\x00\x00":
-                break
-            compressed_end -= 4
+        compressed_end = _skip_stream_padding_backwards(stream, compressed_end, stop_at)
 
         if compressed_end <= stop_at:
             break

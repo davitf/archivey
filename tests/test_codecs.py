@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import importlib.util
 import io
+import random
 import re
 import zlib
 from pathlib import Path
@@ -312,6 +313,41 @@ def test_corrupt_unix_compress_translates_to_corruption() -> None:
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(bytes(corrupt))) as stream:
         with pytest.raises(CorruptionError):
             stream.read()
+
+
+def test_unix_compress_empty_source_raises() -> None:
+    """Zero bytes is a .Z with no header, as it already was for one or two bytes."""
+    for data in (b"", b"\x1f", b"\x1f\x9d"):
+        with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(data)) as stream:
+            with pytest.raises(CorruptionError, match="missing header"):
+                stream.read()
+
+
+@requires("ncompress")
+def test_unix_compress_needs_input_is_false_only_when_progress_is_possible() -> None:
+    """``needs_input`` False promises that ``feed(b"")`` makes progress.
+
+    Fed a byte at a time, the decoder is in a partial header, and at CLEAR padding still
+    owed with nothing buffered; neither can progress, so both must report True.
+    """
+    from archivey.internal.streams.unix_compress import LzwState
+
+    # Enough output that the stream carries CLEARs (dictionary resets).
+    data = random.Random(7).randbytes(300_000)
+    compressed = make_unix_compress(data)
+    state = LzwState()
+    out = bytearray()
+    for i in range(len(compressed)):
+        out += state.feed(compressed[i : i + 1])[0]
+        while not state.needs_input:
+            before = (len(state._buf), state._pending_skip)
+            chunk = state.feed(b"")[0]
+            assert chunk or (len(state._buf), state._pending_skip) != before, (
+                f"no-op feed at byte {i}"
+            )
+            out += chunk
+    out += state.flush()[0]
+    assert bytes(out) == data
 
 
 @requires("ncompress")
