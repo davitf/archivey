@@ -357,6 +357,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
 
     import archivey.internal.backends.iso_reader as iso_reader
     import archivey.internal.backends.rar_reader as rar_reader
+    import archivey.internal.backends.zip_aes as zip_aes
     import archivey.internal.detection as detection
     import archivey.internal.source as source_mod
     import archivey.internal.streams.archive_stream as archive_stream
@@ -368,7 +369,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.streams.streamtools.slice as slice_mod
     import archivey.internal.streams.streamtools.solid as solid
     import archivey.internal.streams.verify as verify
-    import archivey.internal.zip_aes as zip_aes
 
     forwards_or_owns = {
         archive_stream.ArchiveStream,

@@ -107,7 +107,7 @@ check can validate the way a local header can, and the survey in
 [`topics/prefixed-archives.md`](../topics/prefixed-archives.md) §4 found every `PK\x05\x06`
 match in a binary to be a string constant parsing to nonsense.
 
-A local-header hit is confirmed by `validate_zip_local_header` (`internal/zip_detect.py`)
+A local-header hit is confirmed by `validate_zip_local_header` (`internal/backends/zip_detect.py`)
 before it is reported: version-needed in range, no reserved general-purpose bits, a known
 method id, a non-empty name, and name+extra within the source.
 
@@ -596,8 +596,8 @@ fixture would skip on every machine that matters and prove nothing about the ref
 - Specs: [`format-zip`](../../openspec/specs/format-zip/spec.md) ·
   [`compressed-streams`](../../openspec/specs/compressed-streams/spec.md) ·
   [`format-detection`](../../openspec/specs/format-detection/spec.md)
-- Code: `internal/backends/zip_reader.py` · `internal/zip_detect.py` ·
-  `internal/zipcrypto.py` · `internal/zip_aes.py` · `internal/volumes.py` (numbered-part
+- Code: `internal/backends/zip_reader.py` · `internal/backends/zip_detect.py` ·
+  `internal/backends/zipcrypto.py` · `internal/backends/zip_aes.py` · `internal/volumes.py` (numbered-part
   discovery and joining, shared with 7z)
 - Investigations: [`archive-format-detection-algorithm.md`](../investigations/archive-format-detection-algorithm.md)
   (tail-tier design, corpus counts) ·

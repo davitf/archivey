@@ -364,26 +364,26 @@ encrypted 7z folder; [#344](https://github.com/davitf/archivey/pull/344) added `
 on a short final block. The "are the three decrypt streams mergeable?" half is answered in the
 class docstring and promoted to `fold-rar-header-decrypt-stream` in #347.
 
-The 5 of this cohort that remain (the five `solid.py` rows and the three `sevenzip_reader.py` rows are done). `*` marks a thread whose follow-up narrowed it.
+The 3 of this cohort that remain (the five `solid.py` rows, the three `sevenzip_reader.py` rows and the two placement threads are done). `*` marks a thread whose follow-up narrowed it.
 
 | File | Open | Threads | Character |
 | --- | --- | --- | --- |
 | ~~`streamtools/solid.py`~~ | 0 | five from 2026-09-14 | **Done** — [#439](https://github.com/davitf/archivey/pull/439): `_drain_chunks` folded into `skip_forward` (per-chunk `on_chunk` callback), `_skip_to` inlined, redundant check dropped, `_claim_offset` renamed `_check_can_open_at`, "Vend" reworded |
 | ~~`backends/sevenzip_reader.py`~~ | 0 | 51\*, 53, 54 | **Done** — [#440](https://github.com/davitf/archivey/pull/440): `_folder_unpack_size` renamed `_folder_members_total_size`, the timestamp aliases dropped from the 7z and ZIP readers, one `SlicingStream` call in `_open_member`. 51's substream-count half was closed by #424 |
-| `zip_aes.py` | 2 | 14, 15 | Placement, and the one live layering violation |
+| `backends/zip_aes.py` | 1 | 15 | The one live layering violation; 14 (placement) was closed by the move in [#PRNUM](https://github.com/davitf/archivey/pull/PRNUM) |
 | `volumes.py` | 1 | 12 | The docstring half; 13 was closed by #374 |
-| `rar_detect.py` | 1 | 10 | Placement — same decision as 14 |
+| ~~`rar_detect.py`~~ | 0 | 10 | **Done** — [#PRNUM](https://github.com/davitf/archivey/pull/PRNUM) moved it under `backends/` |
 | `reader_state.py` | 1 | 11 | "I can't even begin to review it." Explanation, not code |
 
-**Threads 10 and 14 have their answer; the move has not happened.** They asked whether
+**Threads 10 and 14 are done: the move landed in [#PRNUM](https://github.com/davitf/archivey/pull/PRNUM).** They asked whether
 `rar_detect.py`, `zip_detect.py`, `sevenzip_detect.py`, `zip_aes.py` and `zipcrypto.py` should
 move under `backends/` or into a new detection package. **Decided 2026-09-19: `backends/`**,
 with the rationale written down for the first time — a format's detection code is similar to
 and often shares logic with its parsing code, so keeping them together keeps them in sync. The
 axis is per format, not per phase, which is also why the `internal/detection/` alternative was
 rejected. `detection.py`, `detection_workspace.py` and `sfx.py` stay where they are, being
-format-agnostic. **Five modules and every importer move together, and none of it has landed** —
-the threads stay open until the move PR does, and this row is the one to fix when it lands.
+format-agnostic. The five modules now live in `internal/backends/`, every importer with them;
+`internal/` holds 23 top-level modules instead of 28.
 
 **Thread 15 is the only live defect in these, and it is a layering one.** `zip_aes.py:99`
 imports `cryptography` directly, under a comment that reads *"Local import: only the crypto
@@ -879,9 +879,8 @@ bounded-password-confirmation ──> sevenzip-aes-tail-key-check ──> O12 cl
 
 #315 Wave 1 + parcels A–E + the 09-20..23 fixes ──> DONE (98 of 209 threads resolved)
         │
-        ├──> parcel F (placement + odds)   ready; threads 10/14 ANSWERED (-> backends/),
-        │       │                          so what is left is the move itself
-        │       └──> five top-level modules move under backends/, importers with them
+        ├──> parcel F (placement + odds)   threads 10/14 DONE: the five modules moved
+        │                                  under backends/ (#PRNUM)
         ├──> five solid.py naming questions from 09-14   no parcel, no owner
         └──> S15-S25 drain   92 threads
                 ├──> 13 waiting on a ruling (one decision item, taken one at a time)
@@ -1128,7 +1127,7 @@ Thread 56 (the post-drain orphan) closed with [#365](https://github.com/davitf/a
 | ~~C — binaryio + solid~~ | `binaryio.py`, `solid.py` | 22, 23, 25, 26, 40, 41, 55 | **Done** — [#329](https://github.com/davitf/archivey/pull/329) |
 | ~~D — RAR parser~~ | `backends/rar_parser.py` | 1, 2, 4, 5, 6, 7, 8, 9 | **Done** — [#332](https://github.com/davitf/archivey/pull/332). Threads 1 and 2 were the two possible header-decrypt bugs; both measured against fixtures and neither was one |
 | ~~E — RAR reader~~ | `backends/rar_reader.py` | 43, 44, 46, 47, 48, 49 | **Done** — [#336](https://github.com/davitf/archivey/pull/336) |
-| **F — placement + odds** | `rar_detect.py`, `zip_aes.py`, `volumes.py`, `reader_state.py` | 10, 11, 12, 14, 15 | **Ready, and unblocked.** Five threads. 51, 53 and 54 were closed by [#440](https://github.com/davitf/archivey/pull/440), 13 by #374, and thread 3 left when #342 answered it. **Threads 10/14 were answered on 2026-09-19 (`backends/`)**, so the placement is no longer a question; the move itself is the work, and it is what makes the rest mechanical |
+| **F — placement + odds** | `zip_aes.py`, `volumes.py`, `reader_state.py` | 11, 12, 15 | **Placement done** ([#PRNUM](https://github.com/davitf/archivey/pull/PRNUM): threads 10/14, the five modules under `backends/`). Three threads left. 51, 53 and 54 were closed by [#440](https://github.com/davitf/archivey/pull/440), 13 by #374, and thread 3 left when #342 answered it. **Threads 10/14 were answered on 2026-09-19 (`backends/`)** and the move has landed |
 | ~~(orphan)~~ | `streamtools/base.py` | 56 | **Done** — [#365](https://github.com/davitf/archivey/pull/365), merged 2026-09-21. Both flags now use the class-flag-plus-constructor-override pattern `_SUBCLASS_CLOSES_INNER` already had |
 | ~~(new)~~ | five `solid.py` questions from 2026-09-14 | — | **Done** — [#439](https://github.com/davitf/archivey/pull/439), together with S18-K8 (two asserts in `ArchiveStream._collapse_nested`) |
 

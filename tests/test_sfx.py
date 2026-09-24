@@ -37,14 +37,17 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import RAR5_ID, RAR_ID
 from archivey.internal.backends.rar_reader import RarReadBackend
+from archivey.internal.backends.sevenzip_detect import (
+    validate_sevenzip_signature_header,
+)
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z, find_signature_offset
 from archivey.internal.backends.sevenzip_reader import SevenZipReadBackend
+from archivey.internal.backends.zip_detect import validate_zip_local_header
 from archivey.internal.backends.zip_reader import ZipReadBackend
 from archivey.internal.password import _PasswordCandidates
-from archivey.internal.rar_detect import validate_rar_main_header
-from archivey.internal.sevenzip_detect import validate_sevenzip_signature_header
 
 # Chunk-boundary tests need the real trim size.
 from archivey.internal.sfx import (
@@ -65,7 +68,6 @@ from archivey.internal.streams.brotli_framing import (
     parse_metablock,
 )
 from archivey.internal.streams.streamtools.slice import SlicingStream
-from archivey.internal.zip_detect import validate_zip_local_header
 from archivey.types import ArchiveFormat
 from tests.conftest import requires, requires_binary
 from tests.streams_util import NonSeekableBytesIO, brotli_compressed_metablock_header

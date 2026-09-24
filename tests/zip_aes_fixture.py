@@ -13,7 +13,7 @@ import struct
 import zlib
 from collections.abc import Sequence
 
-from archivey.internal.zip_aes import WinZipAesInfo, derive_winzip_aes_keys
+from archivey.internal.backends.zip_aes import WinZipAesInfo, derive_winzip_aes_keys
 
 
 def aes_ctr_le_encrypt(key: bytes, plaintext: bytes) -> bytes:
