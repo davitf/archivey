@@ -366,6 +366,21 @@ def red_on_base(base: str, test_ids: list[str]) -> int:
                 "Run it in the project's environment: "
                 "uv run python scripts/review_prep.py red-on-base ..."
             )
+        # The project environment also has this branch's archivey installed. PYTHONPATH
+        # outranks an editable install's path entry but not a meta-path finder, and the
+        # latter would measure the branch and call every test "passes". Check, not assume.
+        where = subprocess.run(
+            [sys.executable, "-c", "import archivey; print(archivey.__file__)"],
+            cwd=tree,
+            env=env,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if not Path(where).resolve().is_relative_to((tree / "src").resolve()):
+            sys.exit(
+                f"red-on-base: `import archivey` resolves to {where or 'nothing'}, "
+                f"not the merge base's {tree / 'src'}; the table would measure the wrong code."
+            )
         rows: list[tuple[str, str]] = []
         for test_id in test_ids:
             proc = subprocess.run(

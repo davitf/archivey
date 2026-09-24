@@ -166,13 +166,12 @@ Standard repo rules apply — they are not relaxed because the change is review-
 - **Check every "every", "all", "never", "always" and "only" you write.** A comment,
   docstring, spec line or CHANGELOG entry with one of those words is a claim about every
   path, and the path you were looking at is one of them. Check it against the axes this
-  repo's claims keep failing on — the seven backends (ZIP, 7z, RAR, TAR, ISO, directory, single-file
-  compressors),
-  streaming vs random access, seekable vs non-seekable sources, detection probes vs the
-  reader, and Python 3.11 — or narrow the sentence to what you checked. Claims wider than
-  the code were 33 findings in the same window: "the LZMA dictionary is capped" while
-  detection probes ran uncapped, "every diagnostic" while 24 of 29 emit sites used their
-  own logger.
+  repo's claims keep failing on — the seven backends (ZIP, 7z, RAR, TAR, ISO, directory,
+  single-file compressors), streaming vs random access, seekable vs non-seekable
+  sources, detection probes vs the reader, and Python 3.11 — or narrow the sentence to
+  what you checked. Claims wider than the code were 33 findings in the same window: "the
+  LZMA dictionary is capped" while detection probes ran uncapped, "every diagnostic"
+  while 24 of 29 emit sites used their own logger.
 - **Contract moves ⇒ spec and docs move with it**, in the same PR. If a fix contradicts
   `openspec/specs/`, the threat model, or a published doc, that is a §6 escalation, not a
   silent divergence.
@@ -382,9 +381,9 @@ Reply once per round, not once per fix.
 
 **Then ask for the next round, if the review asked to see the fixes.** The round's
 closing comment says which: when it asks for them, run `scripts/review_prep.py` over the
-fixes (§5), then add the `review` label after your final push, which starts the next round of the
-[review loop](../../../dev-docs/review-loop.md). It is the last thing you do — a commit
-pushed after it may not be in what gets reviewed.
+fixes (§5), then add the `review` label after your final push, which starts the next
+round of the [review loop](../../../dev-docs/review-loop.md). It is the last thing you
+do — a commit pushed after it may not be in what gets reviewed.
 
 ```bash
 gh pr edit <number> --add-label review
