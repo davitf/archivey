@@ -591,15 +591,25 @@ def source_size_fact(source: object) -> int | None:
 def is_stream(obj: object) -> TypeGuard[BinaryIO]:
     """Whether ``obj`` already satisfies the ``BinaryIO`` interface we rely on.
 
-    ``io.RawIOBase`` / ``io.BufferedIOBase`` instances qualify directly.
+    ``io.RawIOBase`` / ``io.BufferedIOBase`` instances qualify when they are readable.
     ``io.TextIOBase`` (``TextIOWrapper``, ``StringIO``) does not — ``read()``
-    returns ``str``, not ``bytes``. Anything else must expose the full method
-    set in :data:`_IO_METHODS` and a ``closed`` attribute.
+    returns ``str``, not ``bytes`` — and neither does a write-only handle such as
+    ``open(path, "wb")``. A closed handle still qualifies: it is a binary stream, and
+    its first read reports the closed file. Anything else must expose the full
+    method set in :data:`_IO_METHODS` and a ``closed`` attribute.
+
+    The duck-typed branch checks names, not return types, so a duck whose ``read()``
+    returns ``str`` passes. That is a caller bug this does not catch: proving
+    ``bytes`` would take a read, and this runs before anything may be consumed.
     """
     if isinstance(obj, io.TextIOBase):
         return False
     if isinstance(obj, io.IOBase):
-        return True
+        try:
+            return obj.readable()
+        except ValueError:
+            # ``readable()`` on a closed handle raises; see the docstring.
+            return True
     if is_filename(obj):
         return False
     if not all(callable(getattr(obj, m, None)) for m in _IO_METHODS):
@@ -630,6 +640,13 @@ def reject_source(obj: object) -> NoReturn:
     by the time it gets here — keeps a call the type checkers can see never returns.
     """
     raise_if_text_stream(obj)
+    if isinstance(obj, io.IOBase):
+        # Only a readable-false handle gets here: is_stream accepts every other
+        # binary IOBase.
+        raise TypeError(
+            f"{type(obj).__name__} is not open for reading; a readable binary source "
+            f"is required (open the file with mode 'rb')"
+        )
     raise TypeError(f"unsupported source type: {type(obj)!r}")
 
 
