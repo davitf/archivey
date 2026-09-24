@@ -1113,7 +1113,73 @@ def test_a_degraded_seek_index_reaches_the_readers_collector(
         with reader.open(reader.members()[0]) as stream:
             with pytest.raises(DiagnosticRaisedError) as info:
                 stream.seek(500)
+            # The raise came after the seek finished: a caller who catches it still
+            # has a working handle at the position it asked for.
+            assert stream.tell() == 500
+            assert stream.read() == data[500:]
     assert info.value.diagnostic.code is DiagnosticCode.SEEK_INDEX_DEGRADED
+
+    with open_archive(path, config=strict, seekable_members=True) as reader:
+        with reader.open(reader.members()[0]) as stream:
+            with pytest.raises(DiagnosticRaisedError):
+                stream.seek(0, io.SEEK_END)
+            stream.seek(0)
+            assert stream.read() == data
+
+
+def _strict_collector() -> Any:
+    from archivey import DiagnosticPolicy
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+
+    return DiagnosticCollector(policy=DiagnosticPolicy.strict())
+
+
+@pytest.mark.parametrize("n", [-1, 700])
+def test_a_raise_mid_read_keeps_the_decoded_bytes(small_seek_cap: int, n: int) -> None:
+    """Thinning escalates halfway through a read; nothing it decoded is lost.
+
+    The read raises before it consumes, so the next reads return every byte in order
+    and the stream's size stays the real one, not the length read so far.
+    """
+    from archivey.exceptions import DiagnosticRaisedError
+
+    compressed = make_multi_member_lzip(LZIP_PARTS)
+    full = b"".join(LZIP_PARTS)
+    with LzipDecompressorStream(
+        io.BytesIO(compressed), collector=_strict_collector()
+    ) as stream:
+        pieces: list[bytes] = []
+        with pytest.raises(DiagnosticRaisedError):
+            while chunk := stream.read(n):
+                pieces.append(chunk)
+        pieces.append(stream.read())
+        assert b"".join(pieces) == full
+        assert stream.tell() == len(full)
+        stream.seek(0)
+        assert stream.read() == full
+        assert stream.seek(0, io.SEEK_END) == len(full)
+
+
+@pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
+def test_a_raise_from_the_xz_per_stream_scan_leaves_the_decoder_consistent(
+    small_seek_cap: int,
+) -> None:
+    """The per-stream scan reports from inside the decoder's feed; held, it cannot
+    leave the decoder's stream cursors behind the bytes it already decoded."""
+    from archivey.exceptions import DiagnosticRaisedError
+
+    rng = random.Random(6)
+    parts = [rng.randbytes(4096), rng.randbytes(20 * 4096), rng.randbytes(4096)]
+    compressed = b"".join(make_multiblock_xz(p, block_size=4096) for p in parts)
+    full = b"".join(parts)
+    with XzDecompressorStream(
+        io.BytesIO(compressed), collector=_strict_collector()
+    ) as stream:
+        with pytest.raises(DiagnosticRaisedError):
+            stream.read()
+        assert stream.read() == full
+        stream.seek(4096 + 50_000)
+        assert stream.read() == full[4096 + 50_000 :]
 
 
 @requires("ncompress")

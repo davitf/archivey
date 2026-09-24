@@ -2076,6 +2076,8 @@ class CodecBackend:
 
     Returned by :func:`resolve_codec` so callers can obtain (and reuse) the backend
     without opening a stream — the "backend dispatch is separable from opening" contract.
+    Reuse it only within the scope of ``config.collector``: a backend resolved with a
+    reader's collector reports every stream it opens into that reader.
     """
 
     codec: Codec
