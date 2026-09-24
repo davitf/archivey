@@ -696,3 +696,33 @@ def test_over_budget_receipt_always_names_a_cut_short_tier(
     assert receipt.within_budget(budget) or any(
         s.reason in incomplete for s in info.unavailable_tiers
     ), (receipt, info.unavailable_tiers)
+
+
+@pytest.mark.parametrize("budget_name", ["balanced", "fast", "thorough", "tight"])
+def test_two_pass_receipt_over_budget_also_names_a_cut_short_tier(
+    tmp_path: Path, budget_name: str
+) -> None:
+    # The same invariant over the one receipt that sums two passes: a stub-only
+    # ``vol.exe`` followed to its sibling ``vol.7z.001``.
+    from archivey.detection_cost import FAST_BUDGET
+
+    budget = {
+        "balanced": BALANCED_BUDGET,
+        "fast": FAST_BUDGET,
+        "thorough": THOROUGH_BUDGET,
+        "tight": _tight_budget(),
+    }[budget_name]
+    (tmp_path / "vol.exe").write_bytes(_mz_stub_bytes())
+    (tmp_path / "vol.7z.001").write_bytes(b"7z\xbc\xaf\x27\x1c" + b"\x00" * 8192)
+    info = detect_format(tmp_path / "vol.exe", budget=budget)
+    assert info.format == ArchiveFormat.SEVEN_Z
+    receipt = info.cost_receipt
+    assert receipt is not None
+    assert receipt.passes == 2
+    incomplete = {
+        TierSkipReason.BUDGET_EXHAUSTED,
+        TierSkipReason.CAPABILITY_UNAVAILABLE,
+    }
+    assert receipt.within_budget(budget) or any(
+        s.reason in incomplete for s in info.unavailable_tiers
+    ), (receipt, info.unavailable_tiers)

@@ -730,6 +730,15 @@ def _detect_format_body(
                         _ConflictEvidence.SFX_SCAN,
                     )
                     return _attach_receipt(sfx_info, workspace)
+                # A miss in a window the budget made shorter than ``SFX_MAX`` is a
+                # search cut short, unless the source ends inside the window anyway.
+                # Under a budget as wide as ``SFX_MAX`` the structural bound stopped
+                # the scan, not the budget.
+                source_len = workspace.remaining_known()
+                if budget.max_scan_bytes < SFX_MAX and (
+                    source_len is None or source_len > scan_limit
+                ):
+                    workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
 
         # 3. Far magic (ISO's CD001 at offset 32 769). A signature that ends past
         # ``max_far_bytes`` cannot match in the clamped window, so it is dropped and the

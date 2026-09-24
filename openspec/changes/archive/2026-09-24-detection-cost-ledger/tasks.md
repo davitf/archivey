@@ -13,6 +13,8 @@
 - [x] 1.5 `within_budget` compares `far_bytes` with `max_far_bytes`.
 - [x] 1.6 The receipt carries `passes`; `within_budget` scales every limit by it, and a
       repeated skip is kept once.
+- [x] 1.7 An SFX miss in a budget-shortened window records `sfx_scan` as budget
+      exhausted, unless the source ends inside the window.
 
 ## 2. Proof
 

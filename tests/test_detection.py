@@ -1169,3 +1169,40 @@ def test_inner_tar_probe_is_off_when_the_decode_budget_is_zero() -> None:
         s.tier == "inner_tar" and s.reason is TierSkipReason.NOT_ENABLED_BY_POLICY
         for s in info.unavailable_tiers
     )
+
+
+def test_sfx_miss_in_a_budget_shortened_window_records_the_scan_as_cut_short(
+    tmp_path: Path,
+) -> None:
+    # Round 2 review: a FAST scan (256 KiB) missed a payload at 1 MiB and recorded
+    # nothing, so the extension guess read as a complete search.
+    from archivey.detection_cost import (
+        BALANCED_BUDGET,
+        FAST_BUDGET,
+        TierSkip,
+        TierSkipReason,
+    )
+
+    path = tmp_path / "x.zip"
+    path.write_bytes(b"MZ" + b"\x00" * (1024 * 1024 - 2) + _zip_bytes())
+    cut_short = TierSkip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
+
+    balanced = detect_format(path, budget=BALANCED_BUDGET)
+    assert balanced.detected_by == "sfx_scan"
+    assert cut_short not in balanced.unavailable_tiers
+
+    fast = detect_format(path, budget=FAST_BUDGET)
+    assert fast.detected_by == "extension"
+    assert cut_short in fast.unavailable_tiers
+
+
+def test_sfx_miss_in_a_source_shorter_than_the_window_is_not_cut_short(
+    tmp_path: Path,
+) -> None:
+    from archivey.detection_cost import FAST_BUDGET
+
+    path = tmp_path / "stub.zip"
+    path.write_bytes(b"MZ" + b"\x00" * 8190)
+    info = detect_format(path, budget=FAST_BUDGET)
+    assert info.detected_by == "extension"
+    assert not any(s.tier == "sfx_scan" for s in info.unavailable_tiers)

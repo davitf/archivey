@@ -183,8 +183,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `DetectionBudget` the inner-TAR probe still decoded up to 1 MiB, and a content probe on
   an `ArchiveStream` could buffer 1 MiB, so the receipt failed its own `within_budget`
   check with no skipped tier to explain it. Both now stay inside the budget and record
-  the tier as budget-exhausted when they are cut short, as does a far signature past
-  `max_far_bytes`. A failed inner-TAR decode is now charged, `within_budget` also checks
+  the tier as budget-exhausted when they are cut short, as do a far signature past
+  `max_far_bytes` and an SFX scan that misses in a window the budget shortened. A failed inner-TAR decode is now charged, `within_budget` also checks
   `far_bytes`, and a stub `.exe` followed to its split volume reports both passes' cost
   with `passes=2`, judged against two budgets.
 

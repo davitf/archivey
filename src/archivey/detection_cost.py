@@ -197,6 +197,8 @@ class DetectionCostReceipt:
         receipt that followed a stub to its sibling volume is judged against two
         budgets, the work each pass was allowed.
         """
+        # ``passes`` is 1 or 2 from ``detect_format``; a receipt built by hand can
+        # carry anything, and fewer than one pass is judged as one.
         n = max(1, self.passes)
         probe_allowance = budget.max_probe_links * _PROBE_HEADER_READ_BYTES
         return (
