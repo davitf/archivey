@@ -1,16 +1,17 @@
 # Deep reviews (`review/`) — when the skill expands into a brief
 
-> Loaded only for a **commissioned deep review**, not for ordinary PR review. The
-> addendum's §6 points here. Everything else about reviewing in this repo stays in
-> [`archivey-review-addendum.md`](archivey-review-addendum.md), and **`§N` below means a
-> section of that file**, not of this one.
+> Loaded only for a **commissioned deep review**, not for ordinary PR review
+> ([`SKILL.md`](../SKILL.md) §1 routes here). Reporting, severity and posting stay in
+> `SKILL.md`; the code checklists are in [`code-pr.md`](code-pr.md).
 
 A commissioned deep review inherits
 [`review/README.md`](../../../../review/README.md):
 
-1. **Baseline first** — record green gates (pytest / skips, pyrefly, ty, ruff) and
-   which dependency config. Overrides §10's no-re-run default — no CI run to inherit.
-2. **VISION ranking** — order findings by load-bearing claims (§1).
+1. **Baseline first** — record green gates (pytest / skips, pyrefly, ty, ruff) and which
+   dependency config. Overrides the no-re-run default (`SKILL.md` §6) — no CI run to
+   inherit.
+2. **VISION ranking** — order findings by load-bearing claims (`code-pr.md` §What you are
+   reviewing).
 3. **Deliverable shape** — `SUMMARY.md` (headline + severity table + status), theme
    files, `QUESTIONS.md` for maintainer decisions, and a **“what is actually fine”**
    section.

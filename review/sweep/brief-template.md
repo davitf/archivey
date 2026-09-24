@@ -52,8 +52,8 @@ as replies on its existing threads rather than as new ones].
 
 ## Before you start, read
 
-- `.claude/skills/code-review-skill/reference/archivey-review-addendum.md` — always, per the
-  skill. §0 is the output shape, §7 the severity mapping, §10 the posting rules **and the
+- `.claude/skills/code-review-skill/SKILL.md` — always: §3 is the output shape, §5 the
+  severity mapping, §6 the posting rules. Then `reference/whole-file-sweep.md` for **the
   `SWEPT` marker you owe for every file**.
 - `dev-docs/formats/<format>.md` — the handbook page, if the subsystem has one. A finding that
   contradicts a §6 decision is a finding about the decision, not about the code — say so.
@@ -81,8 +81,8 @@ The skill's own checklist governs. Weight these at every read:
 
 - **Report findings; edit nothing.** The fixes go to a separate agent via
   `.claude/skills/address-review-findings/`.
-- **Do not re-run the gates** (addendum §10). Run a command only when the review needs a
-  result CI cannot give, and say exactly what you ran.
+- **Do not re-run the gates** (`code-review-skill` `SKILL.md` §6). Run a command only
+  when the review needs a result CI cannot give, and say exactly what you ran.
 - **Size the output honestly.** Roughly 2 000 lines producing three to twelve findings is the
   measured range; forty means the bar slipped. Every finding carries a severity *and* a
   confidence tag (`CONFIRMED` / `PLAUSIBLE` / `DISPROVEN`).
@@ -114,7 +114,7 @@ severity × confidence, (3) maintainer decisions. Addendum §10 has the mechanic
   location-less findings.
 - **Do not hold the findings until the end.** Post file by file, in scope-table order, so a
   run that stops early still leaves everything it found behind.
-- Open every comment with its header and the agent line (addendum §"Open every comment
+- Open every comment with its header and the agent line (`SKILL.md` §6 "Open every comment
   with a header"). A `SWEPT` marker comment is the exception: the marker line is its
   opener, and already carries the reviewer and the head. Attribution per §10 — add your own
   footer if your host does not.

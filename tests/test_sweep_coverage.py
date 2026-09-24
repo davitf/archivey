@@ -43,7 +43,7 @@ def marker(
     dash: str = "—",
     extra: str = "",
 ) -> str:
-    """One marker line in the shape addendum §10 defines."""
+    """One marker line in the shape `whole-file-sweep.md` defines."""
     return (
         f"**SWEPT** `{path}` {dash} pass={batch} date={date} lines={lines} "
         f"findings={findings} ids={ids} reviewer={reviewer} head={head}{extra}"

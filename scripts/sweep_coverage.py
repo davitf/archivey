@@ -9,7 +9,7 @@ opened. Both snapshots also counted fifteen maintainer questions as sweep output
 
 So a sweep now posts one top-level comment per file it finishes, whose first line is a
 machine-readable marker (the shape lives in
-`.claude/skills/code-review-skill/reference/archivey-review-addendum.md` §10):
+`.claude/skills/code-review-skill/reference/whole-file-sweep.md`):
 
     **SWEPT** `src/archivey/internal/backends/zip_reader.py` — pass=S1 date=2026-09-17 \
 lines=1612 findings=3 ids=S1-F1,S1-F2,S1-F3 reviewer=cursor head=94468bd

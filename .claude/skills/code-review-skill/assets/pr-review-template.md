@@ -1,7 +1,7 @@
 # PR Review Template
 
 The fill-in form for a review in this repo. **The rules are not here** — they are in
-[addendum §0](../reference/archivey-review-addendum.md) (output shape, verdicts, round
+[`SKILL.md` §3–§4](../SKILL.md) (output shape, verdicts, round
 budget, severity × confidence) and §10 (posting, IDs, headers, re-reviews). This file is a
 shape to copy, and is deliberately not a second copy of §0.
 

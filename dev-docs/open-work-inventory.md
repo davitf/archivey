@@ -666,8 +666,8 @@ that is the one dependency worth honouring.
 **From the `SWEPT` markers on #315, never from thread counts.** Every file a sweep finishes
 reading gets one top-level comment on #315 whose first line is a machine-readable marker —
 path, batch, date, line count, finding count. The shape is defined in
-[`archivey-review-addendum.md`](../.claude/skills/code-review-skill/reference/archivey-review-addendum.md)
-§10, and [`scripts/sweep_coverage.py`](../scripts/sweep_coverage.py) does the arithmetic:
+[`whole-file-sweep.md`](../.claude/skills/code-review-skill/reference/whole-file-sweep.md),
+and [`scripts/sweep_coverage.py`](../scripts/sweep_coverage.py) does the arithmetic:
 
 ```
 for p in 1 2 3; do \

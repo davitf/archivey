@@ -29,7 +29,7 @@ one.
 **The two failure modes this skill exists to prevent:**
 
 1. **Silent dropping.** A finding you neither fixed nor answered is worse than one you
-   argued with. The reviewer over-reports on purpose (addendum §0); the filter is a
+   argued with. The reviewer over-reports on purpose (`code-review-skill` `SKILL.md` §2); the filter is a
    disposition, not silence.
 2. **Credulous fixing.** Taking a reviewer at face value and "fixing" something that was
    never broken. Automated reviewers produce false positives here regularly — on #232 one
@@ -103,7 +103,7 @@ For each one, the disposition is exactly one of:
 it is fixed on this PR, or the maintainer waives it explicitly and you record that waiver
 as theirs (§6). "Leave it for a follow-up" is not something you may choose — nobody comes
 back for it and the next agent starts with no memory of this round. The reviewer's side of
-this rule is [addendum §0 Verdicts](../code-review-skill/reference/archivey-review-addendum.md);
+this rule is [`code-review-skill` §4 Verdicts](../code-review-skill/SKILL.md);
 they match deliberately, and where you think a nit really is out of scope, that is an
 escalation (§6), not a disposition.
 
@@ -113,7 +113,7 @@ standing ruling (#342, #344, #349), not a scope question to re-ask. What is genu
 of scope is a *sweep*: the same mistake across files this PR does not touch, or a rename
 rippling through specs and archived changes (#339, #353). Defer that, with a written home.
 
-**A disproven finding is rarely nothing.** The addendum's routing rule runs in this
+**A disproven finding is rarely nothing.** The review skill's routing rule runs in this
 direction too: if a careful reviewer read this code and concluded it was broken, ask why.
 Usually the answer is that the code is not self-documenting, which makes it 🟡 doc-debt —
 a comment or an assertion that encodes the invariant, not a shrug. "Deferred" without a
@@ -338,7 +338,7 @@ Once the round is done, the PR should record what happened to every finding.
 - **Reply in the thread the finding came from.** An inline finding gets an inline reply.
   A top-level review gets a top-level reply listing one bullet per finding, keyed by the
   reviewer's own numbering. **Bullets, not a table** — same rule and same reason as the
-  reviewer's side ([addendum §0](../code-review-skill/reference/archivey-review-addendum.md)):
+  reviewer's side ([`code-review-skill` §2](../code-review-skill/SKILL.md)):
   the maintainer reads these on a phone. Keep each bullet to a line; anything longer is a
   reply on that finding's own thread, where whoever cares is already looking.
 - **Resolve the threads you actually resolved** (`resolve_review_thread`). Leave open the
@@ -355,7 +355,7 @@ Once the round is done, the PR should record what happened to every finding.
 - **Open every posted comment with a header, then the attribution line.** The heading says
   what the reader is looking at before they read anything; the line says an agent wrote it.
   Same rule as the reviewer's side
-  ([addendum §10](../code-review-skill/reference/archivey-review-addendum.md) "Open every
+  ([`code-review-skill` §6](../code-review-skill/SKILL.md) "Open every
   comment with a header"), with the round's outcome in place of a verdict:
 
   ```
@@ -376,7 +376,7 @@ Once the round is done, the PR should record what happened to every finding.
   is deduplicated on comments but *not* on a review body, which then shows it twice). Hosts
   whose posting path does not append one — Cursor among them — must still add their own.
   Full rule and the check to run if you are unsure:
-  [addendum §10](../code-review-skill/reference/archivey-review-addendum.md).
+  [`code-review-skill` §6](../code-review-skill/SKILL.md).
 
 Reply once per round, not once per fix.
 
