@@ -334,6 +334,9 @@ class ArchiveStream(ReadOnlyIOStream):
         if self._verifier is None and nested._verifier is not None:
             self._verifier = nested._verifier
             nested._verifier = None
+        # Neutralizing ``nested`` below skips its close(), so a verifier left on it
+        # would never run. No path fuses a verifier into both wrappers today.
+        assert nested._verifier is None, "collapse would discard a nested verifier"
 
         with nested._open_lock:
             open_fn = nested._open_fn
@@ -341,7 +344,9 @@ class ArchiveStream(ReadOnlyIOStream):
             nested._open_fn = None
             nested._inner = None
         nested._detach_finalizer()
-        nested._on_close = None
+        # Only the handle returned to the caller gets a lease hook; a nested wrapper
+        # is backend-internal and never registered, so there is nothing to drop.
+        assert nested._on_close is None, "collapse would discard a nested lease hook"
         # Mark closed without touching stolen opener/inner.
         super(ArchiveStream, nested).close()
 

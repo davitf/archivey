@@ -25,7 +25,7 @@ member access via ``_drive_pass_streams(close_previous=True)``, so no public
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable
 from typing import BinaryIO
 
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
@@ -33,27 +33,28 @@ from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 _SKIP_CHUNK = 1 << 20  # 1 MiB
 
 
-def _drain_chunks(stream: BinaryIO, count: int) -> Iterator[int]:
-    """Yield the length of each chunk read while discarding up to ``count`` bytes."""
+def skip_forward(
+    stream: BinaryIO,
+    count: int,
+    *,
+    on_chunk: Callable[[int], None] | None = None,
+) -> None:
+    """Read and discard exactly ``count`` bytes from a forward-only ``stream``.
+
+    ``on_chunk`` is called with the length of each chunk as soon as it is read, so a
+    caller tracking the stream position stays correct when a later ``read`` raises
+    partway through the skip (a 7z folder decode error, a dying ``unrar`` pipe).
+
+    Raises :class:`EOFError` if the stream ends before ``count`` bytes are consumed.
+    """
     remaining = count
     while remaining > 0:
         chunk = stream.read(min(remaining, _SKIP_CHUNK))
         if not chunk:
-            return
-        yield len(chunk)
+            raise EOFError("stream ended before the requested position")
         remaining -= len(chunk)
-
-
-def skip_forward(stream: BinaryIO, count: int) -> None:
-    """Read and discard exactly ``count`` bytes from a forward-only ``stream``.
-
-    Raises :class:`EOFError` if the stream ends before ``count`` bytes are consumed.
-    """
-    skipped = 0
-    for n in _drain_chunks(stream, count):
-        skipped += n
-    if skipped < count:
-        raise EOFError("stream ended before the requested position")
+        if on_chunk is not None:
+            on_chunk(len(chunk))
 
 
 class _MemberSlice(ReadOnlyIOStream):
@@ -87,10 +88,9 @@ class _MemberSlice(ReadOnlyIOStream):
         self._seq = reader._stamp()
 
     def _ensure_positioned(self) -> None:
+        # Only read() calls this, after its own closed check.
         if not self._pending:
             return
-        if self.closed:
-            raise ValueError("I/O operation on closed file.")
         self._reader._advance_to(self)
         self._pending = False
 
@@ -126,7 +126,7 @@ class _MemberSlice(ReadOnlyIOStream):
 
 
 class SolidBlockReader:
-    """Vend consecutive member sub-streams over one forward-only decoded block.
+    """Hand out consecutive member sub-streams over one forward-only decoded block.
 
     ``open_member(offset, size)`` returns a forward-only stream for the member occupying
     ``[offset, offset + size)`` of the decoded block. Members must be opened in
@@ -135,7 +135,7 @@ class SolidBlockReader:
     until the next one is requested. Only one member is active at a time.
 
     Pass ``lazy=True`` to defer that open until the first read on the returned handle
-    (claim-time still rejects ``offset`` behind the current position). Closing a lazy
+    (``open_member`` still rejects an ``offset`` behind the current position at once). Closing a lazy
     handle without reading never skip-decodes. Eager and lazy both return the same
     :class:`_MemberSlice` type — no extra wrapper layer.
 
@@ -157,7 +157,12 @@ class SolidBlockReader:
         self._seq += 1
         return self._seq
 
-    def _claim_offset(self, offset: int) -> None:
+    def _check_can_open_at(self, offset: int) -> None:
+        """Raise ``ValueError`` unless a member at ``offset`` can still be opened.
+
+        That needs the reader to be open and ``offset`` not to be behind the bytes
+        already consumed: the block is forward-only, so earlier data is gone.
+        """
         if self._closed:
             raise ValueError("SolidBlockReader is closed")
         if offset < self._pos:
@@ -170,39 +175,29 @@ class SolidBlockReader:
         """Position the block at ``member`` and make it current.
 
         Shared by eager ``open_member`` and a pending slice's first read.
-        Uses :meth:`_skip_to` so a raising mid-skip still credits ``_pos``.
+        ``_pos`` is credited per skipped chunk, so a ``read`` that raises mid-skip
+        leaves it matching the bytes already pulled from the block.
         """
-        self._claim_offset(member._offset)
+        self._check_can_open_at(member._offset)
         current = self._current
         # Offsets alone cannot order two slices at the same offset (a zero-size
         # member sharing its successor's start). A strictly newer claim wins.
         if current is not None and current is not member and current._seq > member._seq:
             raise ValueError("solid member superseded by a later open_member()")
         self._current = None
-        self._skip_to(member._offset)
+        skip_forward(self._block, member._offset - self._pos, on_chunk=self._credit)
         self._current = member
 
     def open_member(self, offset: int, size: int, *, lazy: bool = False) -> BinaryIO:
         if lazy:
-            self._claim_offset(offset)
+            self._check_can_open_at(offset)
             return _MemberSlice(self, offset, size, pending=True)
         slice_ = _MemberSlice(self, offset, size, pending=False)
         self._advance_to(slice_)
         return slice_
 
-    def _skip_to(self, offset: int) -> None:
-        """Advance the block to ``offset``, crediting every discarded byte to ``_pos``.
-
-        Credit is per yielded chunk, not after the whole skip. A raising ``read``
-        (7z folder decode, ``unrar`` pipe) then leaves ``_pos`` matching bytes
-        already pulled.
-        """
-        remaining = offset - self._pos
-        for n in _drain_chunks(self._block, remaining):
-            self._pos += n
-            remaining -= n
-        if remaining > 0:
-            raise EOFError("stream ended before the requested position")
+    def _credit(self, n: int) -> None:
+        self._pos += n
 
     def _consume(self, n: int) -> bytes:
         data = self._block.read(n)
