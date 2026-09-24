@@ -157,8 +157,21 @@ Standard repo rules apply — they are not relaxed because the change is review-
   (`CONTRIBUTING.md` §Testing standards). This repo has shipped a property test that
   passed a `return block_start` mutant and an inventory test that passed vacuously; both
   reported coverage that did not exist.
-- **Fix the cause, not the symptom.** If the same mistake could exist elsewhere, look
-  there in the same change.
+- **Fix the cause, not the symptom, and look one backend over.** If the same mistake
+  could exist elsewhere, look there in the same change: the other backends, the streaming
+  and random-access paths, and every caller of the function you changed. Say in your
+  reply which sites you checked. "The same pattern one backend or one call over" was 19
+  findings across 38 pull requests (2026-09-23/24), among them `_RAR_PART_RE` left at
+  `\d+` beside a capped sibling, and a new default the pipeline entry points never passed.
+- **Check every "every", "all", "never", "always" and "only" you write.** A comment,
+  docstring, spec line or CHANGELOG entry with one of those words is a claim about every
+  path, and the path you were looking at is one of them. Check it against the axes this
+  repo's claims keep failing on — the seven backends (ZIP, 7z, RAR, TAR, ISO, directory,
+  single-file compressors), streaming vs random access, seekable vs non-seekable
+  sources, detection probes vs the reader, and Python 3.11 — or narrow the sentence to
+  what you checked. Claims wider than the code were 33 findings in the same window: "the
+  LZMA dictionary is capped" while detection probes ran uncapped, "every diagnostic"
+  while 24 of 29 emit sites used their own logger.
 - **Contract moves ⇒ spec and docs move with it**, in the same PR. If a fix contradicts
   `openspec/specs/`, the threat model, or a published doc, that is a §6 escalation, not a
   silent divergence.
@@ -190,6 +203,7 @@ to get half-right:
 ```bash
 ./scripts/check.sh --fix    # every fast gate: ruff, pyrefly, ty, openspec, docs
 ./scripts/test.sh           # the everyday [all] test leg
+uv run python scripts/review_prep.py   # before each review label; see the end of §5
 ```
 
 `check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs; it runs every gate even after
@@ -216,6 +230,40 @@ and path separators or `Path` objects interpolated into compared strings.
 **Archiving.** If this PR finishes an OpenSpec change, archive it here — CI now checks
 this on PRs (`CONTRIBUTING.md` §"Archiving an OpenSpec change"). If the design is still
 moving under review, leave the trailing task unchecked instead, and say so in your reply.
+
+### Before the `review` label: `scripts/review_prep.py`
+
+Run it before you add the label, and again before every re-label:
+
+```bash
+uv run python scripts/review_prep.py                        # sweep + width vs origin/main
+uv run python scripts/review_prep.py --base <reviewed-sha>  # a round's fixes only
+uv run python scripts/review_prep.py red-on-base tests/test_x.py::test_new ...
+```
+
+`red-on-base` needs the project environment for pytest and stops if it cannot import it;
+the other two run under any Python.
+
+- **sweep** lists doc, spec, handbook and skill lines that still name a `src/` class,
+  function or constant this branch removed or renamed, a `src/` module it moved or
+  deleted, or an exception type a file stopped raising (only in docs that also name the
+  enclosing function). It only reports: read each hit and fix the ones that describe
+  current behaviour. This is the mechanical half of "when you change a claim, grep for
+  every place that states it" (§4), which the reviews showed prose alone does not get
+  done.
+- **width** fails on an added line far wider than its file, the mark of a paragraph
+  edited in place and not rewrapped. Rewrap the paragraph, not just the line.
+- **red-on-base** runs the named tests against `src/` at the merge base. Paste its table
+  into the PR body wherever the body says a test fails on `main`; a test listed as
+  "passes" does not pin the change, and a collection error proves only an import.
+
+**A round's fixes are a new diff and get the same treatment.** Of the 70 findings raised
+after round 1 on 2026-09-23/24, 67 were caused by the previous round's fix — a claim
+the fix moved and did not propagate, a gap narrowed rather than closed, a comment edited
+and left stale. So before you add the label again, and equally before you stop after an
+approving verdict, run `review_prep.py --base <the sha the round reviewed>`, re-read
+that fix-diff the way a reviewer would, and update the PR body in the same push: a PR
+body still describing round 1 was its own finding twice.
 
 ---
 
@@ -333,10 +381,10 @@ Once the round is done, the PR should record what happened to every finding.
 Reply once per round, not once per fix.
 
 **Then ask for the next round, if the review asked to see the fixes.** The round's
-closing comment says which: when it asks for them, add the `review` label after your
-final push, which starts the next round of the
-[review loop](../../../dev-docs/review-loop.md). It is the last thing you do — a commit
-pushed after it may not be in what gets reviewed.
+closing comment says which: when it asks for them, run `scripts/review_prep.py` over the
+fixes (§5), then add the `review` label after your final push, which starts the next
+round of the [review loop](../../../dev-docs/review-loop.md). It is the last thing you
+do — a commit pushed after it may not be in what gets reviewed.
 
 ```bash
 gh pr edit <number> --add-label review

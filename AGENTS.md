@@ -172,7 +172,13 @@ that is how legs get skipped:
 ./scripts/check.sh --fix          # seconds — every fast gate CI runs
 ./scripts/test.sh                 # minutes — the everyday [all] test leg
 ./scripts/test.sh --all-configs   # all three configs, when the change can reach an extra
+uv run python scripts/review_prep.py   # seconds — before each `review` label
 ```
+
+`review_prep.py` is not a CI gate: it catches what reviews keep flagging (docs still
+naming what the branch moved, paragraphs edited and not rewrapped, "fails on `main`"
+claims) before a review round is spent on them. `address-review-findings` §5 says how to
+read its output.
 
 `check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs: `ruff check`,
 `ruff format --check`, `pyrefly`, `ty`, `check_openspec_archived.py`,

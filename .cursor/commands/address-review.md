@@ -22,7 +22,9 @@ disposition. The full process lives in the skill:
    audit found it, convert the audit into a standing test.
 5. **Full gate before pushing** — `ruff`, **`pyrefly` and `ty`**, `pytest`, then the three
    dependency configs when extras or versions matter. Check the cross-platform traps
-   (AGENTS.md) since CI runs Windows and macOS and you are on Linux.
+   (AGENTS.md) since CI runs Windows and macOS and you are on Linux. Before re-adding the
+   `review` label, run `uv run python scripts/review_prep.py` over the fixes
+   (address-review-findings §5).
 6. **Escalate one decision packet at a time** (`AskUserQuestion`) — Question, why it
    matters, options, evidence, recommendation, default-if-ignored. The maintainer must
    be able to answer cold without reading the PR. Do **not** dump the full finding list
