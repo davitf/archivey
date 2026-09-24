@@ -425,12 +425,37 @@ and the reasons are part of the contract rather than an oversight:
 """
 
 
+# Codes that share a context kind with another code, and the context field that tells
+# them apart. The kind alone cannot reject a mismatched pairing for these, so
+# ``validate_code_context`` checks the field too. A code added to a shared kind needs a
+# row here; ``test_every_shared_kind_code_has_a_discriminator`` fails until it has one.
+_SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, str]] = (
+    MappingProxyType(
+        {
+            DiagnosticCode.SCAN_DIRECTORY_VANISHED: ("entry_kind", "directory"),
+            DiagnosticCode.SCAN_ENTRY_VANISHED: ("entry_kind", "entry"),
+            DiagnosticCode.ENCODING_ARGUMENT_UNUSED: ("argument", "encoding"),
+            DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: ("argument", "password"),
+            DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY: ("chosen_by", "argument"),
+            DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED: ("chosen_by", "extension"),
+            DiagnosticCode.PROBE_FORMAT_UNCONFIRMED: ("chosen_by", "content_probe"),
+            DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: (
+                "expected_marker",
+                "two_zero_blocks",
+            ),
+            DiagnosticCode.ARCHIVE_TRAILING_DATA: ("expected_marker", "zeros_to_eof"),
+        }
+    )
+)
+
+
 def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> None:
     """Reject unregistered or mismatched code→context pairings.
 
-    Most codes map 1:1 onto a context ``kind`` via ``_CODE_CONTEXT_KINDS``. A few
-    codes share a kind and need an extra field check so directory vanish≠entry
-    vanish — those guards live below the kind match.
+    Most codes map 1:1 onto a context ``kind`` via ``_CODE_CONTEXT_KINDS``. Codes that
+    share a kind (``scan_race``, ``unused_argument``, ``unconfirmed_format``,
+    ``archive_eof``) are told apart by one context field, and every one of them is
+    checked against the value its code requires.
     """
     expected = _CODE_CONTEXT_KINDS.get(code)
     if expected is None:
@@ -440,15 +465,14 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
             f"Diagnostic code {code.value!r} requires context kind {expected!r}, "
             f"got {context.kind!r}"
         )
-    # Shared-kind codes: kind alone is not enough.
-    if code is DiagnosticCode.SCAN_DIRECTORY_VANISHED and (
-        not isinstance(context, ScanRaceContext) or context.entry_kind != "directory"
-    ):
-        raise ValueError("SCAN_DIRECTORY_VANISHED requires entry_kind='directory'")
-    if code is DiagnosticCode.SCAN_ENTRY_VANISHED and (
-        not isinstance(context, ScanRaceContext) or context.entry_kind != "entry"
-    ):
-        raise ValueError("SCAN_ENTRY_VANISHED requires entry_kind='entry'")
+    discriminator = _SHARED_KIND_DISCRIMINATORS.get(code)
+    if discriminator is not None:
+        field_name, required = discriminator
+        actual = getattr(context, field_name, None)
+        if actual != required:
+            raise ValueError(
+                f"{code.name} requires {field_name}={required!r}, got {actual!r}"
+            )
 
 
 @dataclass(frozen=True)

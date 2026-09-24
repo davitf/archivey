@@ -84,7 +84,7 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.streams.streamtools.shared import SharedSource
 from archivey.internal.streams.streamtools.slice import SharedView, SlicingStream
 from archivey.internal.streams.unix_compress import UnixCompressDecompressorStream
-from archivey.internal.streams.xz import XzDecompressorStream
+from archivey.internal.streams.xz import XzDecompressorStream, lzma_error_to_archivey
 from archivey.internal.streams.zstd_framing import (
     FRAME_MAGIC as ZSTD_FRAME_MAGIC,
 )
@@ -1365,7 +1365,7 @@ class _LzmaErrorCodec(StreamCodec):
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, lzma.LZMAError):
-            return CorruptionError(f"Error reading LZMA/XZ stream: {exc!r}")
+            return lzma_error_to_archivey(exc, "Error reading LZMA/XZ stream")
         if isinstance(exc, EOFError):
             return TruncatedError(f"LZMA/XZ stream is truncated: {exc!r}")
         return None

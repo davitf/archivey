@@ -64,9 +64,9 @@ from archivey.exceptions import (
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.logs import normalization as normalization_logger
+from archivey.internal.logs import backends as logger
 from archivey.internal.naming import (
-    member_name_normalized_report,
+    emit_member_name_normalized,
     normalize_member_name,
 )
 from archivey.internal.open_site import OpenSite
@@ -631,11 +631,8 @@ class ZipReader(BaseArchiveReader):
         return None
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
-        # The position is passed down because this runs more than once per archive --
-        # `extract_all` lists an indexed backend twice -- and a member typed on the
-        # second pass is a different `ArchiveMember` object for the same member. It is
-        # the id `_register_member` stamps, so a diagnostic raised here can name the
-        # member and be recognised as one already reported.
+        # The position is passed down because it is the id `_register_member` stamps,
+        # so a diagnostic raised while typing can name the member before it has an id.
         for index, info in enumerate(self._archive.infolist()):
             yield self._to_member(info, index)
 
@@ -794,14 +791,10 @@ class ZipReader(BaseArchiveReader):
             member.comment = _decode_with_fallback(info.comment)
         if create_system is not None:
             member.create_system = create_system
-        # Every diagnostic below goes through the reader's once-per-member ledger, keyed
-        # on the member's position: this runs again for the same member on a second
-        # listing pass, and one member is one finding however often it is typed. The
-        # position is also what each report names the member by, because registration
-        # has not stamped `_member_id` yet and takes the id from this same enumeration
-        # (measured: the two agree in both read modes, and under `extract_all`).
+        # Each report below names the member by its position in the walk, because
+        # registration has not stamped `_member_id` yet and stamps that same position.
         if inferred_encoding is not None:
-            self._report_member_diagnostic(
+            self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
                 message=(
                     f"ZIP member name decoded as {inferred_encoding!r} rather than the "
@@ -816,9 +809,11 @@ class ZipReader(BaseArchiveReader):
                     declared_encoding="cp437",
                 ),
                 member=member,
-                report_key=index,
+                attach_to_member=True,
+                logger=logger,
             )
-        name_report = member_name_normalized_report(
+        emit_member_name_normalized(
+            self._diagnostics_collector,
             member=member,
             presented_name=decoded,
             archive_name=self._archive_name,
@@ -828,18 +823,6 @@ class ZipReader(BaseArchiveReader):
             # this backend knows that, so only this backend says so.
             link_stored_as_directory=is_reparse_point and info.is_dir(),
         )
-        if name_report is not None:
-            normalized_message, normalized_context = name_report
-            self._report_member_diagnostic(
-                code=DiagnosticCode.MEMBER_NAME_NORMALIZED,
-                message=normalized_message,
-                context=normalized_context,
-                member=member,
-                report_key=index,
-                # This code's own logging category, which emitting it from here rather
-                # than through `emit_member_name_normalized` would otherwise lose.
-                diagnostic_logger=normalization_logger,
-            )
         if is_reparse_point and info.file_size == 0:
             # A writer that stores no data for a reparse point has recorded no target
             # for it, and that is knowable from the header alone — no read, and so no
@@ -848,10 +831,10 @@ class ZipReader(BaseArchiveReader):
             # after extraction has already decided what to do with the member, which
             # left a 7-Zip junction raising instead of taking the recorded outcome.
             self._apply_reparse_data(
-                member, b"", fallback_type=fallback_type, report_key=index
+                member, b"", fallback_type=fallback_type, member_id=index
             )
         for issue in ts_issues:
-            self._report_member_diagnostic(
+            self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
                 message=issue.message,
                 context=MemberTimestampContext(
@@ -863,10 +846,8 @@ class ZipReader(BaseArchiveReader):
                     value_repr=issue.value_repr,
                 ),
                 member=member,
-                # One member can carry several invalid timestamps, and they are separate
-                # findings, so the field joins the position in the key. Two passes over
-                # the same bad field still report it once.
-                report_key=(index, issue.field, issue.source),
+                attach_to_member=True,
+                logger=logger,
             )
         return member
 

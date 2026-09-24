@@ -23,11 +23,13 @@ from archivey.config import (
 )
 from archivey.exceptions import (
     ArchiveyUsageError,
+    CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends import sevenzip_aes
 from archivey.internal.backends.sevenzip_parser import SevenZipCoder, SevenZipFolder
 from archivey.internal.backends.sevenzip_reader import (
     SevenZipReader,
@@ -1277,7 +1279,7 @@ def _reader_for_unit_tests() -> SevenZipReader:
     reader = object.__new__(SevenZipReader)
     reader._stream_config = DEFAULT_STREAM_CONFIG  # noqa: SLF001 - focused unit test
     reader._diagnostics_collector = None  # noqa: SLF001 - focused unit test
-    reader._key_cache = crypto.SevenZipKeyCache()  # noqa: SLF001 - focused unit test
+    reader._key_cache = sevenzip_aes.SevenZipKeyCache()  # noqa: SLF001 - focused unit test
     return reader
 
 
@@ -1389,6 +1391,33 @@ def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "properties",
+    [
+        pytest.param(b"\x00\x00", id="no-salt-or-iv-flags"),
+        pytest.param(b"\xc0", id="one-byte"),
+        pytest.param(b"\xc0\x00\x00", id="short-by-one"),
+        pytest.param(b"\xc0\x00\x00\x00\x00", id="long-by-one"),
+    ],
+)
+def test_malformed_aes_properties_raise_corruption_error(properties: bytes) -> None:
+    """``parse_sevenzip_aes_properties`` raises a bare ``ValueError``; the one caller
+    in the pipeline must turn it into an archivey error, cause kept.
+
+    The properties are parsed before any ``cryptography`` import, so this also runs
+    on the core-only leg.
+    """
+    reader = _reader_for_unit_tests()
+    with pytest.raises(CorruptionError, match="Malformed 7z AES properties") as info:
+        _open_pipeline(
+            reader,
+            io.BytesIO(bytes(64)),
+            _folder(b"\x06\xf1\x07\x01", properties),
+            password=b"pw",
+        )
+    assert isinstance(info.value.__cause__, ValueError)
+
+
 @requires("cryptography")
 def test_truncated_aes_pack_raises_truncated_error() -> None:
     """AES-only folder: a short last ciphertext block is TruncatedError, not garbage."""
@@ -1396,7 +1425,7 @@ def test_truncated_aes_pack_raises_truncated_error() -> None:
 
     password = b"pw"
     properties = b"\xc0\x00\x00\x00"
-    cache = crypto.SevenZipKeyCache()
+    cache = sevenzip_aes.SevenZipKeyCache()
     params = cache.aes_params_from_properties(password, properties)
     plaintext = bytes(range(64))
     encryptor = Cipher(algorithms.AES(params.key), modes.CBC(params.iv)).encryptor()

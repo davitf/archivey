@@ -797,7 +797,10 @@ class RarReader(BaseArchiveReader):
         self._archive.comment = self._resolve_rar3_comment(self._archive.comment)
         for info in self._archive.members:
             info.comment = self._resolve_rar3_comment(info.comment)
-        self._members = [self._to_member(info) for info in self._archive.members]
+        self._members = [
+            self._to_member(info, index)
+            for index, info in enumerate(self._archive.members)
+        ]
         # SERVICE headers (``CMT``, ``QO``) are not members, so the walk above never
         # reaches them, and a damaged one would otherwise report nothing under any
         # policy.
@@ -1224,7 +1227,9 @@ class RarReader(BaseArchiveReader):
             return None
         return _decode_name(unpacked)
 
-    def _to_member(self, info: RarMemberInfo) -> ArchiveMember:
+    def _to_member(self, info: RarMemberInfo, index: int) -> ArchiveMember:
+        """Type one member. ``index`` is its position in the walk, the id registration
+        stamps, so the diagnostics raised here can name it before it has one."""
         member_type = self._member_type(info)
         version_history = info.is_file_version_history()
         presented = _presented_filename(info)
@@ -1288,11 +1293,11 @@ class RarReader(BaseArchiveReader):
             extra=extra,
             _raw=info,
         )
-        self._emit_member_diagnostics(info, member, presented)
+        self._emit_member_diagnostics(info, member, presented, index)
         return member
 
     def _emit_member_diagnostics(
-        self, info: RarMemberInfo, member: ArchiveMember, presented: str
+        self, info: RarMemberInfo, member: ArchiveMember, presented: str, index: int
     ) -> None:
         """Name-normalization, dropped-header-record and tweaked-digest diagnostics.
 
@@ -1304,8 +1309,9 @@ class RarReader(BaseArchiveReader):
             member=member,
             presented_name=presented,
             archive_name=self._archive_name,
+            member_id=index,
         )
-        self._emit_header_record_diagnostics(info, member.name, member)
+        self._emit_header_record_diagnostics(info, member.name, member, index)
         # Pure; same predicate ``_rar_member_extra_and_link`` uses for extra keys.
         if not _crc_is_tweaked(info) or self._unrar_password is not None:
             return
@@ -1325,7 +1331,7 @@ class RarReader(BaseArchiveReader):
                 context=DigestContext(
                     archive_name=self._archive_name,
                     member_name=member.name,
-                    member_id=member._member_id,
+                    member_id=index,
                     algorithm=algo.value,
                     reason="tweaked_checksum",
                 ),
@@ -1436,7 +1442,7 @@ class RarReader(BaseArchiveReader):
                 solid.close()
 
         yield from self._drive_pass_streams(
-            iter(self._members),
+            self._listed_members(),
             open_member=_open,
             close_previous=True,
             cleanup=_cleanup,
@@ -1509,6 +1515,7 @@ class RarReader(BaseArchiveReader):
         info: RarMemberInfo | DamagedServiceHeader,
         name: str,
         member: ArchiveMember | None,
+        member_id: int | None = None,
     ) -> None:
         """Report what a RAR5 extra-area walk dropped, and why it stopped.
 
@@ -1526,9 +1533,9 @@ class RarReader(BaseArchiveReader):
         missing with it. Sharing the wording named ``CMT`` as a member the caller
         could then not find, and never mentioned the comment it had withheld. The
         context follows the same split: ``member_name`` is empty and ``member_id``
-        is ``None`` for a service header, because there is no member to name.
+        is ``None`` for a service header, because there is no member to name. For a
+        member, ``member_id`` is its position in the walk, the id registration stamps.
         """
-        member_id = member._member_id if member is not None else None
         attach = member is not None
         context_name = name if member is not None else ""
         for record, record_id, reason in info.skipped_header_records:

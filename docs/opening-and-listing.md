@@ -107,7 +107,8 @@ The old RAR scheme needs a first volume either way: `<base>.rar`, or an SFX
 `<base>.exe` / `<base>.sfx` beside the `.rNN` files. A `.rNN` on its own is read
 as a lone file rather than as part of a set. A lone numbered part
 (`.7z.001` / `.zip.001` / `.exe.001` with no siblings) is an incomplete set,
-not a silent mis-parse.
+not a silent mis-parse. A part that does not exist at all raises
+`FileNotFoundError`, as any missing path does.
 
 You can also pass the volumes yourself, as an ordered sequence of paths or open
 streams — useful when they are not siblings on disk, or not on disk at all. Do that

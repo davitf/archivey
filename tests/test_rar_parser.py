@@ -17,7 +17,7 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_archive,
     parse_rar_volumes,
 )
-from archivey.internal.streams.crypto import SevenZipKeyCache
+from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
 from tests.conftest import requires, requires_binary
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -309,7 +309,10 @@ def test_kdf_caches_keep_passwords_and_keys_out_of_repr() -> None:
     with _fixture("encrypted_header__.rar").open("rb") as handle:
         parse_rar_archive(handle, password="header_password", kdf_cache=rar)
     sevenzip = SevenZipKeyCache()
-    sevenzip.derive("header_password".encode("utf-16-le"), salt=b"", cycles=4)
+    # NumCyclesPower 4, IV flag only: no salt, one IV byte.
+    sevenzip.aes_params_from_properties(
+        "header_password".encode("utf-16-le"), b"\x44\x00\x00"
+    )
     for cache in (rar, sevenzip):
         text = repr(cache)
         assert "header_password" not in text

@@ -712,3 +712,14 @@ def test_init_keyword_does_not_attribute_parent_kwarg() -> None:
 
     assert _init_keyword(_Parent, "readinto_passthrough") is False
     assert _init_keyword(_Child, "readinto_passthrough") is _INIT_KWARG_MISSING
+
+
+def test_delegating_read_none_raises_blocking() -> None:
+    """A non-blocking inner's ``None`` is refused, not passed on as if it were bytes."""
+
+    class _NonBlockingRead(io.BytesIO):
+        def read(self, n: int | None = -1, /) -> bytes:
+            return None  # type: ignore[return-value]
+
+    with pytest.raises(BlockingIOError):
+        DelegatingStream(_NonBlockingRead(b"x")).read(4)

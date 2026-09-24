@@ -1951,7 +1951,7 @@ def test_created_is_ctime_extra_follows_host_os(
         split_before=False,
         split_after=False,
     )
-    member = rar_reader.RarReader._to_member(reader, info)
+    member = rar_reader.RarReader._to_member(reader, info, 0)
     if expected is None:
         assert EXTRA_RAR_CREATED_IS_CTIME not in member.extra
     else:
@@ -1996,12 +1996,12 @@ def test_rar_reader_masks_hostile_unix_mode() -> None:
     reader = object.__new__(RarReader)
     reader._diagnostics_collector = None
     reader._archive_name = "<test>"
-    member = RarReader._to_member(reader, info)
+    member = RarReader._to_member(reader, info, 0)
     assert member.mode == 0o0644
 
     # Win32 attrs are masked to 32 bits (FILE_ATTRIBUTE_* width).
     info_win = dataclasses.replace(info, host_os=2, mode=(1 << 40) | 0x20)
-    member_win = RarReader._to_member(reader, info_win)
+    member_win = RarReader._to_member(reader, info_win, 0)
     assert member_win.mode is None
     assert member_win.windows_attrs == 0x20
 

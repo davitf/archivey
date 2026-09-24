@@ -3,21 +3,21 @@
 The NTFS FILETIME conversion (100 ns ticks since 1601-01-01 UTC → ``datetime``) is used by
 every backend that reads Windows-origin timestamps — ZIP's NTFS extra field, the native
 7z reader, and RAR5 FILETIME extras — so it lives here rather than being copy-pasted per
-backend. The out-of-range guard is the load-bearing part: ``datetime.fromtimestamp``
-raises ``ValueError``/``OverflowError`` on POSIX but ``OSError`` on Windows for
-negative/huge inputs, and a hostile FILETIME must degrade to ``None`` + a reported
-issue, never sink the whole listing.
+backend. The conversion is integer ``datetime`` + ``timedelta`` arithmetic, which is exact
+to the microsecond and raises ``OverflowError`` on every platform for a value outside
+``datetime``'s range. That guard is the load-bearing part: a hostile FILETIME must
+degrade to ``None`` + a reported issue, never sink the whole listing.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from archivey.escaping import quoted
 
-# Seconds between the NTFS FILETIME epoch (1601-01-01) and the Unix epoch (1970-01-01).
-NTFS_EPOCH_OFFSET = 11_644_473_600
+# The NTFS FILETIME epoch.
+_FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -45,15 +45,13 @@ def filetime_to_datetime(
     if value is None or value == 0:
         return None, None
     try:
-        return (
-            datetime.fromtimestamp(
-                value / 10_000_000 - NTFS_EPOCH_OFFSET, tz=timezone.utc
-            ),
-            None,
-        )
-    except (ValueError, OverflowError, OSError):
-        # fromtimestamp rejects out-of-range values with ValueError/OverflowError, and on
-        # some platforms (notably Windows) with OSError for negative/huge inputs.
+        # Integer arithmetic throughout: dividing a modern FILETIME (~1.3e17 ticks) as a
+        # float leaves ~2 us of precision, so the microsecond would often be wrong.
+        # Sub-microsecond ticks are truncated, as the stored value is.
+        return _FILETIME_EPOCH + timedelta(microseconds=value // 10), None
+    except OverflowError:
+        # Raised by timedelta() for a huge tick count, or by the addition for a result
+        # outside datetime's range (negative values included).
         return None, TimestampIssue(
             field=field,
             source=source,

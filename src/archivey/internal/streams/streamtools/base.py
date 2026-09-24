@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, BinaryIO, Never
 
 from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
+    read_blocking,
     readinto_via_read,
     source_name,
     try_readinto,
@@ -238,7 +239,10 @@ class DelegatingStream(ReadOnlyIOStream):
         self._seekable = is_seekable(inner)
 
     def read(self, n: int = -1, /) -> bytes:
-        return self._inner.read(n)
+        # A non-blocking inner's ``None`` ("nothing yet") is refused with
+        # ``BlockingIOError``, as ``readinto`` already does via ``try_readinto``;
+        # passing it on would hand callers a non-bytes they would take for EOF.
+        return read_blocking(self._inner, n)
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
         # Zero-copy passthrough when allowed and the inner exposes a usable

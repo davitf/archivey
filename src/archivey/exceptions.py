@@ -16,6 +16,11 @@ interpolates attacker-controlled member names and the paths derived from them, a
 an exception message reaches a terminal by routes no single consumer configures —
 including a traceback the interpreter prints on its own. See
 :class:`ArchiveyError` for what stays raw and why.
+
+Every exception in both trees survives ``pickle``, ``copy`` and ``deepcopy`` with its
+``args``, message and attributes intact, so an error raised in a worker process reaches
+the parent whole. As with any Python exception, ``__cause__`` and ``__context__`` are not
+carried across a pickle.
 """
 
 from __future__ import annotations
@@ -27,6 +32,23 @@ from archivey.escaping import escape_control_chars
 if TYPE_CHECKING:
     from archivey.diagnostics import Diagnostic
     from archivey.types import ArchiveFormat
+
+
+def _restore_exception(
+    cls: type[BaseException], args: tuple[object, ...], state: dict[str, object]
+) -> BaseException:
+    """Rebuild a pickled or copied exception without calling its ``__init__``.
+
+    ``BaseException``'s own reduce calls ``cls(*self.args)``, which breaks both roots
+    below: ``args[0]`` is the *escaped* message, so a second pass through ``__init__``
+    escapes it again, and a subclass with a required keyword argument
+    (:class:`DiagnosticRaisedError`) cannot be rebuilt at all. Restoring ``args`` and
+    the instance state directly avoids both.
+    """
+    exc = cls.__new__(cls)
+    exc.args = args
+    exc.__dict__.update(state)
+    return exc
 
 
 class ArchiveyError(Exception):
@@ -92,6 +114,10 @@ class ArchiveyError(Exception):
         self.member_name = member_name
         self.link_target = link_target
         self.format_unconfirmed = format_unconfirmed
+
+    def __reduce__(self) -> tuple[object, ...]:
+        # Pickle and copy without re-running __init__; see _restore_exception.
+        return (_restore_exception, (type(self), self.args, self.__dict__))
 
     def __str__(self) -> str:
         parts = [self.message]
@@ -269,6 +295,10 @@ class ArchiveyUsageError(Exception):
         message = escape_control_chars(message)
         super().__init__(message)
         self.message = message
+
+    def __reduce__(self) -> tuple[object, ...]:
+        # Pickle and copy without re-running __init__; see _restore_exception.
+        return (_restore_exception, (type(self), self.args, self.__dict__))
 
     def __str__(self) -> str:
         return self.message

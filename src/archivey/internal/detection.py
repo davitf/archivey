@@ -57,6 +57,7 @@ from archivey.detection_cost import (
     DetectionBudgetPresetStr,
     DetectionCapability,
     DetectionCostReceipt,
+    MutableDetectionCostReceipt,
     TierSkip,
     TierSkipReason,
     default_detection_budget,
@@ -151,7 +152,8 @@ class FormatInfo:
     corroborated: bool = field(default=False, compare=False, repr=False)
     # Detection's own cost receipt — not merged into ``CostReceipt`` / ``ArchiveInfo.cost``.
     # Public exposure on ``FormatInfo`` is ``detection-result-surface``; kept here so tests
-    # and the fuzz harness can assert the access-shape and budget invariants.
+    # and the fuzz harness can assert the access-shape and budget invariants. It is the
+    # work the whole ``detect_format`` call did, both passes when it followed a stub.
     cost_receipt: DetectionCostReceipt | None = field(
         default=None, compare=False, repr=False
     )
@@ -181,6 +183,9 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         self._limit = limit
         self._offset = 0
         self._buf = b""
+        # Set when a read asked for bytes past ``limit`` and the window was full, so the
+        # bound (not the end of the source) cut the read short.
+        self.hit_limit = False
 
     def readable(self) -> bool:
         return True
@@ -207,9 +212,12 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         return self._offset
 
     def read(self, n: int = -1, /) -> bytes:
+        past_limit = n < 0 or self._offset + n > self._limit
         end = self._limit if n < 0 else min(self._offset + n, self._limit)
         if end > len(self._buf):
             self._buf = self._peek_more(end)  # a superset of the current buffer
+        if past_limit and len(self._buf) >= self._limit:
+            self.hit_limit = True
         chunk = self._buf[self._offset : end]
         self._offset += len(chunk)
         return chunk
@@ -274,6 +282,12 @@ def _probe_inner_tar(
     read is bounded, so the dictionary cannot fill past it, but liblzma still reserves
     the declared size. The open that follows applies the caller's limits.
 
+    With a workspace, the compressed input is bounded by the budget's
+    ``max_decode_input`` (and the workspace's read ceiling) as well as by
+    :data:`_INNER_TAR_MAX_PROBE_BYTES`, and the decode is charged whether it succeeds or
+    fails. A probe that reaches its bound without finding a TAR header records
+    ``inner_tar`` as ``BUDGET_EXHAUSTED``: the answer is "not found within budget".
+
     Returns ``False`` (deferring the determination to open time) when the codec backend is
     absent, the source is not decodable as this codec, or the decoded output carries no TAR
     header.
@@ -293,7 +307,19 @@ def _probe_inner_tar(
     if not is_codec_available(codec):
         return False
 
-    source = _BoundedPeekReader(peek_more, _INNER_TAR_MAX_PROBE_BYTES)
+    limit = _INNER_TAR_MAX_PROBE_BYTES
+    if workspace is not None:
+        budget = workspace.budget
+        if budget.max_decode_input <= 0 or budget.max_decode_output <= 0:
+            workspace.record_skip("inner_tar", TierSkipReason.NOT_ENABLED_BY_POLICY)
+            return False
+        if budget.max_decode_output < _INNER_TAR_PROBE_BYTES:
+            workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
+            return False
+        limit = min(limit, budget.max_decode_input, workspace.read_ceiling)
+
+    source = _BoundedPeekReader(peek_more, limit)
+    head = b""
     try:
         with open_codec_stream(
             codec,
@@ -309,13 +335,17 @@ def _probe_inner_tar(
             head = stream.read(_INNER_TAR_PROBE_BYTES)
     except (ArchiveyError, OSError, ValueError):
         # Not decodable as this codec, or truncated before a full block -> not an inner tar.
-        return False
+        pass
+    found = head[257:262] == b"ustar"
     if workspace is not None:
+        # Charged on every path: a decode that ran and then failed did the work too.
         workspace.charge_decode(
             input_bytes=source.tell(),
             output_bytes=len(head),
         )
-    return head[257:262] == b"ustar"
+        if not found and source.hit_limit:
+            workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
+    return found
 
 
 def _brotli_probe_confidence(
@@ -550,6 +580,9 @@ def detect_format(
     volume is detected as that volume's format when ``follow_stub_volumes`` is true
     — the default, so ``detect_format("vol.exe")`` agrees with ``open_archive``.
     ``open_archive`` probes with this flag off, then switches the source itself.
+    The returned ``cost_receipt`` and ``unavailable_tiers`` then cover both passes, the
+    stub's and the volume's. Each pass runs under the full ``budget``; the receipt's
+    ``passes`` is 2 and ``within_budget`` judges it against two budgets.
     """
     # Before anything is read: an object that is neither a path nor a binary stream
     # used to reach the prefix workspace and die there as
@@ -567,13 +600,18 @@ def detect_format(
         detection_wm = collector.watermark()
 
     resolved_budget = _resolve_budget(budget)
+    # One receipt across both passes: the stub pass is usually the expensive one (a
+    # strong executable cue runs the full SFX scan), so the sibling-volume answer
+    # carries its cost and its skips too. ``passes`` says there were two.
+    receipt = MutableDetectionCostReceipt()
     try:
-        info = _detect_format_body(source, collector, resolved_budget)
+        info = _detect_format_body(source, collector, resolved_budget, receipt)
     except FormatDetectionError:
         alt = _first_volume_beside_stub(source) if follow_stub_volumes else None
         if alt is None:
             raise
-        info = _detect_format_body(alt, collector, resolved_budget)
+        receipt.passes += 1
+        info = _detect_format_body(alt, collector, resolved_budget, receipt)
     diagnostics = (
         collector.snapshot()
         if owned_collector
@@ -606,6 +644,7 @@ def _detect_format_body(
     source: str | Path | BinaryIO,
     collector: DiagnosticCollector,
     budget: DetectionBudget,
+    receipt: MutableDetectionCostReceipt | None = None,
 ) -> FormatInfo:
     registry = get_registry()
     magic_entries = registry.magic_entries()
@@ -614,7 +653,7 @@ def _detect_format_body(
     ext_match = _match_extension(name, extension_map)
     ext_fmt = ext_match[0] if ext_match is not None else None
 
-    with PrefixWorkspace(source, budget) as workspace:
+    with PrefixWorkspace(source, budget, receipt) as workspace:
         # Record ZIP-tail policy up front so BALANCED leaves an explicit trace that the
         # tier was not enabled (distinct from capability-unavailable on a pipe).
         if budget.max_tail_bytes <= 0:
@@ -691,18 +730,38 @@ def _detect_format_body(
                         _ConflictEvidence.SFX_SCAN,
                     )
                     return _attach_receipt(sfx_info, workspace)
+                # A miss in a window the budget made shorter than ``SFX_MAX`` is a
+                # search cut short, unless the source ends inside the window anyway.
+                # Under a budget as wide as ``SFX_MAX`` the structural bound stopped
+                # the scan, not the budget.
+                source_len = workspace.remaining_known()
+                if budget.max_scan_bytes < SFX_MAX and (
+                    source_len is None or source_len > scan_limit
+                ):
+                    workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
 
-        # 3. Far magic (ISO's CD001 at offset 32 769).
-        if far and budget.max_far_bytes > 0:
-            far_needed = max(e.offset + len(e.magic) for e in far)
-            far_needed = min(far_needed, budget.max_far_bytes)
+        # 3. Far magic (ISO's CD001 at offset 32 769). A signature that ends past
+        # ``max_far_bytes`` cannot match in the clamped window, so it is dropped and the
+        # tier is recorded as cut short, the same rule the near tier follows. A source
+        # provably too short to hold the signature loses nothing to the clamp.
+        reachable_far: list[MagicSignature] = []
+        unreachable_far: list[MagicSignature] = []
+        for e in far:
+            fits = e.offset + len(e.magic) <= budget.max_far_bytes
+            (reachable_far if fits else unreachable_far).append(e)
+        if budget.max_far_bytes > 0 and any(
+            length is None or length >= e.offset + len(e.magic) for e in unreachable_far
+        ):
+            workspace.record_skip("far_magic", TierSkipReason.BUDGET_EXHAUSTED)
+        if reachable_far:
+            far_needed = max(e.offset + len(e.magic) for e in reachable_far)
             if length is not None and length < far_needed:
                 pass  # size-gated: never pay the peek
             else:
                 far_data = workspace.peek_prefix(far_needed)
                 # Charge the bytes actually requested even when the window came up short.
                 workspace.charge_far(len(far_data))
-                far_fmt = _match_magic(far_data, far)
+                far_fmt = _match_magic(far_data, reachable_far)
                 if far_fmt is not None:
                     _warn_on_conflict(
                         collector, name, ext_match, far_fmt, _ConflictEvidence.MAGIC

@@ -304,11 +304,14 @@ def open_archive(
     passwords *and* a colliding wrong candidate *and* a STORED member) but can matter
     for very large stored members.
 
-    A password supplied for an archive that carries no encryption is **accepted, not
-    refused** — it is a resource offered, not a claim about this archive — and recorded
-    as ``PASSWORD_ARGUMENT_UNUSED``. That is what lets a batch job pass one keyring at
-    every archive. Diagnostics also log at ``WARNING`` by default, so such a job will
-    log once per unencrypted archive; silence it with
+    A password supplied for a *format* with no encryption at all (TAR, ISO, a
+    directory, the single-file compressed streams) is **accepted, not refused** — it is
+    a resource offered, not a claim about this archive — and recorded as
+    ``PASSWORD_ARGUMENT_UNUSED``. That is what lets a batch job pass one keyring at
+    every archive. The check is per format, made before any header is read: an
+    unencrypted ZIP, 7z or RAR records nothing, because those formats can use a
+    password. Diagnostics also log at ``WARNING`` by default, so such a job will log
+    once per archive of a format without encryption; silence it with
     ``ArchiveyConfig(diagnostic_policy=DiagnosticPolicy(overrides={
     DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: DiagnosticDisposition.IGNORE}))``, which
     keeps the count without the log line.

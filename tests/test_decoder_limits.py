@@ -30,7 +30,11 @@ import pytest
 
 import archivey
 from archivey import ArchiveyConfig, DecoderLimits, open_archive
-from archivey.exceptions import CorruptionError, ResourceLimitError
+from archivey.exceptions import (
+    CorruptionError,
+    ResourceLimitError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.config import (
     DEFAULT_STREAM_CONFIG,
     check_decoder_memory,
@@ -809,14 +813,25 @@ class _DrainFailingDecompressor:
 @pytest.mark.parametrize(
     ("message", "raises"),
     [
-        pytest.param("Memory usage limit exceeded", True, id="memlimit-is-raised"),
-        pytest.param("Corrupt input data", False, id="corruption-reads-as-truncation"),
+        pytest.param(
+            "Memory usage limit exceeded",
+            (ResourceLimitError, "max_decoder_memory=65536"),
+            id="memlimit-is-raised",
+        ),
+        pytest.param(
+            "Invalid or unsupported options",
+            (UnsupportedFeatureError, "Invalid or unsupported options"),
+            id="options-error-is-raised",
+        ),
+        pytest.param("Corrupt input data", None, id="corruption-reads-as-truncation"),
     ],
 )
 def test_xz_flush_drain_does_not_swallow_a_memlimit_refusal(
-    monkeypatch: pytest.MonkeyPatch, message: str, raises: bool
+    monkeypatch: pytest.MonkeyPatch,
+    message: str,
+    raises: tuple[type[Exception], str] | None,
 ) -> None:
-    """The mid-stream drain treats a liblzma error as a truncated tail, except a limit.
+    """The drain treats a liblzma error as a truncated tail only when it is damage.
 
     White-box: the drain runs only when the decoder still holds input after the
     final ``_process`` pass, which a real stream does not reliably reach.
@@ -827,9 +842,11 @@ def test_xz_flush_drain_does_not_swallow_a_memlimit_refusal(
     state._state = xz._XzState._IN_STREAM
     monkeypatch.setattr(state, "_dec", _DrainFailingDecompressor(message))
     monkeypatch.setattr(state, "_process", lambda max_length=-1: (b"", []))
-    if raises:
-        with pytest.raises(ResourceLimitError, match="max_decoder_memory=65536"):
+    if raises is not None:
+        error, match = raises
+        with pytest.raises(error, match=match):
             state.flush()
+        assert state.truncated is False
     else:
         assert state.flush() == (b"", [])
         assert state.truncated is True

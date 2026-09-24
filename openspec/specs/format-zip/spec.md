@@ -148,10 +148,13 @@ rules:
 | `is_encrypted` | `flag_bits & 0x1 != 0` |
 
 Invalid DOS or NTFS timestamp values SHALL fall through to the next valid
-precedence layer or `None` and emit `MEMBER_TIMESTAMP_INVALID`. If listing
-cannot read an encrypted symlink target because no correct password is
-available, `link_target` SHALL remain unset and `SYMLINK_TARGET_UNAVAILABLE`
-SHALL be emitted with reason `"password_required"`. Diagnostic payloads SHALL
+precedence layer or `None` and emit `MEMBER_TIMESTAMP_INVALID`. With
+`read_link_targets=True` (the default), if listing cannot read an encrypted
+symlink target because no correct password is available, `link_target` SHALL
+remain unset and `SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with reason
+`"password_required"`. With `read_link_targets=False`, listing reads no symlink
+target and emits nothing for it (`archive-reading`, "Link targets stored as member
+data are read only when configured"). Diagnostic payloads SHALL
 not include passwords, candidates, provider returns, key material, or decrypted
 target bytes. Under `RAISE`, listing halts with `DiagnosticRaisedError`.
 
@@ -167,6 +170,7 @@ target bytes. Under `RAISE`, listing halts with `DiagnosticRaisedError`.
 | Out-of-range NTFS or DOS timestamp | Fallback value used; `MEMBER_TIMESTAMP_INVALID` counted and may attach to member |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 | Encrypted symlink target unavailable | Listing continues with `link_target=None`; `SYMLINK_TARGET_UNAVAILABLE` contains no secret |
+| Encrypted symlink, `read_link_targets=False` | Listing reads no target data; `link_target=None`; no diagnostic |
 
 ### Requirement: Join 7-Zip .zip.NNN sets; reject spanned ZIP cleanly
 
@@ -185,6 +189,8 @@ reporting
 A gap in the numbering SHALL raise `TruncatedError`. A lone `.zip.NNN` (or
 SFX `.exe.NNN`) part whose siblings are not on disk SHALL raise the same
 `TruncatedError`, naming the missing parts — not a ZIP spanned-set refusal.
+A named part that is not on disk itself SHALL raise `FileNotFoundError`, like
+any other missing path.
 
 Every other split/spanned signal SHALL raise `UnsupportedFeatureError` with a
 rejoin-first message rather than mis-read data or surface stdlib `BadZipFile`:

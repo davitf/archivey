@@ -223,24 +223,23 @@ def normalize_member_name(
     return name
 
 
-def member_name_normalized_report(
+def emit_member_name_normalized(
+    collector: DiagnosticCollector,
     *,
     member: ArchiveMember,
     presented_name: str,
     archive_name: str | None = None,
     link_stored_as_directory: bool = False,
     member_id: int | None = None,
-) -> tuple[str, NameNormalizationContext] | None:
-    """The ``MEMBER_NAME_NORMALIZED`` report for this member, or ``None`` for no finding.
+) -> None:
+    """Emit ``MEMBER_NAME_NORMALIZED`` when normalization changed ``presented_name``.
 
-    Split out from :func:`emit_member_name_normalized` so a backend that types the same
-    member more than once per archive can put the report through its own once-per-member
-    ledger instead of the collector directly. The suppression rules below are the reason
-    this is not something a caller can decide for itself.
+    A backend calls this while it types the member, which happens once per reader (the
+    base owns one member walk), so one call is one finding.
 
-    ``member_id`` names the member in the report when the caller knows its position and
-    registration has not stamped the id yet, which is the case for a backend emitting
-    while it types. Left out, the report carries whatever the member already has.
+    ``member_id`` names the member in the report: the caller's position in the walk,
+    since registration has not stamped the id yet and stamps that same position. Left
+    out, the report carries whatever the member already has.
 
     Suppresses the no-op case where a DIRECTORY member only gained the canonical
     trailing slash (Python's ``tarfile`` strips it on read) — that is not an
@@ -257,59 +256,32 @@ def member_name_normalized_report(
     silently stop a strict policy refusing that TAR.
     """
     if member.name == presented_name:
-        return None
+        return
     if (
         member.type is MemberType.DIRECTORY
         and presented_name + "/" == member.name
         and not presented_name.endswith("/")
     ):
-        return None
+        return
     if (
         link_stored_as_directory
         and presented_name == member.name + "/"
         and not member.name.endswith("/")
     ):
-        return None
-    message = (
-        f"Member name normalized: {quoted(presented_name)} -> {quoted(member.name)}"
-    )
-    return message, NameNormalizationContext(
-        archive_name=archive_name,
-        member_name=member.name,
-        member_id=member_id if member_id is not None else member._member_id,
-        raw_name_base64=raw_name_to_base64(member.raw_name),
-        presented_name=presented_name,
-        normalized_name=member.name,
-    )
-
-
-def emit_member_name_normalized(
-    collector: DiagnosticCollector,
-    *,
-    member: ArchiveMember,
-    presented_name: str,
-    archive_name: str | None = None,
-    link_stored_as_directory: bool = False,
-) -> None:
-    """Emit ``MEMBER_NAME_NORMALIZED`` when normalization changed ``presented_name``.
-
-    For a backend that types each member once per archive. One that does not owns the
-    deduplication, so it calls :func:`member_name_normalized_report` and emits the
-    result itself.
-    """
-    report = member_name_normalized_report(
-        member=member,
-        presented_name=presented_name,
-        archive_name=archive_name,
-        link_stored_as_directory=link_stored_as_directory,
-    )
-    if report is None:
         return
-    message, context = report
     collector.emit(
         code=DiagnosticCode.MEMBER_NAME_NORMALIZED,
-        message=message,
-        context=context,
+        message=(
+            f"Member name normalized: {quoted(presented_name)} -> {quoted(member.name)}"
+        ),
+        context=NameNormalizationContext(
+            archive_name=archive_name,
+            member_name=member.name,
+            member_id=member_id if member_id is not None else member._member_id,
+            raw_name_base64=raw_name_to_base64(member.raw_name),
+            presented_name=presented_name,
+            normalized_name=member.name,
+        ),
         member=member,
         attach_to_member=True,
         logger=logger,

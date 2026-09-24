@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Container, Iterator
 from collections.abc import Sequence as ABCSequence
 from contextvars import ContextVar
 from typing import TypeVar, cast
@@ -143,6 +143,36 @@ class _PasswordCandidates:
             return None
         return self._call_provider(member, attempt)
 
+    def iter_provider_answers(
+        self, member: ArchiveMember | None, tried: Container[bytes]
+    ) -> Iterator[bytes]:
+        """Yield the provider's answers for one unit that are not in ``tried``.
+
+        Every password in ``tried`` has already failed for this unit, so an answer found
+        there is skipped rather than decrypted again (that would re-run an expensive
+        decrypt or key derivation), and the provider is asked again with the next
+        ``attempt``. Skipping must not end the loop: a provider that leads with a
+        password it already knows, often the one an earlier unit promoted to known-good,
+        may have the right one next.
+
+        The loop ends when the provider returns ``None``, or when it gives an answer it
+        already gave for this unit. The second is the exact "no progress" signal: a
+        provider stuck on one answer stops on its second call, while a provider walking
+        a list of any length is never cut off. Termination depends only on the
+        provider's answers, not on the caller updating ``tried``.
+        """
+        answered: set[bytes] = set()
+        attempt = 1
+        while self._provider is not None:
+            password = self._call_provider(member, attempt)
+            attempt += 1
+            if password is None or password in answered:
+                return
+            answered.add(password)
+            if password in tried:
+                continue
+            yield password
+
     def _call_provider(
         self, member: ArchiveMember | None, attempt: int
     ) -> bytes | None:
@@ -240,21 +270,10 @@ class _PasswordCandidates:
             if result is not None:
                 return result
 
-        attempt = 1
-        while self._provider is not None:
-            raw = self._call_provider(member, attempt)
-            if raw is None:
-                break
-            password = raw
-            # A provider that repeats a password we already tried can make no further
-            # progress; stop rather than re-running an expensive decrypt (and, for 7z,
-            # an expensive key derivation) on the same input forever.
-            if password in tried:
-                break
+        for password in self.iter_provider_answers(member, tried):
             result = try_password(password)
             if result is not None:
                 return result
-            attempt += 1
 
         message = (
             (

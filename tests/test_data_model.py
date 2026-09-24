@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import json
 import pickle
+from collections.abc import Hashable
 
 import pytest
 
@@ -81,7 +82,10 @@ def test_file_extension_examples() -> None:
 
 def test_member_is_unhashable() -> None:
     m = ArchiveMember(type=MemberType.FILE, name="a.txt")
-    with pytest.raises(TypeError):
+    # ``None``, not a method that raises: only then does ``Hashable`` report it.
+    assert ArchiveMember.__hash__ is None
+    assert not isinstance(m, Hashable)
+    with pytest.raises(TypeError, match="unhashable type: 'ArchiveMember'"):
         hash(m)
     with pytest.raises(TypeError):
         _ = {m}  # set membership needs hashing → unhashable

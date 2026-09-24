@@ -61,9 +61,37 @@ promise with that line; treat `0.2.0` as the first release of this library.
   cap a rejected allocation kills the interpreter from inside pyppmd instead of
   raising), and on the LZMA dictionary of 7z, ZIP, xz, `.lzma` and lzip, where the
   dictionary fills as output is written and so bounds how much of it stays resident.
+- `ArchiveyConfig.read_link_targets` (default `True`). ZIP, 7z and RAR4 store a symlink's
+  target as member data, so reading it while listing can decompress data and consult the
+  password provider. Set it to `False` and the reader reads none of those targets on its
+  own: the links list with `link_target=None`, `extract_all` reads the target of each link
+  its selector and filter accept, and `open()` reads the target of a link it follows.
+  When extraction is the first to read a link's data, under this setting or in any
+  streaming pass, and the data shows a reparse-flagged "link" is really a file,
+  `extract_all` calls the filter again on the file and writes it; a streaming pass,
+  already past its content, fails that member under `on_error`.
 
 ### Fixed
 
+- **A reader builds each member once, and every listing method hands out the same
+  objects.** `members_report_if_available()`, `members()`, `get()`, `stream_members()`
+  and `extract_all()` now share one member list filled by one walk of the archive's
+  index, where `extract_all` used to walk it twice and a peek returned objects that
+  `members()` then replaced. A `member_id` is set on every member a 7z or solid RAR
+  stream pass yields, a link target is filled in on the member you already hold, and
+  per-member diagnostics are counted once. Each typing-time diagnostic now carries the
+  member's `member_id` on every backend.
+- **Streaming extraction of a ZIP, 7z or RAR handles a name stored twice** the way random
+  access does: the earlier entry is `SUPERSEDED` and the later one extracted, where it
+  used to raise `ExtractionError` on the second copy. It relies on the archive's index
+  listing every member before the pass starts. A streaming TAR has no index, so it
+  still writes the first copy and raises `ExtractionError` on the second.
+- **Streaming extraction writes symlinks whose target is stored as member data.** A ZIP
+  or 7z link reached by a streaming pass before its target had been read failed as
+  having no target; the target is now read before the link is written.
+- **Listing a 7z reads each folder's link targets in one decode**, up to the folder's
+  last link, instead of re-decoding from the folder start for every link. A streaming
+  pass reads a link's bytes from its own decoder as it passes the link.
 - **An encrypted RAR derives each key once per open.** RAR5 key derivation costs what
   the archive declares, up to 2²⁴ PBKDF2 rounds (a few seconds each). A header-encrypted
   volume set derived the header key and password check again on every part, so a
@@ -119,6 +147,16 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `MemberStreams.CONCURRENT`, a thread that needed the provider while another thread's call
   was running got the `ArchiveyUsageError` meant for a provider that calls back into the
   reader. It now waits for that call to finish; the reentry error stays for its real case.
+- **A password provider is asked again after answering with a password already tried.**
+  It used to stop on the first such answer, so a provider that offered the password that
+  had opened an earlier member, and had the right one next, never got to give it; the
+  member failed with a wrong-password error. A password that already failed for a member
+  is still not tried on it again, and a provider that gives the same answer twice for one
+  member is taken to have no more. This covers 7z, RAR and ZIP, except a ZipCrypto ZIP
+  member that is stored uncompressed, which still stops on the first repeat.
+- **Windows timestamps land on the right microsecond.** `modified`, `accessed` and
+  `created` read from a ZIP NTFS field, a 7z, or a RAR5 FILETIME were converted through a
+  float, which put more than half of present-day values one or two microseconds off.
 - **A 7z member's `compression` chain is now in compress order**, as documented on
   `ArchiveMember.compression` and the way 7-Zip itself lists it: a BCJ member reads
   `(BCJ, LZMA2)`, filters first and packing codec last. It used to come back reversed,
@@ -187,6 +225,15 @@ promise with that line; treat `0.2.0` as the first release of this library.
 - **An anti-item deletes the file its name matches under the collision rules.** Under
   `STRICT` and `STANDARD` an anti-item `readme` now removes the `README` the same
   extraction wrote, as every other name collision already treated the two.
+- **Detection's cost receipt now reports what detection did.** Under a smaller
+  `DetectionBudget` the inner-TAR probe still decoded up to 1 MiB, and a content probe
+  on an `ArchiveStream` could buffer 1 MiB, so the receipt failed its own
+  `within_budget` check with no skipped tier to explain it. Both now stay inside the
+  budget and record the tier as budget-exhausted when they are cut short, as do a far
+  signature past `max_far_bytes` and an SFX scan that misses in a window the budget
+  shortened. A failed inner-TAR decode is now charged, `within_budget` also checks
+  `far_bytes`, and a stub `.exe` followed to its split volume reports both passes' cost
+  with `passes=2`, judged against two budgets.
 
 ### Changed
 
