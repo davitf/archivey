@@ -704,13 +704,17 @@ class ArchiveMember:
     def is_junction(self) -> bool:
         """The archive recorded this symlink as a Windows NTFS junction.
 
-        ``False`` means no junction was detected, not that the entry is not one. The
-        answer needs the reparse *tag*, which lives in the member's reparse buffer:
+        ``False`` means no junction was detected, not that the entry is not one:
 
-        - RAR, and a directory source scanned on Windows, report junctions.
-        - ZIP and 7z report one only when the writer stored the reparse buffer. 7-Zip
-          stores none for a directory reparse point, and a junction is always one,
-          so a junction in an archive 7-Zip wrote reads ``False`` here.
+        - RAR names the link kind in a header field, so a RAR junction is reported
+          while listing.
+        - A directory source asks the filesystem (``os.DirEntry.is_junction``), so a
+          scan on Windows reports junctions under Python 3.12 and later; under 3.11
+          a junction is listed as a symlink and reads ``False``.
+        - ZIP and 7z keep the junction's reparse *tag* in the member's data, so they
+          report one only when the writer stored that reparse buffer. 7-Zip stores
+          none for a directory reparse point, and a junction is always one, so a
+          junction in an archive 7-Zip wrote reads ``False`` here.
         - TAR and ISO have no junction concept and always read ``False``.
 
         :attr:`is_reparse_point` comes from metadata the archive always carries, and

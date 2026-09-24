@@ -38,6 +38,11 @@ misuse raise [`ArchiveyUsageError`][archivey.ArchiveyUsageError] (e.g.
 provide an operation — seeking a non-seekable member, a format that can't list — that is a
 real `ArchiveyError`: `UnsupportedOperationError`.)
 
+Every archivey exception can be pickled and copied with its message and attributes
+intact, so one raised in a `ProcessPoolExecutor` or `multiprocessing` worker arrives in
+the parent as the same type. As with any Python exception, its `__cause__` and
+`__context__` do not travel with it.
+
 The same applies to an argument that is the wrong type or an unusable value — a
 `config=` that is not an `ArchiveyConfig`, a `budget=` that is not a
 `DetectionBudget`, an `encoding=` naming a codec Python does not have, a

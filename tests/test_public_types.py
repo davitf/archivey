@@ -1,9 +1,8 @@
-"""Protocol conformance of the public types: hashing, pickling, copying.
+"""Every exception class archivey exports survives ``pickle`` and ``copy``.
 
-``ArchiveMember`` must report itself unhashable to ``collections.abc.Hashable``, not
-only fail on ``hash()``. Every exception class archivey exports must survive
-``pickle`` and ``copy`` with its message and attributes intact, because an error
-raised in a worker process crosses back to the caller pickled.
+An error raised in a worker process crosses back to the caller pickled, so its type,
+message and attributes must come through intact. (``ArchiveMember``'s hashing contract
+lives in ``test_data_model.py``.)
 """
 
 from __future__ import annotations
@@ -11,10 +10,10 @@ from __future__ import annotations
 import copy
 import inspect
 import pickle
-from collections.abc import Hashable
 
 import pytest
 
+import archivey
 import archivey.exceptions as exceptions_module
 from archivey.diagnostics import (
     Diagnostic,
@@ -27,15 +26,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     DiagnosticRaisedError,
 )
-from archivey.types import ArchiveFormat, ArchiveMember, MemberType
-
-
-def test_member_is_not_a_hashable_instance() -> None:
-    member = ArchiveMember(type=MemberType.FILE, name="a")
-    assert ArchiveMember.__hash__ is None
-    assert not isinstance(member, Hashable)
-    with pytest.raises(TypeError, match="unhashable type: 'ArchiveMember'"):
-        hash(member)
+from archivey.types import ArchiveFormat
 
 
 def _diagnostic() -> Diagnostic:
@@ -48,13 +39,22 @@ def _diagnostic() -> Diagnostic:
     )
 
 
+def _is_archivey_exception(value: object) -> bool:
+    return isinstance(value, type) and issubclass(
+        value, (ArchiveyError, ArchiveyUsageError)
+    )
+
+
+# Importable but not exported: the write API has not shipped.
+_UNEXPORTED = {exceptions_module.WriteError}
+
 _EXCEPTION_CLASSES = sorted(
-    (
-        cls
-        for _, cls in inspect.getmembers(exceptions_module, inspect.isclass)
-        if issubclass(cls, (ArchiveyError, ArchiveyUsageError))
-        and cls.__module__ == exceptions_module.__name__
-    ),
+    {
+        value
+        for name in archivey.__all__
+        if _is_archivey_exception(value := getattr(archivey, name))
+    }
+    | _UNEXPORTED,
     key=lambda cls: cls.__name__,
 )
 
@@ -77,10 +77,16 @@ def _instance(cls: type[BaseException]) -> BaseException:
     return cls(message, **kwargs)
 
 
-def test_every_exception_class_is_covered() -> None:
-    # The sweep below is only as good as its class list.
-    assert DiagnosticRaisedError in _EXCEPTION_CLASSES
-    assert len(_EXCEPTION_CLASSES) >= 25
+def test_sweep_covers_every_exception_class() -> None:
+    # Exported classes plus the known unexported ones must be exactly the classes
+    # ``archivey.exceptions`` defines, so a class added on either side joins the sweep.
+    defined = {
+        cls
+        for _, cls in inspect.getmembers(exceptions_module, _is_archivey_exception)
+        if cls.__module__ == exceptions_module.__name__
+    }
+    assert set(_EXCEPTION_CLASSES) == defined
+    assert not any(cls.__name__ in archivey.__all__ for cls in _UNEXPORTED)
 
 
 @pytest.mark.parametrize("cls", _EXCEPTION_CLASSES, ids=lambda cls: cls.__name__)

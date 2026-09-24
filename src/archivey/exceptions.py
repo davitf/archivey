@@ -16,6 +16,11 @@ interpolates attacker-controlled member names and the paths derived from them, a
 an exception message reaches a terminal by routes no single consumer configures —
 including a traceback the interpreter prints on its own. See
 :class:`ArchiveyError` for what stays raw and why.
+
+Every exception in both trees survives ``pickle``, ``copy`` and ``deepcopy`` with its
+``args``, message and attributes intact, so an error raised in a worker process reaches
+the parent whole. As with any Python exception, ``__cause__`` and ``__context__`` are not
+carried across a pickle.
 """
 
 from __future__ import annotations
