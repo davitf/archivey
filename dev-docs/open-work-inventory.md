@@ -123,11 +123,11 @@ event proves it: that event carries **no commit at all**, where incident 1's car
 
 **So the rule is about reproduction, not about proximity: when you write down what a closing
 phrase said, do not reproduce it.** Describe it — "PR 365's squash body ended with a closing
-keyword and the hub's number" — or break the string. §10 of the review addendum
-carried this exact shape for the old review loop's trigger phrase, which was a command rather
-than a quotable string; the hub's number is the same hazard with a different parser. Ordinary
-sentences that merely contain both a keyword and the number are fine: this page has eight of
-them and neither closure came from that shape.
+keyword and the hub's number" — or break the string. The review addendum's §10 (now
+`code-review-skill` `SKILL.md` §6) carried this exact shape for the old review loop's trigger
+phrase, which was a command rather than a quotable string; the hub's number is the same hazard
+with a different parser. Ordinary sentences that merely contain both a keyword and the number
+are fine: this page has eight of them and neither closure came from that shape.
 
 **Two surfaces, not one.** GitHub prefills the squash body from the pull request body, so
 they normally match — but whoever merges can edit the squash body, and PR 388's was edited,

@@ -89,8 +89,9 @@ The skill's own checklist governs. Weight these at every read:
 
 ## Output — post to #315 as you go, one file at a time
 
-Addendum §0's three-block shape: (1) maintainer briefing, (2) implementor handoff ranked by
-severity × confidence, (3) maintainer decisions. Addendum §10 has the mechanics. In short:
+The three-block shape of `SKILL.md` §3: (1) maintainer briefing, (2) implementor handoff
+ranked by severity × confidence, (3) maintainer decisions. `SKILL.md` §6 and
+`reference/whole-file-sweep.md` have the mechanics. In short:
 
 - **Every finding with a `file:line` goes inline, anchored there** — one thread per finding.
   Stable IDs are `S<N>-<your initial><n>`: `S<N>-K1` from Claude Code, `S<N>-C1` from Cursor.
@@ -116,7 +117,7 @@ severity × confidence, (3) maintainer decisions. Addendum §10 has the mechanic
   run that stops early still leaves everything it found behind.
 - Open every comment with its header and the agent line (`SKILL.md` §6 "Open every comment
   with a header"). A `SWEPT` marker comment is the exception: the marker line is its
-  opener, and already carries the reviewer and the head. Attribution per §10 — add your own
+  opener, and already carries the reviewer and the head. Attribution per `SKILL.md` §6 — add your own
   footer if your host does not.
 - End the top-level comment with:
   `Addressing these: .claude/skills/address-review-findings/SKILL.md`.

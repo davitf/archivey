@@ -338,7 +338,7 @@ Once the round is done, the PR should record what happened to every finding.
 - **Reply in the thread the finding came from.** An inline finding gets an inline reply.
   A top-level review gets a top-level reply listing one bullet per finding, keyed by the
   reviewer's own numbering. **Bullets, not a table** — same rule and same reason as the
-  reviewer's side ([`code-review-skill` §2](../code-review-skill/SKILL.md)):
+  reviewer's side ([`code-review-skill` §3](../code-review-skill/SKILL.md)):
   the maintainer reads these on a phone. Keep each bullet to a line; anything longer is a
   reply on that finding's own thread, where whoever cares is already looking.
 - **Resolve the threads you actually resolved** (`resolve_review_thread`). Leave open the

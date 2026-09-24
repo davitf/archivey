@@ -84,15 +84,9 @@ Snapshot line.
 
 ## Do not re-measure what a previous round recorded
 
-**The same rule applies to your own earlier rounds.** Rebuilding a fixture, re-timing a
-bomb, re-running a mutant, or re-deriving an offset that a previous round already
-established is the single largest measured waste in this loop — on #342 the same
-arithmetic was re-derived from scratch in three consecutive rounds (twice wrongly), and
-#349 and #353 rebuilt 70,000-file fixtures and re-timed both bombs in rounds 2, 3 and 4.
-
-The next round inherits that list and re-runs only what the new HEAD invalidates. When
-you do re-run something, say what changed to make it necessary. An empty list is a
-perfectly good answer and should be written as `None.`
+Start from the previous round's **Measured this round** list and re-run only what the new
+HEAD invalidates, saying what changed to make it necessary. The rule, the list's shape and
+why it matters are in [`SKILL.md`](../SKILL.md) §6.
 
 ## What does not change
 

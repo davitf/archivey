@@ -20,8 +20,8 @@ allowed-tools:
 
 This file holds what every review in this repo needs: how to report, the output shape,
 verdicts, severity, and how to post. What to *do* depends on what you are reviewing, and
-each kind has its own doc (§1). Read this file, then that one — nothing else is required
-reading.
+each kind has its own doc (§1). Read this file, then the one doc §1 names for what you
+are reviewing, plus `CONTRIBUTING.md` on a first look. Nothing else is required reading.
 
 > Started as a Python-only subset of
 > [awesome-skills/code-review-skill](https://github.com/awesome-skills/code-review-skill)

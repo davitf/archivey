@@ -23,7 +23,7 @@ unless the user explicitly asks for them.
 - **Your finding-ID prefix is `C`** — `C1`, `C2`, … The rule those IDs follow, and what
   happens to them across rounds, is `SKILL.md` §6.
 - **Cursor posts under its own `cursor[bot]` identity**, so add your own attribution footer;
-  §10 says why that matters and what the footer is for.
+  `SKILL.md` §6 says why that matters and what the footer is for.
 
 ## Where each thing is decided
 
