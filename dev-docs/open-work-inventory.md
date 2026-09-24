@@ -300,9 +300,10 @@ later the same day.
 
 **Three threads that looked closeable were not, and the difference was one grep each.**
 Thread 51's bug half was retracted but its rename (`_folder_unpack_size` shadowing the
-parser's `folder_unpack_size` one underscore apart) has not happened. Thread 53's conclusion
+parser's `folder_unpack_size` one underscore apart) had not happened. Thread 53's conclusion
 about RAR held, but its own ask — collapsing the two `SlicingStream` constructor calls so the
-branches differ in `start` alone — is untouched. Thread 12's docstring question is answered by
+branches differ in `start` alone — was untouched. Both were done later, in
+[#440](https://github.com/davitf/archivey/pull/440). Thread 12's docstring question is answered by
 this page's own PR, not by #374. **Resolving on the strength of a follow-up comment saying
 "the conclusion held" would have closed all three wrongly.**
 
@@ -363,12 +364,12 @@ encrypted 7z folder; [#344](https://github.com/davitf/archivey/pull/344) added `
 on a short final block. The "are the three decrypt streams mergeable?" half is answered in the
 class docstring and promoted to `fold-rar-header-decrypt-stream` in #347.
 
-The 8 of this cohort that remain (the five `solid.py` rows are done). `*` marks a thread whose follow-up narrowed it.
+The 5 of this cohort that remain (the five `solid.py` rows and the three `sevenzip_reader.py` rows are done). `*` marks a thread whose follow-up narrowed it.
 
 | File | Open | Threads | Character |
 | --- | --- | --- | --- |
 | ~~`streamtools/solid.py`~~ | 0 | five from 2026-09-14 | **Done** — [#439](https://github.com/davitf/archivey/pull/439): `_drain_chunks` folded into `skip_forward` (per-chunk `on_chunk` callback), `_skip_to` inlined, redundant check dropped, `_claim_offset` renamed `_check_can_open_at`, "Vend" reworded |
-| `backends/sevenzip_reader.py` | 3 | 51\*, 53, 54 | Two renames and a nit; 51's bug half was retracted, 53's own ask survives its follow-up |
+| ~~`backends/sevenzip_reader.py`~~ | 0 | 51\*, 53, 54 | **Done** — [#440](https://github.com/davitf/archivey/pull/440): `_folder_unpack_size` renamed `_folder_members_total_size`, the timestamp aliases dropped from the 7z and ZIP readers, one `SlicingStream` call in `_open_member`. 51's substream-count half was closed by #424 |
 | `zip_aes.py` | 2 | 14, 15 | Placement, and the one live layering violation |
 | `volumes.py` | 1 | 12 | The docstring half; 13 was closed by #374 |
 | `rar_detect.py` | 1 | 10 | Placement — same decision as 14 |
@@ -396,7 +397,9 @@ defines the last substream size as the folder remainder. What survives is
 `_folder_unpack_size` (a sum over members) shadowing the parser's `folder_unpack_size` (from
 the coder graph) one underscore apart, and a missing check that the declared substream count
 matches the non-empty file count — which is why a malformed archive reports `EncryptionError`
-where `CorruptionError` is meant.
+where `CorruptionError` is meant. **Both halves are done:** #424 added the count check
+(`sevenzip_parser._map_files_to_folders` raises `CorruptionError`), and
+[#440](https://github.com/davitf/archivey/pull/440) made the rename.
 
 **The four verified bugs are fixed** — [#324](https://github.com/davitf/archivey/pull/324),
 merged 2026-09-11, threads 17/21/38/39 resolved. Kept here because the PR's own review cycle
@@ -1125,18 +1128,14 @@ Thread 56 (the post-drain orphan) closed with [#365](https://github.com/davitf/a
 | ~~C — binaryio + solid~~ | `binaryio.py`, `solid.py` | 22, 23, 25, 26, 40, 41, 55 | **Done** — [#329](https://github.com/davitf/archivey/pull/329) |
 | ~~D — RAR parser~~ | `backends/rar_parser.py` | 1, 2, 4, 5, 6, 7, 8, 9 | **Done** — [#332](https://github.com/davitf/archivey/pull/332). Threads 1 and 2 were the two possible header-decrypt bugs; both measured against fixtures and neither was one |
 | ~~E — RAR reader~~ | `backends/rar_reader.py` | 43, 44, 46, 47, 48, 49 | **Done** — [#336](https://github.com/davitf/archivey/pull/336) |
-| **F — placement + odds** | `rar_detect.py`, `zip_aes.py`, `volumes.py`, `reader_state.py`, `sevenzip_reader.py` | 10, 11, 12, 14, 15, 51\*, 53, 54 | **Ready, and unblocked.** Eight threads — 13 was closed by #374, and thread 3 left when #342 answered it. **Threads 10/14 were answered on 2026-09-19 (`backends/`)**, so the placement is no longer a question; the move itself is the work, and it is what makes the rest mechanical |
+| **F — placement + odds** | `rar_detect.py`, `zip_aes.py`, `volumes.py`, `reader_state.py` | 10, 11, 12, 14, 15 | **Ready, and unblocked.** Five threads. 51, 53 and 54 were closed by [#440](https://github.com/davitf/archivey/pull/440), 13 by #374, and thread 3 left when #342 answered it. **Threads 10/14 were answered on 2026-09-19 (`backends/`)**, so the placement is no longer a question; the move itself is the work, and it is what makes the rest mechanical |
 | ~~(orphan)~~ | `streamtools/base.py` | 56 | **Done** — [#365](https://github.com/davitf/archivey/pull/365), merged 2026-09-21. Both flags now use the class-flag-plus-constructor-override pattern `_SUBCLASS_CLOSES_INNER` already had |
 | ~~(new)~~ | five `solid.py` questions from 2026-09-14 | — | **Done** — [#439](https://github.com/davitf/archivey/pull/439), together with S18-K8 (two asserts in `ArchiveStream._collapse_nested`) |
 
-**Parcel F's prompt should carry three corrections** the follow-up comments make and the
-opening comments do not: thread 3 is closed and out of scope; thread 51 is a rename plus a
-missing substream-count check, not the password bug its first comment describes; and thread 54
-is a ~10-site rename across `sevenzip_reader.py` **and** `zip_reader.py`, not the two-line
-delete it was first written as. A fourth, added 2026-09-21: **thread 53's own ask survives its
-own follow-up.** The follow-up says the RAR conclusion held, which reads like a closing note,
-but the opening comment's suggestion — collapse the two `SlicingStream` constructor calls in
-`sevenzip_reader._open_member` so the branches differ in `start` alone — has not been done.
+**Parcel F's prompt should carry one correction** the follow-up comments make and the
+opening comments do not: thread 3 is closed and out of scope. The other corrections recorded
+here (threads 51, 53 and 54) no longer apply: those three were done in
+[#440](https://github.com/davitf/archivey/pull/440).
 
 **Wave 2c — the S15–S25 drain. The largest block on this page.** 92 threads on 2026-09-23,
 eight of them blocking, thirteen rulings owed. It is not a parcel because it is not one shape: batch

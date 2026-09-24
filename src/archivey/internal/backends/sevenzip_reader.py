@@ -838,10 +838,11 @@ class SevenZipReader(BaseArchiveReader):
     def _folder_members_total_size(self, folder_index: int) -> int:
         """Sum of the listed members' sizes in the folder.
 
-        Not the coder graph's unpack size (``sevenzip_parser.folder_unpack_size``):
-        the parser rejects a folder whose substreams leave bytes unaccounted for, so
-        the two agree on any archive that opens, but this is the one the per-member
-        CRC walk is built from.
+        Not the coder graph's unpack size (``sevenzip_parser.folder_unpack_size``).
+        The two agree for any folder that has members: the parser rejects a folder
+        whose substreams leave bytes unaccounted for, and skips a folder declaring
+        zero substreams, which never reaches this helper. This is the one the
+        per-member CRC walk is built from.
         """
         members = self._folder_members.get(folder_index, [])
         return sum(_member_stream_size(member) for member in members)
@@ -1063,8 +1064,10 @@ class SevenZipReader(BaseArchiveReader):
             track_output=True,
         )
         try:
-            # A seekable folder stream lets the slice start at the prefix without
-            # decoding it; otherwise the prefix is decoded and discarded first.
+            # A seekable folder stream leaves positioning to the slice's first read
+            # and to the codec (free on a stored folder, decode-and-discard inside
+            # the codec otherwise), and the slice stays seekable. A forward-only
+            # one is skipped to the prefix here.
             seek_to_prefix = want_seekable and is_seekable(folder_stream)
             if not seek_to_prefix:
                 skip_forward(folder_stream, prefix)
