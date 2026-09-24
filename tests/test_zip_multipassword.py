@@ -16,6 +16,7 @@ from archivey import PasswordRequest, open_archive
 from archivey.exceptions import CorruptionError, EncryptionError
 from archivey.internal import password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
+from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import CONFIRM_PREFIX_BYTES
 from tests.zipcrypto import (
     build_zipcrypto_zip,
@@ -27,6 +28,7 @@ from tests.zipcrypto import (
 RIGHT = b"very_secret_password"
 DATA = b"This is very secret" * 8
 NAME = "very_secret.txt"
+UNCONFIRMED = r"password may be wrong .*or the encrypted member may be corrupt"
 PasswordArg = (
     str | bytes | list[str | bytes] | Callable[[PasswordRequest], str | bytes | None]
 )
@@ -94,7 +96,34 @@ def test_single_distinct_candidate_is_not_eagerly_read(
 
     with open_archive(io.BytesIO(blob), password=passwords) as ar:
         stream = ar.open(NAME)
-        with stream, pytest.raises(CorruptionError):
+        with stream, pytest.raises(EncryptionError, match=UNCONFIRMED):
+            stream.read()
+
+
+@pytest.mark.parametrize("compression", COMPRESSION_METHODS)
+def test_single_colliding_password_is_reported_as_a_password_failure(
+    compression: int,
+) -> None:
+    """A lone wrong password that passes the check byte is not called corruption."""
+    blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=compression)
+    collider = find_check_byte_collision(blob, NAME, RIGHT)
+
+    with pytest.raises(EncryptionError, match=UNCONFIRMED) as caught:
+        _read_member(blob, collider)
+    assert type(caught.value) is EncryptionError
+    # Only the check byte could have said "wrong"; it did not, so no wrong-password mark.
+    assert not is_wrong_password(caught.value)
+    assert _read_member(blob, RIGHT) == DATA
+
+
+@pytest.mark.parametrize("compression", COMPRESSION_METHODS)
+def test_single_colliding_password_fails_a_forward_seek(compression: int) -> None:
+    blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=compression)
+    collider = find_check_byte_collision(blob, NAME, RIGHT)
+
+    with open_archive(io.BytesIO(blob), password=collider, seekable_members=True) as ar:
+        with ar.open(NAME) as stream, pytest.raises(EncryptionError, match=UNCONFIRMED):
+            stream.seek(len(DATA))
             stream.read()
 
 
@@ -356,7 +385,7 @@ def test_stored_caller_stream_is_crc_checked() -> None:
         )
     )
     with open_archive(io.BytesIO(blob), password=RIGHT) as ar:
-        with pytest.raises(CorruptionError):
+        with pytest.raises(EncryptionError, match=UNCONFIRMED):
             ar.read(NAME)
 
 

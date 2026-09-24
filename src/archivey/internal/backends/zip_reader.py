@@ -102,6 +102,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.streamtools import (
     CloseLockedStream,
+    DelegatingStream,
     SharedView,
     SlicingStream,
     read_exact,
@@ -270,6 +271,47 @@ def _is_candidate_integrity_failure(exc: Exception) -> bool:
     return isinstance(exc, (zlib.error, lzma.LZMAError)) or (
         isinstance(exc, OSError) and str(exc) == _BZIP2_INVALID_DATA
     )
+
+
+#: A lone ZipCrypto password passed the one-byte check, and the data then failed its
+#: integrity check. Either the password is wrong (one in 256 wrong ones pass that byte)
+#: or the member is damaged; nothing in the archive can tell the two apart.
+_UNCONFIRMED_PASSWORD_FAILURE = (
+    "The data failed its integrity check with this password; the password may be "
+    "wrong (ZipCrypto checks only one byte of it before decrypting), or the encrypted "
+    "member may be corrupt"
+)
+
+
+class _UnconfirmedZipCryptoStream(DelegatingStream):
+    """A ZipCrypto member opened with one password that only its check byte vouched for.
+
+    A wrong password shows up here as a CRC mismatch at the end of a stored member, or a
+    decompressor error part way into a compressed one. Both would otherwise read as a
+    damaged archive, so they are reported the way the multi-password path reports the
+    same ambiguity: as an ``EncryptionError`` that names both causes.
+    """
+
+    readinto_passthrough = False
+
+    def read(self, n: int = -1, /) -> bytes:
+        try:
+            return super().read(n)
+        except _ZIP_MEMBER_READ_ERRORS as exc:
+            self._reraise(exc)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        # A forward seek on a ZipExtFile decrypts and decompresses what it skips.
+        try:
+            return super().seek(offset, whence)
+        except _ZIP_MEMBER_READ_ERRORS as exc:
+            self._reraise(exc)
+
+    @staticmethod
+    def _reraise(exc: Exception) -> NoReturn:
+        if _is_candidate_integrity_failure(exc):
+            raise EncryptionError(_UNCONFIRMED_PASSWORD_FAILURE) from exc
+        raise exc
 
 
 def _zip_timestamps(
@@ -1288,8 +1330,10 @@ class ZipReader(BaseArchiveReader):
         member_name: str,
     ) -> BinaryIO:
         def decrypt(password: bytes) -> BinaryIO:
-            return self._open_zipfile_member(
-                info, password=password, member_name=member_name
+            return _UnconfirmedZipCryptoStream(
+                self._open_zipfile_member(
+                    info, password=password, member_name=member_name
+                )
             )
 
         return self._finish_password_attempt(
