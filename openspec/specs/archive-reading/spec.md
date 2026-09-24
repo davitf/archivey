@@ -50,12 +50,13 @@ contracts. `format=None` auto-detects; an explicit format bypasses detection.
 | Argument | Intent | Behaviour when the backend cannot act on it |
 | --- | --- | --- |
 | `format=` | assertion — "I claim this is a ZIP" | refuse when it cannot hold (see the directory rule below) |
-| `password=` | resource — a keyring | permit in **every** form; `PASSWORD_ARGUMENT_UNUSED` |
+| `password=` | resource — a keyring | permit in **every** form; `PASSWORD_ARGUMENT_UNUSED` for a concrete value, none for a provider |
 | `encoding=` | resource — a hint for name decoding | permit; `ENCODING_ARGUMENT_UNUSED` |
 
 `password=` on a format with no encryption SHALL NOT raise, in any of its forms — a
-single value, an ordered sequence, and a provider callable SHALL behave identically
-(accepted, never consulted, one diagnostic). A *wrong* password on an *encrypted*
+single value, an ordered sequence, and a provider callable SHALL open identically
+(accepted, never consulted). A single value or a sequence records one diagnostic; a
+provider callable records none, because it offers a password only if asked. A *wrong* password on an *encrypted*
 archive is unaffected and still raises. Each backend SHALL declare whether it consumes
 `encoding` (`ReadBackend.USES_ENCODING`) the same way it declares
 `ReadBackend.SUPPORTS_PASSWORD`, so the check is central rather than per-backend
@@ -86,7 +87,8 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 | `format=ArchiveFormat.ZIP` succeeds | No detection diagnostics from open |
 | Open raises | No reader returned |
 | `password="secret"` | Returned reader uses that password for encrypted members |
-| `password=` any form, format with no encryption | Opens; `PASSWORD_ARGUMENT_UNUSED`; no raise |
+| `password=` a value or a sequence, format with no encryption | Opens; `PASSWORD_ARGUMENT_UNUSED`; no raise |
+| `password=` a provider callable, format with no encryption | Opens; no diagnostic; provider never called |
 | `encoding=` on a backend that decodes names another way | Opens; `ENCODING_ARGUMENT_UNUSED`; names unchanged |
 | Directory path, no `format=` | Opens as `DIRECTORY` |
 | Directory path, `format=ArchiveFormat.DIRECTORY` | Opens as `DIRECTORY` |

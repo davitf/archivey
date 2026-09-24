@@ -173,12 +173,13 @@ bytes and tells you, via a `FORMAT_EXTENSION_CONFLICT`
 really a ZIP opens fine, and so does a `.cbr` that is a ZIP (the usual comic
 mislabel). You can still find out that the name lied.
 
-`detect_format` reports the same format `open_archive` would use, with one wrinkle
-worth knowing. Telling a `.tar.zst` from a plain `.zst` means decompressing a little
-of it to look for the tar header, so when that compressor's package is not installed
-the check cannot run and the bare compressor is reported instead. You are not left
-guessing: opening the file raises `UnsupportedFormatError`, naming the package to
-install.
+`detect_format` reports the same format `open_archive` would use; a directory path
+reports `ArchiveFormat.DIRECTORY`, since `open_archive` reads a directory as an
+archive. There is one wrinkle worth knowing: telling a `.tar.zst` from a plain `.zst`
+means decompressing a little of it to look for the tar header, so when that
+compressor's package is not installed the check cannot run and the bare compressor is
+reported instead. You are not left guessing: opening the file raises
+`UnsupportedFormatError`, naming the package to install.
 See [Install and extras](install.md#what-each-format-needs).
 
 ## Passwords
@@ -196,7 +197,9 @@ Passing a password to a format that has no encryption at all — a tar, say — 
 you can query on `reader.diagnostics`. That is deliberate. `password=` is a *keyring you are offering*, not a claim that this
 archive is encrypted — "here are the twenty passwords we know, open whatever you can"
 is the point of the list form — so one plain `.tar` in a batch should not stop the run.
-All three forms behave alike here: a string, a list, and a `PasswordProvider` callable.
+All three forms open alike here: a string, a list, and a `PasswordProvider` callable.
+Only a string or a list records the diagnostic. A provider offers a password only when
+asked, and a format with no encryption never asks, so nothing was supplied.
 
 A *wrong* password on an archive that really is encrypted still fails loudly with
 `EncryptionError`, which is the case that actually costs you something.

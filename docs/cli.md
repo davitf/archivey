@@ -39,8 +39,9 @@ archivey extract photos.zip --policy trusted -d /tmp/out
 ### Notes
 
 - Verbs are bare words (`x`, `list`); dash-prefixed forms like `-x` are not mode selectors.
-- A file whose name is a verb word (e.g. `./x`) is reached with an explicit verb:
-  `archivey list ./x`.
+- A bare verb word is always a verb: `archivey x a.zip` extracts. Any path-qualified
+  token is a path and gets listed, so a file named `x` is reached as `archivey ./x`
+  (or `archivey dir/x`, `archivey /abs/x`, `archivey list x`).
 - A file whose name starts with `-` is reached after `--`: `archivey -- -weird.zip`
   (or `archivey list -- -weird.zip`). Every word after `--` is a file or pattern, so
   `archivey -- list` opens a file named `list`.

@@ -161,19 +161,33 @@ def test_pipe_metadata_stays_absent_and_costs_no_decode(
         assert HashAlgorithm.CRC32 not in member.hashes
 
 
-def test_gzip_crc32_is_not_gated_on_declared_seekability(tmp_path: Path) -> None:
-    """F1 (guardrail): gzip already does it the right way — keep it that way.
+def test_gzip_reports_no_crc32_on_either_decoder(tmp_path: Path) -> None:
+    """F1 (guardrail), narrowed to absence by PR 441: gzip reports no CRC at all.
 
-    The gzip trailer CRC-32 is surfaced from a bounded peek regardless of
-    ``seekable_members``. This is the behaviour the lzip/xz rows should converge on,
-    so it is pinned rather than left to drift toward the gated shape.
+    F1 said declared seekability must not leak into member metadata. PR 441's ruling
+    then removed the gzip digest outright (a trailer CRC covers only the last member,
+    and a read already verifies every member), so the assertion is absence on every
+    path: listing and full read, with and without ``seekable_members``, on either
+    decoder (the accelerator is pinned ON and OFF so the legs really differ).
     """
+    from archivey.config import AcceleratorMode
     from archivey.types import HashAlgorithm
 
     path = _archive("single-file", "gz", tmp_path)
-    for kwargs in ({}, {"seekable_members": True}):
-        with open_archive(path, **kwargs) as reader:  # type: ignore[arg-type]
-            assert HashAlgorithm.CRC32 in reader.members()[0].hashes
+    modes = [AcceleratorMode.OFF]
+    try:
+        import rapidgzip  # noqa: F401
+
+        modes.append(AcceleratorMode.ON)
+    except ImportError:
+        pass
+    for mode in modes:
+        config = ArchiveyConfig(use_rapidgzip=mode)
+        for kwargs in ({}, {"seekable_members": True}):
+            with open_archive(path, config=config, **kwargs) as reader:  # type: ignore[arg-type]
+                member = reader.members()[0]
+                reader.read(member)
+                assert HashAlgorithm.CRC32 not in member.hashes
 
 
 # ---------------------------------------------------------------------------

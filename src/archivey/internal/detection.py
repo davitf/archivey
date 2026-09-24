@@ -135,7 +135,7 @@ class FormatInfo:
 
     format: ArchiveFormat
     confidence: DetectionConfidence
-    detected_by: str  # "magic", "extension", "content_probe", "sfx_scan"
+    detected_by: str  # "magic", "extension", "content_probe", "sfx_scan", "directory"
     encoding_hint: str | None = None
     payload_offset: int = (
         0  # nonzero only for SFX archives (is-SFX == payload_offset > 0)
@@ -583,6 +583,11 @@ def detect_format(
     The returned ``cost_receipt`` and ``unavailable_tiers`` then cover both passes, the
     stub's and the volume's. Each pass runs under the full ``budget``; the receipt's
     ``passes`` is 2 and ``within_budget`` judges it against two budgets.
+
+    A directory path returns :attr:`ArchiveFormat.DIRECTORY` with ``CERTAIN``
+    confidence and ``detected_by="directory"``, matching ``open_archive``, which reads
+    it as a directory archive. Nothing is read to decide that, so ``cost_receipt`` is
+    the zero receipt (one pass, no bytes).
     """
     # Before anything is read: an object that is neither a path nor a binary stream
     # used to reach the prefix workspace and die there as
@@ -590,6 +595,15 @@ def detect_format(
     # the same value already said "unsupported source type". Same refusal, same words.
     require_source(source)
     check_config(config, call="detect_format(config=…)")
+    if _is_directory_source(source):
+        # Nothing is read, so the receipt is the zero one: every other return
+        # carries a receipt, and callers compare them across sources.
+        return FormatInfo(
+            ArchiveFormat.DIRECTORY,
+            DetectionConfidence.CERTAIN,
+            "directory",
+            cost_receipt=MutableDetectionCostReceipt().freeze(),
+        )
 
     owned_collector = collector is None
     if owned_collector:
@@ -618,6 +632,15 @@ def detect_format(
         else collector.snapshot(since=detection_wm)
     )
     return replace(info, diagnostics=diagnostics)
+
+
+def _is_directory_source(source: str | Path | BinaryIO) -> bool:
+    """Whether ``source`` names a directory, by the test ``ArchiveSource`` uses."""
+    if isinstance(source, ArchiveSource):
+        return source.is_directory
+    if isinstance(source, (str, Path)):
+        return Path(source).is_dir()
+    return False
 
 
 def _first_volume_beside_stub(source: str | Path | BinaryIO) -> Path | None:

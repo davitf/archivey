@@ -873,20 +873,15 @@ class MetadataContext:
 
     Lets a codec's ``extract_metadata`` read what it needs from the source without the codec
     layer depending on the single-file reader. ``peek_header(n)`` returns the leading ``n``
-    bytes of the compressed source without consuming it; ``peek_trailer(n)`` returns the
-    trailing ``n`` bytes when the source is seekable/path (else ``None``);
-    ``probe_decompressed_size()`` returns the decompressed size from the stream
-    index/trailer when cheaply available (else ``None``); ``probe_gzip_stored_crc32()``
-    returns the single-member gzip trailer CRC when that is cheaply knowable (else
-    ``None``), in one seekable pass; ``probe_lzip_index()`` returns
+    bytes of the compressed source without consuming it; ``probe_decompressed_size()``
+    returns the decompressed size from the stream index/trailer when cheaply available
+    (else ``None``); ``probe_lzip_index()`` returns
     ``(decompressed_size, combined_crc32)`` from one seekable lzip index scan when
     available (else ``None``).
     """
 
     peek_header: Callable[[int], bytes]
-    peek_trailer: Callable[[int], bytes | None]
     probe_decompressed_size: Callable[[], int | None]
-    probe_gzip_stored_crc32: Callable[[], int | None]
     probe_lzip_index: Callable[[], tuple[int, int] | None]
 
 
@@ -1225,15 +1220,32 @@ class GzipCodec(StreamCodec):
         return _translate_rapidgzip(exc, "gzip")
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
-        """Surface gzip's stored filename (FNAME), mtime, and trailer CRC when cheap.
+        """Surface gzip's stored filename (FNAME) and mtime.
 
         RFC 1952 specifies the FNAME field as ISO-8859-1 (Latin-1), so the decoded value in
         ``extra`` uses that encoding; ``raw_name`` keeps the verbatim stored bytes.
 
-        The 8-byte trailer CRC-32 is surfaced as ``member.hashes[HashAlgorithm.CRC32]``
-        only when the header is a valid gzip magic *and* the stream is a single member on a
-        seekable/path source (multi-member trailers cover only the last member). Never
-        triggers a decompression pass.
+        **The trailer CRC-32 is deliberately never put in** ``member.hashes``. Maintainer
+        decision (PR 441); the reasoning, so it is not re-litigated:
+
+        - A digest is worth having for two things: skipping a decompression because an
+          equal file was already processed (it must be known *before* the read), or
+          verifying a read (it must come from somewhere the decoder does not already
+          check).
+        - The trailer CRC covers only the **last** member. It equals the digest of the
+          whole content only when the file holds exactly one member, and nothing in the
+          header says so.
+        - Proving single-memberness at open means scanning the whole compressed file.
+          That was the old behaviour: O(file size) on every open (a full download for a
+          remote source), and on large files the 3-byte member magic ``1f 8b 08``
+          matches by chance (about once per 16 MiB), so the scan usually concluded
+          "multi-member" and dropped the CRC anyway.
+        - Adding the CRC after a full read was implemented and removed: by then the
+          decoder has already checked every member's CRC and raised on a mismatch, so
+          the digest serves neither purpose. It also could not be made uniform, since
+          the rapidgzip accelerator hides member boundaries.
+
+        A caller that wants a digest of a gzip's content computes one while reading.
         """
         header = ctx.peek_header(_GZIP_HEADER_PEEK)
         if len(header) < 10 or header[:2] != b"\x1f\x8b":
@@ -1257,12 +1269,6 @@ class GzipCodec(StreamCodec):
                 name_bytes = header[pos:end]
                 member.raw_name = name_bytes
                 member.extra["gzip.original_filename"] = name_bytes.decode("latin-1")
-
-        crc32 = ctx.probe_gzip_stored_crc32()
-        if crc32 is not None:
-            hashes = dict(member.hashes)
-            hashes[HashAlgorithm.CRC32] = crc32_digest(crc32)
-            member.hashes = hashes
 
 
 class Bzip2Codec(StreamCodec):
