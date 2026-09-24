@@ -385,8 +385,12 @@ class ArchiveStream(ReadOnlyIOStream):
         # wrapper's own (plain file semantics, not translated), and a lazy open failure
         # is already routed through _fail inside it.
         # Full-count ``read(n)`` (ADR 0014): one ``inner.read(n)``, so
-        # ``read(member.size)`` is a real verifying event when a verifier is fused. The
-        # ``n``-or-terminal guarantee is the inner's (fill-or-EOF); a short non-empty
+        # ``read(member.size)`` is a real verifying event when a verifier is fused and
+        # the call returns all ``member.size`` bytes. On a truncated member it can
+        # return short without raising (unless the decoder itself reports the cut): the
+        # ``TruncatedError`` then comes from the next read, the one that sees EOF, so a
+        # caller must read until ``b""``. The ``n``-or-terminal guarantee is the
+        # inner's (fill-or-EOF); a short non-empty
         # return is a terminal signal to forward, not "ask again" — retrying it would
         # pull a decoder's deferred truncation into this call. An inner that shorts
         # mid-stream needs a full-count layer in front (the ``ArchiveSource`` at the

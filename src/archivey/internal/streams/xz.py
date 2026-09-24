@@ -36,6 +36,7 @@ from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.config import DecoderLimits
 from archivey.internal.diagnostics_collector import (
@@ -410,14 +411,43 @@ def _new_decompressor(limits: DecoderLimits) -> lzma.LZMADecompressor:
     )
 
 
+def lzma_error_to_archivey(exc: lzma.LZMAError, context: str) -> ArchiveyError:
+    """Map a liblzma error to archivey's by its cause.
+
+    CPython raises every liblzma failure as the one ``LZMAError`` type and tells them
+    apart only by message text, the same on 3.10 to 3.14, so the text is what there
+    is to match on. An options error names a filter or filter property this liblzma
+    cannot decode (a block header with a valid CRC naming an unknown filter gets
+    here). liblzma gives the same message for corrupt filter properties, but the
+    callers that decode properties themselves (the ZIP and 7z readers) classify that
+    as corruption before it can arrive here. An unsupported check names an integrity check it does not implement, and a
+    memlimit error is a configured cap refusing a declared dictionary. None of those
+    is damage. Anything else (corrupt data, a header that is not LZMA, an unrecognized
+    code) stays :class:`CorruptionError`. ``LZMA_MEM_ERROR`` never gets here: CPython
+    raises it as ``MemoryError``.
+    """
+    text = str(exc)
+    if text.startswith(
+        ("Invalid or unsupported options", "Unsupported integrity check")
+    ):
+        return UnsupportedFeatureError(f"{context}: {exc} (liblzma cannot decode this)")
+    if text.startswith("Memory usage limit"):
+        return ResourceLimitError(
+            f"{context}: {exc}. The archive declared a dictionary larger than the "
+            f"decoder memory cap; raise DecoderLimits.max_decoder_memory if the "
+            f"archive is trusted."
+        )
+    return CorruptionError(f"{context}: {exc}")
+
+
 def _lzma_failure(
     exc: lzma.LZMAError, context: str, limits: DecoderLimits
 ) -> ArchiveyError:
-    """Map a liblzma error to archivey's, telling a memlimit refusal from corruption.
+    """:func:`lzma_error_to_archivey`, naming the cap when a memlimit refused a block.
 
-    CPython reports ``LZMA_MEMLIMIT_ERROR`` only as message text, "Memory usage limit
-    exceeded" on every version from 3.10 to 3.14, so the text is what there is to
-    match on. Only a decompressor built with a ``memlimit`` can raise it.
+    Only a decompressor built with a ``memlimit`` can raise "Memory usage limit
+    exceeded", and here that memlimit is always ``max_decoder_memory`` plus the
+    overhead allowance.
     """
     cap = limits.max_decoder_memory
     if cap is not None and str(exc).startswith("Memory usage limit"):
@@ -427,7 +457,7 @@ def _lzma_failure(
             f"allocating). The archive chose this number; raise "
             f"DecoderLimits.max_decoder_memory if the archive is trusted."
         )
-    return CorruptionError(f"{context}: {exc}")
+    return lzma_error_to_archivey(exc, context)
 
 
 class _XzState:
@@ -485,9 +515,10 @@ class _XzState:
                 out = out + more
             except lzma.LZMAError as e:
                 # A corrupt tail is what truncation looks like here, so it stays a
-                # truncation. A memlimit refusal is not damage and is not swallowed.
+                # truncation. A memlimit or options refusal is not damage and is not
+                # swallowed.
                 failure = _lzma_failure(e, "XZ decompression error", self._limits)
-                if isinstance(failure, ResourceLimitError):
+                if not isinstance(failure, CorruptionError):
                     raise failure from e
         self.truncated = True
         return out, units
