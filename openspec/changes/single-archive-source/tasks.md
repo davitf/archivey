@@ -29,8 +29,8 @@
       fact, with the fact/hint distinction recorded (decisions 5 and 6).
       *As built:* `size` is the fact; the caller's hint is `size_hint`, read by
       `compressed_source_size`, its complement (whether a byte counter stands in) and
-      detection's total size, none of which bounds a read. A first build exposed the hint as `size`, and slices
-      and shared views over the source clamped on it.
+      detection's total size, none of which bounds a read. A first build exposed the
+      hint as `size`, and slices and shared views over the source clamped on it.
 - [x] 2.5 Bounded `read` and `readinto`: `read_within_reach` decides how many bytes may be
       requested and runs over the full-count strategy, never over the raw inner; clamp
       only on a fact (decision 5). Test that a one-byte-chunk non-seekable source still

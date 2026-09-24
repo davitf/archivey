@@ -185,8 +185,8 @@ class _EofProbeStream:
     Over a decompressor it is the one place a read sized from the archive can be
     bounded: the source's own bound sits under the codec, not in front of ``tarfile``.
     Over the source itself (a plain tar) the source already bounds, so ``bounded=False``
-    passes reads straight through rather than bounding the raw case twice. ``TarInfo._proc_pax`` and
-    ``_proc_gnulong`` each issue a single ``read(self._block(self.size))`` for a PAX
+    passes reads straight through rather than bounding the raw case twice.
+    ``TarInfo._proc_pax`` and ``_proc_gnulong`` each issue a single ``read(self._block(self.size))`` for a PAX
     extended header or a GNU long name, where ``size`` is the 12-byte octal field of a
     ``typeflag`` ``x`` / ``L`` / ``K`` header — up to 8 GiB, and further through GNU
     base-256. ``BufferedReader.read(n)`` allocates ``n`` up front, so the allocation

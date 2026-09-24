@@ -177,8 +177,9 @@ class PrefixWorkspace:
         An overestimated total size never proves a later offset reachable — we only report
         a remaining length when it is measured from the entry position (or a short peek
         that hit EOF). The one unverified total is a caller's fsspec ``size`` attribute,
-        which is taken at its word here as it always was. An abandoned spool truncated the pipe; more bytes may exist, so
-        the buffered length is never reported as a proven remaining size.
+        which is taken at its word here as it always was. An abandoned spool truncated
+        the pipe; more bytes may exist, so the buffered length is never reported as a
+        proven remaining size.
         """
         if self._spool_abandoned:
             return None

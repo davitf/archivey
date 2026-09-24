@@ -185,10 +185,10 @@ it.
 *As built:* as designed. A caller's `size` hint is kept apart as `size_hint`, read where the
 cheap answer is wanted and nothing is bounded: `compressed_source_size`, the choice of
 whether a live byte counter stands in for it (the two are complements, so they must ask
-the same question), and detection's total size. An earlier build exposed the hint as `size`; since
-`source_byte_size` reads `size` first, every slice and shared view over the source then
-clamped on the hint, one layer above the source's own fact-only clamp (the design review
-of the implementation found it).
+the same question), and detection's total size. An earlier build exposed the hint as
+`size`; since `source_byte_size` reads `size` first, every slice and shared view over the
+source then clamped on the hint, one layer above the source's own fact-only clamp (the
+design review of the implementation found it).
 
 ### 7. Three wrappers stay above it
 
