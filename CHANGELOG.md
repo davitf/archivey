@@ -92,16 +92,14 @@ promise with that line; treat `0.2.0` as the first release of this library.
   without bound, both when a seek built the index and while a forward read recorded
   resume points (the cap covers every codec that records them, `.Z` included). Past the
   cap the table is thinned rather than dropped: points are kept a spacing apart so a
-  seek decodes a little further, and a `SEEK_INDEX_DEGRADED` diagnostic says so. An `.xz`
-  whose blocks would pass the cap keeps only the start of each stream, since a block
-  can only be resumed with every later block listed. The data read is unchanged, and
-  real files come nowhere near the cap: `xz -T0` writes 24 MiB blocks, so 262 144 of
-  them is 6 TiB.
+  seek decodes a little further, and a `SEEK_INDEX_DEGRADED` diagnostic says so. The
+  data read is unchanged, and real files come nowhere near the cap: `xz -T0` writes
+  24 MiB blocks, so 262 144 of them is 6 TiB.
 - **Seeking in an `.xz` whose index scan failed no longer returns a short read with no
   error.** When the file had data the index scan could not parse (trailing garbage, for
-  example), resume points recorded by an earlier forward read were kept and pointed at
-  blocks the missing index could no longer locate; a later seek then stopped at the end
-  of the current stream. Those points now resume from the start of their stream.
+  example), a seek resumed from block points an earlier forward read had recorded, and
+  the read stopped at the end of that stream. A seek into an `.xz` now resumes from one
+  block, needing only that block and its stream's footer, and decodes on to the end.
 - **A password list now works when the right password is not first**, on the two
   formats where it did not: a header-encrypted 7z and RAR5 with encrypted data. On 7z, a
   wrong key decodes the header to garbage, and that failure ended the attempt instead of

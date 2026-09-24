@@ -4,6 +4,7 @@ trailer-scan random access, plus accelerator present/absent behaviour."""
 from __future__ import annotations
 
 import bz2
+import dataclasses
 import gzip
 import importlib.util
 import io
@@ -22,7 +23,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     TruncatedError,
 )
-from archivey.internal.config import AcceleratorMode, StreamConfig
+from archivey.internal.config import AcceleratorMode, DecoderLimits, StreamConfig
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.lzip import LzipDecompressorStream, _read_index_backwards
 from archivey.internal.streams.unix_compress import UnixCompressDecompressorStream
@@ -353,10 +354,9 @@ def test_lzip_truncated_large_read_recovers_prefix() -> None:
 def test_xz_partial_index_mid_seek_includes_later_streams() -> None:
     """Stateful resume after indexing only an early stream must not silent-EOF later ones.
 
-    Progressive enrichment adds block-bounds for *completed* streams only. Resuming via
-    an ``_XzBlockBounds`` point builds a closed chain from that point plus already-indexed
-    later blocks; without a full from-origin index the chain ends at the first stream and
-    reads past it return empty. Seek must complete the index first.
+    Progressive enrichment adds block-bounds for *completed* streams only. A resume from
+    one decodes to the end of its stream and carries on sequentially, so later streams
+    need no index.
     """
     part1 = b"A" * 30_000
     part2 = b"B" * 8_000
@@ -371,7 +371,6 @@ def test_xz_partial_index_mid_seek_includes_later_streams() -> None:
         assert any(p.state is not None for p in stream._seek_points)
         mid = len(part1) // 2
         assert stream.seek(mid) == mid
-        assert stream._index_built
         # Cross the stream boundary while reading from a mid-stream resume point.
         n = len(part1) - mid + 200
         assert stream.read(n) == plaintext[mid : mid + n]
@@ -870,7 +869,7 @@ def test_lzip_forward_read_over_the_cap_thins_the_table(small_seek_cap: int) -> 
         assert stream.read() == full[-400:]
 
 
-def test_xz_many_streams_over_the_cap_keep_spaced_stream_starts(
+def test_xz_many_streams_over_the_cap_are_thinned_and_seeks_read_right(
     small_seek_cap: int,
 ) -> None:
     parts = [bytes([65 + i]) * 500 for i in range(20)]
@@ -881,18 +880,19 @@ def test_xz_many_streams_over_the_cap_keep_spaced_stream_starts(
         assert stream.seek(0, io.SEEK_END) == len(full)
         _assert_table_thinned(stream, seen, small_seek_cap, "backwards_index")
         assert len(stream._seek_points) > 1
-        assert all(p.state is None for p in stream._seek_points)
         for pos in (7777, 3, len(full) - 1):
             stream.seek(pos)
             assert stream.read() == full[pos:]
+        stream.seek(1234)
+        assert stream.read(3000) == full[1234:4234]
 
 
 @pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
-def test_xz_stream_with_more_blocks_than_the_cap_keeps_only_its_start(
+def test_xz_stream_with_more_blocks_than_the_cap_keeps_spaced_blocks(
     small_seek_cap: int,
 ) -> None:
-    """Blocks are never dropped one at a time: a chain resumed from a kept block would
-    run through the missing ones' bytes as if they were the next block."""
+    """Blocks inside one stream are thinned like any other point: a resume needs only
+    its own block's start and the stream's footer, not the blocks in between."""
     data = random.Random(3).randbytes(40 * 4096)
     compressed = make_multiblock_xz(data, block_size=4096)
     collector, seen = _collect_diagnostics()
@@ -900,41 +900,63 @@ def test_xz_stream_with_more_blocks_than_the_cap_keeps_only_its_start(
         assert stream.read(10_000) == data[:10_000]
         assert stream.seek(0, io.SEEK_END) == len(data)
         _assert_table_thinned(stream, seen, small_seek_cap, "backwards_index")
-        assert all(p.state is None for p in stream._seek_points)
-        stream.seek(len(data) // 3)
-        assert stream.read() == data[len(data) // 3 :]
+        block_points = [p for p in stream._seek_points if p.state is not None]
+        assert len(block_points) > 2
+        for pos in (len(data) // 3, 4096 * 7 + 5, len(data) - 100):
+            stream.seek(pos)
+            assert stream.read(5000) == data[pos : pos + 5000]
+            stream.seek(pos)
+            assert stream.read() == data[pos:]
+
+
+def test_xz_index_scan_of_many_blocks_keeps_the_last_and_the_exact_total(
+    small_seek_cap: int,
+) -> None:
+    """The scan never holds a stream's blocks whole, keeps the last block (the total
+    comes from it), and keeps blocks where the real ones start."""
+    records = [(12 + i % 5, 100 + i) for i in range(1000)]
+    blob = _xz_stream_from_records(records)
+    thinned: list[bool] = []
+    blocks = _read_xz_index_backwards(
+        io.BytesIO(blob), len(blob), on_thinned=lambda: thinned.append(True)
+    )
+    assert thinned == [True]
+    assert len(blocks) <= small_seek_cap + 1
+    assert blocks[-1].decompressed_end == sum(u for _, u in records)
+    starts = []
+    offset = 0
+    for _, u in records:
+        starts.append(offset)
+        offset += u
+    assert {b.decompressed_start for b in blocks} <= set(starts)
+    assert all(b.blocks_end == blocks[0].blocks_end for b in blocks)
+    assert all(b.stream_decompressed_end == offset for b in blocks)
 
 
 @pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
-def test_xz_block_points_recorded_before_a_thinned_index_become_stream_starts(
+def test_xz_resume_from_recorded_blocks_after_a_thinned_index_reads_every_stream(
     small_seek_cap: int,
 ) -> None:
-    """A thinned index leaves streams out, so block points a forward read recorded
-    earlier are demoted to their stream's start. Kept, a chain resumed from them would
-    run from the first stream's last block straight to the next stream the index kept,
-    skipping the ones between with no error (59 185 of 68 185 bytes, measured).
-    """
+    """A thinned index leaves streams out. A resume from block points a forward read
+    recorded earlier must still read every stream after them: the old block chain ran
+    from the recorded blocks straight to the next stream the index kept, skipping the
+    ones between (59 185 of 68 185 bytes, no error, measured on the chain)."""
     rng = random.Random(4)
     parts = [rng.randbytes(3 * 4096)] + [rng.randbytes(3000) for _ in range(20)]
     compressed = b"".join(make_multiblock_xz(p, block_size=4096) for p in parts)
     full = b"".join(parts)
     collector, seen = _collect_diagnostics()
     with XzDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
-        # Finish the first stream so its blocks are recorded progressively. Few enough
-        # that the table itself stays under the cap once the thinned index joins it.
         assert stream.read(len(parts[0]) + 10) == full[: len(parts[0]) + 10]
         assert any(p.state is not None for p in stream._seek_points)
         assert stream.seek(0, io.SEEK_END) == len(full)
         _assert_table_thinned(stream, seen, small_seek_cap, "backwards_index")
-        assert all(p.state is None for p in stream._seek_points)
         stream.seek(4096 + 7)
         assert stream.read() == full[4096 + 7 :]
 
 
 @pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
-def test_xz_forward_read_over_the_cap_demotes_blocks_to_stream_starts(
-    small_seek_cap: int,
-) -> None:
+def test_xz_forward_read_over_the_cap_thins_the_table(small_seek_cap: int) -> None:
     rng = random.Random(5)
     parts = [rng.randbytes(5 * 4096) for _ in range(3)]
     compressed = b"".join(make_multiblock_xz(p, block_size=4096) for p in parts)
@@ -943,19 +965,14 @@ def test_xz_forward_read_over_the_cap_demotes_blocks_to_stream_starts(
     with XzDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
         assert stream.read() == full
         _assert_table_thinned(stream, seen, small_seek_cap, "seek_table")
-        assert all(p.state is None for p in stream._seek_points)
-        assert [p.decompressed_offset for p in stream._seek_points] == [
-            0,
-            len(parts[0]),
-            len(parts[0]) + len(parts[1]),
-        ]
+        assert len(stream._seek_points) > 2
         for pos in (4096 + 7, len(parts[0]) + 9000, len(full) - 5):
             stream.seek(pos)
             assert stream.read() == full[pos:]
 
 
 @pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
-def test_xz_progressive_scan_of_a_stream_over_the_cap_keeps_its_start(
+def test_xz_progressive_scan_of_a_stream_over_the_cap_is_thinned(
     small_seek_cap: int,
 ) -> None:
     rng = random.Random(6)
@@ -966,9 +983,44 @@ def test_xz_progressive_scan_of_a_stream_over_the_cap_keeps_its_start(
     with XzDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
         assert stream.read() == full
         _assert_table_thinned(stream, seen, small_seek_cap, "per_stream")
-        assert [p.decompressed_offset for p in stream._seek_points] == [0, 4096]
         stream.seek(4096 + 50_000)
         assert stream.read() == full[4096 + 50_000 :]
+
+
+@pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
+def test_xz_block_resume_refuses_blocks_that_disagree_with_the_index() -> None:
+    """A resume checks the rest of the stream against the size the index declares,
+    since it does not feed liblzma the index that would otherwise check it."""
+    from archivey.internal.streams.xz import _XzBlockResume
+
+    data = random.Random(8).randbytes(4 * 4096)
+    compressed = make_multiblock_xz(data, block_size=4096)
+    blocks = _read_xz_index_backwards(io.BytesIO(compressed), len(compressed))
+    start = blocks[1]
+    for delta, match in ((1, "short of"), (-1, "more than")):
+        lying = dataclasses.replace(
+            start, stream_decompressed_end=start.stream_decompressed_end + delta
+        )
+        source = io.BytesIO(compressed)
+        resume = _XzBlockResume(lying, source, DecoderLimits())
+        with pytest.raises(CorruptionError, match=match):
+            resume.feed(source.read())
+
+
+@pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
+def test_xz_block_resume_cut_inside_the_blocks_is_truncated() -> None:
+    from archivey.internal.streams.xz import _XzBlockResume
+
+    data = random.Random(9).randbytes(4 * 4096)
+    compressed = make_multiblock_xz(data, block_size=4096)
+    blocks = _read_xz_index_backwards(io.BytesIO(compressed), len(compressed))
+    cut = compressed[: blocks[2].compressed_start + 100]
+    source = io.BytesIO(cut)
+    resume = _XzBlockResume(blocks[1], source, DecoderLimits())
+    out, _ = resume.feed(source.read())
+    assert data[blocks[1].decompressed_start :].startswith(out)
+    resume.flush()
+    assert resume.truncated and not resume.is_finished()
 
 
 @pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
@@ -986,20 +1038,35 @@ def test_xz_seek_after_a_failed_index_scan_reads_to_the_end() -> None:
         assert stream.read() == full[4096 + 7 :]
 
 
-def test_xz_index_records_over_the_limit_are_summed_not_stored() -> None:
-    from archivey.internal.streams.xz import _encode_mbi, _scan_xz_index
+def _xz_stream_from_records(records: list[tuple[int, int]]) -> bytes:
+    """A syntactically valid xz stream whose index lists ``records``.
 
-    records = [(100, 4096), (50, 1000), (9, 3)]
-    body = _encode_mbi(len(records)) + b"".join(
-        _encode_mbi(u) + _encode_mbi(n) for u, n in records
+    The block bytes are zeros: only the backward scan reads this, never a decoder.
+    """
+    from archivey.internal.streams.xz import (
+        _XZ_FOOTER_MAGIC,
+        _XZ_STREAM_MAGIC,
+        _encode_mbi,
+        _round_up_4,
     )
-    index = b"\x00" + body
-    index += b"\x00" * (-len(index) % 4)
-    assert _scan_xz_index(index, max_records=3) == (records, 100 + 52 + 12, 5099)
-    assert _scan_xz_index(index, max_records=2) == (None, 100 + 52 + 12, 5099)
-    # A huge declared count runs out of index bytes instead of reserving anything.
+
+    flags = bytes([0x00, 0x00])
+    header = _XZ_STREAM_MAGIC + flags + struct.pack("<I", zlib.crc32(flags))
+    blocks = b"".join(b"\x00" * _round_up_4(unpadded) for unpadded, _ in records)
+    body = b"\x00" + _encode_mbi(len(records))
+    body += b"".join(_encode_mbi(u) + _encode_mbi(n) for u, n in records)
+    body += b"\x00" * (-len(body) % 4)
+    index = body + struct.pack("<I", zlib.crc32(body))
+    fbody = struct.pack("<I", len(index) // 4 - 1) + flags
+    footer = struct.pack("<I", zlib.crc32(fbody)) + fbody + _XZ_FOOTER_MAGIC
+    return header + blocks + index + footer
+
+
+def test_xz_index_with_a_huge_declared_count_fails_without_reserving() -> None:
+    from archivey.internal.streams.xz import _encode_mbi, _iter_xz_index
+
     with pytest.raises(CorruptionError):
-        _scan_xz_index(b"\x00" + _encode_mbi(1 << 40), max_records=8)
+        list(_iter_xz_index(b"\x00" + _encode_mbi(1 << 40)))
 
 
 # --- accelerator backends present / absent ---------------------------------------------

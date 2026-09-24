@@ -56,8 +56,8 @@ class SeekPoint:
     # codec re-emits an equal-valued token for the same offset
     # (``_resolve_same_offset_collision``). Deliberately Any: object breaks
     # the assignment of a non-None value to ``_XzBlockBounds`` in
-    # ``XzDecoder.from_point`` — the start block, and the list it feeds to
-    # ``_XzBlockChain``; one Any here vs two casts there.
+    # ``XzDecoder.from_point``, the block it hands to ``_XzBlockResume``; one Any
+    # here vs a cast there.
     state: Any = field(default=None, compare=False)
 
 
@@ -421,8 +421,6 @@ class DecompressorStream(ReadOnlyIOStream):
         self._seek_points: list[SeekPoint] = [SeekPoint(0, 0)]
         self._index_built = False
         self._index_build_attempted = False
-        # Set once block chains can no longer be trusted; see _demote_stateful_points.
-        self._demote_stateful = False
         # Minimum decompressed distance between points once the table has been thinned
         # (0 until then); see _thin_seek_table.
         self._min_spacing = 0
@@ -499,10 +497,6 @@ class DecompressorStream(ReadOnlyIOStream):
                 continue
             if not self._index_enabled:
                 continue
-            if point.state is not None and self._demote_stateful:
-                point = point.state.stateless_point()
-                if point.decompressed_offset == 0:
-                    continue  # the origin already resumes there
             if self._min_spacing and self._too_close(point):
                 continue
             if point < self._seek_points[-1]:
@@ -539,18 +533,14 @@ class DecompressorStream(ReadOnlyIOStream):
     def _thin_seek_table(self) -> None:
         """Bring a table past :data:`MAX_SEEK_POINTS` down to at most half of it.
 
-        Block points go first (:meth:`_demote_stateful_points`): an XZ chain needs every
-        block after its start, so blocks cannot be dropped one by one. If that is not
-        enough, points are kept at least a spacing apart, and later points keep it.
+        Points are kept at least a spacing apart, and later points keep it. Any subset
+        is safe: every point resumes on its own, whatever else the table holds.
         """
-        if not self._demote_stateful:
-            self._demote_stateful_points()
-        if len(self._seek_points) > MAX_SEEK_POINTS // 2:
-            span = self._seek_points[-1].decompressed_offset
-            self._min_spacing = max(self._min_spacing * 2, thinning_spacing(span))
-            self._seek_points[:] = spaced_subset(
-                self._seek_points, lambda p: p.decompressed_offset, self._min_spacing
-            )
+        span = self._seek_points[-1].decompressed_offset
+        self._min_spacing = max(self._min_spacing * 2, thinning_spacing(span))
+        self._seek_points[:] = spaced_subset(
+            self._seek_points, lambda p: p.decompressed_offset, self._min_spacing
+        )
         if self._table_thinned:
             return
         self._table_thinned = True
@@ -565,26 +555,6 @@ class DecompressorStream(ReadOnlyIOStream):
             ),
             logger=logger,
         )
-
-    def _demote_stateful_points(self) -> None:
-        """Replace every point that resumes a block chain with its stream's start.
-
-        A point carrying ``state`` (an XZ block) resumes a chain made of the points
-        after it, up to the next stateless one, and the chain is right only while the
-        table lists every block and stream in between. That stops holding when an index
-        build fails (the chain would end at the last recorded block: a short read with
-        no error), when the table is thinned, or when a thinned index skipped streams.
-        The stream start decodes forward on its own. Later block points are demoted as
-        they arrive (``add_seek_points``).
-        """
-        self._demote_stateful = True
-        kept = [self._seek_points[0]]
-        for point in self._seek_points[1:]:
-            if point.state is not None:
-                point = point.state.stateless_point()
-            if point.decompressed_offset > kept[-1].decompressed_offset:
-                kept.append(point)
-        self._seek_points[:] = kept
 
     def _resolve_same_offset_collision(self, index: int, point: SeekPoint) -> None:
         """Skip duplicates; allow forward refinement / richer-state merge; else error."""
@@ -755,15 +725,7 @@ class DecompressorStream(ReadOnlyIOStream):
         self._index_build_attempted = True
         if new_points or new_size is not None:
             self._index_built = True
-        else:
-            self._demote_stateful_points()
         if new_points:
-            # An index of stateless points next to recorded block points means a thinned
-            # XZ index: it may skip streams a recorded chain would run into.
-            if any(p.state is None for p in new_points) and any(
-                p.state is not None for p in self._seek_points
-            ):
-                self._demote_stateful_points()
             self.add_seek_points(new_points)
         if new_size is not None:
             self._size = new_size
@@ -865,19 +827,12 @@ class DecompressorStream(ReadOnlyIOStream):
         return self._pos
 
     def _prepare_seek_point(self, pos: int) -> SeekPoint:
-        """Best resume point for ``pos``, with a complete index if block-state is used.
+        """Best resume point for ``pos`` in the table as it stands.
 
-        Progressive enrichment only adds points for *completed* streams. Resuming via
-        an ``_XzBlockBounds`` point builds a closed block chain from that point plus
-        already-indexed later blocks; if later streams are not indexed yet the chain
-        finishes early and the stream silently EOFs. Force a full from-origin index
-        before any stateful resume so the chain includes every subsequent block.
+        Every point resumes on its own (an XZ block point carries its stream's bounds),
+        so a table that progressive enrichment has only partly filled is safe to use.
         """
-        best = self._find_best_seek_point(pos)
-        if best.state is not None and not self._index_built:
-            self._ensure_index_built()
-            best = self._find_best_seek_point(pos)
-        return best
+        return self._find_best_seek_point(pos)
 
     def tell(self, /) -> int:
         return self._pos
