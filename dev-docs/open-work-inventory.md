@@ -383,7 +383,7 @@ and often shares logic with its parsing code, so keeping them together keeps the
 axis is per format, not per phase, which is also why the `internal/detection/` alternative was
 rejected. `detection.py`, `detection_workspace.py` and `sfx.py` stay where they are, being
 format-agnostic. The five modules now live in `internal/backends/`, every importer with them;
-`internal/` holds 23 top-level modules instead of 28.
+`internal/` holds 27 top-level modules instead of 32 (not counting `__init__.py`).
 
 **Thread 15 is the only live defect in these, and it is a layering one.** `zip_aes.py:99`
 imports `cryptography` directly, under a comment that reads *"Local import: only the crypto
@@ -506,7 +506,12 @@ files arrived after the pass finished: `internal/enum_args.py` (183 lines, #380)
 `internal/arg_checks.py` (165, #382) and `internal/windows_reparse.py` (136, #386). The
 previous revision's count was taken before `enum_args.py` merged. A sweep covers a tree at a moment; new code arrives unswept by default and nothing
 flags it except running the count. The three are one small batch (484 lines), tracked
-internally. **Re-run the count before quoting it — a figure on this page is always a
+internally. The move of five modules under `backends/` ([#443](https://github.com/davitf/archivey/pull/443)) orphans
+their markers, which name the old paths: `internal/rar_detect.py`, `zip_detect.py`,
+`sevenzip_detect.py`, `zip_aes.py` and `zipcrypto.py`. `sweep_coverage.py` reports a marker
+whose path is gone and does not count it, so the figure drops by those five files until a sweep
+batch re-anchors them at `internal/backends/`. They were read; they are not new code.
+**Re-run the count before quoting it — a figure on this page is always a
 snapshot, including this one.**
 
 **Every figure here is countable from the `SWEPT` markers on #315** rather than maintained by
@@ -1127,7 +1132,7 @@ Thread 56 (the post-drain orphan) closed with [#365](https://github.com/davitf/a
 | ~~C — binaryio + solid~~ | `binaryio.py`, `solid.py` | 22, 23, 25, 26, 40, 41, 55 | **Done** — [#329](https://github.com/davitf/archivey/pull/329) |
 | ~~D — RAR parser~~ | `backends/rar_parser.py` | 1, 2, 4, 5, 6, 7, 8, 9 | **Done** — [#332](https://github.com/davitf/archivey/pull/332). Threads 1 and 2 were the two possible header-decrypt bugs; both measured against fixtures and neither was one |
 | ~~E — RAR reader~~ | `backends/rar_reader.py` | 43, 44, 46, 47, 48, 49 | **Done** — [#336](https://github.com/davitf/archivey/pull/336) |
-| **F — placement + odds** | `zip_aes.py`, `volumes.py`, `reader_state.py` | 11, 12, 15 | **Placement done** ([#443](https://github.com/davitf/archivey/pull/443): threads 10/14, the five modules under `backends/`). Three threads left. 51, 53 and 54 were closed by [#440](https://github.com/davitf/archivey/pull/440), 13 by #374, and thread 3 left when #342 answered it. **Threads 10/14 were answered on 2026-09-19 (`backends/`)** and the move has landed |
+| **F — placement + odds** | `backends/zip_aes.py`, `volumes.py`, `reader_state.py` | 11, 12, 15 | **Placement done** (threads 10/14, ruled 2026-09-19; the five modules moved under `backends/` in [#443](https://github.com/davitf/archivey/pull/443)). Three threads left. 51, 53 and 54 were closed by [#440](https://github.com/davitf/archivey/pull/440), 13 by #374, and thread 3 left when #342 answered it. |
 | ~~(orphan)~~ | `streamtools/base.py` | 56 | **Done** — [#365](https://github.com/davitf/archivey/pull/365), merged 2026-09-21. Both flags now use the class-flag-plus-constructor-override pattern `_SUBCLASS_CLOSES_INNER` already had |
 | ~~(new)~~ | five `solid.py` questions from 2026-09-14 | — | **Done** — [#439](https://github.com/davitf/archivey/pull/439), together with S18-K8 (two asserts in `ArchiveStream._collapse_nested`) |
 

@@ -17,10 +17,11 @@ Module map:
 
 Format-specific helpers that are not readers live here too, next to the parser they share
 logic with: the scan-hit validators :mod:`.zip_detect`, :mod:`.sevenzip_detect` and
-:mod:`.rar_detect` (used by ``internal/sfx.py`` for prefixed archives), and the ZIP
-ciphers :mod:`.zipcrypto` and :mod:`.zip_aes`. The axis is per format, not per phase:
-everything that supports one format sits together so it can be read and kept in sync at
-once. Format-agnostic detection (``detection.py``, ``detection_workspace.py``, ``sfx.py``)
+:mod:`.rar_detect`, which the readers pass to ``internal/sfx.py``'s scan as ``HitValidator``
+callbacks (the dependency runs from here to ``sfx.py``, never back; ``zip_detect`` also
+carries the split-segment name check ``core.py`` uses), and the ZIP ciphers
+:mod:`.zipcrypto` and :mod:`.zip_aes`. The axis is per format, not per phase: everything
+that supports one format sits together so it can be read and kept in sync at once. Format-agnostic detection (``detection.py``, ``detection_workspace.py``, ``sfx.py``)
 stays at the top of ``internal/``.
 
 Typical split inside a format: ``*ReadBackend`` (registry / ``open_read``) +
