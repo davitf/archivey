@@ -1,4 +1,42 @@
-"""Operation ownership, live-stream gate, and lifecycle leases for readers."""
+"""Whether a reader call is allowed right now, and who cleans up afterwards.
+
+This module holds no archive data and does no I/O. ``BaseArchiveReader`` asks it two
+kinds of question: "may this call start?" (and, if not, which usage error to raise, or
+whether to wait) and "am I the one who must close the archive now?". Every method is a
+transition on, or a test of, four independent pieces of state:
+
+- **Who owns the reader.** ``_root`` is the reader-wide pass in progress (``members()``
+  on a default reader, ``stream_members()``, ``extract_all()``), ``_children`` are
+  library-internal scopes under it (link reads, the extraction coordinator's own
+  opens), and ``_workers`` are short ``open()`` / ``read()`` / ``get()`` calls. Each is
+  an :class:`OperationToken` that records the thread that took it, so a callback that
+  re-enters the reader on that thread gets a message about the callback, not about a
+  second caller.
+- **Whether the member list exists yet** (``cache_state``). See :class:`ReaderState`.
+- **How many member streams are alive** (``_live_streams``, plus ``_reservations`` for
+  an ``open()`` that has passed the gate but not built its stream yet).
+- **How far the close has got** (``lifecycle`` and ``_lease_count``), below.
+
+Leases, and why teardown is separate from close
+-----------------------------------------------
+
+Marking the reader closed does not close the archive. ``_lease_count`` counts what still
+reads through the source: the reader itself (one lease, from construction until
+``close()``) plus each live member stream. The underlying file handle or ``unrar`` /
+``7z`` process is torn down by whoever drops the **last** lease. ``close()`` drops the
+reader's lease first and then closes the still-open member streams, so with streams open
+the last lease usually goes with the last stream's close, not with the reader's. That is
+why :meth:`ReaderState.mark_reader_closed` and :meth:`ReaderState.release_live_stream`
+both return "run teardown now", and why :meth:`ReaderState.claim_teardown` makes sure
+only one caller acts on it. Teardown always follows the streams, never runs under one::
+
+    OPEN --mark_reader_closed()--> READER_CLOSED --claim_teardown()--> TEARDOWN_RUNNING
+         (drops the reader's lease)                 (lease count 0; succeeds once)
+    TEARDOWN_RUNNING --complete_teardown()--> TEARDOWN_COMPLETE
+
+``_closing`` is set while one ``close()`` drains in-flight workers (``CONCURRENT`` only);
+new calls are refused from then on, and other closers wait for the transition.
+"""
 
 from __future__ import annotations
 
@@ -48,19 +86,38 @@ class OperationToken:
     # The thread that acquired the token. Used to detect same-thread re-entry (a
     # diagnostic/progress callback driving the reader that is mid-operation on this very
     # thread), which must raise a usage error instead of deadlocking on a wait for itself.
-    thread_id: int = field(default_factory=threading.get_ident, repr=False)
+    # The Thread object, not ``get_ident()``: idents are reused once a thread exits, so a
+    # token that outlived its thread would misdiagnose a fresh thread as re-entering.
+    thread: threading.Thread = field(
+        default_factory=threading.current_thread, repr=False
+    )
+    # True for a pass held by a generator (``stream_members()``, streaming
+    # ``__iter__``) across its yields. Its thread runs the caller's loop body between
+    # them, so a call from that thread is not necessarily re-entry from a callback, and
+    # the same-thread diagnosis in ``_same_thread_token_locked`` skips it.
+    spans_yields: bool = field(default=False, repr=False)
     _released: bool = field(default=False, repr=False)
 
 
 class ReaderState:
-    """Per-reader concurrency/lifecycle bookkeeping.
+    """Per-reader concurrency and lifecycle bookkeeping (see the module docstring).
 
-    Under the default (no ``CONCURRENT``) path this enforces the single-live-stream gate
-    and exclusive single-owner operations without shared-handle locks. Declared
-    ``CONCURRENT`` activates multi-stream admission and coordinates first-touch
-    materialization (wait/share) plus draining ``close()`` (wait for in-flight worker
-    calls). Distinct reader-wide passes and same-stream access remain single-owner /
-    caller-synchronized.
+    **Materialization** means building the member list, once. A reader does not list the
+    archive when it is opened. The first call that needs members (``members()``,
+    ``open()``, ``get()``) walks the whole archive and publishes one immutable snapshot,
+    which every later call reads. :meth:`begin_materialization` elects the caller that
+    does the walk: it returns ``True`` to that caller and ``False`` to one for whom the
+    snapshot already exists. The three :class:`CacheState` values are before, during and
+    after that walk.
+
+    **The default path is the strict one.** Without ``MemberStreams.CONCURRENT``
+    (``concurrent_members=True``) this class mostly refuses: one live member stream, one
+    reader-wide operation, no overlapping worker calls, and no shared-handle locks
+    needed. ``CONCURRENT`` turns those refusals into waits: several live streams,
+    a second materializer waits for the first one's snapshot, and ``close()`` drains
+    in-flight worker calls. Most methods therefore have two behaviours, chosen by
+    :attr:`concurrent`. Distinct reader-wide passes and access to one stream stay
+    single-owner (caller-synchronized) either way.
     """
 
     def __init__(
@@ -134,14 +191,21 @@ class ReaderState:
         """Whether the CURRENT thread is inside a library-internal open window."""
         return self._internal_open_threads.get(threading.get_ident(), 0) > 0
 
-    def acquire_pass(self, name: str) -> OperationToken:
-        """Acquire a data-pass token: root when free, else a child under an internal owner."""
+    def acquire_pass(self, name: str, *, spans_yields: bool = False) -> OperationToken:
+        """Acquire a data-pass token: root when free, else a child under an internal owner.
+
+        ``spans_yields`` marks a pass a generator holds across its yields (see
+        :attr:`OperationToken.spans_yields`).
+        """
         with self._lock:
             self._require_admissible_locked(name)
-            if self._root is not None and self._internal_opens_active_locked():
+            internal = self._internal_opens_active_locked()
+            if self._root is not None and internal:
                 child = OperationToken(name=name, parent=self._root, kind="child")
                 self._children.add(child)
                 return child
+            if not internal:
+                self._reject_same_thread_reentry_locked(f"start {name!r}")
             if self._root is not None:
                 raise ArchiveyUsageError(
                     f"Cannot start {name!r}: another reader operation "
@@ -152,7 +216,7 @@ class ReaderState:
                     f"Cannot start {name!r}: a concurrent open()/read() call is still "
                     "in progress."
                 )
-            token = OperationToken(name=name, kind="root")
+            token = OperationToken(name=name, kind="root", spans_yields=spans_yields)
             self._root = token
             return token
 
@@ -195,6 +259,8 @@ class ReaderState:
         with self._lock:
             self._require_admissible_locked(name)
             internal = self._internal_opens_active_locked()
+            if not internal:
+                self._reject_same_thread_reentry_locked(f"call {name!r}")
             if self._root is not None and not internal:
                 raise ArchiveyUsageError(
                     f"Cannot call {name!r}: another reader operation "
@@ -372,44 +438,53 @@ class ReaderState:
         return without running teardown again.
         """
         with self._lock:
-            # Another closer is draining, or close already finished.
-            if self._closing or self.lifecycle is not LifecycleState.OPEN:
-                while self.lifecycle is LifecycleState.OPEN and self._closing:
-                    self._close_cv.wait()
-                return False
-            if self._root is not None:
-                raise ArchiveyUsageError(
-                    "Cannot close the archive reader while another reader operation "
-                    f"({self._root.name!r}) is active."
-                )
-            if self._workers and not self.concurrent:
-                raise ArchiveyUsageError(
-                    "Cannot close the archive reader while an open()/read() call is "
-                    "still in progress."
-                )
-            tid = threading.get_ident()
-            if any(worker.thread_id == tid for worker in self._workers):
-                # This thread is closing from INSIDE one of its own worker calls (a
-                # diagnostic/progress callback calling close()). Draining would wait
-                # forever for a worker that cannot return until close() does (deep
-                # review N4b).
-                raise ArchiveyUsageError(
-                    "Cannot close the archive reader from inside one of its own "
-                    "open()/read()/members() calls (e.g. from a diagnostic or "
-                    "progress callback). Callbacks must not close the reader that "
-                    "triggered them."
-                )
-            self._closing = True
-            try:
-                while self._workers:
-                    self._workers_cv.wait()
-                self.lifecycle = LifecycleState.READER_CLOSED
-                self._close_cv.notify_all()
-                return self._release_lease_locked()
-            except BaseException:
-                self._closing = False
-                self._close_cv.notify_all()
-                raise
+            while True:
+                # First, before any wait: a thread closing from INSIDE one of its own
+                # calls (a diagnostic/progress callback calling close()) would wait
+                # forever for a call that cannot return until close() does (deep
+                # review N4b), and the generic messages below would send the user
+                # looking for a second caller that does not exist (S21-K4).
+                token = self._same_thread_token_locked()
+                if token is not None:
+                    raise ArchiveyUsageError(
+                        "Cannot close the archive reader from inside one of its own "
+                        f"calls ({token.name!r}; e.g. from a diagnostic or progress "
+                        "callback). Callbacks must not close the reader that "
+                        "triggered them."
+                    )
+                # Another closer is draining, or close already finished.
+                if self._closing or self.lifecycle is not LifecycleState.OPEN:
+                    while self.lifecycle is LifecycleState.OPEN and self._closing:
+                        self._close_cv.wait()
+                    if self.lifecycle is LifecycleState.OPEN:
+                        # The draining closer was interrupted (its except arm below
+                        # reset ``_closing``), so nothing closed the reader. Returning
+                        # False would tell close() a peer had, and it would then mark
+                        # itself closed with teardown never run. Retry as the closer.
+                        # Invariant: False is returned only when lifecycle is not OPEN.
+                        continue
+                    return False
+                if self._root is not None:
+                    raise ArchiveyUsageError(
+                        "Cannot close the archive reader while another reader "
+                        f"operation ({self._root.name!r}) is active."
+                    )
+                if self._workers and not self.concurrent:
+                    raise ArchiveyUsageError(
+                        "Cannot close the archive reader while an open()/read() call "
+                        "is still in progress."
+                    )
+                self._closing = True
+                try:
+                    while self._workers:
+                        self._workers_cv.wait()
+                    self.lifecycle = LifecycleState.READER_CLOSED
+                    self._close_cv.notify_all()
+                    return self._release_lease_locked()
+                except BaseException:
+                    self._closing = False
+                    self._close_cv.notify_all()
+                    raise
 
     def claim_stream_shutdown(self) -> bool:
         """True exactly once, for the caller that should close live member streams.
@@ -463,6 +538,38 @@ class ReaderState:
             and self._lease_count == 0
             and not self._teardown_claimed
         )
+
+    def _same_thread_token_locked(self) -> OperationToken | None:
+        """A token this thread holds while inside a reader call, if any.
+
+        Any hit means the current call is re-entry from inside one of the reader's own
+        calls on this thread: in practice a diagnostic or progress callback. Passes held
+        across generator yields are skipped (see :attr:`OperationToken.spans_yields`).
+        """
+        current = threading.current_thread()
+        root = self._root
+        if root is not None and root.thread is current and not root.spans_yields:
+            return root
+        for token in (*self._children, *self._workers):
+            if token.thread is current:
+                return token
+        return None
+
+    def _reject_same_thread_reentry_locked(self, action: str) -> None:
+        """Raise the re-entry usage error before the generic overlap messages.
+
+        Without this, a non-``CONCURRENT`` reader answered a callback's re-entry with
+        "another reader operation is already active", which points at a second caller
+        that does not exist (S21-K4).
+        """
+        token = self._same_thread_token_locked()
+        if token is not None:
+            raise ArchiveyUsageError(
+                f"Cannot {action}: the reader was re-entered from inside its own "
+                f"{token.name!r} call on this same thread (e.g. from a diagnostic or "
+                "progress callback). Callbacks must not call back into the reader "
+                "that triggered them."
+            )
 
     def _require_lifecycle_open_locked(self, op: str) -> None:
         """Lifecycle is still OPEN (including during draining close)."""

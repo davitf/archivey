@@ -1190,9 +1190,12 @@ class BaseArchiveReader(ArchiveReader):
                         self._listing_tracker.account_link_target(
                             member.link_target, enforce=enforce_listing_limits
                         )
+            # One memo per finalize: every link on a walked chain shares its terminal,
+            # so a chain of N links costs O(N) rather than a fresh walk per member.
+            terminals: dict[int, ArchiveMember | None] = {}
             for member in members:
                 if member.is_link and member.link_target:
-                    self._resolve_link(member, by_name_lists)
+                    self._resolve_link(member, by_name_lists, terminals)
 
         try:
             if child_scope:
@@ -1920,26 +1923,52 @@ class BaseArchiveReader(ArchiveReader):
         self,
         member: ArchiveMember,
         by_name_lists: dict[str, list[ArchiveMember]],
+        terminals: dict[int, ArchiveMember | None],
     ) -> None:
-        """Resolve link_target to the fully dereferenced link_target_member."""
-        visited: set[int] = set()
-        current = member
+        """Resolve link_target to the fully dereferenced link_target_member.
 
-        while current.is_link and current.link_target:
-            if current._member_id is None:
-                return
+        ``terminals`` memoizes, by ``_member_id``, where a walk from each link ends:
+        the terminal member, or ``None`` for a cycle or a dead end. A walk depends only
+        on the node it is at (the hardlink lookup keys off that node's own id, not the
+        member the walk started from), so every link on a path shares the path's
+        terminal. Recording it for all of them makes finalizing N chained links O(N)
+        instead of O(N²).
+
+        A cycle or dead end leaves ``link_target_member`` unset. That is bookkeeping,
+        not an error: :meth:`_open_with_link_follow` is where a read of such a link
+        raises.
+        """
+        path: list[int] = []
+        on_path: set[int] = set()
+        current = member
+        terminal: ArchiveMember | None
+        while True:
+            if not (current.is_link and current.link_target):
+                terminal = current
+                break
             member_id = current._member_id
-            if member_id in visited:
+            if member_id is None:
+                terminal = None
+                break
+            if member_id in terminals:
+                terminal = terminals[member_id]
+                break
+            if member_id in on_path:
                 # Cycle detected; leave link_target_member unset (None).
-                return
-            visited.add(member_id)
+                terminal = None
+                break
+            path.append(member_id)
+            on_path.add(member_id)
             target = self._lookup_link_target_for_member(current, by_name_lists)
             if target is None:
-                return
+                terminal = None
+                break
             current = target
 
-        if current is not member:
-            member.link_target_member = current
+        for member_id in path:
+            terminals[member_id] = terminal
+        if terminal is not None and terminal is not member:
+            member.link_target_member = terminal
 
     def _finalize_pass_links(self, *, error: ArchiveyError | None = None) -> None:
         """Resolve all links after a streaming forward pass reaches EOF or terminal damage."""
@@ -2127,7 +2156,7 @@ class BaseArchiveReader(ArchiveReader):
     def __iter__(self) -> Iterator[ArchiveMember]:
         self._state.require_open("__iter__")
         if self._streaming:
-            token = self._state.acquire_pass("__iter__")
+            token = self._state.acquire_pass("__iter__", spans_yields=True)
             try:
                 self._enter_forward_pass("__iter__")
                 yield from self._begin_forward_pass()
@@ -2401,50 +2430,62 @@ class BaseArchiveReader(ArchiveReader):
         member: ArchiveMember,
         visited: set[int],
     ) -> ArchiveStream:
-        if member.type in (MemberType.SYMLINK, MemberType.HARDLINK):
-            if member._member_id is None:
+        """Open ``member``, following links hop by hop until a non-link member.
+
+        A loop, not recursion: an archive's chain can be longer than the interpreter's
+        recursion limit, and ``RecursionError`` is outside the library's error contract.
+
+        The cycle policy differs from :meth:`_resolve_link` on purpose. That one is
+        listing bookkeeping and leaves ``link_target_member`` unset on a cycle or dead
+        end; this one is a caller asking for bytes, so it raises ``ReadError`` /
+        ``LinkTargetNotFoundError``. Do not unify them.
+        """
+        current = member
+        while current.type in (MemberType.SYMLINK, MemberType.HARDLINK):
+            if current._member_id is None:
                 raise LinkTargetNotFoundError(
                     "Link target is unknown",
-                    member_name=member.name,
+                    member_name=current.name,
                 )
-            member_id = member._member_id
+            member_id = current._member_id
             if member_id in visited:
                 raise ReadError(
-                    f"Link cycle detected at '{member.name}'",
-                    member_name=member.name,
+                    f"Link cycle detected at '{current.name}'",
+                    member_name=current.name,
                 )
             visited.add(member_id)
-            if member.link_target_member is not None:
-                return self._open_with_link_follow(member.link_target_member, visited)
-            if member.link_target is None:
-                self._read_link_target_on_request(member)
-            if member.link_target is None:
+            if current.link_target_member is not None:
+                current = current.link_target_member
+                continue
+            if current.link_target is None:
+                self._read_link_target_on_request(current)
+            if current.link_target is None:
                 raise LinkTargetNotFoundError(
                     "Link target is unknown",
-                    member_name=member.name,
+                    member_name=current.name,
                 )
             materialized = self._materialized
             by_name_lists = (
                 materialized.by_name_lists if materialized is not None else None
             )
             target = (
-                self._lookup_link_target_for_member(member, by_name_lists)
+                self._lookup_link_target_for_member(current, by_name_lists)
                 if by_name_lists is not None
                 else None
             )
             if target is None:
                 raise LinkTargetNotFoundError(
                     "Link target not found in archive",
-                    member_name=member.name,
-                    link_target=member.link_target,
+                    member_name=current.name,
+                    link_target=current.link_target,
                 )
-            return self._open_with_link_follow(target, visited)
-        if member.type in (MemberType.DIRECTORY, MemberType.ANTI, MemberType.OTHER):
+            current = target
+        if current.type in (MemberType.DIRECTORY, MemberType.ANTI, MemberType.OTHER):
             raise ArchiveyUsageError(
-                f"Cannot open member {quoted(member.name)}: type is {member.type.value!r} "
+                f"Cannot open member {quoted(current.name)}: type is {current.type.value!r} "
                 f"(not a file)"
             )
-        return self._open_member(member)
+        return self._open_member(current)
 
     def read(self, member: str | ArchiveMember) -> bytes:
         """Read member data as bytes."""
@@ -2471,7 +2512,7 @@ class BaseArchiveReader(ArchiveReader):
         self,
         selector: Callable[[ArchiveMember], bool] | None,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
-        token = self._state.acquire_pass("stream_members")
+        token = self._state.acquire_pass("stream_members", spans_yields=True)
         current: ArchiveStream | None = None
         try:
             if self._streaming:
