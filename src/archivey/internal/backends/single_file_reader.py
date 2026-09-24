@@ -349,6 +349,7 @@ class SingleFileReader(BaseArchiveReader):
                 counted,
                 config=self._codec_config,
                 stamp=lambda exc: self._stamp_error_context(exc, self._member.name),
+                collector=self._diagnostics_collector,
             )
         else:
             src = self._source
@@ -366,6 +367,7 @@ class SingleFileReader(BaseArchiveReader):
                 codec_source,
                 config=self._codec_config,
                 stamp=lambda exc: self._stamp_error_context(exc, self._member.name),
+                collector=self._diagnostics_collector,
             )
         # Wrap so the handle carries the reader's diagnostic collector/operation id.
         # (open_codec_stream already returns an ArchiveStream; nesting is fine.)

@@ -1072,6 +1072,74 @@ def test_xz_index_with_a_huge_declared_count_fails_without_reserving() -> None:
         list(_iter_xz_index(b"\x00" + _encode_mbi(1 << 40)))
 
 
+# --- codec streams report into the caller's collector ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "compress"),
+    [
+        pytest.param("a.xz", lambda d: lzma.compress(d), id="xz"),
+        pytest.param("a.lz", lambda d: make_multi_member_lzip([d]), id="lzip"),
+    ],
+)
+def test_a_degraded_seek_index_reaches_the_readers_collector(
+    tmp_path: Any, name: str, compress: Callable[[bytes], bytes]
+) -> None:
+    """Trailing junk defeats the backward index scan; the report is the caller's.
+
+    The codec builds its decompressor itself, so before the collector rode on
+    ``StreamConfig`` this report went to a throwaway collector: no ``on_diagnostic``,
+    nothing in ``reader.diagnostics``, and no raise under ``strict()``.
+    """
+    from archivey import ArchiveyConfig, DiagnosticPolicy, open_archive
+    from archivey.diagnostics import DiagnosticCode
+    from archivey.exceptions import DiagnosticRaisedError
+
+    data = random.Random(7).randbytes(2000)
+    path = tmp_path / name
+    path.write_bytes(compress(data) + b"J" * 14)
+
+    seen: list[Any] = []
+    config = ArchiveyConfig(on_diagnostic=seen.append)
+    with open_archive(path, config=config, seekable_members=True) as reader:
+        with reader.open(reader.members()[0]) as stream:
+            stream.seek(500)
+            assert stream.read() == data[500:]
+        assert reader.diagnostics.counts[DiagnosticCode.SEEK_INDEX_DEGRADED] == 1
+    assert [d.code for d in seen] == [DiagnosticCode.SEEK_INDEX_DEGRADED]
+
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with open_archive(path, config=strict, seekable_members=True) as reader:
+        with reader.open(reader.members()[0]) as stream:
+            with pytest.raises(DiagnosticRaisedError) as info:
+                stream.seek(500)
+    assert info.value.diagnostic.code is DiagnosticCode.SEEK_INDEX_DEGRADED
+
+
+@requires("ncompress")
+def test_open_codec_stream_hands_the_collector_to_a_unix_compress_stream(
+    small_seek_cap: int,
+) -> None:
+    """A .Z seek table past the cap reports its thinning into the passed collector."""
+    rng = random.Random(1)
+    # Alternating random and two-letter runs make the compressor emit CLEAR codes,
+    # and every CLEAR is a seek point.
+    data = b"".join(
+        bytes(rng.choices(b"ab", k=40_000)) if i % 2 else rng.randbytes(40_000)
+        for i in range(60)
+    )
+    collector, seen = _collect_diagnostics()
+    with open_codec_stream(
+        Codec.UNIX_COMPRESS,
+        io.BytesIO(make_unix_compress(data)),
+        config=StreamConfig(seekable=True),
+        collector=collector,
+    ) as stream:
+        assert stream.read() == data
+    degraded = [d for d in seen if d.context.scan == "seek_table"]
+    assert [d.context.error_type for d in degraded] == ["SeekTableThinned"]
+
+
 # --- accelerator backends present / absent ---------------------------------------------
 
 

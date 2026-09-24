@@ -426,11 +426,11 @@ def resolve_collector(collector: DiagnosticCollector | None) -> DiagnosticCollec
     - never reaches ``reader.diagnostics`` or the caller's ``on_diagnostic`` callback.
       Only the WARNING log line survives.
 
-    This path is reached today: the codec layer builds its decompressor streams
-    without a collector, so the ``SEEK_INDEX_DEGRADED`` emissions in
-    ``decompressor_stream.py`` and ``xz.py`` land here even under ``open_archive``.
-    Threading the collector through ``StreamConfig`` is recorded in
-    ``review/backlog.md``. Prefer passing the shared collector wherever one exists.
+    Codec streams get the caller's collector through ``StreamConfig.collector``, which
+    :func:`~archivey.internal.streams.codecs.open_codec_stream` fills from its
+    ``collector`` argument. A caller that builds a codec stream without one (the
+    single-file reader's listing-time size probe, detection, direct stream tests) still
+    lands here. Prefer passing the shared collector wherever one exists.
 
     The fallback logs at DEBUG on ``archivey.diagnostics`` with the caller's
     ``file:line`` (``stacklevel=2``). An application or test that enables DEBUG on

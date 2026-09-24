@@ -8,7 +8,8 @@ for the backends.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -17,6 +18,9 @@ from archivey.config import (
     DecoderLimits,
 )
 from archivey.exceptions import ResourceLimitError
+
+if TYPE_CHECKING:
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 # Only the names other modules import from here. ``ArchiveyConfig`` and
 # ``DEFAULT_ARCHIVEY_CONFIG`` are imported for use below, not re-exported —
@@ -53,7 +57,12 @@ class StreamConfig:
     carried down so a codec can refuse an archive-declared allocation before making
     it; it defaults to the public default rather than to "unlimited", because a
     :class:`StreamConfig` built directly (detection, tests) is still decoding a file
-    someone else wrote.
+    someone else wrote. ``collector`` is the reader's (or ``open_stream``'s)
+    diagnostic collector, so a codec stream that reports something itself — the xz,
+    lzip and unix-compress ``SEEK_INDEX_DEGRADED`` — reports it under the caller's
+    policy and into ``reader.diagnostics``; ``None`` falls back to
+    :func:`~archivey.internal.diagnostics_collector.resolve_collector`'s throwaway. It
+    is left out of equality: it says where reports go, not how the stream decodes.
     """
 
     streaming: bool = False
@@ -64,6 +73,7 @@ class StreamConfig:
     expected_decompressed_size: int | None = None
     gzip_isize_backstop: bool = False
     decoder_limits: DecoderLimits = DecoderLimits()
+    collector: DiagnosticCollector | None = field(default=None, compare=False)
 
 
 def stream_config_from_archivey(
