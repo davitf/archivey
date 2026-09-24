@@ -474,8 +474,8 @@ class TarReader(BaseArchiveReader):
                 # Snapshot the EOF probe now, while the handle sits just past the scan and
                 # before any member extraction can move it.
                 self._capture_eof_probe(members)
-        for info in members:
-            yield self._to_member(info)
+        for index, info in enumerate(members):
+            yield self._to_member(info, index)
         self._verify_tar_eof()
 
     def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
@@ -489,16 +489,18 @@ class TarReader(BaseArchiveReader):
                 # Hold the lock only around each next() so a yielded consumer can open
                 # the current member without deadlock (streaming is single-owner).
                 tar_iter = iter(self._tar)
+                index = 0
                 while True:
                     with self._handle_lock:
                         try:
                             info = next(tar_iter)
                         except StopIteration:
                             break
-                    yield self._to_member(info)
+                    yield self._to_member(info, index)
+                    index += 1
             else:
-                for info in self._tar:
-                    yield self._to_member(info)
+                for index, info in enumerate(self._tar):
+                    yield self._to_member(info, index)
         self._verify_tar_eof()
 
     def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
@@ -723,7 +725,9 @@ class TarReader(BaseArchiveReader):
             return StreamCapability.SEEKABLE
         return StreamCapability.FORWARD_ONLY
 
-    def _to_member(self, info: tarfile.TarInfo) -> ArchiveMember:
+    def _to_member(self, info: tarfile.TarInfo, index: int) -> ArchiveMember:
+        """Type one member. ``index`` is its position in the walk, the id registration
+        stamps, so the diagnostics raised here can name it before it has one."""
         member_type = _member_type(info)
         # TAR is a POSIX format: a backslash is a legal filename character, not a separator.
         presented = info.name
@@ -797,6 +801,7 @@ class TarReader(BaseArchiveReader):
             member=member,
             presented_name=presented,
             archive_name=self._archive_name,
+            member_id=index,
         )
         if mtime_invalid:
             self._diagnostics_collector.emit(
@@ -805,7 +810,7 @@ class TarReader(BaseArchiveReader):
                 context=MemberTimestampContext(
                     archive_name=self._archive_name,
                     member_name=member.name,
-                    member_id=member._member_id,
+                    member_id=index,
                     field="mtime",
                     source="tar",
                     value_repr=repr(info.mtime),

@@ -135,9 +135,16 @@ Guaranteed fully-resolved complete list → `members()` (RA) or `scan_members()`
 
 Index-only listings SHALL leave data-stored link targets unset (`link_target` /
 `link_target_member`); resolving them needs member-data reads that
-`members()`/`scan_members()` perform. Returning an incomplete report to a caller
-MUST NOT change the complete-or-raise behaviour of `members()` / `scan_members()` /
-`get(name)`; the report self-labels via `error` and those methods still raise.
+`members()`/`scan_members()` perform. The members of an upfront-index report SHALL be
+the same `ArchiveMember` objects that every other listing method and pass on this
+reader returns, and a repeated peek SHALL return the same objects. When
+`members()`/`scan_members()` later resolve data-stored link targets, they SHALL fill
+them in place on those objects (`archive-data-model`: members are live objects). An
+upfront-index listing that ends in terminal archive damage SHALL be returned as the
+stored incomplete report (prefix plus `error`), not raised. Returning an incomplete
+report to a caller MUST NOT change the complete-or-raise behaviour of `members()` /
+`scan_members()` / `get(name)`; the report self-labels via `error` and those methods
+still raise.
 
 #### Scenario: index-only listing matrix
 
@@ -149,6 +156,9 @@ MUST NOT change the complete-or-raise behaviour of `members()` / `scan_members()
 | No-index after completed pass / `scan_members` | Complete fully-resolved report |
 | No-index after incomplete pass already ran | Incomplete report with recovered prefix and `error` |
 | ZIP symlink via `members_report_if_available` | Link fields unset; `members`/`scan_members` resolve them |
+| `members_report_if_available()` twice on an upfront index | Same member objects both times |
+| ZIP symlink held from a peek, then `members()` | `members()` returns that same object, now with its link fields set |
+| Upfront index whose listing ends in terminal damage | Incomplete report (prefix plus `error`); `members()` still raises |
 
 ### Requirement: Access mode × method behaviour summary
 

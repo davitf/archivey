@@ -138,7 +138,9 @@ Order: aggregate first, then most-specific attachment. No attachment without a
 retained aggregate. Exact counters do not consume slots.
 
 Snapshots are freshly created, bounded, never mutated. Caller-retained snapshots
-and caller-created member copies are outside the library budget.
+and caller-created member copies are outside the library budget, and so is the record
+a random-access member walk keeps until it ends so that a walk started over can
+replay its diagnostics (`archive-reading` §Each member is listed once per reader).
 
 **Watermark (implementer):** an internal operation watermark consumes no slot and
 copies no occurrence; a ranged summary computes counter deltas and selects from
