@@ -216,6 +216,29 @@ def test_non_dirs_listed_before_subdirs(simple_dir: Path) -> None:
     assert names.index("sub/") < names.index("sub/c.txt")
 
 
+def test_walk_order_is_depth_first_preorder(tmp_path: Path) -> None:
+    # Pins the order the iterative walk must keep: at each level the non-directory
+    # entries by name, then each subdirectory followed by its whole subtree.
+    for rel in ("b/y/f", "b/x/f", "b/f", "a/g", "z", "c"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"")
+    with open_archive(tmp_path) as reader:
+        names = [m.name for m in reader]
+    assert names == [
+        "c",
+        "z",
+        "a/",
+        "a/g",
+        "b/",
+        "b/f",
+        "b/x/",
+        "b/x/f",
+        "b/y/",
+        "b/y/f",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Iteration
 # ---------------------------------------------------------------------------
@@ -456,6 +479,35 @@ def test_deep_nested_read(deep_dir: Path) -> None:
         assert data == b"level2"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="the tree's path exceeds MAX_PATH on Windows"
+)
+def test_tree_deeper_than_recursion_limit_lists(tmp_path: Path) -> None:
+    # A tree this deep is ordinary (extract an archive of `a/a/a/…/f` and point a
+    # directory reader at the result). The limit is lowered rather than the tree made
+    # ~1000 levels deep, so the path stays short enough for every platform's PATH_MAX.
+    depth = 300
+    leaf = tmp_path.joinpath(*(["d"] * depth))
+    leaf.mkdir(parents=True)
+    (leaf / "f").write_bytes(b"deep")
+
+    frames = 0
+    frame = sys._getframe()
+    while frame is not None:
+        frames += 1
+        frame = frame.f_back
+    old_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(frames + depth // 2)
+    try:
+        with open_archive(tmp_path) as reader:
+            names = [m.name for m in reader]
+    finally:
+        sys.setrecursionlimit(old_limit)
+
+    assert len(names) == depth + 1
+    assert names[-1] == "d/" * depth + "f"
+
+
 # ---------------------------------------------------------------------------
 # extract_all — basic smoke test via the ExtractionCoordinator
 # ---------------------------------------------------------------------------
@@ -611,58 +663,28 @@ def test_symlink_vanishing_before_readlink_is_skipped(
     assert counts[DiagnosticCode.SCAN_ENTRY_VANISHED] == 1
 
 
-# ---------------------------------------------------------------------------
-# The walk is iterative: depth is not bounded by the recursion limit
-# ---------------------------------------------------------------------------
+def test_symlink_replaced_by_file_mid_scan_lists_as_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # scandir saw a symlink; by the `lstat` it is a regular file. The member is typed
+    # from the `lstat`, so no `readlink` runs on a file (EINVAL on POSIX) and the
+    # listing survives.
+    (tmp_path / "a.txt").write_bytes(b"a")
+    os.symlink("a.txt", tmp_path / "link")
+    (tmp_path / "z.txt").write_bytes(b"z")
+    real_stat = os.DirEntry.stat
 
+    def replacing_stat(self: os.DirEntry, *args: object, **kwargs: object):
+        if self.name == "link" and os.path.islink(self.path):
+            os.unlink(self.path)
+            Path(self.path).write_bytes(b"now a file")
+        return real_stat(self, *args, **kwargs)
 
-def test_walk_order_is_depth_first_preorder(tmp_path: Path) -> None:
-    # Pins the order the iterative walk must keep: at each level the non-directory
-    # entries by name, then each subdirectory followed by its whole subtree.
-    for rel in ("b/y/f", "b/x/f", "b/f", "a/g", "z", "c"):
-        path = tmp_path / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"")
+    monkeypatch.setattr(os.DirEntry, "stat", replacing_stat)
     with open_archive(tmp_path) as reader:
-        names = [m.name for m in reader]
-    assert names == [
-        "c",
-        "z",
-        "a/",
-        "a/g",
-        "b/",
-        "b/f",
-        "b/x/",
-        "b/x/f",
-        "b/y/",
-        "b/y/f",
-    ]
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="the tree's path exceeds MAX_PATH on Windows"
-)
-def test_tree_deeper_than_recursion_limit_lists(tmp_path: Path) -> None:
-    # A tree this deep is ordinary (extract an archive of `a/a/a/…/f` and point a
-    # directory reader at the result). The limit is lowered rather than the tree made
-    # ~1000 levels deep, so the path stays short enough for every platform's PATH_MAX.
-    depth = 300
-    leaf = tmp_path.joinpath(*(["d"] * depth))
-    leaf.mkdir(parents=True)
-    (leaf / "f").write_bytes(b"deep")
-
-    frames = 0
-    frame = sys._getframe()
-    while frame is not None:
-        frames += 1
-        frame = frame.f_back
-    old_limit = sys.getrecursionlimit()
-    sys.setrecursionlimit(frames + depth // 2)
-    try:
-        with open_archive(tmp_path) as reader:
-            names = [m.name for m in reader]
-    finally:
-        sys.setrecursionlimit(old_limit)
-
-    assert len(names) == depth + 1
-    assert names[-1] == "d/" * depth + "f"
+        types = {m.name: m.type for m in reader.members()}
+    assert types == {
+        "a.txt": MemberType.FILE,
+        "link": MemberType.FILE,
+        "z.txt": MemberType.FILE,
+    }

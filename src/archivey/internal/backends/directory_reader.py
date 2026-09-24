@@ -149,7 +149,10 @@ class DirectoryReader(BaseArchiveReader):
         """Yield one directory's non-directory entries; push its subdirectories.
 
         The subdirectories go onto ``pending`` (the walk's stack, see `_iter_members`)
-        in reverse name order, so the caller pops them in name order.
+        in reverse name order, so the caller pops them in name order. They are pushed
+        only when this generator is exhausted: a caller that stops early (``break``,
+        ``islice``, a peek with ``next``) leaves them off the stack and silently loses
+        those subtrees, so drain it before reading ``pending``.
         """
         # os.scandir yields DirEntry objects whose stat() is cached, so we avoid a
         # separate os.stat()/os.lstat() syscall per entry.
@@ -186,10 +189,16 @@ class DirectoryReader(BaseArchiveReader):
             rel_path = rel_prefix + entry.name
             # `stat` and `readlink` race the same window on the same entry — listed by
             # scandir, gone before we inspect it — so both sit inside the one guard.
-            is_symlink = entry.is_symlink()
-            is_junction = not is_symlink and _is_junction(entry)
+            #
+            # The type comes from that `lstat`, not from scandir's snapshot, so an entry
+            # replaced in the window (a symlink swapped for a file) is typed as what is
+            # there now and `readlink` only runs on something that is a link. Only the
+            # junction test still reads the entry: a junction's reparse tag is not in
+            # `st_mode`, which reports it as a directory.
             try:
                 st = entry.stat(follow_symlinks=False)
+                is_symlink = stat.S_ISLNK(st.st_mode)
+                is_junction = not is_symlink and _is_junction(entry)
                 link_target = (
                     self._read_link_target(entry.path)
                     if is_symlink or is_junction
@@ -221,12 +230,12 @@ class DirectoryReader(BaseArchiveReader):
                     link_target,
                     is_junction=True,
                 )
-            elif entry.is_dir(follow_symlinks=False):
+            elif stat.S_ISDIR(st.st_mode):
                 member = self._make_member(
                     rel_path + "/", st, MemberType.DIRECTORY, None
                 )
                 subdirs.append((member, Path(entry.path)))
-            elif entry.is_file(follow_symlinks=False):
+            elif stat.S_ISREG(st.st_mode):
                 yield self._make_member(rel_path, st, MemberType.FILE, None)
             else:
                 yield self._make_member(rel_path, st, MemberType.OTHER, None)

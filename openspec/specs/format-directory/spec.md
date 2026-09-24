@@ -28,7 +28,7 @@ The directory reader SHALL expose these properties:
 
 | Property | Value |
 | --- | --- |
-| Listing cost | `ListingCost.REQUIRES_SCANNING` — enumeration walks the tree (`os.scandir` recursion); there is no O(1) index |
+| Listing cost | `ListingCost.REQUIRES_SCANNING` — enumeration walks the tree (an `os.scandir` walk); there is no O(1) index |
 | Access cost | `AccessCost.DIRECT` — each file is independently addressable |
 | Stream capability | `StreamCapability.SEEKABLE` |
 | Member list upfront | No — `members_report_if_available()` returns `None` (the walk is a scan, run once under materialization, not on every peek) |
