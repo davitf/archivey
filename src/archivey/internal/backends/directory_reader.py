@@ -92,7 +92,7 @@ class DirectoryReader(BaseArchiveReader):
     """Reads a filesystem directory as an archive."""
 
     _SUPPORTS_RANDOM_ACCESS = True
-    # A filesystem directory has no O(1) upfront index: enumerating members is a recursive
+    # A filesystem directory has no O(1) upfront index: enumerating members is an
     # os.scandir walk (a scan). So this is False (like plain TAR) — members_report_if_available()
     # returns None rather than triggering an uncached walk on every call, and the walk only runs
     # once under the materialization election (which also removes the free-threaded cache race on
@@ -125,9 +125,32 @@ class DirectoryReader(BaseArchiveReader):
         self._gname_cache: dict[int, str | None] = {}
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
-        yield from self._scan(self._root, "")
+        # An explicit stack rather than recursion: a tree deeper than the interpreter's
+        # recursion limit (easy to produce by extracting an archive of `a/a/a/…/f`)
+        # must list like any other, and a member is yielded straight to the caller
+        # instead of being passed up one generator frame per level of depth.
+        #
+        # Order is a depth-first preorder: at each level the non-directory entries
+        # (sorted by name), then each subdirectory's own member followed by its whole
+        # subtree. Subdirectories are pushed in reverse so they pop in name order.
+        pending: list[tuple[ArchiveMember, Path]] = []
+        yield from self._scan_level(self._root, "", pending)
+        while pending:
+            member, path = pending.pop()
+            yield member
+            yield from self._scan_level(path, member.name, pending)
 
-    def _scan(self, directory: Path, rel_prefix: str) -> Iterator[ArchiveMember]:
+    def _scan_level(
+        self,
+        directory: Path,
+        rel_prefix: str,
+        pending: list[tuple[ArchiveMember, Path]],
+    ) -> Iterator[ArchiveMember]:
+        """Yield one directory's non-directory entries; push its subdirectories.
+
+        The subdirectories go onto ``pending`` (the walk's stack, see `_iter_members`)
+        in reverse name order, so the caller pops them in name order.
+        """
         # os.scandir yields DirEntry objects whose stat() is cached, so we avoid a
         # separate os.stat()/os.lstat() syscall per entry.
         #
@@ -155,14 +178,23 @@ class DirectoryReader(BaseArchiveReader):
             )
             return
 
-        # Emit all non-directory entries at this level first, then descend into the
-        # subdirectories, so the iterator yields a directory's own files before walking
-        # into its children. `subdirs` keeps the (member, path) pairs to recurse into.
+        # Emit all non-directory entries at this level now; the subdirectories are
+        # collected and handed to the walk's stack, so a directory's own files come
+        # before anything inside its children.
         subdirs: list[tuple[ArchiveMember, Path]] = []
         for entry in entries:
             rel_path = rel_prefix + entry.name
+            # `stat` and `readlink` race the same window on the same entry — listed by
+            # scandir, gone before we inspect it — so both sit inside the one guard.
+            is_symlink = entry.is_symlink()
+            is_junction = not is_symlink and _is_junction(entry)
             try:
                 st = entry.stat(follow_symlinks=False)
+                link_target = (
+                    self._read_link_target(entry.path)
+                    if is_symlink or is_junction
+                    else None
+                )
             except FileNotFoundError:
                 self._diagnostics_collector.emit(
                     code=DiagnosticCode.SCAN_ENTRY_VANISHED,
@@ -176,11 +208,9 @@ class DirectoryReader(BaseArchiveReader):
                 )
                 continue
 
-            if entry.is_symlink():
-                yield self._make_member(
-                    rel_path, st, MemberType.SYMLINK, self._read_link_target(entry.path)
-                )
-            elif _is_junction(entry):
+            if is_symlink:
+                yield self._make_member(rel_path, st, MemberType.SYMLINK, link_target)
+            elif is_junction:
                 # A Windows NTFS junction points at a directory but is a reparse point,
                 # not a real subtree to walk — surface it as a symlink-like leaf (flagged
                 # via extra[EXTRA_IS_JUNCTION]) and do NOT recurse through it.
@@ -188,7 +218,7 @@ class DirectoryReader(BaseArchiveReader):
                     rel_path,
                     st,
                     MemberType.SYMLINK,
-                    self._read_link_target(entry.path),
+                    link_target,
                     is_junction=True,
                 )
             elif entry.is_dir(follow_symlinks=False):
@@ -201,10 +231,7 @@ class DirectoryReader(BaseArchiveReader):
             else:
                 yield self._make_member(rel_path, st, MemberType.OTHER, None)
 
-        # Now descend, keeping a stable parent-before-children order within each subtree.
-        for member, path in subdirs:
-            yield member
-            yield from self._scan(path, member.name)
+        pending.extend(reversed(subdirs))
 
     @staticmethod
     def _read_link_target(path: str) -> str:
@@ -302,7 +329,7 @@ class DirectoryReader(BaseArchiveReader):
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(
             # A directory has no O(1) index; listing walks the tree header-to-header
-            # (os.scandir recursion) without decompressing, exactly like a plain TAR.
+            # (an os.scandir walk) without decompressing, exactly like a plain TAR.
             listing_cost=ListingCost.REQUIRES_SCANNING,
             access_cost=AccessCost.DIRECT,
             stream_capability=StreamCapability.SEEKABLE,
