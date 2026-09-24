@@ -184,6 +184,12 @@ error. No raw backend exception SHALL escape. For zstd specifically,
 `compression.zstd.ZstdError` SHALL map to `CorruptionError`, and its truncation
 `EOFError` SHALL map to `TruncatedError`.
 
+A liblzma failure that is not damage SHALL NOT surface as `CorruptionError`: a filter,
+filter option or integrity check liblzma cannot decode SHALL raise
+`UnsupportedFeatureError`, and a decoder memory cap refusing a declared dictionary
+SHALL raise `ResourceLimitError`. These are not `ReadError`s, so a listing that meets
+one fails rather than publishing the members before it as an incomplete report.
+
 A source that ends before its first complete header is end-of-input too. For the
 native xz, lzip and unix-compress decoders, a source that is empty, or holds only a
 prefix of the format's magic bytes, SHALL raise `TruncatedError`; a short source whose
@@ -200,6 +206,8 @@ valid empty stream.
 | Zstd checksum frame is corrupted | `CorruptionError` with backend `ZstdError` as `__cause__` |
 | Empty source, or only a prefix of the magic, to xz / lzip / unix-compress | `TruncatedError` |
 | Source shorter than a header whose bytes are not the format's magic (xz / lzip / unix-compress) | `CorruptionError`, never `b""` |
+| xz block header (valid CRC) names a filter liblzma does not know | `UnsupportedFeatureError`, not `CorruptionError` |
+| xz / LZMA stream declares a dictionary above `DecoderLimits.max_decoder_memory` | `ResourceLimitError` |
 
 ### Requirement: Content faults raise from read, never from close
 
