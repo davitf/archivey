@@ -283,40 +283,58 @@ def test_cheap_size_still_needs_seekability(suffix: str = ".lz") -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_single_member_gzip_exposes_stored_crc32(tmp_path: Path) -> None:
-    payload = b"stored-crc-payload"
+@pytest.mark.parametrize("source_kind", ["path", "bytesio"])
+@pytest.mark.parametrize(
+    "tail",
+    [
+        pytest.param(b"", id="single-member"),
+        pytest.param(gzip.compress(b"second"), id="second-member"),
+        pytest.param(b"\0" * 8, id="nul-padding"),
+    ],
+)
+def test_gzip_never_reports_a_crc32(
+    tmp_path: Path, source_kind: str, tail: bytes
+) -> None:
+    """A gzip has no digest, before or after a full read.
+
+    The trailer CRC covers the whole member only when the file holds one member, and
+    proving that at open means scanning the whole file. After a read it is useless: the
+    decoder has already checked each member's CRC.
+    """
+    data = gzip.compress(b"first") + tail
     path = tmp_path / "one.gz"
-    path.write_bytes(gzip.compress(payload))
-    with open_archive(path) as ar:
+    path.write_bytes(data)
+    source: Path | io.BytesIO = path if source_kind == "path" else io.BytesIO(data)
+    with open_archive(source) as ar:
         member = ar.members()[0]
-        assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(payload))
+        assert HashAlgorithm.CRC32 not in member.hashes
+        ar.read(member)
+        assert HashAlgorithm.CRC32 not in member.hashes
 
 
-def test_multi_member_gzip_omits_crc32(tmp_path: Path) -> None:
-    path = tmp_path / "multi.gz"
-    path.write_bytes(gzip.compress(b"first") + gzip.compress(b"second"))
-    with open_archive(path) as ar:
-        assert HashAlgorithm.CRC32 not in ar.members()[0].hashes
+def test_gzip_open_does_not_scan_for_a_second_member() -> None:
+    """Opening and listing a large gzip reads a bounded prefix, not the whole file.
 
+    Counted in bytes rather than by patching the scan function, so it fails against
+    any open-time scan however it is imported. The open-time validation probe reads
+    about 1 MiB. Before the change, the scan for a second member read this file in
+    1 MiB blocks until it hit a chance ``1f 8b 08`` match, about 4 MiB in with this
+    seed.
+    """
 
-def test_gzip_metadata_omits_crc_without_gzip_magic() -> None:
-    """Non-gzip bytes must not get a fake trailer CRC (PR 104 review #1)."""
-    from archivey.internal.streams.codecs import GzipCodec, MetadataContext
-    from archivey.types import ArchiveMember, MemberType
+    class CountingBytesIO(io.BytesIO):
+        consumed = 0
 
-    def boom() -> int | None:
-        raise AssertionError("must not probe CRC without gzip magic")
+        def read(self, size: int | None = -1, /) -> bytes:
+            data = super().read(size)
+            self.consumed += len(data)
+            return data
 
-    member = ArchiveMember(type=MemberType.FILE, name="data")
-    ctx = MetadataContext(
-        peek_header=lambda _n: b"NOT_A_GZIP_HEADER!!!!!!!!",
-        peek_trailer=lambda _n: b"\x11\x22\x33\x44\x55\x66\x77\x88",
-        probe_decompressed_size=lambda: None,
-        probe_gzip_stored_crc32=boom,
-        probe_lzip_index=lambda: None,
-    )
-    GzipCodec().extract_metadata(ctx, member)
-    assert HashAlgorithm.CRC32 not in member.hashes
+    data = gzip.compress(random.Random(7).randbytes(8 << 20), 1)
+    source = CountingBytesIO(data)
+    with open_archive(source) as ar:
+        assert ar.members()[0].name == "data"
+    assert source.consumed < 2 << 20
 
 
 def test_gzip_omits_crc32_on_nonseekable_source() -> None:
@@ -396,13 +414,12 @@ def test_zlib_omits_hashes_but_verifies_adler_on_read(tmp_path: Path) -> None:
             ar.read(member)
 
 
-def test_stored_gzip_crc32_does_not_change_read_or_verification(tmp_path: Path) -> None:
+def test_gzip_reads_and_rereads_without_a_listed_crc32(tmp_path: Path) -> None:
     payload = b"verify-unchanged"
     path = tmp_path / "ok.gz"
     path.write_bytes(gzip.compress(payload))
     with open_archive(path) as ar:
         member = ar.members()[0]
-        assert HashAlgorithm.CRC32 in member.hashes
         assert ar.read(member) == payload
         # Second open still succeeds (path source; codec verifies its own trailer).
         assert ar.read(member) == payload

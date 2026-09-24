@@ -147,6 +147,15 @@ class _PasswordCandidates:
                 self._known_good or self._candidates or self._provider is not None
             )
 
+    def has_concrete_passwords(self) -> bool:
+        """Whether the caller gave a password value (a str, bytes or a list of them).
+
+        A provider callable alone does not count: it offers a password only if asked,
+        so a format that never asks has not been given one.
+        """
+        with self._state_lock:
+            return bool(self._known_good or self._candidates)
+
     def is_ambiguous(self) -> bool:
         """Whether a weak password check needs confirmation before accepting a result.
 

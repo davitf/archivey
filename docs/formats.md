@@ -187,6 +187,13 @@ behaviour. The complete list is on the two classes.
   in order when you can. With `seekable_members=True`, a backward `seek()` on a compressed
   member is the same cost: a new `unrar` run from the start. `CostReceipt.access_cost` is
   `SOLID` to say so.
+- **A member read waits as long as `unrar` does.** `read()` on a RAR member stream has
+  no time bound: archivey does not stop an `unrar` process that stalls. A solid archive
+  can produce no bytes for a long time while `unrar` decodes the members ahead of the
+  one you asked for, so no idle timeout would be safe.
+- **Encrypted old-style comments are not decoded.** A RAR 1.5 / 2.x comment block with
+  its password or salt flag set gives `comment` as `None`. No available tool writes such
+  a comment, so there is nothing to test a decode path against.
 - Read-only — no RAR writer.
 
 ## ISO 9660
@@ -222,9 +229,10 @@ behaviour. The complete list is on the two classes.
 
 - One synthetic member (name from the source path, or `data` for anonymous streams).
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries `FNAME`.
-- `.gz` surfaces the trailer CRC-32 as `member.hashes["crc32"]` for a **single-member**
-  file on a seekable/path source (omit for multi-member gzip — the trailer covers only
-  the last member — and for non-seekable sources).
+- `.gz` has **no** `member.hashes` entry, before or after a read. The trailer CRC-32
+  covers the whole member only when the file holds one gzip member, and proving that
+  at open would mean reading the whole compressed file. The decoder still checks every
+  member's CRC as it reads.
 - With the `[seekable]` rapidgzip accelerator on a seekable `.gz`, truncation detection is
   **best-effort** (empty→stdlib fallback + single-member ISIZE) — stronger than naked
   rapidgzip, weaker than stdlib alone. Do **not** rely on it when you need certainty;

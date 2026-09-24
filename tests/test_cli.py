@@ -170,8 +170,9 @@ def test_list_incomplete_members_report_exits_one(
 
 
 def test_verb_named_file_known_verb_wins(tmp_path: Path) -> None:
-    # A file named "x" collides with the extract alias; known-verb-wins dispatches extract.
-    # Escape hatch: archivey list ./x
+    # A file named "x" collides with the extract alias; a bare verb word is a verb, so
+    # this dispatches extract. Escape hatches: `archivey list x`, or a path-qualified
+    # token such as `archivey ./x` (next test).
     named = tmp_path / "x"
     _zip(named, {"f.txt": b"data"})
     # extract into dest — should not fall through to list
@@ -182,6 +183,28 @@ def test_verb_named_file_known_verb_wins(tmp_path: Path) -> None:
     # escape hatch lists the verb-named archive
     code = main(["list", str(named)])
     assert code == EXIT_OK
+
+
+@pytest.mark.parametrize("shape", ["./x", "sub/x", "absolute"])
+def test_path_qualified_verb_word_is_listed_not_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    shape: str,
+) -> None:
+    """A path-qualified token whose basename is a verb word is a path, never a verb.
+
+    A regression here would run ``extract`` and write into the working directory.
+    """
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "sub" / "x" if shape == "sub/x" else tmp_path / "x"
+    target.parent.mkdir(exist_ok=True)
+    _zip(target, {"f.txt": b"data"})
+    token = str(target) if shape == "absolute" else shape
+    before = sorted(p.name for p in tmp_path.iterdir())
+    assert main([token]) == EXIT_OK
+    assert "f.txt" in capsys.readouterr().out
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
 
 
 def test_dash_prefixed_verb_rejected(sample_zip: Path) -> None:
@@ -363,6 +386,35 @@ def test_info_and_detect(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -
     assert "SEVEN_Z" not in out
     assert "access:      random (indexed)" in out
     assert main(["detect", str(sample_zip)]) == EXIT_OK
+
+
+def test_info_on_a_directory_reports_the_directory_format(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`info <dir>` works: detect_format answers DIRECTORY, as open_archive reads it."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "a.txt").write_bytes(b"hello")
+    assert main(["info", str(tree)]) == EXIT_OK
+    captured = capsys.readouterr()
+    assert "directory" in captured.out
+    assert "cannot open" not in captured.err
+    assert "password" not in captured.err
+
+
+def test_default_run_on_tar_prints_no_password_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The CLI's own provider is not a password the user supplied."""
+    import tarfile
+
+    path = tmp_path / "a.tar"
+    with tarfile.open(path, mode="w") as tar:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 5
+        tar.addfile(info, io.BytesIO(b"hello"))
+    assert main(["list", str(path)]) == EXIT_OK
+    assert "password" not in capsys.readouterr().err
 
 
 def test_info_verbose_prints_cost_axes(
