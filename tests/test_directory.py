@@ -663,6 +663,10 @@ def test_symlink_vanishing_before_readlink_is_skipped(
     assert counts[DiagnosticCode.SCAN_ENTRY_VANISHED] == 1
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="DirEntry.stat serves scandir's cached data on Windows, so no fresh lstat",
+)
 def test_symlink_replaced_by_file_mid_scan_lists_as_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

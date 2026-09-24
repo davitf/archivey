@@ -194,7 +194,9 @@ class DirectoryReader(BaseArchiveReader):
             # replaced in the window (a symlink swapped for a file) is typed as what is
             # there now and `readlink` only runs on something that is a link. Only the
             # junction test still reads the entry: a junction's reparse tag is not in
-            # `st_mode`, which reports it as a directory.
+            # `st_mode`, which reports it as a directory. On Windows `DirEntry.stat`
+            # serves scandir's own data without a syscall, so this narrows the
+            # replacement window only on POSIX; a replaced entry there still fails.
             try:
                 st = entry.stat(follow_symlinks=False)
                 is_symlink = stat.S_ISLNK(st.st_mode)
