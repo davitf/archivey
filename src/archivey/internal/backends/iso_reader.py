@@ -384,13 +384,15 @@ class IsoReader(BaseArchiveReader):
         # _cdfp. Only open_file_from_iso / PyCdlibIO I/O need the handle lock. If a future
         # pycdlib version gains handle access here, lock the complete call.
         with self._translated_errors():
+            # ``index`` is each member's position in the walk, the id registration
+            # stamps, so a diagnostic raised while typing can name it.
+            index = 0
             for dirpath, dirnames, filenames in self._iso.walk(**{self._path_kw: "/"}):
-                for name in dirnames:
-                    yield self._make_member(self._join(dirpath, name))
-                for name in filenames:
-                    yield self._make_member(self._join(dirpath, name))
+                for name in (*dirnames, *filenames):
+                    yield self._make_member(self._join(dirpath, name), index)
+                    index += 1
 
-    def _make_member(self, ns_path: str) -> ArchiveMember:
+    def _make_member(self, ns_path: str, index: int) -> ArchiveMember:
         record: Any = self._iso.get_record(**{self._path_kw: ns_path})
         rr = getattr(record, "rock_ridge", None)
 
@@ -441,6 +443,7 @@ class IsoReader(BaseArchiveReader):
             member=member,
             presented_name=presented,
             archive_name=self._archive_name,
+            member_id=index,
         )
         return member
 

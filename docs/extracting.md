@@ -57,17 +57,14 @@ archivey.extract("archive.zip", "out/")
 - **A link for which the archive records no target** is recorded
   `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still extracts.
   Nothing can be written for it, and nothing about the extraction went wrong, so it is
-  not a failure and `OnError.STOP` does not abort on it. In a streaming read that holds
-  for the omissions a reader can see in the archive's metadata, which is where every
-  such link these tools actually write comes from; one that is legible only in the
-  member's own data is not known until the end of the pass, too late to be anything but
-  a per-member failure. The omission is the archive's,
-  and it is reported as `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an
-  archive-integrity code, so `DiagnosticPolicy.strict()` still refuses such an archive
-  outright. A link whose target the archive *does* carry but this read could not reach —
-  encrypted, compressed, split across volumes, or simply not read yet in streaming mode
-  — is a per-member failure instead, because recording it as an outcome would drop a
-  member the archive describes in full while reporting success.
+  not a failure and `OnError.STOP` does not abort on it. That holds in a streaming read
+  too: extraction reads a link's data before writing it, so an omission legible only in
+  that data is seen in time. The omission is the archive's, and it is reported as
+  `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an archive-integrity code,
+  so `DiagnosticPolicy.strict()` still refuses such an archive outright. A link whose
+  target the archive *does* carry but this read could not reach — encrypted, compressed
+  or split across volumes — is a per-member failure instead, because recording it as an
+  outcome would drop a member the archive describes in full while reporting success.
 - **A link target longer than 4096 bytes** is treated as corrupt or malicious when it is
   stored as the member's data (ZIP, 7z, RAR4). No filesystem path that long exists on
   Linux or macOS, and the data can be compressed, so reading it whole would let a small
@@ -256,6 +253,28 @@ codec buffers. Wall time is *at most* folder size per candidate, and reaches tha
 for **store/copy+AES**, where nothing rejects a wrong key early — a compressed folder's
 codec rejects one within a few bytes, and confirmation stops at the first member CRC
 that fails.
+
+**Symlink targets stored as member data.** ZIP, 7z and RAR4 keep a symlink's target in
+the member's data rather than its header, so learning where a link points means reading
+that data, which can mean decompressing it and asking your password provider. By default
+(`ArchiveyConfig.read_link_targets=True`) listing reads every such target, and a
+`stream_members()` pass reads them all by the time it finishes, whether you selected the
+links or not; on 7z that decodes each link's folder up to its last link, once. For an
+untrusted archive you only mean to list, `read_link_targets=False` stops the reader
+reading any of them on its own: those links list with `link_target=None` and no
+diagnostic. Extraction still writes them. `extract_all` runs your `members` selector and
+`filter` on the link first, with `link_target=None`, and reads the target only for a link
+both accept; a target it cannot read fails that member under `on_error`. `open()` on a
+link reads its target to follow it. Either way the target is filled in place on the
+member you hold. Like `listing_limits`, the setting is fixed for the reader's lifetime.
+
+That read can show the member is not a link at all. A member flagged as a Windows
+reparse point whose data is not a reparse buffer is a file, and listing would have
+presented it as one. When extraction is the first to read it, under
+`read_link_targets=False` or in a streaming pass, `extract_all` re-types it and calls
+your `filter` a second time, now with the file, so a filter can see such a member twice.
+In random access it then writes the file's content. A streaming pass has already gone
+past that content, so the member fails under `on_error` instead.
 
 **The bomb tracker is per-archive, not nesting-aware.** It measures the expansion of
 the archive it is extracting, so a zip-of-zips can amplify past your budget one level

@@ -76,23 +76,19 @@ extract(path, dest)                                  core.py → internal/extrac
 
 Three things about this path are worth knowing before you debug it:
 
-- **Listing can happen twice, and the two passes build different member objects.**
-  Backends that declare `_MEMBER_LIST_UPFRONT` take an index-only pass
-  (`_get_members_index_only`) before materialization (`_materialize_members`). Both call
-  `_iter_members()` afresh, and the index-only pass's list is never stored in
-  `self._materialized` — so the backend re-walks and constructs new `ArchiveMember`
-  instances the second time.
-
-  **This is an artifact of the two passes, not a design choice, and it is not a
-  frozen-object decision.** `ArchiveMember` is a *mutable* dataclass the library fills in
-  place — ADR 0007, explicitly "reversed from an earlier frozen draft". Nothing decided
-  that the second pass should build fresh objects; it falls out of the index-only result
-  not being cached. Whether it *should* be is an open question, recorded in `IDEAS.md`.
-
-  Consequence, and the reason this is worth knowing: **dedupe per-member work on the
-  member id, never on object identity** — the id is stable across both passes, the object
-  is not. A guardrail test that lists a TAR will not exercise this at all, because TAR has
-  no upfront index. Getting this wrong emitted one diagnostic twice per member (#232).
+- **A reader lists its members once, and every method hands out the same objects.**
+  `BaseArchiveReader` owns one member list (`_listed`) filled by one pull over the
+  backend's `_iter_members()`. The peek, `members()`, `scan_members()`, `get()`,
+  `stream_members()` and `extract_all()` all read that list; `_pull_member` stamps,
+  checks and accounts each member exactly once, so per-member work needs no dedupe. The
+  walk runs once when it completes. A random-access walk that fails without terminal
+  damage is discarded and may be retried, which is why `_iter_members()` must still
+  yield in a stable order; a streaming one poisons the reader. Last-entry-wins
+  `is_current` is stamped once, when the walk ends (`_end_walk`). A streaming pass keeps
+  its own cursor into the list and finalizes links only when that cursor passes the end,
+  so a peek that drains the walk does not finalize a pass the caller then abandons.
+  `ArchiveMember` is mutable and filled in place (ADR 0007), and there is now only one
+  object per member to fill.
 - **"Backend" means archivey's class, not the third-party code.** `ReadBackend` /
   `ZipReadBackend` are ours; the library a backend wraps (stdlib `zipfile`, `pycdlib`, the
   `unrar` binary) is **the library**. Handbook pages tag a limitation **format** (inherent),
@@ -113,7 +109,7 @@ Three things about this path are worth knowing before you debug it:
 |---|---|
 | A format's parsing or metadata | `internal/backends/<fmt>_{reader,parser}.py`; spec `openspec/specs/format-<fmt>/` |
 | ZIP internals | `zip_reader.py` (stdlib central directory + archivey member data) · `internal/zip_detect.py` (scan-hit validator) · `internal/zipcrypto.py` · `internal/zip_aes.py`; handbook [`formats/zip.md`](formats/zip.md) |
-| 7z internals | `sevenzip_parser.py` (headers) · `sevenzip_pipeline.py` (coder graph) · `sevenzip_reader.py` · `sevenzip_methods.py` · `internal/sevenzip_detect.py` (scan-hit validator); handbook [`formats/7z.md`](formats/7z.md) |
+| 7z internals | `sevenzip_parser.py` (headers) · `sevenzip_pipeline.py` (coder graph) · `sevenzip_reader.py` · `sevenzip_methods.py` · `sevenzip_aes.py` (KDF, AES properties, key cache) · `internal/sevenzip_detect.py` (scan-hit validator); handbook [`formats/7z.md`](formats/7z.md) |
 | RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) · `internal/rar_detect.py` (scan-hit validator); handbook [`formats/rar.md`](formats/rar.md) |
 | A codec, or adding one | `streams/codecs.py` + `streams/decompress.py`; `xz.py` / `lzip.py` / `unix_compress.py` for the hand-written ones |
 | Seeking inside a compressed stream | `streams/decompressor_stream.py`; spec `seekable-decompressor-streams` |

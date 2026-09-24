@@ -722,21 +722,19 @@ def test_bidi_diagnostic_is_emitted_once_per_presentation(
 ) -> None:
     """F10 (guardrail): one member, one occurrence — however the list gets walked.
 
-    The emission lives in `_register_member`, which runs once per member *identity*, so
-    a backend that also normalizes the name cannot add a second.
+    The emission lives in `_register_member`, which runs when the base reader's one
+    member walk first pulls a member, so neither a second listing call nor a backend
+    that also normalizes the name can add a second.
 
-    ``extract_all`` is the case that caught this out and is why the guard keys on the
-    member id rather than on the object: it walks the list twice —
-    ``_get_members_index_only`` for the extraction prep, then ``_materialize_members`` —
-    building *different* ArchiveMember objects for the same members, so an
-    ``is _member_id set?`` guard never sees the second pass. One member with one
-    deceptive name is one finding; counting it twice inflates the summary a caller
-    queries, burns a second retention slot and fires their callback again.
+    ``extract_all`` is the case that caught this out: it used to walk an upfront index
+    twice, once for the extraction prep and once to materialize, building different
+    ArchiveMember objects for the same members. One member with one deceptive name is
+    one finding; counting it twice inflates the summary a caller queries, burns a second
+    retention slot and fires their callback again.
 
     Deliberately a **ZIP**: only a backend with an upfront index answers
-    ``members_report_if_available`` during extraction prep, so only there does the
-    second pass happen. The same test over a TAR passes against the unfixed code and
-    would have pinned nothing.
+    ``members_report_if_available`` during extraction prep, which is the path that
+    once walked twice.
     """
     import zipfile
 

@@ -35,6 +35,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
 from archivey.internal.backends.sevenzip_methods import (
     METHOD_DELTA,
     METHOD_LZMA,
@@ -64,7 +65,7 @@ from archivey.internal.backends.sevenzip_parser import (
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
-from archivey.internal.streams.crypto import SevenZipKeyCache, open_aes_decrypt_stream
+from archivey.internal.streams.crypto import open_aes_decrypt_stream
 from archivey.internal.streams.decompress import BcjFilterStream
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
 

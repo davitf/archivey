@@ -326,6 +326,9 @@ class ExtractionCoordinator:
         # ``requested_path`` set with ``path=None``.
         self._requested_path: Path | None = None
         self._collided_with: Path | None = None
+        # Set by ``_transform`` when reading a link's target showed the current member
+        # is not a link after all, so the pass yielded it with no data stream.
+        self._retyped: bool = False
         # Set by ``_prepare_destination`` when it removes an existing entry to make room.
         # Only the non-atomic paths (DIR / SYMLINK / HARDLINK) do that — a FILE write
         # lands via os.replace and never destroys the destination up front — so this is
@@ -342,6 +345,9 @@ class ExtractionCoordinator:
         # ``(1)``. Reset per ``run()``, and cleared whenever a claim is released (a freed
         # name may be the first free one again).
         self._rename_next: dict[str, int] = {}
+        # The reader ``run()`` is extracting from, for the one read ``_transform`` makes
+        # on it: an accepted link's target. Set per ``run()``.
+        self._reader: BaseArchiveReader | None = None
 
     # --- entry point ---------------------------------------------------------------
 
@@ -363,6 +369,7 @@ class ExtractionCoordinator:
         )
 
         selector = normalize_member_selector(self._members)
+        self._reader = reader
 
         # Progress totals cover what this call will actually attempt: when a member list
         # is free (an upfront index) and a selector is given, totals count only the
@@ -482,6 +489,7 @@ class ExtractionCoordinator:
             self._emit_progress = None
             self._requested_path = None
             self._collided_with = None
+            self._retyped = False
             try:
                 # User filter sees every selected member (including non-current); the
                 # is_current skip is hardwired after the filter and does not force a write
@@ -680,6 +688,25 @@ class ExtractionCoordinator:
                 return None, None
             # A caller filter can rename/relink; re-run the universal check on the result.
             check_universal(transformed, dest_root)
+        if self._reader is not None and self._needs_target_read(original, transformed):
+            # A symlink whose target the format keeps in member data and nothing has
+            # read yet: `read_link_targets=False`, or a streaming pass whose own read
+            # comes only at EOF. The selector and the filter have now both accepted it,
+            # with `link_target=None`, so reading it here is the read the caller asked
+            # for (`archive-reading`, "Link targets stored as member data are read only
+            # when configured"). The target it yields is checked like any other below.
+            self._reader._read_link_target_on_request(original)
+            if original.type is not MemberType.SYMLINK:
+                # The data showed the member is not a link: a reparse-flagged member
+                # whose data is no reparse buffer, re-typed to its fallback as listing
+                # would have. Everything above decided on a member that did not exist,
+                # so decide again on the real one, the filter included.
+                self._retyped = True
+                return self._transform(original, dest_root)
+            if original.link_target is not None:
+                if transformed is not original:
+                    transformed = transformed.replace(link_target=original.link_target)
+                check_universal(transformed, dest_root)
         # Portable-name policy on the FINAL name — after the user filter, so a filter rename
         # is checked too, and TRUSTED keeps faithful bytes. Reserved names / ':' are
         # rejected; a trailing dot/space (STRICT) or non-representable byte is rewritten to a
@@ -698,6 +725,22 @@ class ExtractionCoordinator:
                 )
             )
         return portable, transformed.name
+
+    @staticmethod
+    def _needs_target_read(original: ArchiveMember, transformed: ArchiveMember) -> bool:
+        """Whether a link about to be written still needs its target read.
+
+        Only a current symlink the caller's filter left targetless and whose target
+        nobody has looked for yet: a superseded member is not written, and a target the
+        filter supplied is the one to write.
+        """
+        return (
+            original.type is MemberType.SYMLINK
+            and original.is_current
+            and original.link_target is None
+            and not original._link_target_resolved
+            and transformed.link_target is None
+        )
 
     # --- per-member write ----------------------------------------------------------
 
@@ -1063,7 +1106,22 @@ class ExtractionCoordinator:
             )
 
         os.makedirs(dest_path.parent, exist_ok=True)
-        self._write_file_atomic(stream, dest_path, transformed, tracker)
+        if stream is None and self._retyped:
+            # The pass yielded this member as a link, with no data stream, before its
+            # data showed it is a file. Random access opens it now. A forward-only pass
+            # is already past that data, so the content is out of reach: fail the member
+            # rather than write an empty file for one the archive carries in full.
+            reader = self._reader
+            if reader is None or reader._streaming:
+                raise ExtractionError(
+                    f"{quoted(original.name)} is flagged as a link but its data is a "
+                    "file's content, which a streaming pass cannot go back for",
+                    member_name=original.name,
+                )
+            with contextlib.closing(reader._lazy_member_stream(original)) as reopened:
+                self._write_file_atomic(reopened, dest_path, transformed, tracker)
+        else:
+            self._write_file_atomic(stream, dest_path, transformed, tracker)
 
         # Record this FILE's path under the ORIGINAL member id so later hardlinks whose
         # link_target_member is this member can os.link against it.
@@ -1092,14 +1150,13 @@ class ExtractionCoordinator:
 
         if target is None:
             # Unset for any other reason, which always means the archive records a
-            # target this read could not produce: not looked for yet (a ZIP or 7z
-            # symlink in streaming mode carries its target in data the pass has already
-            # gone by), or looked for and out of reach (compressed, split across
-            # volumes, encrypted). Reporting those as the status above would claim
-            # success while dropping a member the archive describes in full, so they
-            # stay the per-member failure they were before that status existed. Which
-            # of the two it is comes from the backend that knows — see
-            # `BaseArchiveReader._emit_link_target_unavailable`.
+            # target this read could not produce. A data-stored target has been looked
+            # for by now, either while listing or by `_transform` on request, so it is
+            # out of reach: compressed, split across volumes, encrypted, or refused as
+            # too long. Reporting that as the status above would claim success while
+            # dropping a member the archive describes in full, so it stays the
+            # per-member failure it was before that status existed. The reason is the
+            # backend's to report: `BaseArchiveReader._emit_link_target_unavailable`.
             raise LinkTargetNotFoundError(
                 "Symlink has no target",
                 member_name=transformed.name,

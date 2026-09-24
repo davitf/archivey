@@ -1,6 +1,6 @@
 ## 0. Gate
 
-- [ ] 0.1 Before archiving, check all four MODIFIED blocks against the live requirements:
+- [x] 0.1 Before archiving, check all four MODIFIED blocks against the live requirements:
       `access-mode-and-cost` "members_report_if_available() — a report peek",
       `archive-reading` "Bounded-memory sequential streaming via stream_members",
       `format-zip` "Map ZIP member metadata to ArchiveMember" and `format-rar` "Resolve RAR
@@ -12,74 +12,74 @@
 
 ## 1. Red tests first
 
-- [ ] 1.1 Failing test: on a fresh 7z and a fresh solid RAR, in both access modes, every
+- [x] 1.1 Failing test: on a fresh 7z and a fresh solid RAR, in both access modes, every
       member yielded by `stream_members()` has `member_id` set and `member in reader` is
       true
-- [ ] 1.2 Failing test: for ZIP, ISO, 7z and RAR, `members_report_if_available()` twice and
+- [x] 1.2 Failing test: for ZIP, ISO, 7z and RAR, `members_report_if_available()` twice and
       then `members()` return the same objects (`is`), and a spy on `_iter_members` counts
       one call
-- [ ] 1.3 Failing test: `extract_all()` on ZIP, ISO, 7z and RAR walks `_iter_members` once
-- [ ] 1.4 Failing test: a ZIP symlink member held from a peek gets its `link_target` set in
+- [x] 1.3 Failing test: `extract_all()` on ZIP, ISO, 7z and RAR walks `_iter_members` once
+- [x] 1.4 Failing test: a ZIP symlink member held from a peek gets its `link_target` set in
       place after `members()`
-- [ ] 1.5 Failing test: `MEMBER_NAME_BIDI_CONTROL` from a peek-then-materialize sequence is
+- [x] 1.5 Failing test: `MEMBER_NAME_BIDI_CONTROL` from a peek-then-materialize sequence is
       counted once and attached to the object the caller holds (today it attaches to the
       discarded prep-pass object)
-- [ ] 1.6 Failing test: streaming `extract_all()` over a ZIP holding `a.txt` twice returns
+- [x] 1.6 Failing test: streaming `extract_all()` over a ZIP holding `a.txt` twice returns
       `SUPERSEDED`, `EXTRACTED` for the two entries, as random access does (today it raises
       `ExtractionError: Destination already exists`)
-- [ ] 1.7 Failing test: over a streaming ZIP with a symlink, peek inside the
+- [x] 1.7 Failing test: over a streaming ZIP with a symlink, peek inside the
       `stream_members()` loop and `break`; assert `_materialized` stays unpublished and no
       link-target read happened (D1b). Mutation: finalize on walk exhaustion; the test
       must go red.
-- [ ] 1.8 Failing test: a typing-time diagnostic (normalized name, invalid timestamp) on
+- [x] 1.8 Failing test: a typing-time diagnostic (normalized name, invalid timestamp) on
       ZIP, 7z, RAR and ISO carries a context `member_id` equal to the member's own
       `member_id` (D8)
-- [ ] 1.9 Keep green, and check each fails when its path is broken:
+- [x] 1.9 Keep green, and check each fails when its path is broken:
       `MEMBER_NAME_NORMALIZED` counted once per member on `extract_all` (ZIP),
       the existing PR 386 dedupe tests, and the listing-limit refusal part-way through a
       ZIP listing (`tests/test_listing_limits.py`)
 
 ## 2. One walk in the base (D1, D2, D4)
 
-- [ ] 2.1 Add the base-owned walk: `_listed`, its name index, the `_iter_members()`
+- [x] 2.1 Add the base-owned walk: `_listed`, its name index, the `_iter_members()`
       iterator, and the walk outcome. One pull method stamps, runs presentation checks,
       accounts, indexes and appends.
-- [ ] 2.2 Route `members_report_if_available()` through the walk (pull to end, apply
+- [x] 2.2 Route `members_report_if_available()` through the walk (pull to end, apply
       last-entry-wins once) and delete `_get_members_index_only`
-- [ ] 2.3 Route `_materialize_members` through the walk; resolve links on `_listed`;
+- [x] 2.3 Route `_materialize_members` through the walk; resolve links on `_listed`;
       publish `_materialized` from it
-- [ ] 2.4 Route `_begin_forward_pass` / `_ProgressivePassIterator` through the walk;
+- [x] 2.4 Route `_begin_forward_pass` / `_ProgressivePassIterator` through the walk;
       fold `_pass_scanned` / `_pass_by_name_lists` into the base list. The pass keeps its
       own cursor and finalizes when that cursor passes the end of a completed walk (D1b).
-- [ ] 2.5 Stamp last-entry-wins `is_current` once, when the walk ends (D1a). Drop
+- [x] 2.5 Stamp last-entry-wins `is_current` once, when the walk ends (D1a). Drop
       `_finalize_links`' `is_current_first` parameter and its "preserve those orderings"
       docstring note.
-- [ ] 2.6 Failure handling per D2: discard and allow a retry in random access, poison in
+- [x] 2.6 Failure handling per D2: discard and allow a retry in random access, poison in
       streaming, store the incomplete report on terminal damage and stamp last-entry-wins
       over its prefix (D1a). One test per branch that fails when a branch is routed to the
       wrong behaviour. The terminal-damage test streams a TAR holding `a.txt` twice,
       truncated in a later member, and asserts the first `a.txt` reads
       `is_current=False` in the incomplete report. It passes today; mutation: skip the
       stamp on the damage branch, and it must go red.
-- [ ] 2.7 Listing limits per D4: account once at pull, enforce per caller, and run
+- [x] 2.7 Listing limits per D4: account once at pull, enforce per caller, and run
       `assert_within_limits()` when an enforcing caller finds members already pulled.
       Remove the tracker `reset()` calls and `_register_member`'s "already stamped"
       branch.
 
 ## 3. Concurrency (D5)
 
-- [ ] 3.1 Put the walk under the first-touch election. Test a peek racing `members()`
+- [x] 3.1 Put the walk under the first-touch election. Test a peek racing `members()`
       under `concurrent_members=True`: one walk, same objects, no `ArchiveyUsageError`.
-- [ ] 3.2 Test a peek from inside a streaming `for` loop over an upfront-index backend:
+- [x] 3.2 Test a peek from inside a streaming `for` loop over an upfront-index backend:
       the pass continues and yields the same objects the peek returned
 
 ## 4. Backends (D6)
 
-- [ ] 4.1 `sevenzip_reader._iter_with_data`: iterate the base list, not `self._members`
-- [ ] 4.2 `rar_reader._iter_with_data` solid branch: the same
-- [ ] 4.3 ZIP and 7z: drop the `report_key=` arguments and emit directly. ZIP keeps the
+- [x] 4.1 `sevenzip_reader._iter_with_data`: iterate the base list, not `self._members`
+- [x] 4.2 `rar_reader._iter_with_data` solid branch: the same
+- [x] 4.3 ZIP and 7z: drop the `report_key=` arguments and emit directly. ZIP keeps the
       `index` parameter (D8 uses it).
-- [ ] 4.4 7z link reads (D6b). Random-access listing: resolving any link in a folder
+- [x] 4.4 7z link reads (D6b). Random-access listing: resolving any link in a folder
       decodes that folder once, up to its last link member, and fills every link in it.
       Streaming pass: read each link member's bytes from the pass's own folder decoder
       when the cursor reaches it, keep them, and apply them at EOF finalization. Test
@@ -98,16 +98,16 @@
       Mutations: resolve per link again (the `members()` count must rise); skip the
       pass's own link read (the last-member link must stay unresolved, or be read by a
       second decode that raises the count).
-- [ ] 4.5 Commit a small fixture made by 7-Zip `a -snl`, since the corpus's 7z fixtures
+- [x] 4.5 Commit a small fixture made by 7-Zip `a -snl`, since the corpus's 7z fixtures
       come from py7zr and none has a link mid-folder. One solid folder of a few KB of
       text files, with links before the files, between them, and as the last member
       with data. No executable, so no BCJ folder and nothing large in the repo. Add the
       same tree with `-ms=off` for the non-solid row. Record the generating commands
       next to the fixture.
-- [ ] 4.6 D8: 7z, RAR and ISO pass the listing position into typing-time diagnostic
+- [x] 4.6 D8: 7z, RAR and ISO pass the listing position into typing-time diagnostic
       contexts as `member_id` (7z and RAR: the index in their open-time list; ISO: an
       `enumerate` over its walk)
-- [ ] 4.7 D6c: add `ArchiveyConfig.read_link_targets: bool = True`, reader-lifetime like
+- [x] 4.7 D6c: add `ArchiveyConfig.read_link_targets: bool = True`, reader-lifetime like
       `listing_limits`. Gate the read by trigger, not in the backends: under `False`,
       the link-finalization loops that run for listing and for a pass
       (`_finalize_links`, `_finalize_pass_links`) skip data-stored targets on ZIP, 7z and
@@ -131,40 +131,63 @@
       Mutations: gate inside `_ensure_link_target` (the `open()` and extraction tests must
       fail); record the skipped read in the memo (the extraction test must fail); read
       the target before the filter runs.
-- [ ] 4.8 Correct `_emit_link_target_unavailable`'s docstring
+- [x] 4.8 Correct `_emit_link_target_unavailable`'s docstring
       (`base_reader.py:1374-1380`). Its claim that every path leaving `link_target` unset
       goes through it stops holding under `False`, so name that path and say why it emits
       nothing.
-- [ ] 4.9 Add `read_link_targets` to the "Explicit configuration object" schema, config
+- [x] 4.9 Add `read_link_targets` to the "Explicit configuration object" schema, config
       matrix and reader-lifetime sentence in `archive-reading`. Write that MODIFIED block
       at implementation time against the then-live requirement, because another open
       change edits the same block. Task 0.1's whole-block check applies to it.
-- [ ] 4.10 Document the setting in the user docs next to `listing_limits`, including what
+- [x] 4.10 Document the setting in the user docs next to `listing_limits`, including what
       `False` does to extraction.
 
 ## 5. Delete the dedupe machinery (D7)
 
-- [ ] 5.1 Remove `_member_reports`, the memo half of `_report_member_diagnostic`,
+- [x] 5.1 Remove `_member_reports`, the memo half of `_report_member_diagnostic`,
       `DiagnosticCollector.reattach_to_member` and `_presentation_checked`
-- [ ] 5.2 Rewrite `_iter_members`' docstring: runs once per completed walk; order stability
+- [x] 5.2 Rewrite `_iter_members`' docstring: runs once per completed walk; order stability
       still required for a retried random-access walk
 
 ## 6. Docs
 
-- [ ] 6.1 `dev-docs/known-issues.md`: mark the ISO typing-time-diagnostics entry resolved
+- [x] 6.1 `dev-docs/known-issues.md`: mark the ISO typing-time-diagnostics entry resolved
       by this change
-- [ ] 6.2 `dev-docs/IDEAS.md`: remove "Reuse the index-only pass's members instead of
+- [x] 6.2 `dev-docs/IDEAS.md`: remove "Reuse the index-only pass's members instead of
       rebuilding them"
-- [ ] 6.3 `dev-docs/code-map.md`: rewrite "Listing can happen twice…" to describe the one
+- [x] 6.3 `dev-docs/code-map.md`: rewrite "Listing can happen twice…" to describe the one
       walk, and drop the "dedupe on the member id, never on object identity" advice where
       it no longer applies
-- [ ] 6.4 `docs/`: check the user-facing pages for any sentence implying a peek returns
+- [x] 6.4 `docs/`: check the user-facing pages for any sentence implying a peek returns
       snapshot objects
 
 ## 7. Verify and archive
 
-- [ ] 7.1 `openspec validate --strict one-member-listing-per-reader`
-- [ ] 7.2 `./scripts/check.sh` and the three test configs from CONTRIBUTING.md
+- [x] 7.1 `openspec validate --strict one-member-listing-per-reader`
+- [x] 7.2 `./scripts/check.sh` and the three test configs from CONTRIBUTING.md
       "Before pushing…"
-- [ ] 7.3 `openspec archive one-member-listing-per-reader --yes` after task 0.1, and commit
+- [x] 7.3 `openspec archive one-member-listing-per-reader --yes` after task 0.1, and commit
       the resulting `openspec/specs/` diff in the same PR
+
+## As built
+
+- Extraction reads an accepted link's still-unread target under **both** settings, not
+  only under `read_link_targets=False`. A streaming pass reaches a ZIP or 7z link before
+  it finalizes, so under the default such a link used to fail as having no target; it is
+  now read after the selector and filter, then written. `tests/test_windows_reparse.py`
+  pins the new behaviour, and the `archive-reading` delta says so.
+- `_register_member` stamps and runs the bidi check only on a member's first sighting
+  (`_member_id is None`) and accounts every time, so a retried random-access walk, which
+  resets the tracker, accounts again without re-emitting.
+- ZIP's typing-time diagnostics emit directly with `member_id=index`; the per-position
+  ledger is gone with `_report_member_diagnostic`. `member_name_normalized_report` folded
+  into `emit_member_name_normalized`, which gained a `member_id` parameter.
+- TAR passes its walk position as `member_id` too, beyond the four backends D8 named.
+- The `archive-reading` "Explicit configuration object" MODIFIED block was written
+  against the live requirement after PR 415 and also lists the two fields the live schema
+  had missed (`zip_unflagged_fallback_encoding`, `rar_allow_glob_member_concatenation`).
+  `bounded-source-spooling` and `prefixed-archive-detection` MODIFY the same block and
+  must be re-derived from the live spec before they archive, or they drop
+  `read_link_targets`.
+- Measured on the 4.5 solid fixture: `members()` decodes 6368 bytes (the last link's end
+  offset), against 9583 before (the sum of every link's end offset).
