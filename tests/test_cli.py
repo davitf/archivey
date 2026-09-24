@@ -2135,3 +2135,99 @@ def test_dunder_main_is_importable_without_running_the_cli() -> None:
     assert proc.returncode == 0, proc.stderr
     assert "imported" in proc.stdout
     assert "usage:" not in proc.stderr
+
+
+# --- S24-K3: a bare ``--`` takes the default verb ahead of the separator ---
+
+
+def test_inject_default_list_puts_verb_before_separator() -> None:
+    assert _inject_default_list(["--", "-w.zip"]) == ["list", "--", "-w.zip"]
+    assert _inject_default_list(["--track-io", "--", "a.zip"]) == [
+        "--track-io",
+        "list",
+        "--",
+        "a.zip",
+    ]
+    # After ``--`` every token is a positional, so a verb-shaped word is an archive name.
+    assert _inject_default_list(["--", "list"]) == ["list", "--", "list"]
+    # A spelled verb before ``--`` is left alone.
+    assert _inject_default_list(["list", "--", "a.zip"]) == ["list", "--", "a.zip"]
+
+
+def test_double_dash_lists_dash_named_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _zip(tmp_path / "-w.zip", {"inner.txt": b"x"})
+    assert main(["--", "-w.zip"]) == EXIT_OK
+    assert "inner.txt" in capsys.readouterr().out
+
+
+# --- ARC-125: the bpo-26240 workaround matches the ``pattern`` metavar ---
+
+
+def test_missing_archive_message_omits_optional_patterns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["x"]) == EXIT_USAGE
+    err = capsys.readouterr().err
+    assert "the following arguments are required: archive\n" in err
+    assert "pattern" not in err.splitlines()[-1]
+
+
+# --- S24-K2: the CLI's own wrap directory never goes through a symlink ---
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - Windows
+        pytest.skip(f"cannot create symlinks here: {exc}")
+
+
+def test_smart_dest_steps_aside_from_dangling_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    z = _zip(tmp_path / "pkg.zip", {"a.txt": b"a", "b.txt": b"b"})
+    _symlink_or_skip(tmp_path / "pkg", tmp_path / "nowhere")
+    assert main(["x", str(z)]) == EXIT_OK
+    assert (tmp_path / "pkg (1)" / "a.txt").read_bytes() == b"a"
+    assert not (tmp_path / "nowhere").exists()
+
+
+def test_smart_dest_does_not_follow_symlink_to_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    z = _zip(tmp_path / "pkg.zip", {"a.txt": b"a", "b.txt": b"b"})
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _symlink_or_skip(tmp_path / "pkg", elsewhere)
+    assert main(["x", str(z), "--overwrite", "replace"]) == EXIT_OK
+    assert list(elsewhere.iterdir()) == []
+    assert (tmp_path / "pkg (1)" / "b.txt").read_bytes() == b"b"
+
+
+# --- S24-K6: an incomplete ``test`` run exits nonzero even with no failure ---
+
+
+def test_test_early_stop_without_error_exits_fail(
+    sample_zip: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey.internal.base_reader import BaseArchiveReader
+
+    real = BaseArchiveReader.stream_members
+
+    def _one_then_stop(self: BaseArchiveReader, members: object = None) -> object:
+        for item in real(self, members):
+            yield item
+            return
+
+    monkeypatch.setattr(BaseArchiveReader, "stream_members", _one_then_stop)
+    assert main(["test", str(sample_zip)]) == EXIT_FAIL
+    assert "1 OK, 0 failed, 2 not tested" in capsys.readouterr().err
