@@ -76,6 +76,7 @@ from archivey.diagnostics import (
     OnDiagnostic,
     ScanRaceContext,  # noqa: F401
     SeekIndexContext,  # noqa: F401
+    SelectorUnmatchedContext,  # noqa: F401
     StreamRewindContext,  # noqa: F401
     SymlinkTargetContext,  # noqa: F401
     UnconfirmedFormatContext,  # noqa: F401

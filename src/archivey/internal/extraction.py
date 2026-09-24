@@ -62,7 +62,10 @@ from archivey.internal.filters import (
     collision_key,
 )
 from archivey.internal.logs import extraction as logger
-from archivey.internal.selection import normalize_member_selector
+from archivey.internal.selection import (
+    CollectionSelector,
+    normalize_member_selector,
+)
 from archivey.types import ArchiveMember, MemberType
 
 if TYPE_CHECKING:
@@ -380,6 +383,18 @@ class ExtractionCoordinator:
         all_members = list(members_report) if members_report is not None else None
         if all_members is not None and selector is not None:
             all_members = [m for m in all_members if selector(m)]
+        # A members= collection whose entries all went through the free list is
+        # settled now: report the entries that matched nothing before anything is
+        # written, so a RAISE disposition refuses the call with nothing on disk.
+        # Without a free list the answer is known only at the end of the pass.
+        unmatched_pending: CollectionSelector | None = None
+        if isinstance(selector, CollectionSelector):
+            if all_members is not None:
+                selector.report_unmatched(
+                    reader._diagnostics_collector, reader._archive_name
+                )
+            else:
+                unmatched_pending = selector
         members_total = len(all_members) if all_members is not None else None
         total_estimate = self._estimate_total_bytes(all_members)
 
@@ -397,10 +412,14 @@ class ExtractionCoordinator:
         # runs once per member (on the index) rather than once per pre-filter plus once
         # per yield; a stateful predicate still sees each member a single time. Without
         # a free list the predicate itself is passed through.
+        #
+        # The identity selector is normalized here, not by stream_members(): a
+        # selector that stream_members() builds from a collection reports its own
+        # unmatched entries, and these entries are ours, not the caller's.
         stream_selector = (
             None
             if selector is None
-            else all_members
+            else normalize_member_selector(all_members)
             if all_members is not None
             else selector
         )
@@ -452,6 +471,10 @@ class ExtractionCoordinator:
             # write begins, and FILE writes land atomically in any case.
             raise abort.error from None
 
+        if unmatched_pending is not None:
+            unmatched_pending.report_unmatched(
+                reader._diagnostics_collector, reader._archive_name
+            )
         return results
 
     def _run_pass(

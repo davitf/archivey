@@ -94,7 +94,11 @@ from archivey.internal.naming import (
 )
 from archivey.internal.open_site import OpenSite
 from archivey.internal.reader_state import LiveStreamReservation, ReaderState
-from archivey.internal.selection import normalize_member_selector
+from archivey.internal.selection import (
+    CollectionSelector,
+    member_name_keys,
+    normalize_member_selector,
+)
 from archivey.internal.sfx import HitValidator
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
@@ -1809,12 +1813,6 @@ class BaseArchiveReader(ArchiveReader):
         by_name_lists.setdefault(member.name, []).append(member)
 
     @staticmethod
-    def _target_name_keys(target_name: str) -> tuple[str, ...]:
-        if target_name.endswith("/"):
-            return (target_name,)
-        return (target_name, target_name + "/")
-
-    @staticmethod
     def _latest_prior_named_member(
         target_name: str,
         before_id: int,
@@ -1823,7 +1821,7 @@ class BaseArchiveReader(ArchiveReader):
         """Latest member matching ``target_name`` with ``member_id`` strictly before ``before_id``."""
         best: ArchiveMember | None = None
         best_id = -1
-        for name in BaseArchiveReader._target_name_keys(target_name):
+        for name in member_name_keys(target_name):
             for prior in reversed(by_name_lists.get(name, [])):
                 prior_id = prior._member_id
                 if prior_id is None:
@@ -1849,7 +1847,7 @@ class BaseArchiveReader(ArchiveReader):
         target_name: str, by_name_lists: Mapping[str, list[ArchiveMember]]
     ) -> ArchiveMember | None:
         """Last-wins lookup for a link target (tries bare and ``/``-suffixed names)."""
-        for name in BaseArchiveReader._target_name_keys(target_name):
+        for name in member_name_keys(target_name):
             candidates = by_name_lists.get(name)
             if candidates:
                 return candidates[-1]
@@ -1994,7 +1992,7 @@ class BaseArchiveReader(ArchiveReader):
         by_name_lists: Mapping[str, list[ArchiveMember]],
     ) -> ArchiveMember | None:
         """``_last_named_member``, looking only at members listed before ``before_id``."""
-        for name in BaseArchiveReader._target_name_keys(target_name):
+        for name in member_name_keys(target_name):
             for candidate in reversed(by_name_lists.get(name, [])):
                 candidate_id = candidate._member_id
                 if candidate_id is not None and candidate_id < before_id:
@@ -2514,11 +2512,20 @@ class BaseArchiveReader(ArchiveReader):
         # run until the first next(), so a check left there raised at a call site
         # that did not make the mistake.
         selector = normalize_member_selector(members)
-        return self._iter_stream_members(selector)
+        # Report unmatched entries only for a selector built here from the caller's
+        # collection. A CollectionSelector passed in is an internal caller's (the
+        # extraction coordinator), and that caller reports for itself.
+        report = (
+            selector
+            if isinstance(selector, CollectionSelector) and selector is not members
+            else None
+        )
+        return self._iter_stream_members(selector, report)
 
     def _iter_stream_members(
         self,
         selector: Callable[[ArchiveMember], bool] | None,
+        report: CollectionSelector | None = None,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStream | None = None
@@ -2540,6 +2547,13 @@ class BaseArchiveReader(ArchiveReader):
                         self._state.set_suspended(token, False)
                 elif stream is not None:
                     stream.close()
+            # Only a pass that reached the end has offered every member. A caller
+            # that stops early never gets here (the generator is closed at a yield).
+            if current is not None:
+                current.close()
+                current = None
+            if report is not None:
+                report.report_unmatched(self._diagnostics_collector, self._archive_name)
         finally:
             if current is not None:
                 current.close()

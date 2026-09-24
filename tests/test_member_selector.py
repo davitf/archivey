@@ -4,9 +4,22 @@ from __future__ import annotations
 
 import io
 import tarfile
+import zipfile
 from pathlib import Path
 
+import pytest
+
 from archivey import open_archive
+from archivey.config import ArchiveyConfig
+from archivey.diagnostics import (
+    ARCHIVE_INTEGRITY_CODES,
+    DiagnosticCode,
+    DiagnosticDisposition,
+    DiagnosticPolicy,
+    DiagnosticSummary,
+    SelectorUnmatchedContext,
+)
+from archivey.exceptions import DiagnosticRaisedError
 
 
 def _tar_with_duplicate_names() -> bytes:
@@ -89,3 +102,166 @@ def test_stream_members_callable_collection_is_read_as_a_collection() -> None:
             )
         ]
     assert selected == ["keep.txt"]
+
+
+# --- Directory spelling and unmatched entries (maintainer ruling on S25-K13) ---------
+
+
+def _tar(entries: list[tuple[str, bytes | None]]) -> bytes:
+    """A TAR of ``(name, content)``; ``None`` content makes a directory entry."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, content in entries:
+            info = tarfile.TarInfo(name)
+            if content is None:
+                info.type = tarfile.DIRTYPE
+                tar.addfile(info)
+            else:
+                info.size = len(content)
+                tar.addfile(info, io.BytesIO(content))
+    return buf.getvalue()
+
+
+def _zip(entries: list[tuple[str, bytes]]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, content in entries:
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def _unmatched(summary: DiagnosticSummary) -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    for diagnostic in summary.retained:
+        if diagnostic.code is DiagnosticCode.MEMBER_SELECTOR_UNMATCHED:
+            context = diagnostic.context
+            assert isinstance(context, SelectorUnmatchedContext)
+            found.append((context.entry, context.entry_kind))
+    return found
+
+
+_DIR_TAR = [("dir", None), ("dir/f.txt", b"f")]
+
+
+def test_a_name_without_the_slash_selects_the_directory() -> None:
+    """``"dir"`` selects the member stored as ``"dir/"``, as link lookup does.
+
+    Mutant: drop the ``name + "/"`` key from ``member_name_keys`` and nothing is
+    selected.
+    """
+    with open_archive(io.BytesIO(_tar(_DIR_TAR))) as ar:
+        assert [m.name for m in ar.members()] == ["dir/", "dir/f.txt"]
+        selected = [m.name for m, _s in ar.stream_members(members=["dir"])]
+        assert selected == ["dir/"]
+        assert _unmatched(ar.diagnostics) == []
+
+
+def test_extract_all_selects_the_directory_by_its_bare_name(tmp_path: Path) -> None:
+    with open_archive(io.BytesIO(_tar(_DIR_TAR))) as ar:
+        report = ar.extract_all(tmp_path, members=["dir"])
+    assert [r.member.name for r in report] == ["dir/"]
+    assert (tmp_path / "dir").is_dir()
+    assert not (tmp_path / "dir" / "f.txt").exists()
+    assert _unmatched(report.diagnostics) == []
+
+
+def test_a_name_with_the_slash_does_not_select_a_file() -> None:
+    """A trailing ``/`` says the caller meant a directory, so a file ``x`` is not it."""
+    with open_archive(io.BytesIO(_tar([("x", b"file")]))) as ar:
+        assert [m.name for m, _s in ar.stream_members(members=["x/"])] == []
+        assert _unmatched(ar.diagnostics) == [("x/", "name")]
+
+
+def test_bare_name_selects_a_file_and_a_directory_of_that_name() -> None:
+    with open_archive(io.BytesIO(_tar([("x", b"file"), ("x", None)]))) as ar:
+        names = [m.name for m, _s in ar.stream_members(members=["x"])]
+    assert names == ["x", "x/"]
+
+
+def test_stream_members_reports_each_unmatched_name_once() -> None:
+    with open_archive(io.BytesIO(_tar([("a.txt", b"a")]))) as ar:
+        selected = [
+            m.name
+            for m, _s in ar.stream_members(
+                members=["nope.txt", "a.txt", "nope.txt", "other"]
+            )
+        ]
+        assert selected == ["a.txt"]
+        assert _unmatched(ar.diagnostics) == [
+            ("nope.txt", "name"),
+            ("other", "name"),
+        ]
+
+
+def test_stream_members_stopped_early_reports_nothing() -> None:
+    """An entry can still match a later member, so a pass the caller left early has
+    no answer to give."""
+    with open_archive(io.BytesIO(_tar([("a.txt", b"a"), ("b.txt", b"b")]))) as ar:
+        for _member, _stream in ar.stream_members(members=["a.txt", "b.txt", "z"]):
+            break
+        assert _unmatched(ar.diagnostics) == []
+
+
+def test_a_predicate_selector_reports_nothing() -> None:
+    with open_archive(io.BytesIO(_tar([("a.txt", b"a")]))) as ar:
+        assert list(ar.stream_members(members=lambda m: False)) == []
+        assert _unmatched(ar.diagnostics) == []
+
+
+def test_a_member_from_another_reader_is_reported_by_name() -> None:
+    data = _tar([("a.txt", b"a")])
+    with open_archive(io.BytesIO(data)) as other:
+        foreign = other.members()[0]
+    with open_archive(io.BytesIO(data)) as ar:
+        assert list(ar.stream_members(members=[foreign])) == []
+        assert _unmatched(ar.diagnostics) == [("a.txt", "member")]
+
+
+def test_extract_all_reports_unmatched_after_a_scanned_pass(tmp_path: Path) -> None:
+    """TAR has no free member list, so the answer comes at the end of the pass."""
+    with open_archive(io.BytesIO(_tar([("a.txt", b"a")]))) as ar:
+        report = ar.extract_all(tmp_path, members=["a.txt", "typo.txt"])
+    assert [r.member.name for r in report] == ["a.txt"]
+    assert _unmatched(report.diagnostics) == [("typo.txt", "name")]
+
+
+def test_extract_all_on_a_forward_only_stream_reports_unmatched(tmp_path: Path) -> None:
+    source = io.BytesIO(_tar([("a.txt", b"a")]))
+    with open_archive(source, streaming=True) as ar:
+        report = ar.extract_all(tmp_path, members=["typo.txt"])
+    assert list(report) == []
+    assert _unmatched(report.diagnostics) == [("typo.txt", "name")]
+
+
+def test_extract_all_with_a_free_list_refuses_before_writing(tmp_path: Path) -> None:
+    """ZIP lists for free, so a RAISE disposition refuses with nothing on disk."""
+    config = ArchiveyConfig(
+        diagnostic_policy=DiagnosticPolicy(
+            overrides={
+                DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: DiagnosticDisposition.RAISE
+            }
+        )
+    )
+    data = _zip([("a.txt", b"a")])
+    with (
+        open_archive(io.BytesIO(data), config=config) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        ar.extract_all(tmp_path, members=["a.txt", "typo.txt"])
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_extract_all_with_a_free_list_collects_by_default(tmp_path: Path) -> None:
+    with open_archive(io.BytesIO(_zip([("a.txt", b"a")]))) as ar:
+        report = ar.extract_all(tmp_path, members=["typo.txt", "a.txt"])
+    assert [r.member.name for r in report] == ["a.txt"]
+    assert _unmatched(report.diagnostics) == [("typo.txt", "name")]
+
+
+def test_strict_policy_does_not_raise_on_an_unmatched_entry(tmp_path: Path) -> None:
+    """Argument hygiene, not archive integrity: out of ``strict()``."""
+    assert DiagnosticCode.MEMBER_SELECTOR_UNMATCHED not in ARCHIVE_INTEGRITY_CODES
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with open_archive(io.BytesIO(_zip([("a.txt", b"a")])), config=config) as ar:
+        report = ar.extract_all(tmp_path, members=["typo.txt"])
+    assert _unmatched(report.diagnostics) == [("typo.txt", "name")]
