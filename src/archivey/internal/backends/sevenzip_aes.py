@@ -121,12 +121,9 @@ class SevenZipKeyCache:
     def __init__(self) -> None:
         self._derive = functools.cache(derive_sevenzip_aes_key)
 
-    def derive(self, password: bytes, *, salt: bytes, cycles: int) -> bytes:
-        return self._derive(password, salt=salt, cycles=cycles)
-
     def aes_params_from_properties(
         self, password: bytes, properties: bytes
     ) -> AesParams:
         cycles, salt, iv = parse_sevenzip_aes_properties(properties)
-        key = self.derive(password, salt=salt, cycles=cycles)
+        key = self._derive(password, salt=salt, cycles=cycles)
         return AesParams(key=key, iv=iv)

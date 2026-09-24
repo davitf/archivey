@@ -188,11 +188,15 @@ def test_crypto_reachable_only_through_wrapper() -> None:
 def test_sevenzip_kdf_cache_reuses_derived_keys() -> None:
     password = "secret".encode("utf-16le")
     salt = b"salt"
+    # NumCyclesPower 1 with both flag bits set; the high nibble adds 3 salt bytes.
+    properties = b"\xc1\x30" + salt + b"\x00"
     cache = sevenzip_aes.SevenZipKeyCache()
-    first = cache.derive(password, salt=salt, cycles=1)
-    second = cache.derive(password, salt=salt, cycles=1)
-    assert first == second
-    assert first is second  # same cached object
+    first = cache.aes_params_from_properties(password, properties)
+    second = cache.aes_params_from_properties(password, properties)
+    assert first.key == sevenzip_aes.derive_sevenzip_aes_key(
+        password, salt=salt, cycles=1
+    )
+    assert first.key is second.key  # same cached object
     # 0x3f special case: salt+password copied into 32-byte key (no hashing).
     special = sevenzip_aes.derive_sevenzip_aes_key(password, salt=salt, cycles=0x3F)
     assert len(special) == 32
