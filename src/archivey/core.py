@@ -43,6 +43,10 @@ from archivey.internal.arg_checks import (
     check_extraction_limits,
 )
 from archivey.internal.backends.iso_reader import refuse_raw_sector_image
+from archivey.internal.backends.zip_detect import (
+    ZIP_MULTI_VOLUME_MSG,
+    is_zip_split_segment_name,
+)
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.diagnostics_collector import collector_from_config
@@ -91,10 +95,6 @@ from archivey.internal.volumes import (
     incomplete_lone_numbered_volume_error,
     is_sfx_stub_name,
     resolve_source,
-)
-from archivey.internal.zip_detect import (
-    ZIP_MULTI_VOLUME_MSG,
-    is_zip_split_segment_name,
 )
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ContainerFormat, MemberStreams, StreamFormat

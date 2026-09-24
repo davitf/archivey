@@ -647,7 +647,7 @@ def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
     Scanning both ids rather than their shared ``Rar!\x1a\x07`` prefix lets the shared
     scanner resolve the version by which id matched first, so a stub containing the bare
     prefix (without a valid version byte) no longer needs a rescan loop here. A
-    candidate that fails :func:`~archivey.internal.rar_detect.validate_rar_main_header`
+    candidate that fails :func:`~archivey.internal.backends.rar_detect.validate_rar_main_header`
     is skipped while a later ``VALID`` hit is sought; if none validate, the first
     identified candidate is used so a damaged payload still reaches the parser.
     """
@@ -661,7 +661,7 @@ def _find_sfx_header(source: BinaryIO, start: int) -> tuple[int, int]:
 
     source.seek(start)
     # Imported here: rar_detect imports this module for the ids / CRC helpers.
-    from archivey.internal.rar_detect import validate_rar_main_header
+    from archivey.internal.backends.rar_detect import validate_rar_main_header
 
     scan = scan_for_magic(
         source,

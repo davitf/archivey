@@ -236,7 +236,7 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.crypto.AesDecryptStream": (
         "assigns _source and _owns_inner before source.tell() and the stage build"
     ),
-    "archivey.internal.zip_aes.WinZipAesDecryptStream": (
+    "archivey.internal.backends.zip_aes.WinZipAesDecryptStream": (
         "its negative cipher_len refusal precedes _source, but open_winzip_aes_member "
         "refuses compress_size < overhead first, so cipher_len is never negative"
     ),

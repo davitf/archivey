@@ -261,7 +261,7 @@ the scan needles for a prefixed archive, deliberately rather than their shared
 `Rar!\x1a\x07` prefix: matching each id separately resolves RAR4 vs RAR5 at the
 hit instead of re-reading to disambiguate.
 
-The hit validator (`internal/rar_detect.py`) is the **main header that follows the marker**,
+The hit validator (`internal/backends/rar_detect.py`) is the **main header that follows the marker**,
 and it is checksummed, which makes it a stronger validator than ZIP's field-range checks:
 
 - **RAR5** — read the first block's declared length (capped at 64 KiB for identity, well
@@ -996,7 +996,7 @@ need `-qo+` or live AUTO; the gap and what would close it are in
   [`packaging-and-extras`](../../openspec/specs/packaging-and-extras/spec.md)
 - Code: `internal/backends/rar_parser.py` (headers, both generations, volumes, header
   crypto) · `rar_reader.py` (member mapping, solid demux, temp materialization, exit
-  mapping) · `rar_unrar.py` (binary discovery, argv construction) · `internal/rar_detect.py`
+  mapping) · `rar_unrar.py` (binary discovery, argv construction) · `internal/backends/rar_detect.py`
   (SFX hit validator) · `internal/volumes.py` (sibling discovery, shared with 7z and ZIP)
 - Decisions: ADR [0002](../decisions/0002-native-rar-metadata-unrar-data.md) (native
   metadata, `unrar` data) · ADR [0016](../decisions/0016-committed-rar-corpus-fixtures.md)

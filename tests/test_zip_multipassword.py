@@ -14,8 +14,8 @@ import pytest
 
 from archivey import PasswordRequest, open_archive
 from archivey.exceptions import CorruptionError, EncryptionError
-from archivey.internal import password_confirm, zipcrypto
-from archivey.internal.backends import zip_reader
+from archivey.internal import password_confirm
+from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password_confirm import CONFIRM_PREFIX_BYTES
 from tests.zipcrypto import (
     build_zipcrypto_zip,

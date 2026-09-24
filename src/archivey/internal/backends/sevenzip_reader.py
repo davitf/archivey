@@ -45,6 +45,9 @@ from archivey.exceptions import (
     raw_message_of,
 )
 from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
+from archivey.internal.backends.sevenzip_detect import (
+    validate_sevenzip_signature_header,
+)
 from archivey.internal.backends.sevenzip_methods import is_aes
 from archivey.internal.backends.sevenzip_parser import (
     EncodedHeader,
@@ -87,7 +90,6 @@ from archivey.internal.password import (
     wrong_password_error,
 )
 from archivey.internal.registry import register_reader
-from archivey.internal.sevenzip_detect import validate_sevenzip_signature_header
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.crypto import _AesCbcTruncatedError

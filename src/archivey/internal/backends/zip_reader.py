@@ -12,7 +12,7 @@ Who does what:
 - Unencrypted member **data** — slice the local payload and decode via the shared
   codec layer (not ``ZipExtFile``), so accelerators / rewind warnings stay uniform.
 - ZipCrypto — encryption header + weak 1-byte check (+ CRC confirm when ambiguous).
-- WinZip AES (method 99) — ``internal.zip_aes``, then the codec for the real method
+- WinZip AES (method 99) — ``internal.backends.zip_aes``, then the codec for the real method
   from extra field ``0x9901``.
 
 Split/spanned multi-volume sets are rejected — rejoin first (see ``format-zip``):
@@ -61,6 +61,19 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     raw_message_of,
 )
+from archivey.internal.backends.zip_aes import (
+    open_winzip_aes_member,
+    parse_winzip_aes_extra,
+)
+from archivey.internal.backends.zip_detect import (
+    ZIP_MULTI_VOLUME_MSG,
+    is_zip_split_segment_name,
+    validate_zip_local_header,
+)
+from archivey.internal.backends.zipcrypto import (
+    parallel_plaintext_crc32,
+    password_matches_check_byte,
+)
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -95,19 +108,6 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
-from archivey.internal.zip_aes import (
-    open_winzip_aes_member,
-    parse_winzip_aes_extra,
-)
-from archivey.internal.zip_detect import (
-    ZIP_MULTI_VOLUME_MSG,
-    is_zip_split_segment_name,
-    validate_zip_local_header,
-)
-from archivey.internal.zipcrypto import (
-    parallel_plaintext_crc32,
-    password_matches_check_byte,
-)
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,

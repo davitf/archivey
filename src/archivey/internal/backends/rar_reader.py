@@ -53,6 +53,7 @@ from archivey.exceptions import (
     UnsupportedOperationError,
     raw_message_of,
 )
+from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
     RAR_ID,
@@ -94,7 +95,6 @@ from archivey.internal.password import (
     _PasswordCandidatesExhausted,
     wrong_password_error,
 )
-from archivey.internal.rar_detect import validate_rar_main_header
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning

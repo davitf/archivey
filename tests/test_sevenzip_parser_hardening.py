@@ -498,7 +498,7 @@ def test_zero_bcj_start_offset_needs_no_option() -> None:
 
 
 def test_sevenzip_detect_imports_no_private_parser_names() -> None:
-    from archivey.internal import sevenzip_detect
+    from archivey.internal.backends import sevenzip_detect
 
     tree = ast.parse(Path(sevenzip_detect.__file__).read_text(encoding="utf-8"))
     imported = [

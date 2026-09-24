@@ -15,6 +15,15 @@ Module map:
   ``sevenzip_reader`` — native 7z (method registry → header parse → folder decode → ABC)
 - :mod:`.rar_parser` / ``rar_unrar`` / ``rar_reader`` — native RAR metadata + ``unrar`` data
 
+Format-specific helpers that are not readers live here too, next to the parser they share
+logic with: the scan-hit validators :mod:`.zip_detect`, :mod:`.sevenzip_detect` and
+:mod:`.rar_detect`, which the readers pass to ``internal/sfx.py``'s scan as ``HitValidator``
+callbacks (the dependency runs from here to ``sfx.py``, never back; ``zip_detect`` also
+carries the split-segment name check ``core.py`` uses), and the ZIP ciphers
+:mod:`.zipcrypto` and :mod:`.zip_aes`. The axis is per format, not per phase: everything
+that supports one format sits together so it can be read and kept in sync at once. Format-agnostic detection (``detection.py``, ``detection_workspace.py``, ``sfx.py``)
+stays at the top of ``internal/``.
+
 Typical split inside a format: ``*ReadBackend`` (registry / ``open_read``) +
 ``*Reader`` (``BaseArchiveReader``). Native 7z/RAR also split parse vs decode.
 """

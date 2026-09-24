@@ -17,7 +17,10 @@ from archivey.exceptions import (
     EncryptionError,
     PackageNotInstalledError,
 )
-from archivey.internal.zip_aes import WinZipAesDecryptStream, parse_winzip_aes_extra
+from archivey.internal.backends.zip_aes import (
+    WinZipAesDecryptStream,
+    parse_winzip_aes_extra,
+)
 from archivey.types import CompressionAlgorithm, HashAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.zip_aes_fixture import build_aes_zip
@@ -373,7 +376,7 @@ def _minimal_aes_zip_bytes() -> bytes:
 
 def test_aes_without_crypto_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     data = _minimal_aes_zip_bytes()
-    import archivey.internal.zip_aes as zip_aes_module
+    import archivey.internal.backends.zip_aes as zip_aes_module
 
     monkeypatch.setattr(zip_aes_module, "_crypto_available", lambda: False)
     with open_archive(io.BytesIO(data), password=_PASSWORD) as ar:
@@ -404,7 +407,7 @@ def test_aes_stream_guard_runs_before_the_cryptography_import(
     """
     import sys
 
-    import archivey.internal.zip_aes as zip_aes_module
+    import archivey.internal.backends.zip_aes as zip_aes_module
 
     monkeypatch.setattr(zip_aes_module, "_crypto_available", lambda: False)
     monkeypatch.setitem(sys.modules, "cryptography.hazmat.primitives.ciphers", None)

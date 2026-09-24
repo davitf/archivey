@@ -253,6 +253,6 @@ the full stub matrix is task 4.3 of `prefixed-archive-detection`.
 - Investigation: [`archive-format-detection-algorithm.md`](../investigations/archive-format-detection-algorithm.md)
   — evidence classes, the tail-tier cost argument, the corpus counts above
 - Code: `internal/sfx.py` (bound, cue, scan, `HitOutcome`) · `internal/detection.py` (tier
-  order) · `internal/zip_detect.py`, `internal/sevenzip_detect.py`, `internal/rar_detect.py` ·
+  order) · `internal/backends/zip_detect.py`, `internal/backends/sevenzip_detect.py`, `internal/backends/rar_detect.py` ·
   `internal/volumes.py` (sibling discovery)
 - Status: [`open-issues.md`](../open-issues.md) §Closed (P17)
