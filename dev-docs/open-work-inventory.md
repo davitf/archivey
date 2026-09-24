@@ -7,7 +7,7 @@
 > Linear wins; when they disagree about reasoning, the registers win. GitHub issues are
 > deliberately not used for internal tracking — they stay clear for external reports.
 >
-> **A dated snapshot, not a register.** Snapshot: **2026-09-23** against `main` @ `1925039`.
+> **A dated snapshot, not a register.** Snapshot: **2026-09-24** against `main` @ `3a2602c`.
 > Every item below lives somewhere canonical — [`open-issues.md`](open-issues.md),
 > [`threat-model.md`](threat-model.md), [`IDEAS.md`](IDEAS.md),
 > [`review/backlog.md`](../review/backlog.md), [`review/STATUS.md`](../review/STATUS.md),
@@ -40,18 +40,16 @@ coverage section](#the-first-pass-over-src-is-complete-and-countable)).
 and #398 fixed the PPMd window, by adding the public `DecoderLimits` type that the LZMA
 dictionary size and the KDF budget are now waiting to use.
 
-**Thirteen S20–S25 rulings are still owed by davi.** Seventeen findings needed a ruling. Four
-have one, and none of the four has landed: remove `extract_all(config=)` and
-`strict_archive_eof`, detect raw `.bin` ISO images and refuse them, and pin `__module__` on
-the public names before 0.2.0. A re-check on
-2026-09-22 made two of the thirteen smaller: the `archivey ./x` question is a notation fix in one
-spec row, and PR 382 already fixed half of the selector question. They are tracked
-internally as one decision item.
+**The four S20–S25 rulings davi gave have landed** (#415, 2026-09-24). What still waits on
+him is listed under [#315](#315--the-209-threads). The historical note: seventeen findings
+needed a ruling; the first four answered were removing `extract_all(config=)` and
+`strict_archive_eof`, refusing raw `.bin` ISO images, and pinning `__module__` on the public
+names.
 
 | Register | Open items | Health |
 | --- | --- | --- |
-| Open PRs | **0 live**, 1 hub | Everything merged by 2026-09-23 14:17Z. Seventeen merged after the previous revision (#388, 2026-09-21 12:45Z): #386, #387, #389, #391, #392, #393, #394, #395, #396, #397, #398, #399, #400, #401, #402, #403, #404. See [Open PRs](#open-prs) |
-| [#315](https://github.com/davitf/archivey/pull/315) review threads | 209 total, **98 resolved, 111 open** | #393 cleared 26, #394 one, and four were resolved on 2026-09-23 after a check against `main`. Eight blocking findings are open |
+| Open PRs | **0 live**, 1 hub | Everything merged by 2026-09-24 14:15Z: twenty-seven since the previous revision, #406 to #432. Before that, everything merged by 2026-09-23 14:17Z. Seventeen merged after the previous revision (#388, 2026-09-21 12:45Z): #386, #387, #389, #391, #392, #393, #394, #395, #396, #397, #398, #399, #400, #401, #402, #403, #404. See [Open PRs](#open-prs) |
+| [#315](https://github.com/davitf/archivey/pull/315) review threads | 209 total, **164 resolved, 45 open** | No blocking finding is open. 36 of the 45 can be fixed now; 9 wait on davi. See [#315](#315--the-209-threads) |
 | `openspec/changes/` (15 active) | 14 unimplemented, 1 half-done | `prefixed-archive-detection` is 32/68; the rest are 0/N (bar one task on `archive-origin-reporting`). **435 tasks outstanding**, counted 2026-09-23. #402 and #404 added two proposals, `single-archive-source` (0/31) and `one-member-listing-per-reader` (0/38) |
 | [`open-issues.md`](open-issues.md) | 13 product candidates, 1 deliberate docs gap | P15/P16 are specced; P2/P3/P4/P5 are unowned; **P18 is new** since the first snapshot |
 | [`formats/rar.md`](formats/rar.md) `§10` | **gone** — the section is deleted | It said to delete it once empty, and it is: 19 of 21 shipped, #19 and #21 last. The two that had not shipped moved to homes that outlive it — the stream-copy bound to §7, the `unrar` mask port to [`IDEAS.md`](IDEAS.md) — and both are tracked internally |
@@ -81,7 +79,32 @@ revision has merged, and so has everything opened since.
 
 | PR | What | Where it sits |
 | --- | --- | --- |
-| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge.** Head *is* `main` (base is an orphan `empty-base`), so it re-renders against current `main` automatically — there is nothing to merge into it. 209 threads, 111 open. Carries `no-review` so no review round can run on it. **It was closed by accident twice on 2026-09-21 and reopened both times** — see the note below |
+| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge.** Head *is* `main` (base is an orphan `empty-base`), so it re-renders against current `main` automatically — there is nothing to merge into it. 209 threads, 45 open. Carries `no-review` so no review round can run on it. **It was closed by accident twice on 2026-09-21 and reopened both times** — see the note below |
+
+**Twenty-seven merged between 2026-09-23 14:17Z and 2026-09-24 14:15Z**, #406 to #432 less
+the unused numbers. The last ten were merged together on 2026-09-24 after main plus all ten
+passed lint and all three test configurations locally; three needed main merged in first, each
+for a `CHANGELOG.md` conflict only. **CHANGELOG entries are no longer added per fix before the
+first release** (davi, 2026-09-24): the file will be cleared before 0.2.0, so a PR that
+conflicts there drops its own entry.
+
+| PR | What it did | Effect here |
+| --- | --- | --- |
+| [#406](https://github.com/davitf/archivey/pull/406) | **Proposal only**: decode 7z BCJ2 folders, with a prototype | OpenSpec `sevenzip-bcj2-decode`, not for 0.2.0 |
+| [#407](https://github.com/davitf/archivey/pull/407), [#408](https://github.com/davitf/archivey/pull/408), [#410](https://github.com/davitf/archivey/pull/410), [#412](https://github.com/davitf/archivey/pull/412), [#415](https://github.com/davitf/archivey/pull/415) | xz/lzip seeks, CLI escaping, per-thread password guard, symlink target cap, the four ruled surface changes | Closed the last eight **blocking** hub findings |
+| [#409](https://github.com/davitf/archivey/pull/409), [#411](https://github.com/davitf/archivey/pull/411), [#413](https://github.com/davitf/archivey/pull/413), [#414](https://github.com/davitf/archivey/pull/414), [#416](https://github.com/davitf/archivey/pull/416), [#417](https://github.com/davitf/archivey/pull/417), [#420](https://github.com/davitf/archivey/pull/420), [#421](https://github.com/davitf/archivey/pull/421) | Volume-name error bound, 7z coder order, LZMA dictionary cap, PPMd truncation, extraction batch, refused-constructor finalizer, stream-decoder batch and seek-table cap, a `Final` | Important hub findings; the LZMA cap is the second user of `DecoderLimits` |
+| [#418](https://github.com/davitf/archivey/pull/418), [#422](https://github.com/davitf/archivey/pull/422) | RAR keys derived once per open; the 7z KDF, AES properties and key cache moved into `backends/sevenzip_aes.py` | Cache and dedupe of R2-K8. Its derivation budget still needs a default from davi |
+| [#419](https://github.com/davitf/archivey/pull/419) | One `ArchiveSource` replaces the source wrappers | OpenSpec `single-archive-source` implemented; archiving it (task 7.3) still waits, with `bounded-source-spooling` |
+| [#423](https://github.com/davitf/archivey/pull/423) | One base-owned member walk per reader, `read_link_targets`, the walk replay log | OpenSpec `one-member-listing-per-reader` implemented and archived. Unblocked S21-K7, S25-K3, S18-K2 and the ISO findings |
+| [#424](https://github.com/davitf/archivey/pull/424) | 7z parser refuses malformed folder structures; Delta-only folders and BCJ start offsets | S2-F3 to F8 and F12. S2-F9 to F11 (nits) remain |
+| [#425](https://github.com/davitf/archivey/pull/425) | CLI `--`, the argparse required message, symlink-safe wrap dir, `test` exit code | S24-K2, K3, K5, K6 |
+| [#426](https://github.com/davitf/archivey/pull/426) | The detection cost receipt charges what detection does | S19-K1, K2, K3, K5, K7 |
+| [#427](https://github.com/davitf/archivey/pull/427) | `--` before the `unrar` archive path; a hung probe is cached | R1-K2, R1-K3. R1-K4 did not reproduce |
+| [#428](https://github.com/davitf/archivey/pull/428) | Directory listing of any depth; a symlink that vanishes mid-listing | S22-K10, K11. K12 (hardlinks) is ruled and waits for its own PR |
+| [#429](https://github.com/davitf/archivey/pull/429) | Honest hashing, picklable errors, the full shared-kind guard | S20-K4, K8, K9, K11, S21-K2 |
+| [#430](https://github.com/davitf/archivey/pull/430) | A password provider is asked again after a repeat; exact FILETIME | S25-K6, K11 |
+| [#431](https://github.com/davitf/archivey/pull/431) | Linear SFX magic scan, fat Mach-O 64, the missing-part error | S15-K2, K10 and the superlinear SFX scan |
+| [#432](https://github.com/davitf/archivey/pull/432) | liblzma errors mapped by cause; a non-blocking `None` refused | S15-K3 and two filed findings |
 
 **Seventeen merged between 2026-09-21 12:45Z and 2026-09-23 14:17Z.** What each one changed
 for this page:
@@ -238,6 +261,25 @@ the reasoning is kept only so the closures are not re-litigated.
   long bullet. Merged in this pass.
 
 ## #315 — the 209 threads
+
+**2026-09-24 14:30Z: 164 resolved, 45 open, none blocking**, counted from the
+`ccr/review_threads` route after #422 to #432 merged. Twenty threads were resolved that
+afternoon, each checked on `main` @ `3a2602c`: thirteen fixed by #424, #425 and #427, six
+found already fixed by earlier PRs (S15-K4 and S25-K2 by #393; S20-K1, K2, K3 and S23-K6 by
+#419, each measured), and one reference note whose refactor had landed. Of the 45:
+
+- **36 can be fixed now.** They are grouped by file into batches that run two at a time
+  without touching the same files: reader lifecycle (`reader_state.py`, `base_reader.py`);
+  tar, ISO and link names (the ones that waited for #423); the `solid.py` naming questions;
+  the public surface (`core.py`, `types.py`, `config.py`); diagnostics and logging; the 7z
+  tidy and directory hardlinks; then the ruled move of the five top-level modules under
+  `backends/`, then the WinZip AES CTR primitive and R3-K9 on top of it.
+- **9 wait on davi**: R1-K4 (synthetic RAR3 header), the KDF budget's default (R2-K8),
+  R1-K7 (a time bound on the `unrar` data subprocess), S22-K7 (the gzip multi-member scan),
+  S24-K4, K8 and K9 (CLI), S25-K8 (`escaping.py`'s place) and S25-K13 (`members=["dir"]`).
+  S25-K14's spec-table half also needs him; its code half is in the fixable 36.
+
+The paragraphs below are the 2026-09-23 revision, kept for the reasoning.
 
 **Still the largest pool of actionable work.** 209 threads, **98 resolved and 111 open**,
 counted from the `ccr/review_threads` route on 2026-09-23. The composition matters more than
