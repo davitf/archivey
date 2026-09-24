@@ -140,10 +140,6 @@ _SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
 # drain in ``verify.py`` and ZipCrypto's parallel CRC).
 _PASSWORD_CONFIRM_CHUNK = 65536
 
-# Local aliases keep test imports of these private names working.
-_TimestampIssue = TimestampIssue
-_filetime_to_datetime = filetime_to_datetime
-
 
 @dataclass(frozen=True)
 class _MemberRaw:
@@ -224,7 +220,7 @@ def _verify_decoded_folder(
         _crc_exactly(stream, expected_size)
         return
     # The per-member walk covers `expected_size` by construction: the caller derives
-    # it from these same member sizes (`_folder_unpack_size`). Pinned here because
+    # it from these same member sizes (`_folder_members_total_size`). Pinned here because
     # nothing else records the coupling now the whole-folder length check is gone.
     assert expected_size == sum(size for size, _ in member_digests), (
         "member digest sizes must sum to the folder unpack size"
@@ -689,25 +685,25 @@ class SevenZipReader(BaseArchiveReader):
         mode = stat.S_IMODE(unix_mode) if unix_mode is not None else None
         # Folder/substream indices live on ``_raw``; skip the unused public extra
         # bag so listing-limit accounting does not walk a per-member dict.
-        ts_issues: list[_TimestampIssue] = []
+        ts_issues: list[TimestampIssue] = []
         modified = accessed = created = None
         # Hot-path shortcut only: filetime_to_datetime also treats 0/None as unset.
         # Keep these guards equivalent to that helper so ZIP (unconditional call)
         # and 7z cannot diverge if the shared 0-handling rule ever changes.
         if record.last_write_time:
-            modified, issue = _filetime_to_datetime(
+            modified, issue = filetime_to_datetime(
                 record.last_write_time, presented_name, field="modified"
             )
             if issue is not None:
                 ts_issues.append(issue)
         if record.last_access_time:
-            accessed, issue = _filetime_to_datetime(
+            accessed, issue = filetime_to_datetime(
                 record.last_access_time, presented_name, field="accessed"
             )
             if issue is not None:
                 ts_issues.append(issue)
         if record.creation_time:
-            created, issue = _filetime_to_datetime(
+            created, issue = filetime_to_datetime(
                 record.creation_time, presented_name, field="created"
             )
             if issue is not None:
@@ -839,7 +835,15 @@ class SevenZipReader(BaseArchiveReader):
         pack_size = self._archive.pack_sizes[pack_index]
         return self._view(pack_offset, pack_size)
 
-    def _folder_unpack_size(self, folder_index: int) -> int:
+    def _folder_members_total_size(self, folder_index: int) -> int:
+        """Sum of the listed members' sizes in the folder.
+
+        Not the coder graph's unpack size (``sevenzip_parser.folder_unpack_size``).
+        The two agree for any folder that has members: the parser rejects a folder
+        whose substreams leave bytes unaccounted for, and skips a folder declaring
+        zero substreams, which never reaches this helper. This is the one the
+        per-member CRC walk is built from.
+        """
         members = self._folder_members.get(folder_index, [])
         return sum(_member_stream_size(member) for member in members)
 
@@ -907,7 +911,7 @@ class SevenZipReader(BaseArchiveReader):
                 _verify_decoded_folder(
                     folder,
                     stream,
-                    expected_size=self._folder_unpack_size(folder_index),
+                    expected_size=self._folder_members_total_size(folder_index),
                     member_digests=member_digests,
                 )
                 return kdf_password
@@ -1060,13 +1064,19 @@ class SevenZipReader(BaseArchiveReader):
             track_output=True,
         )
         try:
-            if want_seekable and is_seekable(folder_stream):
-                inner: BinaryIO = SlicingStream(
-                    folder_stream, start=prefix, length=size, owns_inner=True
-                )
-            else:
+            # A seekable folder stream leaves positioning to the slice's first read
+            # and to the codec (free on a stored folder, decode-and-discard inside
+            # the codec otherwise), and the slice stays seekable. A forward-only
+            # one is skipped to the prefix here.
+            seek_to_prefix = want_seekable and is_seekable(folder_stream)
+            if not seek_to_prefix:
                 skip_forward(folder_stream, prefix)
-                inner = SlicingStream(folder_stream, length=size, owns_inner=True)
+            inner: BinaryIO = SlicingStream(
+                folder_stream,
+                start=prefix if seek_to_prefix else None,
+                length=size,
+                owns_inner=True,
+            )
         except EOFError as exc:
             # Construction no longer seeks, so a truncated folder raises from the
             # first read (or from skip_forward), not from SlicingStream.__init__.
