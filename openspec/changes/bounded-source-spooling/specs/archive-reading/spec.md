@@ -59,7 +59,6 @@ class SpoolLimits:
 class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
-    strict_archive_eof: bool = False
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
     spool_limits: SpoolLimits = SpoolLimits()
@@ -78,17 +77,11 @@ callback.
 for every read the reader performs, which is why it lives on the config rather than as a
 per-call argument beside `limits`.
 
-A reader carries its open config, including `listing_limits` and `spool_limits` for its
-lifetime.
-Later `extract_all(config=...)` MAY override policy/callback/strictness/
-accelerators/`extraction_limits` for new work, but SHALL NOT change the
-reader's effective `listing_limits`, `spool_limits` or
-`max_retained_diagnostic_references` (see `diagnostics`). Per-call `limits`
+A reader carries its open config, all of it, `spool_limits` included, for its
+lifetime. Reader methods SHALL NOT take a `config=`: `extract_all(limits=...)` is the
+one per-call override, and it replaces only the extraction limits for that call. Per-call `limits`
 still beat `config.extraction_limits`, then reader/library default. Other
 per-call operational args stay outside `ArchiveyConfig`.
-
-`strict_archive_eof=False` follows ordinary diagnostic policy for failed EOF check;
-`True` forces `TruncatedError` after ordered diagnostic rules in `error-handling`.
 
 `on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
 reads from a callback are allowed. Starting another operation on the same
@@ -100,10 +93,9 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 
 | Case | Expected |
 | --- | --- |
-| `ArchiveyConfig()` | AUTO accelerators; EOF strictness false; documented extraction, listing and spool defaults; COLLECT; budget 256; no callback |
+| `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults; COLLECT; budget 256; no callback |
 | `ArchiveyConfig()` spool limit | 1 GiB, platform temporary directory |
 | Reader opened with `spool_limits=SpoolLimits(max_bytes=None)` | No operation on that reader writes the source to temporary storage |
-| Reader opened with a spool limit, then `extract_all(config=…)` omitting one | The reader's spool limit stands for its lifetime |
-| Reader budget 10, then `extract_all(config=…budget=1000)` | New policy/callback may apply; diagnostics still under budget 10 |
+| Reader opened with a spool limit, then `extract_all()` | The reader's spool limit stands for its lifetime |
 | `extract(..., extraction_limits=ExtractionLimits(max_ratio=100))` | 100:1 per-member ratio enforced (`safe-extraction`) |
-| Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime even if later `extract_all(config=...)` omits listing_limits |
+| Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |

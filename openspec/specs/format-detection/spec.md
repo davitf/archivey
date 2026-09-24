@@ -157,6 +157,7 @@ Exact matches only (no fuzzy/weak magic). Recognised:
 | 7-Zip | `37 7A BC AF 27 1C` |
 | RAR 4.x / 5.x | `52 61 72 21 1A 07 00` / `… 01 00` |
 | ISO 9660 | `CD001` at 32769 |
+| ISO 9660, raw CD sector image | `00 FF×10 00` sector sync at 0 (claimed so `format-iso` can refuse it by name) |
 | TAR | `ustar` at 257 |
 | LZ4 | `04 22 4D 18` |
 | lzip | `LZIP` |
@@ -179,6 +180,7 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 | Starts `50 4B 03 04` | ZIP, `CERTAIN`, `magic` |
 | Magic table consulted for zlib | No zlib entry; CMF/FLG → zlib probe |
 | `ustar` at 257, ≥512 bytes | TAR, `CERTAIN`, `magic` |
+| Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
 
 #### Scenario: zstd frame prefix
 

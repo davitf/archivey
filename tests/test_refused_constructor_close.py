@@ -198,7 +198,7 @@ def test_archive_stream_refused_by_verifier_diagnostic_closes_cleanly() -> None:
 # ``close()`` reads. A new stream class fails here until someone makes that call.
 _REFUSALS_TESTED_ABOVE = {
     "archivey.internal.volumes.ConcatenatedFile",
-    "archivey.internal.streams.archive_stream.ArchiveStream",
+    "archivey.ArchiveStream",  # its __module__ is pinned to the public package
     "archivey.internal.streams.decompressor_stream.DecompressorStream",
     "archivey.internal.streams.verify.VerifyingStream",
 }

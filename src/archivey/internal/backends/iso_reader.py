@@ -55,6 +55,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.base_reader import (
     BaseArchiveReader,
@@ -561,6 +562,84 @@ class IsoReader(BaseArchiveReader):
         self._release_archive_handles()
 
 
+# The 12-byte sync pattern that opens every sector of a raw CD dump (a ``.bin`` from a
+# ``.bin``/``.cue`` pair). A plain ``.iso`` holds only the 2048-byte user data of each
+# sector, so it never starts with this: its first 32 KiB is the zero-filled system area.
+_RAW_SECTOR_SYNC = b"\x00" + b"\xff" * 10 + b"\x00"
+# 2352 bytes is a full raw sector; 2448 is the same with 96 bytes of subchannel data
+# appended, which some dumpers write.
+_RAW_SECTOR_SIZES = (2352, 2448)
+
+
+def _describe_raw_sector_image(source: BinaryIO) -> str | None:
+    """Name the layout of a raw CD sector image, or ``None`` if ``source`` is not one.
+
+    Raw images are recognised so they can be refused by name: reading one means stripping
+    every sector to its payload first, which is not implemented. Without this the same
+    file fails detection outright, which sends a user looking for a corrupt file when the
+    answer is to convert it.
+
+    Everything needed is in the first sector or two. Byte 15 is the sector mode. For
+    mode 2, bit ``0x20`` of the submode byte (offset 18, in the subheader) separates Form
+    1, whose 2048-byte payload holds a filesystem, from Form 2, whose 2324-byte payload
+    is video or audio and holds none. The sector size is where the second sync lands.
+    ``source`` is left at the position it was handed in at.
+    """
+    want = max(_RAW_SECTOR_SIZES) + len(_RAW_SECTOR_SYNC)
+    start = source.tell()
+    try:
+        head = source.read(want)
+    finally:
+        source.seek(start)
+    if not head.startswith(_RAW_SECTOR_SYNC) or len(head) < 24:
+        return None
+    mode = head[15]
+    if mode == 1:
+        layout = "Mode 1"
+    elif mode == 2:
+        layout = "Mode 2 Form 2" if head[18] & 0x20 else "Mode 2 Form 1"
+    else:
+        layout = f"unknown sector mode {mode}"
+    sizes = [
+        size
+        for size in _RAW_SECTOR_SIZES
+        if head[size : size + len(_RAW_SECTOR_SYNC)] == _RAW_SECTOR_SYNC
+    ]
+    if sizes:
+        layout += f", {sizes[0]}-byte sectors"
+    return layout
+
+
+def refuse_raw_sector_image(
+    source: BinaryIO, format: ArchiveFormat, archive_name: str | None
+) -> None:
+    """Raise ``UnsupportedFeatureError`` if ``source`` is a raw CD sector image.
+
+    Called by ``open_archive`` for a source resolved as ISO, before the backend's
+    availability check, so the refusal does not depend on pycdlib being installed: a
+    caller without it would otherwise be told to install it, only to be refused after.
+    """
+    layout = _describe_raw_sector_image(source)
+    if layout is None:
+        return
+    if layout.startswith("Mode 2 Form 2"):
+        what = (
+            "Its sectors carry video or audio, not an ISO 9660 filesystem, so there is "
+            "nothing here to list."
+        )
+    else:
+        what = (
+            "Reading raw sector images is not supported; convert it to a plain .iso "
+            "first (for example with bchunk or bin2iso, using the .cue sheet if there "
+            "is one)."
+        )
+    raise UnsupportedFeatureError(
+        f"The file is a raw CD sector image ({layout}), not an ISO 9660 image. {what}",
+        source_format=format,
+        archive_name=archive_name,
+    )
+
+
 class IsoReadBackend(ReadBackend):
     """Backend factory for ISO 9660 images (requires the ``[recommended]`` extra → ``pycdlib``)."""
 
@@ -570,6 +649,9 @@ class IsoReadBackend(ReadBackend):
     # extended 32 774-byte window on demand to find it (see internal/detection.py).
     MAGIC: tuple[MagicSignature, ...] = (
         MagicSignature(32769, b"CD001", ArchiveFormat.ISO),
+        # A raw CD sector dump. Claimed as ISO so that open_archive can refuse it by
+        # name (see refuse_raw_sector_image) rather than fail detection.
+        MagicSignature(0, _RAW_SECTOR_SYNC, ArchiveFormat.ISO),
     )
     # SUPPORTS_STREAMING_NON_SEEKABLE stays False: pycdlib addresses the image by
     # absolute offsets (volume descriptors at 32 KiB), so even a forward-only pass

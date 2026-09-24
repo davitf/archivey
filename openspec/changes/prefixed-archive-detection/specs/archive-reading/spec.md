@@ -23,7 +23,6 @@ class ListingLimits:
 class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
-    strict_archive_eof: bool = False
     zip_unflagged_fallback_encoding: str = "cp437"
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
@@ -53,24 +52,19 @@ lands (task 3.1) — two channels for one decision is the debt.
 
 `format=` skips detection, so `detection_budget` is then unused. Unused config
 knobs are silent; there is no `BUDGET_ARGUMENT_UNUSED`. Detection already ran or
-was skipped before extract, so later `extract_all(config=...)` SHALL NOT change
-the reader's effective `detection_budget` (same rule as `listing_limits`).
+was skipped before extract, and `extract_all()` takes no `config=`, so nothing
+changes the reader's effective `detection_budget` (same rule as `listing_limits`).
 
 `max_retained_diagnostic_references` SHALL be non-negative. Policy/default/override
 mappings and the dataclasses SHALL be defensively immutable. `config=None` →
 immutable library default. No mutable global/context-local diagnostic policy or
 callback.
 
-A reader carries its open config, including `listing_limits` and `detection_budget`
-for its lifetime. Later `extract_all(config=...)` MAY override policy/callback/strictness/
-accelerators/`extraction_limits` for new work, but SHALL NOT change the
-reader's effective `listing_limits`, `detection_budget`, or
-`max_retained_diagnostic_references` (see `diagnostics`). Per-call `limits`
+A reader carries its open config, all of it, `detection_budget` included, for its
+lifetime. Reader methods SHALL NOT take a `config=`: `extract_all(limits=...)` is the
+one per-call override, and it replaces only the extraction limits for that call. Per-call `limits`
 still beat `config.extraction_limits`, then reader/library default. Other
 per-call operational args stay outside `ArchiveyConfig`.
-
-`strict_archive_eof=False` follows ordinary diagnostic policy for failed EOF check;
-`True` forces `TruncatedError` after ordered diagnostic rules in `error-handling`.
 
 `on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
 reads from a callback are allowed. Starting another operation on the same
@@ -82,10 +76,9 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 
 | Case | Expected |
 | --- | --- |
-| `ArchiveyConfig()` | AUTO accelerators; EOF strictness false; documented extraction and listing defaults; COLLECT; diagnostic retention 256; `detection_budget is None` (BALANCED at detect); no callback |
-| Reader diagnostic retention 10, then `extract_all(config=…max_retained_diagnostic_references=1000)` | New policy/callback may apply; diagnostics still under retention 10 |
+| `ArchiveyConfig()` | AUTO accelerators; documented extraction and listing defaults; COLLECT; diagnostic retention 256; `detection_budget is None` (BALANCED at detect); no callback |
 | `extract(..., extraction_limits=ExtractionLimits(max_ratio=100))` | 100:1 per-member ratio enforced (`safe-extraction`) |
-| Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime even if later `extract_all(config=...)` omits listing_limits |
+| Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 | `open_archive(path)` / `detect_format(path)` | Default BALANCED detection; caller never names a budget |
 | `config=ArchiveyConfig(detection_budget=DetectionBudgetPreset.THOROUGH)` | Detection uses that preset (ZIP tail once `max_tail_bytes` is raised) |
 | `format=ZIP` plus a non-default `detection_budget` | Opens; detection skipped; the field is unused and silent |

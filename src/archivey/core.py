@@ -42,6 +42,7 @@ from archivey.internal.arg_checks import (
     check_encoding,
     check_extraction_limits,
 )
+from archivey.internal.backends.iso_reader import refuse_raw_sector_image
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
 from archivey.internal.diagnostics_collector import collector_from_config
@@ -269,9 +270,9 @@ def open_archive(
     ``streaming=True`` combined with ``concurrent_members=True`` is rejected
     (``ArchiveyUsageError``): a forward-only pass cannot fan out.
 
-    ``config`` supplies library tuning knobs (accelerator modes, TAR end-of-archive
-    strictness via ``strict_archive_eof``, default extraction limits, and listing
-    resource limits via ``listing_limits``). ``None`` selects the module default
+    ``config`` supplies library tuning knobs (accelerator modes, the diagnostic
+    policy, default extraction limits, and listing resource limits via
+    ``listing_limits``). ``None`` selects the module default
     :data:`~archivey.DEFAULT_ARCHIVEY_CONFIG`.
 
     The format is auto-detected from the source's magic bytes (then its extension) unless
@@ -483,6 +484,12 @@ def _open_resolved(
         volume_paths = archive_source.volume_paths
         if archive_source.joined is not None and volume_paths:
             archive_source = slot.replace(ArchiveSource.for_path(volume_paths[0]))
+
+    # A raw CD sector image is claimed as ISO only so it can be refused by name. Ahead
+    # of the availability check, so the answer does not depend on pycdlib; a
+    # non-seekable source is left to the seekability refusal below.
+    if resolved_format == ArchiveFormat.ISO and archive_source.seekable():
+        refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
     registry = get_registry()
     backend_cls = registry.reader_for_format(resolved_format)
