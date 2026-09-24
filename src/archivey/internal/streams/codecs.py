@@ -1225,11 +1225,27 @@ class GzipCodec(StreamCodec):
         RFC 1952 specifies the FNAME field as ISO-8859-1 (Latin-1), so the decoded value in
         ``extra`` uses that encoding; ``raw_name`` keeps the verbatim stored bytes.
 
-        The trailer CRC-32 is never surfaced. It describes the whole member only when the
-        file holds one gzip member, and proving that at open means scanning the whole
-        compressed file. After a full read it would be useless: the decoder has already
-        checked every member's CRC, and a digest is only worth having before a read
-        (to skip it) or to verify one.
+        **The trailer CRC-32 is deliberately never put in** ``member.hashes``. Maintainer
+        decision (PR 441); the reasoning, so it is not re-litigated:
+
+        - A digest is worth having for two things: skipping a decompression because an
+          equal file was already processed (it must be known *before* the read), or
+          verifying a read (it must come from somewhere the decoder does not already
+          check).
+        - The trailer CRC covers only the **last** member. It equals the digest of the
+          whole content only when the file holds exactly one member, and nothing in the
+          header says so.
+        - Proving single-memberness at open means scanning the whole compressed file.
+          That was the old behaviour: O(file size) on every open (a full download for a
+          remote source), and on large files the 3-byte member magic ``1f 8b 08``
+          matches by chance (about once per 16 MiB), so the scan usually concluded
+          "multi-member" and dropped the CRC anyway.
+        - Adding the CRC after a full read was implemented and removed: by then the
+          decoder has already checked every member's CRC and raised on a mismatch, so
+          the digest serves neither purpose. It also could not be made uniform, since
+          the rapidgzip accelerator hides member boundaries.
+
+        A caller that wants a digest of a gzip's content computes one while reading.
         """
         header = ctx.peek_header(_GZIP_HEADER_PEEK)
         if len(header) < 10 or header[:2] != b"\x1f\x8b":
