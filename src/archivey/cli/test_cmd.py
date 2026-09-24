@@ -151,16 +151,24 @@ def run_test(
 
     print(_test_summary(ok=ok, failed=failed, members_total=members_total), file=err)
     # An untested remainder is an incomplete verification, whatever ended the stream.
-    incomplete = members_total is not None and members_total > ok + failed
-    return EXIT_FAIL if failed or incomplete else EXIT_OK
+    not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)
+    return EXIT_FAIL if failed or not_tested else EXIT_OK
+
+
+def _not_tested(*, ok: int, failed: int, members_total: int | None) -> int:
+    """Untested remainder of an indexed selection; ``0`` when unknown or none (P8).
+
+    The summary line and the exit code both read this, so they cannot disagree.
+    """
+    if members_total is None:
+        return 0
+    return max(members_total - ok - failed, 0)
 
 
 def _test_summary(*, ok: int, failed: int, members_total: int | None) -> str:
     """Format the quiet test summary, including untested remainder when known (P8)."""
     base = f"{ok} OK, {failed} failed"
-    if members_total is None:
-        return base
-    not_tested = members_total - ok - failed
-    if not_tested <= 0:
+    not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)
+    if not not_tested:
         return base
     return f"{base}, {not_tested} not tested"
