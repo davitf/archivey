@@ -161,14 +161,16 @@ def test_pipe_metadata_stays_absent_and_costs_no_decode(
         assert HashAlgorithm.CRC32 not in member.hashes
 
 
-def test_gzip_crc32_is_not_gated_on_declared_seekability(tmp_path: Path) -> None:
-    """F1 (guardrail): gzip reports no CRC, with or without ``seekable_members``.
+def test_gzip_reports_no_crc32_on_either_decoder(tmp_path: Path) -> None:
+    """F1 (guardrail), narrowed to absence by PR 441: gzip reports no CRC at all.
 
-    Neither the listing nor a full read adds one, on either decoder (the accelerator
-    is pinned ON and OFF so the legs really differ). Fails if a gzip digest comes back
-    on any path, which would reopen the question of whether it depends on the flag.
+    F1 said declared seekability must not leak into member metadata. PR 441's ruling
+    then removed the gzip digest outright (a trailer CRC covers only the last member,
+    and a read already verifies every member), so the assertion is absence on every
+    path: listing and full read, with and without ``seekable_members``, on either
+    decoder (the accelerator is pinned ON and OFF so the legs really differ).
     """
-    from archivey.config import AcceleratorMode, ArchiveyConfig
+    from archivey.config import AcceleratorMode
     from archivey.types import HashAlgorithm
 
     path = _archive("single-file", "gz", tmp_path)
