@@ -581,8 +581,8 @@ def detect_format(
     — the default, so ``detect_format("vol.exe")`` agrees with ``open_archive``.
     ``open_archive`` probes with this flag off, then switches the source itself.
     The returned ``cost_receipt`` and ``unavailable_tiers`` then cover both passes, the
-    stub's and the volume's. Each pass runs under the full ``budget``, so that receipt
-    can exceed it.
+    stub's and the volume's. Each pass runs under the full ``budget``; the receipt's
+    ``passes`` is 2 and ``within_budget`` judges it against two budgets.
     """
     # Before anything is read: an object that is neither a path nor a binary stream
     # used to reach the prefix workspace and die there as
@@ -602,7 +602,7 @@ def detect_format(
     resolved_budget = _resolve_budget(budget)
     # One receipt across both passes: the stub pass is usually the expensive one (a
     # strong executable cue runs the full SFX scan), so the sibling-volume answer
-    # carries its cost and its skips too.
+    # carries its cost and its skips too. ``passes`` says there were two.
     receipt = MutableDetectionCostReceipt()
     try:
         info = _detect_format_body(source, collector, resolved_budget, receipt)
@@ -610,6 +610,7 @@ def detect_format(
         alt = _first_volume_beside_stub(source) if follow_stub_volumes else None
         if alt is None:
             raise
+        receipt.passes += 1
         info = _detect_format_body(alt, collector, resolved_budget, receipt)
     diagnostics = (
         collector.snapshot()
@@ -734,13 +735,13 @@ def _detect_format_body(
         # ``max_far_bytes`` cannot match in the clamped window, so it is dropped and the
         # tier is recorded as cut short, the same rule the near tier follows. A source
         # provably too short to hold the signature loses nothing to the clamp.
-        reachable_far = [
-            e for e in far if e.offset + len(e.magic) <= budget.max_far_bytes
-        ]
+        reachable_far: list[MagicSignature] = []
+        unreachable_far: list[MagicSignature] = []
+        for e in far:
+            fits = e.offset + len(e.magic) <= budget.max_far_bytes
+            (reachable_far if fits else unreachable_far).append(e)
         if budget.max_far_bytes > 0 and any(
-            length is None or length >= e.offset + len(e.magic)
-            for e in far
-            if e not in reachable_far
+            length is None or length >= e.offset + len(e.magic) for e in unreachable_far
         ):
             workspace.record_skip("far_magic", TierSkipReason.BUDGET_EXHAUSTED)
         if reachable_far:

@@ -185,7 +185,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   check with no skipped tier to explain it. Both now stay inside the budget and record
   the tier as budget-exhausted when they are cut short, as does a far signature past
   `max_far_bytes`. A failed inner-TAR decode is now charged, `within_budget` also checks
-  `far_bytes`, and a stub `.exe` followed to its split volume reports both passes' cost.
+  `far_bytes`, and a stub `.exe` followed to its split volume reports both passes' cost
+  with `passes=2`, judged against two budgets.
 
 ### Changed
 

@@ -147,6 +147,12 @@ class DetectionCostReceipt:
     decode_output: int = 0
     index_bytes: int = 0
     spooled_bytes: int = 0
+    passes: int = 1
+    """Detection passes this receipt sums, each run under the full budget.
+
+    2 when ``detect_format`` followed a stub-only executable to its sibling split
+    volume: the stub's pass and the volume's pass.
+    """
 
     def charge(
         self,
@@ -187,25 +193,33 @@ class DetectionCostReceipt:
         ``prefix_bytes`` is the one counter not compared: it bills overlapping requests
         in full, so ``unique_bytes_read`` stands in for it.
 
-        A receipt from ``detect_format`` that followed a stub to its sibling volume
-        sums two passes, each run under the full budget, so it can exceed ``budget``
-        with no tier cut short.
+        The budget applies per pass: every limit is multiplied by :attr:`passes`, so a
+        receipt that followed a stub to its sibling volume is judged against two
+        budgets, the work each pass was allowed.
         """
+        n = max(1, self.passes)
         probe_allowance = budget.max_probe_links * _PROBE_HEADER_READ_BYTES
         return (
             self.unique_bytes_read
-            <= max(budget.max_prefix_bytes, budget.max_far_bytes, budget.max_scan_bytes)
-            + budget.max_tail_bytes
-            + budget.spool_non_seekable_up_to
-            + probe_allowance
-            and self.far_bytes <= budget.max_far_bytes
-            and self.seeks <= budget.max_seeks
-            and self.tail_bytes <= budget.max_tail_bytes
-            and self.scanned_bytes <= budget.max_scan_bytes
-            and self.decode_input <= budget.max_decode_input
-            and self.decode_output <= budget.max_decode_output
-            and self.index_bytes <= budget.max_index_bytes
-            and self.spooled_bytes <= budget.spool_non_seekable_up_to
+            <= n
+            * (
+                max(
+                    budget.max_prefix_bytes,
+                    budget.max_far_bytes,
+                    budget.max_scan_bytes,
+                )
+                + budget.max_tail_bytes
+                + budget.spool_non_seekable_up_to
+                + probe_allowance
+            )
+            and self.far_bytes <= n * budget.max_far_bytes
+            and self.seeks <= n * budget.max_seeks
+            and self.tail_bytes <= n * budget.max_tail_bytes
+            and self.scanned_bytes <= n * budget.max_scan_bytes
+            and self.decode_input <= n * budget.max_decode_input
+            and self.decode_output <= n * budget.max_decode_output
+            and self.index_bytes <= n * budget.max_index_bytes
+            and self.spooled_bytes <= n * budget.spool_non_seekable_up_to
         )
 
 
@@ -284,6 +298,7 @@ class MutableDetectionCostReceipt:
     decode_output: int = 0
     index_bytes: int = 0
     spooled_bytes: int = 0
+    passes: int = 1
     skips: list[TierSkip] = field(default_factory=list)
 
     def freeze(self) -> DetectionCostReceipt:
@@ -298,7 +313,12 @@ class MutableDetectionCostReceipt:
             decode_output=self.decode_output,
             index_bytes=self.index_bytes,
             spooled_bytes=self.spooled_bytes,
+            passes=self.passes,
         )
 
     def record_skip(self, tier: str, reason: TierSkipReason) -> None:
-        self.skips.append(TierSkip(tier=tier, reason=reason))
+        # A second pass records the same policy skips again (``zip_tail`` on every
+        # pass); a repeat carries no information, so the list keeps one of each.
+        skip = TierSkip(tier=tier, reason=reason)
+        if skip not in self.skips:
+            self.skips.append(skip)

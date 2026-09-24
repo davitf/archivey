@@ -1053,16 +1053,28 @@ def test_far_budget_skip_is_not_recorded_for_a_source_too_short_for_the_iso_span
 def test_stub_volume_fallback_keeps_the_stub_pass_cost(tmp_path: Path) -> None:
     # S19-K3: the stub pass runs the full SFX scan; its receipt and skips used to be
     # dropped in favour of the cheap second pass on the sibling volume.
-    from archivey.detection_cost import BALANCED_BUDGET
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET, TierSkip, TierSkipReason
 
     stub = tmp_path / "vol.exe"
     stub.write_bytes(b"MZ" + b"\x00" * (3 * 1024 * 1024))
-    (tmp_path / "vol.7z.001").write_bytes(_sevenz_sig())
+    # Big enough that the volume pass takes a full near peek on top of the scan.
+    (tmp_path / "vol.7z.001").write_bytes(_sevenz_sig() + b"\x00" * 8192)
     info = detect_format(stub)
     assert info.format == ArchiveFormat.SEVEN_Z
-    assert info.cost_receipt is not None
-    assert info.cost_receipt.scanned_bytes == BALANCED_BUDGET.max_scan_bytes
-    assert info.cost_receipt.unique_bytes_read > BALANCED_BUDGET.max_scan_bytes
+    receipt = info.cost_receipt
+    assert receipt is not None
+    assert receipt.scanned_bytes == BALANCED_BUDGET.max_scan_bytes
+    assert receipt.unique_bytes_read > BALANCED_BUDGET.max_scan_bytes
+    # Two passes, said as data, and each within its budget: the sum passes the
+    # two-budget check and would fail a single-pass one.
+    assert receipt.passes == 2
+    assert receipt.within_budget(BALANCED_BUDGET)
+    assert not replace(receipt, passes=1).within_budget(BALANCED_BUDGET)
+    # The volume pass records the same policy skip again; it is kept once.
+    zip_tail = TierSkip("zip_tail", TierSkipReason.NOT_ENABLED_BY_POLICY)
+    assert info.unavailable_tiers.count(zip_tail) == 1
 
 
 def _incompressible_tar_bz2(first_member: int) -> bytes:
@@ -1117,6 +1129,29 @@ def test_inner_tar_probe_charges_a_decode_that_fails() -> None:
     assert info.format == ArchiveFormat.BZ2
     assert info.cost_receipt is not None
     assert info.cost_receipt.decode_input > 0
+
+
+def test_inner_tar_probe_is_skipped_when_the_output_budget_is_below_one_header() -> (
+    None
+):
+    # The probe always asks for one 512-byte TAR header block, so an output budget
+    # below that would be overspent the moment the probe ran.
+    import bz2
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET, TierSkipReason
+
+    budget = replace(BALANCED_BUDGET, max_decode_output=256)
+    info = detect_format(io.BytesIO(bz2.compress(_tar_bytes(), 9)), budget=budget)
+    assert info.format == ArchiveFormat.BZ2
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.decode_input == 0
+    assert info.cost_receipt.decode_output == 0
+    assert info.cost_receipt.within_budget(budget)
+    assert any(
+        s.tier == "inner_tar" and s.reason is TierSkipReason.BUDGET_EXHAUSTED
+        for s in info.unavailable_tiers
+    )
 
 
 def test_inner_tar_probe_is_off_when_the_decode_budget_is_zero() -> None:

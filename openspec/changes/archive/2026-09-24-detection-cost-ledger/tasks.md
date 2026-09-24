@@ -11,9 +11,11 @@
 - [x] 1.4 Inner-TAR probe: input capped by `max_decode_input`, charged on failure, and a
       probe cut short records `inner_tar` as budget exhausted.
 - [x] 1.5 `within_budget` compares `far_bytes` with `max_far_bytes`.
+- [x] 1.6 The receipt carries `passes`; `within_budget` scales every limit by it, and a
+      repeated skip is kept once.
 
 ## 2. Proof
 
-- [x] 2.1 Red-green tests for each, plus the invariant test: a single-pass receipt that
-      fails `within_budget` carries a skip naming the tier.
+- [x] 2.1 Red-green tests for each, plus the invariant test: a receipt that fails
+      `within_budget` carries a skip naming the tier.
 - [x] 2.2 `openspec validate --strict detection-cost-ledger`, then archive this change.
