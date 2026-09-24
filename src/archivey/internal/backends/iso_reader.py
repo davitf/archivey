@@ -51,6 +51,8 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
+from archivey.diagnostics import DiagnosticCode, MemberHeaderRecordContext
+from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -419,9 +421,19 @@ class IsoReader(BaseArchiveReader):
         rendered (surrogateescape for the byte namespaces, U+FFFD for Joliet's UTF-16)
         rather than costing the listing.
         """
-        if self._namespace == "rock_ridge":
+        if self._namespace == "rock_ridge" and record.rock_ridge is not None:
             return record.rock_ridge.name().decode("utf-8", errors="surrogateescape")
         ident = record.file_identifier()
+        if self._namespace == "rock_ridge":
+            # No Rock Ridge entries on this one record: fall back to its ISO 9660
+            # identifier, version and empty-extension dot removed.
+            base = ident.decode("utf-8", errors="surrogateescape")
+            match = _VERSION_SUFFIX.search(base)
+            if match is not None and match.start() > 0:
+                base = base[: match.start()]
+                if base.endswith(".") and len(base) > 1:
+                    base = base[:-1]
+            return base
         if self._namespace == "joliet":
             return ident.decode("utf-16_be", errors="replace")
         return ident.decode("utf-8", errors="surrogateescape")
@@ -478,8 +490,6 @@ class IsoReader(BaseArchiveReader):
             files: list[tuple[str, Any]] = []
             for child in _yield_children(dir_record, use_rr):
                 if child is None or child.is_dot() or child.is_dotdot():
-                    continue
-                if use_rr and child.rock_ridge is None:
                     continue
                 if (
                     use_rr
@@ -597,6 +607,28 @@ class IsoReader(BaseArchiveReader):
             archive_name=self._archive_name,
             member_id=index,
         )
+        if self._namespace == "rock_ridge" and rr is None:
+            # The image is Rock Ridge but this record's System Use area carries none
+            # (absent or damaged). The member is kept under its ISO 9660 name; what the
+            # entries would have given (the long name, POSIX mode/owner, a symlink)
+            # is missing, and the caller is told so.
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"Directory record {quoted(presented)} carries no Rock Ridge "
+                    "entries; the member is listed under its ISO 9660 name without "
+                    "Rock Ridge name, mode, owner or link data."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=name,
+                    member_id=index,
+                    record="rock_ridge",
+                    reason="no Rock Ridge entries in the System Use area",
+                ),
+                member=member,
+                attach_to_member=True,
+            )
         return member
 
     # rr stays Any: dr_entries / ce_entries (and symlink_path) are real

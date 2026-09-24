@@ -770,3 +770,72 @@ def test_rock_ridge_relocation_directory_is_not_listed() -> None:
         assert deep in names
         assert len(names) == 13
         assert ar.read(deep) == b"deep"
+
+
+def test_a_rock_ridge_record_without_entries_lists_under_its_iso_name() -> None:
+    """An RR image whose one record has no System Use entries keeps that member,
+    names it from the ISO 9660 identifier, and says what was lost."""
+    from archivey import DiagnosticCode
+
+    data = bytearray(_build_rr_iso(_two_rr_files))
+    at = data.index(b"AAA.;1")
+    start = at - 33  # the identifier sits at offset 33 of its directory record
+    length, ident_len = data[start], data[start + 32]
+    su = start + 33 + ident_len + (1 if ident_len % 2 == 0 else 0)
+    data[su : start + length] = bytes(start + length - su)
+
+    with open_archive(io.BytesIO(bytes(data))) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert set(by_name) == {"AAA", "bbb"}
+        assert ar.read("AAA") == b"AAAA"
+        assert [d.code for d in by_name["AAA"].diagnostics] == [
+            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        ]
+        assert by_name["bbb"].diagnostics == ()
+
+
+def test_the_record_walk_descends_each_directory_extent_once() -> None:
+    """A child record pointing back at an ancestor extent is listed but not entered.
+
+    pycdlib's parse-time guard keeps such a cycle out of a parsed tree, so the cycle
+    is spliced into the parsed records here to reach the walk's own guard.
+    """
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    iso.add_directory("/A")
+    iso.add_directory("/A/B")
+    iso.add_fp(io.BytesIO(b"x"), 1, "/A/B/F.;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+
+    with open_archive(io.BytesIO(out.getvalue())) as ar:
+        reader: Any = ar
+        a = reader._iso.get_record(iso_path="/A")
+        b = reader._iso.get_record(iso_path="/A/B")
+        b.children.append(a)  # B now lists its own parent A as a child
+        names = [m.name for m in ar.members()]
+    assert sorted(names) == ["A/", "A/B/", "A/B/A/", "A/B/F"]
+
+
+def test_listing_reads_nothing_from_the_image() -> None:
+    """Materialization only touches catalog records pycdlib parsed at open: the
+    audit the handle-lock requirement relies on."""
+
+    class Counting(io.BytesIO):
+        calls = 0
+
+        def read(self, size: int | None = -1, /) -> bytes:
+            Counting.calls += 1
+            return super().read(size)
+
+        def seek(self, offset: int, whence: int = 0, /) -> int:
+            Counting.calls += 1
+            return super().seek(offset, whence)
+
+    with open_archive(Counting(_build_rr_iso(_two_rr_files))) as ar:
+        before = Counting.calls
+        assert len(ar.members()) == 2
+        assert Counting.calls == before
