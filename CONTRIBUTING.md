@@ -373,7 +373,9 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   un-guarded code is worse than no test, because it reports coverage that does not
   exist — this repo has shipped a property test that passed a `return block_start`
   mutant, an inventory test that passed vacuously, and a test whose fixture could not
-  reach the path it named.
+  reach the path it named. For a test the PR says fails on `main`,
+  `scripts/review_prep.py red-on-base <test ids>` runs it against the merge base's
+  `src/` and prints a table for the PR body.
 
 ### Coverage-guided fuzz (Atheris)
 
