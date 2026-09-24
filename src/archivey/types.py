@@ -414,6 +414,9 @@ class MemberExtra(dict[str, object]):
     * ``tar.devmajor`` (``int``)
     * ``tar.devminor`` (``int``)
     * ``gzip.original_filename`` (``str``)
+    * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
+      stripped from the name. Versions of one name share it; the highest is
+      listed last and is the current one.
     """
 
     __slots__ = ()
@@ -460,6 +463,8 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["tar.devminor"], /) -> int: ...
     @overload
     def __getitem__(self, key: Literal["gzip.original_filename"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["iso.version"], /) -> int: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     def __getitem__(self, key: str, /) -> object:
@@ -512,7 +517,8 @@ class ArchiveMember:
     """Normalized member path, ``/``-separated, decoded for display and lookup."""
 
     raw_name: bytes | None = None
-    """The member name exactly as stored in the archive, undecoded."""
+    """The member name exactly as stored in the archive, undecoded, or ``None`` when
+    the format stores no name or the bytes cannot be recovered from the decoded one."""
 
     size: int | None = None
     """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry)."""

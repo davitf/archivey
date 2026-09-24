@@ -297,15 +297,22 @@ def resolve_link_target_name(
     The two link kinds store targets in different namespaces:
 
     - A **hardlink** target is archive-relative from the root (the TAR model: the
-      linkname is the earlier member's own stored path), so it is normalized as-is.
+      linkname is the earlier member's own stored path), so it is in the member-name
+      namespace and cleaned the way :func:`normalize_member_name` cleans a name: ``.``
+      and empty segments dropped, ``..`` **retained**. ``a/../b`` names the member
+      stored as ``a/../b``, never the unrelated member ``b``.
     - A **symlink** target is a filesystem path relative to the link's *own directory*
-      (``dir/link -> file`` means ``dir/file``), so it is joined to that directory
-      before normalization.
+      (``dir/link -> file`` means ``dir/file``), so it is joined to that directory and
+      ``..`` is collapsed, as the filesystem would resolve it.
 
-    Returns ``None`` for a target that cannot be a member: an absolute symlink target
-    (it points outside the archive namespace) or one that ``..``-escapes the archive
-    root. The caller looks the result up against normalized member names; directory
-    members carry a trailing ``/`` in their names, so lookups should try both forms.
+    Returns ``None`` for a target that cannot be a member: an absolute target of either
+    kind (it points outside the archive namespace) or one that ``..``-escapes the
+    archive root. A leading ``/`` is the one place a hardlink target departs from
+    :func:`normalize_member_name`, which retains it in a name and leaves the refusal to
+    extraction: a link that follows it would lead out of the extraction root, so a
+    hardlink naming ``/abs`` does not resolve even when a member ``/abs`` exists. The escape test runs on the collapsed form for both kinds. The caller looks
+    the result up against normalized member names; directory members carry a trailing
+    ``/`` in their names, so lookups should try both forms.
 
     A backslash in ``target`` is a literal character, exactly as in member names: the
     backend that decoded the member already converted ``\\`` to ``/`` where the source
@@ -326,4 +333,6 @@ def resolve_link_target_name(
     resolved = posixpath.normpath(joined)
     if resolved in (".", "/") or resolved.startswith(("../", "/")) or resolved == "..":
         return None  # escapes the archive root (or names the root itself)
-    return resolved
+    if member_type == MemberType.SYMLINK:
+        return resolved
+    return "/".join(seg for seg in joined.split("/") if seg not in ("", "."))

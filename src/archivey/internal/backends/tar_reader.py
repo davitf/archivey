@@ -734,9 +734,9 @@ class TarReader(BaseArchiveReader):
         name = normalize_member_name(
             presented, member_type, backslash_is_separator=False
         )
-        # Re-encode the decoded name with the archive's own codec to recover the stored bytes
-        # (tarfile decodes with surrogateescape, which round-trips losslessly).
-        raw_name = info.name.encode(self._tar.encoding, errors="surrogateescape")
+        raw_name = _recover_raw_name(
+            info, self._tar.encoding, self._tar.errors, self._tar.pax_headers
+        )
 
         link_target = (
             info.linkname
@@ -869,10 +869,60 @@ class TarReader(BaseArchiveReader):
 
     def _close_archive(self) -> None:
         with self._handle_guard():
-            self._tar.close()
-            # tarfile never closes an external fileobj, so close the decompression
-            # stream we built. The source closes with the reader, after this.
-            self._release_owned_stream()
+            try:
+                self._tar.close()
+            finally:
+                # tarfile never closes an external fileobj, so close the decompression
+                # stream we built, even when close() raised: teardown runs once. The
+                # source closes with the reader, after this.
+                self._release_owned_stream()
+
+
+def _recover_raw_name(
+    info: tarfile.TarInfo,
+    encoding: str,
+    errors: str,
+    global_headers: Mapping[str, str],
+) -> bytes | None:
+    """Recover the stored name bytes from tarfile's decoded ``info.name``.
+
+    The codec depends on where the name came from. A ustar or GNU long-name field is
+    decoded with the archive ``encoding`` and ``errors`` (surrogateescape by default), so
+    encoding back with the same pair round-trips. A PAX ``path`` record is decoded
+    strictly as UTF-8 (strictly with ``encoding`` when its own header block says
+    ``hdrcharset=BINARY``), and only when that fails with ``encoding`` + ``errors``.
+
+    Where the name came from is inferred, not recorded: ``info.pax_headers`` has the
+    archive's global headers merged in, and tarfile keeps no per-block record. The name
+    is taken as a PAX name when it equals ``pax_headers["path"]`` (a GNU long name that
+    overrode an inherited global ``path`` differs from it), and ``BINARY`` is honoured
+    only when it is not the inherited global value (tarfile reads ``hdrcharset`` from
+    the member's own block only). A block that repeats the global ``BINARY``, or a long
+    name equal to a global ``path``, is misread; both need a crafted archive and give
+    different bytes only when ``encoding`` is not UTF-8.
+
+    For a PAX name the bytes are taken as UTF-8, the spec's encoding. A name that UTF-8
+    cannot encode holds surrogates, which only the fallback decode produces, so it is
+    encoded back with the fallback pair. What stays ambiguous is a fallback decode under
+    a codec that yields no surrogates (``latin-1``, say) of bytes that are not UTF-8: the
+    string does not say which arm produced it, and the spec's reading wins.
+
+    Returns ``None`` when no codec reproduces the name, which ``ArchiveMember.raw_name``
+    documents as "could not be recovered". One unencodable name must not sink the
+    listing.
+    """
+    try:
+        from_pax = info.pax_headers.get("path") == info.name
+        charset = info.pax_headers.get("hdrcharset")
+        binary = charset == "BINARY" and global_headers.get("hdrcharset") != charset
+        if from_pax and not binary:
+            try:
+                return info.name.encode("utf-8")
+            except UnicodeEncodeError:
+                pass
+        return info.name.encode(encoding, errors)
+    except UnicodeEncodeError:
+        return None
 
 
 class TarReadBackend(ReadBackend):

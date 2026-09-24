@@ -204,3 +204,43 @@ def test_dots_only_stem_extracts_under_every_policy(
     extract(src, dest, policy=policy)
 
     assert (dest / "....gz.uncompressed").read_bytes() == b"payload"
+
+
+def test_hardlink_target_retains_dot_dot_like_member_names() -> None:
+    """A hardlink target is a stored member name: ``a/../b`` names the member stored
+    as ``a/../b``, never the unrelated ``b``. A symlink target is a filesystem path,
+    so its ``..`` is collapsed."""
+    from archivey.internal.naming import resolve_link_target_name
+
+    assert resolve_link_target_name("x", "a/../b", MemberType.HARDLINK) == "a/../b"
+    assert resolve_link_target_name("x", "./a//b/./c", MemberType.HARDLINK) == "a/b/c"
+    assert resolve_link_target_name("x", "a/../../b", MemberType.HARDLINK) is None
+    assert resolve_link_target_name("x", "a/..", MemberType.HARDLINK) is None
+    assert resolve_link_target_name("x", "/abs", MemberType.HARDLINK) is None
+    assert resolve_link_target_name("d/l", "../b", MemberType.SYMLINK) == "b"
+    assert resolve_link_target_name("d/l", "../../b", MemberType.SYMLINK) is None
+
+
+def test_tar_hardlink_through_dot_dot_reads_the_member_it_names(
+    tmp_path: Path,
+) -> None:
+    import io
+    import tarfile
+
+    from archivey import open_archive
+
+    path = tmp_path / "links.tar"
+    with tarfile.open(path, "w") as tf:
+        for name, data in (("b", b"SECRET-B"), ("a/../b", b"REAL-TARGET")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        link = tarfile.TarInfo("x")
+        link.type = tarfile.LNKTYPE
+        link.linkname = "a/../b"
+        tf.addfile(link)
+    with open_archive(path) as ar:
+        members = {m.name: m for m in ar.members()}
+        target = members["x"].link_target_member
+        assert target is not None and target.name == "a/../b"
+        assert ar.read("x") == b"REAL-TARGET"
