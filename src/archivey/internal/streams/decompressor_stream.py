@@ -469,6 +469,9 @@ class DecompressorStream(ReadOnlyIOStream):
         refining the origin's ``compressed_offset`` / ``state`` (unix-compress header
         commit must apply even when the table is not built).
 
+        Once the table has been thinned (:meth:`_thin_seek_table`), a point closer than
+        ``_min_spacing`` to a neighbour is dropped before the collision rules below.
+
         Same-``decompressed_offset`` collisions:
         - Origin (offset 0) may always be refined in place (unix-compress header commit).
         - For other offsets, an exact duplicate is skipped; a *forward* refinement
@@ -719,8 +722,7 @@ class DecompressorStream(ReadOnlyIOStream):
         inner_pos = self._inner.tell()
         # Always scan from the absolute origin. Using a mid-stream last_known (from
         # progressive enrichment) as the baseline renumbers later streams' decompressed
-        # offsets incorrectly. A full from-origin scan is cheap (index/trailer only) and
-        # makes block-chain resume safe after a partial forward read.
+        # offsets incorrectly. A full from-origin scan is cheap (index/trailer only).
         new_points, new_size = self._decoder.build_index(self._inner, SeekPoint(0, 0))
         self._index_build_attempted = True
         if new_points or new_size is not None:

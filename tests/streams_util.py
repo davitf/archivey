@@ -258,7 +258,7 @@ def make_multiblock_xz(data: bytes, block_size: int) -> bytes:
     """Compress ``data`` into a *single* XZ stream split into multiple blocks.
 
     stdlib ``lzma`` always emits one block per stream, so the multi-block layout (which
-    drives ``XzDecompressorStream``'s block-chain random-access path) is produced via the
+    drives ``XzDecompressorStream``'s block-resume random-access path) is produced via the
     ``xz`` CLI's ``--block-size``. Guard callers with :func:`xz_cli_available`.
     """
     result = subprocess.run(

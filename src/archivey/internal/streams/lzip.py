@@ -56,7 +56,6 @@ class _MemberBounds:
     decompressed_start: int
     compressed_size: int
     decompressed_size: int
-    crc32: int
 
     @property
     def decompressed_end(self) -> int:
@@ -112,9 +111,8 @@ def _read_index_backwards(
 
     A member can be as small as 26 bytes, so the members kept are thinned
     (:class:`SpacedCollector`) once there are more than the seek-table cap; the last
-    member is always kept, so the total size stays exact. Each entry retains its
-    trailer CRC-32. Callers that need only totals use :func:`peek_index_summary`, which
-    folds the walk and keeps nothing.
+    member is always kept, so the total size stays exact. Callers that need only totals
+    use :func:`peek_index_summary`, which folds the walk and keeps nothing.
     """
     # Each entry is (decompressed distance from member start to the end, trailer).
     # Walking backwards that distance only grows, which is what the collector needs.
@@ -129,8 +127,8 @@ def _read_index_backwards(
         on_thinned()
     end = start_decompressed_offset + total
     return [
-        _MemberBounds(comp_start, end - dist, comp_size, decomp_size, crc32)
-        for dist, (comp_start, decomp_size, comp_size, crc32) in reversed(kept.items)
+        _MemberBounds(comp_start, end - dist, comp_size, decomp_size)
+        for dist, (comp_start, decomp_size, comp_size, _crc) in reversed(kept.items)
     ]
 
 

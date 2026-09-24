@@ -177,11 +177,11 @@ def test_xz_index_backwards_parses_blocks() -> None:
     reason="the xz CLI is needed to build a multi-block (single-stream) XZ fixture",
 )
 def test_xz_multiblock_backward_seek_crosses_block_boundary() -> None:
-    """A backward seek within a *single* multi-block XZ stream uses the block chain.
+    """A backward seek within a *single* multi-block XZ stream resumes from a block.
 
-    ``lzma.compress`` emits one block per stream, so the in-stream "advance to the next
-    block" path of ``_XzBlockChain`` is otherwise unexercised. Build a genuinely
-    multi-block stream and seek so the read spans a block boundary.
+    ``lzma.compress`` emits one block per stream, so a resume that decodes on through
+    later blocks of the same stream (``_XzBlockResume``) is otherwise unexercised. Build
+    a genuinely multi-block stream and seek so the read spans a block boundary.
     """
     compressed = make_multiblock_xz(CONTENT, block_size=8192)
     blocks = _read_xz_index_backwards(io.BytesIO(compressed), len(compressed))
@@ -210,13 +210,14 @@ def test_xz_multiblock_backward_seek_crosses_block_boundary() -> None:
 def test_xz_multiblock_seek_serves_the_right_bytes_across_feed_chunks(
     start: int, length: int
 ) -> None:
-    """A block-chain resume must not rewind ``inner`` under ``DecompressorStream``.
+    """A block resume spanning several ``DecompressorStream`` reads serves the right bytes.
 
     Incompressible content makes the compressed stream larger than one
-    ``DecompressorStream`` read, so ``_XzBlockChain`` advances to a contiguous block
-    while bytes past that block's start are still in the chunk it is consuming. If the
-    advance rewound ``inner``, the next read would hand those bytes over a second time
-    and the output would carry a copy of the next block's header.
+    ``DecompressorStream`` read, so ``_XzBlockResume`` is fed across several chunks
+    while ``DecompressorStream`` reads ahead on the same ``inner``. The resume may move
+    ``inner`` only once, at construction, and the decoder again at the hand-off, after
+    the resume has dropped the rest of its chunk; a move anywhere else would hand bytes
+    over a second time and the output would carry a copy of a block header.
     """
     content = random.Random(4).randbytes(300_000)
     compressed = make_multiblock_xz(content, block_size=65536)
@@ -235,11 +236,12 @@ def test_xz_multiblock_seek_serves_the_right_bytes_across_feed_chunks(
     not xz_cli_available(),
     reason="the xz CLI is needed to build a multi-block (single-stream) XZ fixture",
 )
-def test_xz_multistream_block_chain_resume_crosses_a_stream_gap() -> None:
-    """The discontinuous hop (stream footer and padding between two blocks) still works.
+def test_xz_multistream_block_resume_crosses_a_stream_gap() -> None:
+    """A resume that reaches its stream's end hands off across the footer and padding.
 
-    The chain may reposition ``inner`` only where it also drops the rest of the chunk
-    it holds; this pins that path while the contiguous one no longer seeks.
+    ``_XzBlockResume`` stops where the stream's index starts; the decoder then moves
+    ``inner`` past the footer and carries on with a sequential ``_XzState``, which must
+    skip the padding before the next stream.
     """
     rng = random.Random(5)
     part1 = rng.randbytes(200_000)
@@ -267,15 +269,15 @@ def test_xz_multistream_block_chain_resume_crosses_a_stream_gap() -> None:
     not xz_cli_available(),
     reason="the xz CLI is needed to build a multi-block (single-stream) XZ fixture",
 )
-def test_xz_block_chain_hands_off_at_a_stream_without_blocks(
+def test_xz_block_resume_hands_off_before_a_stream_without_blocks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stream whose block scan degraded is decoded, not skipped or cut off.
 
     Stream B's per-stream scan is made to fail, so the table holds a ``state=None``
-    start for B between A's and C's blocks. A resume in A must stop its chain there and
-    carry on sequentially: jumping to C would serve C's bytes at B's offsets, and ending
-    at A would return a short read and publish a short size.
+    start for B between A's and C's blocks. A resume in A decodes to the end of A and
+    carries on sequentially through B: jumping to C would serve C's bytes at B's
+    offsets, and ending at A would return a short read and publish a short size.
     """
     from archivey.internal.streams import xz as xz_module
 
@@ -938,9 +940,10 @@ def test_xz_resume_from_recorded_blocks_after_a_thinned_index_reads_every_stream
     small_seek_cap: int,
 ) -> None:
     """A thinned index leaves streams out. A resume from block points a forward read
-    recorded earlier must still read every stream after them: the old block chain ran
-    from the recorded blocks straight to the next stream the index kept, skipping the
-    ones between (59 185 of 68 185 bytes, no error, measured on the chain)."""
+    recorded earlier must still read every stream after them. Before the resume was
+    made independent of other points, it ran from the recorded blocks straight to the
+    next stream the index kept, skipping the ones between (59 185 of 68 185 bytes, no
+    error)."""
     rng = random.Random(4)
     parts = [rng.randbytes(3 * 4096)] + [rng.randbytes(3000) for _ in range(20)]
     compressed = b"".join(make_multiblock_xz(p, block_size=4096) for p in parts)

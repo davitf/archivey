@@ -683,7 +683,6 @@ class XzDecoder(BaseDecoder):
         decomp_cursor: int,
         index_enabled: bool,
         collector: DiagnosticCollector | None,
-        get_seek_points: Callable[[], list[SeekPoint]],
         index_built: Callable[[], bool],
         limits: DecoderLimits,
         handoff: SeekPoint | None = None,
@@ -696,7 +695,6 @@ class XzDecoder(BaseDecoder):
         self._decomp_cursor = decomp_cursor
         self._index_enabled = index_enabled
         self._collector = collector
-        self._get_seek_points = get_seek_points
         self._index_built = index_built
 
     @classmethod
@@ -707,7 +705,6 @@ class XzDecoder(BaseDecoder):
         *,
         index_enabled: bool,
         collector: DiagnosticCollector | None,
-        get_seek_points: Callable[[], list[SeekPoint]],
         index_built: Callable[[], bool],
         limits: DecoderLimits,
     ) -> XzDecoder:
@@ -727,7 +724,6 @@ class XzDecoder(BaseDecoder):
             decomp_cursor=point.decompressed_offset,
             index_enabled=index_enabled,
             collector=collector,
-            get_seek_points=get_seek_points,
             index_built=index_built,
             limits=limits,
             handoff=handoff,
@@ -739,7 +735,6 @@ class XzDecoder(BaseDecoder):
             inner,
             index_enabled=self._index_enabled,
             collector=self._collector,
-            get_seek_points=self._get_seek_points,
             index_built=self._index_built,
             limits=self._limits,
         )
@@ -790,14 +785,10 @@ class XzDecoder(BaseDecoder):
         return self._engine.needs_input
 
     def _points_for_units(self, units: list[tuple[int, int]]) -> list[SeekPoint]:
+        # Only _XzState reports finished streams; _XzBlockResume never does.
         if not units:
             return []
-        if isinstance(self._engine, _XzState):
-            return self._progressive_stream_points(units)
-        for decomp_size, comp_size in units:
-            self._comp_cursor += comp_size
-            self._decomp_cursor += decomp_size
-        return []
+        return self._progressive_stream_points(units)
 
     def _progressive_stream_points(
         self, new_streams: list[tuple[int, int]]
@@ -923,8 +914,8 @@ def XzDecompressorStream(
     :func:`_new_decompressor`); it defaults to the public default, not to no cap.
 
     ``stream_cell`` late-binds the constructed stream so ``XzDecoder.recreate`` can
-    read subsequent block ``SeekPoint``s / ``_index_built`` — the same coupling the
-    old ``XzDecompressorStream._make_decompressor`` had via ``self``. Fine for XZ;
+    read ``_index_built`` — the same coupling the old
+    ``XzDecompressorStream._make_decompressor`` had via ``self``. Fine for XZ;
     when BGZF (or another indexed codec) needs the same, prefer an explicit
     seek-table / index-state handle passed into ``make_decoder`` rather than another
     private-attr cell.
@@ -932,11 +923,6 @@ def XzDecompressorStream(
     stream_cell: list[DecompressorStream | None] = [None]
 
     def make_decoder(point: SeekPoint, inner: BinaryIO) -> XzDecoder:
-        def get_seek_points() -> list[SeekPoint]:
-            stream = stream_cell[0]
-            assert stream is not None
-            return stream._seek_points
-
         def index_built() -> bool:
             stream = stream_cell[0]
             assert stream is not None
@@ -947,7 +933,6 @@ def XzDecompressorStream(
             inner,
             index_enabled=seekable,
             collector=collector,
-            get_seek_points=get_seek_points,
             index_built=index_built,
             limits=decoder_limits,
         )
