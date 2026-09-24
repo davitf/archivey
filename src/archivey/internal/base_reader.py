@@ -2644,8 +2644,11 @@ class BaseArchiveReader(ArchiveReader):
         # closed only once the transition has actually happened. Its "run teardown now"
         # result is not needed: _maybe_teardown() below asks claim_teardown() directly.
         # Every step below is idempotent on its own (a spent claim refuses), so
-        # ``_closed`` is set only at the end: an interrupt anywhere in between leaves the
-        # next close() able to finish the job instead of returning at the check above.
+        # ``_closed`` is set only at the end: an interrupt in between leaves teardown
+        # reachable instead of short-circuited by the check above -- by the next close()
+        # when no stream lease survives, and otherwise by the last stream's own close,
+        # whose lease callback runs _maybe_teardown(). Stream shutdown itself is not
+        # retried (see ReaderState.claim_stream_shutdown).
         self._state.mark_reader_closed()
         # Exactly one caller closes the streams. mark_reader_closed() returns False both
         # when this thread transitioned with leases outstanding and when a peer had

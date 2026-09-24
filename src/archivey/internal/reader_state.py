@@ -16,14 +16,15 @@ transition on, or a test of, four independent pieces of state:
 - **Whether the member list exists yet** (``cache_state``). See :class:`ReaderState`.
 - **How many member streams are alive** (``_live_streams``, plus ``_reservations`` for
   an ``open()`` that has passed the gate but not built its stream yet).
-- **How far the close has got** (``lifecycle`` and ``_lease_count``), below.
+- **How far the close has got** (``lifecycle`` and the leases), below.
 
 Leases, and why teardown is separate from close
 -----------------------------------------------
 
-Marking the reader closed does not close the archive. ``_lease_count`` counts what still
+Marking the reader closed does not close the archive. A lease is held by whatever still
 reads through the source: the reader itself (one lease, from construction until
-``close()``) plus each live member stream. The underlying file handle or ``unrar`` /
+``close()``, kept as ``_reader_lease_held``) plus each live member stream or reservation
+(counted in ``_lease_count``). The underlying file handle or ``unrar`` /
 ``7z`` process is torn down by whoever drops the **last** lease. ``close()`` drops the
 reader's lease first and then closes the still-open member streams, so with streams open
 the last lease usually goes with the last stream's close, not with the reader's. That is
@@ -148,10 +149,12 @@ class ReaderState:
         self._workers: set[OperationToken] = set()
         self._live_streams: set[int] = set()
         self._reservations: set[LiveStreamReservation] = set()
-        self._lease_count = 1  # reader itself holds one lease until close
-        # Whether that reader lease is still counted. A flag, so dropping it is
-        # idempotent: a close interrupted after the transition but before the drop is
-        # finished by the next mark_reader_closed() instead of stranding the lease.
+        # Leases of live streams and reservations only.
+        self._lease_count = 0
+        # The reader's own lease, held until close. Read by _outstanding_leases_locked
+        # rather than folded into ``_lease_count``, so dropping it is one store: there
+        # is no second write for an interrupt to separate it from, and a close
+        # interrupted before that store is finished by the next mark_reader_closed().
         self._reader_lease_held = True
         self._teardown_claimed = False
         self._stream_shutdown_claimed = False
@@ -536,7 +539,7 @@ class ReaderState:
             # a claim can succeed from.
             if self.lifecycle is not LifecycleState.READER_CLOSED:
                 return False
-            if self._lease_count > 0:
+            if self._outstanding_leases_locked() > 0:
                 return False
             self._teardown_claimed = True
             self.lifecycle = LifecycleState.TEARDOWN_RUNNING
@@ -555,14 +558,21 @@ class ReaderState:
         if not self._reader_lease_held:
             return False
         self._reader_lease_held = False
-        return self._release_lease_locked()
+        return self._teardown_due_locked()
 
     def _release_lease_locked(self) -> bool:
+        """Drop one stream or reservation lease. True → the caller should run teardown."""
         if self._lease_count > 0:
             self._lease_count -= 1
+        return self._teardown_due_locked()
+
+    def _outstanding_leases_locked(self) -> int:
+        return self._lease_count + (1 if self._reader_lease_held else 0)
+
+    def _teardown_due_locked(self) -> bool:
         return (
             self.lifecycle is LifecycleState.READER_CLOSED
-            and self._lease_count == 0
+            and self._outstanding_leases_locked() == 0
             and not self._teardown_claimed
         )
 

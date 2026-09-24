@@ -288,6 +288,8 @@ def test_interrupt_after_the_transition_still_tears_down(
     [
         # Between the transition and the reader's lease drop.
         ("state", "_drop_reader_lease_locked"),
+        # Just after the reader's lease flag is cleared.
+        ("state", "_teardown_due_locked"),
         # Past the transition, in close()'s own stream-shutdown step.
         ("state", "claim_stream_shutdown"),
         ("reader", "_close_public_streams"),

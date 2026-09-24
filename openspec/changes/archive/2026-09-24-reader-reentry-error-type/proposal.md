@@ -19,6 +19,9 @@ from those rows caught nothing.
   reader names `ArchiveyUsageError`.
 - `archive-reading`: the `SHALL` in "Explicit configuration object" gets the same split
   as `diagnostics`, and the diagnostics matrix row names `ArchiveyUsageError`.
+- `error-handling`: the `UnsupportedOperationError` row no longer lists "operation on
+  closed reader", which the next requirement and the code put under
+  `ArchiveyUsageError`.
 
 ## Impact
 
