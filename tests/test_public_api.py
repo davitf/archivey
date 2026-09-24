@@ -131,12 +131,12 @@ def test_no_public_name_reports_an_internal_module() -> None:
     [
         c
         for c in (getattr(archivey, n) for n in archivey.__all__)
-        if isinstance(c, type) and c.__module__ == "archivey"
+        if isinstance(c, type)
     ],
     ids=lambda c: c.__name__,
 )
 def test_public_class_type_hints_resolve(cls: type) -> None:
-    """``get_type_hints`` works on every public class, pinned ones included.
+    """``get_type_hints`` works on every public class, pinned or not.
 
     A pinned class's string hints would otherwise be looked up in ``archivey``, where
     names such as ``Path`` are not defined; ``__init__`` resolves them before the pin.

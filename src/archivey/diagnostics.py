@@ -22,14 +22,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal, TypeVar
+from typing import Literal, TypeVar
 
 from archivey.cli_helpers import escape_control_chars
-from archivey.types import ExtractionResult
-
-if TYPE_CHECKING:
-    from archivey.exceptions import ArchiveyError
-    from archivey.types import ArchiveMember
+from archivey.exceptions import ArchiveyError
+from archivey.types import ArchiveMember, ExtractionResult
 
 _K = TypeVar("_K")
 _V = TypeVar("_V")

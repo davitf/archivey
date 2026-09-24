@@ -247,7 +247,8 @@ cached.
 
 The installable `archivey` package SHALL keep the supported public API at the
 package root. Only public API modules appear in `archivey.__all__`: `core.py`,
-`types.py`, `detection.py`, `exceptions.py`, `cost.py`, and `reader.py`.
+`types.py`, `detection.py`, `config.py`, `diagnostics.py`, `exceptions.py`, `cost.py`,
+`measurement.py`, and `reader.py`.
 `archivey.__init__.py` SHALL re-export the public API so supported callers do not
 import from `archivey.internal.*`.
 

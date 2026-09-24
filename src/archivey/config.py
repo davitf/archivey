@@ -6,7 +6,7 @@ import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from archivey.cli_helpers import coerce_enum
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
@@ -17,9 +17,7 @@ from archivey.internal.arg_checks import (
     check_instance,
     describe_value,
 )
-
-if TYPE_CHECKING:
-    from archivey.types import ArchiveMember
+from archivey.types import ArchiveMember
 
 
 class AcceleratorMode(Enum):

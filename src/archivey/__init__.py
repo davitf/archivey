@@ -12,6 +12,8 @@ Public surface layout (this package root only — not ``internal`` / ``cli``):
 - :mod:`archivey.diagnostics` — advisory codes, summaries, extraction reports
 - :mod:`archivey.exceptions` — error hierarchy
 - :mod:`archivey.measurement` — optional I/O counters
+- :mod:`archivey.detection_cost` — detection budgets and receipts; public, not re-exported
+- :mod:`archivey.cli_helpers` — front-end helpers; public, not re-exported
 
 Names in ``__all__`` are the documented API. A few advanced types are also imported
 here (so ``from archivey import …`` keeps working) but omitted from ``__all__`` so

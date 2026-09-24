@@ -16,15 +16,15 @@ from typing import (
     Literal,
     Mapping,
     NamedTuple,
+    cast,
     overload,
 )
 
 from archivey.cli_helpers import coerce_enum
-from archivey.cost import StreamCapability
+from archivey.cost import CostReceipt, StreamCapability
 from archivey.exceptions import ArchiveyError
 
 if TYPE_CHECKING:
-    from archivey.cost import CostReceipt
     from archivey.diagnostics import Diagnostic
 
 
@@ -694,9 +694,11 @@ class ArchiveMember:
     """Opaque backend handle carried on the member (e.g. the stdlib ``ZipInfo`` /
     ``TarInfo``), so a backend can open the member's data straight from the member without
     a separate name/id lookup table. Not part of the public contract."""
-    _diagnostics: tuple["Diagnostic", ...] = field(
-        default=(), repr=False, compare=False
-    )
+    # Typed ``object`` rather than ``Diagnostic``: ``archivey.diagnostics`` imports this
+    # module, so the name cannot be imported here at runtime, and an unresolvable field
+    # annotation would make ``typing.get_type_hints(ArchiveMember)`` raise. The
+    # ``diagnostics`` property below restores the precise type.
+    _diagnostics: tuple[object, ...] = field(default=(), repr=False, compare=False)
     """Library-retained diagnostic attachments (bounded by the collector budget)."""
     _link_target_resolved: bool = field(default=False, repr=False, compare=False)
     """Set once a backend has looked for this link's target, found or not.
@@ -722,7 +724,7 @@ class ArchiveMember:
     @property
     def diagnostics(self) -> tuple["Diagnostic", ...]:
         """Read-only tuple of diagnostics attached to this member (may be empty)."""
-        return self._diagnostics
+        return cast("tuple[Diagnostic, ...]", self._diagnostics)
 
     @property
     def member_id(self) -> int:

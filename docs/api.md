@@ -2,8 +2,8 @@
 
 Everything documented here is re-exported from the top-level `archivey` package and
 listed in `archivey.__all__`, except the [front-end helpers](#front-end-helpers) at the
-end, which are imported from `archivey.cli_helpers`. Narrative guide: [Home](index.md). Authoritative
-contracts: `openspec/specs/`.
+end, which are imported from `archivey.cli_helpers`. Narrative guide: [Home](index.md).
+Authoritative contracts: `openspec/specs/`.
 
 ## Opening archives
 
