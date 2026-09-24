@@ -220,6 +220,7 @@ class _EofProbeStream(ReadOnlyIOStream):
     _UNKNOWN_LENGTH_READ_STEP = DEFAULT_UNKNOWN_LENGTH_READ_STEP
 
     def __init__(self, inner: BinaryIO, *, bounded: bool = True) -> None:
+        super().__init__()
         self._inner = inner
         self._bounded = bounded
         # Offsets share tarfile's coordinate space (both anchored at the wrapped
@@ -261,7 +262,10 @@ class _EofProbeStream(ReadOnlyIOStream):
 
     def close(self) -> None:
         # No-op: the reader owns the wrapped stream's lifetime (``_owned_stream``); a
-        # stray tarfile call must not tear the shared handle down early.
+        # stray tarfile call must not tear the shared handle down early. So ``closed``
+        # stays False for the probe's whole life. Nothing reads it: tarfile never
+        # checks an external fileobj's ``closed``, and the probe never leaves this
+        # module.
         pass
 
 

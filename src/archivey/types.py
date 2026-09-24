@@ -657,7 +657,9 @@ class ArchiveMember:
     """Opaque backend handle carried on the member (e.g. the stdlib ``ZipInfo`` /
     ``TarInfo``), so a backend can open the member's data straight from the member without
     a separate name/id lookup table. Not part of the public contract. Typed ``object``:
-    each backend narrows it with an ``isinstance`` check on its own handle type."""
+    a backend that reads a typed handle narrows it with an ``isinstance`` check. The ISO
+    backend's pycdlib directory record is still ``Any`` where it is consumed, so its
+    read asserts only that the handle is present."""
     _diagnostics: tuple["Diagnostic", ...] = field(
         default=(), repr=False, compare=False
     )

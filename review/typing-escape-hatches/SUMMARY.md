@@ -88,16 +88,17 @@ one category.
    (`binaryio.py` helpers, `verify` algorithm params, `ReadOnlyIOStream.write`,
    ISO getattr/kwargs). `listing_limits` already moved with Q1. **`_raw` is not in
    this PR** — see the nested item.
-   - **Staged PR 2b — `ArchiveMember._raw: Any` → `object`** (A25), its own
-     change, after PR 1. It must add a narrowing at `tar_reader.py:470` that
-     does not exist today: the assert R11 records is in a different function.
-     The inventory's sequence note has the detail.
+   - ~~**Staged PR 2b — `ArchiveMember._raw: Any` → `object`**~~ (A25)
+     **done**, with C7; see item 3. The narrowing this item said it must add
+     at the tar `_open` closure already existed by then.
 3. ~~**`@overload` on `_track_source_seeks`**~~ **moot.** #419 (one
    `ArchiveSource`) made it `BinaryIO -> BinaryIO`; the four casts are gone.
    - **C7** (the tar EOF probe cast) and **A25** (`_raw: object`) landed
      together after it: the probe now subclasses `ReadOnlyIOStream`, and the
      `assert isinstance` narrowing A25 needed was already in place at every
-     `_raw` read, so both checkers stayed clean.
+     backend that reads a typed handle, so both checkers stayed clean. The ISO
+     directory record is the exception: its read asserts only that the handle
+     is present, and `_open_record` still takes `Any` (A-iso, item 5).
 4. **TypeGuard predicates** — G2 and G3. Runtime-visible; needs tests.
 5. **Remaining `Any`** — ISO pycdlib Protocol, codec `_decomp` Protocols,
    `ZipFile._lock` as `ContextManager`, `verify.py` `Mapping[HashAlgorithm \| str, …]`.
@@ -150,12 +151,12 @@ one category.
   naming `PeekableStream` and not `FullCountStream`.
 - **`is_filename`.** `isinstance(obj, (str, bytes, os.PathLike))` matches the
   `TypeGuard` target. Not a #324.
-- **Every `assert isinstance`** (13 as measured, 12 on the merged tree). Both
-  checkers stay clean without them *because `member._raw` is `Any`*. They are
-  runtime invariants for backend handles (`ZipInfo`, `TarInfo`, `RarMemberInfo`,
-  `_MemberRaw`, `PlainHeader`), not checker appeasement. Keep them. If `_raw` is
-  later tightened to `object`, they become the narrowing — do not delete them in
-  PR 1. Note that `tar_reader.py:470` has **no** assert to become one; PR 2b adds it.
+- **Every `assert isinstance`** on a `member._raw` read. They are runtime
+  invariants for backend handles (`ZipInfo`, `TarInfo`, `RarMemberInfo`,
+  `_MemberRaw`), and since A25 made `_raw` an `object` they are also the
+  narrowing both checkers rely on. Keep them. The tar `_open` closure has one
+  too (it did not when this inventory was measured). The ISO read asserts only
+  that the record is present; see A-iso.
 - **`selection.py:18`.** Pyrefly warns `redundant-cast`; ty still needs the
   cast (`Collection ∩ Callable`). Checker disagreement is data: keep the cast
   for ty, no pyrefly suppression (warnings are not the gate).
@@ -184,4 +185,4 @@ one category.
 | `CONTRIBUTING.md` describes forms that are actually specific | **yes** | |
 | "12 warnings not shown" answered | **yes** | |
 | `SUMMARY.md` records what is fine | **yes** | |
-| Staged fix PRs | 6 done (Q1); 8 this PR | 1, 2, 2b, 3, 4, 5, 7 |
+| Staged fix PRs | 6 done (Q1); 8 this PR; later 1, 2, 2b, the codec half of 5, and 3 (moot) | 4, 5 (ISO half), 7 |
