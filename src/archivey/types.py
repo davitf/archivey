@@ -7,7 +7,6 @@ from datetime import datetime, timezone, tzinfo
 from enum import Enum, Flag, auto
 from typing import (
     TYPE_CHECKING,
-    Any,
     ClassVar,
     Final,
     Literal,
@@ -654,10 +653,11 @@ class ArchiveMember:
     # Private internal fields (not part of the public contract)
     _member_id: int | None = field(default=None, repr=False, compare=False)
     _archive_id: str | None = field(default=None, repr=False, compare=False)
-    _raw: Any = field(default=None, repr=False, compare=False)
+    _raw: object = field(default=None, repr=False, compare=False)
     """Opaque backend handle carried on the member (e.g. the stdlib ``ZipInfo`` /
     ``TarInfo``), so a backend can open the member's data straight from the member without
-    a separate name/id lookup table. Not part of the public contract."""
+    a separate name/id lookup table. Not part of the public contract. Typed ``object``:
+    each backend narrows it with an ``isinstance`` check on its own handle type."""
     _diagnostics: tuple["Diagnostic", ...] = field(
         default=(), repr=False, compare=False
     )

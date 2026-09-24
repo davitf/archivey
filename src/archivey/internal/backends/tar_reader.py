@@ -78,6 +78,7 @@ from archivey.internal.streams.codecs import (
 from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     LockedStream,
+    ReadOnlyIOStream,
     ensure_binaryio,
     ensure_bufferedio,
     read_within_reach,
@@ -179,7 +180,7 @@ def _pax_time(info: tarfile.TarInfo, key: str) -> datetime | None:
         return None
 
 
-class _EofProbeStream:
+class _EofProbeStream(ReadOnlyIOStream):
     """Transparent read/seek proxy over the seekable fileobj handed to stdlib
     ``tarfile`` in random-access mode, remembering the ``(offset, bytes)`` of the most
     recent ``read`` (empty reads included).
@@ -194,7 +195,10 @@ class _EofProbeStream:
 
     tarfile treats this as an external fileobj (``read``/``seek``/``tell``/``seekable``
     only) and never closes it; the reader closes what it wraps — the decompressor via
-    ``_owned_stream``, the source by closing the source.
+    ``_owned_stream``, the source by closing the source. It subclasses
+    :class:`ReadOnlyIOStream` so it is the ``BinaryIO`` it is passed as, with no cast;
+    that base also gives it ``mode == "rb"`` and no ``name``, which is what tarfile
+    reads off an external fileobj.
 
     Over a decompressor it is the one place a read sized from the archive can be
     bounded: the source's own bound sits under the codec, not in front of ``tarfile``.
@@ -223,7 +227,7 @@ class _EofProbeStream:
         self._pos = inner.tell() if inner.seekable() else 0
         self.last_read: tuple[int, bytes] = (-1, b"")
 
-    def read(self, size: int = -1) -> bytes:
+    def read(self, size: int = -1, /) -> bytes:
         offset = self._pos
         chunk = self._read_within_reach(size)
         self._pos += len(chunk)
@@ -244,19 +248,16 @@ class _EofProbeStream:
             self._inner, size, remaining=None, step=self._UNKNOWN_LENGTH_READ_STEP
         )
 
-    def seek(self, offset: int, whence: int = 0) -> int:
+    def seek(self, offset: int, whence: int = 0, /) -> int:
         self._inner.seek(offset, whence)
         self._pos = self._inner.tell()
         return self._pos
 
-    def tell(self) -> int:
+    def tell(self, /) -> int:
         return self._pos
 
     def seekable(self) -> bool:
         return self._inner.seekable()
-
-    def readable(self) -> bool:
-        return True
 
     def close(self) -> None:
         # No-op: the reader owns the wrapped stream's lifetime (``_owned_stream``); a
@@ -418,7 +419,7 @@ class TarReader(BaseArchiveReader):
             return fileobj
         probe = _EofProbeStream(fileobj, bounded=bounded)
         self._eof_probe_stream = probe
-        return cast("BinaryIO", probe)
+        return probe
 
     def _tarfile_open(
         self,

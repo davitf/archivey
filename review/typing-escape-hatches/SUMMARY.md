@@ -65,7 +65,7 @@ Tree restored after each probe.
 | **C-del** | 🟢 | 5 casts both checkers accept without | DELETE | staged PR 1 |
 | **G2** | 🟡 | `is_stream` still True for write-only `IOBase` and duck objects whose `read()` returns `str` | FIX-IN-CODE the predicate | staged PR 4 |
 | **G3** | 🟡 | `_is_source_sequence` proves `Sequence`, not `Sequence[SourceItem]` (`bytearray` is True) | TIGHTEN the predicate | staged PR 4 |
-| **C-overload** | 🟢 | 4 casts exist only because `_track_source_seeks: Path \| BinaryIO -> Path \| BinaryIO` | `@overload` | staged PR 3 |
+| **C-overload** | 🟢 | 4 casts exist only because `_track_source_seeks: Path \| BinaryIO -> Path \| BinaryIO` | `@overload` | **moot** — #419 narrowed the signature to `BinaryIO -> BinaryIO` and the four casts went with it |
 | **C-typeshed** | 🟢 | ~10 casts are `IO[bytes]` / `BufferedIOBase` / `SpooledTemporaryFile` / `PyCdlibIO` vs `BinaryIO` | KEEP-WITH-REASON (S5b gap) | staged PR 7 comments |
 | **A-object** | 🟢 | ~25 `Any` sites accept `object` on both checkers | TIGHTEN | staged PR 2 |
 | **A-iso** | 🟢 | pycdlib dir-record / date bags | Protocol or `TYPE_CHECKING` stubs | staged PR 5 |
@@ -92,8 +92,12 @@ one category.
      change, after PR 1. It must add a narrowing at `tar_reader.py:470` that
      does not exist today: the assert R11 records is in a different function.
      The inventory's sequence note has the detail.
-3. **`@overload` on `_track_source_seeks`** — drops four Path/BinaryIO casts in
-   `tar_reader` / `zip_reader`.
+3. ~~**`@overload` on `_track_source_seeks`**~~ **moot.** #419 (one
+   `ArchiveSource`) made it `BinaryIO -> BinaryIO`; the four casts are gone.
+   - **C7** (the tar EOF probe cast) and **A25** (`_raw: object`) landed
+     together after it: the probe now subclasses `ReadOnlyIOStream`, and the
+     `assert isinstance` narrowing A25 needed was already in place at every
+     `_raw` read, so both checkers stayed clean.
 4. **TypeGuard predicates** — G2 and G3. Runtime-visible; needs tests.
 5. **Remaining `Any`** — ISO pycdlib Protocol, codec `_decomp` Protocols,
    `ZipFile._lock` as `ContextManager`, `verify.py` `Mapping[HashAlgorithm \| str, …]`.
