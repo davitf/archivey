@@ -268,6 +268,14 @@ both accept; a target it cannot read fails that member under `on_error`. `open()
 link reads its target to follow it. Either way the target is filled in place on the
 member you hold. Like `listing_limits`, the setting is fixed for the reader's lifetime.
 
+That read can show the member is not a link at all. A member flagged as a Windows
+reparse point whose data is not a reparse buffer is a file, and listing would have
+presented it as one. When extraction is the first to read it, under
+`read_link_targets=False` or in a streaming pass, `extract_all` re-types it and calls
+your `filter` a second time, now with the file, so a filter can see such a member twice.
+In random access it then writes the file's content. A streaming pass has already gone
+past that content, so the member fails under `on_error` instead.
+
 **The bomb tracker is per-archive, not nesting-aware.** It measures the expansion of
 the archive it is extracting, so a zip-of-zips can amplify past your budget one level
 at a time. Recursion into nested archives is caller-driven: if you open extracted

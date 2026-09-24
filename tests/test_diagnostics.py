@@ -37,7 +37,7 @@ from archivey.exceptions import (
     PathTraversalError,
     UnsupportedOperationError,
 )
-from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.diagnostics_collector import DiagnosticCollector, EmitLog
 from archivey.types import MemberType
 
 
@@ -226,6 +226,80 @@ def test_callback_may_read_snapshot() -> None:
     # Recreate properly
     collector = DiagnosticCollector(on_diagnostic=cb)
     _emit_norm(collector)
+
+
+def _emit_race(collector: DiagnosticCollector) -> Diagnostic:
+    return collector.emit(
+        code=DiagnosticCode.SCAN_ENTRY_VANISHED,
+        message="vanished",
+        context=ScanRaceContext(archive_name=None, relative_path="x"),
+    )
+
+
+def test_replaying_records_then_repeats_without_recording_again() -> None:
+    delivered: list[Diagnostic] = []
+    collector = DiagnosticCollector(on_diagnostic=delivered.append)
+    log = EmitLog()
+    with collector.replaying(log):
+        first = _emit_norm(collector, member=_make_member(), attach=True)
+    member = _make_member()
+    with collector.replaying(log):
+        again = _emit_norm(collector, member=member, attach=True)
+        extra = _emit_race(collector)
+    assert again is first
+    assert member.diagnostics == (first,)
+    assert delivered == [first, extra]
+    assert collector.snapshot().counts == {
+        DiagnosticCode.MEMBER_NAME_NORMALIZED: 1,
+        DiagnosticCode.SCAN_ENTRY_VANISHED: 1,
+    }
+    # The emit past the end of the log was recorded, so a third run repeats both.
+    with collector.replaying(log):
+        _emit_norm(collector)
+        _emit_race(collector)
+    assert len(delivered) == 2
+
+
+def test_replaying_stops_at_an_emit_that_differs_from_the_log() -> None:
+    collector = DiagnosticCollector()
+    log = EmitLog()
+    with collector.replaying(log):
+        _emit_norm(collector)
+        _emit_norm(collector)
+    with collector.replaying(log):
+        _emit_race(collector)
+        _emit_norm(collector)
+    assert collector.snapshot().counts == {
+        DiagnosticCode.MEMBER_NAME_NORMALIZED: 3,
+        DiagnosticCode.SCAN_ENTRY_VANISHED: 1,
+    }
+
+
+def test_replaying_repeats_the_emit_raise_but_not_a_callback_raise() -> None:
+    def interrupting(diagnostic: Diagnostic) -> None:
+        raise KeyboardInterrupt
+
+    collector = DiagnosticCollector(on_diagnostic=interrupting)
+    log = EmitLog()
+    with pytest.raises(KeyboardInterrupt), collector.replaying(log):
+        _emit_norm(collector)
+    with collector.replaying(log):
+        _emit_norm(collector)  # replayed: the callback is not called again
+
+    strict = DiagnosticCollector(
+        policy=DiagnosticPolicy(
+            overrides={
+                DiagnosticCode.MEMBER_NAME_NORMALIZED: DiagnosticDisposition.RAISE
+            }
+        )
+    )
+    log = EmitLog()
+    with pytest.raises(DiagnosticRaisedError) as first, strict.replaying(log):
+        _emit_norm(strict)
+    with pytest.raises(DiagnosticRaisedError) as second, strict.replaying(log):
+        _emit_norm(strict)
+    assert second.value is first.value
+    assert strict.snapshot().counts == {DiagnosticCode.MEMBER_NAME_NORMALIZED: 1}
 
 
 def test_operational_reentrancy_rejected() -> None:

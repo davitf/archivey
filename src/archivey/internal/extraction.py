@@ -326,8 +326,8 @@ class ExtractionCoordinator:
         # ``requested_path`` set with ``path=None``.
         self._requested_path: Path | None = None
         self._collided_with: Path | None = None
-        # Set by ``_transform`` when reading a link's target showed the current member is
-        # not a link after all, so the pass yielded it with no data stream.
+        # Set by ``_transform`` when reading a link's target showed the current member
+        # is not a link after all, so the pass yielded it with no data stream.
         self._retyped: bool = False
         # Set by ``_prepare_destination`` when it removes an existing entry to make room.
         # Only the non-atomic paths (DIR / SYMLINK / HARDLINK) do that — a FILE write
@@ -1150,13 +1150,13 @@ class ExtractionCoordinator:
 
         if target is None:
             # Unset for any other reason, which always means the archive records a
-            # target this read could not produce: `_transform` has already read a
-            # data-stored target nothing read before, so the target was looked for and
-            # is out of reach (compressed, split across volumes, encrypted). Reporting those as the status above would claim
-            # success while dropping a member the archive describes in full, so they
-            # stay the per-member failure they were before that status existed. Which
-            # of the two it is comes from the backend that knows — see
-            # `BaseArchiveReader._emit_link_target_unavailable`.
+            # target this read could not produce. A data-stored target has been looked
+            # for by now, either while listing or by `_transform` on request, so it is
+            # out of reach: compressed, split across volumes, encrypted, or refused as
+            # too long. Reporting that as the status above would claim success while
+            # dropping a member the archive describes in full, so it stays the
+            # per-member failure it was before that status existed. The reason is the
+            # backend's to report: `BaseArchiveReader._emit_link_target_unavailable`.
             raise LinkTargetNotFoundError(
                 "Symlink has no target",
                 member_name=transformed.name,

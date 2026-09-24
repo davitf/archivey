@@ -18,7 +18,7 @@ import uuid
 from collections import Counter
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from archivey.diagnostics import (
@@ -61,6 +61,27 @@ class _RetainedEntry:
     diagnostic: Diagnostic
 
 
+@dataclass
+class _LoggedEmit:
+    diagnostic: Diagnostic
+    attached: bool
+    raised: BaseException | None = None
+
+
+@dataclass
+class EmitLog:
+    """The emits one piece of repeatable work made, in order, for ``DiagnosticCollector.
+    replaying`` to record the first time and replay after."""
+
+    entries: list[_LoggedEmit] = field(default_factory=list)
+
+
+@dataclass
+class _Replay:
+    log: EmitLog
+    cursor: int = 0
+
+
 class DiagnosticCollector:
     """One collector per detection / reader / top-level extract / standalone stream."""
 
@@ -88,28 +109,32 @@ class DiagnosticCollector:
         # legitimate concurrent emits on separate threads do not read as reentrancy, while
         # a callback re-entering emit on its own thread still trips the guard.
         self._emitting_threads: set[int] = set()
-        # Thread ids inside ``replaying()``, whose emits are the repeats of ones already
-        # recorded. Per thread, so another thread's stream on the same reader still counts.
-        self._replaying_threads: set[int] = set()
+        # Per thread, the log a ``replaying()`` block records into or replays from. Per
+        # thread, so another thread's stream on the same reader is never replayed.
+        self._replays: dict[int, _Replay] = {}
 
     @contextmanager
-    def replaying(self) -> Iterator[None]:
-        """Drop this thread's emits for the duration: they repeat recorded ones.
+    def replaying(self, log: EmitLog) -> Iterator[None]:
+        """Record this thread's emits into ``log``, or replay the ones it already holds.
 
-        For a reader re-running work whose diagnostics were already emitted, such as a
-        random-access member walk started over after a failure. Nothing is counted,
-        retained, logged, attached or called back, and nothing is raised: an emit the
-        policy raises on stopped the first run, so the work it would repeat never
-        completed and is not being replayed.
+        For work a reader may have to repeat, such as a random-access member walk
+        started over after a failure: run each piece inside ``replaying`` with its own
+        log. The first run records every emit. A repeat takes its emits from the log in
+        order: nothing is counted, retained, logged or called back again, a recorded
+        attachment is made to the member the repeat passes, and an emit that raised the
+        first time raises the same exception again, so the repeat takes the path the
+        first run took. Emits past the end of the log are new; they go through and are
+        recorded. An emit whose code differs from the recorded one means the work is not
+        repeating itself, and replay stops there.
         """
         thread_id = threading.get_ident()
         with self._lock:
-            self._replaying_threads.add(thread_id)
+            self._replays[thread_id] = _Replay(log)
         try:
             yield
         finally:
             with self._lock:
-                self._replaying_threads.discard(thread_id)
+                self._replays.pop(thread_id, None)
 
     @property
     def policy(self) -> DiagnosticPolicy:
@@ -211,14 +236,21 @@ class DiagnosticCollector:
         thread_id = threading.get_ident()
 
         with self._lock:
-            if thread_id in self._replaying_threads:
-                return Diagnostic(
-                    occurrence_id=uuid.uuid4().hex,
-                    code=code,
-                    severity=severity,
-                    message=message,
-                    context=context,
-                )
+            replay = self._replays.get(thread_id)
+            if replay is not None and replay.cursor < len(replay.log.entries):
+                logged = replay.log.entries[replay.cursor]
+                if logged.diagnostic.code is code:
+                    replay.cursor += 1
+                    if (
+                        logged.attached
+                        and member is not None
+                        and logged.diagnostic not in member._diagnostics
+                    ):
+                        _attach_diagnostic(member, logged.diagnostic)
+                    if logged.raised is not None:
+                        raise logged.raised
+                    return logged.diagnostic
+                replay.cursor = len(replay.log.entries)
             if thread_id in self._emitting_threads:
                 raise UnsupportedOperationError(
                     "Diagnostic callback/reentrancy: cannot drive another operation on "
@@ -237,6 +269,7 @@ class DiagnosticCollector:
             self._counts[code] += 1
 
             retained_aggregate = False
+            attached = False
             if disposition is not DiagnosticDisposition.IGNORE:
                 if self._slots_used < self._max_retained:
                     self._retained.append(
@@ -252,6 +285,12 @@ class DiagnosticCollector:
                 ):
                     _attach_diagnostic(member, diagnostic)
                     self._slots_used += 1
+                    attached = True
+            logged_emit: _LoggedEmit | None = None
+            if replay is not None:
+                logged_emit = _LoggedEmit(diagnostic, attached)
+                replay.log.entries.append(logged_emit)
+                replay.cursor = len(replay.log.entries)
 
             should_deliver = disposition is not DiagnosticDisposition.IGNORE
             should_raise_diagnostic = disposition is DiagnosticDisposition.RAISE
@@ -263,12 +302,19 @@ class DiagnosticCollector:
                 log.warning("%s", message)
                 if self._on_diagnostic is not None:
                     self._on_diagnostic(diagnostic)
+            # Only the raise this emit makes is part of what a replay repeats; one out of
+            # the logger or the callback, a KeyboardInterrupt included, is not.
+            raised: BaseException | None = None
             if escalate_as is not None:
                 msg = escalate_message if escalate_message is not None else message
                 kwargs = escalate_kwargs if escalate_kwargs is not None else {}
-                raise escalate_as(msg, **kwargs)
-            if should_raise_diagnostic:
-                raise DiagnosticRaisedError(message, diagnostic=diagnostic)
+                raised = escalate_as(msg, **kwargs)
+            elif should_raise_diagnostic:
+                raised = DiagnosticRaisedError(message, diagnostic=diagnostic)
+            if raised is not None:
+                if logged_emit is not None:
+                    logged_emit.raised = raised
+                raise raised
         finally:
             with self._lock:
                 self._emitting_threads.discard(thread_id)

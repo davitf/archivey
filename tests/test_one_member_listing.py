@@ -23,7 +23,11 @@ import pytest
 
 from archivey import ExtractionStatus, open_archive
 from archivey.config import ArchiveyConfig, ListingLimits, PasswordRequest
-from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DiagnosticDisposition,
+    DiagnosticPolicy,
+)
 from archivey.exceptions import (
     DiagnosticRaisedError,
     ReadError,
@@ -308,9 +312,18 @@ def test_typing_time_diagnostics_name_the_member_id(
 
 
 def _failing_once(
-    monkeypatch: pytest.MonkeyPatch, cls: type[BaseArchiveReader], at: int
+    monkeypatch: pytest.MonkeyPatch,
+    cls: type[BaseArchiveReader],
+    at: int,
+    *,
+    inside: bool = False,
 ) -> None:
-    """The first walk raises ``RuntimeError`` after ``at`` members; later walks work."""
+    """The first walk raises ``RuntimeError`` after ``at`` members; later walks work.
+
+    By default the interrupt lands between two members, before the backend types the
+    next one. With ``inside``, it lands after the backend typed member ``at``, and its
+    typing-time diagnostics were emitted, but before that member was yielded.
+    """
     original = cls._iter_members
     failed = [False]
 
@@ -318,14 +331,15 @@ def _failing_once(
         members = original(self)
         index = 0
         while True:
-            # Before the backend types the next member, as an interrupt between two
-            # members lands.
-            if index == at and not failed[0]:
+            if index == at and not failed[0] and not inside:
                 failed[0] = True
                 raise RuntimeError("interrupted walk")
             member = next(members, None)
             if member is None:
                 return
+            if index == at and not failed[0]:
+                failed[0] = True
+                raise RuntimeError("interrupted walk")
             yield member
             index += 1
 
@@ -370,12 +384,17 @@ def _retry_zip(tmp_path: Path) -> Path:
     )
 
 
+@pytest.mark.parametrize("inside", [False, True], ids=["between", "inside"])
 def test_a_walk_walked_again_emits_each_member_diagnostic_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inside: bool
 ) -> None:
-    """ZIP builds fresh objects on every walk; the retry must not count them again."""
+    """ZIP builds fresh objects on every walk; the retry must not count them again.
+
+    Interrupted inside member 2, the failed walk has already emitted that member's
+    typing-time diagnostic, onto an object nobody will hold.
+    """
     with open_archive(_retry_zip(tmp_path)) as reader:
-        _failing_once(monkeypatch, type(reader), at=2)
+        _failing_once(monkeypatch, type(reader), at=2, inside=inside)
         with pytest.raises(RuntimeError):
             reader.members()
         listed = reader.members()
@@ -425,6 +444,24 @@ def test_a_strict_policy_refuses_again_on_a_walk_walked_again(
             reader.members()
         with pytest.raises(DiagnosticRaisedError):
             reader.members()
+
+
+def test_a_typing_time_raise_is_raised_again_on_a_walk_walked_again(
+    tmp_path: Path,
+) -> None:
+    """An emit that raised stops the retry in the same place, counted once."""
+    policy = DiagnosticPolicy(
+        overrides={_NORMALIZED: DiagnosticDisposition.RAISE},
+    )
+    with open_archive(
+        _retry_zip(tmp_path), config=ArchiveyConfig(diagnostic_policy=policy)
+    ) as reader:
+        with pytest.raises(DiagnosticRaisedError) as first:
+            reader.members()
+        with pytest.raises(DiagnosticRaisedError) as second:
+            reader.members()
+        assert second.value is first.value
+        assert reader.diagnostics.counts[_NORMALIZED] == 1
 
 
 def test_a_failed_streaming_walk_poisons_the_reader(

@@ -66,6 +66,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   password provider. Set it to `False` and the reader reads none of those targets on its
   own: the links list with `link_target=None`, `extract_all` reads the target of each link
   its selector and filter accept, and `open()` reads the target of a link it follows.
+  When that read shows a reparse-flagged "link" is really a file, `extract_all` calls
+  the filter again on the file and writes it; a streaming pass, already past its
+  content, fails that member under `on_error`.
 
 ### Fixed
 
