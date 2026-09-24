@@ -361,7 +361,7 @@ EXTRA_IS_JUNCTION: Final = "is_junction"
 # the archive always carries, while EXTRA_IS_JUNCTION needs the reparse *tag*, which
 # lives in the member's data and which 7-Zip does not store for a directory reparse
 # point. So a junction written by 7-Zip carries this key and not that one.
-EXTRA_IS_REPARSE_POINT = "is_reparse_point"
+EXTRA_IS_REPARSE_POINT: Final = "is_reparse_point"
 
 # Key in ArchiveMember.extra: True when this RAR member's ``created`` is Unix
 # ``st_ctime`` (inode-change), False when the writer OS stores a birth time
@@ -393,8 +393,9 @@ class MemberExtra(dict[str, object]):
 
     Known keys:
 
-    * ``is_junction`` (``bool``) — directory, RAR. Cross-format by design (ZIP
-      and 7z can carry junctions); other backends may start setting it.
+    * ``is_junction`` (``bool``) — ZIP, 7z, RAR, directory. A Windows NTFS
+      junction; ZIP and 7z set it only when the writer stored the junction's
+      reparse data, and 7-Zip does not. Implies ``is_reparse_point``.
     * ``is_reparse_point`` (``bool``) — ZIP, 7z, RAR, directory. The weaker,
       metadata-only sibling of ``is_junction``: a Windows symlink or junction
       rather than a POSIX one.
