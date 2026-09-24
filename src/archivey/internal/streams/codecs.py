@@ -873,16 +873,14 @@ class MetadataContext:
 
     Lets a codec's ``extract_metadata`` read what it needs from the source without the codec
     layer depending on the single-file reader. ``peek_header(n)`` returns the leading ``n``
-    bytes of the compressed source without consuming it; ``peek_trailer(n)`` returns the
-    trailing ``n`` bytes when the source is seekable/path (else ``None``);
-    ``probe_decompressed_size()`` returns the decompressed size from the stream
-    index/trailer when cheaply available (else ``None``); ``probe_lzip_index()`` returns
+    bytes of the compressed source without consuming it; ``probe_decompressed_size()``
+    returns the decompressed size from the stream index/trailer when cheaply available
+    (else ``None``); ``probe_lzip_index()`` returns
     ``(decompressed_size, combined_crc32)`` from one seekable lzip index scan when
     available (else ``None``).
     """
 
     peek_header: Callable[[int], bytes]
-    peek_trailer: Callable[[int], bytes | None]
     probe_decompressed_size: Callable[[], int | None]
     probe_lzip_index: Callable[[], tuple[int, int] | None]
 

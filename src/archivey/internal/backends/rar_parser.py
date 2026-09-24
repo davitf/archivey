@@ -1317,7 +1317,12 @@ def _parse_rar3_old_comment_subblocks(
                 _S_COMMENT_HDR.unpack_from(hdata, pos)
             )
             packed = hdata[pos + _S_COMMENT_HDR.size : next_pos]
-            if compress_type == _RAR3_M0 and not flags & _RAR3_FILE_PASSWORD:
+            if flags & (_RAR3_FILE_PASSWORD | _RAR3_FILE_SALT):
+                # An encrypted comment is a known limitation, stored or compressed:
+                # no available writer produces one, so no decode path could be
+                # tested. A stored one would otherwise be taken as plaintext.
+                comment = None
+            elif compress_type == _RAR3_M0:
                 if _crc32(packed) & 0xFFFF == crc16:
                     comment = _decode_name(packed)
             else:

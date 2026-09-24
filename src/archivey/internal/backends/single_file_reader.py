@@ -212,7 +212,6 @@ class SingleFileReader(BaseArchiveReader):
     def _metadata_context(self) -> MetadataContext:
         return MetadataContext(
             peek_header=self._peek_header,
-            peek_trailer=self._peek_trailer,
             probe_decompressed_size=self._probe_decompressed_size,
             probe_lzip_index=self._probe_lzip_index,
         )
@@ -286,6 +285,29 @@ class SingleFileReader(BaseArchiveReader):
 
         return self._with_seekable_source(read_trailer)
 
+    def _read_trailer_during_read(self, length: int) -> bytes | None:
+        """The last ``length`` bytes, safe to call while member streams are live.
+
+        A seekable stream source is shared by every member stream through
+        ``SharedSource``, whose views seek and read under one lock. Seeking the source
+        directly here could land between another view's locked seek and its read, so
+        read through a view of our own. Any other source goes through
+        ``_peek_trailer``: a path opens an independent handle and needs no lock, and a
+        non-seekable source gives ``None``.
+        """
+        shared = self._shared
+        if shared is None:
+            return self._peek_trailer(length)
+        size = shared.size
+        if size is None or size < length:
+            return None
+        try:
+            with shared.view(size - length, length) as view:
+                data = read_exact(view, length)
+        except OSError:
+            return None
+        return data if len(data) == length else None
+
     def _read_source_prefix(self, length: int) -> bytes:
         src = self._source
         assert src is not None  # always set in __init__
@@ -315,7 +337,7 @@ class SingleFileReader(BaseArchiveReader):
         member = self._member
         if HashAlgorithm.CRC32 in member.hashes:
             return
-        trailer = self._peek_trailer(8)
+        trailer = self._read_trailer_during_read(8)
         if trailer is None:
             return
         hashes = dict(member.hashes)

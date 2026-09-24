@@ -52,7 +52,8 @@ extension-guess. `encoding_hint` is format-signal only (never a member scan).
 
 A **directory path** SHALL return `FormatInfo(format=DIRECTORY,
 confidence=CERTAIN, detected_by="directory")` without reading anything, the same
-format `open_archive` reads it as. It SHALL NOT raise `IsADirectoryError` or any
+format `open_archive` reads it as. Its `cost_receipt` SHALL be the zero receipt (one pass, no
+bytes read). It SHALL NOT raise `IsADirectoryError` or any
 other `OSError`.
 
 **Collectors:**
@@ -70,7 +71,7 @@ other `OSError`.
 | Auto-detect inside `open_archive` retains conflict, open succeeds | Reader continues same collector/order/budget; no copied aggregate |
 | Magic match | `confidence=CERTAIN`, `detected_by="magic"` |
 | Extension-only guess | `confidence=GUESS`, `detected_by="extension"` |
-| Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; nothing read; no `OSError` |
+| Directory path | `format=DIRECTORY`, `confidence=CERTAIN`, `detected_by="directory"`; zero `cost_receipt`; no `OSError` |
 | Explicit `diagnostic_policy` on detect | IGNORE/COLLECT/RAISE applies to that finite detection |
 
 ### Requirement: Magic-first detection with extension fallback and confidence scoring

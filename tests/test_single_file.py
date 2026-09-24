@@ -334,20 +334,29 @@ def test_gzip_crc32_stays_absent_unless_the_first_member_ends_the_file(
         assert HashAlgorithm.CRC32 not in member.hashes
 
 
-def test_gzip_open_does_not_scan_for_a_second_member(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Opening and listing a gzip reads no more than its header and trailer."""
-    from archivey.internal.streams import codecs
+def test_gzip_open_does_not_scan_for_a_second_member() -> None:
+    """Opening and listing a large gzip reads a bounded prefix, not the whole file.
 
-    def boom(_stream: object) -> bool:
-        raise AssertionError("open must not scan for a second gzip member")
+    Counted in bytes rather than by patching the scan function, so it fails against
+    any open-time scan however it is imported. The open-time validation probe reads
+    about 1 MiB. Before the change, the scan for a second member read this file in
+    1 MiB blocks until it hit a chance ``1f 8b 08`` match, about 4 MiB in with this
+    seed.
+    """
 
-    monkeypatch.setattr(codecs, "gzip_has_additional_member", boom)
-    path = tmp_path / "one.gz"
-    path.write_bytes(gzip.compress(b"no-scan"))
-    with open_archive(path) as ar:
-        assert ar.members()[0].name == "one"
+    class CountingBytesIO(io.BytesIO):
+        consumed = 0
+
+        def read(self, size: int | None = -1, /) -> bytes:
+            data = super().read(size)
+            self.consumed += len(data)
+            return data
+
+    data = gzip.compress(random.Random(7).randbytes(8 << 20), 1)
+    source = CountingBytesIO(data)
+    with open_archive(source) as ar:
+        assert ar.members()[0].name == "data"
+    assert source.consumed < 2 << 20
 
 
 def test_gzip_omits_crc32_on_nonseekable_source() -> None:

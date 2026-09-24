@@ -1228,3 +1228,10 @@ def test_detect_format_reports_directory_for_a_directory_path(
     assert info.format == ArchiveFormat.DIRECTORY
     assert info.confidence is DetectionConfidence.CERTAIN
     assert info.detected_by == "directory"
+
+
+def test_detect_format_directory_carries_a_zero_receipt(tmp_path: Path) -> None:
+    info = detect_format(tmp_path)
+    assert info.cost_receipt is not None
+    assert info.cost_receipt.unique_bytes_read == 0
+    assert info.cost_receipt.passes == 1

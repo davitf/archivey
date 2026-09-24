@@ -504,11 +504,13 @@ def decompress_rar3_blob(
     returned bytes, which is the integrity check the on-disk comment provides.
 
     An encrypted comment (the PASSWORD or SALT flag) returns ``None`` before any
-    archive is built. A salted FILE header carries 8 salt bytes after the name, and
-    the comment subblock keeps no salt to write there. No available writer produces
-    such a comment, so a decode path for it could not be tested. The comment's
-    DICTMASK bits are not copied either: on a comment subblock they do not declare a
-    dictionary size, as they do on a FILE header.
+    archive is built. The parser already drops one
+    (``_parse_rar3_old_comment_subblocks``), so this is a second guard for direct
+    callers. No available writer produces such a comment, so a decode path for it
+    could not be tested.
+    The synthetic FILE header sets only the flag it needs (a long block): it writes
+    no salt, so it must not claim one, and it copies no other bit of the comment's
+    flag word.
     """
     if unpacked_size < 0 or unpacked_size > 0xFFFF:
         return None

@@ -586,7 +586,8 @@ def detect_format(
 
     A directory path returns :attr:`ArchiveFormat.DIRECTORY` with ``CERTAIN``
     confidence and ``detected_by="directory"``, matching ``open_archive``, which reads
-    it as a directory archive. Nothing is read to decide that.
+    it as a directory archive. Nothing is read to decide that, so ``cost_receipt`` is
+    the zero receipt (one pass, no bytes).
     """
     # Before anything is read: an object that is neither a path nor a binary stream
     # used to reach the prefix workspace and die there as
@@ -595,8 +596,13 @@ def detect_format(
     require_source(source)
     check_config(config, call="detect_format(config=…)")
     if _is_directory_source(source):
+        # Nothing is read, so the receipt is the zero one: every other return
+        # carries a receipt, and callers compare them across sources.
         return FormatInfo(
-            ArchiveFormat.DIRECTORY, DetectionConfidence.CERTAIN, "directory"
+            ArchiveFormat.DIRECTORY,
+            DetectionConfidence.CERTAIN,
+            "directory",
+            cost_receipt=MutableDetectionCostReceipt().freeze(),
         )
 
     owned_collector = collector is None

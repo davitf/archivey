@@ -1489,6 +1489,36 @@ def test_rar3_encrypted_old_style_comment_is_skipped_up_front(
     )
 
 
+@pytest.mark.parametrize(
+    "flag", [rar_unrar._RAR3_FILE_PASSWORD, rar_unrar._RAR3_FILE_SALT]
+)
+@pytest.mark.parametrize("compress_type", [0x30, 0x33])
+def test_rar3_parser_drops_encrypted_old_style_comment(
+    flag: int, compress_type: int
+) -> None:
+    """The listing path drops an encrypted comment, stored ones included.
+
+    A stored comment with only the SALT flag used to be taken as plaintext whenever
+    its CRC16 matched, which a crafted archive can arrange.
+    """
+    from archivey.internal.backends import rar_parser as rp
+
+    payload = b"secret comment"
+    body = (
+        rp._S_COMMENT_HDR.pack(
+            len(payload), 29, compress_type, zlib.crc32(payload) & 0xFFFF
+        )
+        + payload
+    )
+    block = (
+        rp._S_BLK_HDR.pack(
+            0, rp._RAR3_OLD_COMMENT, flag, rp._S_BLK_HDR.size + len(body)
+        )
+        + body
+    )
+    assert rp._parse_rar3_old_comment_subblocks(block, 0) is None
+
+
 def test_rar3_service_comment_maps_to_member_comment() -> None:
     """RAR3's existing solid CMT attachment reaches ArchiveMember.comment."""
     from archivey.internal.backends.rar_parser import _RAR3_FILE_SOLID
