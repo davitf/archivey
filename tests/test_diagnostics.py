@@ -273,6 +273,56 @@ def test_replaying_stops_at_an_emit_that_differs_from_the_log() -> None:
         DiagnosticCode.MEMBER_NAME_NORMALIZED: 3,
         DiagnosticCode.SCAN_ENTRY_VANISHED: 1,
     }
+    # The log was cut at the difference and now describes the second run, so a third
+    # run like it replays instead of counting again.
+    assert log.codes == [
+        DiagnosticCode.SCAN_ENTRY_VANISHED,
+        DiagnosticCode.MEMBER_NAME_NORMALIZED,
+    ]
+    with collector.replaying(log):
+        _emit_race(collector)
+        _emit_norm(collector)
+    assert collector.snapshot().total_count == 4
+
+
+def test_replaying_a_run_that_emits_less_does_not_grow_the_log() -> None:
+    collector = DiagnosticCollector()
+    log = EmitLog()
+    with collector.replaying(log):
+        _emit_norm(collector)
+        _emit_race(collector)
+    for _ in range(3):
+        with collector.replaying(log):
+            _emit_race(collector)
+    assert log.codes == [DiagnosticCode.SCAN_ENTRY_VANISHED]
+    assert collector.snapshot().counts == {
+        DiagnosticCode.MEMBER_NAME_NORMALIZED: 1,
+        DiagnosticCode.SCAN_ENTRY_VANISHED: 2,
+    }
+
+
+def test_a_settled_log_replays_from_its_codes_alone() -> None:
+    strict = DiagnosticCollector(
+        policy=DiagnosticPolicy(
+            overrides={DiagnosticCode.SCAN_ENTRY_VANISHED: DiagnosticDisposition.RAISE}
+        )
+    )
+    log = EmitLog()
+    with strict.replaying(log):
+        _emit_norm(strict, member=_make_member(), attach=True)
+        with pytest.raises(DiagnosticRaisedError) as first:
+            _emit_race(strict)
+    log.settle()
+    assert log.details is None
+    member = _make_member()
+    with strict.replaying(log):
+        _emit_norm(strict, member=member, attach=True)
+        with pytest.raises(DiagnosticRaisedError) as second:
+            _emit_race(strict)
+    # Nothing is counted or attached again; the emit's own raise still repeats.
+    assert member.diagnostics == ()
+    assert second.value is first.value
+    assert strict.snapshot().total_count == 2
 
 
 def test_replaying_repeats_the_emit_raise_but_not_a_callback_raise() -> None:

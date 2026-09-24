@@ -395,6 +395,11 @@ class ArchiveyConfig:
     listing_limits: ListingLimits = ListingLimits()
     decoder_limits: DecoderLimits = DecoderLimits()
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
+    # How many references to diagnostics the library keeps per collector: each one
+    # retained in the summary takes a slot, and each attached to a member another.
+    # Counts stay exact past it. A random-access member walk also keeps, until it ends,
+    # the code of each diagnostic it emitted typing a member, so a walk started over
+    # after a failure can replay them; that holds no diagnostic and takes no slot.
     max_retained_diagnostic_references: int = 256
     on_diagnostic: OnDiagnostic | None = None
 

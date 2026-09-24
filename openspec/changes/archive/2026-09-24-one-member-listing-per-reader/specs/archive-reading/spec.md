@@ -16,6 +16,12 @@ as `member_id`, the id the member is registered with, on every backend.
 A backend's member walk SHALL run at most once per reader when it completes. A walk that
 fails before completing, without terminal archive damage, MAY be repeated on the next
 call only in random-access mode, and only when none of its members was handed out.
+A repeated walk SHALL replay the typing-time diagnostics of the positions the failed walk
+reached rather than emit them again. Until the walk ends it SHALL keep, for a member it
+has built, only the codes of those diagnostics, and a full `Diagnostic` only for the
+member being typed. That record is not a library-retained reference and uses none of the
+`max_retained_diagnostic_references` budget. A streaming walk, which is never repeated,
+SHALL keep none.
 
 #### Scenario: listing identity matrix
 

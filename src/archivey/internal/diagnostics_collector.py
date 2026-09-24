@@ -61,22 +61,41 @@ class _RetainedEntry:
     diagnostic: Diagnostic
 
 
-@dataclass
-class _LoggedEmit:
+@dataclass(slots=True)
+class _EmitDetail:
     diagnostic: Diagnostic
     attached: bool
-    raised: BaseException | None = None
 
 
-@dataclass
+@dataclass(slots=True)
 class EmitLog:
-    """The emits one piece of repeatable work made, in order, for ``DiagnosticCollector.
-    replaying`` to record the first time and replay after."""
+    """The emits one piece of repeatable work made, in order.
 
-    entries: list[_LoggedEmit] = field(default_factory=list)
+    ``DiagnosticCollector.replaying`` records into it the first time and replays it
+    after. ``codes`` and ``raised`` (the exception an emit itself raised, by index) are
+    what a replay matches and repeats. ``details`` keeps each emit's diagnostic and
+    whether it was attached, for a repeat that must re-attach them, only until
+    ``settle``: work whose result is kept, such as a member object a walk already
+    built, carries its attachments itself and needs only the codes.
+    """
+
+    codes: list[DiagnosticCode] = field(default_factory=list)
+    raised: dict[int, BaseException] | None = None
+    details: list[_EmitDetail] | None = field(default_factory=list)
+
+    def settle(self) -> None:
+        """Drop the diagnostics, keeping what a replay matches against."""
+        self.details = None
+
+    def _truncate(self, at: int) -> None:
+        del self.codes[at:]
+        if self.details is not None:
+            del self.details[at:]
+        if self.raised is not None:
+            self.raised = {i: exc for i, exc in self.raised.items() if i < at} or None
 
 
-@dataclass
+@dataclass(slots=True)
 class _Replay:
     log: EmitLog
     cursor: int = 0
@@ -121,11 +140,13 @@ class DiagnosticCollector:
         started over after a failure: run each piece inside ``replaying`` with its own
         log. The first run records every emit. A repeat takes its emits from the log in
         order: nothing is counted, retained, logged or called back again, a recorded
-        attachment is made to the member the repeat passes, and an emit that raised the
-        first time raises the same exception again, so the repeat takes the path the
-        first run took. Emits past the end of the log are new; they go through and are
-        recorded. An emit whose code differs from the recorded one means the work is not
-        repeating itself, and replay stops there.
+        attachment is made to the member the repeat passes (while the log still has its
+        details), and an emit that raised the first time raises the same exception
+        again, so the repeat takes the path the first run took. Emits past the end of
+        the log are new; they go through and are recorded. An emit whose code differs
+        from the recorded one means the work is not repeating itself: the log is cut
+        there, and that emit and the ones after it are recorded in its place, so the log
+        always describes the latest run.
         """
         thread_id = threading.get_ident()
         with self._lock:
@@ -237,20 +258,33 @@ class DiagnosticCollector:
 
         with self._lock:
             replay = self._replays.get(thread_id)
-            if replay is not None and replay.cursor < len(replay.log.entries):
-                logged = replay.log.entries[replay.cursor]
-                if logged.diagnostic.code is code:
+            if replay is not None:
+                emit_log = replay.log
+                at = replay.cursor
+                if at < len(emit_log.codes) and emit_log.codes[at] is code:
                     replay.cursor += 1
-                    if (
-                        logged.attached
-                        and member is not None
-                        and logged.diagnostic not in member._diagnostics
-                    ):
-                        _attach_diagnostic(member, logged.diagnostic)
-                    if logged.raised is not None:
-                        raise logged.raised
-                    return logged.diagnostic
-                replay.cursor = len(replay.log.entries)
+                    if emit_log.details is not None:
+                        detail = emit_log.details[at]
+                        replayed = detail.diagnostic
+                        if (
+                            detail.attached
+                            and member is not None
+                            and replayed not in member._diagnostics
+                        ):
+                            _attach_diagnostic(member, replayed)
+                    else:
+                        # A settled log kept no diagnostic; this one is recorded nowhere.
+                        replayed = Diagnostic(
+                            occurrence_id=uuid.uuid4().hex,
+                            code=code,
+                            severity=severity,
+                            message=message,
+                            context=context,
+                        )
+                    if emit_log.raised is not None and at in emit_log.raised:
+                        raise emit_log.raised[at]
+                    return replayed
+                emit_log._truncate(at)
             if thread_id in self._emitting_threads:
                 raise UnsupportedOperationError(
                     "Diagnostic callback/reentrancy: cannot drive another operation on "
@@ -286,11 +320,14 @@ class DiagnosticCollector:
                     _attach_diagnostic(member, diagnostic)
                     self._slots_used += 1
                     attached = True
-            logged_emit: _LoggedEmit | None = None
+            logged_at: int | None = None
             if replay is not None:
-                logged_emit = _LoggedEmit(diagnostic, attached)
-                replay.log.entries.append(logged_emit)
-                replay.cursor = len(replay.log.entries)
+                emit_log = replay.log
+                logged_at = len(emit_log.codes)
+                emit_log.codes.append(code)
+                if emit_log.details is not None:
+                    emit_log.details.append(_EmitDetail(diagnostic, attached))
+                replay.cursor = logged_at + 1
 
             should_deliver = disposition is not DiagnosticDisposition.IGNORE
             should_raise_diagnostic = disposition is DiagnosticDisposition.RAISE
@@ -312,8 +349,11 @@ class DiagnosticCollector:
             elif should_raise_diagnostic:
                 raised = DiagnosticRaisedError(message, diagnostic=diagnostic)
             if raised is not None:
-                if logged_emit is not None:
-                    logged_emit.raised = raised
+                if replay is not None and logged_at is not None:
+                    # Recorded by index, for a replay to raise at the same emit.
+                    if replay.log.raised is None:
+                        replay.log.raised = {}
+                    replay.log.raised[logged_at] = raised
                 raise raised
         finally:
             with self._lock:

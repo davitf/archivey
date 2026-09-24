@@ -449,11 +449,12 @@ class BaseArchiveReader(ArchiveReader):
         # backend's generator while the walk is unfinished; ``_walk_done`` is set when it
         # ends, cleanly or on terminal damage, and ``_walk_error`` holds that damage.
         # ``_walk_failure`` poisons a streaming walk that failed any other way, since
-        # its prefix was already handed out and cannot be walked again. Until a walk
-        # ends, ``_walk_built`` keeps every member object it produced and
-        # ``_walk_emits`` the diagnostics the backend emitted typing each position: a
-        # random-access walk started over after a failure replays those positions onto
-        # the same objects, with their diagnostics already emitted and attached.
+        # its prefix was already handed out and cannot be walked again. Until a
+        # random-access walk ends, ``_walk_built`` keeps every member object it produced
+        # and ``_walk_emits`` a log of what the backend emitted typing each position
+        # (see ``_pull_replayable``): a walk started over after a failure replays those
+        # positions onto the same objects, with their diagnostics already emitted and
+        # attached. A streaming walk keeps neither.
         # ``_walk_presented`` counts the positions whose presentation checks have run.
         self._listed: list[ArchiveMember] = []
         self._listed_by_name: dict[str, list[ArchiveMember]] = {}
@@ -463,7 +464,7 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_failure: BaseException | None = None
         self._walk_pulling: bool = False
         self._walk_built: list[ArchiveMember] = []
-        self._walk_emits: list[EmitLog] = []
+        self._walk_emits: dict[int, EmitLog] = {}
         self._walk_presented: int = 0
         # Set by open_archive on the reader it is about to return; read only by the
         # empty-listing check in _publish_materialized. None for a reader built directly.
@@ -1269,21 +1270,13 @@ class BaseArchiveReader(ArchiveReader):
                 self._account_archive_comment(enforce=enforce)
                 self._walk = self._iter_members()
             position = len(self._listed)
-            if position == len(self._walk_emits):
-                self._walk_emits.append(EmitLog())
             try:
-                # Each position's emits are logged the first time the backend types it.
-                # A walk started over after a discarded failure types it again, and a
-                # backend that builds fresh objects (ZIP, ISO, TAR) emits again: those
-                # replay from the log, including a position the failed walk was part
-                # way through, so each finding is recorded once. A position the failed
-                # walk yielded keeps the object it built, which carries them.
-                with self._diagnostics_collector.replaying(self._walk_emits[position]):
+                if self._streaming:
+                    # A streaming walk is never started over (``_abandon_walk`` poisons
+                    # it), so it has nothing to replay and keeps no log.
                     member = next(self._walk)
-                if position < len(self._walk_built):
-                    member = self._walk_built[position]
                 else:
-                    self._walk_built.append(member)
+                    member = self._pull_replayable(position)
             except StopIteration:
                 self._end_walk(None)
                 return None
@@ -1300,6 +1293,33 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._walk_pulling = False
 
+    def _pull_replayable(self, position: int) -> ArchiveMember:
+        """Advance a random-access walk to ``position``, replaying what a failed one did.
+
+        Each position's emits are logged while the backend types it. A walk started
+        over after a discarded failure types it again, and a backend that builds fresh
+        objects (ZIP, ISO, TAR) emits again: those replay from the log, including a
+        position the failed walk was part way through, so each finding is recorded
+        once. Once the backend has built the member, the log keeps only its codes: the
+        object built first is the one kept, and it carries its attachments itself. A
+        position that emitted nothing keeps no log. So until the walk ends it holds a
+        code per emit, bounded by the listing limits like the member list, and a
+        diagnostic only for the member being typed.
+        """
+        assert self._walk is not None
+        log = self._walk_emits.get(position)
+        if log is None:
+            log = self._walk_emits[position] = EmitLog()
+        with self._diagnostics_collector.replaying(log):
+            member = next(self._walk)
+        log.settle()
+        if not log.codes:
+            del self._walk_emits[position]
+        if position < len(self._walk_built):
+            return self._walk_built[position]
+        self._walk_built.append(member)
+        return member
+
     def _end_walk(self, error: CorruptionError | TruncatedError | None) -> None:
         """Record that the walk ended, and stamp last-entry-wins once, over what it listed.
 
@@ -1312,7 +1332,7 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_done = True
         self._walk_error = error
         self._walk_built = []
-        self._walk_emits = []
+        self._walk_emits = {}
         if error is not None:
             self._stamp_error_context(error)
         _apply_last_entry_wins_is_current(self._listed)

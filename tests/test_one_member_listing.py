@@ -407,6 +407,39 @@ def test_a_walk_walked_again_emits_each_member_diagnostic_once(
         assert [d.code for d in listed[2].diagnostics] == [_NORMALIZED]
 
 
+def _normalized_names_zip(tmp_path: Path, count: int) -> Path:
+    return _zip(tmp_path, [(f"./f{i}.txt", b"x", False) for i in range(count)])
+
+
+def test_a_walk_keeps_a_diagnostic_only_for_the_member_being_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The replay log holds codes for the members built, not their diagnostics.
+
+    With no retention budget, nothing may keep a diagnostic past the member being
+    typed: the one the interrupt landed in.
+    """
+    config = ArchiveyConfig(max_retained_diagnostic_references=0)
+    with open_archive(_normalized_names_zip(tmp_path, 50), config=config) as reader:
+        _failing_once(monkeypatch, type(reader), at=40, inside=True)
+        with pytest.raises(RuntimeError):
+            reader.members()
+        logs = reader._walk_emits
+        assert sorted(logs) == list(range(41))
+        assert [p for p, log in logs.items() if log.details is not None] == [40]
+        assert len(reader.members()) == 50
+        assert reader.diagnostics.counts[_NORMALIZED] == 50
+        assert reader._walk_emits == {}
+
+
+def test_a_streaming_walk_keeps_no_replay_log(tmp_path: Path) -> None:
+    """A streaming walk is never started over, so it has nothing to replay."""
+    with open_archive(_normalized_names_zip(tmp_path, 20), streaming=True) as reader:
+        for _member, _stream in reader.stream_members():
+            assert reader._walk_emits == {}
+        assert reader.diagnostics.counts[_NORMALIZED] == 20
+
+
 def test_a_member_refused_by_the_limit_is_not_counted_again_by_a_pass(
     tmp_path: Path,
 ) -> None:
