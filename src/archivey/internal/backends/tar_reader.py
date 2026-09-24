@@ -734,7 +734,9 @@ class TarReader(BaseArchiveReader):
         name = normalize_member_name(
             presented, member_type, backslash_is_separator=False
         )
-        raw_name = _recover_raw_name(info, self._tar.encoding, self._tar.errors)
+        raw_name = _recover_raw_name(
+            info, self._tar.encoding, self._tar.errors, self._tar.pax_headers
+        )
 
         link_target = (
             info.linkname
@@ -877,15 +879,27 @@ class TarReader(BaseArchiveReader):
 
 
 def _recover_raw_name(
-    info: tarfile.TarInfo, encoding: str, errors: str
+    info: tarfile.TarInfo,
+    encoding: str,
+    errors: str,
+    global_headers: Mapping[str, str],
 ) -> bytes | None:
     """Recover the stored name bytes from tarfile's decoded ``info.name``.
 
     The codec depends on where the name came from. A ustar or GNU long-name field is
     decoded with the archive ``encoding`` and ``errors`` (surrogateescape by default), so
     encoding back with the same pair round-trips. A PAX ``path`` record is decoded
-    strictly as UTF-8 (strictly with ``encoding`` under ``hdrcharset=BINARY``), and only
-    when that fails with ``encoding`` + ``errors``.
+    strictly as UTF-8 (strictly with ``encoding`` when its own header block says
+    ``hdrcharset=BINARY``), and only when that fails with ``encoding`` + ``errors``.
+
+    Where the name came from is inferred, not recorded: ``info.pax_headers`` has the
+    archive's global headers merged in, and tarfile keeps no per-block record. The name
+    is taken as a PAX name when it equals ``pax_headers["path"]`` (a GNU long name that
+    overrode an inherited global ``path`` differs from it), and ``BINARY`` is honoured
+    only when it is not the inherited global value (tarfile reads ``hdrcharset`` from
+    the member's own block only). A block that repeats the global ``BINARY``, or a long
+    name equal to a global ``path``, is misread; both need a crafted archive and give
+    different bytes only when ``encoding`` is not UTF-8.
 
     For a PAX name the bytes are taken as UTF-8, the spec's encoding. A name that UTF-8
     cannot encode holds surrogates, which only the fallback decode produces, so it is
@@ -898,10 +912,10 @@ def _recover_raw_name(
     listing.
     """
     try:
-        if (
-            "path" in info.pax_headers
-            and info.pax_headers.get("hdrcharset") != "BINARY"
-        ):
+        from_pax = info.pax_headers.get("path") == info.name
+        charset = info.pax_headers.get("hdrcharset")
+        binary = charset == "BINARY" and global_headers.get("hdrcharset") != charset
+        if from_pax and not binary:
             try:
                 return info.name.encode("utf-8")
             except UnicodeEncodeError:

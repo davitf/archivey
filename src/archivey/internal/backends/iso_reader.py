@@ -394,6 +394,12 @@ class IsoReader(BaseArchiveReader):
         The leading ``/`` is stripped. In the ``iso9660`` namespace a ``;N`` suffix is the
         file *version*: it is removed and returned, and so is the ``.`` that separates an
         empty extension (``FOO.;1`` is ``FOO``), since the two are one rule in ISO 9660.
+
+        ``FOO.;1`` and ``FOO;1`` both map to ``("FOO", 1)``. Level 1 requires the dotted
+        spelling but writers emit both, so a directory can hold the two. Where one of them
+        is the newest version, the two take the one bare name and last-entry-wins makes
+        only the later one current. A superseded version is presented by its stored
+        spelling (see ``_make_member``), so the two stay apart there.
         """
         rel = ns_path.lstrip("/")
         if self._namespace != "iso9660":
@@ -550,19 +556,18 @@ class IsoReader(BaseArchiveReader):
         # ISO 9660 / Joliet paths are POSIX-style ("/"): a backslash is a literal character.
         presented, version = self._split_version(ns_path)
         if superseded:
-            # An older version keeps its ``;N``, as RAR presents a file-version history
-            # row: a distinct name to read it by, and ``is_current=False`` so extraction
-            # skips it. The newest version takes the bare name.
-            presented = f"{presented};{version}"
+            # An older version is presented as its stored identifier (``FOO.;1``), as
+            # RAR presents a file-version history row: a distinct name to read it by,
+            # matching ``raw_name``, and ``is_current=False`` so extraction skips it.
+            # The newest version takes the bare name. Keeping the stored spelling also
+            # keeps ``FOO.;1`` and ``FOO;1`` apart when both are superseded.
+            presented = ns_path.lstrip("/")
         name = normalize_member_name(
             presented, member_type, backslash_is_separator=False
         )
-        try:
-            raw_name: bytes | None = ns_path.lstrip("/").encode(
-                "utf-8", errors="surrogateescape"
-            )
-        except UnicodeEncodeError:
-            raw_name = None
+        # Always encodes: every name was decoded as UTF-8 with surrogateescape (whose
+        # surrogates this handler re-encodes) or as Joliet UTF-16 with U+FFFD.
+        raw_name = ns_path.lstrip("/").encode("utf-8", errors="surrogateescape")
         extra = (
             MemberExtra({"iso.version": version})
             if version is not None
@@ -595,10 +600,9 @@ class IsoReader(BaseArchiveReader):
             link_target=link_target,
             compression=compression,
             is_encrypted=False,
-            # The directory record itself, so _open_member needs no path lookup.
             extra=extra,
             is_current=not superseded,
-            _raw=record,
+            _raw=record,  # the directory record, so _open_member needs no path lookup
         )
         emit_member_name_normalized(
             self._diagnostics_collector,

@@ -1568,3 +1568,27 @@ def test_close_releases_the_owned_stream_when_tarfile_close_raises(
         with pytest.raises(OSError):
             ar.close()
     assert released == [True]
+
+
+def test_gnu_long_name_under_a_global_pax_path_keeps_the_archive_codec() -> None:
+    """``pax_headers`` carries the archive's global headers, so an inherited global
+    ``path`` must not make a GNU long name read as a PAX (UTF-8) name."""
+    glob = io.BytesIO()
+    with tarfile.open(
+        fileobj=glob, mode="w", format=tarfile.PAX_FORMAT, pax_headers={"path": "g"}
+    ):
+        pass
+    long_name = "é" * 120  # past ustar's 100 bytes: GNU writes a long-name block
+    gnu = io.BytesIO()
+    with tarfile.open(
+        fileobj=gnu, mode="w", format=tarfile.GNU_FORMAT, encoding="latin-1"
+    ) as t:
+        info = tarfile.TarInfo(long_name)
+        info.size = 1
+        t.addfile(info, io.BytesIO(b"x"))
+    # The global header's blocks, then the GNU member and its end-of-archive blocks.
+    data = glob.getvalue().rstrip(b"\0")
+    data += b"\0" * (-len(data) % 512) + gnu.getvalue()
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+        (member,) = [m for m in ar.members() if m.name == long_name]
+        assert member.raw_name == long_name.encode("latin-1")

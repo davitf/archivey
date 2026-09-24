@@ -192,8 +192,9 @@ behaviour. The complete list is on the two classes.
   `ArchiveInfo.extra["iso.namespace"]`.
 - Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty
   extension), and `extra["iso.version"]` keeps the number. When a directory holds
-  several versions of one name, the highest takes the bare name and the others list as
-  `name;N` with `is_current=False`, the same shape as RAR file-version history.
+  several versions of one name, the highest takes the bare name and the others list
+  under their stored identifier (`FOO.;1`) with `is_current=False`, the same shape as
+  RAR file-version history. Entries within a directory list in on-disc record order.
 - A Rock Ridge device node, FIFO or socket lists as `MemberType.OTHER`, so extraction
   skips it. The `rr_moved` directory that holds relocated deep subtrees is not listed;
   those subtrees appear at their logical place.

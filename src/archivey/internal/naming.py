@@ -305,9 +305,12 @@ def resolve_link_target_name(
       (``dir/link -> file`` means ``dir/file``), so it is joined to that directory and
       ``..`` is collapsed, as the filesystem would resolve it.
 
-    Returns ``None`` for a target that cannot be a member: an absolute symlink target
-    (it points outside the archive namespace) or one that ``..``-escapes the archive
-    root. The escape test runs on the collapsed form for both kinds. The caller looks
+    Returns ``None`` for a target that cannot be a member: an absolute target of either
+    kind (it points outside the archive namespace) or one that ``..``-escapes the
+    archive root. A leading ``/`` is the one place a hardlink target departs from
+    :func:`normalize_member_name`, which retains it in a name and leaves the refusal to
+    extraction: a link that follows it would lead out of the extraction root, so a
+    hardlink naming ``/abs`` does not resolve even when a member ``/abs`` exists. The escape test runs on the collapsed form for both kinds. The caller looks
     the result up against normalized member names; directory members carry a trailing
     ``/`` in their names, so lookups should try both forms.
 

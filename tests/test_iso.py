@@ -724,7 +724,8 @@ def test_a_rock_ridge_device_node_is_other_not_file(tmp_path: Path) -> None:
 
 def test_plain_iso_versions_keep_the_newest_current(tmp_path: Path) -> None:
     """The newest ``;N`` takes the bare name (the empty-extension dot goes too); an
-    older version keeps ``;N`` and ``is_current=False``, as a RAR history row does.
+    older version keeps its stored identifier and ``is_current=False``, as a RAR
+    history row does.
     Every version records its number in ``iso.version``."""
     import pycdlib
 
@@ -742,10 +743,10 @@ def test_plain_iso_versions_keep_the_newest_current(tmp_path: Path) -> None:
         assert sorted(rows) == [
             ("BAR.TXT", 1, True),
             ("FOO", 2, True),
-            ("FOO;1", 1, False),
+            ("FOO.;1", 1, False),
         ]
         assert ar.read("FOO") == b"NEW VERSION"
-        assert ar.read("FOO;1") == b"OLD VERSION"
+        assert ar.read("FOO.;1") == b"OLD VERSION"
         ar.extract_all(tmp_path / "out")
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["BAR.TXT", "FOO"]
     assert (tmp_path / "out" / "FOO").read_bytes() == b"NEW VERSION"
