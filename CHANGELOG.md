@@ -170,6 +170,14 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `ARCHIVE_INTEGRITY_CODES`, so a strict policy refuses such an archive rather than
   reading a link whose target is gone; previously 7z reported an empty target for it and
   ZIP reported a directory, and neither said anything.
+- **A directory tree of any depth lists.** The directory reader walked the tree by
+  recursion, so a tree about 990 levels deep raised a bare `RecursionError` and lost the
+  whole listing. Extracting an archive of `a/a/a/…/file` is enough to produce one. The
+  walk now uses an explicit stack, and the order of members is unchanged.
+- **A symlink removed while a directory is listed is skipped, not fatal.** The reader
+  already skipped an entry that vanished before it was inspected, with a
+  `SCAN_ENTRY_VANISHED` diagnostic. A symlink that vanished between that check and the
+  read of its target raised `FileNotFoundError` and lost the listing instead.
 - **A link for which the archive records no target no longer fails extraction.** It is
   recorded as the new `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still
   extracts, under either `OnError` value — nothing can be written for such a member, and
