@@ -12,7 +12,6 @@ from __future__ import annotations
 import io
 import os
 import stat
-import subprocess
 import tarfile
 import threading
 import time
@@ -30,7 +29,7 @@ from archivey.internal.base_reader import BaseArchiveReader
 from archivey.measurement import enable_measurement
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveMember, MemberType
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _RAR5_SOLID = _FIXTURES / "rar" / "symlinks_solid__.rar"
@@ -584,34 +583,15 @@ class _Provider:
         return self.answer
 
 
-def _encrypted(tmp_path: Path, fmt: str) -> Path:
-    """``a.txt``, ``b_link`` (→ ``a.txt``), ``c.txt``, encrypted with ``SECRET``."""
-    tree = tmp_path / "tree"
-    tree.mkdir()
-    (tree / "a.txt").write_bytes(b"aaaa")
-    os.symlink("a.txt", tree / "b_link")
-    (tree / "c.txt").write_bytes(b"cccc")
-    out = tmp_path / f"enc.{fmt}"
-    subprocess.run(
-        [
-            "7z",
-            "a",
-            f"-t{fmt}",
-            "-snl",
-            "-pSECRET",
-            str(out),
-            "a.txt",
-            "b_link",
-            "c.txt",
-        ],
-        cwd=tree,
-        check=True,
-        capture_output=True,
-    )
-    return out
+def _encrypted(fmt: str) -> Path:
+    """``a.txt``, ``b_link`` (→ ``a.txt``), ``c.txt``, encrypted with ``SECRET``.
+
+    Committed rather than built with the ``7z`` CLI at test time: not every platform's
+    ``7z`` stores a symlink as a link.
+    """
+    return _FIXTURES / "sevenzip" / f"encrypted_link.{fmt}"
 
 
-@requires_binary("7z")
 @pytest.mark.parametrize("fmt", ["7z", "zip"])
 @pytest.mark.parametrize("streaming", _MODES)
 def test_without_link_reads_a_pass_reads_and_prompts_for_nothing(
@@ -621,7 +601,7 @@ def test_without_link_reads_a_pass_reads_and_prompts_for_nothing(
     with (
         enable_measurement(),
         open_archive(
-            _encrypted(tmp_path, fmt),
+            _encrypted(fmt),
             streaming=streaming,
             password=provider,
             config=_NO_LINK_READS,
@@ -639,7 +619,6 @@ def test_without_link_reads_a_pass_reads_and_prompts_for_nothing(
         )
 
 
-@requires_binary("7z")
 @pytest.mark.parametrize(
     "fmt",
     [
@@ -652,7 +631,7 @@ def test_without_link_reads_a_pass_reads_and_prompts_for_nothing(
 def test_without_link_reads_extract_all_filters_before_reading(
     fmt: str, streaming: bool, tmp_path: Path
 ) -> None:
-    archive = _encrypted(tmp_path, fmt)
+    archive = _encrypted(fmt)
     seen: list[tuple[str, str | None]] = []
 
     def recording(member: ArchiveMember) -> ArchiveMember:
