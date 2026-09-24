@@ -1019,8 +1019,13 @@ def test_far_budget_below_the_iso_span_records_the_far_tier_as_cut_short(
 
     from archivey.detection_cost import BALANCED_BUDGET, TierSkipReason
 
+    # Only the descriptor magic matters to detection, so no pycdlib (absent from the
+    # minimal dependency configuration).
+    image = bytearray(40_000)
+    image[32768:32774] = b"\x01CD001"
     path = tmp_path / "disc.iso"
-    path.write_bytes(_iso_bytes(b""))
+    path.write_bytes(bytes(image))
+    assert detect_format(path).detected_by == "magic"
     budget = replace(BALANCED_BUDGET, max_far_bytes=4096)
     info = detect_format(path, budget=budget)
     assert info.detected_by == "extension"
