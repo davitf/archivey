@@ -16,13 +16,13 @@ import re
 from collections.abc import Collection
 from typing import TYPE_CHECKING
 
+from archivey.cli_helpers import quoted
 from archivey.diagnostics import (
     DiagnosticCode,
     MemberNameControlsContext,
     NameNormalizationContext,
     raw_name_to_base64,
 )
-from archivey.escaping import quoted
 from archivey.internal.logs import normalization as logger
 from archivey.types import MemberType
 

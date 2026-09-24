@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from archivey.escaping import quoted
+from archivey.cli_helpers import quoted
 
 # The NTFS FILETIME epoch.
 _FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)

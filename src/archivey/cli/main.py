@@ -30,9 +30,8 @@ from archivey.cli.info_cmd import run_info
 from archivey.cli.list_cmd import run_list
 from archivey.cli.logging_config import cli_logging
 from archivey.cli.test_cmd import run_test
-from archivey.escaping import display_path, quoted
+from archivey.cli_helpers import display_path, normalize_spelling, quoted
 from archivey.exceptions import ArchiveyError
-from archivey.internal.enum_args import normalize_spelling
 
 # Registered verbs + aliases + reserved unimplemented verbs (known-verb-wins).
 _VERBS = frozenset(
@@ -481,7 +480,7 @@ def _format_os_error(exc: OSError) -> str:
     """Human prose for missing paths / I/O errors (cli-product P6).
 
     Returned **unescaped**: the caller escapes it once, at the print site. The filename
-    is therefore delimited with :func:`~archivey.escaping.quoted`, not ``!r`` — ``repr``
+    is therefore delimited with :func:`~archivey.cli_helpers.quoted`, not ``!r`` — ``repr``
     would escape it here and the print site would escape those backslashes again — and
     rendered ``/``-separated so a Windows path's separators are not doubled either.
     """

@@ -29,10 +29,10 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import BinaryIO, ContextManager
 
+from archivey.cli_helpers import quoted
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode, DigestContext, MemberTimestampContext
-from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,

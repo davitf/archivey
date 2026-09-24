@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from typing import BinaryIO, Iterator, Literal, Mapping, cast
 
+from archivey.cli_helpers import quoted
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
     AccessCost,
@@ -49,7 +50,6 @@ from archivey.diagnostics import (
     DiagnosticCode,
     MemberTimestampContext,
 )
-from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,

@@ -19,9 +19,9 @@ from typing import (
     overload,
 )
 
+from archivey.cli_helpers import coerce_enum
 from archivey.cost import StreamCapability
 from archivey.exceptions import ArchiveyError
-from archivey.internal.enum_args import coerce_enum
 
 if TYPE_CHECKING:
     from archivey.cost import CostReceipt
@@ -916,7 +916,7 @@ class ExtractionPolicy(Enum):
 
 # The string spellings of ``ExtractionPolicy``, so a type checker flags a bad one at the
 # call rather than leaving it to the runtime. Deliberately narrower than what
-# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# ``cli_helpers`` accepts: coercion also takes the member *name* and ignores
 # case, and a literal can express neither, so this is the canonical spelling.
 # Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
 ExtractionPolicyStr = Literal["strict", "standard", "trusted"]
@@ -941,7 +941,7 @@ class OverwritePolicy(Enum):
 
 # The string spellings of ``OverwritePolicy``, so a type checker flags a bad one at the
 # call rather than leaving it to the runtime. Deliberately narrower than what
-# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# ``cli_helpers`` accepts: coercion also takes the member *name* and ignores
 # case, and a literal can express neither, so this is the canonical spelling.
 # Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
 OverwritePolicyStr = Literal["error", "skip", "replace", "rename"]
@@ -964,7 +964,7 @@ class OnError(Enum):
 
 # The string spellings of ``OnError``, so a type checker flags a bad one at the
 # call rather than leaving it to the runtime. Deliberately narrower than what
-# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# ``cli_helpers`` accepts: coercion also takes the member *name* and ignores
 # case, and a literal can express neither, so this is the canonical spelling.
 # Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
 OnErrorStr = Literal["stop", "continue"]
@@ -1005,7 +1005,7 @@ class AbortOn(str, Enum):
 
 # The string spellings of ``AbortOn``, so a type checker flags a bad one at the
 # call rather than leaving it to the runtime. Deliberately narrower than what
-# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# ``cli_helpers`` accepts: coercion also takes the member *name* and ignores
 # case, and a literal can express neither, so this is the canonical spelling,
 # plus the dash form of each underscored value, which is what the CLI's own
 # ``--help`` advertises and so the spelling most likely to be pasted into a script.

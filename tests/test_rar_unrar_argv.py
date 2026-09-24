@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from archivey import open_archive
-from archivey.escaping import display_path
+from archivey.cli_helpers import display_path
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.backends import rar_unrar
 from tests.conftest import requires_binary

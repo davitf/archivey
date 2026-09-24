@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, BinaryIO, Iterator, Mapping, NoReturn, cast
 
+from archivey.cli_helpers import quoted
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
     AccessCost,
@@ -49,7 +50,6 @@ from archivey.diagnostics import (
     NameEncodingContext,
     raw_name_to_base64,
 )
-from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,

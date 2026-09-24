@@ -34,6 +34,7 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import BinaryIO, Literal
 
+from archivey.cli_helpers import quoted
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
@@ -41,7 +42,6 @@ from archivey.diagnostics import (
     DigestContext,
     MemberHeaderRecordContext,
 )
-from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,

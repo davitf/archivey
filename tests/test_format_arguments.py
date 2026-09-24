@@ -39,9 +39,9 @@ from archivey import (
     open_archive,
     open_stream,
 )
+from archivey.cli_helpers import normalize_spelling
 from archivey.core import _resolve_stream_format
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.enum_args import normalize_spelling
 from archivey.internal.format_args import (
     _accepted_archive_formats,
     _accepted_stream_formats,

@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Iterator, Mapping, cast
 if TYPE_CHECKING:
     from pycdlib.pycdlibio import PyCdlibIO
 
+from archivey.cli_helpers import quoted
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
     AccessCost,
@@ -52,7 +53,6 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.diagnostics import DiagnosticCode, MemberHeaderRecordContext
-from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,

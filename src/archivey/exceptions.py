@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from archivey.escaping import escape_control_chars
+from archivey.cli_helpers import escape_control_chars
 
 if TYPE_CHECKING:
     from archivey.diagnostics import Diagnostic
@@ -85,7 +85,7 @@ class ArchiveyError(Exception):
     interpolates should therefore be raw when it goes in — which is what the two
     helpers are for, and why neither of them is a matter of taste:
 
-    - a member name, link target or path → :func:`~archivey.escaping.quoted`, not
+    - a member name, link target or path → :func:`~archivey.cli_helpers.quoted`, not
       ``!r``. ``!r`` escapes first, and this escapes the backslashes it introduced.
     - a caught exception that might be one of ours → :func:`raw_message_of`, not
       ``{exc}`` or ``{exc!r}``.

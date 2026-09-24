@@ -8,7 +8,7 @@ container.
 
 Each of them accepts the format **spelled as a string** and converts it here, for the
 same reason the enum arguments beside it do (see
-:mod:`archivey.internal.enum_args`): the CLI and a throwaway script hold strings, and
+:mod:`archivey.cli_helpers`): the CLI and a throwaway script hold strings, and
 one vocabulary shared with the CLI beats two that drift. Given something that is neither
 a format nor a spelling of one, every entry point answers the same way —
 :class:`~archivey.ArchiveyUsageError`, which sits outside ``ArchiveyError`` (ADR 0012)
@@ -44,8 +44,8 @@ import functools
 from enum import Enum
 from typing import Literal, NoReturn, overload
 
+from archivey.cli_helpers import normalize_spelling
 from archivey.exceptions import ArchiveyUsageError
-from archivey.internal.enum_args import normalize_spelling
 from archivey.types import _FORMAT_NAMES, ArchiveFormat, ContainerFormat, StreamFormat
 
 __all__ = ["coerce_archive_format", "coerce_stream_or_archive_format"]

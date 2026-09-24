@@ -15,6 +15,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Collection
 
+from archivey.cli_helpers import (
+    coerce_enum,
+    coerce_enum_collection,
+    display_path,
+)
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
     AcceleratorMode,
@@ -29,7 +34,6 @@ from archivey.diagnostics import (
     ExtractionReport,
     UnusedArgumentContext,
 )
-from archivey.escaping import display_path
 from archivey.exceptions import (
     ArchiveyUsageError,
     FormatDetectionError,
@@ -51,10 +55,6 @@ from archivey.internal.backends.zip_detect import (
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.detection import detect_format
 from archivey.internal.diagnostics_collector import collector_from_config
-from archivey.internal.enum_args import (
-    coerce_enum,
-    coerce_enum_collection,
-)
 from archivey.internal.format_args import (
     coerce_archive_format,
     coerce_stream_or_archive_format,

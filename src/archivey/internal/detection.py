@@ -50,6 +50,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable
 
+from archivey.cli_helpers import coerce_enum
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, AcceleratorMode
 from archivey.detection import DetectionConfidence, FormatInfo
 from archivey.detection_cost import (
@@ -72,7 +73,6 @@ from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
 )
-from archivey.internal.enum_args import coerce_enum
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import get_registry
 from archivey.internal.sfx import (

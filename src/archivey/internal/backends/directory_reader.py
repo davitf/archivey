@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Mapping
 
+from archivey.cli_helpers import quoted
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
     AccessCost,
@@ -23,7 +24,6 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.diagnostics import DiagnosticCode, ScanRaceContext
-from archivey.escaping import quoted
 from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,

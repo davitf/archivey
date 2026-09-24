@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionStatus, open_archive
+from archivey.cli_helpers import display_path
 from archivey.config import (
     REWIND_REDECODE_WARN_BYTES,
     ArchiveyConfig,
@@ -27,7 +28,6 @@ from archivey.config import (
 )
 from archivey.cost import AccessCost
 from archivey.diagnostics import DiagnosticCode
-from archivey.escaping import display_path
 from archivey.exceptions import (
     ArchiveyError,
     ConcurrentAccessError,

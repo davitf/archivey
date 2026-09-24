@@ -19,10 +19,12 @@ src/archivey/
 ├── __init__.py          the export surface — the frozen public API
 ├── core.py              open_archive(), extract()
 ├── reader.py            ArchiveReader — the caller-facing read interface
-├── types.py             Member, ArchiveInfo, ArchiveFormat, MemberType, …
-├── config.py cost.py measurement.py diagnostics.py exceptions.py escaping.py
+├── types.py             Member, ArchiveInfo, ArchiveFormat, extraction policies/results, …
+├── detection.py         FormatInfo, DetectionConfidence
+├── config.py cost.py measurement.py diagnostics.py exceptions.py
 │                       public value types: config, CostReceipt, IoStats,
-│                       Diagnostic, the error hierarchy, terminal-safe escaping
+│                       Diagnostic, the error hierarchy
+├── cli_helpers.py       public, not re-exported: terminal-safe escaping, enum spellings
 ├── cli/                 the CLI — a *consumer* of the public API, not a peer of it
 └── internal/            everything else; not importable contract
     ├── base_reader.py   BaseArchiveReader ABC + the ReadBackend/WriteBackend ABCs
@@ -124,7 +126,7 @@ Three things about this path are worth knowing before you debug it:
 | Format detection or a magic number | `internal/detection.py`; prefixed/SFX payloads: `internal/sfx.py` + `<fmt>_detect.py` validators, handbook [`topics/prefixed-archives.md`](topics/prefixed-archives.md) |
 | Adding a backend | `internal/registry.py` + a self-registering module in `backends/` |
 | The CLI | `cli/main.py` dispatches; one module per subcommand |
-| Terminal-safe output of hostile text | `escaping.py`; threat-model O9 |
+| Terminal-safe output of hostile text | `cli_helpers.py`; threat-model O9 |
 | Test-suite leak oracle (live children, owning streams; pipe fds as context) | `tests/leak_oracle.py` (autouse plugin); `tests/test_leak_oracle.py`; the shutdown-only accelerator diagnostic is still `scripts/accel_leak_trace.py` |
 
 ---

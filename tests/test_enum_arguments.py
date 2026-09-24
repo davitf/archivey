@@ -39,14 +39,14 @@ from archivey import (
     extract,
 )
 from archivey.cli.main import build_parser
-from archivey.config import AcceleratorMode, ArchiveyConfig
-from archivey.detection_cost import DetectionBudgetPreset, DetectionBudgetPresetStr
-from archivey.exceptions import ArchiveyError, ArchiveyUsageError
-from archivey.internal.enum_args import (
+from archivey.cli_helpers import (
     coerce_enum,
     coerce_enum_collection,
     normalize_spelling,
 )
+from archivey.config import AcceleratorMode, ArchiveyConfig
+from archivey.detection_cost import DetectionBudgetPreset, DetectionBudgetPresetStr
+from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.types import (
     AbortOnStr,
     ContainerFormat,
@@ -373,7 +373,7 @@ def _enums_coerced_under_src() -> set[str]:
     src = Path(__file__).resolve().parents[1] / "src" / "archivey"
     found: set[str] = set()
     for path in sorted(src.rglob("*.py")):
-        if path.name == "enum_args.py":
+        if path.name == "cli_helpers.py":
             # Where the helpers live: its one call is the collection form delegating to
             # the scalar form over a type variable, not a boundary naming an enum.
             continue

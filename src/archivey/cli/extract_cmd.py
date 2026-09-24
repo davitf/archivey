@@ -31,9 +31,9 @@ from archivey.cli.filters import (
 from archivey.cli.format import escape_member_name, escape_path, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
+from archivey.cli_helpers import coerce_enum, coerce_enum_collection
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
-from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat
 
@@ -531,7 +531,7 @@ def run_extract(
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
     pred = member_predicate(patterns, exclude)
-    # One shared vocabulary with the library: ``enum_args`` treats ``-`` and ``_`` as
+    # One shared vocabulary with the library: ``cli_helpers`` treats ``-`` and ``_`` as
     # the same, so the hand-rolled ``.replace("-", "_")`` this used to carry is gone,
     # and ``main.py`` derives its argparse ``choices=`` from these same enums. Converted
     # here rather than passed through as strings so the CLI's own helpers below stay

@@ -14,13 +14,13 @@ import re
 
 import pytest
 
+from archivey.cli_helpers import escape_control_chars, quoted
 from archivey.diagnostics import (
     Diagnostic,
     DiagnosticCode,
     DiagnosticSeverity,
     MemberNameControlsContext,
 )
-from archivey.escaping import escape_control_chars, quoted
 from archivey.exceptions import ArchiveyError, ExtractionError, raw_message_of
 
 # Characters that must never survive into a terminal unescaped.
@@ -309,7 +309,7 @@ def test_paths_in_messages_do_not_double_their_separators() -> None:
     """
     from pathlib import Path
 
-    from archivey.escaping import display_path
+    from archivey.cli_helpers import display_path
 
     nested = Path("out") / "sub" / "a.txt"
     assert display_path(nested) == "out/sub/a.txt"
@@ -324,7 +324,7 @@ def test_display_path_uses_the_native_flavour_so_names_keep_their_backslashes() 
     POSIX member named ``a\\b`` into a two-segment path — turning a display fix into a
     correctness bug, and hiding exactly the character the escaping exists to show.
     """
-    from archivey.escaping import display_path
+    from archivey.cli_helpers import display_path
 
     if os.sep == "/":
         rendered = display_path("a\\b")
@@ -429,7 +429,7 @@ def test_the_o9_signature_message_renders_its_path_posix() -> None:
     """
     from pathlib import Path
 
-    from archivey.escaping import display_path
+    from archivey.cli_helpers import display_path
 
     dest = Path("out") / "sub" / "a.txt"
     message = ExtractionError(

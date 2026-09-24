@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from types import FrameType
 
-from archivey.escaping import display_path
+from archivey.cli_helpers import display_path
 
 
 @dataclass(frozen=True)

@@ -31,8 +31,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Collection
 
+from archivey.cli_helpers import display_path, quoted
 from archivey.config import ExtractionLimits
-from archivey.escaping import display_path, quoted
 from archivey.exceptions import (
     ArchiveyError,
     DiagnosticRaisedError,

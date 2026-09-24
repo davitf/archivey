@@ -24,7 +24,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, TypeVar
 
-from archivey.escaping import escape_control_chars
+from archivey.cli_helpers import escape_control_chars
 from archivey.types import ExtractionResult
 
 if TYPE_CHECKING:
@@ -518,7 +518,7 @@ class Diagnostic:
     ``message`` and keeps ``member_name`` raw for the same reason.
 
     Escaping here rather than trusting the sites that build messages: every one of them
-    today interpolates through :func:`~archivey.escaping.quoted` or ``!r``, so the text
+    today interpolates through :func:`~archivey.cli_helpers.quoted` or ``!r``, so the text
     would be inert either way — but that is a property of the current call sites, not of
     the type. A future message written as ``f"...{name}"`` would pass review looking
     exactly like its neighbours while emitting raw control bytes, and only for a hostile

@@ -14,9 +14,9 @@ from archivey.cli.format import (
     format_format_label,
 )
 from archivey.cli.password import resolve_password
+from archivey.cli_helpers import escape_control_chars
 from archivey.config import PasswordInput
 from archivey.cost import CostReceipt
-from archivey.escaping import escape_control_chars
 from archivey.exceptions import ArchiveyError
 from archivey.types import ArchiveFormat
 

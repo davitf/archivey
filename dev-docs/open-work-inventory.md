@@ -295,7 +295,7 @@ later the same day.
 | S20-K16 `members="a.txt"` | #382 | `selection.py:21` refuses a bare `str`/`bytes` |
 | S18-K7 short read on a truncated member | — | **Withdrawn by its own author**: today's behaviour is ADR 0014 |
 | 56 `DelegatingStream` flag style | [#365](https://github.com/davitf/archivey/pull/365) | `peel_for_source_size` and `readinto_passthrough` both class-flag-plus-constructor-override, like `_SUBCLASS_CLOSES_INNER` |
-| S19-K8 `overwrite=`/`on_error=` strings | [#380](https://github.com/davitf/archivey/pull/380) | `core.py:727-732` coerces at the boundary; `internal/enum_args.py` names this failure in its docstring |
+| S19-K8 `overwrite=`/`on_error=` strings | [#380](https://github.com/davitf/archivey/pull/380) | `core.py:727-732` coerces at the boundary; `cli_helpers.py` names this failure in its enum-spellings section |
 | S19-K6 `_optional()` re-walks `sys.path` | #380 | `@functools.cache` at `registry.py:132`, with the ~46 µs vs ~0.6 µs measurement in the docstring |
 
 **Three threads that looked closeable were not, and the difference was one grep each.**

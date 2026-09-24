@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, TypeGuard
 
-from archivey.escaping import display_path
+from archivey.cli_helpers import display_path
 from archivey.exceptions import (
     ArchiveyUsageError,
     OpenError,

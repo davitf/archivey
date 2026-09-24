@@ -47,8 +47,8 @@ from datetime import datetime, timezone
 from hashlib import pbkdf2_hmac
 from typing import BinaryIO, Protocol
 
+from archivey.cli_helpers import quoted
 from archivey.config import ListingLimits
-from archivey.escaping import quoted
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
