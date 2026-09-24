@@ -22,6 +22,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends import sevenzip_aes
 from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
@@ -187,13 +188,17 @@ def test_crypto_reachable_only_through_wrapper() -> None:
 def test_sevenzip_kdf_cache_reuses_derived_keys() -> None:
     password = "secret".encode("utf-16le")
     salt = b"salt"
-    cache = crypto.SevenZipKeyCache()
-    first = cache.derive(password, salt=salt, cycles=1)
-    second = cache.derive(password, salt=salt, cycles=1)
-    assert first == second
-    assert first is second  # same cached object
+    # NumCyclesPower 1 with both flag bits set; the high nibble adds 3 salt bytes.
+    properties = b"\xc1\x30" + salt + b"\x00"
+    cache = sevenzip_aes.SevenZipKeyCache()
+    first = cache.aes_params_from_properties(password, properties)
+    second = cache.aes_params_from_properties(password, properties)
+    assert first.key == sevenzip_aes.derive_sevenzip_aes_key(
+        password, salt=salt, cycles=1
+    )
+    assert first.key is second.key  # same cached object
     # 0x3f special case: salt+password copied into 32-byte key (no hashing).
-    special = crypto.derive_sevenzip_aes_key(password, salt=salt, cycles=0x3F)
+    special = sevenzip_aes.derive_sevenzip_aes_key(password, salt=salt, cycles=0x3F)
     assert len(special) == 32
     assert special == bytes(bytearray(salt + password + bytes(32))[:32])
 
@@ -206,7 +211,7 @@ def test_sevenzip_kdf_rejects_cycles_above_24() -> None:
     from archivey.exceptions import UnsupportedFeatureError
 
     with pytest.raises(UnsupportedFeatureError, match="NumCyclesPower"):
-        crypto.derive_sevenzip_aes_key(b"pw", salt=b"s", cycles=25)
+        sevenzip_aes.derive_sevenzip_aes_key(b"pw", salt=b"s", cycles=25)
 
 
 # --- exception translation -------------------------------------------------------------
