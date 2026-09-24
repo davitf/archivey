@@ -1190,9 +1190,12 @@ class BaseArchiveReader(ArchiveReader):
                         self._listing_tracker.account_link_target(
                             member.link_target, enforce=enforce_listing_limits
                         )
+            # One memo per finalize: every link on a walked chain shares its terminal,
+            # so a chain of N links costs O(N) rather than a fresh walk per member.
+            terminals: dict[int, ArchiveMember | None] = {}
             for member in members:
                 if member.is_link and member.link_target:
-                    self._resolve_link(member, by_name_lists)
+                    self._resolve_link(member, by_name_lists, terminals)
 
         try:
             if child_scope:
@@ -1920,26 +1923,53 @@ class BaseArchiveReader(ArchiveReader):
         self,
         member: ArchiveMember,
         by_name_lists: dict[str, list[ArchiveMember]],
+        terminals: dict[int, ArchiveMember | None],
     ) -> None:
-        """Resolve link_target to the fully dereferenced link_target_member."""
-        visited: set[int] = set()
-        current = member
+        """Resolve link_target to the fully dereferenced link_target_member.
 
-        while current.is_link and current.link_target:
-            if current._member_id is None:
-                return
+        ``terminals`` memoizes, by ``_member_id``, where a walk from each link ends:
+        the terminal member, or ``None`` for a cycle or a dead end. A walk depends only
+        on the node it is at (the hardlink lookup keys off that node's own id, not the
+        member the walk started from), so every link on a path shares the path's
+        terminal. Recording it for all of them makes finalizing N chained links O(N)
+        instead of O(N²).
+
+        A cycle or dead end does not set ``link_target_member``; it does not clear it
+        either, so a value a streaming pass already stamped (resolved against the members
+        before this one only) survives. That is bookkeeping, not an error:
+        :meth:`_open_with_link_follow` is where a read of an unresolved link raises.
+        """
+        path: list[int] = []
+        on_path: set[int] = set()
+        current = member
+        terminal: ArchiveMember | None
+        while True:
+            if not (current.is_link and current.link_target):
+                terminal = current
+                break
             member_id = current._member_id
-            if member_id in visited:
+            if member_id is None:
+                terminal = None
+                break
+            if member_id in terminals:
+                terminal = terminals[member_id]
+                break
+            if member_id in on_path:
                 # Cycle detected; leave link_target_member unset (None).
-                return
-            visited.add(member_id)
+                terminal = None
+                break
+            path.append(member_id)
+            on_path.add(member_id)
             target = self._lookup_link_target_for_member(current, by_name_lists)
             if target is None:
-                return
+                terminal = None
+                break
             current = target
 
-        if current is not member:
-            member.link_target_member = current
+        for member_id in path:
+            terminals[member_id] = terminal
+        if terminal is not None and terminal is not member:
+            member.link_target_member = terminal
 
     def _finalize_pass_links(self, *, error: ArchiveyError | None = None) -> None:
         """Resolve all links after a streaming forward pass reaches EOF or terminal damage."""
@@ -2130,7 +2160,14 @@ class BaseArchiveReader(ArchiveReader):
             token = self._state.acquire_pass("__iter__")
             try:
                 self._enter_forward_pass("__iter__")
-                yield from self._begin_forward_pass()
+                for member in self._begin_forward_pass():
+                    # Suspended at the yield: this thread runs the caller's loop body,
+                    # which is not re-entry (see OperationToken.suspended).
+                    self._state.set_suspended(token, True)
+                    try:
+                        yield member
+                    finally:
+                        self._state.set_suspended(token, False)
             finally:
                 self._state.release_pass(token)
             return
@@ -2401,50 +2438,62 @@ class BaseArchiveReader(ArchiveReader):
         member: ArchiveMember,
         visited: set[int],
     ) -> ArchiveStream:
-        if member.type in (MemberType.SYMLINK, MemberType.HARDLINK):
-            if member._member_id is None:
+        """Open ``member``, following links hop by hop until a non-link member.
+
+        A loop, not recursion: an archive's chain can be longer than the interpreter's
+        recursion limit, and ``RecursionError`` is outside the library's error contract.
+
+        The cycle policy differs from :meth:`_resolve_link` on purpose. That one is
+        listing bookkeeping and leaves ``link_target_member`` unset on a cycle or dead
+        end; this one is a caller asking for bytes, so it raises ``ReadError`` /
+        ``LinkTargetNotFoundError``. Do not unify them.
+        """
+        current = member
+        while current.type in (MemberType.SYMLINK, MemberType.HARDLINK):
+            if current._member_id is None:
                 raise LinkTargetNotFoundError(
                     "Link target is unknown",
-                    member_name=member.name,
+                    member_name=current.name,
                 )
-            member_id = member._member_id
+            member_id = current._member_id
             if member_id in visited:
                 raise ReadError(
-                    f"Link cycle detected at '{member.name}'",
-                    member_name=member.name,
+                    f"Link cycle detected at '{current.name}'",
+                    member_name=current.name,
                 )
             visited.add(member_id)
-            if member.link_target_member is not None:
-                return self._open_with_link_follow(member.link_target_member, visited)
-            if member.link_target is None:
-                self._read_link_target_on_request(member)
-            if member.link_target is None:
+            if current.link_target_member is not None:
+                current = current.link_target_member
+                continue
+            if current.link_target is None:
+                self._read_link_target_on_request(current)
+            if current.link_target is None:
                 raise LinkTargetNotFoundError(
                     "Link target is unknown",
-                    member_name=member.name,
+                    member_name=current.name,
                 )
             materialized = self._materialized
             by_name_lists = (
                 materialized.by_name_lists if materialized is not None else None
             )
             target = (
-                self._lookup_link_target_for_member(member, by_name_lists)
+                self._lookup_link_target_for_member(current, by_name_lists)
                 if by_name_lists is not None
                 else None
             )
             if target is None:
                 raise LinkTargetNotFoundError(
                     "Link target not found in archive",
-                    member_name=member.name,
-                    link_target=member.link_target,
+                    member_name=current.name,
+                    link_target=current.link_target,
                 )
-            return self._open_with_link_follow(target, visited)
-        if member.type in (MemberType.DIRECTORY, MemberType.ANTI, MemberType.OTHER):
+            current = target
+        if current.type in (MemberType.DIRECTORY, MemberType.ANTI, MemberType.OTHER):
             raise ArchiveyUsageError(
-                f"Cannot open member {quoted(member.name)}: type is {member.type.value!r} "
+                f"Cannot open member {quoted(current.name)}: type is {current.type.value!r} "
                 f"(not a file)"
             )
-        return self._open_member(member)
+        return self._open_member(current)
 
     def read(self, member: str | ArchiveMember) -> bytes:
         """Read member data as bytes."""
@@ -2482,7 +2531,13 @@ class BaseArchiveReader(ArchiveReader):
                     current = None
                 if selector is None or selector(m):
                     current = stream
-                    yield m, stream
+                    # Suspended at the yield: this thread runs the caller's loop body,
+                    # which is not re-entry (see OperationToken.suspended).
+                    self._state.set_suspended(token, True)
+                    try:
+                        yield m, stream
+                    finally:
+                        self._state.set_suspended(token, False)
                 elif stream is not None:
                     stream.close()
         finally:
@@ -2585,11 +2640,16 @@ class BaseArchiveReader(ArchiveReader):
         """
         if self._closed:
             return
-        # Only mark closed after mark_reader_closed succeeds (or is a no-op because another
-        # thread already closed). Raising on an active pass must leave the reader open --
-        # so member streams are closed only once the transition has actually happened.
-        run_teardown = self._state.mark_reader_closed()
-        self._closed = True
+        # Raising on an active pass must leave the reader open -- so member streams are
+        # closed only once the transition has actually happened. Its "run teardown now"
+        # result is not needed: _maybe_teardown() below asks claim_teardown() directly.
+        # Every step below is idempotent on its own (a spent claim refuses), so
+        # ``_closed`` is set only at the end: an interrupt in between leaves teardown
+        # reachable instead of short-circuited by the check above -- by the next close()
+        # when no stream lease survives, and otherwise by the last stream's own close,
+        # whose lease callback runs _maybe_teardown(). Stream shutdown itself is not
+        # retried (see ReaderState.claim_stream_shutdown).
+        self._state.mark_reader_closed()
         # Exactly one caller closes the streams. mark_reader_closed() returns False both
         # when this thread transitioned with leases outstanding and when a peer had
         # already closed, so it cannot tell the owner from a late caller -- and
@@ -2597,8 +2657,13 @@ class BaseArchiveReader(ArchiveReader):
         # close() calls could otherwise both reach inner.close() on the same stream.
         if self._state.claim_stream_shutdown():
             self._close_public_streams()
-        if run_teardown:
-            self._maybe_teardown()
+        # Unconditional: claim_teardown() refuses while a lease remains or once claimed,
+        # so this is a no-op wherever mark_reader_closed() returned False for a good
+        # reason. It is not a no-op after a close() interrupted just past the transition:
+        # the retry's mark_reader_closed() returns False (lifecycle is no longer OPEN)
+        # although nothing tore the archive down.
+        self._maybe_teardown()
+        self._closed = True
 
     def _close_public_streams(self) -> None:
         """Close member streams that are still open, in the order they were opened.

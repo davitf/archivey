@@ -210,9 +210,9 @@ def test_concurrent_close_shuts_streams_down_once(tmp_path: Path) -> None:
 
     reader._close_public_streams = counting_shutdown  # type: ignore[attr-defined]
 
-    # Force both callers past the `self._closed` gate and out of mark_reader_closed()
-    # together; otherwise whichever thread is first usually sets _closed before the
-    # other looks, and the window never opens.
+    # Pin the interleaving: both callers are inside mark_reader_closed() at once and
+    # leave it together, so both then race for claim_stream_shutdown(). Without the
+    # barriers the first thread usually finishes close() before the second starts.
     entered = threading.Barrier(2)
     released = threading.Barrier(2)
     real_mark = reader._state.mark_reader_closed
