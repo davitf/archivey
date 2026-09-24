@@ -398,8 +398,9 @@ class ArchiveyConfig:
     # How many references to diagnostics the library keeps per collector: each one
     # retained in the summary takes a slot, and each attached to a member another.
     # Counts stay exact past it. A random-access member walk also keeps, until it ends,
-    # the code of each diagnostic it emitted typing a member, so a walk started over
-    # after a failure can replay them; that holds no diagnostic and takes no slot.
+    # a record a walk started over after a failure replays: the codes of the
+    # diagnostics emitted for the members it has built, and the full diagnostics only
+    # for the member being typed. That record takes no slot.
     max_retained_diagnostic_references: int = 256
     on_diagnostic: OnDiagnostic | None = None
 
