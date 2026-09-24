@@ -64,6 +64,15 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A RAR archive whose path starts with `-` reads correctly.** `unrar` took a relative
+  path such as `-inul.rar` for a switch, so every compressed member of a valid archive
+  read as truncated. archivey now ends switch parsing with `--` before the path.
+- **A hung `unrar` on `PATH` costs one probe, not one per member read.** archivey checks
+  which `unrar` or `rar` it has by running it once, with a 10-second limit. A binary
+  that timed out was not remembered, so it was probed again, for another 10 seconds, on
+  every member read. A timeout is now remembered for that binary, and a `rar` further
+  along `PATH` is used instead when there is one. A binary replaced on disk is probed
+  again.
 - **An encrypted RAR derives each key once per open.** RAR5 key derivation costs what
   the archive declares, up to 2²⁴ PBKDF2 rounds (a few seconds each). A header-encrypted
   volume set derived the header key and password check again on every part, so a
