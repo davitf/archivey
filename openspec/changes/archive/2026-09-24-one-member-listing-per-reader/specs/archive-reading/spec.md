@@ -98,6 +98,13 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
   and a filled target SHALL NOT be read again. A report taken afterwards therefore shows
   targets for the links read this way and `None` for the rest. `False` is a promise about
   what the reader reads on its own, not about what a member ends up holding.
+- Under either setting, a read made for extraction can show that the member is not a
+  link: a reparse-flagged member whose data is no reparse buffer, which listing would
+  have re-typed to a file. `extract_all` SHALL then re-type it the same way, call its
+  `filter` again on the re-typed member, and write it as a file. In random access it
+  opens the member for its content. A streaming pass has already passed that content,
+  so it SHALL fail the member under `OnError`; it SHALL NOT report it as a link with no
+  target.
 
 #### Scenario: link-target setting matrix
 
@@ -113,6 +120,7 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
 | ZIP with two symlinks, `read_link_targets=False`, `extract_all(members=["link-a"])`, then `members()` | `link-a` has its target; `link-b` has `link_target=None` |
 | ZIP symlink, `read_link_targets=False`, password supplied, `reader.open("link")` | The target is read, then the link is followed |
 | Streaming `extract_all()` over a ZIP symlink, default config | The target is read before the link is written; the link is extracted |
+| ZIP member flagged as a reparse point whose data is no reparse buffer, `read_link_targets=False`, `extract_all()` | The filter sees it as a link, then again as a file; random access writes its content; a streaming pass fails it under `OnError` |
 
 ## MODIFIED Requirements
 

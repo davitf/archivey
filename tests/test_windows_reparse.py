@@ -433,6 +433,63 @@ def test_the_junction_and_the_symlink_are_indistinguishable_on_disk() -> None:
 # --------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("read_link_targets", [True, False])
+@pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])
+def test_extraction_writes_a_reparse_member_that_is_not_a_link_as_a_file(
+    tmp_path: Path, read_link_targets: bool, streaming: bool
+) -> None:
+    """Reading the target during extraction re-types the member; it is written as that.
+
+    Under `read_link_targets=False`, and in a streaming pass under the default, the
+    read that shows the data is no reparse buffer comes after the pass yielded the
+    member as a link, with no data stream. Random access opens the member then. A
+    forward-only pass is already past the content, so that case fails loudly; it must
+    never become a clean `LINK_TARGET_UNAVAILABLE` with nothing written.
+    """
+    archive = tmp_path / "odd_reparse.zip"
+    _zip_with_reparse_member(
+        archive,
+        name="weird",
+        attributes=0x20 | FILE_ATTRIBUTE_REPARSE_POINT,
+        data=b"not a reparse buffer",
+    )
+    dest = tmp_path / "out"
+    config = ArchiveyConfig(read_link_targets=read_link_targets)
+    with open_archive(archive, streaming=streaming, config=config) as opened:
+        (result,) = opened.extract_all(dest, on_error=OnError.CONTINUE).results
+    assert result.member.type is MemberType.FILE
+    if streaming:
+        assert result.status is ExtractionStatus.FAILED
+        assert "streaming pass" in str(result.error)
+        assert not os.path.lexists(dest / "weird")
+    else:
+        assert result.status is ExtractionStatus.EXTRACTED
+        assert (dest / "weird").read_bytes() == b"not a reparse buffer"
+
+
+def test_a_filter_sees_a_reparse_member_again_once_it_is_known_to_be_a_file(
+    tmp_path: Path,
+) -> None:
+    """The filter decided on a link that does not exist, so it decides again."""
+    archive = tmp_path / "odd_reparse.zip"
+    _zip_with_reparse_member(
+        archive,
+        name="weird",
+        attributes=0x20 | FILE_ATTRIBUTE_REPARSE_POINT,
+        data=b"not a reparse buffer",
+    )
+    seen: list[MemberType] = []
+
+    def recording(member: ArchiveMember) -> ArchiveMember:
+        seen.append(member.type)
+        return member
+
+    config = ArchiveyConfig(read_link_targets=False)
+    with open_archive(archive, config=config) as opened:
+        opened.extract_all(tmp_path / "out", filter=recording)
+    assert seen == [MemberType.SYMLINK, MemberType.FILE]
+
+
 def _zip_with_reparse_member(
     path: Path, *, name: str, attributes: int, data: bytes
 ) -> None:

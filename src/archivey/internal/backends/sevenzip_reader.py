@@ -515,6 +515,9 @@ class SevenZipReader(BaseArchiveReader):
 
         def _cleanup() -> None:
             self._pass_link = None
+            # A finished pass has applied what it captured; an abandoned one never will,
+            # and a later read of those links opens them directly.
+            self._link_data.clear()
             if solid is not None:
                 solid.close()
 

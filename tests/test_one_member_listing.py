@@ -22,9 +22,14 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionStatus, open_archive
-from archivey.config import ArchiveyConfig, PasswordRequest
-from archivey.diagnostics import DiagnosticCode
-from archivey.exceptions import ReadError, TruncatedError
+from archivey.config import ArchiveyConfig, ListingLimits, PasswordRequest
+from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
+from archivey.exceptions import (
+    DiagnosticRaisedError,
+    ReadError,
+    ResourceLimitError,
+    TruncatedError,
+)
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.measurement import enable_measurement
 from archivey.reader import ArchiveReader
@@ -310,11 +315,19 @@ def _failing_once(
     failed = [False]
 
     def walk(self: BaseArchiveReader) -> Iterator[ArchiveMember]:
-        for index, member in enumerate(original(self)):
+        members = original(self)
+        index = 0
+        while True:
+            # Before the backend types the next member, as an interrupt between two
+            # members lands.
             if index == at and not failed[0]:
                 failed[0] = True
                 raise RuntimeError("interrupted walk")
+            member = next(members, None)
+            if member is None:
+                return
             yield member
+            index += 1
 
     monkeypatch.setattr(cls, "_iter_members", walk)
 
@@ -339,6 +352,79 @@ def test_a_failed_random_access_walk_is_discarded_and_walked_again(
             ("c.txt", 2),
         ]
         assert reader.members_report_if_available().members == tuple(listed)  # type: ignore[union-attr]
+
+
+_BIDI = DiagnosticCode.MEMBER_NAME_BIDI_CONTROL
+_NORMALIZED = DiagnosticCode.MEMBER_NAME_NORMALIZED
+
+
+def _retry_zip(tmp_path: Path) -> Path:
+    """A presentation diagnostic and a typing-time one before the walk fails, one after."""
+    return _zip(
+        tmp_path,
+        [
+            ("re\u202evil.txt", b"1", False),
+            ("./b.txt", b"2", False),
+            ("./c.txt", b"3", False),
+        ],
+    )
+
+
+def test_a_walk_walked_again_emits_each_member_diagnostic_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ZIP builds fresh objects on every walk; the retry must not count them again."""
+    with open_archive(_retry_zip(tmp_path)) as reader:
+        _failing_once(monkeypatch, type(reader), at=2)
+        with pytest.raises(RuntimeError):
+            reader.members()
+        listed = reader.members()
+        counts = reader.diagnostics.counts
+        assert counts[_BIDI] == 1
+        assert counts[_NORMALIZED] == 2
+        # The objects handed out are the ones the diagnostics were attached to.
+        assert [d.code for d in listed[0].diagnostics] == [_BIDI]
+        assert [d.code for d in listed[1].diagnostics] == [_NORMALIZED]
+        assert [d.code for d in listed[2].diagnostics] == [_NORMALIZED]
+
+
+def test_a_member_refused_by_the_limit_is_not_counted_again_by_a_pass(
+    tmp_path: Path,
+) -> None:
+    """The refused member was typed and checked before the limit fired.
+
+    A ``stream_members()`` pass does not enforce listing limits, so it walks again
+    over the member ``members()`` refused.
+    """
+    path = _zip(
+        tmp_path,
+        [
+            ("a.txt", b"1", False),
+            ("b.txt", b"2", False),
+            ("re\u202evil.txt", b"3", False),
+        ],
+    )
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
+    with open_archive(path, config=config) as reader:
+        with pytest.raises(ResourceLimitError):
+            reader.members()
+        passed = [member for member, _stream in reader.stream_members()]
+        assert len(passed) == 3
+        assert reader.diagnostics.counts[_BIDI] == 1
+        assert [d.code for d in passed[2].diagnostics] == [_BIDI]
+
+
+def test_a_strict_policy_refuses_again_on_a_walk_walked_again(
+    tmp_path: Path,
+) -> None:
+    """A presentation check whose emit raised has not run; the retry raises too."""
+    path = _zip(tmp_path, [("a.txt", b"1", False), ("re\u202evil.txt", b"2", False)])
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with open_archive(path, config=config) as reader:
+        with pytest.raises(DiagnosticRaisedError):
+            reader.members()
+        with pytest.raises(DiagnosticRaisedError):
+            reader.members()
 
 
 def test_a_failed_streaming_walk_poisons_the_reader(
@@ -502,6 +588,18 @@ def test_7z_streaming_pass_reads_links_through_its_own_decode(
         assert _decoded(reader) == expected
 
 
+def test_7z_abandoned_pass_keeps_no_link_bytes() -> None:
+    """A pass left before its end never applies what it captured, so it keeps none."""
+    with open_archive(_LINKS_SOLID, streaming=True) as reader:
+        seen = 0
+        for member, _stream in reader.stream_members():
+            seen += member.type is MemberType.SYMLINK
+            if seen == 2:
+                break
+        assert seen == 2
+        assert _base(reader)._link_data == {}  # type: ignore[attr-defined]
+
+
 @pytest.mark.parametrize("streaming", _MODES)
 def test_7z_nonsolid_decodes_each_link_folder_once(streaming: bool) -> None:
     with (
@@ -595,7 +693,7 @@ def _encrypted(fmt: str) -> Path:
 @pytest.mark.parametrize("fmt", ["7z", "zip"])
 @pytest.mark.parametrize("streaming", _MODES)
 def test_without_link_reads_a_pass_reads_and_prompts_for_nothing(
-    fmt: str, streaming: bool, tmp_path: Path
+    fmt: str, streaming: bool
 ) -> None:
     provider = _Provider()
     with (

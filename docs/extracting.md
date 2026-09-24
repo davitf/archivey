@@ -57,16 +57,14 @@ archivey.extract("archive.zip", "out/")
 - **A link for which the archive records no target** is recorded
   `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still extracts.
   Nothing can be written for it, and nothing about the extraction went wrong, so it is
-  not a failure and `OnError.STOP` does not abort on it. In a streaming read that holds
-  for the omissions a reader can see in the archive's metadata, which is where every
-  such link these tools actually write comes from; one that is legible only in the
-  member's own data is not known until the end of the pass, too late to be anything but
-  a per-member failure. The omission is the archive's,
-  and it is reported as `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an
-  archive-integrity code, so `DiagnosticPolicy.strict()` still refuses such an archive
-  outright. A link whose target the archive *does* carry but this read could not reach —
-  encrypted, compressed or split across volumes — is a per-member failure instead, because recording it as an outcome would drop a
-  member the archive describes in full while reporting success.
+  not a failure and `OnError.STOP` does not abort on it. That holds in a streaming read
+  too: extraction reads a link's data before writing it, so an omission legible only in
+  that data is seen in time. The omission is the archive's, and it is reported as
+  `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an archive-integrity code,
+  so `DiagnosticPolicy.strict()` still refuses such an archive outright. A link whose
+  target the archive *does* carry but this read could not reach — encrypted, compressed
+  or split across volumes — is a per-member failure instead, because recording it as an
+  outcome would drop a member the archive describes in full while reporting success.
 - **A link target longer than 4096 bytes** is treated as corrupt or malicious when it is
   stored as the member's data (ZIP, 7z, RAR4). No filesystem path that long exists on
   Linux or macOS, and the data can be compressed, so reading it whole would let a small

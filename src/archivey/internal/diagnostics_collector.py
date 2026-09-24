@@ -16,7 +16,8 @@ import logging
 import threading
 import uuid
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -87,6 +88,28 @@ class DiagnosticCollector:
         # legitimate concurrent emits on separate threads do not read as reentrancy, while
         # a callback re-entering emit on its own thread still trips the guard.
         self._emitting_threads: set[int] = set()
+        # Thread ids inside ``replaying()``, whose emits are the repeats of ones already
+        # recorded. Per thread, so another thread's stream on the same reader still counts.
+        self._replaying_threads: set[int] = set()
+
+    @contextmanager
+    def replaying(self) -> Iterator[None]:
+        """Drop this thread's emits for the duration: they repeat recorded ones.
+
+        For a reader re-running work whose diagnostics were already emitted, such as a
+        random-access member walk started over after a failure. Nothing is counted,
+        retained, logged, attached or called back, and nothing is raised: an emit the
+        policy raises on stopped the first run, so the work it would repeat never
+        completed and is not being replayed.
+        """
+        thread_id = threading.get_ident()
+        with self._lock:
+            self._replaying_threads.add(thread_id)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._replaying_threads.discard(thread_id)
 
     @property
     def policy(self) -> DiagnosticPolicy:
@@ -188,6 +211,14 @@ class DiagnosticCollector:
         thread_id = threading.get_ident()
 
         with self._lock:
+            if thread_id in self._replaying_threads:
+                return Diagnostic(
+                    occurrence_id=uuid.uuid4().hex,
+                    code=code,
+                    severity=severity,
+                    message=message,
+                    context=context,
+                )
             if thread_id in self._emitting_threads:
                 raise UnsupportedOperationError(
                     "Diagnostic callback/reentrancy: cannot drive another operation on "

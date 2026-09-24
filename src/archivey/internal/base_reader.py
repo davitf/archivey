@@ -448,7 +448,11 @@ class BaseArchiveReader(ArchiveReader):
         # backend's generator while the walk is unfinished; ``_walk_done`` is set when it
         # ends, cleanly or on terminal damage, and ``_walk_error`` holds that damage.
         # ``_walk_failure`` poisons a streaming walk that failed any other way, since
-        # its prefix was already handed out and cannot be walked again.
+        # its prefix was already handed out and cannot be walked again. ``_walk_built``
+        # keeps every member object a walk has produced, by position, until one ends: a
+        # random-access walk started over after a failure replays those positions onto
+        # the same objects, with their diagnostics already emitted and attached.
+        # ``_walk_presented`` counts the positions whose presentation checks have run.
         self._listed: list[ArchiveMember] = []
         self._listed_by_name: dict[str, list[ArchiveMember]] = {}
         self._walk: Iterator[ArchiveMember] | None = None
@@ -456,6 +460,8 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_error: CorruptionError | TruncatedError | None = None
         self._walk_failure: BaseException | None = None
         self._walk_pulling: bool = False
+        self._walk_built: list[ArchiveMember] = []
+        self._walk_presented: int = 0
         # Set by open_archive on the reader it is about to return; read only by the
         # empty-listing check in _publish_materialized. None for a reader built directly.
         self._format_provenance: FormatProvenance | None = None
@@ -1259,17 +1265,27 @@ class BaseArchiveReader(ArchiveReader):
             if self._walk is None:
                 self._account_archive_comment(enforce=enforce)
                 self._walk = self._iter_members()
+            position = len(self._listed)
+            replaying = position < len(self._walk_built)
             try:
-                member = next(self._walk)
+                if replaying:
+                    # A walk started over after a discarded failure. The backend types
+                    # this member again, and a backend that builds fresh objects (ZIP,
+                    # ISO, TAR) emits its typing-time diagnostics again: drop those, and
+                    # keep the object the first walk built, which carries them.
+                    with self._diagnostics_collector.replaying():
+                        next(self._walk)
+                    member = self._walk_built[position]
+                else:
+                    member = next(self._walk)
+                    self._walk_built.append(member)
             except StopIteration:
                 self._end_walk(None)
                 return None
             except (CorruptionError, TruncatedError) as exc:
                 self._end_walk(exc)
                 return None
-            self._register_member(
-                len(self._listed), member, enforce_listing_limits=enforce
-            )
+            self._register_member(position, member, enforce_listing_limits=enforce)
             self._index_member_name(self._listed_by_name, member)
             self._listed.append(member)
             return member
@@ -1290,6 +1306,7 @@ class BaseArchiveReader(ArchiveReader):
         self._walk = None
         self._walk_done = True
         self._walk_error = error
+        self._walk_built = []
         if error is not None:
             self._stamp_error_context(error)
         _apply_last_entry_wins_is_current(self._listed)
@@ -1306,7 +1323,8 @@ class BaseArchiveReader(ArchiveReader):
             self._walk_failure = exc
             return
         # Random access hands out no member before the walk ends, so nobody holds the
-        # prefix. A later call starts over, and ``_iter_members`` yields the same order.
+        # prefix. A later call starts over, and ``_iter_members`` yields the same order;
+        # ``_pull_member`` replays the positions ``_walk_built`` already holds.
         self._listed = []
         self._listed_by_name = {}
         self._listing_tracker.reset()
@@ -1437,21 +1455,23 @@ class BaseArchiveReader(ArchiveReader):
     ) -> None:
         """Assign identity, run backend-independent presentation checks, and account.
 
-        Runs once per member, when the walk yields it. A member already carrying an id
-        is one a backend cached (7z, RAR) and is re-yielding to a walk started over
-        after a discarded failure (``_abandon_walk``): it keeps the same id, and its
-        presentation checks, which already ran, are not repeated. The listing tracker
-        was reset with the discarded walk, so it is counted again.
+        Runs when the walk pulls the member at ``idx``. A walk started over after a
+        discarded failure (``_abandon_walk``) pulls the same positions onto the same
+        objects (``_pull_member``); their presentation checks, counted by position in
+        ``_walk_presented``, are not repeated, so one deceptive name is one finding
+        whichever backend built it. A check whose emit raised is not counted as run, so
+        a strict policy refuses again on the retry. The listing tracker was reset with
+        the discarded walk, so the member is counted again.
         """
-        first_sighting = member._member_id is None
         member._member_id = idx
         member._archive_id = self._archive_id
-        if first_sighting:
+        if idx >= self._walk_presented:
             emit_member_name_bidi_control(
                 self._diagnostics_collector,
                 member=member,
                 archive_name=self._archive_name,
             )
+            self._walk_presented = idx + 1
         self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
