@@ -283,6 +283,40 @@ def test_interrupt_after_the_transition_still_tears_down(
     assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
+@pytest.mark.parametrize(
+    ("target", "method"),
+    [
+        # Between the transition and the reader's lease drop.
+        ("state", "_drop_reader_lease_locked"),
+        # Past the transition, in close()'s own stream-shutdown step.
+        ("state", "claim_stream_shutdown"),
+        ("reader", "_close_public_streams"),
+    ],
+)
+def test_interrupted_close_is_finished_by_the_next_close(
+    monkeypatch: pytest.MonkeyPatch, target: str, method: str
+) -> None:
+    reader = open_archive(io.BytesIO(_zip_with_bidi_name()))
+    assert isinstance(reader, BaseArchiveReader)
+    state = reader._state
+    obj: object = state if target == "state" else reader
+    real = getattr(obj, method)
+    calls: list[int] = []
+
+    def interrupt_once(*args: object, **kwargs: object) -> object:
+        calls.append(1)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(obj, method, interrupt_once)
+    with pytest.raises(KeyboardInterrupt):
+        reader.close()
+    assert state.lifecycle is LifecycleState.READER_CLOSED
+    reader.close()
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+
+
 # ---------------------------------------------------------------------------
 # S17-K10 / S17-K11: long symlink chains
 # ---------------------------------------------------------------------------

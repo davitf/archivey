@@ -51,7 +51,7 @@ the deduplication bookkeeping itself lives with the emitter, which is what knows
 | Code → `IGNORE` | Count++; no retain/attach/log/callback/raise |
 | Callback reads `reader.diagnostics` | Sees current event counted/retained; no lock held |
 | Callback raises during `RAISE` | Callback error propagates; no replacement `DiagnosticRaisedError`; no `OnError.CONTINUE` |
-| Callback starts op on same emitting reader | `UnsupportedOperationError` |
+| Callback starts op on same emitting reader | `ArchiveyUsageError` from the reader's operation gate |
 
 #### Scenario: deduplicated code policy matrix
 

@@ -871,7 +871,9 @@ when configured"); like `listing_limits`, it holds for the reader's lifetime.
 
 `on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
 reads from a callback are allowed. Starting another operation on the same
-emitting reader/stream SHALL raise `UnsupportedOperationError`; other readers OK.
+emitting reader/stream SHALL be rejected: the reader's operation gate raises
+`ArchiveyUsageError`, and a re-entrant call that gets as far as emitting a diagnostic
+of its own raises `UnsupportedOperationError` from the collector; other readers OK.
 Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 (`diagnostics` / `reader-concurrency`).
 

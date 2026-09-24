@@ -149,6 +149,10 @@ class ReaderState:
         self._live_streams: set[int] = set()
         self._reservations: set[LiveStreamReservation] = set()
         self._lease_count = 1  # reader itself holds one lease until close
+        # Whether that reader lease is still counted. A flag, so dropping it is
+        # idempotent: a close interrupted after the transition but before the drop is
+        # finished by the next mark_reader_closed() instead of stranding the lease.
+        self._reader_lease_held = True
         self._teardown_claimed = False
         self._stream_shutdown_claimed = False
         # Library-internal open windows (extract_all's coordinator, first-touch link
@@ -465,6 +469,10 @@ class ReaderState:
                 if self._closing or self.lifecycle is not LifecycleState.OPEN:
                     while self.lifecycle is LifecycleState.OPEN and self._closing:
                         self._close_cv.wait()
+                    if self.lifecycle is LifecycleState.READER_CLOSED:
+                        # A closer interrupted between the transition and its lease
+                        # drop left the reader's lease counted. Finish the drop here.
+                        return self._drop_reader_lease_locked()
                     if self.lifecycle is LifecycleState.OPEN:
                         # The draining closer was interrupted (its except arm below
                         # reset ``_closing``), so nothing closed the reader. Returning
@@ -487,11 +495,10 @@ class ReaderState:
                 try:
                     while self._workers:
                         self._workers_cv.wait()
-                    # Transition and lease drop are adjacent, notify last: an interrupt
-                    # between them would leave READER_CLOSED with the reader's lease
-                    # still held, and teardown could then never be claimed.
+                    # Notify last. If an interrupt lands after the transition but
+                    # before the lease drop, the retry branch above finishes the drop.
                     self.lifecycle = LifecycleState.READER_CLOSED
-                    run_teardown = self._release_lease_locked()
+                    run_teardown = self._drop_reader_lease_locked()
                     self._close_cv.notify_all()
                     return run_teardown
                 except BaseException:
@@ -542,6 +549,13 @@ class ReaderState:
         swallow path."""
         with self._lock:
             self.lifecycle = LifecycleState.TEARDOWN_COMPLETE
+
+    def _drop_reader_lease_locked(self) -> bool:
+        """Drop the reader's own lease, once. True → the caller should run teardown."""
+        if not self._reader_lease_held:
+            return False
+        self._reader_lease_held = False
+        return self._release_lease_locked()
 
     def _release_lease_locked(self) -> bool:
         if self._lease_count > 0:

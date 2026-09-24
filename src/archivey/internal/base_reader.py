@@ -2640,13 +2640,13 @@ class BaseArchiveReader(ArchiveReader):
         """
         if self._closed:
             return
-        # Only mark closed after mark_reader_closed succeeds (or is a no-op because another
-        # thread already closed). Raising on an active pass must leave the reader open --
-        # so member streams are closed only once the transition has actually happened.
-        # Its "run teardown now" result is not needed: _maybe_teardown() below asks
-        # claim_teardown() directly.
+        # Raising on an active pass must leave the reader open -- so member streams are
+        # closed only once the transition has actually happened. Its "run teardown now"
+        # result is not needed: _maybe_teardown() below asks claim_teardown() directly.
+        # Every step below is idempotent on its own (a spent claim refuses), so
+        # ``_closed`` is set only at the end: an interrupt anywhere in between leaves the
+        # next close() able to finish the job instead of returning at the check above.
         self._state.mark_reader_closed()
-        self._closed = True
         # Exactly one caller closes the streams. mark_reader_closed() returns False both
         # when this thread transitioned with leases outstanding and when a peer had
         # already closed, so it cannot tell the owner from a late caller -- and
@@ -2660,6 +2660,7 @@ class BaseArchiveReader(ArchiveReader):
         # the retry's mark_reader_closed() returns False (lifecycle is no longer OPEN)
         # although nothing tore the archive down.
         self._maybe_teardown()
+        self._closed = True
 
     def _close_public_streams(self) -> None:
         """Close member streams that are still open, in the order they were opened.
