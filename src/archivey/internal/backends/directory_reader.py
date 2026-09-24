@@ -78,6 +78,11 @@ def _link_extra(member_type: MemberType, is_junction: bool) -> MemberExtra:
     return extra
 
 
+# `os.DirEntry.stat` on Windows serves the data scandir already has, in which st_ino,
+# st_dev and st_nlink are always zero.
+_STAT_LACKS_IDENTITY = os.name == "nt"
+
+
 def _is_junction(entry: os.DirEntry[str]) -> bool:
     """True if a scandir entry is a Windows NTFS junction.
 
@@ -133,18 +138,24 @@ class DirectoryReader(BaseArchiveReader):
         # Order is a depth-first preorder: at each level the non-directory entries
         # (sorted by name), then each subdirectory's own member followed by its whole
         # subtree. Subdirectories are pushed in reverse so they pop in name order.
+        #
+        # `first_names` maps a multiply-linked file's (st_dev, st_ino) to the first name
+        # the walk gave it, so later names list as HARDLINK members pointing there, the
+        # way a tar records them. It lives for one walk: each pass decides afresh.
         pending: list[tuple[ArchiveMember, Path]] = []
-        yield from self._scan_level(self._root, "", pending)
+        first_names: dict[tuple[int, int], str] = {}
+        yield from self._scan_level(self._root, "", pending, first_names)
         while pending:
             member, path = pending.pop()
             yield member
-            yield from self._scan_level(path, member.name, pending)
+            yield from self._scan_level(path, member.name, pending, first_names)
 
     def _scan_level(
         self,
         directory: Path,
         rel_prefix: str,
         pending: list[tuple[ArchiveMember, Path]],
+        first_names: dict[tuple[int, int], str],
     ) -> Iterator[ArchiveMember]:
         """Yield one directory's non-directory entries; push its subdirectories.
 
@@ -199,6 +210,10 @@ class DirectoryReader(BaseArchiveReader):
             # replacement window only on POSIX; a replaced entry there still fails.
             try:
                 st = entry.stat(follow_symlinks=False)
+                if _STAT_LACKS_IDENTITY and stat.S_ISREG(st.st_mode):
+                    # Windows' scandir data has st_ino, st_dev and st_nlink all zero,
+                    # and hardlink detection needs them: one lstat per regular file.
+                    st = os.stat(entry.path, follow_symlinks=False)
                 is_symlink = stat.S_ISLNK(st.st_mode)
                 is_junction = not is_symlink and _is_junction(entry)
                 link_target = (
@@ -238,7 +253,17 @@ class DirectoryReader(BaseArchiveReader):
                 )
                 subdirs.append((member, Path(entry.path)))
             elif stat.S_ISREG(st.st_mode):
-                yield self._make_member(rel_path, st, MemberType.FILE, None)
+                first_name = None
+                if st.st_nlink > 1:
+                    first_name = first_names.setdefault(
+                        (st.st_dev, st.st_ino), rel_path
+                    )
+                if first_name is not None and first_name != rel_path:
+                    yield self._make_member(
+                        rel_path, st, MemberType.HARDLINK, first_name
+                    )
+                else:
+                    yield self._make_member(rel_path, st, MemberType.FILE, None)
             else:
                 yield self._make_member(rel_path, st, MemberType.OTHER, None)
 

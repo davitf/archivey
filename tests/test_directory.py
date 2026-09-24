@@ -692,3 +692,48 @@ def test_symlink_replaced_by_file_mid_scan_lists_as_file(
         "link": MemberType.FILE,
         "z.txt": MemberType.FILE,
     }
+
+
+# ---------------------------------------------------------------------------
+# Hardlinks: later names of one file list as HARDLINK, as a tar records them
+# ---------------------------------------------------------------------------
+
+
+def test_hardlinked_names_list_as_hardlink_to_the_first(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_bytes(b"shared")
+    (tmp_path / "sub").mkdir()
+    os.link(tmp_path / "a.txt", tmp_path / "b.txt")
+    os.link(tmp_path / "a.txt", tmp_path / "sub" / "c.txt")
+    with open_archive(tmp_path) as reader:
+        members = {m.name: m for m in reader.members()}
+        assert members["a.txt"].type == MemberType.FILE
+        assert members["a.txt"].size == 6
+        for name in ("b.txt", "sub/c.txt"):
+            assert members[name].type == MemberType.HARDLINK
+            assert members[name].link_target == "a.txt"
+            assert members[name].size is None
+            assert reader.read(name) == b"shared"
+
+
+def test_link_count_from_outside_the_tree_is_a_plain_file(tmp_path: Path) -> None:
+    # The file's other name is outside the root, so inside the tree it has one name.
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"x")
+    os.link(root / "a.txt", tmp_path / "outside.txt")
+    with open_archive(root) as reader:
+        assert [(m.name, m.type) for m in reader.members()] == [
+            ("a.txt", MemberType.FILE)
+        ]
+
+
+def test_hardlinked_directory_extracts_both_names(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_bytes(b"shared")
+    os.link(src / "a.txt", src / "b.txt")
+    dest = tmp_path / "dest"
+    with open_archive(src) as reader:
+        reader.extract_all(dest)
+    assert (dest / "a.txt").read_bytes() == b"shared"
+    assert (dest / "b.txt").read_bytes() == b"shared"

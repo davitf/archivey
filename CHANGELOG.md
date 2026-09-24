@@ -188,6 +188,11 @@ promise with that line; treat `0.2.0` as the first release of this library.
   already skipped an entry that vanished before it was inspected, with a
   `SCAN_ENTRY_VANISHED` diagnostic. A symlink that vanished between that check and the
   read of its target raised `FileNotFoundError` and lost the listing instead.
+- **A directory lists hardlinks the way a tar does.** Every name of a hardlinked file used
+  to list as its own `FILE`, so converting a directory to an archive stored the data once
+  per name and lost the link. The first name the walk reaches is now the `FILE`, and each
+  later name is a `HARDLINK` to it. On Windows this costs one extra `lstat` per regular
+  file, since the listing data there carries no inode or link count.
 - **A link for which the archive records no target no longer fails extraction.** It is
   recorded as the new `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still
   extracts, under either `OnError` value — nothing can be written for such a member, and
