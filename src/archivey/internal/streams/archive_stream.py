@@ -347,6 +347,7 @@ class ArchiveStream(ReadOnlyIOStream):
         # Only the handle returned to the caller gets a lease hook; a nested wrapper
         # is backend-internal and never registered, so there is nothing to drop.
         assert nested._on_close is None, "collapse would discard a nested lease hook"
+        nested._on_close = None  # keeps the clear under ``python -O``
         # Mark closed without touching stolen opener/inner.
         super(ArchiveStream, nested).close()
 

@@ -134,8 +134,9 @@ class SolidBlockReader:
     ``offset`` lazily, at open time, so a partially-read (or unread) member costs nothing
     until the next one is requested. Only one member is active at a time.
 
-    Pass ``lazy=True`` to defer that open until the first read on the returned handle
-    (``open_member`` still rejects an ``offset`` behind the current position at once). Closing a lazy
+    Pass ``lazy=True`` to defer that open until the first read on the returned handle.
+    ``open_member`` still rejects an ``offset`` behind the current position immediately,
+    before any read. Closing a lazy
     handle without reading never skip-decodes. Eager and lazy both return the same
     :class:`_MemberSlice` type — no extra wrapper layer.
 

@@ -367,7 +367,7 @@ The 8 of this cohort that remain (the five `solid.py` rows are done). `*` marks 
 
 | File | Open | Threads | Character |
 | --- | --- | --- | --- |
-| ~~`streamtools/solid.py`~~ | 0 | five from 2026-09-14 | **Done** in the hub batch C PR: `_drain_chunks` folded into `skip_forward` (per-chunk `on_chunk` callback), `_skip_to` inlined, redundant check dropped, `_claim_offset` renamed `_check_can_open_at`, "Vend" reworded |
+| ~~`streamtools/solid.py`~~ | 0 | five from 2026-09-14 | **Done** — [#439](https://github.com/davitf/archivey/pull/439): `_drain_chunks` folded into `skip_forward` (per-chunk `on_chunk` callback), `_skip_to` inlined, redundant check dropped, `_claim_offset` renamed `_check_can_open_at`, "Vend" reworded |
 | `backends/sevenzip_reader.py` | 3 | 51\*, 53, 54 | Two renames and a nit; 51's bug half was retracted, 53's own ask survives its follow-up |
 | `zip_aes.py` | 2 | 14, 15 | Placement, and the one live layering violation |
 | `volumes.py` | 1 | 12 | The docstring half; 13 was closed by #374 |
@@ -1127,7 +1127,7 @@ Thread 56 (the post-drain orphan) closed with [#365](https://github.com/davitf/a
 | ~~E — RAR reader~~ | `backends/rar_reader.py` | 43, 44, 46, 47, 48, 49 | **Done** — [#336](https://github.com/davitf/archivey/pull/336) |
 | **F — placement + odds** | `rar_detect.py`, `zip_aes.py`, `volumes.py`, `reader_state.py`, `sevenzip_reader.py` | 10, 11, 12, 14, 15, 51\*, 53, 54 | **Ready, and unblocked.** Eight threads — 13 was closed by #374, and thread 3 left when #342 answered it. **Threads 10/14 were answered on 2026-09-19 (`backends/`)**, so the placement is no longer a question; the move itself is the work, and it is what makes the rest mechanical |
 | ~~(orphan)~~ | `streamtools/base.py` | 56 | **Done** — [#365](https://github.com/davitf/archivey/pull/365), merged 2026-09-21. Both flags now use the class-flag-plus-constructor-override pattern `_SUBCLASS_CLOSES_INNER` already had |
-| ~~(new)~~ | five `solid.py` questions from 2026-09-14 | — | **Done** in the hub batch C PR, together with S18-K8 (two asserts in `ArchiveStream._collapse_nested`) |
+| ~~(new)~~ | five `solid.py` questions from 2026-09-14 | — | **Done** — [#439](https://github.com/davitf/archivey/pull/439), together with S18-K8 (two asserts in `ArchiveStream._collapse_nested`) |
 
 **Parcel F's prompt should carry three corrections** the follow-up comments make and the
 opening comments do not: thread 3 is closed and out of scope; thread 51 is a rename plus a

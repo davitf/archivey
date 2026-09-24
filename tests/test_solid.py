@@ -205,6 +205,36 @@ def test_skip_forward_helper_raises_on_short_stream() -> None:
         skip_forward(stream, 5)
 
 
+def test_skip_forward_credits_each_chunk() -> None:
+    from archivey.internal.streams.streamtools.solid import _SKIP_CHUNK
+
+    calls: list[int] = []
+    stream = io.BytesIO(b"x" * (2 * _SKIP_CHUNK + 5))
+    skip_forward(stream, 2 * _SKIP_CHUNK + 5, on_chunk=calls.append)
+    assert calls == [_SKIP_CHUNK, _SKIP_CHUNK, 5]
+
+
+def test_skip_forward_credits_partial_skip_before_eof() -> None:
+    from archivey.internal.streams.streamtools.solid import _SKIP_CHUNK
+
+    calls: list[int] = []
+    stream = io.BytesIO(b"x" * (_SKIP_CHUNK + 3))
+    with pytest.raises(EOFError):
+        skip_forward(stream, 2 * _SKIP_CHUNK, on_chunk=calls.append)
+    assert calls == [_SKIP_CHUNK, 3]
+
+
+def test_read_on_closed_lazy_member_raises_without_advancing() -> None:
+    block = _CountingBlock(b"AAAABBBB")
+    reader = SolidBlockReader(block)
+    member = reader.open_member(4, 4, lazy=True)
+    member.close()
+    with pytest.raises(ValueError, match="closed file"):
+        member.read(4)
+    # A closed pending slice must not skip the block on its own behalf.
+    assert block.bytes_read == 0
+
+
 def test_read_on_closed_member_raises() -> None:
     block = _CountingBlock(b"AAAABBBB")
     reader = SolidBlockReader(block)
