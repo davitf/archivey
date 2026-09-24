@@ -16,6 +16,8 @@ from typing import (
     overload,
 )
 
+from archivey.internal.enum_args import coerce_enum
+
 if TYPE_CHECKING:
     from archivey.cost import CostReceipt
     from archivey.diagnostics import Diagnostic
@@ -95,10 +97,43 @@ class ArchiveFormat:
     the class body; the ``ClassVar`` declarations exist so type checkers see them
     without per-use suppressions. ``_FORMAT_NAMES`` is built from the same
     assignments so ``repr`` / ``display_name`` stay in sync automatically.
+
+    A pair built by hand from strings — ``ArchiveFormat("raw_stream", "gz")``, say,
+    from a format round-tripped through a config file — is converted to the enum
+    members at construction, with the same spellings the other enum arguments take,
+    and an unknown spelling raises :class:`~archivey.ArchiveyUsageError` there.
     """
 
     container: ContainerFormat
     stream: StreamFormat
+
+    def __post_init__(self) -> None:
+        # Converted, not only checked: both enums mix in ``str``, so a string pair
+        # compares and hashes equal to the named format, while the code that decides
+        # behaviour tests ``container is ContainerFormat.RAW_STREAM`` and would take
+        # the other branch for it. Holding members makes the two agree. An enum
+        # member is left as it is, including one of another class: the codec
+        # registry is keyed on these pairs, and a codec registered from outside
+        # (``tests/test_codec_descriptor.py`` does) brings its own stream enum.
+        if not isinstance(self.container, Enum):
+            object.__setattr__(
+                self,
+                "container",
+                coerce_enum(
+                    self.container,
+                    ContainerFormat,
+                    call="ArchiveFormat()",
+                    param="container=",
+                ),
+            )
+        if not isinstance(self.stream, Enum):
+            object.__setattr__(
+                self,
+                "stream",
+                coerce_enum(
+                    self.stream, StreamFormat, call="ArchiveFormat()", param="stream="
+                ),
+            )
 
     ZIP: ClassVar[ArchiveFormat]
     TAR: ClassVar[ArchiveFormat]

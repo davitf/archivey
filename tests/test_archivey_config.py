@@ -176,3 +176,11 @@ def test_public_api_exports_config_types() -> None:
     ):
         assert name in archivey.__all__
         assert hasattr(archivey, name)
+
+
+def test_config_is_hashable() -> None:
+    """A frozen config advertises hashability; a nested ``MappingProxyType`` broke it."""
+    assert hash(archivey.DEFAULT_ARCHIVEY_CONFIG) == hash(ArchiveyConfig())
+    strict = ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.strict())
+    assert strict != ArchiveyConfig()
+    assert len({strict, ArchiveyConfig(), archivey.DEFAULT_ARCHIVEY_CONFIG}) == 2

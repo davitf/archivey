@@ -53,6 +53,7 @@ from archivey.internal.extraction_types import (
     OnErrorStr,
     OverwritePolicyStr,
 )
+from archivey.types import ContainerFormat, StreamFormat
 
 # Every enum reachable from a public argument.
 PUBLIC_ENUMS: tuple[type[Enum], ...] = (
@@ -62,6 +63,8 @@ PUBLIC_ENUMS: tuple[type[Enum], ...] = (
     AbortOn,
     AcceleratorMode,
     DetectionBudgetPreset,
+    ContainerFormat,
+    StreamFormat,
 )
 
 
@@ -345,6 +348,15 @@ ALIASES_NOT_WANTED = {
         "a member, and the union would describe the constructor's input on the "
         "attribute every consumer reads, obliging each of them to handle a string that "
         "cannot arrive. See the archived coerce-public-enum-arguments design note."
+    ),
+    "ContainerFormat": (
+        "ArchiveFormat's container field, for the same reason as AcceleratorMode: "
+        "__post_init__ converts a hand-built string pair, so the field always holds a "
+        "member, and the code that reads it tests it with `is`."
+    ),
+    "StreamFormat": (
+        "ArchiveFormat's stream field; see ContainerFormat. format= arguments take "
+        "their string spellings through archivey.internal.format_args instead."
     ),
 }
 

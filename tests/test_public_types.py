@@ -26,7 +26,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     DiagnosticRaisedError,
 )
-from archivey.types import ArchiveFormat
+from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 
 
 def _diagnostic() -> Diagnostic:
@@ -114,3 +114,23 @@ def test_diagnostic_raised_error_keeps_its_diagnostic_across_pickle() -> None:
     assert restored.diagnostic == original.diagnostic
     assert restored.raw_message == original.raw_message == "bad \x1b[2K name"
     assert restored.message == original.message == "bad \\x1b[2K name"
+
+
+def test_archive_format_from_strings_holds_enum_members() -> None:
+    """A hand-built string pair behaves like the named format, not only compares equal.
+
+    The code that decides behaviour tests ``container is ContainerFormat.RAW_STREAM``,
+    and a bare ``str`` never is the member, so an unconverted pair took the other branch.
+    """
+    fmt = ArchiveFormat("raw_stream", "gz")  # type: ignore[arg-type]
+    assert fmt.container is ContainerFormat.RAW_STREAM
+    assert fmt.stream is StreamFormat.GZIP
+    assert fmt == ArchiveFormat.GZ
+    assert fmt.file_extension() == "gz"
+
+
+def test_archive_format_unknown_spelling_raises_at_construction() -> None:
+    with pytest.raises(ArchiveyUsageError, match="ContainerFormat"):
+        ArchiveFormat("nope", StreamFormat.GZIP)  # type: ignore[arg-type]
+    with pytest.raises(ArchiveyUsageError, match="StreamFormat"):
+        ArchiveFormat(ContainerFormat.RAW_STREAM, "nope")  # type: ignore[arg-type]
