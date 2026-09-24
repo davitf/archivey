@@ -37,14 +37,6 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
-- **#446 K5 — the review workflow's prompt still names the addendum.**
-  `.github/workflows/review-loop.yml` (~lines 180-190) tells each round to read
-  `archivey-review-addendum.md` first and calls the cap "the addendum's own round
-  budget". The redirect stub keeps both working. The prompt moves to `SKILL.md` §4/§6 in
-  a PR of its own, because the review action cannot review a change to its own workflow
-  file. It goes with the other workflow fixes from the 2026-09-24 loop retrospective:
-  skip an empty gate comment, and delete only the outcome labels that are present.
-
 - **#442 K1 — codec decompressor streams get no diagnostic collector.**
   `open_codec_stream` (`internal/streams/codecs.py`) hands the collector to the outer
   `ArchiveStream` only. `backend.open(source, params)` builds the codec's own stream

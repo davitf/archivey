@@ -30,13 +30,17 @@ the pull request's ``updated_at`` in the webhook, which labelling bumps; see
 
 **Finish** (``--finish``)::
 
-    {"round": 3, "final": false, "head_sha": "abc...", "repository": "...",
+    {"round": 3, "final": false, "head_sha": "abc...", "live_head_sha": "def...",
+     "repository": "...",
      "verdict": {"verdict": "findings", "summary": "...", "question": ""}}
     -> {"verdict": "findings", "stop": false, "counted": true,
         "comment": "...", "reason": "...", "label": "changes-requested",
         "unlabel": ["approved", "approved-with-fixes", "needs-decision"]}
 
 ``verdict`` is the file the reviewing agent wrote, or ``null`` when it wrote none.
+``head_sha`` is the commit the round checked out and read; ``live_head_sha`` is the
+branch's head when the round closed, and when the two differ the comment says which
+commits the review did not see.
 The comment says what happened and what the implementer does next, and it carries
 the marker that makes the round count. ``label`` is the outcome label the workflow puts
 on, taking the ``unlabel`` ones off; see `OUTCOME_LABELS`.
@@ -406,6 +410,13 @@ def finish(event: dict) -> Finish:
 
     v = read_verdict(event.get("verdict"))
     summary = f" {v.summary}" if v.summary else ""
+    live = str(event.get("live_head_sha") or "")
+    unseen = (
+        f"\n\n**Pushed during the round.** The review read `{sha[:8]}`; the branch is "
+        f"now at `{live[:8]}`, and nothing reviewed the commits in between."
+        if sha and live and live != sha
+        else ""
+    )
 
     def again(sentence: str) -> str:
         """How another round starts, which the cap and the ceiling can change."""
@@ -435,7 +446,8 @@ def finish(event: dict) -> Finish:
         )
     elif v.stop:
         # Not "the review approved it": this covers ✅ Approve, the conditional
-        # approval and 💬 Comment, and SKILL.md §4 is explicit that a comment is not an approval.
+        # approval and 💬 Comment, and SKILL.md §4 is explicit that a comment is not
+        # an approval.
         body = (
             f"**Round {rnd}: the review does not need to see the result.**{summary}\n\n"
             "Work through any findings it posted with `address-review-findings`. No "
@@ -475,7 +487,7 @@ def finish(event: dict) -> Finish:
         v.verdict,
         v.stop,
         True,
-        f"{marker}\n\n{body}{footer}",
+        f"{marker}\n\n{body}{unseen}{footer}",
         v.reason,
         outcome,
         tuple(sorted({other for other in OUTCOME_LABELS.values() if other != outcome})),
