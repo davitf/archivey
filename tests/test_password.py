@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import ast
+import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+import archivey
 from archivey import PasswordRequest, open_archive
 from archivey.exceptions import EncryptionError
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
-from archivey.internal.password import _PasswordCandidates
+from archivey.internal.password import _PasswordCandidates, wrong_password_error
 from archivey.measurement import enable_measurement
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
@@ -374,3 +377,90 @@ def test_zip_provider_receives_member(tmp_path: Path) -> None:
     assert seen[0].member is not None
     assert seen[0].member.name == "only.txt"
     assert seen[0].attempt == 1
+
+
+@pytest.mark.parametrize(
+    ("raised", "expected"),
+    [
+        # The marker keeps the backend's message, whatever its wording.
+        (
+            wrong_password_error("Incorrect key for this member"),
+            "Incorrect key for this member",
+        ),
+        # Unmarked text that happens to say "wrong password" does not.
+        (
+            EncryptionError("Wrong password, or so it seems"),
+            "Password(s) rejected for this encrypted member",
+        ),
+    ],
+)
+def test_exhaustion_message_follows_the_marker_not_the_wording(
+    raised: EncryptionError, expected: str
+) -> None:
+    def decrypt(_password: bytes) -> bytes:
+        raise raised
+
+    candidates = _PasswordCandidates.from_input("guess")
+    with pytest.raises(EncryptionError) as caught:
+        candidates.attempt(None, decrypt)
+    assert caught.value.message == expected
+
+
+@requires_binary("7z")
+def test_a_wrong_zip_password_raises_a_plain_encryption_error(tmp_path: Path) -> None:
+    """The mark rides on the exception; the type a caller sees stays public."""
+    archive = tmp_path / "secret.zip"
+    _make_multi_password_zip(archive)
+    with open_archive(archive, password="wrongpw") as reader:
+        member = next(m for m in reader.members() if m.name == "f1.txt")
+        with pytest.raises(EncryptionError) as caught:
+            reader.open(member).read()
+    assert type(caught.value) is EncryptionError
+    assert caught.value.message == "Wrong password for this ZIP member"
+
+
+# Wrong-password wording a raise site may use without the mark: the two unrar
+# exit-code sites, which never feed ``_PasswordCandidates.attempt``.
+_UNMARKED_WRONG_PASSWORD_MESSAGES = {
+    ("internal/backends/rar_reader.py", "Incorrect RAR password or encrypted member"),
+}
+
+
+def _message_text(node: ast.expr) -> str:
+    """The literal text of a message argument, with ``{…}`` for interpolated parts."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            part.value
+            if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            else "{…}"
+            for part in node.values
+        )
+    return ""
+
+
+def test_every_wrong_password_message_carries_the_mark() -> None:
+    """Every ``EncryptionError(...)`` whose message says the password is wrong uses the mark.
+
+    Walks the AST, so a message split over several literals (what the formatter does
+    to a long one) is joined before matching, and f-string text counts too. A message
+    built entirely from an expression (``raw_message_of(exc)``) has no text to match
+    and is not checked.
+    """
+    src = Path(archivey.__file__).parent
+    wording = re.compile(r"wrong password|incorrect .*password", re.IGNORECASE)
+    unmarked: set[tuple[str, str]] = set()
+    for path in src.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "EncryptionError"
+                and node.args
+            ):
+                message = _message_text(node.args[0])
+                if wording.search(message):
+                    unmarked.add((path.relative_to(src).as_posix(), message))
+    assert unmarked == _UNMARKED_WRONG_PASSWORD_MESSAGES

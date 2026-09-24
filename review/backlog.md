@@ -37,6 +37,18 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#442 K1 — codec decompressor streams get no diagnostic collector.**
+  `open_codec_stream` (`internal/streams/codecs.py`) hands the collector to the outer
+  `ArchiveStream` only. `backend.open(source, params)` builds the codec's own stream
+  without one (`XzCodec.open` → `XzDecompressorStream(...)`), so the
+  `SEEK_INDEX_DEGRADED` emissions in `decompressor_stream.py` and `xz.py` run on
+  `resolve_collector`'s throwaway. Under `open_archive`, a `.xz` whose seek index is
+  unreadable therefore does not raise under `DiagnosticPolicy.strict()`, does not fire
+  `on_diagnostic`, and does not count in `reader.diagnostics`; only the WARNING line
+  survives. Repro: a valid `.xz` with 14 junk bytes appended, `open_archive` under
+  `strict()`, then `seek(500)` on the member stream. Fix: carry the collector on
+  `StreamConfig` into every `Codec.open`, then red-green with that repro. Parked
+  because an open PR was editing `StreamConfig` and `codecs.py` when #442 found it.
 - **#430 K4 — the ZIP reader's own provider loop still stops on the first repeat.**
   `_open_stored_confirmed` in `internal/backends/zip_reader.py` (phase 3, STORED
   ZipCrypto) asks the provider through `ask_provider` and `break`s when an answer is in

@@ -6,7 +6,7 @@ import threading
 from collections.abc import Callable, Container, Iterator
 from collections.abc import Sequence as ABCSequence
 from contextvars import ContextVar
-from typing import TypeVar, cast
+from typing import TypeGuard, TypeVar, cast
 
 from archivey.config import PasswordInput, PasswordProvider, PasswordRequest
 from archivey.exceptions import ArchiveyUsageError, EncryptionError
@@ -37,6 +37,35 @@ class _PasswordCandidatesExhausted(EncryptionError):
     ) -> None:
         super().__init__(message)
         self.last_error = last_error
+
+
+# Set on an ``EncryptionError`` by :func:`wrong_password_error`. An attribute, not a
+# subclass, so the exception a caller catches, prints and names stays a plain
+# ``EncryptionError`` (the error-handling spec's hierarchy has no private classes).
+_WRONG_PASSWORD_MARK = "_archivey_wrong_password"
+
+
+def wrong_password_error(message: str) -> EncryptionError:
+    """Build the ``EncryptionError`` a backend raises when a password check fails.
+
+    ``attempt`` keeps this message on exhaustion ("Wrong password for this ZIP
+    member") and replaces any other ``EncryptionError`` text with a generic one. The
+    decision reads the mark, not the wording, so rewording a backend's message cannot
+    change what exhaustion reports. ``tests/test_password.py`` fails on an
+    ``EncryptionError`` whose literal or f-string message says the password is wrong
+    and that does not carry the mark.
+    """
+    error = EncryptionError(message)
+    setattr(error, _WRONG_PASSWORD_MARK, True)
+    return error
+
+
+def is_wrong_password(error: BaseException | None) -> TypeGuard[EncryptionError]:
+    """Whether ``error`` came from :func:`wrong_password_error`."""
+    return (
+        isinstance(error, EncryptionError)
+        and getattr(error, _WRONG_PASSWORD_MARK, False) is True
+    )
 
 
 def _to_bytes(password: str | bytes) -> bytes:
@@ -278,8 +307,7 @@ class _PasswordCandidates:
         message = (
             (
                 last_error.message
-                if last_error is not None
-                and "wrong password" in last_error.message.lower()
+                if is_wrong_password(last_error)
                 else "Password(s) rejected for this encrypted member"
             )
             if tried

@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import logging
 import os
 import shutil
 import stat
@@ -62,13 +61,13 @@ from archivey.internal.filters import (
     check_universal,
     collision_key,
 )
+from archivey.internal.logs import extraction as logger
 from archivey.internal.selection import normalize_member_selector
 from archivey.types import ArchiveMember, MemberType
 
 if TYPE_CHECKING:
     from archivey.internal.base_reader import BaseArchiveReader
 
-logger = logging.getLogger("archivey.extraction")
 
 _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 
