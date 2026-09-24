@@ -1027,6 +1027,11 @@ def _resolve_single(source: object) -> ResolvedSource:
                 name,
                 len(siblings),
             )
+        if _NUMBERED_VOLUME_RE.match(path.name) and not path.exists():
+            # A lone numbered part is refused by name before anything is read, as an
+            # incomplete set. A part that is not there at all is a missing file, not
+            # "found part 3 only": raise what opening it would have raised.
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
         return ResolvedSource(ArchiveSource.for_path(path), source_name(path), 1)
     if not is_stream(source):
         # str/Path are handled above, so anything left that is not a stream is a

@@ -52,12 +52,10 @@ SFX_MAX = 2 * 1024 * 1024
 # not carry hundreds of format magics, and the native parsers that call this have no
 # detection budget. 256 is a starting value; raise it here if a real archive needs more.
 #
-# :func:`iter_magic_in_prefix` is left uncapped on purpose. The detector's candidate
-# walk is superlinear in planted decoys (``bytes.find`` per needle per hit), so the
-# byte window is not a time bound — a 1 MiB decoy-packed prefix is tens of seconds,
-# ``SFX_MAX`` is minutes. That is a pre-existing detector bug (threat-model O11),
-# not this scan's to widen into. Do not copy this cap onto that path as a silent
-# extra in the same diff.
+# :func:`iter_magic_in_prefix` is left uncapped on purpose: its search is linear in
+# the window (see :class:`_EarliestFinder`), and what the detector then spends on
+# each candidate is the detection budget's business (threat-model O11), not a
+# structural cap's.
 MAX_VALIDATED_CANDIDATES = 256
 
 # Read granularity for the forward scan. Large enough that a full 2 MiB window is 32
@@ -354,13 +352,12 @@ def _fat_macho_parses(prefix: bytes, endian: str, is_64: bool) -> bool:
     table_end = 8 + nfat_arch * arch_size
     if len(prefix) < table_end:
         return False
-    arch_fmt = endian + ("iiIQQI" if is_64 else "iiIII")
+    # fat_arch: cputype, cpusubtype, offset, size, align. fat_arch_64 widens offset
+    # and size to 64 bits and appends a reserved word; the field order is the same.
+    arch_fmt = endian + ("iiQQII" if is_64 else "iiIII")
     for i in range(nfat_arch):
         fields = struct.unpack_from(arch_fmt, prefix, 8 + i * arch_size)
-        cputype = fields[0]
-        offset = fields[3] if is_64 else fields[2]
-        size = fields[4] if is_64 else fields[3]
-        align = fields[5] if is_64 else fields[4]
+        cputype, _cpusubtype, offset, size, align = fields[:5]
         if (
             cputype not in _MACHO_CPU_TYPES
             or size == 0
@@ -383,26 +380,62 @@ def _normalize_needles(
     return tuple(out)
 
 
-def _find_earliest(
-    data: bytes | bytearray,
-    needles: Sequence[ScanNeedle],
-    start: int = 0,
-    *,
-    searched: int = 0,
-) -> tuple[int, ScanNeedle] | None:
-    """The earliest needle occurrence at or after ``start``, as ``(index, needle)``.
+class _EarliestFinder:
+    """Earliest needle occurrence at or after a rising ``start``, in linear time.
+
+    Each needle's next match is remembered, so a later :meth:`find` searches only
+    past it instead of re-running ``bytes.find`` from ``start`` for every needle.
+    Re-searching from each candidate made a scan packed with one needle's decoys
+    quadratic whenever another needle was absent (each miss re-read to the end):
+    about 75 s for 1 MiB of back-to-back RAR5 ids. Tracking positions returns the
+    same hits in the same order; ties still go to the needle listed first.
+
+    ``data`` may grow between calls (the validated scan's window is extended by
+    validator peeks) but must not otherwise change. ``start`` must not decrease.
 
     ``searched`` is how far a previous pass already covered. A shorter
     needle that fitted entirely in that prefix must not be re-found in the overlap
     kept for a longer sibling (RAR5's 8 bytes vs RAR4's 7, or ZIP's 4).
     """
-    best: tuple[int, ScanNeedle] | None = None
-    for needle in needles:
-        needle_start = max(start, max(0, searched - (len(needle.magic) - 1)))
-        found = data.find(needle.magic, needle_start)
-        if found >= 0 and (best is None or found < best[0]):
-            best = (found, needle)
-    return best
+
+    def __init__(
+        self,
+        data: bytes | bytearray,
+        needles: Sequence[ScanNeedle],
+        *,
+        searched: int = 0,
+    ) -> None:
+        self._data = data
+        self._needles = needles
+        # Per needle: the lowest index it may match at (the ``searched`` skip).
+        self._floors = [max(0, searched - (len(n.magic) - 1)) for n in needles]
+        # Per needle: its next match (``-1`` for none), and ``len(data)`` when that
+        # was computed. A ``-1`` goes stale only when ``data`` grows.
+        self._next = [-1] * len(needles)
+        self._scanned_len = [-1] * len(needles)
+
+    def find(self, start: int = 0) -> tuple[int, ScanNeedle] | None:
+        data = self._data
+        size = len(data)
+        best: tuple[int, ScanNeedle] | None = None
+        for i, needle in enumerate(self._needles):
+            found = self._next[i]
+            scanned_len = self._scanned_len[i]
+            if scanned_len < 0 or (found >= 0 and found < start):
+                # Never searched, or the remembered match is behind ``start``.
+                found = data.find(needle.magic, max(start, self._floors[i]))
+                self._next[i], self._scanned_len[i] = found, size
+            elif found < 0 and scanned_len != size:
+                # No match in the old bytes; search only what was appended, less
+                # the needle's length so a match straddling the old end is found.
+                resume = max(
+                    start, self._floors[i], scanned_len - (len(needle.magic) - 1)
+                )
+                found = data.find(needle.magic, resume)
+                self._next[i], self._scanned_len[i] = found, size
+            if found >= 0 and (best is None or found < best[0]):
+                best = (found, needle)
+        return best
 
 
 def _remaining_from_origin(
@@ -489,7 +522,7 @@ def scan_for_magic(
     # searched, so the same candidate origin can be validated twice — once via
     # the short needle, once via the long. Unreachable for the needle sets in
     # the tree today (7z is one needle; RAR5/RAR4 differ at byte 6).
-    # ``_find_earliest(..., searched=)`` is the same skip ``iter_magic_in_prefix``
+    # ``_EarliestFinder(..., searched=)`` is the same skip ``iter_magic_in_prefix``
     # already uses.
     searched = 0
     rejected = 0
@@ -536,8 +569,9 @@ def scan_for_magic(
         consumed += len(chunk)
         window.extend(chunk)
 
+        finder = _EarliestFinder(window, normalized, searched=searched)
         while True:
-            hit = _find_earliest(window, normalized, search_from, searched=searched)
+            hit = finder.find(search_from)
             if hit is None:
                 break
             index, needle = hit
@@ -548,7 +582,7 @@ def scan_for_magic(
                 # Reached only when a validator peek has already pulled the
                 # window past ``limit``; the main read loop never stores those
                 # bytes. Two needles matching at the *same* index are a
-                # different case: ``_find_earliest`` returns one of them and
+                # different case: ``_EarliestFinder`` returns one of them and
                 # ``search_from = index + 1`` skips the other even if the
                 # shorter would have fitted. Unreachable for (RAR5, RAR4):
                 # byte 6 differs, so they cannot match at one index.
@@ -608,8 +642,9 @@ def iter_magic_in_prefix(
             continue
         data = peek_more(min(step, limit))
         search_from = 0
+        finder = _EarliestFinder(data, normalized, searched=searched)
         while True:
-            hit = _find_earliest(data, normalized, search_from, searched=searched)
+            hit = finder.find(search_from)
             if hit is None:
                 break
             index, needle = hit
