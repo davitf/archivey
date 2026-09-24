@@ -8,7 +8,8 @@ transition on, or a test of, four independent pieces of state:
 - **Who owns the reader.** ``_root`` is the reader-wide pass in progress (``members()``
   on a default reader, ``stream_members()``, ``extract_all()``), ``_children`` are
   library-internal scopes under it (link reads, the extraction coordinator's own
-  opens), and ``_workers`` are short ``open()`` / ``read()`` / ``get()`` calls. Each is
+  opens), and ``_workers`` are short ``open()`` / ``read()`` / ``get()`` calls (and, on a
+  ``CONCURRENT`` reader, ``members()`` / ``members_report()``). Each is
   an :class:`OperationToken` that records the thread that took it, so a callback that
   re-enters the reader on that thread gets a message about the callback, not about a
   second caller.
@@ -34,8 +35,10 @@ only one caller acts on it. Teardown always follows the streams, never runs unde
          (drops the reader's lease)                 (lease count 0; succeeds once)
     TEARDOWN_RUNNING --complete_teardown()--> TEARDOWN_COMPLETE
 
-``_closing`` is set while one ``close()`` drains in-flight workers (``CONCURRENT`` only);
-new calls are refused from then on, and other closers wait for the transition.
+``_closing`` is set once a ``close()`` has passed its checks, and stays set while it drains
+in-flight workers (a wait that only happens under ``CONCURRENT``; a default reader has
+refused the close instead). New calls are refused from then on, and other closers wait
+for the transition.
 """
 
 from __future__ import annotations
@@ -86,16 +89,21 @@ class OperationToken:
     # The thread that acquired the token. Used to detect same-thread re-entry (a
     # diagnostic/progress callback driving the reader that is mid-operation on this very
     # thread), which must raise a usage error instead of deadlocking on a wait for itself.
-    # The Thread object, not ``get_ident()``: idents are reused once a thread exits, so a
-    # token that outlived its thread would misdiagnose a fresh thread as re-entering.
+    # The Thread object, not ``get_ident()``: idents are reused once a thread exits, and
+    # a token can outlive its thread (a generator holding a pass is never closed), which
+    # would misdiagnose a fresh thread with the same ident as re-entering.
+    # ``_materializing_thread`` and ``_internal_open_threads`` stay idents: both are
+    # cleared in ``finally`` on the thread that set them, so neither outlives it.
     thread: threading.Thread = field(
         default_factory=threading.current_thread, repr=False
     )
-    # True for a pass held by a generator (``stream_members()``, streaming
-    # ``__iter__``) across its yields. Its thread runs the caller's loop body between
-    # them, so a call from that thread is not necessarily re-entry from a callback, and
-    # the same-thread diagnosis in ``_same_thread_token_locked`` skips it.
-    spans_yields: bool = field(default=False, repr=False)
+    # True while the generator holding this pass (``stream_members()``, streaming
+    # ``__iter__``) is suspended at a yield. Its thread is then running the caller's
+    # loop body, so a call from that thread is not re-entry from a callback and
+    # ``_same_thread_token_locked`` skips the token. While the generator is executing a
+    # step (where a diagnostic callback fires) the flag is False and the token counts.
+    # Set with :meth:`ReaderState.set_suspended`.
+    suspended: bool = field(default=False, repr=False)
     _released: bool = field(default=False, repr=False)
 
 
@@ -191,12 +199,8 @@ class ReaderState:
         """Whether the CURRENT thread is inside a library-internal open window."""
         return self._internal_open_threads.get(threading.get_ident(), 0) > 0
 
-    def acquire_pass(self, name: str, *, spans_yields: bool = False) -> OperationToken:
-        """Acquire a data-pass token: root when free, else a child under an internal owner.
-
-        ``spans_yields`` marks a pass a generator holds across its yields (see
-        :attr:`OperationToken.spans_yields`).
-        """
+    def acquire_pass(self, name: str) -> OperationToken:
+        """Acquire a data-pass token: root when free, else a child under an internal owner."""
         with self._lock:
             self._require_admissible_locked(name)
             internal = self._internal_opens_active_locked()
@@ -216,9 +220,14 @@ class ReaderState:
                     f"Cannot start {name!r}: a concurrent open()/read() call is still "
                     "in progress."
                 )
-            token = OperationToken(name=name, kind="root", spans_yields=spans_yields)
+            token = OperationToken(name=name, kind="root")
             self._root = token
             return token
+
+    def set_suspended(self, token: OperationToken, suspended: bool) -> None:
+        """Mark a generator-held pass as suspended at a yield, or running again."""
+        with self._lock:
+            token.suspended = suspended
 
     def release_pass(self, token: OperationToken) -> None:
         with self._lock:
@@ -478,9 +487,13 @@ class ReaderState:
                 try:
                     while self._workers:
                         self._workers_cv.wait()
+                    # Transition and lease drop are adjacent, notify last: an interrupt
+                    # between them would leave READER_CLOSED with the reader's lease
+                    # still held, and teardown could then never be claimed.
                     self.lifecycle = LifecycleState.READER_CLOSED
+                    run_teardown = self._release_lease_locked()
                     self._close_cv.notify_all()
-                    return self._release_lease_locked()
+                    return run_teardown
                 except BaseException:
                     self._closing = False
                     self._close_cv.notify_all()
@@ -543,15 +556,15 @@ class ReaderState:
         """A token this thread holds while inside a reader call, if any.
 
         Any hit means the current call is re-entry from inside one of the reader's own
-        calls on this thread: in practice a diagnostic or progress callback. Passes held
-        across generator yields are skipped (see :attr:`OperationToken.spans_yields`).
+        calls on this thread: in practice a diagnostic or progress callback. A pass whose
+        generator is suspended at a yield is skipped (see
+        :attr:`OperationToken.suspended`).
         """
         current = threading.current_thread()
         root = self._root
-        if root is not None and root.thread is current and not root.spans_yields:
-            return root
-        for token in (*self._children, *self._workers):
-            if token.thread is current:
+        tokens = (*self._children, *self._workers)
+        for token in (root, *tokens) if root is not None else tokens:
+            if token.thread is current and not token.suspended:
                 return token
         return None
 

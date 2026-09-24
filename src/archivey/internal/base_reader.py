@@ -1934,9 +1934,10 @@ class BaseArchiveReader(ArchiveReader):
         terminal. Recording it for all of them makes finalizing N chained links O(N)
         instead of O(N²).
 
-        A cycle or dead end leaves ``link_target_member`` unset. That is bookkeeping,
-        not an error: :meth:`_open_with_link_follow` is where a read of such a link
-        raises.
+        A cycle or dead end does not set ``link_target_member``; it does not clear it
+        either, so a value a streaming pass already stamped (resolved against the members
+        before this one only) survives. That is bookkeeping, not an error:
+        :meth:`_open_with_link_follow` is where a read of an unresolved link raises.
         """
         path: list[int] = []
         on_path: set[int] = set()
@@ -2156,10 +2157,17 @@ class BaseArchiveReader(ArchiveReader):
     def __iter__(self) -> Iterator[ArchiveMember]:
         self._state.require_open("__iter__")
         if self._streaming:
-            token = self._state.acquire_pass("__iter__", spans_yields=True)
+            token = self._state.acquire_pass("__iter__")
             try:
                 self._enter_forward_pass("__iter__")
-                yield from self._begin_forward_pass()
+                for member in self._begin_forward_pass():
+                    # Suspended at the yield: this thread runs the caller's loop body,
+                    # which is not re-entry (see OperationToken.suspended).
+                    self._state.set_suspended(token, True)
+                    try:
+                        yield member
+                    finally:
+                        self._state.set_suspended(token, False)
             finally:
                 self._state.release_pass(token)
             return
@@ -2512,7 +2520,7 @@ class BaseArchiveReader(ArchiveReader):
         self,
         selector: Callable[[ArchiveMember], bool] | None,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
-        token = self._state.acquire_pass("stream_members", spans_yields=True)
+        token = self._state.acquire_pass("stream_members")
         current: ArchiveStream | None = None
         try:
             if self._streaming:
@@ -2523,7 +2531,13 @@ class BaseArchiveReader(ArchiveReader):
                     current = None
                 if selector is None or selector(m):
                     current = stream
-                    yield m, stream
+                    # Suspended at the yield: this thread runs the caller's loop body,
+                    # which is not re-entry (see OperationToken.suspended).
+                    self._state.set_suspended(token, True)
+                    try:
+                        yield m, stream
+                    finally:
+                        self._state.set_suspended(token, False)
                 elif stream is not None:
                     stream.close()
         finally:
@@ -2629,7 +2643,9 @@ class BaseArchiveReader(ArchiveReader):
         # Only mark closed after mark_reader_closed succeeds (or is a no-op because another
         # thread already closed). Raising on an active pass must leave the reader open --
         # so member streams are closed only once the transition has actually happened.
-        run_teardown = self._state.mark_reader_closed()
+        # Its "run teardown now" result is not needed: _maybe_teardown() below asks
+        # claim_teardown() directly.
+        self._state.mark_reader_closed()
         self._closed = True
         # Exactly one caller closes the streams. mark_reader_closed() returns False both
         # when this thread transitioned with leases outstanding and when a peer had
@@ -2638,8 +2654,12 @@ class BaseArchiveReader(ArchiveReader):
         # close() calls could otherwise both reach inner.close() on the same stream.
         if self._state.claim_stream_shutdown():
             self._close_public_streams()
-        if run_teardown:
-            self._maybe_teardown()
+        # Unconditional: claim_teardown() refuses while a lease remains or once claimed,
+        # so this is a no-op wherever mark_reader_closed() returned False for a good
+        # reason. It is not a no-op after a close() interrupted just past the transition:
+        # the retry's mark_reader_closed() returns False (lifecycle is no longer OPEN)
+        # although nothing tore the archive down.
+        self._maybe_teardown()
 
     def _close_public_streams(self) -> None:
         """Close member streams that are still open, in the order they were opened.

@@ -215,8 +215,10 @@ already-updated state, in emission order.
 | Callback exception | Propagates unchanged; not under `OnError.CONTINUE`; blocks later `DiagnosticRaisedError`; operation still halted |
 
 No collector/reader/stream/backend/registry lock while calling handlers/callbacks.
-Callbacks MAY read snapshots; same-emitting-reader/stream operational reentry →
-`UnsupportedOperationError`; other readers OK.
+Callbacks MAY read snapshots; same-emitting-reader/stream operational reentry is
+rejected: the reader's operation gate raises `ArchiveyUsageError` (reader-concurrency),
+and a re-entrant call that gets as far as emitting a diagnostic of its own raises
+`UnsupportedOperationError` from the collector; other readers OK.
 
 **Deduplication is a presentation concern; escalation is not.** Where a code is
 documented as recorded *at most once* per stream or per reader, that bound SHALL apply to

@@ -9,6 +9,7 @@ library's own errors rather than ``RecursionError`` (S17-K11).
 from __future__ import annotations
 
 import io
+import random
 import tarfile
 import threading
 import time
@@ -19,12 +20,13 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, open_archive
+from archivey import ArchiveMember, ArchiveyConfig, open_archive
 from archivey.exceptions import (
     ArchiveyUsageError,
     LinkTargetNotFoundError,
     ReadError,
 )
+from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.reader_state import (
     LifecycleState,
     OperationToken,
@@ -98,14 +100,19 @@ def test_another_threads_pass_keeps_the_generic_message() -> None:
         state.acquire_pass("members")
 
 
-def test_iterator_pass_is_not_diagnosed_as_a_callback() -> None:
-    """A generator's pass is held on the thread running the caller's loop body."""
+def test_suspended_pass_is_not_diagnosed_as_a_callback() -> None:
+    """A generator suspended at a yield: its thread is running the caller's loop body."""
     state = _state()
-    state.acquire_pass("stream_members", spans_yields=True)
+    token = state.acquire_pass("stream_members")
+    state.set_suspended(token, True)
     with pytest.raises(ArchiveyUsageError, match="another reader operation") as ei:
         state.mark_reader_closed()
     assert CLOSE_FROM_INSIDE not in str(ei.value)
     with pytest.raises(ArchiveyUsageError, match="another reader operation"):
+        state.acquire_worker("open")
+    # Running again (a diagnostic fired inside a step): that is re-entry.
+    state.set_suspended(token, False)
+    with pytest.raises(ArchiveyUsageError, match=REENTRY):
         state.acquire_worker("open")
 
 
@@ -114,7 +121,7 @@ def test_internal_open_window_still_admits_children() -> None:
     root = state.acquire_pass("extract_all")
     state.begin_internal_opens()
     try:
-        child = state.acquire_pass("stream_members", spans_yields=True)
+        child = state.acquire_pass("stream_members")
         worker = state.acquire_worker("open")
     finally:
         state.end_internal_opens()
@@ -125,14 +132,14 @@ def test_internal_open_window_still_admits_children() -> None:
 def _zip_with_bidi_name() -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("evil‮txt.exe", b"x")
+        zf.writestr("evil\u202etxt.exe", b"x")
         zf.writestr("plain.txt", b"y")
     return buf.getvalue()
 
 
 def test_default_reader_callback_close_during_members_names_the_callback() -> None:
     """End to end: the case the sweep measured on a default (non-concurrent) reader."""
-    assert unicodedata.bidirectional("‮") == "RLO"
+    assert unicodedata.bidirectional("\u202e") == "RLO"
     errors: list[BaseException] = []
     holder: list[ArchiveReader] = []
 
@@ -148,6 +155,39 @@ def test_default_reader_callback_close_during_members_names_the_callback() -> No
         reader.members()
     assert errors, "fixture must emit a diagnostic during listing"
     assert CLOSE_FROM_INSIDE in str(errors[0])
+
+
+def test_callback_inside_stream_members_step_names_the_callback() -> None:
+    """The streaming path: a diagnostic fires while the generator runs a step."""
+    errors: list[BaseException] = []
+    holder: list[ArchiveReader] = []
+
+    def on_diagnostic(_diag: object) -> None:
+        try:
+            holder[0].get("plain.txt")
+        except ArchiveyUsageError as exc:
+            errors.append(exc)
+
+    config = ArchiveyConfig(on_diagnostic=on_diagnostic)
+    with open_archive(io.BytesIO(_zip_with_bidi_name()), config=config) as reader:
+        holder.append(reader)
+        for _member, _stream in reader.stream_members():
+            pass
+    assert errors, "fixture must emit a diagnostic during the pass"
+    assert REENTRY in str(errors[0])
+
+
+def test_loop_body_of_stream_members_keeps_the_generic_message() -> None:
+    """The caller's own loop body is not a callback, so the message stays generic."""
+    with open_archive(io.BytesIO(_zip_with_bidi_name())) as reader:
+        for _member, _stream in reader.stream_members():
+            with pytest.raises(ArchiveyUsageError) as ei:
+                reader.get("plain.txt")
+            assert "another reader operation ('stream_members')" in str(ei.value)
+            with pytest.raises(ArchiveyUsageError) as ei:
+                reader.close()
+            assert CLOSE_FROM_INSIDE not in str(ei.value)
+            break
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +259,30 @@ def test_interrupted_drain_hands_close_to_the_waiting_closer(
     assert state.claim_teardown()
 
 
+def test_interrupt_after_the_transition_still_tears_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ctrl-C on the closers' notify, after the reader moved to READER_CLOSED."""
+    reader = open_archive(io.BytesIO(_zip_with_bidi_name()))
+    assert isinstance(reader, BaseArchiveReader)
+    state = reader._state
+    real_notify = state._close_cv.notify_all
+    calls: list[int] = []
+
+    def notify_all() -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+        real_notify()
+
+    monkeypatch.setattr(state._close_cv, "notify_all", notify_all)
+    with pytest.raises(KeyboardInterrupt):
+        reader.close()
+    assert state.lifecycle is LifecycleState.READER_CLOSED
+    reader.close()
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+
+
 # ---------------------------------------------------------------------------
 # S17-K10 / S17-K11: long symlink chains
 # ---------------------------------------------------------------------------
@@ -278,3 +342,105 @@ def test_open_long_cycle_raises_read_error(tmp_path: Path) -> None:
         assert start is not None and start.link_target_member is None
         with pytest.raises(ReadError, match="Link cycle detected"):
             reader.open("l0")
+
+
+# The terminal memo is sound only because every lookup is node-local. These shapes
+# reuse the memo from a second starting member, which the straight chains above never do.
+
+
+def _tar(path: Path, entries: list[tuple[str, str, str | None]]) -> Path:
+    """``entries`` are ``(name, kind, target)``; kind is "file", "sym" or "hard"."""
+    with tarfile.open(path, "w") as tf:
+        for name, kind, target in entries:
+            info = tarfile.TarInfo(name)
+            if kind == "file":
+                data = f"payload:{name}".encode()
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+                continue
+            info.type = tarfile.SYMTYPE if kind == "sym" else tarfile.LNKTYPE
+            assert target is not None
+            info.linkname = target
+            tf.addfile(info)
+    return path
+
+
+def _terminal_names(reader: ArchiveReader) -> dict[str, str | None]:
+    return {
+        m.name: (m.link_target_member.name if m.link_target_member else None)
+        for m in reader.members()
+        if m.is_link
+    }
+
+
+def test_tail_into_cycle_leaves_every_prefix_unresolved(tmp_path: Path) -> None:
+    entries: list[tuple[str, str, str | None]] = [
+        ("t0", "sym", "t1"),
+        ("t1", "sym", "t2"),
+        ("t2", "sym", "c0"),
+        ("c0", "sym", "c1"),
+        ("c1", "sym", "c0"),
+    ]
+    with open_archive(_tar(tmp_path / "rho.tar", entries)) as reader:
+        assert set(_terminal_names(reader).values()) == {None}
+        with pytest.raises(ReadError, match="Link cycle detected"):
+            reader.open("t0")
+
+
+def test_hardlink_chain_resolves_every_hop(tmp_path: Path) -> None:
+    entries: list[tuple[str, str, str | None]] = [
+        ("f", "file", None),
+        ("h1", "hard", "f"),
+        ("h2", "hard", "h1"),
+        ("h3", "hard", "h2"),
+    ]
+    with open_archive(_tar(tmp_path / "hard.tar", entries)) as reader:
+        assert _terminal_names(reader) == {"h1": "f", "h2": "f", "h3": "f"}
+        assert reader.read("h3") == b"payload:f"
+
+
+def test_converging_chains_share_the_memo(tmp_path: Path) -> None:
+    entries: list[tuple[str, str, str | None]] = [
+        ("a", "sym", "m"),
+        ("b", "sym", "m"),
+        ("m", "sym", "end"),
+        ("end", "file", None),
+    ]
+    with open_archive(_tar(tmp_path / "branch.tar", entries)) as reader:
+        assert _terminal_names(reader) == {"a": "end", "b": "end", "m": "end"}
+        assert reader.read("b") == b"payload:end"
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_memoized_terminals_match_a_fresh_walk_per_member(
+    tmp_path: Path, seed: int
+) -> None:
+    """Random link graphs: the memo must agree with an independent walk per member."""
+    rng = random.Random(seed)
+    names = [f"n{i}" for i in range(40)]
+    entries: list[tuple[str, str, str | None]] = []
+    for i, name in enumerate(names):
+        roll = rng.random()
+        if roll < 0.2:
+            entries.append((name, "file", None))
+        elif roll < 0.35 and i > 0:
+            entries.append((name, "hard", rng.choice(names[:i])))
+        else:
+            # Includes names that do not exist (dead ends) and forward references.
+            entries.append((name, "sym", rng.choice([*names, "missing"])))
+    with open_archive(_tar(tmp_path / f"g{seed}.tar", entries)) as reader:
+        assert isinstance(reader, BaseArchiveReader)
+        members = reader.members()
+        materialized = reader._materialized
+        assert materialized is not None
+        by_name = materialized.by_name_lists
+        for member in members:
+            if not (member.is_link and member.link_target):
+                continue
+            fresh = ArchiveMember(
+                name=member.name, type=member.type, link_target=member.link_target
+            )
+            fresh._member_id = member._member_id
+            fresh._archive_id = member._archive_id
+            reader._resolve_link(fresh, by_name, {})
+            assert member.link_target_member is fresh.link_target_member, member.name

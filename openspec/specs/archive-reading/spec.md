@@ -908,7 +908,7 @@ Value shape, retention budget, watermarks, and attachment rules: `diagnostics`.
 | --- | --- |
 | Detection conflict + scan + rewind diagnostics | Later `reader.diagnostics` has exact cumulative counts in emission order; earlier snapshot unchanged |
 | Two streams emit different diagnostics | Each stream sees only its op; reader sees both |
-| Callback reads `diagnostics` then `reader.read(...)` | Snapshot OK (incl. current event); reentry → `UnsupportedOperationError` |
+| Callback reads `diagnostics` then `reader.read(...)` | Snapshot OK (incl. current event); reentry → `ArchiveyUsageError` naming the callback |
 
 ### Requirement: Collection form of MemberSelector
 
