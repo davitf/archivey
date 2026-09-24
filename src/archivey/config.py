@@ -383,6 +383,14 @@ class ArchiveyConfig:
     # solid archive those bytes are already inside ``AccessCost.SOLID``. Set True to
     # read it anyway. A glob name that matches no other member is unaffected either way.
     rar_allow_glob_member_concatenation: bool = False
+    # Whether the reader reads a symlink's target when the format stores it as member
+    # data (ZIP, 7z, RAR3/4) rather than in the header. True: listing and a finished
+    # ``stream_members()`` pass read every such target, selected or not, so the report
+    # matches random access — on ZIP and 7z that can decompress data nobody selected and
+    # consult the password provider. False: the reader reads none of them on its own;
+    # ``extract_all`` reads the targets of links its selector and filter accept, and
+    # ``open()`` reads the target of a link it follows. Fixed for the reader's lifetime.
+    read_link_targets: bool = True
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
     decoder_limits: DecoderLimits = DecoderLimits()

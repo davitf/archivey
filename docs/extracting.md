@@ -65,8 +65,7 @@ archivey.extract("archive.zip", "out/")
   and it is reported as `SYMLINK_TARGET_UNAVAILABLE` on the diagnostics channel — an
   archive-integrity code, so `DiagnosticPolicy.strict()` still refuses such an archive
   outright. A link whose target the archive *does* carry but this read could not reach —
-  encrypted, compressed, split across volumes, or simply not read yet in streaming mode
-  — is a per-member failure instead, because recording it as an outcome would drop a
+  encrypted, compressed or split across volumes — is a per-member failure instead, because recording it as an outcome would drop a
   member the archive describes in full while reporting success.
 - **A link target longer than 4096 bytes** is treated as corrupt or malicious when it is
   stored as the member's data (ZIP, 7z, RAR4). No filesystem path that long exists on
@@ -256,6 +255,20 @@ codec buffers. Wall time is *at most* folder size per candidate, and reaches tha
 for **store/copy+AES**, where nothing rejects a wrong key early — a compressed folder's
 codec rejects one within a few bytes, and confirmation stops at the first member CRC
 that fails.
+
+**Symlink targets stored as member data.** ZIP, 7z and RAR4 keep a symlink's target in
+the member's data rather than its header, so learning where a link points means reading
+that data, which can mean decompressing it and asking your password provider. By default
+(`ArchiveyConfig.read_link_targets=True`) listing reads every such target, and a
+`stream_members()` pass reads them all by the time it finishes, whether you selected the
+links or not; on 7z that decodes each link's folder up to its last link, once. For an
+untrusted archive you only mean to list, `read_link_targets=False` stops the reader
+reading any of them on its own: those links list with `link_target=None` and no
+diagnostic. Extraction still writes them. `extract_all` runs your `members` selector and
+`filter` on the link first, with `link_target=None`, and reads the target only for a link
+both accept; a target it cannot read fails that member under `on_error`. `open()` on a
+link reads its target to follow it. Either way the target is filled in place on the
+member you hold. Like `listing_limits`, the setting is fixed for the reader's lifetime.
 
 **The bomb tracker is per-archive, not nesting-aware.** It measures the expansion of
 the archive it is extracting, so a zip-of-zips can amplify past your budget one level

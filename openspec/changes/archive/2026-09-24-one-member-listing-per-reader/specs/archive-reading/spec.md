@@ -64,7 +64,7 @@ members it passed.
 ### Requirement: Link targets stored as member data are read only when configured
 
 `ArchiveyConfig` SHALL carry `read_link_targets: bool = True`. Like `listing_limits`, it
-is fixed for the reader's lifetime. A later `extract_all(config=...)` SHALL NOT change it.
+is fixed for the reader's lifetime: the reader's own config is the only one it reads.
 It governs every symlink whose target the format stores as member data rather than in
 the header (ZIP, 7z, RAR3/4), in both access modes.
 
@@ -72,6 +72,10 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
   7z this includes decompression and the full password sequence, provider included. A
   target it cannot read stays unset with `SYMLINK_TARGET_UNAVAILABLE`. RAR3/4 reads only
   stored, unencrypted, single-volume bytes, as before.
+  When `extract_all` accepts a link whose target is still unread (a streaming pass
+  reaches a ZIP or 7z link before the pass finalizes), it SHALL read that target before
+  writing the link, as under `False` below, rather than failing it as a link with no
+  target.
 - `False`: the reader SHALL NOT read member data for a link target as a side effect of
   listing (the peek, `members()`, `scan_members()`, `members_report()`, `get()`,
   `__iter__`) or of a pass advancing (`stream_members()`, including the child pass
@@ -108,8 +112,80 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
 | RAR4 stored symlink, `read_link_targets=False`, `members()` | `link_target=None`; no member data read |
 | ZIP with two symlinks, `read_link_targets=False`, `extract_all(members=["link-a"])`, then `members()` | `link-a` has its target; `link-b` has `link_target=None` |
 | ZIP symlink, `read_link_targets=False`, password supplied, `reader.open("link")` | The target is read, then the link is followed |
+| Streaming `extract_all()` over a ZIP symlink, default config | The target is read before the link is written; the link is extracted |
 
 ## MODIFIED Requirements
+
+### Requirement: Explicit configuration object
+
+The system SHALL define these complete frozen schemas:
+
+```python
+@dataclass(frozen=True)
+class ExtractionLimits:
+    max_extracted_bytes: int | None = 2 * 2**30
+    max_ratio: float | None = 1000.0
+    ratio_activation_threshold: int = 5 * 2**20
+    max_entries: int | None = 1_048_576
+    UNLIMITED: ClassVar["ExtractionLimits"]
+
+@dataclass(frozen=True)
+class ListingLimits:
+    max_members: int | None = 1_048_576
+    max_metadata_bytes: int | None = 64 * 2**20
+    UNLIMITED: ClassVar["ListingLimits"]
+
+@dataclass(frozen=True)
+class DecoderLimits:
+    max_decoder_memory: int | None = 2 * 2**30
+    UNLIMITED: ClassVar["DecoderLimits"]
+
+@dataclass(frozen=True)
+class ArchiveyConfig:
+    use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
+    use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    zip_unflagged_fallback_encoding: str = "cp437"
+    rar_allow_glob_member_concatenation: bool = False
+    read_link_targets: bool = True
+    extraction_limits: ExtractionLimits = ExtractionLimits()
+    listing_limits: ListingLimits = ListingLimits()
+    decoder_limits: DecoderLimits = DecoderLimits()
+    diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
+    max_retained_diagnostic_references: int = 256
+    on_diagnostic: Callable[[Diagnostic], None] | None = None
+```
+
+`max_retained_diagnostic_references` SHALL be non-negative. Policy/default/override
+mappings and the dataclasses SHALL be defensively immutable. `config=None` →
+immutable library default. No mutable global/context-local diagnostic policy or
+callback.
+
+A reader carries its open config, all of it, for its lifetime. Reader methods
+SHALL NOT take a `config=`: `extract_all(limits=...)` is the one per-call
+override, and it replaces only the extraction limits for that call.
+`decoder_limits` SHALL bound the working memory a codec allocates on the
+strength of a number the archive declares, and SHALL be enforced before that
+allocation is made. Per-call `limits`
+still beat `config.extraction_limits`, then reader/library default. Other
+per-call operational args stay outside `ArchiveyConfig`.
+`read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
+the format stores as member data (see "Link targets stored as member data are read only
+when configured"); like `listing_limits`, it holds for the reader's lifetime.
+
+`on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
+reads from a callback are allowed. Starting another operation on the same
+emitting reader/stream SHALL raise `UnsupportedOperationError`; other readers OK.
+Callbacks hold no Archivey collector/reader/stream/backend/registry lock
+(`diagnostics` / `reader-concurrency`).
+
+#### Scenario: config matrix
+
+| Case | Expected |
+| --- | --- |
+| `ArchiveyConfig()` | AUTO accelerators; documented extraction and listing defaults; COLLECT; budget 256; no callback |
+| `extract(..., extraction_limits=ExtractionLimits(max_ratio=100))` | 100:1 per-member ratio enforced (`safe-extraction`) |
+| Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
+| Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
 
 ### Requirement: Bounded-memory sequential streaming via stream_members
 

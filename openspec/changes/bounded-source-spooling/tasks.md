@@ -9,6 +9,11 @@
 > `SpoolLimitExceededError` subclassing `ResourceLimitError`, and `streaming=True` reading
 > forward from the spooled file. They are inputs here, not implementation choices.
 
+> **Re-derive the `archive-reading` "Explicit configuration object" block before archiving.**
+> `one-member-listing-per-reader` archived a version of that block adding
+> `read_link_targets` (and the two fields the schema had missed). This change's MODIFIED
+> block predates it and would delete those lines on archive.
+
 ## 1. The setting
 
 - [ ] 1.1 Add a frozen `SpoolLimits` dataclass with an `UNLIMITED` classvar, matching

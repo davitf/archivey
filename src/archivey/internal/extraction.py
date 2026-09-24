@@ -342,6 +342,9 @@ class ExtractionCoordinator:
         # ``(1)``. Reset per ``run()``, and cleared whenever a claim is released (a freed
         # name may be the first free one again).
         self._rename_next: dict[str, int] = {}
+        # The reader ``run()`` is extracting from, for the one read ``_transform`` makes
+        # on it: an accepted link's target. Set per ``run()``.
+        self._reader: BaseArchiveReader | None = None
 
     # --- entry point ---------------------------------------------------------------
 
@@ -363,6 +366,7 @@ class ExtractionCoordinator:
         )
 
         selector = normalize_member_selector(self._members)
+        self._reader = reader
 
         # Progress totals cover what this call will actually attempt: when a member list
         # is free (an upfront index) and a selector is given, totals count only the
@@ -680,6 +684,18 @@ class ExtractionCoordinator:
                 return None, None
             # A caller filter can rename/relink; re-run the universal check on the result.
             check_universal(transformed, dest_root)
+        if self._reader is not None and self._needs_target_read(original, transformed):
+            # A symlink whose target the format keeps in member data and nothing has
+            # read yet: `read_link_targets=False`, or a streaming pass whose own read
+            # comes only at EOF. The selector and the filter have now both accepted it,
+            # with `link_target=None`, so reading it here is the read the caller asked
+            # for (`archive-reading`, "Link targets stored as member data are read only
+            # when configured"). The target it yields is checked like any other below.
+            self._reader._read_link_target_on_request(original)
+            if original.link_target is not None:
+                if transformed is not original:
+                    transformed = transformed.replace(link_target=original.link_target)
+                check_universal(transformed, dest_root)
         # Portable-name policy on the FINAL name — after the user filter, so a filter rename
         # is checked too, and TRUSTED keeps faithful bytes. Reserved names / ':' are
         # rejected; a trailing dot/space (STRICT) or non-representable byte is rewritten to a
@@ -698,6 +714,22 @@ class ExtractionCoordinator:
                 )
             )
         return portable, transformed.name
+
+    @staticmethod
+    def _needs_target_read(original: ArchiveMember, transformed: ArchiveMember) -> bool:
+        """Whether a link about to be written still needs its target read.
+
+        Only a current symlink the caller's filter left targetless and whose target
+        nobody has looked for yet: a superseded member is not written, and a target the
+        filter supplied is the one to write.
+        """
+        return (
+            original.type is MemberType.SYMLINK
+            and original.is_current
+            and original.link_target is None
+            and not original._link_target_resolved
+            and transformed.link_target is None
+        )
 
     # --- per-member write ----------------------------------------------------------
 

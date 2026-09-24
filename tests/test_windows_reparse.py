@@ -10,6 +10,7 @@ ones the format would allow.
 
 from __future__ import annotations
 
+import os
 import struct
 import subprocess
 import tarfile
@@ -342,15 +343,12 @@ def test_a_targetless_link_is_skipped_and_the_rest_extracts(
     taken in the link-target hook, which a streaming pass does not run until EOF, long
     after extraction has chosen what to do with the member. So exactly the member this
     whole feature exists for raised instead, and the default aborted the archive.
+
+    The file symlink in this tree does carry its target, in the member's own data, and
+    extraction reads it once the link is accepted, so it is written in both modes.
     """
-    # The file symlink in this tree is a different member, and only in streaming mode:
-    # its target IS in the archive, in the member's own data, which the pass has gone
-    # past by the time the link is written. The spec keeps that one a per-member
-    # failure, so a streaming read under the default would abort on it before the
-    # report exists — for a documented reason that is not this test's subject.
-    on_error = OnError.CONTINUE if streaming else OnError.STOP
     with open_archive(_JUNCTION_DIR / fixture, streaming=streaming) as opened:
-        report = opened.extract_all(tmp_path, on_error=on_error)
+        report = opened.extract_all(tmp_path, on_error=OnError.STOP)
     by_name = {r.member.name: r for r in report.results}
     for name in ("tree/junction_dir", "tree/symlink_dir"):
         assert by_name[name].status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
@@ -360,24 +358,17 @@ def test_a_targetless_link_is_skipped_and_the_rest_extracts(
     assert (tmp_path / "tree" / "regular.txt").read_bytes() == b"plain\r\n"
     # Nothing was left behind at the skipped paths.
     assert not (tmp_path / "tree" / "junction_dir").exists()
-    expected_file_link = (
-        ExtractionStatus.FAILED if streaming else ExtractionStatus.EXTRACTED
-    )
-    assert by_name["tree/symlink_file"].status is expected_file_link
+    assert by_name["tree/symlink_file"].status is ExtractionStatus.EXTRACTED
 
 
-def test_an_omission_only_the_data_shows_is_a_failure_in_streaming(
+def test_an_omission_only_the_data_shows_is_reported_in_both_modes(
     tmp_path: Path,
 ) -> None:
-    """The read-mode guarantee reaches exactly as far as the metadata does.
+    """A buffer that names nothing records no target just as surely as no buffer at all.
 
-    A buffer that names nothing records no target just as surely as no buffer at all,
-    and a seekable read says so. But it is in the member's *data*, and a streaming pass
-    does not read that until EOF — after it has already decided what to do with the
-    member. So there it stays the per-member failure an unresolved target takes, and the
-    default aborts. Closing that gap would mean holding a reparse point's data until the
-    member is written, which is a larger promise than this one; the doc and the spec say
-    where the line is, and this says it is where they say.
+    It is in the member's *data*, which a streaming pass reads only at EOF on its own.
+    Extraction reads an accepted link's data before writing it, so the streaming read
+    reaches the same answer as the seekable one instead of failing the member.
     """
     archive = tmp_path / "nameless_symlink.zip"
     _zip_with_reparse_member(
@@ -393,11 +384,9 @@ def test_an_omission_only_the_data_shows_is_a_failure_in_streaming(
     assert result.error is None
 
     with open_archive(archive, streaming=True) as opened:
-        (result,) = opened.extract_all(
-            tmp_path / "streaming", on_error=OnError.CONTINUE
-        ).results
-    assert result.status is ExtractionStatus.FAILED
-    assert isinstance(result.error, LinkTargetNotFoundError)
+        (result,) = opened.extract_all(tmp_path / "streaming").results
+    assert result.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
+    assert result.error is None
 
 
 def test_skipping_a_targetless_link_does_not_replace_what_is_there(
@@ -997,19 +986,14 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
                 opened.extract_all(dest / "stop", members=only_links)
 
 
-def test_a_streaming_symlink_is_not_silently_skipped(tmp_path: Path) -> None:
-    """An unset `link_target` means two things, and only one of them is the archive's.
+def test_a_streaming_symlink_is_written(tmp_path: Path) -> None:
+    """A ZIP or 7z symlink stores its target as the member's data.
 
-    A ZIP or 7z symlink stores its target as the member's data, so in streaming mode it
-    reaches the write decision with `link_target` still unset — the reader has not read
-    it yet, and cannot go back for it. The archive records that target perfectly well.
-    Calling it the archive's omission would report success while dropping an ordinary
-    POSIX symlink from the output, with no error and no diagnostic.
-
-    Streaming still cannot write such a link, which is a gap of its own and not this
-    status's business. What matters is that it stays loud: a failure the caller sees,
-    the way it behaved before `LINK_TARGET_UNAVAILABLE` existed. Nothing in the suite covered a
-    streaming-mode symlink at all, which is how the silent version got through.
+    A streaming pass reaches the write decision with `link_target` still unset: its own
+    read of that data comes at EOF. The archive records the target perfectly well, so
+    extraction reads it once the selector and filter have accepted the link, and writes
+    it. Before that read existed the link failed here; calling it the archive's omission
+    instead would have reported success while dropping an ordinary POSIX symlink.
     """
     archive = tmp_path / "unixlink.zip"
     with zipfile.ZipFile(archive, "w") as zf:
@@ -1019,18 +1003,12 @@ def test_a_streaming_symlink_is_not_silently_skipped(tmp_path: Path) -> None:
         info.external_attr = (0o120777 << 16) | 0o120000
         zf.writestr(info, b"target.txt")
 
-    # The library default, OnError.STOP: the whole extraction stops on it.
+    dest = tmp_path / "out"
     with open_archive(archive, streaming=True) as opened:
-        with pytest.raises(LinkTargetNotFoundError):
-            opened.extract_all(tmp_path / "stop")
-
-    # And under CONTINUE it is a recorded failure, not a skip.
-    dest = tmp_path / "continue"
-    with open_archive(archive, streaming=True) as opened:
-        report = opened.extract_all(dest, on_error=OnError.CONTINUE)
+        report = opened.extract_all(dest)
     by_name = {r.member.name: r for r in report.results}
-    assert by_name["link"].status is ExtractionStatus.FAILED
-    assert isinstance(by_name["link"].error, LinkTargetNotFoundError)
+    assert by_name["link"].status is ExtractionStatus.EXTRACTED
+    assert os.readlink(dest / "link") == "target.txt"
     assert by_name["target.txt"].status is ExtractionStatus.EXTRACTED
 
 
