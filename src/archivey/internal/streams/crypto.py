@@ -12,6 +12,7 @@ Layers here:
   wrapper over a ciphertext source (7z member data: CBC, optional seek).
   RAR headers and WinZip AES keep their own pull streams; see the class
   docstring.
+
 Key derivation is not here: each format derives its keys its own way, so the 7z KDF
 and its coder-property parser live in :mod:`archivey.internal.backends.sevenzip_aes`,
 beside RAR's in ``rar_parser`` and WinZip AES's in ``zip_aes``.

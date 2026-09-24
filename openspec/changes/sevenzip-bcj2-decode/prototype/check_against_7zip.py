@@ -36,14 +36,12 @@ import bcj2  # noqa: E402
 from bcj2 import Bcj2DecoderStream  # noqa: E402
 
 from archivey.exceptions import CorruptionError, TruncatedError  # noqa: E402
+from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache  # noqa: E402
 from archivey.internal.backends.sevenzip_parser import SevenZipFolder  # noqa: E402
 from archivey.internal.backends.sevenzip_pipeline import (  # noqa: E402
     parse_sevenzip_archive,
 )
-from archivey.internal.streams.crypto import (  # noqa: E402
-    SevenZipKeyCache,
-    open_aes_decrypt_stream,
-)
+from archivey.internal.streams.crypto import open_aes_decrypt_stream  # noqa: E402
 
 _BCJ2 = bytes.fromhex("0303011b")
 _AES = bytes.fromhex("06f10701")

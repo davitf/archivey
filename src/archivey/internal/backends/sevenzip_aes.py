@@ -108,9 +108,12 @@ class SevenZipKeyCache:
     One per reader, so the cached candidate passwords and derived keys go when the
     reader does; ``@functools.cache`` on a method would keep them, and every reader,
     until the process exits. Keyed by ``(password, salt, cycles)``, with the password
-    already UTF-16LE. Unbounded for the same reason as ``RarKdfCache``: an entry is
-    added only by the derivation it caches. Neither this class nor the cache wrapper
-    has a ``repr`` that shows passwords or keys.
+    already UTF-16LE. Unbounded: an entry is added only by the derivation it caches,
+    and each needs a distinct salt, so entries are bounded by the folders the listing
+    limits already cap times the candidate passwords. Unlike RAR's, a 7z derivation
+    can cost almost nothing (the ``0x3F`` sentinel hashes nothing), so the bound is
+    that count, not the CPU cost of filling it. Neither this class nor the cache
+    wrapper has a ``repr`` that shows passwords or keys.
     """
 
     __slots__ = ("_derive",)
