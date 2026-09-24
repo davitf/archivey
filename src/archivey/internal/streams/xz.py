@@ -42,14 +42,15 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
+from archivey.internal.streams import decompressor_stream
 from archivey.internal.streams.decompressor_stream import (
+    SEEK_TABLE_THINNED,
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
-    SeekIndexTooLarge,
     SeekPoint,
+    SpacedCollector,
     build_index_backwards,
-    check_seek_index_size,
 )
 
 _XZ_STREAM_MAGIC = b"\xfd7zXZ\x00"
@@ -101,6 +102,34 @@ class _XzBlockBounds:
     unpadded_size: int
     uncompressed_size: int
     check: int
+    # Where the stream holding this block starts (its header), for stateless_point.
+    stream_compressed_start: int = 0
+    stream_decompressed_start: int = 0
+
+    @property
+    def decompressed_end(self) -> int:
+        return self.decompressed_start + self.uncompressed_size
+
+    def stateless_point(self) -> SeekPoint:
+        """The start of this block's stream, which ``_XzState`` decodes on its own.
+
+        What ``DecompressorStream`` resumes from instead of this block once block
+        chains can no longer be trusted (``_demote_stateful_points``).
+        """
+        return SeekPoint(self.stream_decompressed_start, self.stream_compressed_start)
+
+
+@dataclass
+class _XzStreamStart:
+    """A stream a thinned index keeps only the start of, with no block bounds.
+
+    ``compressed_start`` is the stream header. A seek into the stream decodes it from
+    there, as for a stream whose index was never scanned.
+    """
+
+    compressed_start: int
+    decompressed_start: int
+    uncompressed_size: int
 
     @property
     def decompressed_end(self) -> int:
@@ -152,12 +181,21 @@ def _parse_xz_footer(data: bytes) -> tuple[int, int]:
     return check, backward_size_bytes
 
 
-def _parse_xz_index(data: bytes, records_before: int = 0) -> list[tuple[int, int]]:
-    """Parse one stream's index into ``(unpadded_size, uncompressed_size)`` records.
+def _parse_xz_index(data: bytes) -> list[tuple[int, int]]:
+    """Parse one stream's index into ``(unpadded_size, uncompressed_size)`` records."""
+    records, _, _ = _scan_xz_index(data, max_records=None)
+    assert records is not None
+    return records
 
-    ``records_before`` counts blocks already taken from later streams by the same scan;
-    the declared record count is checked against the seek-table cap before any record is
-    stored, since a record can be as small as two bytes.
+
+def _scan_xz_index(
+    data: bytes, max_records: int | None
+) -> tuple[list[tuple[int, int]] | None, int, int]:
+    """Validate one stream's index; return its records and block totals.
+
+    Returns ``(records, blocks_compressed_size, uncompressed_size)``. ``records`` is
+    ``None`` when the index declares more than ``max_records``: a record can be as small
+    as two bytes, so the records are then walked and summed but never stored.
     """
     if not data or data[0] != 0x00:
         raise CorruptionError(
@@ -168,8 +206,10 @@ def _parse_xz_index(data: bytes, records_before: int = 0) -> list[tuple[int, int
     offset = 1
     num_records, consumed = _decode_mbi(data, offset)
     offset += consumed
-    check_seek_index_size(records_before + num_records, "xz")
+    keep = max_records is None or num_records <= max_records
     records: list[tuple[int, int]] = []
+    compressed_total = 0
+    uncompressed_total = 0
     for _ in range(num_records):
         unpadded_size, consumed = _decode_mbi(data, offset)
         offset += consumed
@@ -177,7 +217,10 @@ def _parse_xz_index(data: bytes, records_before: int = 0) -> list[tuple[int, int
         offset += consumed
         if unpadded_size == 0:
             raise CorruptionError("XZ index: unpadded_size must be > 0")
-        records.append((unpadded_size, uncompressed_size))
+        compressed_total += _round_up_4(unpadded_size)
+        uncompressed_total += uncompressed_size
+        if keep:
+            records.append((unpadded_size, uncompressed_size))
     # The footer's backward size fixes the index length, so the records plus padding
     # must fill it exactly: fewer records than the index carries, or padding cut short,
     # is a malformed index (liblzma, which does the decoding, rejects both).
@@ -192,7 +235,7 @@ def _parse_xz_index(data: bytes, records_before: int = 0) -> list[tuple[int, int
             raise CorruptionError(
                 f"XZ index padding byte {i} is non-zero: {data[i]:#04x}"
             )
-    return records
+    return (records if keep else None), compressed_total, uncompressed_total
 
 
 # Stream padding is scanned backwards this many bytes per read; a multiple of 4.
@@ -233,19 +276,36 @@ def _skip_stream_padding_backwards(
     return compressed_end
 
 
+# One stream seen by ``_read_xz_index_backwards``: (decompressed distance from its
+# start to the end of the scan, header offset, uncompressed size, check, block records
+# or None when only its start is kept).
+_ScannedXzStream = tuple[int, int, int, int, "list[tuple[int, int]] | None"]
+
+
 def _read_xz_index_backwards(
     stream: BinaryIO,
     file_size: int,
     stop_at: int = 0,
     start_decompressed_offset: int = 0,
-) -> list[_XzBlockBounds]:
+    on_thinned: Callable[[], None] | None = None,
+) -> list[_XzBlockBounds | _XzStreamStart]:
     """Walk XZ streams from EOF toward ``stop_at``, building a block index.
 
-    Reads only footers and indices — no decompression. Returns blocks in forward order
+    Reads only footers and indices — no decompression. Returns entries in forward order
     with absolute compressed/decompressed offsets.
+
+    Streams keep their block bounds while those fit the seek-table cap. Once they would
+    not, every stream is kept as a :class:`_XzStreamStart` only, because a block chain
+    needs every block after its start and so blocks cannot be dropped one at a time;
+    the starts are then thinned by distance (:class:`SpacedCollector`) and
+    ``on_thinned`` is called. The last stream is always kept, so the total stays exact.
     """
-    all_streams: list[list[_XzBlockBounds]] = []
-    blocks_seen = 0
+    limit = decompressor_stream.MAX_SEEK_POINTS
+    # Last stream first; None once thinning has started and ``starts`` holds them.
+    scanned: list[_ScannedXzStream] | None = []
+    entries = 0
+    starts: SpacedCollector[_ScannedXzStream] = SpacedCollector(lambda e: e[0])
+    total = 0
     compressed_end = file_size
 
     while compressed_end > stop_at:
@@ -285,9 +345,9 @@ def _read_xz_index_backwards(
                 f"computed {computed_index_crc:#010x}"
             )
 
-        records = _parse_xz_index(raw_index, records_before=blocks_seen)
-        blocks_seen += len(records)
-        blocks_compressed_total = sum(_round_up_4(r[0]) for r in records)
+        records, blocks_compressed_total, stream_size = _scan_xz_index(
+            raw_index, max_records=limit - entries if scanned is not None else 0
+        )
         stream_header_start = (
             index_with_crc_start - blocks_compressed_total - _STREAM_HEADER_SIZE
         )
@@ -304,35 +364,48 @@ def _read_xz_index_backwards(
                 f"XZ stream header check {header_check} != footer check {check}"
             )
 
-        stream_entries: list[_XzBlockBounds] = []
-        block_compressed_start = stream_header_start + _STREAM_HEADER_SIZE
+        total += stream_size
+        # An empty stream holds no block but still costs an entry here.
+        cost = max(1, len(records)) if records is not None else 0
+        if scanned is not None and records is not None and entries + cost <= limit:
+            scanned.append((total, stream_header_start, stream_size, check, records))
+            entries += cost
+        else:
+            if scanned is not None:
+                for dist, header, size, earlier_check, _ in scanned:
+                    starts.add((dist, header, size, earlier_check, None))
+                scanned = None
+            starts.add((total, stream_header_start, stream_size, check, None))
+        compressed_end = stream_header_start
+
+    if scanned is None and on_thinned is not None:
+        on_thinned()
+    end = start_decompressed_offset + total
+    result: list[_XzBlockBounds | _XzStreamStart] = []
+    for dist, header, size, check, records in reversed(
+        scanned if scanned is not None else starts.items
+    ):
+        stream_start = end - dist
+        if records is None:
+            result.append(_XzStreamStart(header, stream_start, size))
+            continue
+        block_compressed_start = header + _STREAM_HEADER_SIZE
+        block_decompressed_start = stream_start
         for unpadded_size, uncompressed_size in records:
-            stream_entries.append(
+            result.append(
                 _XzBlockBounds(
                     compressed_start=block_compressed_start,
-                    decompressed_start=0,  # filled in below
+                    decompressed_start=block_decompressed_start,
                     unpadded_size=unpadded_size,
                     uncompressed_size=uncompressed_size,
                     check=check,
+                    stream_compressed_start=header,
+                    stream_decompressed_start=stream_start,
                 )
             )
             block_compressed_start += _round_up_4(unpadded_size)
-
-        all_streams.append(stream_entries)
-        # An empty stream holds no block but still costs a list here.
-        check_seek_index_size(len(all_streams), "xz")
-        compressed_end = stream_header_start
-
-    flat: list[_XzBlockBounds] = []
-    for stream_entries in reversed(all_streams):
-        flat.extend(stream_entries)
-
-    decomp_offset = start_decompressed_offset
-    for block in flat:
-        block.decompressed_start = decomp_offset
-        decomp_offset += block.uncompressed_size
-
-    return flat
+            block_decompressed_start += uncompressed_size
+    return result
 
 
 # liblzma's ``memlimit`` counts a decoder's whole working set: the dictionary the
@@ -875,8 +948,26 @@ class XzDecoder(BaseDecoder):
                     )
                     # Prefer block-bounds (with resume state) for the stream start
                     # over a state=None placeholder — avoids colliding with a prior
-                    # build_index point at the same decompressed offset.
+                    # build_index point at the same decompressed offset. A stream with
+                    # more blocks than the seek-table cap comes back as its start only
+                    # and gets the placeholder below.
+                    if any(isinstance(b, _XzStreamStart) for b in blocks):
+                        resolve_collector(self._collector).emit(
+                            code=DiagnosticCode.SEEK_INDEX_DEGRADED,
+                            message=(
+                                "XZ stream has more blocks than the seek-table cap; "
+                                "seeks into it decode from the stream start"
+                            ),
+                            context=SeekIndexContext(
+                                codec="xz",
+                                scan="per_stream",
+                                error_type=SEEK_TABLE_THINNED,
+                            ),
+                            logger=logger,
+                        )
+                        blocks = []
                     for b in blocks:
+                        assert isinstance(b, _XzBlockBounds)
                         if b.uncompressed_size == 0:
                             continue  # zero-length span is never a useful seek target
                         if b.decompressed_start < stream_decomp_start:
@@ -895,7 +986,7 @@ class XzDecoder(BaseDecoder):
                         points.append(
                             SeekPoint(b.decompressed_start, b.compressed_start, state=b)
                         )
-                except (CorruptionError, SeekIndexTooLarge) as e:
+                except CorruptionError as e:
                     message = (
                         "XZ per-stream backward scan failed; block-level seek points for "
                         f"this stream will not be available: {e}"
@@ -934,7 +1025,11 @@ class XzDecoder(BaseDecoder):
             inner,
             last_known,
             _read_xz_index_backwards,
-            lambda b: SeekPoint(b.decompressed_start, b.compressed_start, state=b),
+            lambda b: SeekPoint(
+                b.decompressed_start,
+                b.compressed_start,
+                state=b if isinstance(b, _XzBlockBounds) else None,
+            ),
             "XZ backwards index scan failed; falling back to sequential decompression. "
             "Reason: %s",
             codec_name="xz",
@@ -975,9 +1070,7 @@ def XzDecompressorStream(
         def index_built() -> bool:
             stream = stream_cell[0]
             assert stream is not None
-            # A stream that abandoned its seek table records no more points, so the
-            # per-stream scans would be wasted work.
-            return stream._index_built or not stream._index_enabled
+            return stream._index_built
 
         return XzDecoder.from_point(
             point,

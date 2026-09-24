@@ -760,13 +760,15 @@ def _collect_diagnostics() -> tuple[Any, list[Any]]:
     return DiagnosticCollector(on_diagnostic=seen.append), seen
 
 
-def _assert_table_abandoned(stream: Any, seen: list[Any]) -> None:
+def _assert_table_thinned(stream: Any, seen: list[Any], cap: int, scan: str) -> None:
     from archivey.diagnostics import DiagnosticCode
 
     degraded = [d for d in seen if d.code is DiagnosticCode.SEEK_INDEX_DEGRADED]
-    assert degraded, "the fallback must be reported"
-    assert degraded[-1].context.error_type == "SeekIndexTooLarge"
-    assert len(stream._seek_points) == 1  # only the origin is kept
+    assert degraded, "thinning must be reported"
+    assert degraded[-1].context.error_type == "SeekTableThinned"
+    assert degraded[-1].context.scan == scan
+    assert len(stream._seek_points) <= cap
+    assert stream._seek_points[0].decompressed_offset == 0
 
 
 @pytest.fixture
@@ -777,10 +779,41 @@ def small_seek_cap(monkeypatch: pytest.MonkeyPatch) -> int:
     return 8
 
 
+@pytest.mark.parametrize("step", [0, 1, 7, 100])
+def test_spaced_collector_stays_within_the_cap_and_spreads_what_it_keeps(
+    small_seek_cap: int, step: int
+) -> None:
+    from archivey.internal.streams.decompressor_stream import SpacedCollector
+
+    collector: SpacedCollector[int] = SpacedCollector(lambda k: k)
+    for i in range(1000):
+        collector.add(i * step)
+        assert len(collector.items) <= small_seek_cap
+    kept = collector.items
+    assert kept[0] == 0  # the first item always survives
+    assert collector.thinned
+    gaps = [b - a for a, b in zip(kept, kept[1:])]
+    # Greedy spacing: no kept gap is wider than the spacing plus one step.
+    assert all(g <= collector.spacing + step for g in gaps), (gaps, collector.spacing)
+    if step:
+        # Spread over the whole range, not bunched at the start.
+        assert kept[-1] >= 999 * step - collector.spacing - step
+
+
+def test_spaced_collector_below_the_cap_keeps_everything(small_seek_cap: int) -> None:
+    from archivey.internal.streams.decompressor_stream import SpacedCollector
+
+    collector: SpacedCollector[int] = SpacedCollector(lambda k: k)
+    for i in range(small_seek_cap):
+        collector.add(i)
+    assert collector.items == list(range(small_seek_cap))
+    assert not collector.thinned
+
+
 LZIP_PARTS = [bytes([65 + i]) * (300 + i) for i in range(20)]
 
 
-def test_lzip_index_over_the_cap_falls_back_to_decoding_from_the_start(
+def test_lzip_index_over_the_cap_is_thinned_and_seeks_read_right(
     small_seek_cap: int,
 ) -> None:
     compressed = make_multi_member_lzip(LZIP_PARTS)
@@ -788,86 +821,154 @@ def test_lzip_index_over_the_cap_falls_back_to_decoding_from_the_start(
     collector, seen = _collect_diagnostics()
     with LzipDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
         assert stream.seek(0, io.SEEK_END) == len(full)
-        _assert_table_abandoned(stream, seen)
-        assert stream.seek(len(full) // 2) == len(full) // 2
-        assert stream.read() == full[len(full) // 2 :]
-        stream.seek(5)
-        assert stream.read(700) == full[5:705]
+        _assert_table_thinned(stream, seen, small_seek_cap, "backwards_trailer")
+        # Thinned, not dropped: seeks still resume from members past the origin.
+        assert len(stream._seek_points) > 1
+        for pos in (5, len(full) // 3, len(full) // 2, len(full) - 3):
+            assert stream.seek(pos) == pos
+            assert stream.read(700) == full[pos : pos + 700]
 
 
-def test_lzip_index_scan_stops_at_the_cap(small_seek_cap: int) -> None:
-    """Past the cap the scan gives up; it does not walk the rest of the file first."""
-    from archivey.internal.streams.decompressor_stream import SeekIndexTooLarge
+def test_lzip_index_scan_keeps_the_last_member_and_the_exact_total(
+    small_seek_cap: int,
+) -> None:
+    compressed = make_multi_member_lzip(LZIP_PARTS)
+    thinned: list[bool] = []
+    members = _read_index_backwards(
+        io.BytesIO(compressed), len(compressed), on_thinned=lambda: thinned.append(True)
+    )
+    assert thinned == [True]
+    assert len(members) <= small_seek_cap
+    assert members[-1].decompressed_end == sum(len(p) for p in LZIP_PARTS)
+    assert members[-1].decompressed_size == len(LZIP_PARTS[-1])
+    offsets = [m.decompressed_start for m in members]
+    assert offsets == sorted(offsets)
+    # Every kept member sits where the real member starts.
+    starts = {sum(len(p) for p in LZIP_PARTS[:i]) for i in range(len(LZIP_PARTS))}
+    assert set(offsets) <= starts
 
+
+def test_lzip_index_of_many_empty_members_keeps_one(small_seek_cap: int) -> None:
     block = b"LZIP" + bytes([1, 20]) + struct.pack("<IQQ", 0, 0, 26)
     data = block * 1000
-    source = CountingBytesIO(data)
-    with pytest.raises(SeekIndexTooLarge):
-        _read_index_backwards(source, len(data))
-    assert source.bytes_read < 30 * 26
+    members = _read_index_backwards(io.BytesIO(data), len(data))
+    assert len(members) == 1
+    assert members[0].compressed_start == len(data) - 26
 
 
-def test_lzip_forward_read_over_the_cap_abandons_the_table(small_seek_cap: int) -> None:
+def test_lzip_forward_read_over_the_cap_thins_the_table(small_seek_cap: int) -> None:
     compressed = make_multi_member_lzip(LZIP_PARTS)
     full = b"".join(LZIP_PARTS)
     collector, seen = _collect_diagnostics()
     with LzipDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
         assert stream.read() == full
-        _assert_table_abandoned(stream, seen)
+        _assert_table_thinned(stream, seen, small_seek_cap, "seek_table")
+        assert len(stream._seek_points) > 1
         stream.seek(1000)
         assert stream.read(50) == full[1000:1050]
+        stream.seek(len(full) - 400)
+        assert stream.read() == full[-400:]
 
 
-def test_xz_many_streams_over_the_cap_fall_back(small_seek_cap: int) -> None:
+def test_xz_many_streams_over_the_cap_keep_spaced_stream_starts(
+    small_seek_cap: int,
+) -> None:
     parts = [bytes([65 + i]) * 500 for i in range(20)]
     compressed = make_multi_stream_xz(parts)
     full = b"".join(parts)
     collector, seen = _collect_diagnostics()
     with XzDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
         assert stream.seek(0, io.SEEK_END) == len(full)
-        _assert_table_abandoned(stream, seen)
-        stream.seek(7777)
-        assert stream.read() == full[7777:]
+        _assert_table_thinned(stream, seen, small_seek_cap, "backwards_index")
+        assert len(stream._seek_points) > 1
+        assert all(p.state is None for p in stream._seek_points)
+        for pos in (7777, 3, len(full) - 1):
+            stream.seek(pos)
+            assert stream.read() == full[pos:]
 
 
 @pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
-def test_xz_many_blocks_over_the_cap_fall_back_and_read_right(
+def test_xz_stream_with_more_blocks_than_the_cap_keeps_only_its_start(
     small_seek_cap: int,
 ) -> None:
-    """No partial block chain survives the cap: a chain built from one would stop at
-    the last recorded block and report a short stream."""
+    """Blocks are never dropped one at a time: a chain resumed from a kept block would
+    run through the missing ones' bytes as if they were the next block."""
     data = random.Random(3).randbytes(40 * 4096)
     compressed = make_multiblock_xz(data, block_size=4096)
     collector, seen = _collect_diagnostics()
     with XzDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
         assert stream.read(10_000) == data[:10_000]
         assert stream.seek(0, io.SEEK_END) == len(data)
-        _assert_table_abandoned(stream, seen)
+        _assert_table_thinned(stream, seen, small_seek_cap, "backwards_index")
+        assert all(p.state is None for p in stream._seek_points)
         stream.seek(len(data) // 3)
         assert stream.read() == data[len(data) // 3 :]
 
 
 @pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
-def test_xz_block_points_recorded_before_the_cap_are_dropped_with_it(
+def test_xz_block_points_recorded_before_a_thinned_index_become_stream_starts(
     small_seek_cap: int,
 ) -> None:
-    """Block points a forward read recorded must go when the full index is abandoned.
-
-    Kept, a seek would resume a block chain from them that ends at the first stream's
-    last block, and the read would stop there with no error.
+    """A thinned index leaves streams out, so block points a forward read recorded
+    earlier are demoted to their stream's start. Kept, a chain resumed from them would
+    run from the first stream's last block straight to the next stream the index kept,
+    skipping the ones between with no error (59 185 of 68 185 bytes, measured).
     """
     rng = random.Random(4)
-    parts = [rng.randbytes(5 * 4096), rng.randbytes(5 * 4096)]
+    parts = [rng.randbytes(3 * 4096)] + [rng.randbytes(3000) for _ in range(20)]
     compressed = b"".join(make_multiblock_xz(p, block_size=4096) for p in parts)
     full = b"".join(parts)
     collector, seen = _collect_diagnostics()
     with XzDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
-        # Finish the first stream so its blocks are recorded progressively.
+        # Finish the first stream so its blocks are recorded progressively. Few enough
+        # that the table itself stays under the cap once the thinned index joins it.
         assert stream.read(len(parts[0]) + 10) == full[: len(parts[0]) + 10]
+        assert any(p.state is not None for p in stream._seek_points)
         assert stream.seek(0, io.SEEK_END) == len(full)
-        _assert_table_abandoned(stream, seen)
+        _assert_table_thinned(stream, seen, small_seek_cap, "backwards_index")
+        assert all(p.state is None for p in stream._seek_points)
         stream.seek(4096 + 7)
         assert stream.read() == full[4096 + 7 :]
+
+
+@pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
+def test_xz_forward_read_over_the_cap_demotes_blocks_to_stream_starts(
+    small_seek_cap: int,
+) -> None:
+    rng = random.Random(5)
+    parts = [rng.randbytes(5 * 4096) for _ in range(3)]
+    compressed = b"".join(make_multiblock_xz(p, block_size=4096) for p in parts)
+    full = b"".join(parts)
+    collector, seen = _collect_diagnostics()
+    with XzDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
+        assert stream.read() == full
+        _assert_table_thinned(stream, seen, small_seek_cap, "seek_table")
+        assert all(p.state is None for p in stream._seek_points)
+        assert [p.decompressed_offset for p in stream._seek_points] == [
+            0,
+            len(parts[0]),
+            len(parts[0]) + len(parts[1]),
+        ]
+        for pos in (4096 + 7, len(parts[0]) + 9000, len(full) - 5):
+            stream.seek(pos)
+            assert stream.read() == full[pos:]
+
+
+@pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
+def test_xz_progressive_scan_of_a_stream_over_the_cap_keeps_its_start(
+    small_seek_cap: int,
+) -> None:
+    rng = random.Random(6)
+    parts = [rng.randbytes(4096), rng.randbytes(20 * 4096)]
+    compressed = b"".join(make_multiblock_xz(p, block_size=4096) for p in parts)
+    full = b"".join(parts)
+    collector, seen = _collect_diagnostics()
+    with XzDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
+        assert stream.read() == full
+        _assert_table_thinned(stream, seen, small_seek_cap, "per_stream")
+        assert [p.decompressed_offset for p in stream._seek_points] == [0, 4096]
+        stream.seek(4096 + 50_000)
+        assert stream.read() == full[4096 + 50_000 :]
 
 
 @pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
@@ -885,12 +986,20 @@ def test_xz_seek_after_a_failed_index_scan_reads_to_the_end() -> None:
         assert stream.read() == full[4096 + 7 :]
 
 
-def test_xz_index_record_count_is_checked_before_parsing(small_seek_cap: int) -> None:
-    from archivey.internal.streams.decompressor_stream import SeekIndexTooLarge
-    from archivey.internal.streams.xz import _encode_mbi, _parse_xz_index
+def test_xz_index_records_over_the_limit_are_summed_not_stored() -> None:
+    from archivey.internal.streams.xz import _encode_mbi, _scan_xz_index
 
-    with pytest.raises(SeekIndexTooLarge):
-        _parse_xz_index(b"\x00" + _encode_mbi(1 << 40))
+    records = [(100, 4096), (50, 1000), (9, 3)]
+    body = _encode_mbi(len(records)) + b"".join(
+        _encode_mbi(u) + _encode_mbi(n) for u, n in records
+    )
+    index = b"\x00" + body
+    index += b"\x00" * (-len(index) % 4)
+    assert _scan_xz_index(index, max_records=3) == (records, 100 + 52 + 12, 5099)
+    assert _scan_xz_index(index, max_records=2) == (None, 100 + 52 + 12, 5099)
+    # A huge declared count runs out of index bytes instead of reserving anything.
+    with pytest.raises(CorruptionError):
+        _scan_xz_index(b"\x00" + _encode_mbi(1 << 40), max_records=8)
 
 
 # --- accelerator backends present / absent ---------------------------------------------

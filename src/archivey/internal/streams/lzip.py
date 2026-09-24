@@ -23,7 +23,7 @@ import lzma
 import os
 import struct
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -36,8 +36,8 @@ from archivey.internal.streams.decompressor_stream import (
     DecodeOut,
     DecompressorStream,
     SeekPoint,
+    SpacedCollector,
     build_index_backwards,
-    check_seek_index_size,
 )
 
 _MAGIC = b"LZIP"
@@ -106,28 +106,32 @@ def _read_index_backwards(
     file_size: int,
     stop_at: int = 0,
     start_decompressed_offset: int = 0,
+    on_thinned: Callable[[], None] | None = None,
 ) -> list[_MemberBounds]:
     """Build the member index by scanning trailers backwards (no decompression).
 
-    Each entry retains the trailer CRC-32 so callers can combine a whole-stream digest
-    without decompressing. A member can be as small as 26 bytes, so the entry count is
-    capped (:func:`check_seek_index_size`); callers that need only totals use
-    :func:`peek_index_summary`, which folds the walk and needs no cap.
+    A member can be as small as 26 bytes, so the members kept are thinned
+    (:class:`SpacedCollector`) once there are more than the seek-table cap; the last
+    member is always kept, so the total size stays exact. Each entry retains its
+    trailer CRC-32. Callers that need only totals use :func:`peek_index_summary`, which
+    folds the walk and keeps nothing.
     """
-    entries: list[tuple[int, int, int, int]] = []
+    # Each entry is (decompressed distance from member start to the end, trailer).
+    # Walking backwards that distance only grows, which is what the collector needs.
+    kept: SpacedCollector[tuple[int, tuple[int, int, int, int]]] = SpacedCollector(
+        lambda e: e[0]
+    )
+    total = 0
     for entry in _iter_trailers_backwards(stream, file_size, stop_at):
-        entries.append(entry)
-        check_seek_index_size(len(entries), "lzip")
-    result: list[_MemberBounds] = []
-    decompressed_offset = start_decompressed_offset
-    for comp_start, decomp_size, comp_size, crc32 in reversed(entries):
-        result.append(
-            _MemberBounds(
-                comp_start, decompressed_offset, comp_size, decomp_size, crc32
-            )
-        )
-        decompressed_offset += decomp_size
-    return result
+        total += entry[1]
+        kept.add((total, entry))
+    if kept.thinned and on_thinned is not None:
+        on_thinned()
+    end = start_decompressed_offset + total
+    return [
+        _MemberBounds(comp_start, end - dist, comp_size, decomp_size, crc32)
+        for dist, (comp_start, decomp_size, comp_size, crc32) in reversed(kept.items)
+    ]
 
 
 def peek_index_summary(stream: BinaryIO, file_size: int) -> tuple[int, int]:

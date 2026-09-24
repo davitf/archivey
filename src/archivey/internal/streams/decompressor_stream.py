@@ -25,6 +25,7 @@ from typing import (
     Any,
     BinaryIO,
     Callable,
+    Generic,
     Protocol,
     Sequence,
     TypeVar,
@@ -193,34 +194,74 @@ def _compressed_feed_size(max_length: int) -> int:
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
 
 
-# Upper bound on a stream's seek table, in entries. A seek table is an optimisation: past
-# this many points the stream drops the table and seeks by decoding from the start, which
-# is always correct, so the cap can never turn a readable file into an error (unless a
-# policy escalates the SEEK_INDEX_DEGRADED it reports). That is why it is a structural
+# Upper bound on a stream's seek table, in entries. A seek table is an optimisation, so
+# passing the cap thins the table instead of failing: points are kept at least a spacing
+# apart (in decompressed bytes) chosen so the table falls to half the cap, and later
+# points keep that spacing. A seek then decodes at most about one spacing plus one unit
+# further than it would with every point. Nothing becomes unreadable (unless a policy
+# escalates the SEEK_INDEX_DEGRADED it reports), which is why this is a structural
 # constant and not a ListingLimits field. Without it the table grows with the unit count
 # the file declares: an lzip member can be 26 bytes, so a table cost ~9x the file's size.
 # Real files stay far below it: xz -T0 writes 24 MiB blocks and ncompress checks for a
 # CLEAR every 10 kB of input, so reaching it takes a multi-GiB file even at the densest.
 MAX_SEEK_POINTS = 1 << 18
 
+# ``SeekIndexContext.error_type`` when a table was thinned; no exception is involved.
+SEEK_TABLE_THINNED = "SeekTableThinned"
 
-class SeekIndexTooLarge(Exception):
-    """A seek-index scan found more units than :data:`MAX_SEEK_POINTS`.
+_T = TypeVar("_T")
 
-    Not an :class:`~archivey.ArchiveyError`: it never leaves this layer.
-    :class:`DecompressorStream` catches it and falls back to seeking from the start.
+
+def thinning_spacing(span: int) -> int:
+    """The spacing that keeps points spread over ``span`` bytes to half the cap."""
+    return max(1, -(-2 * span // MAX_SEEK_POINTS))
+
+
+def spaced_subset(
+    items: Sequence[_T], key: Callable[[_T], int], spacing: int
+) -> list[_T]:
+    """Keep the first item, then each item at least ``spacing`` past the last one kept.
+
+    ``items`` must be in non-decreasing ``key`` order. Over a key span ``S`` at most
+    ``S // spacing + 1`` items survive, whatever their count.
+    """
+    kept: list[_T] = []
+    last = 0
+    for item in items:
+        k = key(item)
+        if not kept or k - last >= spacing:
+            kept.append(item)
+            last = k
+    return kept
+
+
+class SpacedCollector(Generic[_T]):
+    """Collect items with non-decreasing keys, thinning to stay within the cap.
+
+    For the backward index scans, which cannot know their entry count up front: an
+    lzip trailer names only the member before it, and xz streams are found one at a
+    time. Keys are decompressed distances, so thinning keeps seek cost bounded.
+    Memory stays at most :data:`MAX_SEEK_POINTS` items. The first item is always kept.
     """
 
+    def __init__(self, key: Callable[[_T], int]) -> None:
+        self._key = key
+        self._limit = MAX_SEEK_POINTS
+        self.items: list[_T] = []
+        self.spacing = 0
+        self.thinned = False
 
-def check_seek_index_size(count: int, codec_name: str) -> None:
-    """Raise :class:`SeekIndexTooLarge` once a scan has seen more than the cap.
-
-    Scanners call it as they count, so a table past the cap is never materialized.
-    """
-    if count > MAX_SEEK_POINTS:
-        raise SeekIndexTooLarge(
-            f"{codec_name} seek index has more than {MAX_SEEK_POINTS} entries"
-        )
+    def add(self, item: _T) -> None:
+        k = self._key(item)
+        if self.items and k - self._key(self.items[-1]) < self.spacing:
+            return
+        self.items.append(item)
+        if len(self.items) > self._limit:
+            self.thinned = True
+            self.spacing = max(
+                self.spacing * 2, thinning_spacing(k - self._key(self.items[0]))
+            )
+            self.items = spaced_subset(self.items, self._key, self.spacing)
 
 
 class _IndexBlock(Protocol):
@@ -246,7 +287,8 @@ class _ScanFn(Protocol[_B]):
 
     Parameter names in a callback protocol bind every implementation, so the
     first two are positional-only: a scanner may call them whatever it likes.
-    This module only ever passes them positionally.
+    This module only ever passes them positionally. A scanner that had to thin its
+    entries to stay within :data:`MAX_SEEK_POINTS` calls ``on_thinned``.
     """
 
     def __call__(
@@ -257,6 +299,7 @@ class _ScanFn(Protocol[_B]):
         *,
         stop_at: int,
         start_decompressed_offset: int,
+        on_thinned: Callable[[], None] | None = None,
     ) -> list[_B]: ...
 
 
@@ -282,15 +325,23 @@ def build_index_backwards(
     ``include_block``, when set, filters scanned bounds before they become seek
     points (e.g. XZ zero-``uncompressed_size`` blocks that share a decompressed
     offset with the next real block and are never useful resume targets). The
-    total size still comes from the last bound's ``decompressed_end``.
+    total size still comes from the last bound's ``decompressed_end``, so a scanner
+    that thins its entries always keeps the last one.
     """
     file_size = inner.seek(0, io.SEEK_END)
+    thinned = False
+
+    def on_thinned() -> None:
+        nonlocal thinned
+        thinned = True
+
     try:
         bounds = scan_fn(
             inner,
             file_size,
             stop_at=last_known.compressed_offset,
             start_decompressed_offset=last_known.decompressed_offset,
+            on_thinned=on_thinned,
         )
     except CorruptionError as e:
         message = warning_msg % (e,)
@@ -305,6 +356,18 @@ def build_index_backwards(
             logger=logger,
         )
         return [], None
+    if thinned:
+        resolve_collector(collector).emit(
+            code=DiagnosticCode.SEEK_INDEX_DEGRADED,
+            message=(
+                f"{codec_name} index has more than {MAX_SEEK_POINTS} entries; kept a "
+                "spaced subset, so seeks may decode further"
+            ),
+            context=SeekIndexContext(
+                codec=codec_name, scan=scan, error_type=SEEK_TABLE_THINNED
+            ),
+            logger=logger,
+        )
     points = [
         to_point(b)
         for b in bounds
@@ -358,8 +421,12 @@ class DecompressorStream(ReadOnlyIOStream):
         self._seek_points: list[SeekPoint] = [SeekPoint(0, 0)]
         self._index_built = False
         self._index_build_attempted = False
-        # Set when an index build fails; see _drop_stateful_points.
-        self._stateful_points_unsafe = False
+        # Set once block chains can no longer be trusted; see _demote_stateful_points.
+        self._demote_stateful = False
+        # Minimum decompressed distance between points once the table has been thinned
+        # (0 until then); see _thin_seek_table.
+        self._min_spacing = 0
+        self._table_thinned = False
         self._make_decoder = make_decoder
         try:
             if isinstance(path, (str, os.PathLike)):
@@ -432,14 +499,12 @@ class DecompressorStream(ReadOnlyIOStream):
                 continue
             if not self._index_enabled:
                 continue
-            if point.state is not None and self._stateful_points_unsafe:
+            if point.state is not None and self._demote_stateful:
+                point = point.state.stateless_point()
+                if point.decompressed_offset == 0:
+                    continue  # the origin already resumes there
+            if self._min_spacing and self._too_close(point):
                 continue
-            if len(self._seek_points) >= MAX_SEEK_POINTS:
-                self._abandon_seek_table(
-                    f"{self._codec_name} seek table reached {MAX_SEEK_POINTS} entries",
-                    scan="seek_table",
-                )
-                return
             if point < self._seek_points[-1]:
                 i = bisect.bisect_left(self._seek_points, point)
                 if i < len(self._seek_points) and self._seek_points[i] == point:
@@ -451,40 +516,75 @@ class DecompressorStream(ReadOnlyIOStream):
                 continue
             else:
                 self._seek_points.append(point)
+            if len(self._seek_points) > MAX_SEEK_POINTS:
+                self._thin_seek_table()
 
-    def _drop_stateful_points(self) -> None:
-        """After a failed index build, keep only points that resume on their own.
+    def _too_close(self, point: SeekPoint) -> bool:
+        """Whether ``point`` lands within ``_min_spacing`` of a neighbour in the table."""
+        points = self._seek_points
+        i = bisect.bisect_left(points, point)
+        if i < len(points) and points[i] == point:
+            return False  # same offset: the collision rules decide
+        # i >= 1: the origin sits at offset 0 and point is past it.
+        if point.decompressed_offset - points[i - 1].decompressed_offset < (
+            self._min_spacing
+        ):
+            return True
+        return (
+            i < len(points)
+            and points[i].decompressed_offset - point.decompressed_offset
+            < self._min_spacing
+        )
 
-        A point carrying ``state`` (an XZ block) resumes a block chain made of the
-        points recorded after it, which is complete only once the whole index is. With
-        the build failed it never will be: the chain would end at the last recorded
-        block and the read would stop there, short and without an error. Stateless
-        points (a stream or member start) decode forward on their own, so they stay,
-        and later stateful points are refused (``add_seek_points``).
+    def _thin_seek_table(self) -> None:
+        """Bring a table past :data:`MAX_SEEK_POINTS` down to at most half of it.
+
+        Block points go first (:meth:`_demote_stateful_points`): an XZ chain needs every
+        block after its start, so blocks cannot be dropped one by one. If that is not
+        enough, points are kept at least a spacing apart, and later points keep it.
         """
-        self._stateful_points_unsafe = True
-        origin, *rest = self._seek_points
-        self._seek_points[:] = [origin, *(p for p in rest if p.state is None)]
-
-    def _abandon_seek_table(self, reason: str, *, scan: str) -> None:
-        """Drop every seek point but the origin and stop indexing this stream.
-
-        Seeks then decode from the start, as for a stream with no declared seek demand.
-        Partial tables are never kept: an XZ block chain resumed from one would end at
-        the last recorded block and report a short stream.
-        """
-        del self._seek_points[1:]
-        self._index_enabled = False
+        if not self._demote_stateful:
+            self._demote_stateful_points()
+        if len(self._seek_points) > MAX_SEEK_POINTS // 2:
+            span = self._seek_points[-1].decompressed_offset
+            self._min_spacing = max(self._min_spacing * 2, thinning_spacing(span))
+            self._seek_points[:] = spaced_subset(
+                self._seek_points, lambda p: p.decompressed_offset, self._min_spacing
+            )
+        if self._table_thinned:
+            return
+        self._table_thinned = True
         resolve_collector(self._diagnostics_collector).emit(
             code=DiagnosticCode.SEEK_INDEX_DEGRADED,
-            message=f"{reason}; seeks decode from the start instead",
+            message=(
+                f"{self._codec_name} seek table passed {MAX_SEEK_POINTS} entries; kept "
+                "a spaced subset, so seeks may decode further"
+            ),
             context=SeekIndexContext(
-                codec=self._codec_name,
-                scan=scan,
-                error_type=SeekIndexTooLarge.__name__,
+                codec=self._codec_name, scan="seek_table", error_type=SEEK_TABLE_THINNED
             ),
             logger=logger,
         )
+
+    def _demote_stateful_points(self) -> None:
+        """Replace every point that resumes a block chain with its stream's start.
+
+        A point carrying ``state`` (an XZ block) resumes a chain made of the points
+        after it, up to the next stateless one, and the chain is right only while the
+        table lists every block and stream in between. That stops holding when an index
+        build fails (the chain would end at the last recorded block: a short read with
+        no error), when the table is thinned, or when a thinned index skipped streams.
+        The stream start decodes forward on its own. Later block points are demoted as
+        they arrive (``add_seek_points``).
+        """
+        self._demote_stateful = True
+        kept = [self._seek_points[0]]
+        for point in self._seek_points[1:]:
+            if point.state is not None:
+                point = point.state.stateless_point()
+            if point.decompressed_offset > kept[-1].decompressed_offset:
+                kept.append(point)
+        self._seek_points[:] = kept
 
     def _resolve_same_offset_collision(self, index: int, point: SeekPoint) -> None:
         """Skip duplicates; allow forward refinement / richer-state merge; else error."""
@@ -651,22 +751,19 @@ class DecompressorStream(ReadOnlyIOStream):
         # progressive enrichment) as the baseline renumbers later streams' decompressed
         # offsets incorrectly. A full from-origin scan is cheap (index/trailer only) and
         # makes block-chain resume safe after a partial forward read.
-        try:
-            new_points, new_size = self._decoder.build_index(
-                self._inner, SeekPoint(0, 0)
-            )
-        except SeekIndexTooLarge as e:
-            self._index_build_attempted = True
-            self._abandon_seek_table(str(e), scan="backwards_index")
-            if self._inner.tell() != inner_pos:
-                self._inner.seek(inner_pos)
-            return
+        new_points, new_size = self._decoder.build_index(self._inner, SeekPoint(0, 0))
         self._index_build_attempted = True
         if new_points or new_size is not None:
             self._index_built = True
         else:
-            self._drop_stateful_points()
+            self._demote_stateful_points()
         if new_points:
+            # An index of stateless points next to recorded block points means a thinned
+            # XZ index: it may skip streams a recorded chain would run into.
+            if any(p.state is None for p in new_points) and any(
+                p.state is not None for p in self._seek_points
+            ):
+                self._demote_stateful_points()
             self.add_seek_points(new_points)
         if new_size is not None:
             self._size = new_size

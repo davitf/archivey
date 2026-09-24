@@ -1,4 +1,4 @@
-# Cap the seek table, and never resume from a partial one
+# Cap the seek table by thinning it, and never resume from a broken chain
 
 ## Why
 
@@ -10,7 +10,10 @@ Listing no longer pays this (the probe folds the walk); seeking and asking for t
 still did.
 
 davi ruled 2026-09-24, in the project thread: "an absolute limit seems to make sense
-for all cases".
+for all cases". Asked whether the index could be thinned rather than dropped, he
+proposed keeping only entries some distance apart ("any seek would have to decompress
+at most X extra"). The entry count is not known up front (an lzip trailer names only
+the member before it; xz streams are found one at a time), so the distance adapts.
 
 Working out where the limit could cut surfaced an existing silent short read. A point
 for an xz block resumes a chain built from the block points recorded after it, and that
@@ -21,16 +24,25 @@ stream and stopped there with no error.
 
 ## What changes
 
-- One constant cap on a stream's seek table, `MAX_SEEK_POINTS` = 262 144 entries. A
-  backward scan stops as soon as it passes the cap, before storing the rest; the xz scan
-  checks each index's declared record count before parsing its records.
-- Passing the cap, by a scan or by points a forward read records, drops the table to its
-  origin, stops indexing that stream, and emits `SEEK_INDEX_DEGRADED`. Seeks then decode
-  from the start. Nothing that was readable becomes an error unless a policy escalates
-  the diagnostic, which is why the cap is a structural constant and not a
-  `ListingLimits` field.
-- When an index build fails, points carrying resume state (xz blocks) are dropped and no
-  more are recorded. Stream and member starts stay, since each decodes forward on its own.
+- One constant cap on a stream's seek table, `MAX_SEEK_POINTS` = 262 144 entries.
+- Past the cap the table is thinned, never dropped: points are kept at least a spacing
+  apart in decompressed bytes, chosen so the table falls to half the cap, and later
+  points keep that spacing (doubling it if the table fills again). A seek then decodes
+  at most about one spacing plus one unit further than with every point.
+- The backward scans thin as they walk, so they never hold more than the cap. The last
+  unit is always kept, so the size they report stays exact. The xz scan sums an index's
+  records without storing them once they would not fit.
+- xz blocks are never dropped one at a time: a point for an xz block resumes a chain made
+  of every block point after it, and a gap would make the chain decode the next listed
+  block as if it followed. So thinning first replaces every block point with its
+  stream's start, which decodes forward on its own; stream starts are then thinned like
+  lzip members. A single stream with more blocks than the cap keeps only its start.
+- Thinning emits `SEEK_INDEX_DEGRADED` (failure type `SeekTableThinned`). Nothing that
+  was readable becomes an error unless a policy escalates the diagnostic, which is why
+  the cap is a structural constant and not a `ListingLimits` field.
+- Block points are also replaced by stream starts when an index build fails, and when a
+  thinned index joins block points a forward read recorded (the thinned index can leave
+  out a stream those blocks' chain would run into).
 
 ## Impact
 
