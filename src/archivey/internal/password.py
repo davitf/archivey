@@ -6,7 +6,7 @@ import threading
 from collections.abc import Callable, Container, Iterator
 from collections.abc import Sequence as ABCSequence
 from contextvars import ContextVar
-from typing import TypeGuard, TypeVar, cast
+from typing import TypeGuard, TypeVar
 
 from archivey.config import PasswordInput, PasswordProvider, PasswordRequest
 from archivey.exceptions import ArchiveyUsageError, EncryptionError
@@ -139,7 +139,7 @@ class _PasswordCandidates:
                 f"password= takes a str, bytes, a sequence of those, a provider "
                 f"callable, or None, but got {describe_value(password)}."
             )
-        return cls(provider=cast(PasswordProvider, password))
+        return cls(provider=password)
 
     def has_passwords(self) -> bool:
         with self._state_lock:

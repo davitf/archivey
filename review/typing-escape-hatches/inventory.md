@@ -16,6 +16,10 @@ disposition moves. The one exception is R6, below.
 **Checkers** = pyrefly 1.1.1 / ty (dev extra pins). `both-clean` means both exit 0.
 Dispositions: DELETE / FIX-IN-CODE / TIGHTEN / KEEP-WITH-REASON.
 
+**Superseded.** A25 has landed: the tar `_open` closure gained its
+`assert isinstance(info, tarfile.TarInfo)` before `_raw` was tightened, so no
+new narrowing was needed. The note below is kept as measured.
+
 **Sequence note, and it runs one way only.** Several `cast(member._raw)` sites are
 `both-clean` only while `_raw: Any`. **C8 (`tar_reader.py:470`) has no assert to fall
 back on** — the `assert isinstance(info, tarfile.TarInfo)` that R11 records is at
@@ -57,18 +61,18 @@ Honesty analysis: [`typeguards.md`](typeguards.md).
 | C2 | `iso_reader.py:246` | `BinaryIO` | both-error: `PyCdlibIO` ↛ `DelegatingStream` inner | KEEP-WITH-REASON | pycdlib handle is not `BinaryIO` in typeshed; runtime it is a binary stream |
 | C3 | `rar_unrar.py:518` | `BinaryIO` | both-error: `Popen[bytes].stdout` is `IO[Any]` | KEEP-WITH-REASON | typeshed `Popen.stdout` vs `BinaryIO` |
 | C4 | `tar_reader.py:333` | `BinaryIO` | both-error: `BufferedIOBase` ↛ `_owned_stream: BinaryIO` | KEEP / same as C22 | `ensure_bufferedio` returns `BufferedIOBase`; typeshed split. Comment already exists at C22 |
-| C5 | `tar_reader.py:347` | `BinaryIO` | both-error: `Path \| BinaryIO` ↛ `BinaryIO` | FIX-IN-CODE | `@overload` on `_track_source_seeks` |
-| C6 | `tar_reader.py:356` | `BinaryIO` | same | FIX-IN-CODE | same overload |
-| C7 | `tar_reader.py:370` | `BinaryIO` | both-error: `_EofProbeStream` ↛ `BinaryIO` | FIX-IN-CODE | make the probe stream a `BinaryIO` subclass (it likely already is at runtime) |
+| C5 | `tar_reader.py:347` | `BinaryIO` | both-error: `Path \| BinaryIO` ↛ `BinaryIO` | **moot** | #419 narrowed `_track_source_seeks` to `BinaryIO -> BinaryIO`; the cast is gone |
+| C6 | `tar_reader.py:356` | `BinaryIO` | same | **moot** | #419 narrowed `_track_source_seeks` to `BinaryIO -> BinaryIO`; the cast is gone |
+| C7 | `tar_reader.py:370` | `BinaryIO` | both-error: `_EofProbeStream` ↛ `BinaryIO` | **done** | the probe now subclasses `ReadOnlyIOStream`; the cast is gone |
 | C8 | `tar_reader.py:470` | `tarfile.TarInfo` | both-clean | DELETE *while `_raw` is `Any`* | redundant with A-raw. Keep the assert at R-tar if `_raw` tightens |
 | C9 | `tar_reader.py:772` | `BinaryIO \| None` | both-clean | DELETE | next line is `ensure_binaryio` (`Any` param). Comment about `extractfile` → `IO[bytes]` is stale for this assignment |
-| C10 | `zip_reader.py:480` | `BinaryIO` | both-error: `Path \| BinaryIO` | FIX-IN-CODE | `_track_source_seeks` overload |
-| C11 | `zip_reader.py:482` | `BinaryIO` | same | FIX-IN-CODE | same |
+| C10 | `zip_reader.py:480` | `BinaryIO` | both-error: `Path \| BinaryIO` | **moot** | #419 narrowed `_track_source_seeks` to `BinaryIO -> BinaryIO`; the cast is gone |
+| C11 | `zip_reader.py:482` | `BinaryIO` | same | **moot** | #419 narrowed `_track_source_seeks` to `BinaryIO -> BinaryIO`; the cast is gone |
 | C12 | `zip_reader.py:840` | `BinaryIO` | both-error: `IO[bytes]` ↛ `SlicingStream` | KEEP-WITH-REASON | `ZipFile.fp` is `IO[bytes]` in typeshed |
 | C13 | `zip_reader.py:1045` | `BinaryIO` | same | KEEP-WITH-REASON | same |
 | C14 | `zip_reader.py:1209` | `BinaryIO` | both-error: `IO[bytes]` ↛ declared return | KEEP-WITH-REASON | `ZipFile.open` return |
 | C15 | `detection_workspace.py:292` | `BinaryIO` | both-error: `SpooledTemporaryFile[bytes]` | KEEP-WITH-REASON | typeshed spool vs `BinaryIO` |
-| C16 | `password.py:85` | `PasswordProvider` | **pyrefly-only** (ty clean) | FIX-IN-CODE | after str/bytes/sequence branches the remainder is the provider; pyrefly still sees `str` in the union. `assert callable` or a `TypeIs` |
+| C16 | `password.py:85` | `PasswordProvider` | **pyrefly-only** (ty clean) | **done** | a `callable()` check that raises `ArchiveyUsageError` now precedes the return, which narrows on both checkers; the cast is gone |
 | C17 | `selection.py:18` | `Callable[[ArchiveMember], bool]` | **ty-only** (`Collection ∩ Callable`); pyrefly warns `redundant-cast` | KEEP-WITH-REASON | ty cannot exclude a callable collection. Do not DELETE off the pyrefly warning |
 | C18 | `selection.py:19` | `Collection[str \| ArchiveMember]` | both-clean | DELETE | after the callable return, the remainder is the collection |
 | C19 | `archive_stream.py:192` | `sys.UnraisableHookArgs` | **pyrefly-only**: `SimpleNamespace` ↛ hook args | KEEP-WITH-REASON | runtime shape matches; typeshed wants the typed hook-args object. Comment already there |
@@ -110,7 +114,7 @@ heuristic in the first census pass and are included here.
 | A22 | `binaryio.py:535` | `BinaryIOWrapper.write(data)` | unused body (raises) |
 | A23 | `verify.py:76` | `_algo_key(algorithm)` | better: `HashAlgorithm \| str` (FIX-IN-CODE in PR 5 if not folded here) |
 | A24 | `verify.py:126` | `_make_hasher(algorithm)` | same |
-| A25 | `types.py:457` | `ArchiveMember._raw` | **private**. `object` is honest. **Not in staged PR 2** — its own change after PR 1, and it must add the missing narrowing at `tar_reader.py:470`. See the sequence note above |
+| A25 | `types.py:457` | `ArchiveMember._raw` | **done** — `_raw: object`. The tar `_open` narrowing already existed when it landed, so none was added |
 
 ### Public `Any` — Q1 **DECIDED A** (tightened in this PR)
 
