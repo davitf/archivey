@@ -99,6 +99,8 @@ one category.
      backend that reads a typed handle, so both checkers stayed clean. The ISO
      directory record is the exception: its read asserts only that the handle
      is present, and `_open_record` still takes `Any` (A-iso, item 5).
+   - **C16** (`password.py`) went in the same change. The `callable()` check
+     added ahead of it narrows on both checkers, so the cast was dead.
 4. **TypeGuard predicates** — G2 and G3. Runtime-visible; needs tests.
 5. **Remaining `Any`** — ISO pycdlib Protocol, codec `_decomp` Protocols,
    `ZipFile._lock` as `ContextManager`, `verify.py` `Mapping[HashAlgorithm \| str, …]`.

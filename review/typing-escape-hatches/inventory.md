@@ -72,7 +72,7 @@ Honesty analysis: [`typeguards.md`](typeguards.md).
 | C13 | `zip_reader.py:1045` | `BinaryIO` | same | KEEP-WITH-REASON | same |
 | C14 | `zip_reader.py:1209` | `BinaryIO` | both-error: `IO[bytes]` ↛ declared return | KEEP-WITH-REASON | `ZipFile.open` return |
 | C15 | `detection_workspace.py:292` | `BinaryIO` | both-error: `SpooledTemporaryFile[bytes]` | KEEP-WITH-REASON | typeshed spool vs `BinaryIO` |
-| C16 | `password.py:85` | `PasswordProvider` | **pyrefly-only** (ty clean) | FIX-IN-CODE | after str/bytes/sequence branches the remainder is the provider; pyrefly still sees `str` in the union. `assert callable` or a `TypeIs` |
+| C16 | `password.py:85` | `PasswordProvider` | **pyrefly-only** (ty clean) | **done** | a `callable()` check that raises `ArchiveyUsageError` now precedes the return, which narrows on both checkers; the cast is gone |
 | C17 | `selection.py:18` | `Callable[[ArchiveMember], bool]` | **ty-only** (`Collection ∩ Callable`); pyrefly warns `redundant-cast` | KEEP-WITH-REASON | ty cannot exclude a callable collection. Do not DELETE off the pyrefly warning |
 | C18 | `selection.py:19` | `Collection[str \| ArchiveMember]` | both-clean | DELETE | after the callable return, the remainder is the collection |
 | C19 | `archive_stream.py:192` | `sys.UnraisableHookArgs` | **pyrefly-only**: `SimpleNamespace` ↛ hook args | KEEP-WITH-REASON | runtime shape matches; typeshed wants the typed hook-args object. Comment already there |
