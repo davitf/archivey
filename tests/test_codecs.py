@@ -315,12 +315,32 @@ def test_corrupt_unix_compress_translates_to_corruption() -> None:
             stream.read()
 
 
-def test_unix_compress_empty_source_raises() -> None:
-    """Zero bytes is a .Z with no header, as it already was for one or two bytes."""
-    for data in (b"", b"\x1f", b"\x1f\x9d"):
-        with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(data)) as stream:
-            with pytest.raises(CorruptionError, match="missing header"):
-                stream.read()
+@pytest.mark.parametrize("data", [b"", b"\x1f", b"\x1f\x9d"])
+def test_unix_compress_source_cut_inside_the_header_is_truncated(data: bytes) -> None:
+    """An empty source is a .Z with no header, not a valid empty stream."""
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(data)) as stream:
+        with pytest.raises(TruncatedError, match="header"):
+            stream.read()
+
+
+@pytest.mark.parametrize("data", [b"a", b"ab", b"\x1fa"])
+def test_unix_compress_short_source_that_is_not_z_is_corrupt(data: bytes) -> None:
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(data)) as stream:
+        with pytest.raises(CorruptionError, match="missing header"):
+            stream.read()
+
+
+def test_unix_compress_cut_inside_clear_padding_is_truncated() -> None:
+    """A CLEAR realigns to a code-width boundary; a source ending before it is cut.
+
+    Header, then the codes ``A``, ``B`` and CLEAR at width 9: the CLEAR asks for
+    padding to offset 9 of its era and only 4 bytes follow the header.
+    """
+    blob = bytes.fromhex("1f9d9041840004")
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(blob)) as stream:
+        assert stream.read(2) == b"AB"
+        with pytest.raises(TruncatedError, match="padding after a CLEAR"):
+            stream.read()
 
 
 @requires("ncompress")

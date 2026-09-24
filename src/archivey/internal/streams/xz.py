@@ -196,16 +196,19 @@ def _skip_stream_padding_backwards(
     """Return the end of the stream before any zero padding that ends at ``compressed_end``.
 
     Stream padding (XZ spec §2.2) is 4-byte groups of zeros, aligned to the end being
-    walked back from, and unbounded on a well-formed file. Groups are tested in chunks of
-    :data:`_PADDING_SCAN_CHUNK`, not one ``seek`` + ``read(4)`` each. The result is the
+    walked back from, and unbounded on a well-formed file. Most streams carry none, so
+    the first read is one group; each all-zero read grows the next sixteenfold, up to
+    :data:`_PADDING_SCAN_CHUNK`. No padding costs 4 bytes, and megabytes of it cost a
+    few dozen reads rather than one ``seek`` + ``read(4)`` per group. The result is the
     offset just past the last group holding a non-zero byte, or a value ``<= stop_at``
     when every group down to ``stop_at`` is zero. As with a group-at-a-time walk, the
     lowest group may reach up to 3 bytes below ``stop_at``, and a group that would start
     before offset 0 is an error.
     """
+    chunk_limit = 4
     while compressed_end > stop_at:
         groups = -(-(compressed_end - stop_at) // 4)
-        groups = min(groups, _PADDING_SCAN_CHUNK // 4, compressed_end // 4)
+        groups = min(groups, chunk_limit // 4, compressed_end // 4)
         if groups == 0:
             raise CorruptionError("XZ file too small to contain a valid stream")
         start = compressed_end - 4 * groups
@@ -217,6 +220,7 @@ def _skip_stream_padding_backwards(
         if nonzero_end:
             return start + _round_up_4(nonzero_end)
         compressed_end = start
+        chunk_limit = min(chunk_limit * 16, _PADDING_SCAN_CHUNK)
     return compressed_end
 
 
@@ -400,7 +404,13 @@ class _XzState:
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         if self._state == self._NEED_HEADER:
             if self._streams_seen == 0:
-                raise CorruptionError("Not a valid XZ file: no streams found")
+                # The source ended before a first header: nothing, or the start of the
+                # magic, is a cut-short xz file; anything else was never one.
+                head = bytes(self._buf[:6])
+                if self._padding_before_stream or head != _XZ_STREAM_MAGIC[: len(head)]:
+                    raise CorruptionError("Not a valid XZ file: no streams found")
+                self.truncated = True
+                return b"", []
             if len(self._buf) >= 6 and bytes(self._buf[:6]) == _XZ_STREAM_MAGIC:
                 self.truncated = True
                 return b"", []

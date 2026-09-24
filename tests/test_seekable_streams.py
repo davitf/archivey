@@ -464,6 +464,41 @@ def test_xz_padding_scan_reads_in_chunks() -> None:
     assert source.read_calls < 200
 
 
+def test_xz_padding_scan_reads_one_group_when_there_is_no_padding() -> None:
+    """A stream with no padding pays 4 bytes for the check, not a whole chunk.
+
+    The whole-file scan runs the padding check once per stream boundary, so a chunk
+    per check would read many times the file on a file of many small streams.
+    """
+    blob = b"".join(lzma.compress(b"x" * 100) for _ in range(200))
+
+    class _CountBytes(io.BytesIO):
+        total = 0
+
+        def read(self, n: int | None = -1, /) -> bytes:
+            data = super().read(n)
+            self.total += len(data)
+            return data
+
+    source = _CountBytes(blob)
+    _read_xz_index_backwards(source, len(blob))
+    assert source.total < len(blob)
+
+
+@pytest.mark.parametrize("data", [b"", b"\xfd", b"\xfd7zXZ", b"\xfd7zXZ\x00"])
+def test_xz_source_cut_inside_the_first_header_is_truncated(data: bytes) -> None:
+    with XzDecompressorStream(io.BytesIO(data)) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+
+
+@pytest.mark.parametrize("data", [b"a", b"abc", b"\x00" * 4, b"\xfd7zXY"])
+def test_xz_short_source_that_is_not_xz_is_corrupt(data: bytes) -> None:
+    with XzDecompressorStream(io.BytesIO(data)) as stream:
+        with pytest.raises(CorruptionError, match="no streams found"):
+            stream.read()
+
+
 def test_xz_index_with_room_for_more_records_is_rejected() -> None:
     """Records plus padding must fill the index the footer declared, exactly."""
     from archivey.internal.streams.xz import _parse_xz_index
@@ -657,21 +692,19 @@ def test_lzip_index_backwards_parses_members() -> None:
     assert members[1].decompressed_start == 500
 
 
-@pytest.mark.parametrize("data", [b"", b"a", b"abc", b"LZI", b"LZIx"])
-def test_lzip_source_with_no_member_raises(data: bytes) -> None:
-    """Fewer bytes than a header and no member: not lzip, not a valid empty stream.
-
-    Trailing data is allowed only after a member, so a short non-lzip source must not
-    decode to ``b""``.
-    """
+@pytest.mark.parametrize("data", [b"", b"L", b"LZI", b"LZIP", b"LZIPx"])
+def test_lzip_source_cut_inside_the_first_header_is_truncated(data: bytes) -> None:
+    """Nothing, or the start of the magic, is an lzip file that was cut short."""
     with LzipDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(CorruptionError, match="no members found"):
+        with pytest.raises(TruncatedError):
             stream.read()
 
 
-def test_lzip_bare_magic_is_truncated() -> None:
-    with LzipDecompressorStream(io.BytesIO(b"LZIP")) as stream:
-        with pytest.raises(TruncatedError):
+@pytest.mark.parametrize("data", [b"a", b"abc", b"LZIx", b"xLZIP"])
+def test_lzip_short_source_that_is_not_lzip_is_corrupt(data: bytes) -> None:
+    """Trailing data is allowed only after a member, so this must not decode to b''."""
+    with LzipDecompressorStream(io.BytesIO(data)) as stream:
+        with pytest.raises(CorruptionError, match="expected magic"):
             stream.read()
 
 

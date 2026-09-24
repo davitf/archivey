@@ -180,14 +180,20 @@ class _LzipState:
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         if self._state == self._NEED_HEADER:
-            if len(self._buf) >= 4 and self._buf[:4] == _MAGIC:
+            head = bytes(self._buf[:4])
+            if self._members_seen == 0:
+                # The source ended before a first header. Nothing, or the start of the
+                # magic, is a cut-short lzip file; anything else was never one, since
+                # trailing data is allowed only *after* a member (lzip spec §7).
+                if head != _MAGIC[: len(head)]:
+                    raise CorruptionError(
+                        f"Not a valid lzip file: expected magic {_MAGIC!r}, got {head!r}"
+                    )
                 self.truncated = True
                 return b"", []
-            # Trailing data is allowed only *after* a member (lzip spec §7). With no
-            # member seen, whatever is left (nothing, or fewer bytes than a header) is
-            # not an lzip file.
-            if self._members_seen == 0:
-                raise CorruptionError("Not a valid lzip file: no members found")
+            if head == _MAGIC:
+                self.truncated = True
+                return b"", []
             self._finished = True
             return b"", []
         out, units = self._process(max_length=-1)

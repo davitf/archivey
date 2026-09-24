@@ -31,6 +31,7 @@ _BLOCK_MODE_FLAG = 0x80
 _CODE_WIDTH_FLAG = 0x1F
 _RESERVED_FLAGS = 0x60
 _HEADER_SIZE = 3
+_MAGIC = bytes([_MAGIC_BYTE0, _MAGIC_BYTE1])
 
 
 def _parse_header(header: bytes) -> tuple[int, bool]:
@@ -73,8 +74,10 @@ class LzwState:
 
     Format errors raise :class:`CorruptionError` directly (same pattern as native
     xz/lzip). Unknown reserved header flags raise :class:`UnsupportedFeatureError`.
-    At EOF, nonzero leftover bits after the last complete code are a best-effort
-    truncation signal (:attr:`truncated`); zero padding is normal for finished streams.
+    At EOF, :attr:`truncation` names the evidence of a cut when there is some: a source
+    that ended inside the header, inside a CLEAR's realignment padding, or with nonzero
+    leftover bits after the last complete code. Zero leftover bits are normal for
+    finished streams, so a cut that leaves only those stays undetectable.
     """
 
     def __init__(
@@ -85,7 +88,7 @@ class LzwState:
     ) -> None:
         self._buf = bytearray()
         self._finished = False
-        self._truncated = False
+        self._truncation: str | None = None
         self._header_params: tuple[int, bool] | None = None
         self._need_header = max_width is None
         self._seg_comp = 0
@@ -103,8 +106,13 @@ class LzwState:
 
     @property
     def truncated(self) -> bool:
-        """True after ``flush`` when leftover bits after the last code were nonzero."""
-        return self._truncated
+        """True after ``flush`` when the stream shows evidence of being cut short."""
+        return self._truncation is not None
+
+    @property
+    def truncation(self) -> str | None:
+        """After ``flush``, what showed the stream was cut short, else ``None``."""
+        return self._truncation
 
     def feed(
         self, data: bytes, max_length: int = -1
@@ -116,13 +124,19 @@ class LzwState:
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         out, units = self._process(eof=True, max_length=-1)
+        if self._pending_skip:
+            # A compressor writes a CLEAR's realignment padding in full, so a source that
+            # ends while padding is still owed was cut inside it.
+            self._truncation = f"it ends {self._pending_skip} byte(s) short of the padding after a CLEAR"
         # Finished compressors zero-pad the last incomplete code slot. Nonzero leftover
         # bits are a best-effort truncation / corrupt-padding signal (exact mid-code
         # cuts that leave only zero bits remain undetectable — no length trailer).
-        if self._header_params is not None and self._bits_in_buffer > 0:
+        elif self._header_params is not None and self._bits_in_buffer > 0:
             leftover = self._bit_buffer & ((1 << self._bits_in_buffer) - 1)
             if leftover:
-                self._truncated = True
+                self._truncation = (
+                    "nonzero leftover bits after the last complete LZW code"
+                )
         if self._header_params is not None:
             del self._dictionary[self._starting_code :]
         self._finished = True
@@ -172,11 +186,15 @@ class LzwState:
         if self._need_header:
             if len(self._buf) < _HEADER_SIZE:
                 if eof:
-                    # Zero bytes included: an empty source is not a valid empty .Z
-                    # (zcat refuses it too), it is a stream with no header.
-                    raise CorruptionError(
-                        "unix-compress (.Z) stream is too short (missing header)"
-                    )
+                    # An empty source is not a valid empty .Z (zcat refuses it too).
+                    # Nothing, or the start of the magic, is a cut-short header;
+                    # anything else was never a .Z stream.
+                    head = bytes(self._buf)
+                    if head != _MAGIC[: len(head)]:
+                        raise CorruptionError(
+                            "unix-compress (.Z) stream is too short (missing header)"
+                        )
+                    self._truncation = "it ends inside the 3-byte header"
                 return b"", []
             header = bytes(self._buf[:_HEADER_SIZE])
             del self._buf[:_HEADER_SIZE]
@@ -378,10 +396,9 @@ class UnixCompressDecoder(BaseDecoder):
         data, units = self._state.flush()
         points = self._commit_header_points()
         points.extend(self._points_for_units(units))
-        if self._state.truncated:
+        if self._state.truncation is not None:
             self._pending_error = TruncatedError(
-                "unix-compress (.Z) stream is truncated (nonzero leftover bits after "
-                "the last complete LZW code)"
+                f"unix-compress (.Z) stream is truncated ({self._state.truncation})"
             )
         return DecodeOut(data, points)
 

@@ -64,23 +64,29 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
-- **An empty `.Z` file, or a file of fewer than six bytes read as lzip, is now an
-  error** instead of one empty member. Both decoders already refused a longer non-archive;
-  the short case slipped through as a valid empty stream. Short trailing data *after* an
-  lzip member is still allowed, as the lzip format specifies.
+- **A `.Z`, `.xz` or `.lz` source that ends before its first header is now an error**,
+  never an empty stream. An empty `.Z`, and a 1–5 byte file read as lzip, used to decode
+  to `b""` with no error. The error type now follows the rule for every other codec:
+  `TruncatedError` when the source is empty or holds only the start of the format's magic,
+  `CorruptionError` when its bytes could not start that format. An empty `.xz` or `.lz`
+  therefore raises `TruncatedError` where it raised `CorruptionError` before. Short
+  trailing data *after* an lzip member is still allowed, as the lzip format specifies.
+- **A `.Z` file cut inside the padding after a CLEAR code now raises `TruncatedError`**
+  instead of ending cleanly with a short size. Compressors always write that padding in
+  full, so a stream that ends while it is owed was cut.
 - **A caller's file object that implements only `read` now works as a compressed source
   of unknown size.** The input counter behind the live decompression-ratio guard called
   the inherited `readinto` of such an `io.RawIOBase` subclass, which raises
   `NotImplementedError`, instead of falling back to `read`; a non-blocking source with no
   data got a bare `TypeError` rather than archivey's `BlockingIOError`.
 - **Opening an xz file with megabytes of stream padding no longer takes seconds**: the
-  padding is scanned backwards in 64 KiB reads rather than one 4-byte read at a time.
+  padding is scanned backwards in reads that grow up to 64 KiB, rather than one 4-byte
+  read at a time. A stream with no padding still costs a single 4-byte read.
   Listing a `.lz` file holds no per-member state however many members it declares, where it
   used to take about nine times the file's size in memory for a file of empty members.
 - **The xz seek index is now as strict as the decoder**: an index whose records do not
   fill its declared length, or a size field written in more bytes than it needs, is
   refused, as liblzma already refused both when decoding.
-
 - **A password list now works when the right password is not first**, on the two
   formats where it did not: a header-encrypted 7z and RAR5 with encrypted data. On 7z, a
   wrong key decodes the header to garbage, and that failure ended the attempt instead of

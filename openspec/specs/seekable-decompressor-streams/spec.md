@@ -16,7 +16,9 @@ forward-only streams free of seek machinery.
 | `access-mode-and-cost` | Declared capabilities vs access modes |
 | `diagnostics` | Rewind and seek-index diagnostic policy/retention |
 | `error-handling` | Codec exception translation and `DiagnosticRaisedError` |
+
 ## Requirements
+
 ### Requirement: Seek machinery is demand-driven
 
 The system SHALL construct seek support only when seekability is declared:
@@ -298,10 +300,14 @@ is not seekable, the decompressor stream SHALL report `seekable() is False` and
 
 Unix-compress has no length or checksum trailer. At source EOF, after all
 decoded bytes have been delivered, the system SHALL best-effort detect
-truncation: if any leftover bits remain after the last complete LZW code and
-those bits are nonzero (finished compressors zero-pad), the next `read()` SHALL
-raise `TruncatedError`. Zero leftover bits (including a cut exactly on a code
-boundary) SHALL end successfully — such truncation remains undetectable.
+truncation, and the next `read()` SHALL raise `TruncatedError` when any of these
+holds: the source ended inside the 3-byte header (see `compressed-streams` for a
+short source that is not `.Z` at all); the source ended while a CLEAR's
+realignment padding was still owed (compressors write that padding in full); or
+leftover bits remain after the last complete LZW code and those bits are nonzero
+(finished compressors zero-pad). Zero leftover bits outside CLEAR padding
+(including a cut exactly on a code boundary) SHALL end successfully — such
+truncation remains undetectable.
 
 Unknown reserved header flag bits (`0x60` in the third header byte) SHALL raise
 `UnsupportedFeatureError` when the header is parsed.
@@ -314,7 +320,8 @@ Unknown reserved header flag bits (`0x60` in the third header byte) SHALL raise
 | Seekable `.Z`, `seekable=False` | Forward-only; no CLEAR table retained |
 | Non-seekable `.Z` pipe, forward read | Decompresses; `seekable()` false |
 | Truncated `.Z` with nonzero leftover bits | Yields available bytes; next `read()` raises `TruncatedError` |
-| Truncated `.Z` with only zero leftover bits | Yields fewer bytes; no `TruncatedError` (undetectable) |
+| Truncated `.Z` cut inside the padding after a CLEAR | Yields available bytes; next `read()` raises `TruncatedError` |
+| Empty `.Z` source, or one cut inside the header | `TruncatedError`, never a clean empty stream |
+| Truncated `.Z` with only zero leftover bits, outside CLEAR padding | Yields fewer bytes; no `TruncatedError` (undetectable) |
 | Header flag byte has reserved bits `0x60` set | `UnsupportedFeatureError` |
 | Corrupt LZW codes | `CorruptionError` |
-
