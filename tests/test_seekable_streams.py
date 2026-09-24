@@ -750,6 +750,149 @@ def test_lzip_peek_index_summary_holds_no_per_member_state() -> None:
     assert peak < 200_000, peak
 
 
+# --- seek-table cap ---------------------------------------------------------------------
+
+
+def _collect_diagnostics() -> tuple[Any, list[Any]]:
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+
+    seen: list[Any] = []
+    return DiagnosticCollector(on_diagnostic=seen.append), seen
+
+
+def _assert_table_abandoned(stream: Any, seen: list[Any]) -> None:
+    from archivey.diagnostics import DiagnosticCode
+
+    degraded = [d for d in seen if d.code is DiagnosticCode.SEEK_INDEX_DEGRADED]
+    assert degraded, "the fallback must be reported"
+    assert degraded[-1].context.error_type == "SeekIndexTooLarge"
+    assert len(stream._seek_points) == 1  # only the origin is kept
+
+
+@pytest.fixture
+def small_seek_cap(monkeypatch: pytest.MonkeyPatch) -> int:
+    from archivey.internal.streams import decompressor_stream
+
+    monkeypatch.setattr(decompressor_stream, "MAX_SEEK_POINTS", 8)
+    return 8
+
+
+LZIP_PARTS = [bytes([65 + i]) * (300 + i) for i in range(20)]
+
+
+def test_lzip_index_over_the_cap_falls_back_to_decoding_from_the_start(
+    small_seek_cap: int,
+) -> None:
+    compressed = make_multi_member_lzip(LZIP_PARTS)
+    full = b"".join(LZIP_PARTS)
+    collector, seen = _collect_diagnostics()
+    with LzipDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
+        assert stream.seek(0, io.SEEK_END) == len(full)
+        _assert_table_abandoned(stream, seen)
+        assert stream.seek(len(full) // 2) == len(full) // 2
+        assert stream.read() == full[len(full) // 2 :]
+        stream.seek(5)
+        assert stream.read(700) == full[5:705]
+
+
+def test_lzip_index_scan_stops_at_the_cap(small_seek_cap: int) -> None:
+    """Past the cap the scan gives up; it does not walk the rest of the file first."""
+    from archivey.internal.streams.decompressor_stream import SeekIndexTooLarge
+
+    block = b"LZIP" + bytes([1, 20]) + struct.pack("<IQQ", 0, 0, 26)
+    data = block * 1000
+    source = CountingBytesIO(data)
+    with pytest.raises(SeekIndexTooLarge):
+        _read_index_backwards(source, len(data))
+    assert source.bytes_read < 30 * 26
+
+
+def test_lzip_forward_read_over_the_cap_abandons_the_table(small_seek_cap: int) -> None:
+    compressed = make_multi_member_lzip(LZIP_PARTS)
+    full = b"".join(LZIP_PARTS)
+    collector, seen = _collect_diagnostics()
+    with LzipDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
+        assert stream.read() == full
+        _assert_table_abandoned(stream, seen)
+        stream.seek(1000)
+        assert stream.read(50) == full[1000:1050]
+
+
+def test_xz_many_streams_over_the_cap_fall_back(small_seek_cap: int) -> None:
+    parts = [bytes([65 + i]) * 500 for i in range(20)]
+    compressed = make_multi_stream_xz(parts)
+    full = b"".join(parts)
+    collector, seen = _collect_diagnostics()
+    with XzDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
+        assert stream.seek(0, io.SEEK_END) == len(full)
+        _assert_table_abandoned(stream, seen)
+        stream.seek(7777)
+        assert stream.read() == full[7777:]
+
+
+@pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
+def test_xz_many_blocks_over_the_cap_fall_back_and_read_right(
+    small_seek_cap: int,
+) -> None:
+    """No partial block chain survives the cap: a chain built from one would stop at
+    the last recorded block and report a short stream."""
+    data = random.Random(3).randbytes(40 * 4096)
+    compressed = make_multiblock_xz(data, block_size=4096)
+    collector, seen = _collect_diagnostics()
+    with XzDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
+        assert stream.read(10_000) == data[:10_000]
+        assert stream.seek(0, io.SEEK_END) == len(data)
+        _assert_table_abandoned(stream, seen)
+        stream.seek(len(data) // 3)
+        assert stream.read() == data[len(data) // 3 :]
+
+
+@pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
+def test_xz_block_points_recorded_before_the_cap_are_dropped_with_it(
+    small_seek_cap: int,
+) -> None:
+    """Block points a forward read recorded must go when the full index is abandoned.
+
+    Kept, a seek would resume a block chain from them that ends at the first stream's
+    last block, and the read would stop there with no error.
+    """
+    rng = random.Random(4)
+    parts = [rng.randbytes(5 * 4096), rng.randbytes(5 * 4096)]
+    compressed = b"".join(make_multiblock_xz(p, block_size=4096) for p in parts)
+    full = b"".join(parts)
+    collector, seen = _collect_diagnostics()
+    with XzDecompressorStream(io.BytesIO(compressed), collector=collector) as stream:
+        # Finish the first stream so its blocks are recorded progressively.
+        assert stream.read(len(parts[0]) + 10) == full[: len(parts[0]) + 10]
+        assert stream.seek(0, io.SEEK_END) == len(full)
+        _assert_table_abandoned(stream, seen)
+        stream.seek(4096 + 7)
+        assert stream.read() == full[4096 + 7 :]
+
+
+@pytest.mark.skipif(not xz_cli_available(), reason="xz CLI needed for multi-block XZ")
+def test_xz_seek_after_a_failed_index_scan_reads_to_the_end() -> None:
+    """Trailing bytes after the last stream make the backward scan fail. Block points
+    a forward read recorded before that must not be used: their chain stops at the
+    first stream's last block, and the read used to end there with no error."""
+    rng = random.Random(4)
+    parts = [rng.randbytes(5 * 4096), rng.randbytes(5 * 4096)]
+    compressed = b"".join(make_multiblock_xz(p, block_size=4096) for p in parts)
+    full = b"".join(parts)
+    with XzDecompressorStream(io.BytesIO(compressed + b"garbage!")) as stream:
+        assert stream.read(len(parts[0]) + 10) == full[: len(parts[0]) + 10]
+        stream.seek(4096 + 7)
+        assert stream.read() == full[4096 + 7 :]
+
+
+def test_xz_index_record_count_is_checked_before_parsing(small_seek_cap: int) -> None:
+    from archivey.internal.streams.decompressor_stream import SeekIndexTooLarge
+    from archivey.internal.streams.xz import _encode_mbi, _parse_xz_index
+
+    with pytest.raises(SeekIndexTooLarge):
+        _parse_xz_index(b"\x00" + _encode_mbi(1 << 40))
+
+
 # --- accelerator backends present / absent ---------------------------------------------
 
 

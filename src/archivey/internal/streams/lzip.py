@@ -37,6 +37,7 @@ from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
     build_index_backwards,
+    check_seek_index_size,
 )
 
 _MAGIC = b"LZIP"
@@ -109,11 +110,14 @@ def _read_index_backwards(
     """Build the member index by scanning trailers backwards (no decompression).
 
     Each entry retains the trailer CRC-32 so callers can combine a whole-stream digest
-    without decompressing. The list holds one entry per member the file declares, and
-    nothing bounds that count: a member can be as small as 26 bytes. Callers that need
-    only totals use :func:`peek_index_summary`, which folds the walk instead.
+    without decompressing. A member can be as small as 26 bytes, so the entry count is
+    capped (:func:`check_seek_index_size`); callers that need only totals use
+    :func:`peek_index_summary`, which folds the walk and needs no cap.
     """
-    entries = list(_iter_trailers_backwards(stream, file_size, stop_at))
+    entries: list[tuple[int, int, int, int]] = []
+    for entry in _iter_trailers_backwards(stream, file_size, stop_at):
+        entries.append(entry)
+        check_seek_index_size(len(entries), "lzip")
     result: list[_MemberBounds] = []
     decompressed_offset = start_decompressed_offset
     for comp_start, decomp_size, comp_size, crc32 in reversed(entries):

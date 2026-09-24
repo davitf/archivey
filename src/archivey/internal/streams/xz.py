@@ -46,8 +46,10 @@ from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
+    SeekIndexTooLarge,
     SeekPoint,
     build_index_backwards,
+    check_seek_index_size,
 )
 
 _XZ_STREAM_MAGIC = b"\xfd7zXZ\x00"
@@ -150,7 +152,13 @@ def _parse_xz_footer(data: bytes) -> tuple[int, int]:
     return check, backward_size_bytes
 
 
-def _parse_xz_index(data: bytes) -> list[tuple[int, int]]:
+def _parse_xz_index(data: bytes, records_before: int = 0) -> list[tuple[int, int]]:
+    """Parse one stream's index into ``(unpadded_size, uncompressed_size)`` records.
+
+    ``records_before`` counts blocks already taken from later streams by the same scan;
+    the declared record count is checked against the seek-table cap before any record is
+    stored, since a record can be as small as two bytes.
+    """
     if not data or data[0] != 0x00:
         raise CorruptionError(
             f"XZ index indicator byte expected 0x00, got {data[0]:#04x}"
@@ -160,6 +168,7 @@ def _parse_xz_index(data: bytes) -> list[tuple[int, int]]:
     offset = 1
     num_records, consumed = _decode_mbi(data, offset)
     offset += consumed
+    check_seek_index_size(records_before + num_records, "xz")
     records: list[tuple[int, int]] = []
     for _ in range(num_records):
         unpadded_size, consumed = _decode_mbi(data, offset)
@@ -236,6 +245,7 @@ def _read_xz_index_backwards(
     with absolute compressed/decompressed offsets.
     """
     all_streams: list[list[_XzBlockBounds]] = []
+    blocks_seen = 0
     compressed_end = file_size
 
     while compressed_end > stop_at:
@@ -275,7 +285,8 @@ def _read_xz_index_backwards(
                 f"computed {computed_index_crc:#010x}"
             )
 
-        records = _parse_xz_index(raw_index)
+        records = _parse_xz_index(raw_index, records_before=blocks_seen)
+        blocks_seen += len(records)
         blocks_compressed_total = sum(_round_up_4(r[0]) for r in records)
         stream_header_start = (
             index_with_crc_start - blocks_compressed_total - _STREAM_HEADER_SIZE
@@ -308,6 +319,8 @@ def _read_xz_index_backwards(
             block_compressed_start += _round_up_4(unpadded_size)
 
         all_streams.append(stream_entries)
+        # An empty stream holds no block but still costs a list here.
+        check_seek_index_size(len(all_streams), "xz")
         compressed_end = stream_header_start
 
     flat: list[_XzBlockBounds] = []
@@ -882,7 +895,7 @@ class XzDecoder(BaseDecoder):
                         points.append(
                             SeekPoint(b.decompressed_start, b.compressed_start, state=b)
                         )
-                except CorruptionError as e:
+                except (CorruptionError, SeekIndexTooLarge) as e:
                     message = (
                         "XZ per-stream backward scan failed; block-level seek points for "
                         f"this stream will not be available: {e}"
@@ -962,7 +975,9 @@ def XzDecompressorStream(
         def index_built() -> bool:
             stream = stream_cell[0]
             assert stream is not None
-            return stream._index_built
+            # A stream that abandoned its seek table records no more points, so the
+            # per-stream scans would be wasted work.
+            return stream._index_built or not stream._index_enabled
 
         return XzDecoder.from_point(
             point,

@@ -87,6 +87,18 @@ promise with that line; treat `0.2.0` as the first release of this library.
 - **The xz seek index is now as strict as the decoder**: an index whose records do not
   fill its declared length, or a size field written in more bytes than it needs, is
   refused, as liblzma already refused both when decoding.
+- **A compressed stream's seek table holds at most 262 144 entries.** A crafted `.lz` or
+  `.xz` declaring millions of tiny members, streams or blocks used to grow the table
+  without bound, both when a seek built the index and while a forward read recorded
+  resume points (the cap covers every codec that records them, `.Z` included). Past the
+  cap the table is dropped, a `SEEK_INDEX_DEGRADED` diagnostic says so, and seeks decode
+  from the start of the stream instead; the data read is unchanged. Real files come
+  nowhere near the cap: `xz -T0` writes 24 MiB blocks, so 262 144 of them is 6 TiB.
+- **Seeking in an `.xz` whose index scan failed no longer returns a short read with no
+  error.** When the file had data the index scan could not parse (trailing garbage, for
+  example), resume points recorded by an earlier forward read were kept and pointed at
+  blocks the missing index could no longer locate; a later seek then stopped at the end
+  of the current stream. Those points are now dropped and the seek decodes from the start.
 - **A password list now works when the right password is not first**, on the two
   formats where it did not: a header-encrypted 7z and RAR5 with encrypted data. On 7z, a
   wrong key decodes the header to garbage, and that failure ended the attempt instead of

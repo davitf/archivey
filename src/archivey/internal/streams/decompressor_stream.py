@@ -193,6 +193,36 @@ def _compressed_feed_size(max_length: int) -> int:
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
 
 
+# Upper bound on a stream's seek table, in entries. A seek table is an optimisation: past
+# this many points the stream drops the table and seeks by decoding from the start, which
+# is always correct, so the cap can never turn a readable file into an error (unless a
+# policy escalates the SEEK_INDEX_DEGRADED it reports). That is why it is a structural
+# constant and not a ListingLimits field. Without it the table grows with the unit count
+# the file declares: an lzip member can be 26 bytes, so a table cost ~9x the file's size.
+# Real files stay far below it: xz -T0 writes 24 MiB blocks and ncompress checks for a
+# CLEAR every 10 kB of input, so reaching it takes a multi-GiB file even at the densest.
+MAX_SEEK_POINTS = 1 << 18
+
+
+class SeekIndexTooLarge(Exception):
+    """A seek-index scan found more units than :data:`MAX_SEEK_POINTS`.
+
+    Not an :class:`~archivey.ArchiveyError`: it never leaves this layer.
+    :class:`DecompressorStream` catches it and falls back to seeking from the start.
+    """
+
+
+def check_seek_index_size(count: int, codec_name: str) -> None:
+    """Raise :class:`SeekIndexTooLarge` once a scan has seen more than the cap.
+
+    Scanners call it as they count, so a table past the cap is never materialized.
+    """
+    if count > MAX_SEEK_POINTS:
+        raise SeekIndexTooLarge(
+            f"{codec_name} seek index has more than {MAX_SEEK_POINTS} entries"
+        )
+
+
 class _IndexBlock(Protocol):
     """Fields ``build_index_backwards`` reads on a scanned block.
 
@@ -328,6 +358,8 @@ class DecompressorStream(ReadOnlyIOStream):
         self._seek_points: list[SeekPoint] = [SeekPoint(0, 0)]
         self._index_built = False
         self._index_build_attempted = False
+        # Set when an index build fails; see _drop_stateful_points.
+        self._stateful_points_unsafe = False
         self._make_decoder = make_decoder
         try:
             if isinstance(path, (str, os.PathLike)):
@@ -400,6 +432,14 @@ class DecompressorStream(ReadOnlyIOStream):
                 continue
             if not self._index_enabled:
                 continue
+            if point.state is not None and self._stateful_points_unsafe:
+                continue
+            if len(self._seek_points) >= MAX_SEEK_POINTS:
+                self._abandon_seek_table(
+                    f"{self._codec_name} seek table reached {MAX_SEEK_POINTS} entries",
+                    scan="seek_table",
+                )
+                return
             if point < self._seek_points[-1]:
                 i = bisect.bisect_left(self._seek_points, point)
                 if i < len(self._seek_points) and self._seek_points[i] == point:
@@ -411,6 +451,40 @@ class DecompressorStream(ReadOnlyIOStream):
                 continue
             else:
                 self._seek_points.append(point)
+
+    def _drop_stateful_points(self) -> None:
+        """After a failed index build, keep only points that resume on their own.
+
+        A point carrying ``state`` (an XZ block) resumes a block chain made of the
+        points recorded after it, which is complete only once the whole index is. With
+        the build failed it never will be: the chain would end at the last recorded
+        block and the read would stop there, short and without an error. Stateless
+        points (a stream or member start) decode forward on their own, so they stay,
+        and later stateful points are refused (``add_seek_points``).
+        """
+        self._stateful_points_unsafe = True
+        origin, *rest = self._seek_points
+        self._seek_points[:] = [origin, *(p for p in rest if p.state is None)]
+
+    def _abandon_seek_table(self, reason: str, *, scan: str) -> None:
+        """Drop every seek point but the origin and stop indexing this stream.
+
+        Seeks then decode from the start, as for a stream with no declared seek demand.
+        Partial tables are never kept: an XZ block chain resumed from one would end at
+        the last recorded block and report a short stream.
+        """
+        del self._seek_points[1:]
+        self._index_enabled = False
+        resolve_collector(self._diagnostics_collector).emit(
+            code=DiagnosticCode.SEEK_INDEX_DEGRADED,
+            message=f"{reason}; seeks decode from the start instead",
+            context=SeekIndexContext(
+                codec=self._codec_name,
+                scan=scan,
+                error_type=SeekIndexTooLarge.__name__,
+            ),
+            logger=logger,
+        )
 
     def _resolve_same_offset_collision(self, index: int, point: SeekPoint) -> None:
         """Skip duplicates; allow forward refinement / richer-state merge; else error."""
@@ -577,10 +651,21 @@ class DecompressorStream(ReadOnlyIOStream):
         # progressive enrichment) as the baseline renumbers later streams' decompressed
         # offsets incorrectly. A full from-origin scan is cheap (index/trailer only) and
         # makes block-chain resume safe after a partial forward read.
-        new_points, new_size = self._decoder.build_index(self._inner, SeekPoint(0, 0))
+        try:
+            new_points, new_size = self._decoder.build_index(
+                self._inner, SeekPoint(0, 0)
+            )
+        except SeekIndexTooLarge as e:
+            self._index_build_attempted = True
+            self._abandon_seek_table(str(e), scan="backwards_index")
+            if self._inner.tell() != inner_pos:
+                self._inner.seek(inner_pos)
+            return
         self._index_build_attempted = True
         if new_points or new_size is not None:
             self._index_built = True
+        else:
+            self._drop_stateful_points()
         if new_points:
             self.add_seek_points(new_points)
         if new_size is not None:
