@@ -64,6 +64,13 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **An encrypted RAR derives each key once per open.** RAR5 key derivation costs what
+  the archive declares, up to 2²⁴ PBKDF2 rounds (a few seconds each). A header-encrypted
+  volume set derived the header key and password check again on every part, so a
+  four-part set ran eight derivations where two do, and an `-hp` archive repeated the
+  header's password check for its member data. One cache per reader now serves the
+  header parse, every volume and every member read. RAR3 volume sets re-derived per part
+  the same way and are covered by the same cache.
 - **A `.Z`, `.xz` or `.lz` source that ends before its first header is now an error**,
   never an empty stream. An empty `.Z`, and a 1–5 byte file read as lzip, used to decode
   to `b""` with no error. The error type now follows the rule for every other codec:
@@ -273,6 +280,11 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Security
 
+- **`repr()` of a 7z reader's key cache no longer prints passwords or keys.** The cache
+  is a dataclass whose generated `repr` showed every candidate password tried and every
+  AES key derived from them, so a traceback with locals, a debugger dump or a debug log
+  line could carry them. The field is now excluded from `repr`, as the AES key in the
+  decrypt parameters already was.
 - **`STRICT` extraction no longer widens a file's permissions.** A file stored as
   `0o660` (group-shared, what `umask 007` produces) was written as `0o644`, readable
   by every user. The stored mode is now masked with `0o644`, so it comes out `0o640`.

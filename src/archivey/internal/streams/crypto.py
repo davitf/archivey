@@ -559,9 +559,15 @@ def parse_sevenzip_aes_properties(properties: bytes) -> tuple[int, bytes, bytes]
 
 @dataclass
 class SevenZipKeyCache:
-    """Cache derived 7z AES keys keyed by ``(password, salt, cycles)`` for one reader."""
+    """Cache derived 7z AES keys keyed by ``(password, salt, cycles)`` for one reader.
 
-    _cache: dict[tuple[bytes, bytes, int], bytes] = field(default_factory=dict)
+    The entries are candidate passwords and the keys derived from them, so they stay
+    out of ``repr`` the way :attr:`AesParams.key` does.
+    """
+
+    _cache: dict[tuple[bytes, bytes, int], bytes] = field(
+        default_factory=dict, repr=False
+    )
 
     def derive(self, password: bytes, *, salt: bytes, cycles: int) -> bytes:
         key = (password, salt, cycles)

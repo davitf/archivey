@@ -630,6 +630,32 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         print(f"wrote {part1.relative_to(REPO_ROOT)}")
         print(f"wrote {part2.relative_to(REPO_ROOT)}")
 
+    # Header-encrypted volumes: every part carries its own encryption record with
+    # the same salt, so a listing must derive the header key once, not per part.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "payload.bin").write_bytes(b"ABCDEFGH" * 200)
+        out = out_dir / "tinyvol_hp.rar"
+        _rar_a(
+            rar5_bin,
+            out,
+            ["payload.bin"],
+            cwd=root,
+            extra=("-m0", "-v900b", "-hpheader_password"),
+        )
+        # ``_rar_a`` unlinks earlier ``tinyvol_hp.part*.rar`` first, so these are
+        # this run's parts. The tests expect exactly four.
+        parts = [out_dir / f"tinyvol_hp.part{n}.rar" for n in range(1, 5)]
+        if (
+            not all(part.is_file() for part in parts)
+            or (out_dir / "tinyvol_hp.part5.rar").exists()
+        ):
+            raise RuntimeError("expected tinyvol_hp to span exactly four volumes")
+        if out.is_file():
+            out.unlink()
+        for part in parts:
+            print(f"wrote {part.relative_to(REPO_ROOT)}")
+
     # --- RAR4 (needs -ma4) ---
     # Classic extension volumes (name.rar + name.r00…): RAR4-only via -vn.
     with tempfile.TemporaryDirectory() as td:
