@@ -1,7 +1,10 @@
 # Formats and extras
 
 What each format can do, what optional packages or tools it needs, and the quirks that
-most often surprise callers. Authoritative detail lives in `openspec/specs/format-*`.
+most often surprise callers. For more depth, the maintainer handbook has pages on
+[7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md),
+[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md) and
+[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md).
 
 ## Quick matrix
 
@@ -206,6 +209,11 @@ behaviour. The complete list is on the two classes.
 ## ISO 9660
 
 - Needs `[recommended]` (`pycdlib`) and a seekable source.
+- `import archivey` patches pycdlib for the whole process: the `collections` name inside
+  `pycdlib.pycdlib` becomes one whose `deque` skips a directory extent it has already
+  queued. That stops pycdlib looping forever on a directory tree that points back at an
+  ancestor. Other code using pycdlib in the same process gets the patch too. A valid tree
+  never revisits an extent, so its results do not change.
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
 - Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty
@@ -216,6 +224,15 @@ behaviour. The complete list is on the two classes.
 - A Rock Ridge device node, FIFO or socket lists as `MemberType.OTHER`, so extraction
   skips it. The `rr_moved` directory that holds relocated deep subtrees is not listed;
   those subtrees appear at their logical place.
+- A bootable image lists its El Torito boot catalog (`boot.catalog`, `BOOT.CAT`) as an
+  ordinary file, with the catalog's bytes as its data, as a mounted image shows it.
+- A file of 4 GiB or more, stored in several extents, lists and reads as one member.
+  Extents that are not back to back are refused with `UnsupportedFeatureError`.
+- `ArchiveInfo.format_version` is `None`: ISO 9660 records no interchange level.
+- A truncated image opens as long as its directories survive, and lists the sizes its
+  records declare. A file the cut reaches reads the bytes that survive and then raises
+  `TruncatedError`; files before the cut read normally. A file whose declared length
+  cannot be recovered lists with `size` set to `None`.
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).

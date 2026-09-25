@@ -58,12 +58,12 @@ names.
 | [`review/backlog.md`](../review/backlog.md) | 3 PR parks, 7 archived-review parks, Topics 6/7 | #320 F2 is the only one with a live question |
 | [`review/STATUS.md`](../review/STATUS.md) | Topics 8 + 10 in flight, docs IA in flight, +2 commissioned 2026-09-11, +1 (`api-freeze`) 2026-09-21 | **Its own header still says 2026-08-15.** The ranked list predates every OpenSpec change now in tree |
 | [`review/typing-escape-hatches/`](../review/typing-escape-hatches/brief.md) | 89 sites inventoried; the fixes are staged | **Started and mostly landed.** The inventory merged as #352; #376, #377, #378 and #384 landed four waves of it. The rest is held on file collisions only |
-| [`review/exception-catchalls/`](../review/exception-catchalls/brief.md) | 67 blind `except` sites | **Done 2026-09-25.** Six fixed, 61 fine, two deferred behind an open PR; see its `SUMMARY.md` |
+| [`review/exception-catchalls/`](../review/exception-catchalls/brief.md) | 69 blind `except` sites | **Done 2026-09-25.** Seven fixed, the rest fine (two deferred handlers and two added since were reviewed later); see its `SUMMARY.md` |
 | [`threat-model.md`](threat-model.md) | `O*` register | O15 (tar extended header) and O16 (ISO directory record) were added and closed by #396. O12's memory half is mitigated; the rest closes with `sevenzip-aes-tail-key-check`. The PPMd window #398 capped has **no row yet** — #398 left it out because the file belonged to another open PR |
 | [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
 | **Linear** (`Archivey` team) | seeded 2026-09-17, added to continuously | **The state layer.** Labels: `sweep`, `decision`, `openspec`, `docs`, `review`, `pr-315`, `pr-open`. Not a replacement for any register below |
 | **The #315 sweep** — *the `SWEPT` markers on #315* | First pass complete 2026-09-20; **94 of 97 files on 2026-09-23** | 40 178 of 40 662 lines, **98.8%**. Three files arrived after the pass: `internal/enum_args.py` (#380), `internal/arg_checks.py` (#382) and `internal/windows_reparse.py` (#386). Since then [#448](https://github.com/davitf/archivey/pull/448) added `terminal.py` (the former `escaping.py`, already swept, under a new name) and `detection.py` (moved classes). What is open now is draining the threads, not reading. Count it from the markers, not from this row |
-| **`dev-docs/formats/`** — *no register* | 3 of ~7 handbook pages written | ZIP, RAR and 7z done. `rar.md` alone produced the 21-item `§10` register |
+| **`dev-docs/formats/`** — *no register* | 4 of ~7 handbook pages written | ZIP, RAR, 7z and ISO done. `rar.md` alone produced the 21-item `§10` register |
 | **`docs/`** — *tracked in `review/docs-content/`* | ~174 lines of prose + `how-it-works.md` | Skeleton, scope and verified claim inventory all done; the writing is not |
 
 **[`IDEAS.md`](IDEAS.md) is not backlog.** 55 entries across six sections, and its job is to
@@ -762,11 +762,12 @@ it tracks.
 
 ### 1. The format handbook — `dev-docs/formats/`
 
-Three of the intended set exist: [`rar.md`](formats/rar.md),
-[`zip.md`](formats/zip.md) and [`7z.md`](formats/7z.md). `rar.md` is the longest by some
-way; the other two are each a little over 40% of it. (Byte counts used to be written out
+Four of the intended set exist: [`rar.md`](formats/rar.md),
+[`zip.md`](formats/zip.md), [`7z.md`](formats/7z.md) and [`iso.md`](formats/iso.md).
+`rar.md` is the longest by some way; `zip.md` and `7z.md` are each a little over 40% of
+it, and `iso.md` is shorter again. (Byte counts used to be written out
 here and were wrong twice, because any edit to a page invalidates the number describing
-it — `wc -c` the files if you need the exact figures.) All three follow the same
+it — `wc -c` the files if you need the exact figures.) All four follow the same
 nine-section shape — At a glance, Shape, The pipeline here, In the wild, Threat surface,
 Sharp edges, Decisions, Open questions, Verify, References — so the template is settled
 and the remaining pages are writing, not design.
@@ -777,14 +778,14 @@ and the remaining pages are writing, not design.
 | `zip.md` | **Written**; `§7` has 1 open question (whether PKWARE Strong Encryption deserves an explicit refusal rather than a misleading wrong-password error) |
 | `7z.md` | **Written.** `§7` has 3 open questions. The file is `7z.md`, not the `sevenzip.md` this row used to name — the format is spelled `7z` everywhere else that faces a reader (`format-7z`, `docs/formats.md`, `review/backlog.md`). Thirteen open #315 findings still sit against the backend: six on `sevenzip_parser.py` (bind-pair arithmetic, pack-size overrun, substream mapping, the `kComment` external flag), three on the reader, two on the pipeline, one each on `sevenzip_methods.py` and `sevenzip_detect.py` |
 | `tar.md` | **Missing.** Includes the stdlib-leniency question that `open-issues.md` **P3** is about |
-| `iso.md` | **Missing.** Thin — one optional backend, `pycdlib` |
+| `iso.md` | **Written.** `§7` has 2 open questions. Writing it against genisoimage, xorriso and libarchive's images, rather than the `pycdlib`-built corpus, found six bugs: four fixed with it (the El Torito boot catalog failed every bootable image, a file over 4 GiB was cut to its first extent, `format_version` was `pycdlib`'s guess, a truncated image listed clamped or negative sizes and read short silently), two tracked (Rock Ridge name charset, `pycdlib` refusing zisofs and some genisoimage symlinks as corrupt) |
 | `single-file.md` | **Missing.** gzip, bzip2, xz, lzip, zstd, lz4, brotli, `.Z`: the seek-point and truncation behaviour is spread across `codecs.py`, `xz.py`, `lzip.py` and `unix_compress.py` with no single page |
 | `directory.md` | **Missing.** Thinnest of all; may not earn a page |
 
 **The handbook is how a format's to-fix register gets created**, which is the argument for continuing it:
 writing `rar.md` produced 21 tracked code changes, 19 of which have shipped, and `7z.md`
 surfaced two of its own (a refusal that names the wrong coder, and the folder decode that
-listing a solid archive with a symlink in it pays for). That is the
+listing a solid archive with a symlink in it pays for), and `iso.md` six. That is the
 highest-yield documentation work in the repo, and it is also why each new page should be
 expected to *add* open items rather than only close them.
 
@@ -969,7 +970,7 @@ sweep S0..S25 ──> 209 #315 threads, 111 open ──> new parcels, new change
         │              (first pass over src/ complete 2026-09-20; draining is what is left)
         └── a second pass waits on those threads being drained, not on a decision
 
-formats/tar.md, iso.md, single-file.md ──> more §10-style registers
+formats/tar.md, single-file.md ──> more §10-style registers
 docs/ prose + how-it-works.md ──> (nothing; skeleton, scope and claims all done)
 ```
 
@@ -1224,7 +1225,7 @@ rewrite the files the sweep fixes touch.
 
 **Wave 6 — the docs, continuously and in parallel with everything above.** Not a wave in the
 sense the others are: a long-running programme that should have one page in flight at a time
-rather than a slot in the order. `7z.md` is written (see §1 above); `tar.md` is the next page
+rather than a slot in the order. `7z.md` and `iso.md` are written (see §1 above); `tar.md` is the next page
 by value, because the stdlib-leniency question `open-issues.md` **P3** is about has no other
 home. The user guide's remaining prose is the one item here with no agent-shaped unit of work
 defined for it yet. **The sweep half of this wave is spent**: the reading is done, and the

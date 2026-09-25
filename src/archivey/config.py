@@ -605,6 +605,7 @@ class ArchiveyConfig:
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()
+"""The configuration used when a call is given no ``config=``: ``ArchiveyConfig()``."""
 
 
 @dataclass(frozen=True)
