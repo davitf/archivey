@@ -151,8 +151,12 @@ class ZipCryptoDecryptStream(ReadOnlyIOStream):
 
     The cipher state depends on every earlier byte, so a backward seek restarts from
     the saved post-header state and a forward seek decrypts what it skips. The source
-    must be seekable for the backward case. ``read(n)`` is full-count: ``n`` bytes or
-    what is left before the source ends. Close owns ``source``.
+    must be seekable for the backward case. Seek positions follow
+    :class:`~archivey.internal.streams.streamtools.SlicingStream` (and ``BytesIO``):
+    only a negative ``SEEK_SET`` raises, a relative seek below 0 clamps to 0, and a
+    seek past the end returns the requested position, where reads return ``b""``.
+    ``read(n)`` is full-count: ``n`` bytes or what is left before the source ends.
+    Close owns ``source``.
     """
 
     def __init__(self, source: BinaryIO, keys: ZipCryptoKeys, *, length: int) -> None:
@@ -162,11 +166,12 @@ class ZipCryptoDecryptStream(ReadOnlyIOStream):
         self._length = length
         self._start_keys = keys.copy()
         self._keys = keys
-        self._pos = 0
+        self._pos = 0  # bytes decrypted so far
+        self._logical = 0  # the caller's position; past ``_pos`` only after a seek
         self._origin = source.tell() if source.seekable() else 0
 
     def read(self, n: int = -1, /) -> bytes:
-        if n == 0:
+        if n == 0 or self._logical != self._pos:
             return b""
         data = (
             self._source.read() if n is None or n < 0 else read_exact(self._source, n)
@@ -174,33 +179,37 @@ class ZipCryptoDecryptStream(ReadOnlyIOStream):
         if not data:
             return b""
         self._pos += len(data)
+        self._logical = self._pos
         return self._keys.decrypt(data)
 
     def seekable(self) -> bool:
         return self._source.seekable()
 
     def tell(self) -> int:
-        return self._pos
+        return self._logical
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if whence == io.SEEK_SET:
+            if offset < 0:
+                raise ValueError(f"negative seek position {offset}")
             target = offset
         elif whence == io.SEEK_CUR:
-            target = self._pos + offset
+            target = max(0, self._logical + offset)
         elif whence == io.SEEK_END:
-            target = self._length + offset
+            target = max(0, self._length + offset)
         else:
             raise ValueError(f"invalid whence ({whence})")
-        if target < 0:
-            raise ValueError(f"negative seek position {target}")
-        if target < self._pos:
+        reach = min(target, self._length)
+        if reach < self._pos:
             self._source.seek(self._origin)
             self._keys = self._start_keys.copy()
             self._pos = 0
-        while self._pos < target:
-            if not self.read(min(64 * 1024, target - self._pos)):
-                break
-        return self._pos
+        self._logical = self._pos
+        while self._pos < reach:
+            if not self.read(min(64 * 1024, reach - self._pos)):
+                break  # the source ended early; reads from here return b""
+        self._logical = target
+        return target
 
     def close(self) -> None:
         if self.closed:

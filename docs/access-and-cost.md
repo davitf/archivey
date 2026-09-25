@@ -190,8 +190,10 @@ consumes the pass. A second call raises — including after an early `break`. Us
 
 Multiple password candidates can trigger confirmation reads. ZipCrypto **STORED** members
 are the expensive niche: a wrong candidate that passes the weak open check may force a
-full-member CRC scan. A WinZip AES member that is stored, or small, is read once to its
-HMAC per candidate that passes the two-byte check before the caller's read starts.
+full-member CRC scan. So is a **PPMd** member under either ZIP encryption: its
+decoder is not relied on to reject a wrong key. A WinZip AES member that is stored, PPMd or small
+is read once to its HMAC per candidate that passes the two-byte check, before the
+caller's read starts.
 Encrypted **7z folders** have no check value at all, so the first read into a folder
 confirms the password by decoding. That decode stops at the first
 member CRC covering at least 4 bytes, so a solid folder's first small member settles it.

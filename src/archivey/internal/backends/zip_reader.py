@@ -29,7 +29,6 @@ import io
 import lzma
 import stat
 import struct
-import threading
 import zipfile
 import zlib
 from collections.abc import Callable
@@ -68,8 +67,6 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     EncryptionError,
-    PackageNotInstalledError,
-    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -203,7 +200,7 @@ _ZIP_COMPRESSION_TUPLES: dict[int, tuple[CompressionMethod, ...]] = {
     for method_id, algo in _ZIP_COMPRESSION_ALGOS.items()
 }
 
-# ZIP method id -> shared codec-layer Codec for unencrypted member decode.
+# ZIP method id -> shared codec-layer Codec for member decode, after any decrypt stage.
 _ZIP_METHOD_CODECS: dict[int, Codec] = {
     0: Codec.STORED,
     8: Codec.DEFLATE,
@@ -285,10 +282,10 @@ def _closed_archive_error() -> ArchiveyUsageError:
     return ArchiveyUsageError(_CLOSED_ARCHIVE_MESSAGE)
 
 
-# Raw exceptions a ZIP member open/read can raise that _translate_exception maps to typed
-# ArchiveyErrors. Declared once so the catch sites (member open, compressed-confirm decrypt)
-# cannot drift apart — they previously did (one omitted io.UnsupportedOperation), exactly
-# the bug this constant prevents.
+# Raw exceptions a ZIP member open can raise before the codec layer takes over (local
+# header parse, raw payload view, decrypt-stage header, codec open) that
+# _translate_exception maps to typed ArchiveyErrors. Declared once so those catch sites
+# cannot drift apart.
 _ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
     zipfile.BadZipFile,
     RuntimeError,
@@ -299,11 +296,6 @@ _ZIP_MEMBER_READ_ERRORS: tuple[type[Exception], ...] = (
     UnicodeDecodeError,
     ValueError,
     OSError,
-    # stdlib zipfile raises bare EOFError on a truncated member body
-    # (ZipExtFile._read2 / _ZipDecrypter). Live site: compressed-confirm's
-    # prefix read. Must be translated like the other member-read errors —
-    # otherwise it escapes as a raw exception.
-    EOFError,
 )
 
 
@@ -318,14 +310,18 @@ def _decode_with_fallback(data: bytes) -> str:
 
 _T = TypeVar("_T")
 
-# ZipCrypto methods whose decompressor rejects random input (the confirm ladder's codec
-# rung): a wrong key dies inside the plaintext prefix, so confirmation stops there
-# rather than walk a large member to its CRC. Anything else zipfile can decode under
-# ZipCrypto walks to the CRC. The compressed-input half of the budget needs no cap of
-# its own here: DEFLATE and LZMA are stream codecs, and bzip2 produces output after one
-# block, whose compressed size its format bounds.
+# Methods whose decoder rejects random input (the confirm ladder's codec rung, for
+# ZipCrypto and WinZip AES alike): a wrong key dies inside the plaintext prefix, so
+# confirmation stops there rather than walk a large member to its CRC or HMAC.
+# Deflate64 and Zstandard rejected 300 of 300 random 1 MiB inputs before 64 KiB of
+# output. STORED has nothing to reject with, and PPMd is not a measured rejecter (on
+# random input pyppmd 1.3.1 can crash the process rather than raise), so both walk to
+# the CRC or HMAC. The compressed-input half of the budget
+# needs no cap of its own here: DEFLATE, Deflate64, LZMA and Zstandard are stream
+# codecs, and bzip2 produces output after one block, whose compressed size its format
+# bounds.
 _ZIP_REJECTING_METHODS = frozenset(
-    {zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA}
+    {zipfile.ZIP_DEFLATED, 9, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA, 93}
 )
 
 
@@ -651,14 +647,10 @@ class ZipReader(BaseArchiveReader):
             streaming=streaming,
             seekable=MemberStreams.SEEKABLE in member_streams,
         )
-        # Under CONCURRENT, closing the ZipFile takes this lock (_close_archive).
-        # Member data never goes through ZipFile.open / ZipExtFile, whose _fileRefCnt
-        # raced under free-threading: every member reads through a SharedView under
-        # zipfile's own ZipFile._lock, one read at a time, so independent members
-        # still decode in parallel.
-        self._handle_lock: threading.Lock | None = (
-            threading.Lock() if MemberStreams.CONCURRENT in member_streams else None
-        )
+        # No reader-level handle lock: member data never goes through ZipFile.open /
+        # ZipExtFile. Every member reads through a SharedView under zipfile's own
+        # ZipFile._lock, one read at a time, so independent members still decode in
+        # parallel; closing the archive takes the same lock (_close_archive).
         # >1 when the source is a joined volume set. 7-Zip's ``-v`` on a ZIP is a raw
         # byte split, so the join is an ordinary ZIP and the count is reported rather
         # than acted on. The source states it, so no wrapper between the boundary and
@@ -1674,12 +1666,6 @@ class ZipReader(BaseArchiveReader):
                     # The read that finds the end is the one that checks the HMAC.
                     if probe.read(1):
                         verdict = PasswordConfirmVerdict.REJECTED
-            except (
-                UnsupportedFeatureError,
-                PackageNotInstalledError,
-                ResourceLimitError,
-            ):
-                raise
             except ArchiveyError as exc:
                 if not _is_candidate_integrity_failure(
                     exc, payload_complete=payload_complete
@@ -2032,7 +2018,9 @@ class ZipReader(BaseArchiveReader):
         )
 
     def _close_archive(self) -> None:
-        with self._handle_guard():
+        # Wait out an in-flight member read before the handle closes; a later read then
+        # fails its SharedView check_open with the closed-archive error.
+        with self._zipfile_lock():
             self._archive.close()
 
 
@@ -2136,7 +2124,12 @@ def _central_directory_looks_encrypted(fp: IO[bytes]) -> bool:
 
 
 def _sequential_accelerator(mode: AcceleratorMode) -> AcceleratorMode:
-    """``AUTO`` off, for a codec input that is expensive to read out of order."""
+    """``AUTO`` off, for a codec input that is expensive to read out of order.
+
+    ``ON`` stays on: the caller asked for the accelerator by name. Over a ZipCrypto
+    stage its scattered reads each restart decryption from the member's start, so the
+    cost grows with the square of the member size.
+    """
     return AcceleratorMode.OFF if mode is AcceleratorMode.AUTO else mode
 
 

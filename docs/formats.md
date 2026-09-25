@@ -110,9 +110,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   backward seek decrypts it again from the start.
 - ZipCrypto's check byte and WinZip AES's two-byte password check both admit some wrong
   passwords, so the member's CRC or HMAC at EOF is the real test. With several
-  candidate passwords, each one that passes is checked further before it is used. Closing a member stream
-  before EOF emits `ENCRYPTED_MEMBER_UNVERIFIED` when only one of those short checks
-  accepted the password.
+  candidate passwords, each one that passes is checked further before it is used.
+  Closing a member stream before EOF emits `ENCRYPTED_MEMBER_UNVERIFIED` when only one
+  of those short checks accepted the password.
 
 ## TAR (and compressed TAR)
 

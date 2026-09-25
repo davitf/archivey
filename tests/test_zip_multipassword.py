@@ -9,7 +9,7 @@ import tempfile
 import zipfile
 import zlib
 from collections.abc import Callable, Iterator
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 
 import pytest
 
@@ -21,6 +21,7 @@ from archivey import (
     open_archive,
 )
 from archivey.exceptions import (
+    ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
     EncryptionError,
@@ -609,6 +610,26 @@ def test_zipcrypto_member_decodes_a_method_stdlib_cannot() -> None:
     assert _read_member(blob, [b"wrong", RIGHT]) == payload
 
 
+@requires_zstd()
+def test_zipcrypto_zstd_confirm_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Several candidates on a large Zstd member confirm on a prefix, not the CRC."""
+    payload = os.urandom(PASSWORD_CONFIRM_PREFIX_BYTES * 4)
+    compressed = zstd_backend().compress(payload)
+    blob = build_zipcrypto_zip(
+        RIGHT, NAME.encode(), payload, compression=93, compressed=compressed
+    )
+    plans: list[password_confirm.PasswordConfirmPlan] = []
+    real_plan = zip_reader.plan_password_confirm
+
+    def spy(*args: Any, **kwargs: Any) -> password_confirm.PasswordConfirmPlan:
+        plans.append(real_plan(*args, **kwargs))
+        return plans[-1]
+
+    monkeypatch.setattr(zip_reader, "plan_password_confirm", spy)
+    assert _read_member(blob, [b"wrong", RIGHT]) == payload
+    assert [plan.read_bytes for plan in plans] == [PASSWORD_CONFIRM_PREFIX_BYTES]
+
+
 @pytest.mark.parametrize("compression", COMPRESSION_METHODS)
 @pytest.mark.parametrize("passwords", [RIGHT, [b"wrong", RIGHT]], ids=["one", "two"])
 def test_zipcrypto_member_seeks(compression: int, passwords: PasswordArg) -> None:
@@ -626,6 +647,43 @@ def test_zipcrypto_member_seeks(compression: int, passwords: PasswordArg) -> Non
             assert stream.read(10) == payload[123:133]
             stream.seek(-5, io.SEEK_END)
             assert stream.read() == payload[-5:]
+
+
+def _seek_outcomes(stream: BinaryIO) -> list[object]:
+    """Where out-of-range seeks land (or what they raise), and what a read there returns."""
+    out: list[object] = []
+    for offset, whence in (
+        (-10, io.SEEK_END),
+        (-100, io.SEEK_CUR),
+        (1000, io.SEEK_SET),
+    ):
+        try:
+            out.append(stream.seek(offset, whence))
+        except ArchiveyError as exc:
+            out.append(type(exc))
+        out += [stream.tell(), stream.read(2)]
+    return out
+
+
+def test_zipcrypto_stored_out_of_range_seeks_match_an_unencrypted_member() -> None:
+    """A STORED member's seek reaches the decrypt stage directly, and lands where the
+    same member unencrypted does: a relative underflow clamps to 0 and a past-end
+    seek keeps its position."""
+    payload = b"hello"
+    encrypted = build_zipcrypto_zip(
+        RIGHT, NAME.encode(), payload, compression=zipfile.ZIP_STORED
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(NAME, payload)
+    results = []
+    for blob, password in ((encrypted, RIGHT), (buf.getvalue(), None)):
+        with open_archive(
+            io.BytesIO(blob), password=password, seekable_members=True
+        ) as ar:
+            with ar.open(NAME) as stream:
+                results.append(_seek_outcomes(stream))
+    assert results[0] == results[1] == [0, 0, b"he", 0, 0, b"he", 1000, 1000, b""]
 
 
 def test_zipcrypto_stage_matches_stdlib() -> None:
