@@ -285,17 +285,19 @@ def _rewrite_object(obj: Object, public: dict[str, str]) -> None:
 def _rewrite_section(
     obj: Object, section: DocstringSection, public: dict[str, str]
 ) -> None:
+    # Section shapes in griffe: Text holds a str; Examples holds immutable
+    # (kind, text) tuples, so the list is rebuilt; Admonition and Deprecated hold one
+    # element with a .description; the rest hold a list of such elements.
     value = section.value
     if isinstance(value, str):
         section.value = _rewrite_text(obj, value, public)
         return
-    items = value if isinstance(value, list) else [value]
-    # Examples sections hold (kind, text) tuples, which are immutable: rebuild the list.
     if isinstance(value, list) and value and isinstance(value[0], tuple):
         section.value = [
             (kind, _rewrite_text(obj, text, public)) for kind, text in value
         ]
         return
+    items = value if isinstance(value, list) else [value]
     for item in items:
         description = getattr(item, "description", None)
         if isinstance(description, str):

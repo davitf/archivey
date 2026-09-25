@@ -182,9 +182,9 @@ read its output.
 
 `check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs (the script is the list of
 gates). It runs every gate even after one fails and names what failed, so one run gives
-you the whole picture; without
-`--fix` it writes nothing. `test.sh --all-configs` restores `uv.lock` and the everyday
-environment on exit, so the `[all-lowest]` leg cannot leave a downgraded resolution behind.
+you the whole picture; without `--fix` it writes nothing. `test.sh --all-configs`
+restores `uv.lock` and the everyday environment on exit, so the `[all-lowest]` leg
+cannot leave a downgraded resolution behind.
 
 Run a tool directly when you want one in isolation (`--no-sync` avoids a redundant
 re-resolve):

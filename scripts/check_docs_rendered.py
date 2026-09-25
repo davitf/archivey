@@ -46,18 +46,27 @@ UNRESOLVED_RE = re.compile(r'<span title="([^"]*)"><code class="sphinx-role">')
 ROLE_MARKER = 'class="sphinx-role"'
 
 # Role targets that exist but have no anchor on the site, so they render as plain code.
-# Adding to this list is a decision that the reference is fine unlinked; removing an
-# entry is required once the target gains an anchor or its last role goes away.
+# Outside the group marked NOT a decision, adding to this list is a decision that the
+# reference is fine unlinked. Removing an entry is required once the target gains an
+# anchor or its last role goes away.
 UNRESOLVED_OK = {
-    # Not documented on the API page (internal, or public but not in docs/api.md).
+    # Not public API, so deliberately not on the API page: outside `archivey.__all__`
+    # (RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE is importable but "advanced; not in __all__"),
+    # or reachable only through an internal module path.
+    "archivey.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
+    "archivey.detection_cost.BALANCED_BUDGET",
+    "archivey.exceptions.raw_message_of",
+    # NOT a decision: these are in `archivey.__all__` but have no `::: archivey.<Name>`
+    # block in docs/api.md, which contradicts the documentation spec's scenario that the
+    # API reference documents the public symbols in `__all__`
+    # (openspec/specs/documentation/spec.md, first requirement). 31 of the 90 names in
+    # `__all__` are missing from docs/api.md, 21 of them exception classes; these are the
+    # five a docstring role points at. Each entry leaves once its name is documented.
     "archivey.ARCHIVE_INTEGRITY_CODES",
     "archivey.DEFAULT_ARCHIVEY_CONFIG",
     "archivey.ExtractionError",
     "archivey.FormatDetectionError",
     "archivey.FormatInfo",
-    "archivey.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
-    "archivey.detection_cost.BALANCED_BUDGET",
-    "archivey.exceptions.raw_message_of",
     # Members the page shows in a table or not at all, so they get no heading anchor.
     "archivey.ArchiveFormat.DIRECTORY",
     "archivey.ArchiveyError.__str__",

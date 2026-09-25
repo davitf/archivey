@@ -252,13 +252,15 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   prose here, follows [`AGENTS.md`](AGENTS.md) §Writing English. It decides how you
   write a comment; the two rules above decide whether to write one and what it says,
   and they win where the two ever pull apart.
-- **Cross-references in docstrings use Sphinx roles**:
-  ``:class:`~archivey.ArchiveMember` ``, `:meth:`, `:func:`, `:attr:`, `:data:`.
-  `SphinxRolesToAutorefs` in
-  `scripts/griffe_extensions.py` turns them into links on the API page, and
-  `scripts/check_docs_rendered.py` fails the docs build when one leaks as text or points
-  at a target with no anchor. Pages under `docs/` are Markdown that nothing rewrites, so
-  there use mkdocstrings syntax: ``[`ArchiveMember`][archivey.ArchiveMember]``.
+- **Cross-references in docstrings use Sphinx roles**, such as
+  ``:class:`~archivey.ArchiveMember` ``. The roles accepted are `:class:`, `:meth:`,
+  `:func:`, `:attr:`, `:data:`, `:const:`, `:exc:`, `:mod:`, `:obj:` and `:any:`, each
+  with an optional `py:` domain. `SphinxRolesToAutorefs` in `scripts/griffe_extensions.py`
+  turns them into links on the API page, and `scripts/check_docs_rendered.py` fails the
+  docs build when one leaks as text, or when its target does not resolve and is not on
+  the check's list of targets known to have no anchor. Pages under `docs/` are Markdown
+  that nothing rewrites, so there use mkdocstrings syntax:
+  ``[`ArchiveMember`][archivey.ArchiveMember]``.
 - **Comments describe the code as it is, not how it got there.** A comment in `src/` is
   read by someone who never saw the change that produced it, so it must not depend on
   that change being remembered. Three things this rules out:
