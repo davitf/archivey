@@ -62,6 +62,7 @@ from archivey.internal.backends.sevenzip_parser import (
     empty_archive,
     find_signature_offset,
     folder_is_encrypted,
+    folder_unpack_size,
     materialize_archive,
     parse_header_block,
     read_signature_and_next_header,
@@ -816,18 +817,6 @@ class SevenZipReader(BaseArchiveReader):
         pack_size = self._archive.pack_sizes[pack_index]
         return self._view(pack_offset, pack_size)
 
-    def _folder_members_total_size(self, folder_index: int) -> int:
-        """Sum of the listed members' sizes in the folder.
-
-        Not the coder graph's unpack size (``sevenzip_parser.folder_unpack_size``).
-        The two agree for any folder that has members: the parser rejects a folder
-        whose substreams leave bytes unaccounted for, and skips a folder declaring
-        zero substreams, which never reaches this helper. This is the one the
-        per-member CRC walk is built from.
-        """
-        members = self._folder_members.get(folder_index, [])
-        return sum(_member_stream_size(member) for member in members)
-
     def _open_folder_stream(
         self,
         folder_index: int,
@@ -918,6 +907,14 @@ class SevenZipReader(BaseArchiveReader):
             if folder.digest_defined
             else None
         )
+        # The folder digest covers the coder graph's unpack size, and the plan checks it
+        # over the substream sum. The two agree because the parser rejects a folder
+        # whose substreams leave bytes unaccounted for (and skips one declaring zero
+        # substreams, which has no members to reach this). If they ever diverged, a
+        # correct password would be reported as wrong, so the coupling is pinned here.
+        assert tail_crc is None or sum(size for size, _ in substreams) == (
+            folder_unpack_size(folder)
+        ), "member sizes must sum to the folder unpack size"
         return plan_confirm(
             substreams,
             tail_crc,
@@ -934,8 +931,10 @@ class SevenZipReader(BaseArchiveReader):
         ``_PasswordCandidates.attempt`` moves to the next candidate. A bounded plan
         reads at most ``CONFIRM_MAX_INPUT_BYTES`` of packed input: a block-transform
         codec can otherwise consume far more input than the plaintext prefix it
-        produces. A failure after the capped input ran out is not evidence about the
-        key, so it is ``INCONCLUSIVE``.
+        produces. Running out of that capped input (a short read, or a decoder error,
+        once the cap is spent) is not evidence about the key, so it is
+        ``INCONCLUSIVE``. A mismatched anchor stays a rejection, however much input it
+        took to produce.
         """
         folder = self._archive.folders[folder_index]
         pack = self._folder_pack_view(folder_index)
@@ -959,7 +958,7 @@ class SevenZipReader(BaseArchiveReader):
             collector=self._diagnostics_collector,
         )
         try:
-            verdict = run_confirm_plan(stream, plan)
+            verdict = run_confirm_plan(stream, plan, input_exhausted=input_ran_out)
         except (
             UnsupportedFeatureError,
             PackageNotInstalledError,
@@ -972,14 +971,17 @@ class SevenZipReader(BaseArchiveReader):
             # garbage) remaps below: ``attempt`` advances only on EncryptionError.
             raise
         except ArchiveyError as exc:
+            # Any decoder error once the cap is spent, not only ``TruncatedError``: a
+            # decoder cut mid-block does not reliably say so (indexed_bzip2 raises a
+            # bare ``RuntimeError``, mapped to ``CorruptionError``), so the error type
+            # cannot tell the cut from a wrong key. A mismatched anchor can, and the
+            # runner keeps that one ``REJECTED``.
             if input_ran_out():
                 return ConfirmVerdict.INCONCLUSIVE
             raise wrong_password_error("Wrong password or corrupt 7z folder") from exc
         finally:
             stream.close()
         if verdict is ConfirmVerdict.REJECTED:
-            if input_ran_out():
-                return ConfirmVerdict.INCONCLUSIVE
             raise wrong_password_error("Wrong password or corrupt 7z folder")
         return verdict
 

@@ -199,6 +199,22 @@ def test_run_rejects_a_short_stream_with_no_anchor() -> None:
     assert run_confirm_plan(io.BytesIO(b"ab"), plan) is ConfirmVerdict.REJECTED
 
 
+def test_run_short_read_after_the_input_cap_is_inconclusive() -> None:
+    # The caller's input cap ended the stream, not the key.
+    plan = plan_confirm([(8, None)], None, budget=BUDGET, codec_rejects=True)
+    verdict = run_confirm_plan(io.BytesIO(b"ab"), plan, input_exhausted=lambda: True)
+    assert verdict is ConfirmVerdict.INCONCLUSIVE
+    verdict = run_confirm_plan(io.BytesIO(b"ab"), plan, input_exhausted=lambda: False)
+    assert verdict is ConfirmVerdict.REJECTED
+
+
+def test_run_mismatched_anchor_is_rejected_even_after_the_input_cap() -> None:
+    # A mismatch is decisive evidence, whatever input it took to produce the bytes.
+    plan = plan_confirm([(4, _crc(b"good"))], None, budget=BUDGET, codec_rejects=True)
+    verdict = run_confirm_plan(io.BytesIO(b"evil"), plan, input_exhausted=lambda: True)
+    assert verdict is ConfirmVerdict.REJECTED
+
+
 def test_run_reads_in_bounded_chunks() -> None:
     payload = b"x" * (CONFIRM_CHUNK_BYTES * 2 + 17)
     plan = plan_confirm(

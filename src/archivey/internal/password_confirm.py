@@ -169,14 +169,21 @@ def plan_confirm(
 
 
 def run_confirm_plan(
-    stream: BinaryIO, plan: ConfirmPlan, *, chunk_size: int = CONFIRM_CHUNK_BYTES
+    stream: BinaryIO,
+    plan: ConfirmPlan,
+    *,
+    chunk_size: int = CONFIRM_CHUNK_BYTES,
+    input_exhausted: Callable[[], bool] | None = None,
 ) -> ConfirmVerdict:
     """Read ``stream`` as ``plan`` says and return the verdict.
 
     Reads in chunks of at most ``chunk_size``, so peak extra memory is one chunk. A
     short read is ``REJECTED``: the stream is the decoded unit, and a correct key
-    decodes the declared length. Decoder exceptions propagate; the caller decides
-    which of them mean "wrong key".
+    decodes the declared length. The one exception is a short read while
+    ``input_exhausted()`` is true: the caller's input cap ended the stream, not the
+    key, so it is ``INCONCLUSIVE``. A mismatched anchor is ``REJECTED`` however much
+    input it took to produce. Decoder exceptions propagate; the caller decides which of
+    them mean "wrong key".
     """
     unit_crc = 0
     for length, expected in plan.segments:
@@ -187,6 +194,8 @@ def run_confirm_plan(
         while remaining > 0:
             chunk = stream.read(min(chunk_size, remaining))
             if not chunk:
+                if input_exhausted is not None and input_exhausted():
+                    return ConfirmVerdict.INCONCLUSIVE
                 return ConfirmVerdict.REJECTED
             crc = zlib.crc32(chunk, crc)
             if plan.unit_crc is not None:
@@ -248,6 +257,12 @@ class UnverifiedReadWatch(DelegatingStream):
         super().__init__(inner)
 
     def _note_position(self) -> None:
+        # "Reads reached ``size``" stands for "the digest ran". That holds only for an
+        # inner stream that verifies on the read reaching its declared size, not on a
+        # following empty read: ``MemberVerifier`` finishes (CRC, WinZip AES HMAC,
+        # over-run probe) on that read, and CPython's ``ZipExtFile`` checks its CRC as
+        # soon as nothing is left. An inner stream that deferred the check to the next
+        # read would silence this report; check a new wrap target against it.
         if self._watch_pos >= self._watch_size and not self._forfeited:
             self._reached = True
 

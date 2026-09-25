@@ -277,3 +277,95 @@ def test_inconclusive_candidate_is_not_promoted_when_ambiguous(
 def test_plan_confirm_is_what_the_reader_calls() -> None:
     # The mutation checks above patch this name; make sure it is the planner itself.
     assert sevenzip_reader_mod.plan_confirm is plan_confirm
+
+
+class _PackCounter:
+    """Counts the packed bytes read from one folder's pack view."""
+
+    def __init__(self, inner: BinaryIO) -> None:
+        self._inner = inner
+        self.bytes_read = 0
+
+    def read(self, n: int = -1, /) -> bytes:
+        data = self._inner.read(n)
+        self.bytes_read += len(data)
+        return data
+
+    def readinto(self, buffer: bytearray | memoryview, /) -> int:
+        count = self._inner.readinto(buffer)  # type: ignore[attr-defined]
+        self.bytes_read += count or 0
+        return count  # type: ignore[no-any-return]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+def _count_pack_reads(monkeypatch: pytest.MonkeyPatch) -> list[_PackCounter]:
+    counters: list[_PackCounter] = []
+    reader_cls = sevenzip_reader_mod.SevenZipReader
+    original = reader_cls._folder_pack_view
+
+    def counting(self: object, folder_index: int) -> _PackCounter:
+        counter = _PackCounter(original(self, folder_index))  # type: ignore[arg-type]
+        counters.append(counter)
+        return counter
+
+    monkeypatch.setattr(reader_cls, "_folder_pack_view", counting)
+    return counters
+
+
+# Small enough that bzip2 cannot finish its first block (it emits nothing until a
+# whole block, ~900 KB here, is read), so the capped input runs out before the prefix.
+_SMALL_CAP = 256 * 1024
+
+
+def _bounded_plan(
+    substreams: object, tail_crc: object, *, budget: int, codec_rejects: bool
+) -> ConfirmPlan:
+    return plan_confirm(
+        substreams,  # type: ignore[arg-type]
+        tail_crc,  # type: ignore[arg-type]
+        budget=budget,
+        codec_rejects=codec_rejects,
+    )
+
+
+def test_input_cap_bounds_the_packed_bytes_and_running_out_is_inconclusive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The compressed half of the budget: a block codec reads at most the cap."""
+    import random
+
+    data = random.Random(7).randbytes(3 * 1024 * 1024)
+    archive = _build(tmp_path, "bzip2", {"big.bin": data}, method="BZip2", solid=True)
+    monkeypatch.setattr(sevenzip_reader_mod, "CONFIRM_MAX_INPUT_BYTES", _SMALL_CAP)
+    counters = _count_pack_reads(monkeypatch)
+    with open_archive(archive, password=_PASSWORD) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with reader.open(member) as stream:
+            assert stream.read(1) == data[:1]
+        confirm = counters[0]
+        assert 0 < confirm.bytes_read <= _SMALL_CAP
+        # The cap, not the key, ended the confirm: accepted as INCONCLUSIVE, so the
+        # abandoned read is reported.
+        assert (
+            reader.diagnostics.counts.get(DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED)
+            == 1
+        )
+        # The member itself still reads in full and checks its CRC.
+        assert reader.read(member) == data
+
+    # A wrong key is still refused under the cap: bzip2 rejects it well inside it.
+    with pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"):
+        _first_member_read(archive, "wrong")
+
+    # Mutation check: an unbounded plan takes no cap, and the same count sees bzip2
+    # read its whole first block.
+    def unbounded(*args: object, **kwargs: object) -> ConfirmPlan:
+        plan = _bounded_plan(*args, **kwargs)  # type: ignore[arg-type]
+        return ConfirmPlan(plan.segments, plan.unit_crc, plan.confirms, bounded=False)
+
+    monkeypatch.setattr(sevenzip_reader_mod, "plan_confirm", unbounded)
+    counters.clear()
+    _first_member_read(archive, _PASSWORD)
+    assert counters[0].bytes_read > _SMALL_CAP
