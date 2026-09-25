@@ -11,12 +11,13 @@ whenever the archive order allows it.
 
 ## What changes
 
-- `safe-extraction`: when a streaming pass meets a name it already handled, it removes
-  what it wrote for the earlier copy and reports that copy `SUPERSEDED`, before the
-  later copy is filtered or written. Results and the tree on disk then match random
-  access. The one case it cannot match is a different name colliding with the earlier
-  copy in between (a case variant outside `TRUSTED`), because that collision is decided
-  before the later copy is seen.
+- `safe-extraction`: when a streaming pass meets a name it already handled, it reports the
+  earlier copy `SUPERSEDED` and stops counting it against the entry and byte caps, before
+  the later copy is filtered. The earlier copy's entry stays until the later copy is
+  done, so a later copy at the same path replaces it atomically; otherwise it is then
+  removed. Results and the tree on disk then match random access. The requirement lists
+  the cases it cannot match, all of which depend on something that happened before the
+  later copy arrived.
 
 ## Impact
 

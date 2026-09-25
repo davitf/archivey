@@ -26,12 +26,26 @@ How surfaces interact:
 There is no extract-all flag to force writing non-current revisions; callers that need those bytes use `open`/`read` (or a future opt-in).
 
 A streaming pass learns that a member is shadowed only when the later same-name member
-arrives. At that point it SHALL remove what it wrote for the earlier member in this run
-and report the earlier member `SUPERSEDED`, before the later member reaches the filter,
-so both modes end with the same results and the same tree on disk. A directory that
-later members were written into stays, as their parent. One difference remains: a
-different name that collides with the earlier member between the two (a case variant
-outside `TRUSTED`) meets that member's write in a streaming pass, not an empty key.
+arrives. At that point it SHALL report the earlier member `SUPERSEDED`, before the later
+member reaches the filter, and stop counting it against `max_entries` and
+`max_extracted_bytes` (the archive-wide ratio still counts its decoded bytes). What the
+earlier member wrote in this run SHALL stay in place until the later member is done, so
+a later member that lands at the same path replaces it atomically under any overwrite
+policy; if the later member does not land there, the earlier member's entry SHALL then be
+removed. A directory that other members were written into stays, as their parent.
+
+Results and the tree on disk then match random access, except where something that
+happened before the later member arrived depended on the earlier member. A streaming pass
+cannot undo that:
+
+- A selection that excludes the later member: the pass never sees it, so the earlier
+  member stays `EXTRACTED`.
+- An entry of the caller's that the earlier member replaced under `REPLACE`: it is not
+  restored when the later member does not land.
+- A member between the two that met the earlier member's write: a different name that
+  collides with it (a case variant outside `TRUSTED`), a member written under it as a
+  directory, or a hardlink to it when it was not written (random access reads that
+  source again; a streaming pass cannot).
 
 #### Scenario: non-current skip matrix
 
