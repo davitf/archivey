@@ -29,48 +29,56 @@ does force it, the cost report says so.
 The defaults, one by one, and what each escape hatch costs:
 [Philosophy](philosophy.md) and [Access costs and pitfalls](access-and-cost.md).
 
-## Native-first parsing
-
-Archivey parses 7z and RAR headers itself, in Python, instead of wrapping `py7zr` or
-`rarfile`. Neither library fit a pull-based stream model. When the project started,
-`py7zr` decompressed a solid block again for each member read from it. Its current API
-replaced that `read()` with a push model, where you pass a factory and the library writes
-decompressed data into the objects it makes. Turning that back into a stream you read
-from took more code than parsing the headers.
-
-The other reason is consistency. Archivey turns every format's member names and
-metadata into one model by the same rules. Both libraries apply their own rules first,
-which Archivey would have had to copy, and sometimes undo.
-
-Depth: [7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md) and
-[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md) handbook pages.
-
-## One stream layer for every codec
+## Codecs and streams
 
 Most codecs are shared between formats: LZMA sits inside 7z, `.xz` and `.tar.xz`, and
-Deflate inside ZIP, 7z and gzip. So there is one internal stream layer. It deals with
-each codec library's quirks, gives each codec the best support it can, including
-incremental reads and seeking where the codec allows it, and every format builds on it.
-The 7z reader, the single-file compressors, compressed TAR, and ZIP's unencrypted and
-AES members all decode through it; [`open_stream`][archivey.open_stream] exposes it for a
-bare compressed file.
+Deflate inside ZIP, 7z and gzip. Archivey decodes all of them through one internal
+stream layer. The decoders come from three places: the standard library (`lzma`, `bz2`,
+`zlib`), optional packages in `[recommended]` (PPMd, Deflate64, Brotli, and Zstandard
+before Python 3.14), and a few written in Python, such as the `.Z` decoder and the
+framing of xz and lzip streams. AES decryption uses the `cryptography` package.
 
-Because the layer is shared, the behaviour you rely on is written once. Codec exceptions
-become [`CorruptionError`][archivey.CorruptionError] or
+The layer makes every one of them behave like an ordinary Python stream, and the same
+way in every format. Codec exceptions become
+[`CorruptionError`][archivey.CorruptionError] or
 [`TruncatedError`][archivey.TruncatedError]. A stored CRC or hash is checked when a
 member is read to its end, and the verdict comes from `read()`, never from `close()`. A
-missing codec package raises an error that names the extra to install.
-
-The layer also draws the line between Python and compiled code. Archive headers, member
-tables, and the framing of xz and lzip streams are parsed in Python, which can be wrong
-but cannot corrupt memory; C archive parsers have a long history of memory-safety bugs
-set off by crafted files. Most decompression runs in compiled code: stdlib `lzma`, `bz2`
-and `zlib` in the core, and the `[recommended]` packages for PPMd, Deflate64, Brotli and
-Zstandard before Python 3.14. `.Z` is the exception, decoded in Python as well. AES
-decryption uses the `cryptography` package.
+missing codec package raises an error that names the extra to install. A stream declared
+seekable with `seekable_members=True` does seek, even when that means decompressing
+again from the start; where a codec allows better, the layer uses an index (xz, lzip) or
+the `[seekable]` accelerator (gzip, bzip2). WinZip AES members are the one documented
+exception ([Seeking inside compressed members](access-and-cost.md#seeking-inside-compressed-members)).
+[`open_stream`][archivey.open_stream] exposes the layer for a bare compressed file.
 
 Depth: the [codec library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md)
 for which library backs each codec, and why.
+
+## Format parsers
+
+Format parsers come from the same three places. ZIP uses the standard library's
+`zipfile` for the central directory and TAR uses `tarfile` for its headers. ISO 9660 uses
+`pycdlib` from `[recommended]`. 7z and RAR headers are parsed by Archivey itself, in
+Python. Whatever parses the headers, Archivey turns each format's names and metadata
+into one member model by the same rules, and member data goes through the stream layer
+above wherever it can. Two exceptions: ZipCrypto members, which `zipfile` decrypts and
+decodes itself, and compressed RAR data, which needs RARLAB's `unrar` or `rar` because
+the RAR compression format is proprietary.
+
+7z and RAR get their own parsers for two reasons. The first is consistent metadata:
+`py7zr` and `rarfile` apply their own rules to names and fields, which Archivey would
+have had to copy, and sometimes undo. The second is streaming. `py7zr` writes
+decompressed data into objects you give it rather than returning a stream you read
+from, and turning that back into a stream took more code than parsing the headers.
+`rarfile` starts one `unrar` process per member, so reading every member of a solid
+archive decodes the solid block again for each one. Archivey's `stream_members()`
+reads a whole solid 7z folder, or a whole solid RAR, in one forward pass. Parsing
+headers in Python has a safety benefit too: a crafted header can make a parser wrong, but
+cannot make it corrupt memory.
+
+Depth: the [7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md),
+[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md) and
+[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md) handbook
+pages. Per-format behaviour: [Formats and extras](formats.md).
 
 ## Where the cost model comes from
 
@@ -85,50 +93,24 @@ pattern, and events at run time go to diagnostics rather than into the receipt.
 
 What to do with it: [Access costs and pitfalls](access-and-cost.md).
 
-## Backends and the registry
+## Format detection
 
-Every format backend registers when `archivey` is imported, including one whose
-optional package is missing. Detection and backend selection are separate steps.
-[`detect_format`][archivey.detect_format] peeks at the source without consuming it,
-prefers magic bytes and content probes to the file extension, and records a
-`FORMAT_EXTENSION_CONFLICT` diagnostic when the two disagree. For a compressed single
-file it also decompresses the start and looks for a TAR header, so a `.gz` that holds a
-tarball opens as `.tar.gz`. The registry then maps the detected format to its backend.
+Archivey decides what a file is from its bytes, not its name. It checks magic bytes
+first, including signatures far into the file such as ISO 9660's at 32 KiB, and a stub
+in front of an archive such as a self-extracting executable's. Formats with no usable
+magic, such as a raw zlib or LZMA stream, are recognised by content probes that try to
+parse the start. The extension only corroborates a weak probe, or serves as a last guess
+when the bytes settle nothing, because a name can be wrong: a `.jpg` that is really a ZIP opens as a ZIP, and a
+`FORMAT_EXTENSION_CONFLICT` diagnostic names both candidates. A compressed single file
+is decompressed a little to look for a TAR header, so a `.gz` that holds a tarball opens
+as `.tar.gz`. [`detect_format`][archivey.detect_format] runs the same steps without
+opening the archive.
 
-An extra supplies one of two things: the library a backend cannot work without, or the
-codec packages a container's members may use.
-[`format_availability`][archivey.format_availability] combines the two and reports
-[`FormatSupport`][archivey.FormatSupport] `FULL`, `PARTIAL` or `NONE`. ISO needs
-`pycdlib`, so without `[recommended]` it is `NONE` and opening one raises
-[`UnsupportedFormatError`][archivey.UnsupportedFormatError] with the install command. 7z
-only lacks some member codecs, so it is `PARTIAL`: it opens and lists, members in the
-stdlib-backed codecs read (see [Formats and extras](formats.md#7z)), and a PPMd member
-raises [`PackageNotInstalledError`][archivey.PackageNotInstalledError] when you read it.
+Every format registers its magic, probes and extensions with one registry, so adding a
+format means writing a backend rather than changing the detector. That registry is not
+a public API yet.
 
-What to install: [Install and extras](install.md). The detection order and its evidence:
-[Opening and listing](opening-and-listing.md#detection).
-
-## What is not ours
-
-- **ZIP: stdlib `zipfile`** reads the central directory. Member data is sliced from the
-  file and decoded by the shared stream layer, except ZipCrypto members, which
-  `zipfile` decrypts and decodes itself. The stdlib keeps ZIP in the zero-dependency
-  core; the alternatives bring native dependencies.
-- **TAR: stdlib `tarfile`** parses the headers, reading decompressed bytes from the
-  stream layer for `.tar.gz` and the other compressed forms. `tarfile` can stop at a
-  corrupt header and return a short listing, so Archivey checks the end of the archive
-  after a scan ([TAR](formats.md#tar-and-compressed-tar)).
-- **RAR data: RARLAB `unrar` or `rar`.** RAR compression is proprietary, and a native
-  decompressor is out of scope. Archivey runs the binary as a separate process, passes
-  the password on stdin, and reads the decoded bytes from its output, with one process
-  for a whole solid `stream_members()` pass. Uncompressed members that are not solid,
-  encrypted or split are read without it. `unrar-free` and `unar` are never fallbacks.
-- **ISO 9660: `pycdlib`**, a pure-Python library in `[recommended]`. Archivey installs a
-  directory-cycle guard inside it at import
-  ([ISO 9660](formats.md#iso-9660)).
-
-Depth: the [ZIP handbook page](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md).
-Per-format behaviour: [Formats and extras](formats.md).
+Details: [Opening and listing](opening-and-listing.md#detection).
 
 ## How it is tested
 
