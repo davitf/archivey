@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import io
 import os
 import struct
@@ -16,14 +18,18 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
+    TruncatedError,
 )
 from archivey.internal.backends.zip_aes import (
     WinZipAesDecryptStream,
+    WinZipAesInfo,
+    derive_winzip_aes_keys,
+    open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
 from archivey.types import CompressionAlgorithm, HashAlgorithm
 from tests.conftest import requires, requires_binary
-from tests.zip_aes_fixture import build_aes_zip
+from tests.zip_aes_fixture import aes_ctr_le_encrypt, build_aes_zip
 
 _PASSWORD = b"secret"
 _PAYLOAD = b"winzip-aes-payload\n" * 40
@@ -308,6 +314,60 @@ def test_aes_decrypt_stream_close_marks_wrapper_closed_when_source_raises() -> N
         stream.close()
     assert stream.closed
     stream.close()  # no-op; must not re-raise
+
+
+def _truncated_aes_parts() -> tuple[bytes, bytes, bytes, bytes, bytes]:
+    salt = b"\x11" * 16
+    enc_key, auth_key, _ = derive_winzip_aes_keys(_PASSWORD, salt=salt, key_len=32)
+    ciphertext = aes_ctr_le_encrypt(enc_key, _PAYLOAD)
+    mac = hmac.new(auth_key, ciphertext, hashlib.sha1).digest()[:10]
+    return salt, enc_key, auth_key, ciphertext, mac
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    ("cut", "match"),
+    [("ciphertext", "ciphertext before HMAC"), ("mac", "Truncated WinZip AES HMAC")],
+)
+def test_aes_stream_short_source_raises_truncated(cut: str, match: str) -> None:
+    """A source that ends before the declared ciphertext or HMAC is a truncation."""
+    _, enc_key, auth_key, ciphertext, mac = _truncated_aes_parts()
+    body = ciphertext[:400] if cut == "ciphertext" else ciphertext + mac[:4]
+    stream = WinZipAesDecryptStream(
+        io.BytesIO(body), enc_key=enc_key, auth_key=auth_key, cipher_len=len(ciphertext)
+    )
+    with pytest.raises(TruncatedError, match=match):
+        stream.read(-1)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    ("keep", "match"), [(8, "salt"), (17, "password-verification value")]
+)
+def test_aes_member_short_envelope_raises_truncated(keep: int, match: str) -> None:
+    """A payload cut inside the salt or the verifier is a truncation too."""
+    salt, *_ = _truncated_aes_parts()
+    raw = io.BytesIO((salt + b"\x00\x00")[:keep])
+    with pytest.raises(TruncatedError, match=match):
+        open_winzip_aes_member(
+            raw,
+            aes=WinZipAesInfo(vendor_version=2, strength=3, actual_method=0),
+            password=_PASSWORD,
+            compress_size=len(_PAYLOAD) + 28,
+        )
+
+
+@requires("cryptography")
+def test_aes_member_impossible_declared_size_stays_corruption() -> None:
+    """A declared size too small to hold the envelope is a bad header, not a short read."""
+    with pytest.raises(CorruptionError, match="too short") as exc:
+        open_winzip_aes_member(
+            io.BytesIO(b"\x00" * 64),
+            aes=WinZipAesInfo(vendor_version=2, strength=3, actual_method=0),
+            password=_PASSWORD,
+            compress_size=10,
+        )
+    assert not isinstance(exc.value, TruncatedError)
 
 
 @requires("cryptography")
