@@ -461,11 +461,15 @@ needle's next position forward, and the same prefix scans in about 0.2 s. What r
 open here is the per-candidate work the detector does after the search.
 
 `detection-prefix-workspace` ships the `DetectionBudget` / `DetectionCostReceipt` and a
-fuzz assertion that aggregate detection cost stays inside the declared budget. The bound
-itself — and whether limits are per-detection aggregates or per-candidate — belongs to
-`detection-evidence-ledger`, which owns the scan tiers where candidates multiply. Until
-that lands, a hostile prefix can still force unbounded decode work under the
-default budget's scan path once those tiers are enabled.
+fuzz assertion that aggregate detection cost stays inside the declared budget. The
+decode limits are now per-call aggregates, not per-candidate: `max_decode_input` /
+`max_decode_output` form one allowance that every decoding tier draws on (the content
+probes, their whole-source completion check, the inner-TAR probe), and a tier the
+remaining allowance cannot cover does not run (`detection-cost` spec). No tier decodes
+scan candidates today, so the amplification above is not reachable yet; a tier that
+does (makeself compressor needles under `#!`, planned after 0.2.0) must draw on the same
+allowance, which is what keeps this open until it lands and is measured. The
+`detection-evidence-ledger` change that was to own this bound was decided against.
 
 ### O12. 7z password confirmation decoded the whole folder into RAM — memory mitigated
 

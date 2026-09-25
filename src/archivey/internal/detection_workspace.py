@@ -369,6 +369,21 @@ class PrefixWorkspace:
         self._receipt.decode_input += input_bytes
         self._receipt.decode_output += output_bytes
 
+    @property
+    def decode_input_left(self) -> int:
+        """Compressed input detection may still decode before ``max_decode_input`` runs out.
+
+        One allowance for the whole call: every decoding tier (content probes, their
+        completion check, the inner-TAR probe) draws on it, so the number of tiers or
+        candidates cannot multiply the work the budget allows.
+        """
+        return max(0, self._budget.max_decode_input - self._receipt.decode_input)
+
+    @property
+    def decode_output_left(self) -> int:
+        """Decoded output detection may still produce before ``max_decode_output`` runs out."""
+        return max(0, self._budget.max_decode_output - self._receipt.decode_output)
+
     def record_skip(self, tier: str, reason: TierSkipReason) -> None:
         self._receipt.record_skip(tier, reason)
 

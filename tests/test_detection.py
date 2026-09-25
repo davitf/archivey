@@ -1235,3 +1235,54 @@ def test_detect_format_directory_carries_a_zero_receipt(tmp_path: Path) -> None:
     assert info.cost_receipt is not None
     assert info.cost_receipt.unique_bytes_read == 0
     assert info.cost_receipt.passes == 1
+
+
+def test_content_probes_share_one_decode_allowance() -> None:
+    # The probes draw on ``max_decode_input`` as the inner-TAR probe does, so a budget
+    # that allows no decoding runs no probe, and one that runs out stops them.
+    from dataclasses import replace
+
+    from archivey.config import DEFAULT_ARCHIVEY_CONFIG
+    from archivey.detection_cost import (
+        BALANCED_BUDGET,
+        MutableDetectionCostReceipt,
+        TierSkip,
+        TierSkipReason,
+    )
+    from archivey.internal.detection import _detect_format_body
+    from archivey.internal.diagnostics_collector import collector_from_config
+    from archivey.internal.registry import get_registry
+
+    data = zlib.compress(b"zlib payload")
+    probes = [fmt for fmt, _ in get_registry().content_probes()]
+    # Each probe ahead of zlib is charged its sample, so zlib needs one sample per
+    # probe up to and including itself.
+    zlib_needs = (probes.index(ArchiveFormat.ZLIB) + 1) * len(data)
+
+    def detect(
+        max_decode_input: int,
+    ) -> tuple[FormatInfo | None, MutableDetectionCostReceipt]:
+        budget = replace(BALANCED_BUDGET, max_decode_input=max_decode_input)
+        receipt = MutableDetectionCostReceipt()
+        collector = collector_from_config(DEFAULT_ARCHIVEY_CONFIG)
+        try:
+            info = _detect_format_body(io.BytesIO(data), collector, budget, receipt)
+        except FormatDetectionError:
+            info = None
+        return info, receipt
+
+    info, receipt = detect(0)
+    assert info is None
+    assert receipt.decode_input == 0
+    assert TierSkip("content_probe", TierSkipReason.NOT_ENABLED_BY_POLICY) in (
+        receipt.skips
+    )
+
+    info, receipt = detect(zlib_needs - 1)
+    assert info is None
+    assert receipt.decode_input <= zlib_needs - 1
+    assert TierSkip("content_probe", TierSkipReason.BUDGET_EXHAUSTED) in receipt.skips
+
+    info, receipt = detect(zlib_needs)
+    assert info is not None and info.format == ArchiveFormat.ZLIB
+    assert receipt.decode_input == zlib_needs

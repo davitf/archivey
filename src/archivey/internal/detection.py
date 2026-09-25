@@ -74,7 +74,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.enum_args import coerce_enum
 from archivey.internal.logs import detection as logger
-from archivey.internal.registry import get_registry
+from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.sfx import (
     SFX_MAX,
     ExecutableCue,
@@ -238,7 +238,7 @@ def _probe_inner_tar(
     read is bounded, so the dictionary cannot fill past it, but liblzma still reserves
     the declared size. The open that follows applies the caller's limits.
 
-    With a workspace, the compressed input is bounded by the budget's
+    With a workspace, the compressed input is bounded by what is left of the budget's
     ``max_decode_input`` (and the workspace's read ceiling) as well as by
     :data:`_INNER_TAR_MAX_PROBE_BYTES`, and the decode is charged whether it succeeds or
     fails. A probe that reaches its bound without finding a TAR header records
@@ -269,10 +269,15 @@ def _probe_inner_tar(
         if budget.max_decode_input <= 0 or budget.max_decode_output <= 0:
             workspace.record_skip("inner_tar", TierSkipReason.NOT_ENABLED_BY_POLICY)
             return False
-        if budget.max_decode_output < _INNER_TAR_PROBE_BYTES:
+        # What is left, not the budget's face value: a content probe and its completion
+        # check may already have drawn on the same allowance.
+        if (
+            workspace.decode_output_left < _INNER_TAR_PROBE_BYTES
+            or workspace.decode_input_left <= 0
+        ):
             workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
             return False
-        limit = min(limit, budget.max_decode_input, workspace.read_ceiling)
+        limit = min(limit, workspace.decode_input_left, workspace.read_ceiling)
 
     source = _BoundedPeekReader(peek_more, limit)
     head = b""
@@ -302,6 +307,58 @@ def _probe_inner_tar(
         if not found and source.hit_limit:
             workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
     return found
+
+
+def _decode_allowance_covers(
+    workspace: PrefixWorkspace, input_bytes: int, tier: str
+) -> bool:
+    """Whether ``input_bytes`` of decoding still fits the call's decode allowance.
+
+    Records ``tier`` as not enabled when the budget allows no decoding at all, and as
+    cut short when an earlier tier spent what it allowed.
+    """
+    if workspace.budget.max_decode_input <= 0:
+        workspace.record_skip(tier, TierSkipReason.NOT_ENABLED_BY_POLICY)
+        return False
+    if workspace.decode_input_left < input_bytes:
+        workspace.record_skip(tier, TierSkipReason.BUDGET_EXHAUSTED)
+        return False
+    return True
+
+
+def _probe_completes(
+    probe: ContentProbe,
+    data: bytes,
+    length: int | None,
+    read_at: Callable[[int, int], bytes | None],
+    workspace: PrefixWorkspace,
+) -> bool:
+    """Whether a probe that accepted the prefix still accepts the whole source.
+
+    A probe handed only the detection window cannot tell a stream that goes on from one
+    that turns invalid past the window: text that happens to decode for 4 KiB is a
+    Brotli stream as far as the window shows. When the source is small enough, all of it
+    is peeked and the probe runs again with the whole source in hand, where its
+    completeness check (``_decodes_sample``) rejects a decode that is still asking for
+    input at the end.
+
+    Runs only when the source length is known, longer than the window the probe already
+    saw, and within the budget's ``completion_window_bytes`` (64 KiB under ``BALANCED``;
+    ``FAST`` does not complete). A source the decode allowance can no longer cover is
+    accepted on the window alone and ``probe_completion`` is recorded as cut short.
+    """
+    if length is None or length <= len(data):
+        # Unknown length: nothing to complete against. At or under the window: the
+        # probe already had the whole source and ran its completeness check.
+        return True
+    budget = workspace.budget
+    if length > min(budget.completion_window_bytes, workspace.read_ceiling):
+        return True
+    if not _decode_allowance_covers(workspace, length, "probe_completion"):
+        return True
+    whole = workspace.peek_prefix(length)
+    workspace.charge_decode(input_bytes=len(whole))
+    return probe(whole, source_length=length, read_at=read_at)
 
 
 def _brotli_probe_confidence(
@@ -759,7 +816,15 @@ def _detect_format_body(
                 return workspace.read_at(offset, n)
 
             for probe_fmt, probe in registry.content_probes():
-                if probe(data, source_length=length, read_at=read_at):
+                if not _decode_allowance_covers(workspace, len(data), "content_probe"):
+                    break
+                # Charged at the sample the probe was handed, whether it decodes all of
+                # it or a header check turns it away first: the ceiling of its input.
+                # Its output is bounded per probe by the codec's own drain.
+                workspace.charge_decode(input_bytes=len(data))
+                if probe(
+                    data, source_length=length, read_at=read_at
+                ) and _probe_completes(probe, data, length, read_at, workspace):
                     confidence = DetectionConfidence.PROBABLE
                     if probe_fmt.stream is StreamFormat.BROTLI:
                         confidence = _brotli_probe_confidence(data, ext_match)

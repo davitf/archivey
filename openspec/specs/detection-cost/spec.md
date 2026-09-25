@@ -43,7 +43,7 @@ class DetectionBudget:
     max_scan_bytes: int
     max_decode_input: int
     max_decode_output: int
-    completion_window_bytes: int   # reserved: whole-source completion → evidence-ledger
+    completion_window_bytes: int   # largest source a content-probe hit is re-checked whole
     max_index_bytes: int           # reserved → evidence-ledger
     max_probe_links: int           # live for within_budget probe allowance; walk still uses CHAIN_MAX_LINKS
     spool_non_seekable_up_to: int
@@ -75,13 +75,25 @@ from `max_prefix_bytes` because a far fixed-offset signature needs a ~32 KiB win
 4 096-byte near budget would otherwise forbid.
 
 Live budget fields today: `max_prefix_bytes` (near peek clamp), `max_far_bytes`,
-`max_scan_bytes` (SFX window), `max_decode_input` / `max_decode_output` (receipt bounds /
-inner-TAR probe limit: compressed input is capped at the smaller of `max_decode_input` and
-1 MiB, a decode that fails is charged like one that succeeds, and a probe cut short by the
-cap records `inner_tar` as *budget exhausted*), `spool_non_seekable_up_to`,
+`max_scan_bytes` (SFX window), `max_decode_input` / `max_decode_output`,
+`completion_window_bytes` (see `format-detection`: a content-probe hit on a source no
+larger than this is re-checked against the whole source), `spool_non_seekable_up_to`,
 `max_probe_links` (via `within_budget`'s probe-seek allowance of `max_probe_links × 24`
 bytes, aligned with the Brotli chain header read), and the skip-recording of
-`max_tail_bytes <= 0` as *not enabled by policy*. Content-probe `read_at` seeks on cheap
+`max_tail_bytes <= 0` as *not enabled by policy*.
+
+`max_decode_input` / `max_decode_output` SHALL be one allowance for the whole
+`detect_format` pass, not a limit per tier or per candidate: every tier that decodes draws
+on what earlier tiers left, so adding tiers or candidates cannot multiply the decode work a
+budget allows. Today three tiers draw on it. Each content probe is charged the sample it was
+handed, whether or not a header check turned it away before decoding; a probe the
+remaining allowance cannot cover does not run, and `content_probe` is recorded *budget
+exhausted* (or *not enabled by policy* when `max_decode_input` is 0). The completion check
+is charged the whole source it decodes and records `probe_completion` the same way. The
+inner-TAR probe caps its compressed input at the smaller of what is left and 1 MiB, is
+charged whether its decode succeeds or fails, and records `inner_tar` as *budget
+exhausted* when the cap cut it short or less than one 512-byte TAR header of output is
+left. Content-probe `read_at` seeks on cheap
 random-access sources (path, full spool, non-`ArchiveStream` seekable streams) without
 growing the prefix through `[0, offset)`; non-seekable and expensive-seek sources grow
 under the smaller of 1 MiB and the budget's prefix/far/scan ceiling, and record
@@ -98,8 +110,7 @@ fails `within_budget` SHALL carry a *budget exhausted* or *capability unavailabl
 naming the tier that was cut short, except where a budget field is not yet honoured by the
 tier spending against it: the Brotli walk follows `CHAIN_MAX_LINKS`, not
 `max_probe_links`, until `detection-evidence-ledger` wires it. Remaining reserved fields
-(`completion_window_bytes`, `max_index_bytes`, `collect_nonmaximal_candidates`, and the
-ZIP-tail pair) MAY appear on the type and in presets so follow-on changes can wire them
+(`max_index_bytes`, `collect_nonmaximal_candidates`, and the ZIP-tail pair) MAY appear on the type and in presets so follow-on changes can wire them
 without a second public shape break; no tier SHALL claim to honour them until those
 changes land.
 
@@ -117,6 +128,8 @@ changes land.
 | Expensive-seek source, content probe asks past the budget ceiling | `read_at` returns `None`; `content_probe_read_at` recorded *budget exhausted*; `within_budget` True |
 | Stub-only `vol.exe` beside `vol.7z.001` | `SEVEN_Z`; the receipt includes the stub pass's SFX scan; `passes` 2; `within_budget` True; `zip_tail` recorded once |
 | `max_decode_output` below one 512-byte TAR header | Inner-TAR probe not run; `inner_tar` recorded *budget exhausted*; nothing charged |
+| `max_decode_input` 0, zlib stream | No content probe runs; `content_probe` recorded *not enabled by policy*; `decode_input` 0; detection fails |
+| `max_decode_input` smaller than the samples the probes ahead of zlib were charged | Probing stops before zlib; `content_probe` recorded *budget exhausted*; `decode_input` within the budget |
 
 ### Requirement: Detection capabilities are derived from source and budget together
 
@@ -155,9 +168,9 @@ value across presets so follow-on changes inherit a ready table.
 
 | preset | behaviour today |
 | --- | --- |
-| `BALANCED` | near prefix; far fixed-offset evidence; cued bounded SFX scan (`max_scan_bytes` = 2 MiB); bounded content probes; inner TAR; **no** ZIP tail; no whole-source completion; no exhaustive scan; no implicit spool |
-| `FAST` | same tiers as `BALANCED` with a smaller SFX scan (`max_scan_bytes` = 256 KiB) and smaller decode ceilings |
-| `THOROUGH` | same scheduled tiers as `BALANCED` today; reserved fields (`completion_window_bytes`, `max_probe_links`, `collect_nonmaximal_candidates`, `max_index_bytes`) carry the intended future values but are **not honoured** until `detection-evidence-ledger` wires them. ZIP tail stays off (`max_tail_bytes = 0`, `max_seeks = 0`) until `prefixed-archive-detection` schedules it |
+| `BALANCED` | near prefix; far fixed-offset evidence; cued bounded SFX scan (`max_scan_bytes` = 2 MiB); bounded content probes; whole-source completion of a probe hit up to 64 KiB; inner TAR; **no** ZIP tail; no exhaustive scan; no implicit spool |
+| `FAST` | same tiers as `BALANCED` with a smaller SFX scan (`max_scan_bytes` = 256 KiB), smaller decode ceilings, and no whole-source completion |
+| `THOROUGH` | same scheduled tiers as `BALANCED` today, with whole-source completion up to 1 MiB (the decode allowance); reserved fields (`max_probe_links`, `collect_nonmaximal_candidates`, `max_index_bytes`) carry the intended future values but are **not honoured** until `detection-evidence-ledger` wires them. ZIP tail stays off (`max_tail_bytes = 0`, `max_seeks = 0`) until `prefixed-archive-detection` schedules it |
 
 The ZIP tail tier SHALL remain outside every preset until its aggregate cost is measured on
 the founding backup workload, in seeks as well as bytes, **and** a caller exists. Format

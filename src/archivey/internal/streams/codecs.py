@@ -53,6 +53,7 @@ from archivey.internal.config import (
     check_decoder_memory,
     exceeds_decoder_memory,
 )
+from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStream,
@@ -984,9 +985,11 @@ _ALONE_HEADER_SIZE = 13
 # Alone header marks unknown uncompressed size with all-ones uint64.
 _ALONE_UNKNOWN_SIZE = (1 << 64) - 1
 
-# Bytes fed to a content probe — enough to trip a malformed-stream error without
-# decompressing the whole payload.
-_PROBE_PREFIX = 256
+# Bytes fed to a content probe: the whole detection window, which is what detection has
+# already peeked. A shorter sample let text through: 256 bytes of a Perl module starting
+# ``package`` decode as a Brotli meta-block that only turns invalid further in (measured:
+# 7 of 800 ``/usr/share/perl`` modules detected as Brotli at 256, none at 4096).
+_PROBE_PREFIX = DETECTION_LIMIT
 # Output drain when the whole source is visible and completeness is checked. Caps
 # expansion bomb cost (a 4 KiB zlib sample can expand to ~4 MiB); large enough to
 # catch the small/medium truncations that dominate measured fabrications.

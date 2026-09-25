@@ -73,6 +73,13 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **Text files are no longer detected as Brotli.** Brotli has no magic, so detection
+  decodes the start of a source to recognise it, and a 256-byte sample let ordinary text
+  through: 7 of the first 800 Perl modules under `/usr/share/perl` detected as `BROTLI`
+  and then failed to read. The probe now decodes the whole 4 KiB detection window, and a
+  content-probe hit on a source up to 64 KiB is checked against the whole source, which
+  also turns away a truncated stream the window alone cannot tell apart. The detection
+  budget's decode limits now bound the content probes too, as one allowance for the call.
 - **A Windows symlink to a network share keeps its `//server/share` target.** A ZIP or
   7z reparse buffer that named its target only as `\??\UNC\server\share` listed
   the link as pointing at the relative path `UNC/server/share`, and extraction created
