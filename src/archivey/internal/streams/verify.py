@@ -144,6 +144,24 @@ def _make_hasher(
     return None
 
 
+def _probe_past_declared(inner: BinaryIO) -> bytes:
+    """Read one byte past a member's declared size; ``b""`` means the member ends there.
+
+    An ``ArchiveyError``, an ``OSError`` or a ``MemoryError`` propagates. Any other
+    error from the decoder at this point counts as "nothing more": an accelerator can
+    raise an opaque error at the end of its input instead of returning ``b""``, and
+    every declared byte has already been delivered. What is given up is only the
+    over-run verdict. On a sequential read the digests, checked after this probe, still
+    judge the content; after a seek the checksum was forfeited already.
+    """
+    try:
+        return inner.read(1)
+    except (ArchiveyError, OSError, MemoryError):
+        raise
+    except Exception:  # noqa: BLE001 - an opaque decoder error past the end is "no more data"
+        return b""
+
+
 class MemberVerifier:
     """Incremental digest/length checker over bytes read from an inner stream.
 
@@ -271,12 +289,7 @@ class MemberVerifier:
             # Delivered the declared size via reads; the underlying must have nothing
             # more. This probe also drains post-payload authenticators (e.g. WinZip AES
             # HMAC).
-            try:
-                trailing = inner.read(1)
-            except ArchiveyError:
-                raise
-            except Exception:  # noqa: BLE001 - opaque accel errors ≈ no trailing data
-                trailing = b""
+            trailing = _probe_past_declared(inner)
             if trailing:
                 raise CorruptionError(
                     "Decompressed content exceeds its declared size of "
@@ -339,12 +352,7 @@ class MemberVerifier:
         # boundary. Over-run probe (same as _finish): any trailing byte means the
         # member decodes past its declared size — corruption independent of the
         # checksum, and it must not be silenced just because a seek reached the size.
-        try:
-            trailing = inner.read(1)
-        except ArchiveyError:
-            raise
-        except Exception:  # noqa: BLE001 - opaque accel errors ≈ no trailing data
-            trailing = b""
+        trailing = _probe_past_declared(inner)
         if trailing:
             raise CorruptionError(
                 "Decompressed content exceeds its declared size of "
@@ -396,22 +404,13 @@ class MemberVerifier:
             want = min(_SIZED_DRAIN_CHUNK, remaining)
             try:
                 piece = inner.read(want)
-            except ArchiveyError:
+            except BaseException:
+                # The decoder's own error is the verdict, as on the bounded path in
+                # read(): the translator above this verifier classifies it. Relabelling
+                # every raw error as TruncatedError here made a corrupt deflate body
+                # read as truncated through read() and as corrupt through read(n).
                 self._abandon()
                 raise
-            except (OSError, MemoryError):
-                # Real resource failures must propagate (CONTRIBUTING); do not relabel
-                # them as TruncatedError.
-                self._abandon()
-                raise
-            except Exception as exc:
-                # Opaque accelerator EOF while still short of the declared size
-                # (macOS rapidgzip often raises instead of returning b""). Surface
-                # TruncatedError on this read path so close need not raise it.
-                raise TruncatedError(
-                    f"Decompressed content ended after {self._pos} of "
-                    f"{self._expected_size} expected bytes."
-                ) from exc
             if not piece:
                 break
             self._record_read(piece)
@@ -464,7 +463,7 @@ class MemberVerifier:
         if self._abandoned or self._verified:
             try:
                 return inner.read(n)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
                 self._abandon()
                 raise
 

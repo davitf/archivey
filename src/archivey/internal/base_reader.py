@@ -605,9 +605,11 @@ class BaseArchiveReader(ArchiveReader):
                 if source is not None:
                     source.close()
         except Exception as exc:  # noqa: BLE001 - combine with pending stream-close failure
+            # Held, not swallowed: every path below raises it. Exception, not
+            # BaseException: an interrupt propagates alone, through the finally.
             teardown_exc = exc
-            self._state.complete_teardown()
-        else:
+        finally:
+            # Also on an interrupt: teardown is never retried, so it is complete either way.
             self._state.complete_teardown()
         if pending is not None and teardown_exc is not None:
             raise ExceptionGroup(

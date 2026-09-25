@@ -98,7 +98,8 @@ Three things about this path are worth knowing before you debug it:
   and that middle word is why it is not "backend".
 - **Exceptions are translated per backend**, through that backend's translator, into
   `ArchiveyError` subclasses. Unknown exceptions return `None` from the translator and
-  propagate; there is no catch-all.
+  propagate; there is no catch-all. The shapes a blind `except` may take, and why, are
+  in handbook [`topics/exception-handlers.md`](topics/exception-handlers.md).
 - **`ArchiveyUsageError` is deliberately outside the `ArchiveyError` tree** (ADR 0012), so
   a caller-misuse fault cannot be produced by a translator that can only return archive
   errors.

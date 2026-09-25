@@ -85,6 +85,16 @@ promise with that line; treat `0.2.0` as the first release of this library.
 - **A usage error no longer suggests calling the wrong class.** Passing
   `limits=ListingLimits` where an `ExtractionLimits` belongs said "did you mean
   ListingLimits()?"; the hint now appears only when that call would be accepted.
+- **Errors keep their real cause in four places where a blind `except` changed it.**
+  Reading a bzip2 stream through the rapidgzip accelerator from a file object whose own
+  `read` failed aborted the Python process; the file object's error now propagates, as it
+  already did for gzip. A corrupt member read with `read()` raised `TruncatedError`
+  where `read(n)` raised `CorruptionError`; both now raise `CorruptionError`. A RAR with
+  encrypted headers cut inside a header's salt or IV raised `EncryptionError` even with
+  the right password; it now raises `CorruptionError`, and a `bytes` password that is not
+  UTF-8 counts as a wrong candidate there instead of escaping as `UnicodeDecodeError`.
+  An `OSError` or `MemoryError` on the check for data past a member's declared size was
+  taken as "no more data"; it now propagates.
 - **A reader builds each member once, and every listing method hands out the same
   objects.** `members_report_if_available()`, `members()`, `get()`, `stream_members()`
   and `extract_all()` now share one member list filled by one walk of the archive's
