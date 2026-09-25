@@ -29,6 +29,10 @@ class _Pattern:
 
     On Windows a ``\\`` in the pattern is read as ``/``. Elsewhere it stays a literal
     character, because a TAR member name can contain one.
+
+    This looseness is deliberate and CLI-only: the library's ``members=``, ``get()`` and
+    ``open()`` match stored names exactly (maintainer decision, easier to widen later).
+    Do not align the library with this.
     """
 
     __slots__ = ("forms", "text")
@@ -37,11 +41,15 @@ class _Pattern:
         self.text = text
         pattern = text.replace("\\", "/") if backslash_is_separator else text
         base = pattern.rstrip("/")
+        # dict.fromkeys: "docs/" as written is already its own "base + /" form.
         self.forms: tuple[str, ...] = (
-            (pattern, base + "/", base + "/*") if base else (pattern,)
+            tuple(dict.fromkeys((pattern, base + "/", base + "/*")))
+            if base
+            else (pattern,)
         )
 
     def matches(self, name: str) -> bool:
+        # fnmatchcase: deterministic across platforms (fnmatch is case-folding on Windows).
         return any(fnmatch.fnmatchcase(name, form) for form in self.forms)
 
 
@@ -76,7 +84,6 @@ def member_predicate(
 
     def matches(member: ArchiveMember) -> bool:
         name = member.name
-        # fnmatchcase: deterministic across platforms (fnmatch is case-folding on Windows).
         if include_pats and not any(p.matches(name) for p in include_pats):
             return False
         if exclude_pats and any(p.matches(name) for p in exclude_pats):
@@ -94,8 +101,9 @@ def unmatched_include_patterns(
 ) -> list[str]:
     """Return include patterns that match no member names (order preserved).
 
-    Uses the same matching as :func:`member_predicate`, so a pattern is reported
-    exactly when it selected nothing.
+    Uses the same pattern matching as :func:`member_predicate`, over the includes
+    only: ``--exclude`` is not considered, so an include whose every match is then
+    excluded is not reported here.
     """
     if not includes:
         return []
@@ -110,7 +118,11 @@ def unmatched_include_patterns(
                 hit[index] = True
         if all(hit):
             break
-    return [pattern.text for pattern, matched in zip(patterns, hit) if not matched]
+    return [
+        pattern.text
+        for pattern, matched in zip(patterns, hit, strict=True)
+        if not matched
+    ]
 
 
 def warn_unmatched_includes(

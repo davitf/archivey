@@ -136,3 +136,32 @@ def test_extract_with_only_a_missing_directory_pattern_still_fails(
     dest = tmp_path / "out"
     assert main(["x", str(archive), "-d", str(dest), "nothere/"]) == EXIT_FAIL
     assert "pattern matched no members: 'nothere/'" in capsys.readouterr().err
+
+
+def test_a_matching_pattern_wins_over_the_dash_d_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``out`` names a local folder and a directory in the archive: it is a pattern.
+
+    The ``-d`` hint is for a pattern that matched nothing; this one matched.
+    """
+    archive = _tar(
+        tmp_path / "t.tar", [("out", None), ("out/a.txt", b"a"), ("top.txt", b"t")]
+    )
+    work = tmp_path / "work"
+    (work / "out").mkdir(parents=True)
+    monkeypatch.chdir(work)
+    assert main(["x", str(archive), "out"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "did you mean -d" not in err
+    assert (work / "out" / "a.txt").read_bytes() == b"a"
+    assert not (work / "top.txt").exists()
+
+
+def test_a_pattern_written_with_the_slash_compiles_no_duplicate_form() -> None:
+    from archivey.cli.filters import _Pattern
+
+    assert _Pattern("docs/", backslash_is_separator=False).forms == (
+        "docs/",
+        "docs/*",
+    )

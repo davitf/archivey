@@ -42,7 +42,11 @@ archivey extract photos.zip --policy trusted -d /tmp/out
 - A pattern naming a directory selects the directory and everything under it, as `tar`
   does: `archivey extract a.zip docs` and `archivey extract a.zip docs/` both extract
   `docs/` and its contents, but not a file named `docs.txt`. On Windows, `docs\sub`
-  works like `docs/sub`. `--exclude` matches the same way.
+  works like `docs/sub`. `--exclude` matches the same way. This is a CLI rule: in the
+  Python API, `members=` needs the exact stored name (`docs/` for the directory entry).
+- A pattern that matches is a pattern, even if a local folder has the same name:
+  `archivey x a.tar out` extracts the archive's `out/` subtree and gives no `-d` hint.
+  The hint appears only when such a pattern matches nothing.
 - A bare verb word is always a verb: `archivey x a.zip` extracts. Any path-qualified
   token is a path and gets listed, so a file named `x` is reached as `archivey ./x`
   (or `archivey dir/x`, `archivey /abs/x`, `archivey list x`).
