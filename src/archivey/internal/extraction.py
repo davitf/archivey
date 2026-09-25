@@ -167,6 +167,9 @@ class BombTracker:
         self._copied_bytes = 0
         self._member_bytes = 0  # output bytes for the current member
         self._member: ArchiveMember | None = None
+        # Output of members a streaming pass wrote and then took back as superseded (see
+        # ``refund``). Subtracted for the byte cap only.
+        self._refunded_bytes = 0
 
     @property
     def total_bytes(self) -> int:
@@ -189,6 +192,22 @@ class BombTracker:
                 f"Entry-count limit reached: max_entries={self._max_entries} "
                 f"(would write entry {self._entry_count})"
             )
+
+    def refund(self, member_bytes: int) -> None:
+        """Stop counting one member that a streaming pass took back as superseded.
+
+        Random access never writes a shadowed duplicate, so it never counts one
+        (``safe-extraction``: no bomb-limit counting for the skip). A streaming pass
+        wrote it before it could know, and its entry is gone from the destination once
+        the later copy replaces it, so the entry count stops counting it. Its bytes are
+        gone too unless a hardlink made to it still holds them, so the caller passes
+        ``member_bytes`` as 0 in that case and the byte cap keeps them. The archive-wide
+        ratio counts them either way: those bytes were decoded, and a name repeated many
+        times must not decode for free. ``total_bytes``, which progress reports, is not
+        reduced: it counts what was written.
+        """
+        self._entry_count -= 1
+        self._refunded_bytes += member_bytes
 
     def count(self, chunk_bytes: int) -> None:
         self._total_bytes += chunk_bytes
@@ -230,7 +249,7 @@ class BombTracker:
 
     def _check_cumulative_bytes(self) -> None:
         # Cumulative byte guard (always-stop).
-        written = self.total_bytes
+        written = self.total_bytes - self._refunded_bytes
         if self._max_bytes is not None and written > self._max_bytes:
             raise _AlwaysStopResourceLimitError(
                 f"Extraction limit reached: max_extracted_bytes={self._max_bytes} "
@@ -343,11 +362,23 @@ class ExtractionCoordinator:
         # correct the tally with it (progress reports tallies of results, not of writes
         # attempted). Reset per ``run()``.
         self._members_extracted = 0
+        # The same for BLOCKED results, which a streaming pass's take-back of a
+        # superseded copy can revise.
+        self._members_blocked = 0
         # RENAME: the last ``N`` tried per collision key of the requested name, so the
         # next member colliding on that key resumes after it instead of rescanning from
         # ``(1)``. Reset per ``run()``, and cleared whenever a claim is released (a freed
         # name may be the first free one again).
         self._rename_next: dict[str, int] = {}
+        # A streaming pass's superseded copies, left in place while the later copy of the
+        # same name is handled so that copy can replace one atomically: path -> index of
+        # the superseded result. Only for the length of one member; see
+        # ``_supersede_written_copy``.
+        self._stale: dict[Path, int] = {}
+        # Superseded copies the filesystem refused to remove, by archive name. The next
+        # member of that name parks them in ``_stale`` again, so it can still replace
+        # the run's own leftover instead of meeting it as a pre-existing entry.
+        self._unremoved: dict[str, dict[Path, int]] = {}
         # The reader ``run()`` is extracting from, for the one read ``_transform`` makes
         # on it: an accepted link's target. Set per ``run()``.
         self._reader: BaseArchiveReader | None = None
@@ -360,6 +391,8 @@ class ExtractionCoordinator:
         dest = Path(dest)
         forward_only = reader._streaming
         self._rename_next = {}
+        self._stale = {}
+        self._unremoved = {}
 
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
@@ -505,8 +538,17 @@ class ExtractionCoordinator:
         discards it rather than returning it.
         """
         members_done = 0
-        members_blocked = 0
+        self._members_blocked = 0
         self._members_extracted = 0
+        # Archive name -> result index of the latest member of that name that went on to
+        # be written (or tried). Random access stamps last-entry-wins before the pass, so
+        # a shadowed copy reaches the SUPERSEDED branch below and is never recorded here.
+        # A streaming pass learns of the later copy only when it arrives; see
+        # ``_supersede_written_copy``.
+        current_by_name: dict[str, int] = {}
+        # Result index -> output bytes counted for it, for each member that reached
+        # ``tracker.start_member``: what a take-back refunds.
+        counted: dict[int, int] = {}
 
         for original, stream in reader.stream_members(stream_selector):
             member_started = False
@@ -517,6 +559,26 @@ class ExtractionCoordinator:
             self._collided_with = None
             self._retyped = False
             try:
+                for held, held_index in self._unremoved.pop(original.name, {}).items():
+                    # Unless another member has since replaced it under its own claim.
+                    key = collision_key(self._rel_name(dest, held), self._policy)
+                    if collision_map.get(key) == _Claim(held, held_index):
+                        self._stale[held] = held_index
+                        del collision_map[key]
+                earlier = current_by_name.get(original.name)
+                if earlier is not None:
+                    self._supersede_written_copy(
+                        earlier,
+                        results,
+                        tracker,
+                        counted,
+                        source_paths,
+                        written_paths,
+                        collision_map,
+                        orphans,
+                        dest,
+                    )
+                    del current_by_name[original.name]
                 # User filter sees every selected member (including non-current); the
                 # is_current skip is hardwired after the filter and does not force a write
                 # even if the filter returns the member.
@@ -534,6 +596,7 @@ class ExtractionCoordinator:
                     )
                 else:
                     result_index = recorded_index = len(results)
+                    current_by_name[original.name] = result_index
                     results.append(
                         ExtractionResult(original, None, ExtractionStatus.FAILED, None)
                     )
@@ -567,7 +630,7 @@ class ExtractionCoordinator:
                             # members fully completed *before* this one.
                             done_so_far = members_done
                             extracted_so_far = self._members_extracted
-                            blocked_so_far = members_blocked
+                            blocked_so_far = self._members_blocked
                             current = original
 
                             def emit_progress() -> None:
@@ -658,6 +721,13 @@ class ExtractionCoordinator:
             finally:
                 self._emit_progress = None
                 self._close(stream)
+                if self._stale:
+                    self._drop_stale_copies(
+                        original, results, written_paths, collision_map, dest
+                    )
+
+            if member_started and recorded_index is not None:
+                counted[recorded_index] = tracker.member_bytes
 
             # A portable rewrite is recorded on whatever result this member ended up with,
             # including a BLOCKED/FAILED one: the rewrite happened before the outcome.
@@ -671,7 +741,7 @@ class ExtractionCoordinator:
                 if status is ExtractionStatus.EXTRACTED:
                     self._members_extracted += 1
                 elif status is ExtractionStatus.BLOCKED:
-                    members_blocked += 1
+                    self._members_blocked += 1
             members_done += 1
             self._report_progress(
                 original,
@@ -681,7 +751,7 @@ class ExtractionCoordinator:
                 members_total,
                 member_bytes_written=(tracker.member_bytes if member_started else 0),
                 members_extracted=self._members_extracted,
-                members_blocked=members_blocked,
+                members_blocked=self._members_blocked,
             )
             if selected_total is not None and members_done >= selected_total:
                 break
@@ -693,6 +763,129 @@ class ExtractionCoordinator:
             self._resolve_orphans(
                 reader, source_paths, orphans, tracker, results, collision_map, dest
             )
+
+    def _supersede_written_copy(
+        self,
+        index: int,
+        results: list[ExtractionResult],
+        tracker: BombTracker,
+        counted: dict[int, int],
+        source_paths: dict[int, list[Path]],
+        written_paths: set[Path],
+        collision_map: dict[str, _Claim],
+        orphans: list[_Orphan],
+        dest: Path,
+    ) -> None:
+        """Take back an earlier copy of a name the archive holds again (streaming only).
+
+        Random access knows every duplicate before it writes anything, so the shadowed
+        copy is reported ``SUPERSEDED`` and never written. A streaming pass finds out
+        when the later copy arrives, after the earlier one was already handled. The
+        earlier result becomes ``SUPERSEDED`` here, before the later copy is filtered:
+        random access supersedes it whatever then happens to the later copy.
+
+        The earlier copy's file stays where it is while the later copy is handled, as
+        ``_stale``: the destination checks treat that path as free, so the later
+        copy replaces it atomically, under any overwrite policy. If the later copy does
+        not land there, ``_drop_stale_copies`` removes it once the member is done. Its
+        claim, its place in the hardlink source lists and its bomb-limit counts are
+        released now. A hardlink already made to it is its own directory entry and
+        stays, and its bytes stay counted against the byte cap while it holds them. A
+        directory is removed now if it is empty; one that other members were written
+        into stays, as their parent, as it would in random access. An orphaned hardlink
+        waiting on the second pass is dropped with the result it would fill. An error
+        recorded on the earlier result is dropped with it: random access never tried
+        that copy.
+        """
+        prior = results[index]
+        path = prior.path
+        # Whether another directory entry still holds the earlier copy's content: a
+        # hardlink made to it before the later copy arrived.
+        content_kept = False
+        if (
+            prior.status is ExtractionStatus.EXTRACTED
+            and path is not None
+            and path in written_paths
+        ):
+            self._release_claim(collision_map, dest, path)
+            for source_id, paths in list(source_paths.items()):
+                if path in paths:
+                    paths.remove(path)
+                    if paths:
+                        content_kept = True
+                    else:
+                        del source_paths[source_id]
+            if path.is_dir() and not path.is_symlink():
+                with contextlib.suppress(OSError):  # not empty: members live under it
+                    os.rmdir(path)
+                    written_paths.discard(path)
+            else:
+                written_paths.discard(path)
+                self._stale[path] = index
+        if index in counted:
+            member_bytes = counted.pop(index)
+            tracker.refund(0 if content_kept else member_bytes)
+        # Progress tallies results, so they follow the revision (as in
+        # ``_mark_overwritten``).
+        if prior.status is ExtractionStatus.EXTRACTED:
+            self._members_extracted -= 1
+        elif prior.status is ExtractionStatus.BLOCKED:
+            self._members_blocked -= 1
+        orphans[:] = [o for o in orphans if o.result_index != index]
+        results[index] = ExtractionResult(
+            prior.member,
+            None,
+            ExtractionStatus.SUPERSEDED,
+            None,
+            presented_name=prior.presented_name,
+        )
+
+    def _drop_stale_copies(
+        self,
+        original: ArchiveMember,
+        results: list[ExtractionResult],
+        written_paths: set[Path],
+        collision_map: dict[str, _Claim],
+        dest: Path,
+    ) -> None:
+        """Remove each parked superseded copy unless the member just handled replaced it.
+
+        A removal the filesystem refuses is logged, not raised: this runs in a
+        ``finally``, where raising would replace the member's own error. The entry is
+        then still the run's own, so it goes back into ``written_paths`` (an anti-item
+        can still delete it) and into the collision map (a different name on the same
+        key still collides with it), and is held for the next member of the same name.
+        Its claim points at its ``SUPERSEDED`` result, which ``_mark_overwritten``
+        leaves as it is.
+        """
+        stale, self._stale = self._stale, {}
+        latest = results[-1] if results else None
+        landed = (
+            latest.path
+            if latest is not None
+            and latest.member is original
+            and latest.status is ExtractionStatus.EXTRACTED
+            else None
+        )
+        for path, index in stale.items():
+            if path == landed:
+                continue
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                written_paths.discard(path)
+            except OSError as exc:
+                logger.warning("Could not remove superseded %r: %s", str(path), exc)
+                written_paths.add(path)
+                key = collision_key(self._rel_name(dest, path), self._policy)
+                collision_map[key] = _Claim(path, index)
+                self._unremoved.setdefault(original.name, {})[path] = index
+            else:
+                written_paths.discard(path)
+
+    def _occupied(self, path: Path) -> bool:
+        """Whether ``path`` holds an entry, not counting a superseded copy in waiting."""
+        return path not in self._stale and os.path.lexists(path)
 
     # --- selection / transform -----------------------------------------------------
 
@@ -869,7 +1062,7 @@ class ExtractionCoordinator:
         result_index: int,
     ) -> ExtractionResult:
         if transformed.type == MemberType.DIRECTORY:
-            existed = os.path.lexists(dest_path)
+            existed = self._occupied(dest_path)
             if not self._prepare_destination(transformed, dest_path):
                 return ExtractionResult(
                     original, None, ExtractionStatus.NOT_OVERWRITTEN, None
@@ -959,7 +1152,7 @@ class ExtractionCoordinator:
             else None
         )
         if self._overwrite is OverwritePolicy.RENAME:
-            if prior is not None or os.path.lexists(requested):
+            if prior is not None or self._occupied(requested):
                 if collided is not None:
                     assert prior is not None
                     self._check_collision_abort(original, transformed, prior)
@@ -1052,7 +1245,7 @@ class ExtractionCoordinator:
         while True:
             candidate = parent / f"{stem} ({n}){suffix}"
             candidate_key = collision_key(self._rel_name(dest, candidate), self._policy)
-            if candidate_key not in collision_map and not os.path.lexists(candidate):
+            if candidate_key not in collision_map and not self._occupied(candidate):
                 self._rename_next[counter_key] = n + 1
                 return candidate
             n += 1
@@ -1595,6 +1788,9 @@ class ExtractionCoordinator:
         if prior is None or self._overwrite is not OverwritePolicy.REPLACE:
             return
         clobbered = results[prior.result_index]
+        if clobbered.status is ExtractionStatus.SUPERSEDED:
+            # A superseded copy the filesystem would not remove: it keeps its status.
+            return
         results[prior.result_index] = replace(
             clobbered,
             path=None,
@@ -1656,6 +1852,13 @@ class ExtractionCoordinator:
         a directory cannot be renamed over a file at all."""
         exists = os.path.lexists(dest_path)
         if not exists:
+            return True
+        if dest_path in self._stale:
+            # A superseded copy of this same name that this run wrote: the member
+            # replaces it under any policy, as random access would never have written it.
+            # Never a directory (see ``_supersede_written_copy``).
+            if not atomic:
+                dest_path.unlink()
             return True
 
         # A real directory being (re)created as a directory is fine under any policy.
