@@ -50,6 +50,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `MEMBER_HEADER_RECORD_SKIPPED` | `MemberHeaderRecordContext`: `kind="member_header_record"`, `archive_name`, `member_name`, `member_id`, `record`, `record_id`, `reason`, `list_truncated` |
 | `SYMLINK_TARGET_UNAVAILABLE` | `SymlinkTargetContext`: `kind="symlink_target"`, `archive_name`, `member_name`, `member_id`, `reason` |
 | `DIGEST_UNVERIFIABLE` | `DigestContext`: `kind="digest"`, `archive_name`, `member_name`, `member_id`, `algorithm`, `reason` |
+| `ENCRYPTED_MEMBER_UNVERIFIED` | `EncryptedVerificationContext`: `kind="encrypted_verification"`, `archive_name`, `member_name`, `member_id`, `check`, `reason` |
 | `SEEK_INDEX_DEGRADED` | `SeekIndexContext`: `kind="seek_index"`, `archive_name`, `member_name`, `member_id`, `codec`, `scan`, `error_type` |
 | `STREAM_REWIND_REDECOMPRESSES` | `StreamRewindContext`: `kind="stream_rewind"`, `archive_name`, `member_name`, `member_id`, `codec`, `from_offset`, `to_offset`, `accelerator` |
 
@@ -94,6 +95,15 @@ never any candidate value.
 Copies on multiple surfaces MAY share `occurrence_id` by value; object identity
 and cross-run id stability are not promised.
 
+`ENCRYPTED_MEMBER_UNVERIFIED` SHALL be emitted when a member of an encrypted unit is
+closed before its declared digest was reached **and** the password behind those bytes was
+accepted on a check weaker than that digest. `check` names what accepted the password
+(`"weak_open_check"`, `"confirm_budget_exhausted"`); `reason` names
+why the digest was not reached (`"partial_read"`). It SHALL NOT be emitted for a partial
+read whose password was confirmed against an integrity anchor — that restates what the
+caller already knows, which the admission clause refuses. Nor SHALL it be emitted for a
+stream closed before any read returned bytes, since nothing unchecked was delivered.
+
 #### Scenario: value-model matrix
 
 | Case | Expected |
@@ -112,6 +122,18 @@ and cross-run id stability are not promised.
 | Probe + `.br` (`PROBABLE`) read raises | No `PROBE_FORMAT_UNCONFIRMED` — the format was corroborated, and corroboration is still what matters |
 | Probe hit upgraded to `TAR_*` by the inner-TAR probe, read raises | No `PROBE_FORMAT_UNCONFIRMED` — the upgrade is independent corroboration |
 | Probe-only read succeeds | No diagnostic |
+
+#### Scenario: encrypted-member verification matrix
+
+| Case | Expected |
+| --- | --- |
+| ZipCrypto member, candidate accepted on the header check byte, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="weak_open_check"`, `reason="partial_read"`) |
+| 7z LZMA2, CRC at 200 MiB, correct password, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`) |
+| 7z store+AES, CRC at 200 MiB, correct password, stream closed before EOF | No diagnostic (walked to the CRC) |
+| 7z store+AES, no CRC, single candidate, stream closed before EOF | `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`) |
+| Encrypted member whose password was confirmed against an integrity anchor, stream closed before EOF | No diagnostic |
+| Encrypted member read to EOF | No diagnostic; the digest decides |
+| Unencrypted member, stream closed before EOF | No diagnostic |
 
 #### Scenario: A malformed optional member-header record is reported, not raised
 
@@ -321,9 +343,6 @@ argument. It MUST NOT raise.
 Each SHALL be emitted **at most once per `open_archive()` call**, before the reader is
 returned, so a caller can inspect `reader.diagnostics` without listing anything.
 
-An `encoding` value that came from detection's `encoding_hint` rather than from the
-caller SHALL NOT emit — the caller asked for nothing.
-
 `password=` SHALL open identically in all three forms (a single value, a sequence of
 candidates, a provider callable) on a format with no encryption: accepted, never
 consulted. A single value or a sequence SHALL record one diagnostic. A provider callable
@@ -337,7 +356,7 @@ wrong password on an *encrypted* archive is unaffected and still raises.
 | --- | --- |
 | `open_archive(iso, encoding="cp500")` | Opens; one `ENCODING_ARGUMENT_UNUSED`; names unchanged |
 | `open_archive(zip, encoding="cp500")` | No diagnostic; the encoding is applied |
-| Auto-detected encoding hint on a backend that ignores encoding | No diagnostic |
+| Auto-detected open with no `encoding=` on a backend that ignores encoding | No diagnostic |
 | `open_archive(tar, password="p")` / `password=["a","b"]` | Both open; one `PASSWORD_ARGUMENT_UNUSED` each; no `UnsupportedOperationError` |
 | `open_archive(tar \| gz \| directory, password=lambda r: "p")` | Opens; no `PASSWORD_ARGUMENT_UNUSED`; the provider is never called |
 | Wrong password on an encrypted ZIP | Unchanged: `EncryptionError` |
@@ -410,7 +429,7 @@ the archive's own bytes or metadata as anomalous:
 
 | In `ARCHIVE_INTEGRITY_CODES` | Excluded |
 | --- | --- |
-| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `FORMAT_EXTENSION_CONFLICT`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `SEEK_INDEX_DEGRADED` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED` |
+| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `FORMAT_EXTENSION_CONFLICT`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `SEEK_INDEX_DEGRADED` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED` |
 
 Each exclusion is deliberate, and the reason SHALL be recorded so the boundary is not
 rediscovered: `EMPTY_ARCHIVE` because an empty archive is legitimate and this spec
@@ -418,9 +437,13 @@ forbids treating zero members as an error; `ENCODING_ARGUMENT_UNUSED` and
 `PASSWORD_ARGUMENT_UNUSED` because they report argument hygiene, and a pipeline that
 speculatively passes a password to every call would otherwise raise on every
 unencrypted archive; `EXPLICIT_FORMAT_LISTED_EMPTY` because `format=` is an override
-and an override that halts the caller is not an override; and
+and an override that halts the caller is not an override;
 `STREAM_REWIND_REDECOMPRESSES` because it reports the caller's access pattern rather
 than the archive, and is most useful as a deliberately targeted tripwire;
+`ENCRYPTED_MEMBER_UNVERIFIED` because the trigger is the caller abandoning the stream
+before EOF (extract never fires it), and putting it in `strict` would turn a ZipCrypto
+peek into `DiagnosticRaisedError` (revisit when `stream.verified` lands and this code
+is retired); and
 `PROBE_FORMAT_UNCONFIRMED` because a probe-only identification is an advisory about
 what the file *is* (its bytes did pass that format's content check), not a finding
 about the archive's own bytes, and the code only ever accompanies a read that has
@@ -452,6 +475,9 @@ remains a breaking change.
 | `strict()`, legitimately empty tar | No raise; `EMPTY_ARCHIVE` collected |
 | Preset value compared to an equivalent hand-built policy | Equal; presets add no resolution axis |
 | A new code added in a later minor release | `strict()` membership is explicit; a `default=RAISE` policy silently gains it |
+| `ENCRYPTED_MEMBER_UNVERIFIED in ARCHIVE_INTEGRITY_CODES` | False |
+| `strict()`, ZipCrypto member, `read(1)`, close | No raise; `ENCRYPTED_MEMBER_UNVERIFIED` collected |
+| `pedantic()`, same call | `DiagnosticRaisedError` |
 
 #### Scenario: probe code stays out of strict
 

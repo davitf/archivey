@@ -11,6 +11,7 @@ import inspect
 import subprocess
 import sys
 import typing
+from pathlib import Path
 from types import FunctionType
 
 import pytest
@@ -77,6 +78,7 @@ def test_public_symbols_are_in_all() -> None:
         "ArchiveEofContext",
         "DigestContext",
         "EmptyArchiveContext",
+        "EncryptedVerificationContext",
         "FormatConflictContext",
         "MemberHeaderRecordContext",
         "MemberNameControlsContext",
@@ -221,3 +223,29 @@ def test_version_is_computed_on_first_access() -> None:
     )
     subprocess.run([sys.executable, "-c", code], check=True)
     assert "__version__" in archivey.__all__
+
+
+# Public names with no entry on the API page, each for a stated reason.
+_NOT_ON_API_PAGE = {
+    # The package version string: nothing to document beyond its name.
+    "__version__",
+}
+
+
+def test_every_public_name_is_on_the_api_page() -> None:
+    """``docs/api.md`` carries a ``::: archivey.<Name>`` block for each name in ``__all__``.
+
+    The documentation spec says the API reference documents the public symbols
+    re-exported from ``archivey.__all__``. Nothing in a docs build notices a name that
+    was exported and never documented, and 29 had drifted off the page before this test.
+    """
+    api_page = Path(__file__).resolve().parent.parent / "docs" / "api.md"
+    documented = {
+        line.removeprefix("::: archivey.").strip()
+        for line in api_page.read_text(encoding="utf-8").splitlines()
+        if line.startswith("::: archivey.")
+    }
+    missing = sorted(set(archivey.__all__) - documented - _NOT_ON_API_PAGE)
+    assert not missing, f"public names with no ::: block in docs/api.md: {missing}"
+    stale = sorted(_NOT_ON_API_PAGE & documented)
+    assert not stale, f"_NOT_ON_API_PAGE entries now documented, remove them: {stale}"

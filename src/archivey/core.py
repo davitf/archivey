@@ -540,8 +540,7 @@ def _open_resolved(
         )
 
     if encoding is not None and not backend_cls.USES_ENCODING:
-        # Only the *caller's* explicit encoding. The detector's encoding_hint reaches the
-        # same parameter, and a hint nobody asked for going unused is not news.
+        # Only the caller's explicit encoding: an open that passed none asked for nothing.
         collector.emit(
             code=DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
             message=(
@@ -588,11 +587,6 @@ def _open_resolved(
     if archive_source.seekable():
         archive_source.rebase_to_current_position()
 
-    # Explicit encoding wins; else detector hint; else backend auto-detect.
-    effective_encoding = encoding
-    if effective_encoding is None and detected is not None:
-        effective_encoding = detected.encoding_hint
-
     # A self-extracting source has an executable stub before the archive; detection
     # reports where the payload starts and the backend opens there. Handed over as an
     # explicit argument rather than by slicing here, so a path source stays a path:
@@ -607,7 +601,7 @@ def _open_resolved(
         format=resolved_format,
         streaming=streaming,
         passwords=passwords,
-        encoding=effective_encoding,
+        encoding=encoding,
         archive_name=archive_name,
         config=config,
         collector=collector,

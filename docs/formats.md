@@ -1,7 +1,10 @@
 # Formats and extras
 
 What each format can do, what optional packages or tools it needs, and the quirks that
-most often surprise callers. Authoritative detail lives in `openspec/specs/format-*`.
+most often surprise callers. For more depth, the maintainer handbook has pages on
+[7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md),
+[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md) and
+[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md).
 
 ## Quick matrix
 
@@ -86,6 +89,10 @@ behaviour. The complete list is on the two classes.
   `[recommended]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
   (integrity is the HMAC). Without it, an AES member raises
   `PackageNotInstalledError` but is still listed as encrypted.
+- ZipCrypto's check byte and WinZip AES's two-byte password check both admit some wrong
+  passwords, so the member's CRC or HMAC at EOF is the real test. Closing a member stream
+  before EOF emits `ENCRYPTED_MEMBER_UNVERIFIED` when only one of those short checks
+  accepted the password.
 
 ## TAR (and compressed TAR)
 
@@ -134,13 +141,16 @@ behaviour. The complete list is on the two classes.
 - **AES + store/copy with no folder digest and no member CRC:** 7z has no password check
   value; a wrong password can yield garbage (matches 7-Zip). Archivey emits
   `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). Treat the payload as unverified.
-- **Encrypted-folder password confirmation** streams the CRC check in 64 KiB chunks.
-  Peak memory is not proportional to folder size. Wall time is, once per candidate, but
-  only for **store/copy+AES** — nothing there rejects a wrong key before the CRC. A
-  compressed folder's codec rejects one within a few bytes, and confirmation stops at
-  the first member CRC that fails, so a wrong candidate mostly costs key derivation.
-  Prefer a single known password on huge encrypted store/copy folders.
-  `ExtractionLimits` do not apply here.
+- **Encrypted-folder password confirmation** decodes only until it can decide: the first
+  member CRC covering at least 4 bytes, or 64 KiB of output for a compressed folder,
+  whose codec rejects a wrong key within a few bytes. Peak memory is one 64 KiB chunk.
+  Wall time grows with folder size only for **store/copy+AES** (or PPMd) whose only CRC
+  is at the end of the folder, with several candidates: nothing rejects a wrong key
+  before that CRC. Prefer a single known password there. `ExtractionLimits` do not
+  apply here.
+- **Partial reads after an unconfirmed password** emit `ENCRYPTED_MEMBER_UNVERIFIED`:
+  when confirmation stopped at its 64 KiB budget without reaching a CRC, the member's own
+  CRC at EOF is the only check, and a stream closed before EOF skips it.
 - **Header-encrypted wrong password:** a decoded header with zero file records is
   rejected as `EncryptionError` (never a silent empty listing).
 - `NumCyclesPower` is capped at ≤24 or the `0x3F` no-hash sentinel (7-Zip’s own clamp);
@@ -199,6 +209,11 @@ behaviour. The complete list is on the two classes.
 ## ISO 9660
 
 - Needs `[recommended]` (`pycdlib`) and a seekable source.
+- `import archivey` patches pycdlib for the whole process: the `collections` name inside
+  `pycdlib.pycdlib` becomes one whose `deque` skips a directory extent it has already
+  queued. That stops pycdlib looping forever on a directory tree that points back at an
+  ancestor. Other code using pycdlib in the same process gets the patch too. A valid tree
+  never revisits an extent, so its results do not change.
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
 - Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty
@@ -209,6 +224,15 @@ behaviour. The complete list is on the two classes.
 - A Rock Ridge device node, FIFO or socket lists as `MemberType.OTHER`, so extraction
   skips it. The `rr_moved` directory that holds relocated deep subtrees is not listed;
   those subtrees appear at their logical place.
+- A bootable image lists its El Torito boot catalog (`boot.catalog`, `BOOT.CAT`) as an
+  ordinary file, with the catalog's bytes as its data, as a mounted image shows it.
+- A file of 4 GiB or more, stored in several extents, lists and reads as one member.
+  Extents that are not back to back are refused with `UnsupportedFeatureError`.
+- `ArchiveInfo.format_version` is `None`: ISO 9660 records no interchange level.
+- A truncated image opens as long as its directories survive, and lists the sizes its
+  records declare. A file the cut reaches reads the bytes that survive and then raises
+  `TruncatedError`; files before the cut read normally. A file whose declared length
+  cannot be recovered lists with `size` set to `None`.
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).

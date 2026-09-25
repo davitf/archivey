@@ -140,6 +140,13 @@ seekability is declared **and** the known compressed input is at least
 so archives of many tiny entries do not pay per-stream accelerator setup. Set
 `use_rapidgzip=ON` to force the accelerator regardless of size, or `OFF` to disable it.
 
+The two settings differ when `rapidgzip` is not installed. `ON` is a request, so it
+raises `PackageNotInstalledError` naming `[seekable]` — even without
+`seekable_members=True`, at the first gzip, zlib or deflate stream it would handle.
+`AUTO` treats the accelerator as an enhancement and falls back to the stdlib decoder
+without raising. The stream is still seekable, but a backward seek may re-decode from
+the start. `use_indexed_bzip2` behaves the same way for bzip2.
+
 Declare seek only when you need it (e.g. parquet-in-zip random reads).
 
 ## Concurrent member streams
@@ -183,13 +190,19 @@ consumes the pass. A second call raises — including after an early `break`. Us
 
 Multiple password candidates can trigger confirmation reads. ZipCrypto **STORED** members
 are the expensive niche: a wrong candidate that passes the weak open check may force a
-full-member CRC scan. Encrypted **7z folders** are the same shape without a check value:
-confirm decodes the folder (now in 64 KiB chunks, so peak RAM is not the folder size)
-and CRCs. Store+AES does not fail fast on a wrong key, so wall time there is
-folder size × candidate count. A compressed folder is far cheaper: the codec rejects a
-wrong key within a few bytes, and confirmation stops at the first member CRC that fails,
-so a wrong candidate costs the key derivation and little else. Prefer a single known
-password when reading huge encrypted members.
+full-member CRC scan. Encrypted **7z folders** have no check value at all, so the first
+read into a folder confirms the password by decoding. That decode stops at the first
+member CRC covering at least 4 bytes, so a solid folder's first small member settles it.
+For a compressed folder it also stops at 64 KiB of output: the codec rejects a wrong key
+within a few bytes, so a wrong candidate costs the key derivation and little else. The
+one expensive case left is **store/copy+AES** (or PPMd) with its only CRC at the end of
+a large folder: nothing rejects a wrong key before that CRC, so each candidate reads to
+it. Prefer a single known password there.
+
+A password that only a weak check accepted leaves the member's own checksum as the real
+test, and that runs at EOF. Closing such a stream part way through emits
+`ENCRYPTED_MEMBER_UNVERIFIED`: the bytes you read may have decrypted with a wrong
+password. Read to EOF, or pass the one password you know, when that matters.
 
 ## Accelerators and source lifetime
 
@@ -208,6 +221,27 @@ One residual is genuinely upstream and not contained: some **path**-source trunc
 and CRC mismatches can still `std::terminate` during worker finalization after a Python
 exception. Details:
 [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
+
+## Measuring what a read cost
+
+`reader.cost` predicts; `reader.io_stats()` counts. Counting is off by default and costs
+nothing then. It is decided when the reader is opened, so open inside
+`enable_measurement()`:
+
+```python
+from archivey import enable_measurement, open_archive
+
+with enable_measurement():
+    reader = open_archive("data.zip")
+
+with reader:
+    reader.read("file.txt")
+    stats = reader.io_stats()   # None if the reader was opened outside the block
+```
+
+The reader keeps counting after the `with` block ends. `io_stats()` returns `None` for
+a reader opened outside it. The fields are listed on
+[`IoStats`][archivey.IoStats]. The CLI's `--track-io` prints the same counters.
 
 ## Checklist
 
