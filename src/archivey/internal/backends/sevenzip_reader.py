@@ -135,12 +135,21 @@ from archivey.types import (
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-# FILE_ATTRIBUTE_UNIX_EXTENSION: the high word holds a Unix mode. 7-Zip and p7zip set
-# it when writing on Unix, where the "Created" slot is filled from st_ctime. The bit
-# or a non-zero high word (what ``mode`` and ``create_system`` already key on) marks
-# a Unix writer; a record with only one of the two is nonstandard, and either one
-# moves the time out of ``created``, the side that keeps st_ctime out of it.
-_UNIX_EXTENSION_BIT = 0x8000
+_S_IFMT = 0o170000
+
+
+def _written_on_unix(attrs: int | None) -> bool:
+    """True when 7z's attribute word carries a real Unix mode, file type included.
+
+    7-Zip and p7zip writing on Unix, where "Created" is filled from st_ctime, set
+    FILE_ATTRIBUTE_UNIX_EXTENSION (``0x8000``) and put ``st_mode`` in the high word.
+    Neither signal alone identifies the writer: ``0x8000`` is also Windows
+    FILE_ATTRIBUTE_INTEGRITY_STREAM (ReFS), and Windows has attributes above
+    ``0xFFFF`` (PINNED ``0x80000``, which OneDrive sets, and others) that make the
+    high word non-zero. A Windows word never has ``S_IFMT`` bits there, while every
+    Unix ``st_mode`` does, so the file type is the test.
+    """
+    return attrs is not None and bool((attrs >> 16) & _S_IFMT)
 
 
 def _is_windows_reparse_point(attrs: int | None) -> bool:
@@ -702,9 +711,7 @@ class SevenZipReader(BaseArchiveReader):
             if is_reparse_point
             else MemberExtra()
         )
-        if created is not None and (
-            unix_mode is not None or (attrs is not None and attrs & _UNIX_EXTENSION_BIT)
-        ):
+        if created is not None and _written_on_unix(attrs):
             # A Unix writer (7-Zip on Linux, p7zip) fills "Created" from st_ctime,
             # which ``created`` never holds.
             extra[EXTRA_SEVENZIP_CTIME] = created

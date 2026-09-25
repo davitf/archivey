@@ -231,6 +231,18 @@ _DOS_ATTRIBUTE_SYSTEMS: frozenset[CreateSystem] = frozenset(
         CreateSystem.VFAT,
     }
 )
+# Hosts whose stored creation time is a birth time. The same four as
+# _DOS_ATTRIBUTE_SYSTEMS today, kept apart on purpose: a host added there for its
+# attribute or separator rules is not a birth-time host until someone says so, since
+# its creation time would otherwise flow into ``created``.
+_ZIP_BIRTH_TIME_HOSTS: frozenset[CreateSystem] = frozenset(
+    {
+        CreateSystem.FAT,
+        CreateSystem.OS2_HPFS,
+        CreateSystem.WINDOWS_NTFS,
+        CreateSystem.VFAT,
+    }
+)
 _CREATE_SYSTEM_BY_VALUE: dict[int, CreateSystem] = {
     member.value: member for member in CreateSystem
 }
@@ -524,15 +536,21 @@ def _zip_created(
     """Split a member's stored creation time into ``(created, zip_ctime)``.
 
     The writer's host decides what the time means, not the field that carries it: 7-Zip
-    on Unix fills the NTFS creation FILETIME from st_ctime, and Info-ZIP on Unix fills
-    the Extended Timestamp's third time from it too. Only a DOS-attribute host (FAT,
-    OS/2, NTFS, VFAT) stores a birth time there. Any other host, unknown included, has
-    its time reported as ``zip.ctime`` and ``created`` left None, as RAR does for an
-    unknown ``host_os``. The Extended Timestamp wins when both are present, the same
-    precedence ``_zip_timestamps`` gives it for the other times.
+    on Linux fills the NTFS creation FILETIME from st_ctime (measured), and Info-ZIP on
+    Unix fills the Extended Timestamp's third time from it. A FAT, OS/2, NTFS or VFAT
+    host stores a birth time. Any other host, unknown included, has its time reported
+    as ``zip.ctime`` and ``created`` left None, as RAR does for an unknown ``host_os``.
+
+    The header cannot tell a Linux writer from a macOS one (both stamp host 3), and a
+    macOS writer could store the birth time it has there. Which one 7-Zip and Info-ZIP
+    use on macOS is not measured; either way the time lands in ``zip.ctime``, so
+    ``created`` can miss a birth time but never holds st_ctime.
+
+    The Extended Timestamp wins when both are present, the same precedence
+    ``_zip_timestamps`` gives it for the other times.
     """
     stored = ut_ctime if ut_ctime is not None else ntfs_ctime
-    if create_system in _DOS_ATTRIBUTE_SYSTEMS:
+    if create_system in _ZIP_BIRTH_TIME_HOSTS:
         return stored, None
     return None, stored
 

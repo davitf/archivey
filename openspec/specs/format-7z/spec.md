@@ -380,8 +380,8 @@ order: pre-filters first, packing codec last. If a POSIX attribute block is abse
 | Every folder packs one file | `ArchiveInfo.is_solid` false; access cost is `DIRECT` |
 | BCJ pre-filter followed by LZMA2 | `member.compression` is `(BCJ, LZMA2)`, not the decode order the folder stores |
 | No POSIX attribute block | `member.mode`, `member.uid`, and `member.gid` are all `None` |
-| "Created" stored, Unix-extension bit `0x8000` or a Unix mode in the attribute high word | `created is None`; `extra["7z.ctime"]` holds it (7-Zip on Linux and p7zip store `st_ctime`) |
-| "Created" stored, neither | `created` holds it; no `7z.ctime` |
+| "Created" stored, attribute high word holds a Unix mode with a file type (`S_IFMT` bits) | `created is None`; `extra["7z.ctime"]` holds it (7-Zip on Linux and p7zip store `st_ctime`) |
+| "Created" stored, no Unix file type in the high word (`0x8000` alone or Windows attributes above `0xFFFF` included) | `created` holds it; no `7z.ctime` |
 
 ### Requirement: Infer presented names for nameless 7z members
 

@@ -449,15 +449,16 @@ EXTRA_ISO_CTIME: Final = "iso.ctime"
 EXTRA_RAR_CTIME: Final = "rar.ctime"
 # TAR: the PAX ``ctime`` record. Always st_ctime.
 EXTRA_TAR_CTIME: Final = "tar.ctime"
-# 7z: the "Created" FILETIME of a member written on Unix: the Unix-extension
-# attribute bit (0x8000) or a Unix mode in the attribute word's high 16 bits. A Unix
-# 7-Zip / p7zip writer fills that slot from st_ctime, so it goes here and
-# ``created`` stays None. Otherwise the slot is a birth time and is ``created``.
+# 7z: the "Created" FILETIME of a member written on Unix, i.e. whose attribute word
+# holds a Unix mode with a file type in its high 16 bits. A Unix 7-Zip / p7zip writer
+# fills that slot from st_ctime, so it goes here and ``created`` stays None.
+# Otherwise the slot is a birth time and is ``created``.
 EXTRA_SEVENZIP_CTIME: Final = "7z.ctime"
 # ZIP: the stored creation time (the Extended Timestamp's third time, else the NTFS
-# FILETIME) of a member whose "version made by" host is not FAT, OS/2, NTFS or VFAT.
-# 7-Zip and Info-ZIP on Unix fill both slots from st_ctime. From those four hosts
-# the time is a birth time and is ``created``.
+# FILETIME) of a member whose "version made by" host is not FAT, OS/2, NTFS or VFAT,
+# unknown hosts included. 7-Zip on Linux writes st_ctime into the NTFS field and
+# Info-ZIP on Unix into the Extended Timestamp. From those four hosts the time is a
+# birth time and is ``created``.
 EXTRA_ZIP_CTIME: Final = "zip.ctime"
 
 # RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
@@ -492,11 +493,11 @@ class MemberExtra(dict[str, object]):
     * ``rar.ctime`` (``datetime``) — the header's creation-time slot as stored:
       ``st_ctime`` from a Unix writer, the birth time from any other host.
     * ``tar.ctime`` (``datetime``) — the PAX ``ctime`` record (``st_ctime``).
-    * ``7z.ctime`` (``datetime``) — the "Created" time of a member written on
-      Unix, where 7-Zip and p7zip store ``st_ctime``.
-    * ``zip.ctime`` (``datetime``) — the creation time of a member written on a
-      non-DOS host (Unix, or unknown), where 7-Zip and Info-ZIP store
-      ``st_ctime``.
+    * ``7z.ctime`` (``datetime``) — the "Created" time of a member whose
+      attributes hold a Unix mode, where 7-Zip and p7zip store ``st_ctime``.
+    * ``zip.ctime`` (``datetime``) — the creation time of a member from any
+      host but FAT, OS/2, NTFS or VFAT (unknown included); 7-Zip and Info-ZIP
+      on Unix store ``st_ctime`` there.
     * ``rar.extract_version`` (``int``)
     * ``rar.file_version`` (``int``)
     * ``rar.tweaked_crc32`` (``int``)
@@ -640,9 +641,9 @@ class ArchiveMember:
     """The birth (creation) time, if recorded (rare; most formats store only mtime).
 
     Never Unix ``st_ctime`` (inode change), in any format. Where a writer
-    stores ``st_ctime`` in a creation slot (a Unix RAR, a 7z or ZIP made on
-    Unix) or in a field of its own (Rock Ridge, PAX), that time goes to a
-    format key in ``extra`` instead:
+    may store ``st_ctime`` in a creation slot (a RAR or 7z made on Unix, a
+    ZIP from any host but FAT, OS/2, NTFS or VFAT) or in a field of its own
+    (Rock Ridge, PAX), that time goes to a format key in ``extra`` instead:
     ``iso.ctime``, ``rar.ctime``, ``tar.ctime``, ``7z.ctime`` or
     ``zip.ctime``, and ``created`` stays ``None``. Directory listing uses
     ``st_birthtime`` only.

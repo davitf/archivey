@@ -2642,9 +2642,12 @@ def _to_filetime_ticks(unix_seconds: int) -> int:
     ("attributes", "unix_written"),
     [
         (0x8000 | 0x20 | (0o100644 << 16), True),  # 7-Zip on Linux, p7zip
+        (0x8000 | (0o040755 << 16), True),  # a directory from the same writers
         (0o100644 << 16, True),  # Unix mode, bit clear (nonstandard)
-        (0x8000 | 0x20, True),  # bit set, no mode (nonstandard)
         (0x20, False),  # FILE_ATTRIBUTE_ARCHIVE: 7-Zip on Windows
+        (0x8000 | 0x20, False),  # 0x8000 alone: also INTEGRITY_STREAM (ReFS)
+        (0x80020, False),  # ARCHIVE | PINNED (OneDrive): high word, no file type
+        (0x400020, False),  # ARCHIVE | RECALL_ON_DATA_ACCESS
         (None, False),  # no attribute word
     ],
 )
