@@ -67,7 +67,7 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   [`sevenzip-aes-tail-key-check/design.md`](../openspec/changes/sevenzip-aes-tail-key-check/design.md)
   (`:4`, `:25`, `:75`, `:126`), that change's
   [`proposal.md`](../openspec/changes/sevenzip-aes-tail-key-check/proposal.md) (`:47`) and
-  [`bounded-password-confirmation/design.md`](../openspec/changes/bounded-password-confirmation/design.md)
+  [`bounded-password-confirmation/design.md`](../openspec/changes/archive/2026-09-25-bounded-password-confirmation/design.md)
   (`:4`). `.github/workflows/ci.yml` already states the transitional relationship
   correctly, so the tree is inconsistent with itself rather than uniformly wrong;
   `AGENTS.md`'s "`7z` (system binary, from `p7zip-full`)" is accurate as an install
