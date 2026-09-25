@@ -2017,6 +2017,28 @@ def test_streaming_duplicate_name_is_not_counted_against_the_limits(
         assert (dest / "a.txt").read_bytes() == payload
 
 
+def test_streaming_duplicate_name_kept_by_a_hardlink_still_counts(
+    tmp_path: Path,
+) -> None:
+    """A taken-back copy that a hardlink still holds stays on disk, so it stays counted."""
+    payload = bytes(range(256)) * 160  # 40 960 bytes
+    specs: list[tuple] = []
+    for n in range(3):
+        specs += [("file", "A.txt", payload), ("hard", f"L{n}.txt", "A.txt")]
+    archive = _tar_bytes(specs)
+    for streaming in (False, True):
+        dest = tmp_path / f"out-{streaming}"
+        with (
+            open_archive(io.BytesIO(archive), streaming=streaming) as reader,
+            pytest.raises(ResourceLimitError, match="max_extracted_bytes"),
+        ):
+            reader.extract_all(
+                dest,
+                on_error=OnError.CONTINUE,
+                limits=ExtractionLimits(max_extracted_bytes=100_000),
+            )
+
+
 def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:
     """The two cases ``safe-extraction`` records as differing, pinned so a change shows.
 

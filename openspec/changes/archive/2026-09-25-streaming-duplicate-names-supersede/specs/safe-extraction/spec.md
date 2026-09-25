@@ -28,7 +28,8 @@ There is no extract-all flag to force writing non-current revisions; callers tha
 A streaming pass learns that a member is shadowed only when the later same-name member
 arrives. At that point it SHALL report the earlier member `SUPERSEDED`, before the later
 member reaches the filter, and stop counting it against `max_entries` and
-`max_extracted_bytes` (the archive-wide ratio still counts its decoded bytes). What the
+`max_extracted_bytes`. Its bytes stay counted while a hardlink written in between still
+holds them, and the archive-wide ratio still counts its decoded bytes. What the
 earlier member wrote in this run SHALL stay in place until the later member is done, so
 a later member that lands at the same path replaces it atomically under any overwrite
 policy; if the later member does not land there, the earlier member's entry SHALL then be
@@ -55,3 +56,27 @@ cannot undo that:
 | Streaming TAR holding `a.txt` twice, default overwrite policy | `SUPERSEDED`, then `EXTRACTED`; `a.txt` holds the later bytes, as in random access |
 | User `filter` receives non-current member | Filter is called; returning the member does not force a write |
 | `open` superseded content `FILE` | Bytes returned (random access still works) |
+
+### Requirement: Enforce Cumulative Max-Extracted-Bytes Limit
+
+The system SHALL track total bytes written across a single `extract()` or
+`extract_all()` call and raise `ResourceLimitError` at the chunk boundary where
+the total exceeds `max_extracted_bytes`. The default is 2 GiB
+(2,147,483,648 bytes). Callers override it through `ExtractionLimits`; `None` via
+`ExtractionLimits.UNLIMITED` disables this guard.
+
+The limit SHALL be tracked by one `BombTracker` per extraction call. It is a
+global resource guard: when it trips, extraction halts and no later members are
+processed regardless of `OnError`.
+
+A copy that a streaming pass takes back as superseded SHALL stop counting toward the
+limit once no entry on disk holds its bytes ("Skip non-current members by default"). The
+written-byte total that progress reports still includes it.
+
+#### Scenario: cumulative byte limit matrix
+
+| Case | Expected |
+| --- | --- |
+| Running written-byte total crosses `max_extracted_bytes` | Immediate `ResourceLimitError`; extraction halts |
+| `ExtractionLimits(max_extracted_bytes=10 * 2**30)` | Enforced cumulative limit is 10 GiB |
+| `ExtractionLimits.UNLIMITED` | Cumulative byte guard is disabled |

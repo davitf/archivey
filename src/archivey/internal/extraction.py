@@ -198,10 +198,13 @@ class BombTracker:
 
         Random access never writes a shadowed duplicate, so it never counts one
         (``safe-extraction``: no bomb-limit counting for the skip). A streaming pass
-        wrote it before it could know, and its entry and bytes are gone from the
-        destination once the later copy replaces them. The entry and the byte cap stop
-        counting them. The archive-wide ratio still does: those bytes were decoded, and
-        a name repeated many times must not decode for free.
+        wrote it before it could know, and its entry is gone from the destination once
+        the later copy replaces it, so the entry count stops counting it. Its bytes are
+        gone too unless a hardlink made to it still holds them, so the caller passes
+        ``member_bytes`` as 0 in that case and the byte cap keeps them. The archive-wide
+        ratio counts them either way: those bytes were decoded, and a name repeated many
+        times must not decode for free. ``total_bytes``, which progress reports, is not
+        reduced: it counts what was written.
         """
         self._entry_count -= 1
         self._refunded_bytes += member_bytes
@@ -771,8 +774,8 @@ class ExtractionCoordinator:
         copy replaces it atomically, under any overwrite policy. If the later copy does
         not land there, ``_drop_stale_copy`` removes it once the member is done. Its
         claim, its place in the hardlink source lists and its bomb-limit counts are
-        released now; a hardlink already made to it is its own directory entry and
-        stays. A directory is removed now if it is empty; one that other members were
+        released now. A hardlink already made to it is its own directory entry and
+        stays, and its bytes stay counted against the byte cap while it holds them. A directory is removed now if it is empty; one that other members were
         written into stays, as their parent, as it would in random access. An orphaned
         hardlink waiting on the second pass is dropped with the result it would fill.
         An error recorded on the earlier result is dropped with it: random access never
@@ -780,6 +783,9 @@ class ExtractionCoordinator:
         """
         prior = results[index]
         path = prior.path
+        # Whether another directory entry still holds the earlier copy's content: a
+        # hardlink made to it before the later copy arrived.
+        content_kept = False
         if (
             prior.status is ExtractionStatus.EXTRACTED
             and path is not None
@@ -789,7 +795,9 @@ class ExtractionCoordinator:
             for source_id, paths in list(source_paths.items()):
                 if path in paths:
                     paths.remove(path)
-                    if not paths:
+                    if paths:
+                        content_kept = True
+                    else:
                         del source_paths[source_id]
             if path.is_dir() and not path.is_symlink():
                 with contextlib.suppress(OSError):  # not empty: members live under it
@@ -799,7 +807,8 @@ class ExtractionCoordinator:
                 written_paths.discard(path)
                 self._stale_path = path
         if index in counted:
-            tracker.refund(counted.pop(index))
+            member_bytes = counted.pop(index)
+            tracker.refund(0 if content_kept else member_bytes)
         # Progress tallies results, so they follow the revision (as in
         # ``_mark_overwritten``).
         if prior.status is ExtractionStatus.EXTRACTED:

@@ -12,7 +12,8 @@ whenever the archive order allows it.
 ## What changes
 
 - `safe-extraction`: when a streaming pass meets a name it already handled, it reports the
-  earlier copy `SUPERSEDED` and stops counting it against the entry and byte caps, before
+  earlier copy `SUPERSEDED` and stops counting it against the entry cap, and against the
+  byte cap unless a hardlink written in between still holds its bytes, before
   the later copy is filtered. The earlier copy's entry stays until the later copy is
   done, so a later copy at the same path replaces it atomically; otherwise it is then
   removed. Results and the tree on disk then match random access. The requirement lists
