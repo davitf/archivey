@@ -255,6 +255,10 @@ member-access / stream axes) in human prose. With `-v` / `--verbose`, it SHALL
 also print the raw cost axes (`listing`, `access_cost`, `stream`,
 `solid_blocks`).
 
+`info` SHALL detect once: the identity lines come from the reader's
+`format_info`, not from a separate `detect_format` call before the open. Only
+when the open fails does it call `detect_format`, to print what it can.
+
 #### Scenario: info vs list
 
 | Case | Expected |
@@ -263,6 +267,7 @@ also print the raw cost axes (`listing`, `access_cost`, `stream`,
 | `archivey info -v <indexed-zip>` | Includes `access: random (indexed)` and raw cost axes |
 | `archivey info <directory>` | Exit `0`; reports format `directory` (the answer `detect_format` gives); no "cannot open" error |
 | Unreadable/unknown file | Non-zero exit; clear error (no stack trace by default) |
+| `archivey info <archive>` that opens | Detection runs once, inside the open |
 | `archivey list <archive>` | Member listing; not a substitute for info's format summary |
 
 ### Requirement: version reports package identity and optional format matrix

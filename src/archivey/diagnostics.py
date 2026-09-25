@@ -179,6 +179,9 @@ class UnconfirmedFormatContext(_JsonSafeContext):
       with zero members under a format chosen by an override or the filename, not by
       content. ``detected_format`` is what a fresh content detection reports now —
       ``None`` when every content signal declines (the extension fallback's usual case).
+    * **Extension-only decode failure** (``chosen_by="extension"``): a read of a format
+      chosen by the filename alone raised. ``detected_format`` is ``None``: detection
+      had declined the bytes, which is why the filename decided.
     * **Probe-only decode failure** (``chosen_by="content_probe"``): listing succeeded
       (typically one fabricated single-file member) and a later read raised. ``format``
       is the probe's claim; ``detected_format`` is the same claim restated (there is no
@@ -462,11 +465,13 @@ and the reasons are part of the contract rather than an oversight:
   before EOF (extraction reads every member to EOF and never fires it). In ``strict`` it
   would turn a peek at a ZipCrypto member into ``DiagnosticRaisedError``. Revisit when a
   ``stream.verified`` attribute lands (``dev-docs/IDEAS.md``) and retires this code.
-- ``PROBE_FORMAT_UNCONFIRMED`` — emitted while stamping a typed ``TruncatedError`` /
-  ``CorruptionError`` that already carries ``format_unconfirmed=True``. Putting it in
-  ``strict`` would replace that typed error with ``DiagnosticRaisedError`` mid-raise.
-  Default disposition is COLLECT (via ``DiagnosticPolicy``'s default); it is not a
-  member of :data:`ARCHIVE_INTEGRITY_CODES`.
+- ``PROBE_FORMAT_UNCONFIRMED`` — a probe-only identification is an advisory about
+  what the file *is* (its bytes passed that format's content check), not a finding
+  about the archive's own bytes, and it only accompanies a read that already failed
+  with a typed error that carries ``format_unconfirmed=True``. A policy that resolves
+  it to RAISE still gets that typed error, through ``escalate_as``. Its sibling
+  ``EXTENSION_FORMAT_UNCONFIRMED`` is **in** the set: it also fires on an
+  extension-only empty listing, a successful open that no byte confirmed.
 - ``MEMBER_SELECTOR_UNMATCHED`` — reports the caller's ``members=`` argument, not the
   archive. A job that passes one fixed list of names to many archives would otherwise
   raise on every archive that lacks one of them.

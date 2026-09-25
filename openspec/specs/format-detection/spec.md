@@ -228,8 +228,9 @@ Within Brotli, a probe-only hit whose **first meta-block is compressed** SHALL k
 ~100% for an uncompressed first block, and 25 of 25 real streams found in the wild are
 compressed-first. An uncompressed or metadata first block is the class every false
 positive comes from, and takes `GUESS`. This split grades evidence strength only —
-`format_unconfirmed` / `PROBE_FORMAT_UNCONFIRMED` key on probe-only provenance, not on
-confidence (see *Detection confidence SHALL NOT be the trigger for error provenance*).
+`format_unconfirmed` / `PROBE_FORMAT_UNCONFIRMED` key on probe-only provenance (and
+`EXTENSION_FORMAT_UNCONFIRMED` on an extension-only guess), not on confidence (see
+*Detection confidence SHALL NOT be the trigger for error provenance*).
 Uncompressed-first remains a valid stream class (incompressible payloads); the framing
 gate keeps those streams — they are not rejected for being uncompressed-first.
 

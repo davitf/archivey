@@ -251,17 +251,26 @@ def cost(self) -> CostReceipt: ...
 
 @property
 def format(self) -> ArchiveFormat: ...
+
+@property
+def format_info(self) -> FormatInfo | None: ...
 ```
 
 `info` is format/version/solid/member count/comment/encryption/multivolume/cost.
 `cost` is listing/access/stream capability/solid block count. `format` is the
-`(container, stream)` pair.
+`(container, stream)` pair. `format_info` is the `FormatInfo` from the detection
+`open_archive` ran, kept rather than repeated, so it equals what `detect_format`
+reports for the same source; it is `None` when `format=` was passed (no detection
+ran), and a directory reports the same fixed `DIRECTORY` / `CERTAIN` / `"directory"`
+answer `detect_format` gives.
 
 #### Scenario: metadata after open
 
 | Case | Expected |
 | --- | --- |
-| Successful open | `ar.info`, `ar.cost`, `ar.format` available immediately without extra I/O |
+| Successful open | `ar.info`, `ar.cost`, `ar.format`, `ar.format_info` available immediately without extra I/O |
+| Opened with `format=` | `ar.format_info is None` |
+| Opened by detection | `ar.format_info == detect_format(source)`, without a second detection |
 
 ### Requirement: MemberListReport surfaces partial listings with terminal errors
 

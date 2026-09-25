@@ -134,7 +134,9 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   non-seekable stream of unknown length the gate is skipped. A residual can still open
   as a single fabricated member. If nothing corroborated the probe (no matching
   extension, no inner-TAR upgrade), a failed read sets `format_unconfirmed=True` — and
-  may already have delivered a buffer of copied bytes.
+  may already have delivered a buffer of copied bytes. A `.br` file cut short enough
+  that the probe declines it is identified by its name alone, so its failed read sets
+  the flag too.
   → [Formats — Detection](formats.md#detection)
 - **Prefer `reader.diagnostics` and the extraction report over logs.** Advisories are
   queryable data, not just log lines.

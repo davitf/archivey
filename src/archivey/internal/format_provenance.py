@@ -9,8 +9,9 @@ record carries the first fact forward to the place that learns the second
 
 It also carries whether a content-probe match was the *sole* evidence (no matching
 extension, no inner-TAR upgrade): a later decode failure then stamps
-``format_unconfirmed`` and emits ``PROBE_FORMAT_UNCONFIRMED``. Confidence is not part of
-that channel.
+``format_unconfirmed`` and emits ``PROBE_FORMAT_UNCONFIRMED``. A decode failure under
+``chosen_by == "extension"`` is stamped the same way and emits
+``EXTENSION_FORMAT_UNCONFIRMED``. Confidence is not part of either channel.
 
 It lives on the reader rather than in ``ReadBackend.open_read``'s signature because no
 backend uses it: adding a parameter would touch every backend for a fact none of them
@@ -48,7 +49,9 @@ class FormatProvenance:
     probe_only: bool = False
     """True when detection chose the format via a content probe with no corroboration.
 
-    That is the channel for ``format_unconfirmed`` on a later decode failure, at any
-    ``DetectionConfidence``. Magic, SFX, extension, and probe hits corroborated by a
-    matching extension or an inner-TAR upgrade leave this ``False``.
+    That is the probe channel for ``format_unconfirmed`` on a later decode failure, at
+    any ``DetectionConfidence``; the other is ``chosen_by == "extension"``, which is
+    stamped through that field and leaves this one ``False``. Magic, SFX, and probe hits
+    corroborated by a matching extension or an inner-TAR upgrade leave it ``False`` and
+    are not stamped.
     """

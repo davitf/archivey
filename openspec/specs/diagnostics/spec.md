@@ -67,10 +67,11 @@ without re-scanning the name. `chosen_by` ∈ `{"argument","extension","content_
 `PROBE_FORMAT_UNCONFIRMED` is a **separate code**, not a widening of
 `EXTENSION_FORMAT_UNCONFIRMED`. The two describe different provenance and fire on
 different events: the extension code keys on `detected_by="extension"` **and an empty
-listing**; the probe code keys on **probe-only provenance** — `detected_by="content_probe"`
-with nothing corroborating the claim (no matching extension, no inner-TAR upgrade) — **and
-a decode failure**. A probe-only read failure MUST NOT double-report under the extension
-code.
+listing or a decode failure** (see `error-handling`, *A decode failure on an
+extension-only format names its provenance*); the probe code keys on **probe-only
+provenance** — `detected_by="content_probe"` with nothing corroborating the claim (no
+matching extension, no inner-TAR upgrade) — **and a decode failure**. A probe-only read
+failure MUST NOT double-report under the extension code.
 
 **Confidence is not part of that trigger.** The probe code fires on a probe-only failure at
 *any* `DetectionConfidence`, so an LZMA Alone hit (always `PROBABLE`) and a compressed-first
@@ -117,6 +118,7 @@ stream closed before any read returned bytes, since nothing unchecked was delive
 | Probe-only single-file read raises, uncorroborated **`PROBABLE`** (compressed-first Brotli) | `PROBE_FORMAT_UNCONFIRMED` too — **changed**; confidence is not the trigger |
 | Probe-only **LZMA Alone** read raises (always `PROBABLE`) | `PROBE_FORMAT_UNCONFIRMED` — **changed**; previously unsignalled |
 | Extension-only empty listing | Still `EXTENSION_FORMAT_UNCONFIRMED` only — unchanged |
+| Extension-only read raises (zeros named `backup.gz`) | `EXTENSION_FORMAT_UNCONFIRMED` with `chosen_by="extension"`, `detected_format=None`; no `PROBE_FORMAT_UNCONFIRMED` |
 | Probe + `.br` (`PROBABLE`) read raises | No `PROBE_FORMAT_UNCONFIRMED` — the format was corroborated, and corroboration is still what matters |
 | Probe hit upgraded to `TAR_*` by the inner-TAR probe, read raises | No `PROBE_FORMAT_UNCONFIRMED` — the upgrade is independent corroboration |
 | Probe-only read succeeds | No diagnostic |
@@ -435,16 +437,22 @@ forbids treating zero members as an error; `ENCODING_ARGUMENT_UNUSED` and
 `PASSWORD_ARGUMENT_UNUSED` because they report argument hygiene, and a pipeline that
 speculatively passes a password to every call would otherwise raise on every
 unencrypted archive; `EXPLICIT_FORMAT_LISTED_EMPTY` because `format=` is an override
-and an override that halts the caller is not an override; and
+and an override that halts the caller is not an override;
 `STREAM_REWIND_REDECOMPRESSES` because it reports the caller's access pattern rather
 than the archive, and is most useful as a deliberately targeted tripwire;
-`PROBE_FORMAT_UNCONFIRMED` because it is emitted while stamping a typed
-`TruncatedError` / `CorruptionError` that already carries `format_unconfirmed=True`,
-and putting it in `strict` would replace that typed error with `DiagnosticRaisedError`;
 `ENCRYPTED_MEMBER_UNVERIFIED` because the trigger is the caller abandoning the stream
 before EOF (extract never fires it), and putting it in `strict` would turn a ZipCrypto
-peek into `DiagnosticRaisedError`. Revisit when `stream.verified` lands and this code
-is retired.
+peek into `DiagnosticRaisedError` (revisit when `stream.verified` lands and this code
+is retired); and
+`PROBE_FORMAT_UNCONFIRMED` because a probe-only identification is an advisory about
+what the file *is* (its bytes did pass that format's content check), not a finding
+about the archive's own bytes, and the code only ever accompanies a read that has
+already failed with a typed error, so `strict` would have nothing further to stop.
+(The emit keeps that typed error through `escalate_as` when a policy does resolve the
+code to RAISE, so the exclusion is not what protects it.)
+`EXTENSION_FORMAT_UNCONFIRMED`, its sibling, is **in** the set because it also fires
+on a successful open: an extension-only empty listing, where no byte confirmed the
+format at all, is exactly the case a `strict` caller wants stopped.
 
 Presets SHALL return ordinary frozen `DiagnosticPolicy` values with per-code
 overrides — no new resolution axis, and no field on `Diagnostic`. A caller MAY build
@@ -525,8 +533,9 @@ fact. The exception attribute and the diagnostic are two views of one provenance
 neither replaces the other.
 
 `PROBE_FORMAT_UNCONFIRMED` SHALL NOT be a member of the `ARCHIVE_INTEGRITY_CODES`
-strict set: it is emitted while stamping a typed `TruncatedError` / `CorruptionError`,
-and putting it in `strict` would replace that typed error with `DiagnosticRaisedError`.
+strict set: a probe-only identification is an advisory about what the file is, not a
+finding about the archive's own bytes, and the code only accompanies a read that has
+already failed with a typed `TruncatedError` / `CorruptionError`.
 Default disposition is COLLECT. When a caller's policy resolves this code to RAISE
 (notably `DiagnosticPolicy.pedantic()`), the emit SHALL surface the same typed error
 via `escalate_as` (carrying `format_unconfirmed=True`) rather than

@@ -22,6 +22,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Added
 
+- **`ArchiveReader.format_info`**: the `FormatInfo` that `open_archive`'s own detection
+  produced (confidence, `detected_by`, `payload_offset`), or `None` under `format=`.
+  `archivey info` prints it instead of detecting the file a second time.
 - Unified archive reading for ZIP, TAR, RAR, 7z, ISO, directory trees, and
   single-file compressed streams (gzip / bzip2 / xz / lzip / zstd / lz4 / compress).
 - Safe extraction defaults (`archivey.extract`) with policy-driven path and
@@ -96,6 +99,14 @@ promise with that line; treat `0.2.0` as the first release of this library.
   budget's decode-input limit (`max_decode_input`) now bounds the content probes too, as
   one allowance for the call; a probe's output stays bounded per probe by the codec's
   drain, not by `max_decode_output`.
+- **A read that fails on a format guessed from the filename says so.** When magic bytes
+  and content probes all declined and the extension decided (40 000 zero bytes named
+  `backup.gz`), the read error now has `format_unconfirmed=True`, its message says the
+  identification rested on the extension only, and `EXTENSION_FORMAT_UNCONFIRMED` is
+  emitted, as it already was for an empty listing. It used to look like a damaged gzip
+  file. The same now holds for a real Brotli file named `x.br` that was cut short: once
+  less than the detection budget's completion window remains, the probe declines it and
+  the name decides, so its read error carries the flag too.
 - **A Windows symlink to a network share keeps its `//server/share` target.** A ZIP or
   7z reparse buffer that named its target only as `\??\UNC\server\share` listed
   the link as pointing at the relative path `UNC/server/share`, and extraction created
