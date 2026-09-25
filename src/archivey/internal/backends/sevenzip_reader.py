@@ -94,13 +94,13 @@ from archivey.internal.password import (
     wrong_password_error,
 )
 from archivey.internal.password_confirm import (
-    CONFIRM_MAX_INPUT_BYTES,
-    CONFIRM_PREFIX_BYTES,
-    ConfirmPlan,
-    ConfirmVerdict,
-    UnverifiedReadWatch,
-    plan_confirm,
-    run_confirm_plan,
+    PASSWORD_CONFIRM_MAX_INPUT_BYTES,
+    PASSWORD_CONFIRM_PREFIX_BYTES,
+    PasswordConfirmPlan,
+    PasswordConfirmVerdict,
+    UnverifiedPasswordReadWatch,
+    plan_password_confirm,
+    run_password_confirm_plan,
 )
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
@@ -851,41 +851,52 @@ class SevenZipReader(BaseArchiveReader):
         if folder_index in self._folder_passwords:
             return self._folder_passwords[folder_index]
 
-        plan = self._folder_confirm_plan(folder_index)
+        plan = self._folder_password_confirm_plan(folder_index)
 
-        def confirm(password: bytes) -> tuple[bytes, ConfirmVerdict]:
-            kdf_password = _password_to_kdf_bytes(password)
+        # The two callbacks below run once per candidate password, inside
+        # ``_PasswordCandidates.attempt``: the first judges the candidate against the
+        # folder (raising the wrong-password error to move on), the second decides
+        # whether the accepted candidate joins the known-good passwords that later
+        # folders try first.
+        def confirm_candidate_password(
+            candidate: bytes,
+        ) -> tuple[bytes, PasswordConfirmVerdict]:
+            kdf_password = _password_to_kdf_bytes(candidate)
             return kdf_password, self._confirm_folder_password(
                 folder_index, kdf_password, plan
             )
 
-        def promote(result: tuple[bytes, ConfirmVerdict]) -> bool:
-            # A candidate that survived without a checksum match is accepted but kept
-            # out of known-good when another candidate could still be the right one
-            # (archive-reading, "Confirm candidates when a weak check permits retries").
+        def promote_candidate_password(
+            accepted: tuple[bytes, PasswordConfirmVerdict],
+        ) -> bool:
+            # A candidate password that survived without a checksum match is accepted
+            # for this folder but kept out of known-good when another candidate could
+            # still be the right one (archive-reading, "Confirm candidates when a weak
+            # check permits retries").
+            _, verdict = accepted
             return (
-                result[1] is ConfirmVerdict.CONFIRMED
+                verdict is PasswordConfirmVerdict.CONFIRMED
                 or not self._passwords.is_ambiguous()
             )
 
         try:
             password, verdict = self._passwords.attempt(
-                member, confirm, promote=promote
+                member, confirm_candidate_password, promote=promote_candidate_password
             )
         except _PasswordCandidatesExhausted as exc:
             raise EncryptionError(raw_message_of(exc)) from exc
-        if verdict is ConfirmVerdict.INCONCLUSIVE:
+        if verdict is PasswordConfirmVerdict.INCONCLUSIVE:
             self._folders_unconfirmed.add(folder_index)
         self._folder_passwords[folder_index] = password
         return password
 
-    def _folder_confirm_plan(self, folder_index: int) -> ConfirmPlan:
+    def _folder_password_confirm_plan(self, folder_index: int) -> PasswordConfirmPlan:
         """The confirm ladder's plan for one encrypted folder (rungs 2 and 3).
 
         7z AES has no password check value, so rung 1 is empty here and the ladder
         starts at the integrity anchor: member CRCs in substream order, then the folder
         digest. The earliest anchor covering at least 4 bytes wins; one past
-        ``CONFIRM_PREFIX_BYTES`` is walked only when no decoder in the chain rejects
+        ``PASSWORD_CONFIRM_PREFIX_BYTES`` is walked only when no decoder in the chain rejects
         random input.
         """
         folder = self._archive.folders[folder_index]
@@ -915,21 +926,21 @@ class SevenZipReader(BaseArchiveReader):
         assert tail_crc is None or sum(size for size, _ in substreams) == (
             folder_unpack_size(folder)
         ), "member sizes must sum to the folder unpack size"
-        return plan_confirm(
+        return plan_password_confirm(
             substreams,
             tail_crc,
-            budget=CONFIRM_PREFIX_BYTES,
+            budget=PASSWORD_CONFIRM_PREFIX_BYTES,
             codec_rejects=_folder_codec_rejects(folder),
         )
 
     def _confirm_folder_password(
-        self, folder_index: int, kdf_password: bytes, plan: ConfirmPlan
-    ) -> ConfirmVerdict:
+        self, folder_index: int, kdf_password: bytes, plan: PasswordConfirmPlan
+    ) -> PasswordConfirmVerdict:
         """Run ``plan`` over the folder decoded with ``kdf_password``.
 
         Raises the wrong-password ``EncryptionError`` on ``REJECTED`` so
         ``_PasswordCandidates.attempt`` moves to the next candidate. A bounded plan
-        reads at most ``CONFIRM_MAX_INPUT_BYTES`` of packed input: a block-transform
+        reads at most ``PASSWORD_CONFIRM_MAX_INPUT_BYTES`` of packed input: a block-transform
         codec can otherwise consume far more input than the plaintext prefix it
         produces. Running out of that capped input (a short read, or a decoder error,
         once the cap is spent) is not evidence about the key, so it is
@@ -941,13 +952,15 @@ class SevenZipReader(BaseArchiveReader):
         source: BinaryIO = pack
         capped: SlicingStream | None = None
         pack_size = self._archive.pack_sizes[self._folder_pack_starts[folder_index]]
-        if plan.bounded and pack_size > CONFIRM_MAX_INPUT_BYTES:
+        if plan.bounded and pack_size > PASSWORD_CONFIRM_MAX_INPUT_BYTES:
             # The cap is a whole number of AES blocks, so the cut never lands mid-block.
-            capped = SlicingStream(pack, length=CONFIRM_MAX_INPUT_BYTES)
+            capped = SlicingStream(pack, length=PASSWORD_CONFIRM_MAX_INPUT_BYTES)
             source = capped
 
         def input_ran_out() -> bool:
-            return capped is not None and capped.tell() >= CONFIRM_MAX_INPUT_BYTES
+            return (
+                capped is not None and capped.tell() >= PASSWORD_CONFIRM_MAX_INPUT_BYTES
+            )
 
         stream = open_folder_pipeline(
             source,
@@ -958,7 +971,9 @@ class SevenZipReader(BaseArchiveReader):
             collector=self._diagnostics_collector,
         )
         try:
-            verdict = run_confirm_plan(stream, plan, input_exhausted=input_ran_out)
+            verdict = run_password_confirm_plan(
+                stream, plan, input_exhausted=input_ran_out
+            )
         except (
             UnsupportedFeatureError,
             PackageNotInstalledError,
@@ -977,11 +992,11 @@ class SevenZipReader(BaseArchiveReader):
             # cannot tell the cut from a wrong key. A mismatched anchor can, and the
             # runner keeps that one ``REJECTED``.
             if input_ran_out():
-                return ConfirmVerdict.INCONCLUSIVE
+                return PasswordConfirmVerdict.INCONCLUSIVE
             raise wrong_password_error("Wrong password or corrupt 7z folder") from exc
         finally:
             stream.close()
-        if verdict is ConfirmVerdict.REJECTED:
+        if verdict is PasswordConfirmVerdict.REJECTED:
             raise wrong_password_error("Wrong password or corrupt 7z folder")
         return verdict
 
@@ -1016,7 +1031,7 @@ class SevenZipReader(BaseArchiveReader):
                 logger=integrity_logger,
             )
 
-        return UnverifiedReadWatch(
+        return UnverifiedPasswordReadWatch(
             stream,
             size=_member_stream_size(member),
             on_unverified=report,

@@ -240,27 +240,28 @@ SHALL emit `ENCRYPTED_MEMBER_UNVERIFIED` (`check="weak_open_check"`): a wrong Zi
 password that passes the byte check returns readable garbage from a partial read and
 fails only at the CRC, and a WinZip AES member's HMAC runs only at EOF.
 
-Compressed members (`DEFLATE`, `BZIP2`, `LZMA`) SHALL confirm by decompressing a
-bounded plaintext prefix and discarding it. If EOF is reached within the bound,
-the CRC check makes confirmation exact. Compressed-member confirmation SHALL run
-through `plan_confirm` / `run_confirm_plan` as the probe under
+Compressed members (`DEFLATE`, `BZIP2`, `LZMA`) SHALL confirm by decompressing a bounded
+plaintext prefix and discarding it. If EOF is reached within the bound, the CRC check
+makes confirmation exact. Compressed-member confirmation SHALL run through
+`plan_password_confirm` / `run_password_confirm_plan` as the probe under
 `_PasswordCandidates.attempt`, with the member as the one substream; the candidate-failure
 exception filter below SHALL survive the move. These three methods are stream codecs, or
 bzip2, which produces output after one block, so the compressed input a bounded prefix
 consumes is bounded by the format and needs no separate cap. A compressed member larger
 than the prefix yields an `INCONCLUSIVE` survivor: its stream, closed before EOF, SHALL
-emit `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`). STORED members SHALL disambiguate all
-surviving candidates in one shared ciphertext pass, computing each candidate's
-plaintext CRC-32 in constant memory; if multiple candidates match, candidate
+emit `ENCRYPTED_MEMBER_UNVERIFIED` (`check="confirm_budget_exhausted"`). STORED members
+SHALL disambiguate all surviving candidates in one shared ciphertext pass, computing each
+candidate's plaintext CRC-32 in constant memory; if multiple candidates match, candidate
 order wins. No candidate plaintext may be buffered. The STORED shared pass stays
 ZIP-local, since running every candidate over one pass is a shape the per-candidate probe
 does not model.
 
 After confirmation, the reader SHALL open a fresh caller stream with the accepted
-password, promote it to known-good when confirmation reached the member's CRC, and
-retain ordinary read-time integrity checking. An `INCONCLUSIVE` survivor is not
-promoted: this path runs only for an ambiguous candidate set. Confirmation failure for all candidates SHALL raise `EncryptionError`
-explaining that passwords may be wrong or the member may be corrupt.
+password, promote it to known-good when confirmation reached the member's CRC, and retain
+ordinary read-time integrity checking. An `INCONCLUSIVE` survivor is not promoted: this
+path runs only for an ambiguous candidate set. Confirmation failure for all candidates
+SHALL raise `EncryptionError` explaining that passwords may be wrong or the member may be
+corrupt.
 
 Candidate failures SHALL include only `zipfile.BadZipFile` with `"Bad CRC-32 for
 file ..."`, `zlib.error`, `lzma.LZMAError`, and exactly BZIP2's

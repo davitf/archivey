@@ -100,12 +100,12 @@ from archivey.internal.password import (
     wrong_password_error,
 )
 from archivey.internal.password_confirm import (
-    CONFIRM_PREFIX_BYTES,
-    ConfirmVerdict,
-    UnverifiedReadWatch,
+    PASSWORD_CONFIRM_PREFIX_BYTES,
+    PasswordConfirmVerdict,
+    UnverifiedPasswordReadWatch,
     first_crc_match,
-    plan_confirm,
-    run_confirm_plan,
+    plan_password_confirm,
+    run_password_confirm_plan,
 )
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
@@ -1434,10 +1434,10 @@ class ZipReader(BaseArchiveReader):
         ambiguous_holder: list[EncryptionError] = []
         # One substream, the member itself: its CRC is the anchor when the member fits
         # the prefix, and codec rejection decides a larger one.
-        plan = plan_confirm(
+        plan = plan_password_confirm(
             [(info.file_size, info.CRC)],
             None,
-            budget=CONFIRM_PREFIX_BYTES,
+            budget=PASSWORD_CONFIRM_PREFIX_BYTES,
             codec_rejects=info.compress_type in _ZIP_REJECTING_METHODS,
         )
 
@@ -1451,14 +1451,14 @@ class ZipReader(BaseArchiveReader):
                 failure.__cause__ = cause
             return failure
 
-        def decrypt(password: bytes) -> tuple[BinaryIO, ConfirmVerdict]:
+        def decrypt(password: bytes) -> tuple[BinaryIO, PasswordConfirmVerdict]:
             stream: BinaryIO | None = None
             try:
                 stream = self._zip_open_raw(
                     info, password=password, member_name=member_name
                 )
-                verdict = run_confirm_plan(stream, plan)
-                if verdict is ConfirmVerdict.REJECTED:
+                verdict = run_password_confirm_plan(stream, plan)
+                if verdict is PasswordConfirmVerdict.REJECTED:
                     raise candidate_failed(None)
                 self._zip_close_raw(stream)
                 stream = None
@@ -1475,19 +1475,23 @@ class ZipReader(BaseArchiveReader):
                 if stream is not None:
                     self._zip_close_raw(stream)
 
-        def promote(result: tuple[BinaryIO, ConfirmVerdict]) -> bool:
-            # This path runs only for an ambiguous candidate set, so a survivor with no
-            # CRC match stays out of known-good.
-            return result[1] is ConfirmVerdict.CONFIRMED
+        def promote_candidate_password(
+            accepted: tuple[BinaryIO, PasswordConfirmVerdict],
+        ) -> bool:
+            # Decides whether the accepted candidate password joins known-good. This
+            # path runs only for an ambiguous candidate set, so a survivor with no CRC
+            # match stays out.
+            _, verdict = accepted
+            return verdict is PasswordConfirmVerdict.CONFIRMED
 
         stream, verdict = self._finish_password_attempt(
             member,
             member_name,
             decrypt,
             ambiguous_holder=ambiguous_holder,
-            promote=promote,
+            promote=promote_candidate_password,
         )
-        if verdict is ConfirmVerdict.CONFIRMED:
+        if verdict is PasswordConfirmVerdict.CONFIRMED:
             return stream
         return self._watch_unverified(
             stream,
@@ -1638,7 +1642,7 @@ class ZipReader(BaseArchiveReader):
                 logger=integrity_logger,
             )
 
-        return UnverifiedReadWatch(
+        return UnverifiedPasswordReadWatch(
             stream,
             size=info.file_size,
             on_unverified=report,

@@ -258,7 +258,7 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.zip_reader._UnconfirmedZipCryptoStream": (
         "no __init__ of its own; DelegatingStream's"
     ),
-    "archivey.internal.password_confirm.UnverifiedReadWatch": (
+    "archivey.internal.password_confirm.UnverifiedPasswordReadWatch": (
         "assigns every field close() reads before DelegatingStream.__init__"
     ),
     "archivey.internal.backends.rar_reader._UnrarOwnedStream": "plain assignments only",

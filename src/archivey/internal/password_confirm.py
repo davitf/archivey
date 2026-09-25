@@ -10,7 +10,7 @@ The ladder has three rungs, strongest first:
    backends apply this rung themselves; it is named here so the ladder reads the same
    in every backend.
 2. **Integrity anchor** — a stored CRC over a decodable prefix of the unit.
-   :func:`plan_confirm` picks the earliest one that verifies at least 4 bytes.
+   :func:`plan_password_confirm` picks the earliest one that verifies at least 4 bytes.
 3. **Codec rejection** — a decompressor measured to fail on random input settles a
    wrong key inside a bounded prefix. Surviving that prefix is ``INCONCLUSIVE``, not
    ``CONFIRMED``.
@@ -36,7 +36,7 @@ from archivey.internal.streams.streamtools.base import DelegatingStream
 # reject wrong-key garbage within a few bytes (the archived bounded-password-confirmation
 # design, §2); 64 KiB leaves a wide margin, so a decoder change of a few bytes does not
 # flip a verdict, and covers typical members exactly (EOF → CRC).
-CONFIRM_PREFIX_BYTES = 64 * 1024
+PASSWORD_CONFIRM_PREFIX_BYTES = 64 * 1024
 
 # Upper bound on the compressed input a bounded confirm may consume to produce its
 # plaintext prefix. An output-only bound does not constrain a block-transform codec: 64
@@ -47,15 +47,15 @@ CONFIRM_PREFIX_BYTES = 64 * 1024
 # a non-consuming peek callable under a detection budget ledger and ends in a ``ustar``
 # check, confirmation decodes a borrowed pack view through a decrypting pipeline. The
 # number is the part they share.
-CONFIRM_MAX_INPUT_BYTES = 1 << 20
+PASSWORD_CONFIRM_MAX_INPUT_BYTES = 1 << 20
 
 # Read size for the confirm walk. Peak extra memory is one chunk, whatever the unit size.
-CONFIRM_CHUNK_BYTES = 64 * 1024
+PASSWORD_CONFIRM_CHUNK_BYTES = 64 * 1024
 
 _T = TypeVar("_T")
 
 
-class ConfirmVerdict(Enum):
+class PasswordConfirmVerdict(Enum):
     """What one confirmation probe concluded about one candidate."""
 
     #: The candidate is wrong: an anchor mismatched, the decoder objected, or the
@@ -68,8 +68,8 @@ class ConfirmVerdict(Enum):
 
 
 @dataclass(frozen=True)
-class ConfirmPlan:
-    """What :func:`run_confirm_plan` reads, and what it may conclude.
+class PasswordConfirmPlan:
+    """What :func:`run_password_confirm_plan` reads, and what it may conclude.
 
     ``segments`` are consecutive ``(length, crc)`` runs from the unit's start; a
     ``None`` CRC is read and not checked. ``unit_crc``, when set, is checked over every
@@ -77,7 +77,7 @@ class ConfirmPlan:
     unit. ``confirms`` says whether reading every segment without a mismatch reaches
     ``CONFIRMED``; otherwise the verdict is ``INCONCLUSIVE``. ``bounded`` says the plan
     stops within the plaintext budget, so the caller should also cap the compressed
-    input (:data:`CONFIRM_MAX_INPUT_BYTES`); an unbounded plan walks to a late anchor
+    input (:data:`PASSWORD_CONFIRM_MAX_INPUT_BYTES`); an unbounded plan walks to a late anchor
     on purpose and takes no input cap.
     """
 
@@ -91,23 +91,34 @@ class ConfirmPlan:
         return sum(length for length, _ in self.segments)
 
 
-def plan_confirm(
+def plan_password_confirm(
     substreams: Iterable[tuple[int, int | None]],
     tail_crc: int | None,
     *,
     budget: int,
     codec_rejects: bool,
     min_verified_bytes: int = 4,
-) -> ConfirmPlan:
-    """Plan the cheapest decode that can judge a candidate.
+) -> PasswordConfirmPlan:
+    """Plan the cheapest decode that can judge one candidate password.
 
-    ``substreams`` are the unit's items in data order, as ``(size, crc | None)``;
-    ``tail_crc`` is a CRC over the whole unit, when the format stores one. The rules:
+    The plan says how many decoded bytes of the unit (a 7z folder, a ZIP member) to
+    read and which stored CRCs to check on the way, so that a wrong password is caught
+    as early as possible.
+
+    ``substreams`` are the unit's items in data order, as ``(size, crc | None)``: for
+    a 7z folder, its members; for a ZIP member, the member itself. ``tail_crc`` is a
+    CRC over the whole unit, when the format stores one (the 7z folder digest).
+    ``budget`` is the most decoded bytes worth spending when a check is not in reach
+    (:data:`PASSWORD_CONFIRM_PREFIX_BYTES` in both readers). ``codec_rejects`` says the
+    unit's decoder chain was measured to fail on the random output a wrong key
+    decrypts to, so decoding ``budget`` bytes without an error is already evidence.
+    ``min_verified_bytes`` is how many bytes a CRC must cover before a match confirms
+    the password: fewer carry less than 32 bits of evidence. The rules:
 
     - **Earliest sufficient anchor.** Item CRCs are consulted in order, and the plan
-      stops once CRC-verified bytes reach ``min_verified_bytes``: fewer carry less
-      than 32 bits and do not end the plan on their own. ``tail_crc`` sits at the unit's
-      end, so it is only ever the last anchor; an item CRC that suffices earlier wins.
+      stops once CRC-verified bytes reach ``min_verified_bytes``. ``tail_crc`` sits at
+      the unit's end, so it is only ever the last anchor; an item CRC that suffices
+      earlier wins.
     - **Anchor inside the budget:** decode to it and stop.
     - **Anchor past the budget:** a chain whose codec rejects random input
       (``codec_rejects``) stops at ``budget`` bytes, since the decoder settles a wrong
@@ -123,20 +134,6 @@ def plan_confirm(
     items = list(substreams)
     total = sum(size for size, _ in items)
 
-    def prefix(limit: int) -> ConfirmPlan:
-        # Whole items up to ``limit``, keeping their CRCs (a short anchor inside the
-        # prefix can still reject), then the rest of the prefix unchecked.
-        planned: list[tuple[int, int | None]] = []
-        offset = 0
-        for size, crc in items:
-            if offset + size > limit:
-                break
-            planned.append((size, crc))
-            offset += size
-        if offset < limit:
-            planned.append((limit - offset, None))
-        return ConfirmPlan(tuple(planned), None, confirms=False, bounded=True)
-
     segments: list[tuple[int, int | None]] = []
     offset = 0
     verified = 0
@@ -145,19 +142,19 @@ def plan_confirm(
         if crc is not None and end > budget and codec_rejects:
             # The next anchor lies past the budget and the decoder decides a wrong key
             # sooner: stop at the budget.
-            return prefix(min(budget, total))
+            return _budget_prefix(segments, min(budget, total))
         segments.append((size, crc))
         offset = end
         if crc is not None:
             verified += size
             if verified >= min_verified_bytes:
-                return ConfirmPlan(
+                return PasswordConfirmPlan(
                     tuple(segments), None, confirms=True, bounded=offset <= budget
                 )
 
     # No item anchor sufficed. A unit CRC is the last anchor there is.
     if tail_crc is not None and (total <= budget or not codec_rejects):
-        return ConfirmPlan(
+        return PasswordConfirmPlan(
             tuple(segments),
             tail_crc,
             confirms=total >= min_verified_bytes,
@@ -165,16 +162,40 @@ def plan_confirm(
         )
     # No sufficient anchor within reach: at most the budget. Nobody runs an unbounded
     # decode to discover that nothing can be checked.
-    return prefix(min(budget, total))
+    return _budget_prefix(segments, min(budget, total))
 
 
-def run_confirm_plan(
+def _budget_prefix(
+    segments: list[tuple[int, int | None]], limit: int
+) -> PasswordConfirmPlan:
+    """A plan that reads exactly ``limit`` bytes, starting from ``segments``.
+
+    The walk in :func:`plan_password_confirm` appends a CRC-less item without looking
+    at the budget, so ``segments`` can run past ``limit`` (one large CRC-less member)
+    or stop short of it (the next item is the anchor that was cut off). Whole segments
+    that end within ``limit`` keep their CRCs, since a short anchor inside the prefix
+    can still reject. The rest of the prefix is read unchecked: a CRC over part of an
+    item cannot be checked.
+    """
+    planned: list[tuple[int, int | None]] = []
+    offset = 0
+    for size, crc in segments:
+        if offset + size > limit:
+            break
+        planned.append((size, crc))
+        offset += size
+    if offset < limit:
+        planned.append((limit - offset, None))
+    return PasswordConfirmPlan(tuple(planned), None, confirms=False, bounded=True)
+
+
+def run_password_confirm_plan(
     stream: BinaryIO,
-    plan: ConfirmPlan,
+    plan: PasswordConfirmPlan,
     *,
-    chunk_size: int = CONFIRM_CHUNK_BYTES,
+    chunk_size: int = PASSWORD_CONFIRM_CHUNK_BYTES,
     input_exhausted: Callable[[], bool] | None = None,
-) -> ConfirmVerdict:
+) -> PasswordConfirmVerdict:
     """Read ``stream`` as ``plan`` says and return the verdict.
 
     Reads in chunks of at most ``chunk_size``, so peak extra memory is one chunk. A
@@ -195,17 +216,21 @@ def run_confirm_plan(
             chunk = stream.read(min(chunk_size, remaining))
             if not chunk:
                 if input_exhausted is not None and input_exhausted():
-                    return ConfirmVerdict.INCONCLUSIVE
-                return ConfirmVerdict.REJECTED
+                    return PasswordConfirmVerdict.INCONCLUSIVE
+                return PasswordConfirmVerdict.REJECTED
             crc = zlib.crc32(chunk, crc)
             if plan.unit_crc is not None:
                 unit_crc = zlib.crc32(chunk, unit_crc)
             remaining -= len(chunk)
         if expected is not None and crc & 0xFFFFFFFF != expected & 0xFFFFFFFF:
-            return ConfirmVerdict.REJECTED
+            return PasswordConfirmVerdict.REJECTED
     if plan.unit_crc is not None and unit_crc != plan.unit_crc & 0xFFFFFFFF:
-        return ConfirmVerdict.REJECTED
-    return ConfirmVerdict.CONFIRMED if plan.confirms else ConfirmVerdict.INCONCLUSIVE
+        return PasswordConfirmVerdict.REJECTED
+    return (
+        PasswordConfirmVerdict.CONFIRMED
+        if plan.confirms
+        else PasswordConfirmVerdict.INCONCLUSIVE
+    )
 
 
 def first_crc_match(expected_crc: int, items: Sequence[tuple[_T, int]]) -> _T | None:
@@ -217,7 +242,7 @@ def first_crc_match(expected_crc: int, items: Sequence[tuple[_T, int]]) -> _T | 
     return None
 
 
-class UnverifiedReadWatch(DelegatingStream):
+class UnverifiedPasswordReadWatch(DelegatingStream):
     """Report a member stream closed before its declared digest was reached.
 
     Wraps the decoded member stream of an encrypted member whose password was accepted

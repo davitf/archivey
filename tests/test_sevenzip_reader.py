@@ -36,7 +36,7 @@ from archivey.internal.backends.sevenzip_reader import (
     open_folder_pipeline,
 )
 from archivey.internal.config import DEFAULT_STREAM_CONFIG
-from archivey.internal.password_confirm import CONFIRM_CHUNK_BYTES
+from archivey.internal.password_confirm import PASSWORD_CONFIRM_CHUNK_BYTES
 from archivey.internal.streams import codecs, crypto
 from archivey.types import CompressionAlgorithm, HashAlgorithm, MemberType
 from tests.conftest import ReadSizeSpy, requires, requires_binary, requires_zstd
@@ -1259,9 +1259,9 @@ def test_password_confirm_does_not_request_the_whole_folder(
     # `max_requested` is a proxy for peak memory, not a measurement of it: a rewrite
     # that looped 64 KiB reads into one bytearray would still pass. It pins the
     # specific regression this PR fixes — a single read sized to the whole folder.
-    assert spies[0].max_requested <= CONFIRM_CHUNK_BYTES, (
+    assert spies[0].max_requested <= PASSWORD_CONFIRM_CHUNK_BYTES, (
         f"confirm requested {spies[0].max_requested} bytes in one read "
-        f"(chunk is {CONFIRM_CHUNK_BYTES}, folder is {folder_size})"
+        f"(chunk is {PASSWORD_CONFIRM_CHUNK_BYTES}, folder is {folder_size})"
     )
 
     # The same fixture with a wrong password is the only end-to-end exercise of the

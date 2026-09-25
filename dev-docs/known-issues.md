@@ -840,7 +840,7 @@ D4; fixed by the spent-payload stop in the pyppmd section above (the same change
 
 7z AES has no password check value, so confirm decrypted, decoded, and CRC'd the
 folder (`SevenZipReader._password_for_folder` → `_verify_decoded_folder` at the time;
-now a bounded `plan_confirm` / `run_confirm_plan` probe). A wrong key
+now a bounded `plan_password_confirm` / `run_password_confirm_plan` probe). A wrong key
 feeds PPMd garbage. On some keys that garbage stops PPMd short of the folder's
 declared size at native `eof` with the whole pack fed — the same state as a header
 that overstates `unpack_size` — and the next empty drain raised `MemoryError` from

@@ -801,7 +801,7 @@ A confirmation step SHALL yield one of three verdicts:
 | `INCONCLUSIVE` | the candidate survived its budget without reaching a deciding signal |
 
 The budget has **two** halves, and a spec that names only the first does not bound the
-work. The plaintext half is `CONFIRM_PREFIX_BYTES` (64 KiB of decoded output): not one
+work. The plaintext half is `PASSWORD_CONFIRM_PREFIX_BYTES` (64 KiB of decoded output): not one
 byte, and not `DetectionBudget.max_prefix_bytes`, since confirm measures decompressed
 output where detection measures source peeks. The compressed half is a cap on how much
 input may be consumed to produce that output, and it SHALL be stated too.

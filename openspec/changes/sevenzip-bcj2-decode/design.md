@@ -146,7 +146,7 @@ keeps its own position, and every read re-seeks under the source lock. That is t
 `_folder_pack_views(folder_index) -> list[BinaryIO]` (pack `k` is `_folder_pack_starts[folder_index] + k`), and
 `open_folder_pipeline` takes that list. The password check calls the same function, so
 it covers BCJ2 folders with no code of its own. It decodes the prefix that
-`plan_confirm` picks and checks it (`run_confirm_plan`).
+`plan_password_confirm` picks and checks it (`run_password_confirm_plan`).
 
 **Rejected: one view read in order.** The streams are interleaved in time, so a single
 position would thrash between them or need all but one stream buffered in memory.

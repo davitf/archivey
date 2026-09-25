@@ -18,13 +18,13 @@ from archivey.exceptions import ArchiveyError
 from archivey.internal import detection
 from archivey.internal.backends.sevenzip_reader import _REJECTING_CODECS
 from archivey.internal.password_confirm import (
-    CONFIRM_CHUNK_BYTES,
-    CONFIRM_MAX_INPUT_BYTES,
-    ConfirmPlan,
-    ConfirmVerdict,
-    UnverifiedReadWatch,
-    plan_confirm,
-    run_confirm_plan,
+    PASSWORD_CONFIRM_CHUNK_BYTES,
+    PASSWORD_CONFIRM_MAX_INPUT_BYTES,
+    PasswordConfirmPlan,
+    PasswordConfirmVerdict,
+    UnverifiedPasswordReadWatch,
+    plan_password_confirm,
+    run_password_confirm_plan,
 )
 from archivey.internal.streams.codecs import (
     Codec,
@@ -42,12 +42,12 @@ def _crc(data: bytes) -> int:
     return zlib.crc32(data) & 0xFFFFFFFF
 
 
-# --- plan_confirm ------------------------------------------------------------------
+# --- plan_password_confirm ------------------------------------------------------------------
 
 
 def test_a_one_byte_anchor_does_not_end_the_plan() -> None:
     # 1 verified byte carries 8 bits, not 32: the plan continues to the next anchor.
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(1, _crc(b"a")), (10, _crc(b"b" * 10)), (100, _crc(b"c" * 100))],
         None,
         budget=BUDGET,
@@ -58,7 +58,7 @@ def test_a_one_byte_anchor_does_not_end_the_plan() -> None:
 
 
 def test_short_anchors_add_up_to_four_bytes() -> None:
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(1, 1), (3, 3), (50, 50)], None, budget=BUDGET, codec_rejects=False
     )
     assert plan.segments == ((1, 1), (3, 3))
@@ -66,7 +66,7 @@ def test_short_anchors_add_up_to_four_bytes() -> None:
 
 
 def test_a_crc_less_first_member_is_read_through_to_the_first_anchor() -> None:
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(100, None), (8, 8), (100, 100)], None, budget=BUDGET, codec_rejects=True
     )
     assert plan.segments == ((100, None), (8, 8))
@@ -75,7 +75,7 @@ def test_a_crc_less_first_member_is_read_through_to_the_first_anchor() -> None:
 
 def test_member_crcs_win_over_the_folder_digest() -> None:
     # A folder carrying both anchors on its first member, not on its end.
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(10, 10), (1000, 1000)], 0xABCD, budget=BUDGET, codec_rejects=False
     )
     assert plan.segments == ((10, 10),)
@@ -84,7 +84,7 @@ def test_member_crcs_win_over_the_folder_digest() -> None:
 
 
 def test_the_folder_digest_is_the_fallback_anchor() -> None:
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(10, None), (20, None)], 0xABCD, budget=BUDGET, codec_rejects=True
     )
     assert plan.segments == ((10, None), (20, None))
@@ -94,7 +94,7 @@ def test_the_folder_digest_is_the_fallback_anchor() -> None:
 
 def test_no_anchor_at_all_reads_at_most_the_budget() -> None:
     for rejects in (True, False):
-        plan = plan_confirm(
+        plan = plan_password_confirm(
             [(BUDGET, None), (BUDGET * 100, None)],
             None,
             budget=BUDGET,
@@ -105,13 +105,13 @@ def test_no_anchor_at_all_reads_at_most_the_budget() -> None:
 
 
 def test_no_anchor_small_unit_reads_the_unit() -> None:
-    plan = plan_confirm([(10, None)], None, budget=BUDGET, codec_rejects=False)
+    plan = plan_password_confirm([(10, None)], None, budget=BUDGET, codec_rejects=False)
     assert plan.segments == ((10, None),)
     assert not plan.confirms
 
 
 def test_rejecting_codec_does_not_walk_a_late_crc() -> None:
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(200 * BUDGET, 0x1234)], None, budget=BUDGET, codec_rejects=True
     )
     assert plan.segments == ((BUDGET, None),)
@@ -119,7 +119,7 @@ def test_rejecting_codec_does_not_walk_a_late_crc() -> None:
 
 
 def test_non_rejecting_codec_walks_a_late_crc() -> None:
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(200 * BUDGET, 0x1234)], None, budget=BUDGET, codec_rejects=False
     )
     assert plan.segments == ((200 * BUDGET, 0x1234),)
@@ -127,7 +127,7 @@ def test_non_rejecting_codec_walks_a_late_crc() -> None:
 
 
 def test_rejecting_codec_late_folder_digest_is_not_walked() -> None:
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(200 * BUDGET, None)], 0x1234, budget=BUDGET, codec_rejects=True
     )
     assert plan.read_bytes == BUDGET
@@ -135,7 +135,7 @@ def test_rejecting_codec_late_folder_digest_is_not_walked() -> None:
 
 
 def test_non_rejecting_codec_walks_a_late_folder_digest() -> None:
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(200 * BUDGET, None)], 0x1234, budget=BUDGET, codec_rejects=False
     )
     assert plan.unit_crc == 0x1234 and plan.confirms and not plan.bounded
@@ -143,7 +143,7 @@ def test_non_rejecting_codec_walks_a_late_folder_digest() -> None:
 
 def test_an_anchor_inside_the_prefix_is_kept_when_the_budget_cuts() -> None:
     # A short anchor inside the budget can still reject, so it stays in the plan.
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(2, 2), (200 * BUDGET, 99)], None, budget=BUDGET, codec_rejects=True
     )
     assert plan.segments == ((2, 2), (BUDGET - 2, None))
@@ -151,86 +151,123 @@ def test_an_anchor_inside_the_prefix_is_kept_when_the_budget_cuts() -> None:
 
 
 def test_a_unit_shorter_than_four_bytes_never_confirms() -> None:
-    plan = plan_confirm([(3, _crc(b"abc"))], None, budget=BUDGET, codec_rejects=False)
-    assert run_confirm_plan(io.BytesIO(b"abc"), plan) is ConfirmVerdict.INCONCLUSIVE
-    assert run_confirm_plan(io.BytesIO(b"abd"), plan) is ConfirmVerdict.REJECTED
+    plan = plan_password_confirm(
+        [(3, _crc(b"abc"))], None, budget=BUDGET, codec_rejects=False
+    )
+    assert (
+        run_password_confirm_plan(io.BytesIO(b"abc"), plan)
+        is PasswordConfirmVerdict.INCONCLUSIVE
+    )
+    assert (
+        run_password_confirm_plan(io.BytesIO(b"abd"), plan)
+        is PasswordConfirmVerdict.REJECTED
+    )
 
 
-# --- run_confirm_plan ----------------------------------------------------------------
+# --- run_password_confirm_plan ----------------------------------------------------------------
 
 
 def test_run_confirms_on_matching_member_crcs() -> None:
     first, second = b"aaaa", b"bbbb"
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(4, _crc(first)), (4, _crc(second))], None, budget=BUDGET, codec_rejects=False
     )
-    assert run_confirm_plan(io.BytesIO(first + second), plan) is (
-        ConfirmVerdict.CONFIRMED
+    assert run_password_confirm_plan(io.BytesIO(first + second), plan) is (
+        PasswordConfirmVerdict.CONFIRMED
     )
 
 
 def test_run_rejects_a_mismatched_member_crc() -> None:
-    plan = plan_confirm([(4, 0xDEADBEEF)], None, budget=BUDGET, codec_rejects=False)
-    assert run_confirm_plan(io.BytesIO(b"abcd"), plan) is ConfirmVerdict.REJECTED
+    plan = plan_password_confirm(
+        [(4, 0xDEADBEEF)], None, budget=BUDGET, codec_rejects=False
+    )
+    assert (
+        run_password_confirm_plan(io.BytesIO(b"abcd"), plan)
+        is PasswordConfirmVerdict.REJECTED
+    )
 
 
 def test_run_rejects_a_mismatched_folder_digest() -> None:
-    plan = plan_confirm([(4, None)], 0xDEADBEEF, budget=BUDGET, codec_rejects=False)
-    assert run_confirm_plan(io.BytesIO(b"abcd"), plan) is ConfirmVerdict.REJECTED
+    plan = plan_password_confirm(
+        [(4, None)], 0xDEADBEEF, budget=BUDGET, codec_rejects=False
+    )
+    assert (
+        run_password_confirm_plan(io.BytesIO(b"abcd"), plan)
+        is PasswordConfirmVerdict.REJECTED
+    )
 
 
 def test_run_confirms_a_matching_folder_digest() -> None:
     payload = b"folder-crc-ok"
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(5, None), (8, None)], _crc(payload), budget=BUDGET, codec_rejects=False
     )
-    assert run_confirm_plan(io.BytesIO(payload), plan) is ConfirmVerdict.CONFIRMED
+    assert (
+        run_password_confirm_plan(io.BytesIO(payload), plan)
+        is PasswordConfirmVerdict.CONFIRMED
+    )
 
 
 def test_run_rejects_a_short_stream() -> None:
     # The CRC is the one the short bytes hash to, so only the short-read guard can
     # reject here.
-    plan = ConfirmPlan(((8, _crc(b"short")),), None, confirms=True, bounded=True)
-    assert run_confirm_plan(io.BytesIO(b"short"), plan) is ConfirmVerdict.REJECTED
+    plan = PasswordConfirmPlan(
+        ((8, _crc(b"short")),), None, confirms=True, bounded=True
+    )
+    assert (
+        run_password_confirm_plan(io.BytesIO(b"short"), plan)
+        is PasswordConfirmVerdict.REJECTED
+    )
 
 
 def test_run_rejects_a_short_stream_with_no_anchor() -> None:
-    plan = plan_confirm([(8, None)], None, budget=BUDGET, codec_rejects=False)
-    assert run_confirm_plan(io.BytesIO(b"ab"), plan) is ConfirmVerdict.REJECTED
+    plan = plan_password_confirm([(8, None)], None, budget=BUDGET, codec_rejects=False)
+    assert (
+        run_password_confirm_plan(io.BytesIO(b"ab"), plan)
+        is PasswordConfirmVerdict.REJECTED
+    )
 
 
 def test_run_short_read_after_the_input_cap_is_inconclusive() -> None:
     # The caller's input cap ended the stream, not the key.
-    plan = plan_confirm([(8, None)], None, budget=BUDGET, codec_rejects=True)
-    verdict = run_confirm_plan(io.BytesIO(b"ab"), plan, input_exhausted=lambda: True)
-    assert verdict is ConfirmVerdict.INCONCLUSIVE
-    verdict = run_confirm_plan(io.BytesIO(b"ab"), plan, input_exhausted=lambda: False)
-    assert verdict is ConfirmVerdict.REJECTED
+    plan = plan_password_confirm([(8, None)], None, budget=BUDGET, codec_rejects=True)
+    verdict = run_password_confirm_plan(
+        io.BytesIO(b"ab"), plan, input_exhausted=lambda: True
+    )
+    assert verdict is PasswordConfirmVerdict.INCONCLUSIVE
+    verdict = run_password_confirm_plan(
+        io.BytesIO(b"ab"), plan, input_exhausted=lambda: False
+    )
+    assert verdict is PasswordConfirmVerdict.REJECTED
 
 
 def test_run_mismatched_anchor_is_rejected_even_after_the_input_cap() -> None:
     # A mismatch is decisive evidence, whatever input it took to produce the bytes.
-    plan = plan_confirm([(4, _crc(b"good"))], None, budget=BUDGET, codec_rejects=True)
-    verdict = run_confirm_plan(io.BytesIO(b"evil"), plan, input_exhausted=lambda: True)
-    assert verdict is ConfirmVerdict.REJECTED
+    plan = plan_password_confirm(
+        [(4, _crc(b"good"))], None, budget=BUDGET, codec_rejects=True
+    )
+    verdict = run_password_confirm_plan(
+        io.BytesIO(b"evil"), plan, input_exhausted=lambda: True
+    )
+    assert verdict is PasswordConfirmVerdict.REJECTED
 
 
 def test_run_reads_in_bounded_chunks() -> None:
-    payload = b"x" * (CONFIRM_CHUNK_BYTES * 2 + 17)
-    plan = plan_confirm(
+    payload = b"x" * (PASSWORD_CONFIRM_CHUNK_BYTES * 2 + 17)
+    plan = plan_password_confirm(
         [(len(payload), _crc(payload))], None, budget=BUDGET, codec_rejects=False
     )
     spy = ReadSizeSpy(io.BytesIO(payload))
-    assert run_confirm_plan(spy, plan) is ConfirmVerdict.CONFIRMED
-    assert spy.max_requested <= CONFIRM_CHUNK_BYTES
+    assert run_password_confirm_plan(spy, plan) is PasswordConfirmVerdict.CONFIRMED
+    assert spy.max_requested <= PASSWORD_CONFIRM_CHUNK_BYTES
 
 
 def test_the_input_cap_is_the_inner_tar_probe_bound() -> None:
     # Design §2: the compressed-input cap is not a new number. If the detection bound
     # moves (bzip2's worst-case block is what sizes both), this one should too.
-    assert CONFIRM_MAX_INPUT_BYTES == detection._INNER_TAR_MAX_PROBE_BYTES
+    assert PASSWORD_CONFIRM_MAX_INPUT_BYTES == detection._INNER_TAR_MAX_PROBE_BYTES
     # Cut on an AES block boundary, so a capped CBC stream never ends mid-block.
-    assert CONFIRM_MAX_INPUT_BYTES % 16 == 0
+    assert PASSWORD_CONFIRM_MAX_INPUT_BYTES % 16 == 0
 
 
 # --- codec rejection evidence (task 5.2) ---------------------------------------------
@@ -285,7 +322,7 @@ def test_rejecting_codecs_reject_random_input(codec: Codec) -> None:
     """Every codec in the rejecting set dies on random input inside the prefix.
 
     This is the evidence the 7z ladder's rung 3 rests on: a folder whose chain holds
-    one of these stops at ``CONFIRM_PREFIX_BYTES`` instead of walking to a late CRC.
+    one of these stops at ``PASSWORD_CONFIRM_PREFIX_BYTES`` instead of walking to a late CRC.
     If a dependency change lets random bytes decode a full prefix, the codec must
     leave the set. Mutation check: adding ``Codec.BROTLI`` to the set fails here.
     """
@@ -332,7 +369,7 @@ def test_filters_never_reject_random_input(lzma_filter: dict[str, int]) -> None:
         stream.close()
 
 
-# --- UnverifiedReadWatch -------------------------------------------------------------
+# --- UnverifiedPasswordReadWatch -------------------------------------------------------------
 
 
 class _Calls:
@@ -345,9 +382,9 @@ class _Calls:
 
 def _watch(
     data: bytes, *, seek_keeps_digest: bool = False
-) -> tuple[UnverifiedReadWatch, _Calls]:
+) -> tuple[UnverifiedPasswordReadWatch, _Calls]:
     calls = _Calls()
-    watch = UnverifiedReadWatch(
+    watch = UnverifiedPasswordReadWatch(
         io.BytesIO(data),
         size=len(data),
         on_unverified=calls,
@@ -393,7 +430,7 @@ def test_watch_is_silent_after_a_read_error() -> None:
             return super().read(n)
 
     calls = _Calls()
-    watch = UnverifiedReadWatch(
+    watch = UnverifiedPasswordReadWatch(
         _Failing(b"0123456789"), size=10, on_unverified=calls, seek_keeps_digest=False
     )
     watch.read(2)
@@ -434,7 +471,7 @@ def test_a_seek_keeps_the_digest_when_the_inner_keeps_it() -> None:
 
 def test_rejecting_codec_budget_cut_after_a_large_crc_less_item() -> None:
     # A large CRC-less first item does not drag the prefix past the budget.
-    plan = plan_confirm(
+    plan = plan_password_confirm(
         [(200 * BUDGET, None), (10, 10)], None, budget=BUDGET, codec_rejects=True
     )
     assert plan.segments == ((BUDGET, None),)

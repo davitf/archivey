@@ -408,7 +408,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         zip_reader._UnconfirmedZipCryptoStream,
         # Wraps an encrypted member's decoded stream to watch for an abandoned read;
         # nothing above it asks it for a resume offset.
-        password_confirm.UnverifiedReadWatch,
+        password_confirm.UnverifiedPasswordReadWatch,
         detection._BoundedPeekReader,
         # Stands in for a refused .lzma decoder: every read raises, so it produces no
         # bytes and has no seek-point table to forward to.
@@ -548,7 +548,7 @@ def test_delegating_stream_close_inventory() -> None:
         codecs._GzipTruncationCheckStream,
         codecs._Bzip2EmptyStreamCheck,
         zip_reader._UnconfirmedZipCryptoStream,
-        password_confirm.UnverifiedReadWatch,
+        password_confirm.UnverifiedPasswordReadWatch,
     }
     subclass_closes_inner = {
         rar_reader._UnrarOwnedStream,

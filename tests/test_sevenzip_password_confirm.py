@@ -24,9 +24,9 @@ from archivey import open_archive
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import ArchiveyError, EncryptionError
 from archivey.internal.password_confirm import (
-    CONFIRM_PREFIX_BYTES,
-    ConfirmPlan,
-    plan_confirm,
+    PASSWORD_CONFIRM_PREFIX_BYTES,
+    PasswordConfirmPlan,
+    plan_password_confirm,
 )
 from tests.conftest import requires, requires_binary
 
@@ -121,10 +121,10 @@ def _first_member_read(archive: Path, password: object) -> tuple[bytes, object]:
 
 def _walk_whole_unit(
     substreams: object, tail_crc: object, *, budget: int, codec_rejects: bool
-) -> ConfirmPlan:
+) -> PasswordConfirmPlan:
     # The mutation: the pre-change ladder, which walked every member CRC to the end.
     items = list(substreams)  # type: ignore[call-overload]
-    return ConfirmPlan(tuple(items), None, confirms=True, bounded=False)
+    return PasswordConfirmPlan(tuple(items), None, confirms=True, bounded=False)
 
 
 def _build_solid_copy(tmp_path: Path, files: dict[str, bytes]) -> Path:
@@ -165,7 +165,7 @@ def test_solid_folder_confirm_decodes_only_the_first_member(
     assert confirm.bytes_read == _SMALL
 
     # Mutation check: with the plan walking the folder, the same count sees it all.
-    monkeypatch.setattr(sevenzip_reader_mod, "plan_confirm", _walk_whole_unit)
+    monkeypatch.setattr(sevenzip_reader_mod, "plan_password_confirm", _walk_whole_unit)
     streams.clear()
     _first_member_read(archive, _PASSWORD)
     assert streams[0].bytes_read == _SMALL + _BIG
@@ -181,12 +181,12 @@ def test_lzma2_late_crc_confirm_reads_the_prefix_only(
     assert data == big[:1]
     # A rejecting codec settles a wrong key inside the prefix; the CRC at 4 MiB is not
     # walked.
-    assert streams[0].bytes_read == CONFIRM_PREFIX_BYTES
+    assert streams[0].bytes_read == PASSWORD_CONFIRM_PREFIX_BYTES
     # Accepted without a checksum, then abandoned: reported.
     assert diagnostics.counts.get(DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED) == 1
 
     # Mutation check: a plan that walks to the CRC reads the whole member.
-    monkeypatch.setattr(sevenzip_reader_mod, "plan_confirm", _walk_whole_unit)
+    monkeypatch.setattr(sevenzip_reader_mod, "plan_password_confirm", _walk_whole_unit)
     streams.clear()
     _first_member_read(archive, _PASSWORD)
     assert streams[0].bytes_read == _BIG
@@ -276,7 +276,7 @@ def test_inconclusive_candidate_is_not_promoted_when_ambiguous(
 
 def test_plan_confirm_is_what_the_reader_calls() -> None:
     # The mutation checks above patch this name; make sure it is the planner itself.
-    assert sevenzip_reader_mod.plan_confirm is plan_confirm
+    assert sevenzip_reader_mod.plan_password_confirm is plan_password_confirm
 
 
 class _PackCounter:
@@ -321,8 +321,8 @@ _SMALL_CAP = 256 * 1024
 
 def _bounded_plan(
     substreams: object, tail_crc: object, *, budget: int, codec_rejects: bool
-) -> ConfirmPlan:
-    return plan_confirm(
+) -> PasswordConfirmPlan:
+    return plan_password_confirm(
         substreams,  # type: ignore[arg-type]
         tail_crc,  # type: ignore[arg-type]
         budget=budget,
@@ -338,7 +338,9 @@ def test_input_cap_bounds_the_packed_bytes_and_running_out_is_inconclusive(
 
     data = random.Random(7).randbytes(3 * 1024 * 1024)
     archive = _build(tmp_path, "bzip2", {"big.bin": data}, method="BZip2", solid=True)
-    monkeypatch.setattr(sevenzip_reader_mod, "CONFIRM_MAX_INPUT_BYTES", _SMALL_CAP)
+    monkeypatch.setattr(
+        sevenzip_reader_mod, "PASSWORD_CONFIRM_MAX_INPUT_BYTES", _SMALL_CAP
+    )
     counters = _count_pack_reads(monkeypatch)
     with open_archive(archive, password=_PASSWORD) as reader:
         member = next(m for m in reader.members() if m.is_file)
@@ -361,11 +363,13 @@ def test_input_cap_bounds_the_packed_bytes_and_running_out_is_inconclusive(
 
     # Mutation check: an unbounded plan takes no cap, and the same count sees bzip2
     # read its whole first block.
-    def unbounded(*args: object, **kwargs: object) -> ConfirmPlan:
+    def unbounded(*args: object, **kwargs: object) -> PasswordConfirmPlan:
         plan = _bounded_plan(*args, **kwargs)  # type: ignore[arg-type]
-        return ConfirmPlan(plan.segments, plan.unit_crc, plan.confirms, bounded=False)
+        return PasswordConfirmPlan(
+            plan.segments, plan.unit_crc, plan.confirms, bounded=False
+        )
 
-    monkeypatch.setattr(sevenzip_reader_mod, "plan_confirm", unbounded)
+    monkeypatch.setattr(sevenzip_reader_mod, "plan_password_confirm", unbounded)
     counters.clear()
     _first_member_read(archive, _PASSWORD)
     assert counters[0].bytes_read > _SMALL_CAP

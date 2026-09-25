@@ -516,9 +516,9 @@ ladder (`internal/password_confirm.py`), not a folder walk. It stops at the
 earliest CRC covering at least 4 bytes, so a solid folder's first member
 decides. A chain holding a codec that rejects random input (LZMA1, LZMA2,
 BZip2, Deflate, Deflate64, Zstandard, LZ4) never walks a CRC past
-`CONFIRM_PREFIX_BYTES` (64 KiB of plaintext): the decoder settles a wrong key
+`PASSWORD_CONFIRM_PREFIX_BYTES` (64 KiB of plaintext): the decoder settles a wrong key
 inside that prefix, and the compressed input feeding it is capped at
-`CONFIRM_MAX_INPUT_BYTES` (1 MiB). A folder with no CRC is never decoded past
+`PASSWORD_CONFIRM_MAX_INPUT_BYTES` (1 MiB). A folder with no CRC is never decoded past
 the prefix just to find that out. The correct password no longer pays a full
 folder decode before its member is served.
 

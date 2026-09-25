@@ -291,14 +291,14 @@ other than `0x3F` SHALL be accepted only when `≤ 24`; values 25–62 SHALL rai
 Because 7z AES carries no password check value in the format, wrong-password detection
 relies on integrity anchors and codec rejection, applied as the `archive-reading`
 confirmation ladder. 7z fills that ladder's cheap-key-check rung in
-`sevenzip-aes-tail-key-check`; this requirement starts at the anchor. The reader SHALL cache derived keys by
-`(password, salt, cycles)` and try known-good passwords first.
+`sevenzip-aes-tail-key-check`; this requirement starts at the anchor. The reader SHALL
+cache derived keys by `(password, salt, cycles)` and try known-good passwords first.
 
 **Integrity anchor.** Confirmation SHALL stop at the earliest sufficient anchor rather
 than decoding the folder: per-member CRCs are consulted in substream order, and the plan
 terminates once CRC-verified bytes reach 4. A folder digest SHALL be used only when it is
 the earliest such anchor — a folder carrying both a digest and per-member CRCs SHALL
-anchor on the members. If that anchor sits past `CONFIRM_PREFIX_BYTES` and the chain
+anchor on the members. If that anchor sits past `PASSWORD_CONFIRM_PREFIX_BYTES` and the chain
 has a rejecting codec, the plan SHALL NOT walk it (codec rejection settles a wrong
 key). If the chain has no rejecting codec, the plan SHALL walk it anyway.
 
@@ -316,11 +316,11 @@ When an encrypted folder has **no** folder digest and a member has **no** CRC
 (format-legal for store/copy), the system SHALL still return decoded bytes (best-effort,
 matching 7-Zip) and SHALL emit `DIGEST_UNVERIFIABLE` with
 `DigestContext.reason="no_integrity_anchor"` — it MUST NOT imply the decryption was
-authenticated. The reader SHALL NOT decode such a folder merely to
-discover that nothing can be checked — several candidates do not change that. After decoding a header-encrypted
-`kEncodedHeader`, a parsed result with zero file records SHALL raise `EncryptionError`
-(legitimate writers never encrypt an empty header) so a wrong password cannot open as a
-silent empty listing.
+authenticated. The reader SHALL NOT decode such a folder merely to discover that nothing
+can be checked — several candidates do not change that. After decoding a
+header-encrypted `kEncodedHeader`, a parsed result with zero file records SHALL raise
+`EncryptionError` (legitimate writers never encrypt an empty header) so a wrong password
+cannot open as a silent empty listing.
 
 #### Scenario: encryption matrix
 
@@ -342,7 +342,7 @@ silent empty listing.
 | Store/copy, no CRC, two candidates | First candidate; `DIGEST_UNVERIFIABLE`; confirmation ≤ budget |
 | Ambiguous candidates, store/copy folder, only CRC at folder end | Unbounded pass; the candidate matching the CRC wins |
 | AES → Delta → Copy or AES → BCJ → Copy | Treated as non-rejecting (the filter does not reject random input) |
-| Rejecting chain, packed input past 1 MiB before the prefix is decoded | Input capped at `CONFIRM_MAX_INPUT_BYTES`; running out of it is `INCONCLUSIVE`, not a rejection |
+| Rejecting chain, packed input past 1 MiB before the prefix is decoded | Input capped at `PASSWORD_CONFIRM_MAX_INPUT_BYTES`; running out of it is `INCONCLUSIVE`, not a rejection |
 | Solid folder, first member 4 KiB, folder 200 MiB | Confirmation decodes the first member only |
 | Folder carrying both a folder digest and per-member CRCs | Anchors on the earliest member CRC, not the folder digest |
 
