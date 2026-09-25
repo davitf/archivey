@@ -164,6 +164,9 @@ class SphinxRolesToAutorefs(Extension):
     inline code. Optional means an unresolvable target (an internal helper, a stdlib
     class) never fails ``mkdocs build --strict``.
 
+    The rewrite is unconditional: a role inside a literal or code block is rewritten
+    too, so a docstring cannot show role syntax verbatim.
+
     Targets are resolved the way Sphinx would: a dotted path is used as written, a bare
     name is looked up in the scope of the object whose docstring holds it, and a leading
     ``~`` shows only the last component. The resolved path is then mapped to the public
@@ -208,8 +211,10 @@ def _public_paths(pkg: Module) -> dict[str, str]:
 
 
 def _exists(obj: Object, path: str) -> bool:
+    # get_member is griffe's producer-side lookup: declared members only. Subscripting
+    # would also compute inherited members, which the API page gives no anchor.
     try:
-        obj.modules_collection[path]
+        obj.modules_collection.get_member(path)
     except (KeyError, AliasResolutionError, CyclicAliasError):
         return False
     return True
@@ -285,6 +290,12 @@ def _rewrite_section(
         section.value = _rewrite_text(obj, value, public)
         return
     items = value if isinstance(value, list) else [value]
+    # Examples sections hold (kind, text) tuples, which are immutable: rebuild the list.
+    if isinstance(value, list) and value and isinstance(value[0], tuple):
+        section.value = [
+            (kind, _rewrite_text(obj, text, public)) for kind, text in value
+        ]
+        return
     for item in items:
         description = getattr(item, "description", None)
         if isinstance(description, str):
