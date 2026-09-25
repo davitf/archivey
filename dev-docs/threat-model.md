@@ -33,7 +33,10 @@ per folder) and keep the header-size bound only. RAR applies
 `stream_members()` / `streaming=True` are not an escape hatch for RAR. ZIP
 still caps at `members()`. `None` (`ListingLimits.UNLIMITED`) disables that
 bound. `max_metadata_bytes` remains a materialization guard on every format,
-including 7z and RAR. Format-local parser bounds (e.g. 7z count fields vs
+including 7z and RAR. RAR also checks it at `open_archive` against the summed
+declared sizes of compressed RAR 1.5/2.x comments, before decoding any, since
+those expand after the parse; that bounds comment bytes, not the one `unrar`
+spawn each still costs. Format-local parser bounds (e.g. 7z count fields vs
 header size → `CorruptionError`; 7z per-folder coder/in-out counts at
 `_MAX_NUM_STREAMS`) stay as defense-in-depth. RAR no longer has a separate
 `_MAX_ARCHIVE_MEMBERS` parser constant. RAR5 QO records that are not FILE
