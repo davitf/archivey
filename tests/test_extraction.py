@@ -1862,14 +1862,14 @@ _DUPLICATE_NAME_CASES: dict[str, list[tuple]] = {
 # the first ``A.txt``, which it cannot yet know is shadowed. That needs the future.
 
 
-def _tree(root: Path) -> dict[str, object]:
+def _tree(root: Path) -> dict[object, object]:
     """Everything under ``root``: file bytes, symlink targets, and bare directories.
 
-    On POSIX, files that share an inode are also listed under ``"hardlinks"`` as groups
+    On POSIX, files that share an inode are also listed under ``("hardlinks",)`` as groups
     of paths, so a copy where the other mode made a link shows up.
     """
-    tree: dict[str, object] = {}
-    inodes: dict[int, list[str]] = {}
+    tree: dict[object, object] = {}
+    inodes: dict[tuple[int, int], list[str]] = {}
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root).as_posix()
         if path.is_symlink():
@@ -1878,9 +1878,11 @@ def _tree(root: Path) -> dict[str, object]:
             tree[rel] = "dir"
         else:
             tree[rel] = path.read_bytes()
-            inodes.setdefault(path.stat().st_ino, []).append(rel)
+            st = path.stat()
+            inodes.setdefault((st.st_dev, st.st_ino), []).append(rel)
     if os.name == "posix":
-        tree["hardlinks"] = sorted(g for g in inodes.values() if len(g) > 1)
+        # A tuple key, so no member path can land on it.
+        tree[("hardlinks",)] = sorted(g for g in inodes.values() if len(g) > 1)
     return tree
 
 
@@ -2015,6 +2017,41 @@ def test_streaming_duplicate_name_is_not_counted_against_the_limits(
             ExtractionStatus.EXTRACTED,
         ]
         assert (dest / "a.txt").read_bytes() == payload
+
+
+def test_streaming_duplicate_name_holds_a_copy_it_could_not_remove(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused removal leaves the run's own entry, which the next copy replaces."""
+    archive = _tar_bytes(
+        [
+            ("file", "a.txt", b"one"),
+            ("file", "a.txt", b"two"),
+            ("file", "a.txt", b"three"),
+        ]
+    )
+    dest = tmp_path / "out"
+    real_unlink = os.unlink
+
+    def refusing_unlink(path: object, *args: object, **kwargs: object) -> None:
+        if Path(str(path)) == dest / "a.txt":
+            raise PermissionError(errno.EACCES, "refused", str(path))
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    seen: list[str] = []
+
+    def drop_second(member: ArchiveMember) -> ArchiveMember | None:
+        seen.append(member.name)
+        return None if len(seen) == 2 else member
+
+    monkeypatch.setattr(os, "unlink", refusing_unlink)
+    with open_archive(io.BytesIO(archive), streaming=True) as reader:
+        results = reader.extract_all(dest, filter=drop_second).results
+    assert [r.status for r in results] == [
+        ExtractionStatus.SUPERSEDED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert (dest / "a.txt").read_bytes() == b"three"
 
 
 def test_streaming_duplicate_name_kept_by_a_hardlink_still_counts(

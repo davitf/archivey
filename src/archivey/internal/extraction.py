@@ -374,6 +374,10 @@ class ExtractionCoordinator:
         # same name is handled so that copy can replace it atomically. Only ever one, and
         # only for the length of one member; see ``_supersede_written_copy``.
         self._stale_path: Path | None = None
+        # Superseded copies the filesystem refused to remove, by archive name. The next
+        # member of that name gets it back as its ``_stale_path``, so it can still
+        # replace the run's own leftover instead of meeting it as a pre-existing entry.
+        self._unremoved: dict[str, Path] = {}
         # The reader ``run()`` is extracting from, for the one read ``_transform`` makes
         # on it: an accepted link's target. Set per ``run()``.
         self._reader: BaseArchiveReader | None = None
@@ -386,6 +390,8 @@ class ExtractionCoordinator:
         dest = Path(dest)
         forward_only = reader._streaming
         self._rename_next = {}
+        self._stale_path = None
+        self._unremoved = {}
 
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
@@ -552,6 +558,7 @@ class ExtractionCoordinator:
             self._collided_with = None
             self._retyped = False
             try:
+                self._stale_path = self._unremoved.pop(original.name, None)
                 earlier = current_by_name.get(original.name)
                 if earlier is not None:
                     self._supersede_written_copy(
@@ -709,7 +716,7 @@ class ExtractionCoordinator:
                 self._emit_progress = None
                 self._close(stream)
                 if self._stale_path is not None:
-                    self._drop_stale_copy(original, results)
+                    self._drop_stale_copy(original, results, written_paths)
 
             if member_started and recorded_index is not None:
                 counted[recorded_index] = tracker.member_bytes
@@ -775,11 +782,12 @@ class ExtractionCoordinator:
         not land there, ``_drop_stale_copy`` removes it once the member is done. Its
         claim, its place in the hardlink source lists and its bomb-limit counts are
         released now. A hardlink already made to it is its own directory entry and
-        stays, and its bytes stay counted against the byte cap while it holds them. A directory is removed now if it is empty; one that other members were
-        written into stays, as their parent, as it would in random access. An orphaned
-        hardlink waiting on the second pass is dropped with the result it would fill.
-        An error recorded on the earlier result is dropped with it: random access never
-        tried that copy.
+        stays, and its bytes stay counted against the byte cap while it holds them. A
+        directory is removed now if it is empty; one that other members were written
+        into stays, as their parent, as it would in random access. An orphaned hardlink
+        waiting on the second pass is dropped with the result it would fill. An error
+        recorded on the earlier result is dropped with it: random access never tried
+        that copy.
         """
         prior = results[index]
         path = prior.path
@@ -825,9 +833,18 @@ class ExtractionCoordinator:
         )
 
     def _drop_stale_copy(
-        self, original: ArchiveMember, results: list[ExtractionResult]
+        self,
+        original: ArchiveMember,
+        results: list[ExtractionResult],
+        written_paths: set[Path],
     ) -> None:
-        """Remove the superseded copy unless the member just handled replaced it."""
+        """Remove the superseded copy unless the member just handled replaced it.
+
+        A removal the filesystem refuses is logged, not raised: this runs in a
+        ``finally``, where raising would replace the member's own error. The entry is
+        then still the run's own, so it goes back into ``written_paths`` (an anti-item
+        can still delete it) and is held for the next member of the same name.
+        """
         stale, self._stale_path = self._stale_path, None
         assert stale is not None
         latest = results[-1] if results else None
@@ -843,8 +860,9 @@ class ExtractionCoordinator:
         except FileNotFoundError:
             pass
         except OSError as exc:
-            # Runs in a ``finally``: raising here would replace the member's own error.
             logger.warning("Could not remove superseded %r: %s", str(stale), exc)
+            written_paths.add(stale)
+            self._unremoved[original.name] = stale
 
     def _occupied(self, path: Path) -> bool:
         """Whether ``path`` holds an entry, not counting a superseded copy in waiting."""
