@@ -59,6 +59,7 @@ from archivey import (
 )
 from archivey.detection_cost import DetectionBudgetPreset, default_detection_budget
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.internal.arg_checks import check_instance
 
 # TypeError is permitted only for the arguments named here; see the module docstring.
 _TYPE_ERROR_OK = frozenset({"source", "dest"})
@@ -762,3 +763,18 @@ def test_members_bytes_message_does_not_advise_wrapping(
         with pytest.raises(ArchiveyUsageError) as caught:
             reader.extract_all(dest, members=b"notes.txt")
     assert "Pass [" not in str(caught.value)
+
+
+def test_class_passed_for_a_config_suggests_calling_it() -> None:
+    """``config=ArchiveyConfig`` (unparenthesised) is named back with the fix."""
+    with pytest.raises(ArchiveyUsageError, match=r"did you mean ArchiveyConfig\(\)\?"):
+        check_instance(ArchiveyConfig, ArchiveyConfig, call="f(config=…)")
+
+
+def test_class_of_the_wrong_kind_gets_no_constructor_hint() -> None:
+    """Calling the wrong class would only trade one usage error for another."""
+    with pytest.raises(ArchiveyUsageError) as info:
+        check_instance(ListingLimits, ExtractionLimits, call="f(limits=…)")
+    message = str(info.value)
+    assert "the ListingLimits class itself" in message
+    assert "did you mean" not in message

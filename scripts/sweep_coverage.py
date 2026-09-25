@@ -53,7 +53,10 @@ Counting rules, deliberately narrow:
   differ by more than 10% the file is reported as drifted — it was read, but not as it
   stands.
 * **A marker whose path is not in the tree** (renamed, moved, deleted) is reported and not
-  counted. It needs re-anchoring by hand.
+  counted. It needs re-anchoring by hand: a new marker at the new path, carrying the old
+  read's fields unchanged plus a final `moved_from=<old path>`. That marker counts the
+  file at its new path, and the old path stops being reported as orphaned. A file whose
+  code was folded into another is not re-anchored; it stays reported.
 * **Threads are never counted.** Nothing in here looks at findings to decide coverage;
   `findings=` is carried through for the per-batch report only.
 * **`ids=` is opaque.** It must be present, and that is all. Batches have used more than one
@@ -89,6 +92,7 @@ class Marker:
     findings: int
     reviewer: str
     head: str
+    moved_from: str | None = None
 
 
 def parse_markers(text: str) -> tuple[list[Marker], list[str]]:
@@ -120,6 +124,7 @@ def parse_markers(text: str) -> tuple[list[Marker], list[str]]:
                 findings=findings,
                 reviewer=fields["reviewer"],
                 head=fields["head"],
+                moved_from=fields.get("moved_from"),
             )
         )
     return markers, malformed
@@ -133,6 +138,21 @@ def newest_per_path(markers: list[Marker]) -> dict[str, Marker]:
         if previous is None or marker.date >= previous.date:
             latest[marker.path] = marker
     return latest
+
+
+def orphaned_paths(latest: dict[str, Marker], tree: dict[str, int]) -> list[str]:
+    """Marker paths that are gone from the tree and that no re-anchor marker answers.
+
+    A re-anchor is a marker at a path in the tree whose `moved_from=` names the old
+    path. The old marker is left alone on the hub as the record; it is only no longer
+    news.
+    """
+    re_anchored = {
+        marker.moved_from
+        for path, marker in latest.items()
+        if path in tree and marker.moved_from is not None
+    }
+    return sorted(set(latest) - set(tree) - re_anchored)
 
 
 def has_drifted(read_lines: int, tree_lines: int) -> bool:
@@ -202,7 +222,7 @@ def main() -> int:
     tree = tree_line_counts()
 
     swept = {path: marker for path, marker in latest.items() if path in tree}
-    orphaned = sorted(set(latest) - set(tree))
+    orphaned = orphaned_paths(latest, tree)
     drifted = [
         (path, marker.lines, tree[path])
         for path, marker in sorted(swept.items())

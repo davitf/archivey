@@ -83,7 +83,15 @@ def parse_sevenzip_aes_properties(properties: bytes) -> tuple[int, bytes, bytes]
             "(and to bound KDF cost)."
         )
     if first & 0xC0 == 0:
-        raise ValueError("7z AES properties missing salt/IV flags")
+        # No salt and no IV: 7-Zip takes the one-byte blob as a zero IV and an empty
+        # salt (``7zAes.cpp``, ``size == 1 ? S_OK : E_INVALIDARG``), and so does
+        # py7zr. Anything after that byte has no field to belong to.
+        if len(properties) != 1:
+            raise ValueError(
+                f"7z AES properties length {len(properties)} != expected 1 "
+                "(no salt or IV flags set)"
+            )
+        return cycles, b"", bytes(AES_BLOCK_SIZE)
     salt_size = (first >> 7) & 1
     iv_size = (first >> 6) & 1
     if len(properties) < 2:

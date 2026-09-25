@@ -521,6 +521,20 @@ def test_f3_parse_properties_allows_0x3f_sentinel() -> None:
     assert len(salt) == 1 and len(iv) == 16
 
 
+@pytest.mark.parametrize("first", [0x00, 0x13, 0x3F])
+def test_parse_properties_accepts_one_byte_without_salt_or_iv(first: int) -> None:
+    """7-Zip and py7zr take a flagless one-byte blob as no salt and a zero IV."""
+    cycles, salt, iv = sevenzip_aes.parse_sevenzip_aes_properties(bytes([first]))
+    assert cycles == first
+    assert salt == b""
+    assert iv == bytes(16)
+
+
+def test_parse_properties_refuses_trailing_bytes_without_flags() -> None:
+    with pytest.raises(ValueError, match="no salt or IV flags"):
+        sevenzip_aes.parse_sevenzip_aes_properties(b"\x13\x00")
+
+
 @requires("cryptography")
 def test_f3_out_of_range_still_value_error() -> None:
     with pytest.raises(ValueError, match="out of range"):

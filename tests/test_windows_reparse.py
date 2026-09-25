@@ -100,6 +100,21 @@ def test_junction_falls_back_to_the_substitute_name_without_its_nt_prefix() -> N
 
 
 @pytest.mark.parametrize(
+    "substitute",
+    [
+        pytest.param("\\??\\UNC\\server\\share\\dir", id="object-manager"),
+        pytest.param("\\\\?\\UNC\\server\\share\\dir", id="win32-long-path"),
+        pytest.param("\\??\\unc\\server\\share\\dir", id="lower-case"),
+    ],
+)
+def test_unc_substitute_name_keeps_its_leading_double_slash(substitute: str) -> None:
+    """`\\??\\UNC\\server\\share` names `\\\\server\\share`, not a relative `UNC/...`."""
+    parsed = parse_reparse_data(_reparse_buffer(IO_REPARSE_TAG_SYMLINK, substitute, ""))
+    assert parsed is not None
+    assert parsed.target == "//server/share/dir"
+
+
+@pytest.mark.parametrize(
     "data",
     [
         pytest.param(b"", id="empty"),

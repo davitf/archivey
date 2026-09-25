@@ -34,6 +34,7 @@ Spellings accepted for a member, all verified non-colliding by
 * its member **name** (``"SKIP"``, ``"BLOCKED_MEMBER"``)
 * either of those with any case, and with ``-`` and ``_`` used interchangeably — so the
   ``--abort-on blocked-member`` spelling from ``--help`` also works in a script
+* any of the above with surrounding whitespace
 
 ``format=`` is not an ``Enum`` (an :class:`~archivey.ArchiveFormat` is a ``(container,
 stream)`` pair), so its own spellings live in :mod:`archivey.internal.format_args`.
@@ -58,8 +59,9 @@ def normalize_spelling(text: str) -> str:
 
     Case and the ``-``/``_`` distinction are the two differences that carry no meaning
     across our spellings: the CLI writes ``blocked-member`` where the enum value is
-    ``blocked_member``, and a caller typing ``"STRICT"`` means ``"strict"``. Everything
-    else is preserved, including the dots in a format extension.
+    ``blocked_member``, and a caller typing ``"STRICT"`` means ``"strict"``. Leading and
+    trailing whitespace is dropped too, so ``" skip"`` from a config file still matches.
+    Everything else is preserved, including the dots in a format extension.
     """
     return text.strip().lower().replace("-", "_")
 

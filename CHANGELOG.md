@@ -73,6 +73,16 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A Windows symlink to a network share keeps its `//server/share` target.** A ZIP or
+  7z reparse buffer that named its target only as `\??\UNC\server\share` listed
+  the link as pointing at the relative path `UNC/server/share`.
+- **A 7z AES coder whose properties are one byte, with no salt and no IV, opens.** 7-Zip
+  reads that as an empty salt and a zero IV; archivey refused it as corrupt.
+- **`FormatInfo` and `DetectionConfidence` are on the API page**, with each field
+  documented. Both were public and returned by `detect_format`, but undocumented.
+- **A usage error no longer suggests calling the wrong class.** Passing
+  `limits=ListingLimits` where an `ExtractionLimits` belongs said "did you mean
+  ListingLimits()?"; the hint now appears only when that call would be accepted.
 - **A reader builds each member once, and every listing method hands out the same
   objects.** `members_report_if_available()`, `members()`, `get()`, `stream_members()`
   and `extract_all()` now share one member list filled by one walk of the archive's
