@@ -271,6 +271,7 @@ and surfaces as a missing-trailer warning, not `CorruptionError`. Random access 
 this case. A native TAR header walker (the 7z/RAR strategy applied to TAR, open-issues P3)
 would validate each header at its offset and close the streaming gap. Documented for users
 in `docs/formats.md` and `docs/gotchas.md`.
+Handbook: [`formats/tar.md`](formats/tar.md) §2.2, §7.
 
 ## WinRAR 3.x SHA-1 KDF mutates its input buffer (emulated)
 
