@@ -135,13 +135,41 @@ def test_rock_ridge_namespace_and_fidelity(rock_ridge_iso: Path) -> None:
         assert f.mode is not None and f.uid is not None and f.gid is not None
         assert f.modified is not None and f.modified.tzinfo is not None
         # pycdlib's TF record carries no creation time, only the attribute-change
-        # time (st_ctime): that goes to extra and ``created`` stays None.
+        # time (st_ctime): that is ``ctime`` and ``created`` stays None.
         assert f.created is None
         assert f.ctime.tzinfo is not None
         sym = by_name["sym"]
         assert sym.type == MemberType.SYMLINK
         assert sym.link_target == "file.txt"
         assert by_name["subdir/"].type == MemberType.DIRECTORY
+
+
+def test_rock_ridge_tf_with_both_times_fills_created_and_ctime() -> None:
+    # Rock Ridge is the one archive format that stores a creation time and an
+    # attribute-change time side by side, so a member can carry both.
+    import time
+    from types import SimpleNamespace
+
+    import pycdlib.dates
+
+    def short_date(*fields: int) -> pycdlib.dates.DirectoryRecordDate:
+        date = pycdlib.dates.DirectoryRecordDate()
+        date.new(time.mktime((*fields, 0, 0, 0)))
+        return date
+
+    tf = SimpleNamespace(
+        modification_time=None,
+        access_time=None,
+        creation_time=short_date(2020, 1, 2, 3, 4, 5),
+        attribute_change_time=short_date(2021, 6, 7, 8, 9, 10),
+    )
+    rr = SimpleNamespace(dr_entries=SimpleNamespace(tf_record=tf), ce_entries=None)
+    record = SimpleNamespace(date=None)
+    reader = object.__new__(IsoReader)
+    _, _, created, ctime = reader._timestamps(record, rr)  # type: ignore[arg-type]
+    assert created is not None and ctime is not None
+    assert (created.year, created.month, created.day) == (2020, 1, 2)
+    assert (ctime.year, ctime.month, ctime.day) == (2021, 6, 7)
 
 
 def test_joliet_namespace_and_fidelity(tmp_path: Path) -> None:

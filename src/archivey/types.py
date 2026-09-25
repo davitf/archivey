@@ -606,11 +606,12 @@ class ArchiveMember:
 
     From an archive: the Rock Ridge attribute-change time (ISO), the PAX ``ctime``
     record (TAR), or a creation slot whose writer fills it from ``st_ctime`` or
-    cannot be shown not to (RAR, 7z, ZIP; see :attr:`created`). An archive member
-    has at most one of ``created`` and ``ctime``, so ``member.created or
-    member.ctime`` is whichever creation-like time the archive stored. A directory
-    listing reports ``st_ctime`` on every OS but Windows, where Python's
-    ``st_ctime`` was the creation time before 3.12.
+    cannot be shown not to (RAR, 7z, ZIP; see :attr:`created`). A format with a
+    single creation slot (RAR, 7z, ZIP) fills at most one of ``created`` and
+    ``ctime``; Rock Ridge stores both times separately and so can fill both, as can a
+    directory listing. ``member.created or member.ctime`` prefers the birth time
+    when there is one. A directory listing reports ``st_ctime`` on every OS but
+    Windows, where Python's ``st_ctime`` was the creation time before 3.12.
 
     Extraction cannot restore it: every OS sets a file's ``st_ctime`` itself.
     """

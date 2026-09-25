@@ -49,8 +49,9 @@ behaviour. The complete list is on the two classes.
 `ArchiveMember.created` is a birth time or `None`, never Unix `st_ctime` (inode
 change). Several writers store `st_ctime` where a reader might expect a creation
 time: a Rock Ridge ISO, a Unix RAR, a PAX TAR, a 7z written on Unix, and a ZIP
-written on Unix by 7-Zip or libarchive. That time is `ArchiveMember.ctime` instead, and
-a member has at most one of the two. For ZIP the writer's host decides: a creation
+written on Unix by 7-Zip or libarchive. That time is `ArchiveMember.ctime` instead. RAR, 7z
+and ZIP have one creation slot, so a member has at most one of the two; Rock Ridge
+stores both times separately and can have both. For ZIP the writer's host decides: a creation
 time is `created` only from a FAT, OS/2, NTFS or VFAT host, and `ctime` from any
 other host, unknown included. 7-Zip and libarchive on macOS store `st_ctime` too. A
 writer that marks itself Unix while storing a birth time (libarchive on Windows) gets

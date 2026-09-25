@@ -299,8 +299,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   the creation slot of a RAR from a Unix or unknown host, a 7z member whose attributes
   hold a Unix mode, and a ZIP member from any host but FAT, OS/2, NTFS or VFAT (7-Zip on
   Linux and macOS fills the NTFS creation field from `st_ctime`, libarchive the
-  Extended Timestamp's). An archive member has at most one of the two, so
-  `member.created or member.ctime` is whichever the archive stored. Directory listing
+  Extended Timestamp's). RAR, 7z and ZIP have one creation slot and fill at most one
+  of the two; Rock Ridge stores both times and can fill both. Directory listing
   fills `ctime` from `st_ctime` except on Windows. The `rar.created_is_ctime` key is
   gone.
 - **Every public class and function reports `archivey` as its `__module__`.** Seventeen
