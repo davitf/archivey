@@ -535,16 +535,17 @@ def _zip_created(
 ) -> tuple[datetime | None, datetime | None]:
     """Split a member's stored creation time into ``(created, zip_ctime)``.
 
-    The writer's host decides what the time means, not the field that carries it: 7-Zip
-    on Linux fills the NTFS creation FILETIME from st_ctime (measured), and Info-ZIP on
-    Unix fills the Extended Timestamp's third time from it. A FAT, OS/2, NTFS or VFAT
-    host stores a birth time. Any other host, unknown included, has its time reported
-    as ``zip.ctime`` and ``created`` left None, as RAR does for an unknown ``host_os``.
+    The writer's host decides what the time means, not the field that carries it: on
+    Linux and macOS, 7-Zip and p7zip fill the NTFS creation FILETIME from st_ctime and
+    libarchive fills the Extended Timestamp's third time from it; on Windows the same
+    writers store the birth time. A FAT, OS/2, NTFS or VFAT host stores a birth time.
+    Any other host, unknown included, has its time reported as ``zip.ctime`` and
+    ``created`` left None, as RAR does for an unknown ``host_os``. Measured per writer
+    and OS in dev-docs/investigations/writer-timestamp-slots.md.
 
-    The header cannot tell a Linux writer from a macOS one (both stamp host 3), and a
-    macOS writer could store the birth time it has there. Which one 7-Zip and Info-ZIP
-    use on macOS is not measured; either way the time lands in ``zip.ctime``, so
-    ``created`` can miss a birth time but never holds st_ctime.
+    One measured writer loses a birth time this way: libarchive on Windows stamps host
+    3 but stores the birth time. It lands in ``zip.ctime``, so ``created`` can miss a
+    birth time but never holds st_ctime.
 
     The Extended Timestamp wins when both are present, the same precedence
     ``_zip_timestamps`` gives it for the other times.

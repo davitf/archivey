@@ -123,3 +123,20 @@ uv run --no-sync python scripts/exploration/capability_declaration_sweep.py
 uv run --no-sync python scripts/exploration/capability_declaration_sweep.py --compare
 uv run --no-sync python scripts/exploration/capability_declaration_sweep.py --write-snapshot
 ```
+
+## Writer timestamp slots — ZIP and 7z creation times
+
+`probe_writer_timestamps.py` archives one file with every ZIP/7z writer it finds
+(7-Zip, p7zip, Info-ZIP, libarchive `bsdtar`, `ditto`, `Compress-Archive`, the Explorer
+shell) and labels each stored time as the source file's birth, ctime, mtime or atime.
+Evidence for `dev-docs/investigations/writer-timestamp-slots.md`. Needs archivey
+importable (for the 7z header parser); missing writers are reported as skipped.
+
+```bash
+uv run python scripts/exploration/probe_writer_timestamps.py
+uv run python scripts/exploration/probe_writer_timestamps.py --out /tmp/archives --json /tmp/probe.json
+```
+
+The Linux/macOS/Windows matrix runs in CI: the `Writer timestamp probe` workflow
+(`.github/workflows/writer-timestamps.yml`) on demand from the Actions tab, and on PRs
+that change the probe.

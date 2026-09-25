@@ -483,7 +483,7 @@ def test_unknown_extra_field_before_timestamp(tmp_path: Path) -> None:
 
 def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
     # An Extended Timestamp (0x5455) with flags 0x07 carries modification, access and
-    # "creation" times (in that order). Info-ZIP on Unix fills the third from st_ctime,
+    # "creation" times (in that order). libarchive on Unix fills the third from st_ctime,
     # so from a Unix writer it goes to extra["zip.ctime"] and `created` stays None.
     mtime, atime, ctime = 1_600_000_000, 1_600_000_100, 1_600_000_200
     extra = struct.pack("<HHB iii", 0x5455, 13, 0x07, mtime, atime, ctime)
@@ -1184,7 +1184,7 @@ _NT_CTIME, _UT_CTIME = 1_500_000_000, 1_600_000_200
         (0, True),  # MS-DOS / FAT
         (10, True),  # NTFS
         (14, True),  # VFAT
-        (3, False),  # Unix: 7-Zip and Info-ZIP fill both slots from st_ctime
+        (3, False),  # Unix: 7-Zip (NTFS) and libarchive (UT) store st_ctime
         (19, False),  # OS X: not a DOS-attribute host
         (99, False),  # unknown host: meaning unknown
     ],

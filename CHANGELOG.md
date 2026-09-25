@@ -284,8 +284,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   attribute-change time, which `created` used to fall back to), `rar.ctime` (a Unix
   RAR's creation slot), `tar.ctime` (PAX `ctime`), `7z.ctime` (a member written on Unix,
   whose attributes hold a Unix mode) and `zip.ctime` (a ZIP member from any host but
-  FAT, OS/2, NTFS or VFAT, unknown included: 7-Zip on Linux fills the NTFS creation
-  field from `st_ctime` and Info-ZIP on Unix the Extended Timestamp's). `rar.ctime` is
+  FAT, OS/2, NTFS or VFAT, unknown included: 7-Zip on Linux and macOS fills the NTFS
+  creation field from `st_ctime` and libarchive the Extended Timestamp's). `rar.ctime` is
   set on every RAR member with a creation slot, Win32 ones too. The
   `rar.created_is_ctime` key is gone.
 - **Every public class and function reports `archivey` as its `__module__`.** Seventeen

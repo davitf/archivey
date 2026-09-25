@@ -49,12 +49,12 @@ behaviour. The complete list is on the two classes.
 `ArchiveMember.created` is a birth time or `None`, never Unix `st_ctime` (inode
 change). Several writers store `st_ctime` where a reader might expect a creation
 time: a Rock Ridge ISO, a Unix RAR, a PAX TAR, a 7z written on Unix, and a ZIP
-written on Unix by 7-Zip or Info-ZIP. That time is kept in `extra` under `iso.ctime`,
+written on Unix by 7-Zip or libarchive. That time is kept in `extra` under `iso.ctime`,
 `rar.ctime`, `tar.ctime`, `7z.ctime` or `zip.ctime`. For ZIP the writer's host
 decides: a creation time is `created` only from a FAT, OS/2, NTFS or VFAT host, and
-`extra["zip.ctime"]` from any other host, unknown included. Where the host cannot
-say which time it stored (a macOS writer stamps itself Unix), `created` is `None`
-rather than risk holding `st_ctime`.
+`extra["zip.ctime"]` from any other host, unknown included. 7-Zip and libarchive on macOS store `st_ctime`
+too. A writer that marks itself Unix while storing a birth time (libarchive on
+Windows) gets `created` of `None` rather than a risk of `st_ctime`.
 
 ## ZIP
 
