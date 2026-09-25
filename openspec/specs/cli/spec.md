@@ -52,6 +52,12 @@ Supported verbs in this capability:
 `list`, `test`, and `extract` SHALL support fnmatch member filters. Positional
 patterns after the archive path SHALL act as **include** filters (a member is
 selected when it matches any positional, or when no positional is given).
+A pattern SHALL match a member name as written, and also with any trailing `/`
+removed and `/` or `/*` appended, so `docs` and `docs/` select the directory `docs/`
+and every member under it, as `tar` does. On Windows a `\` in a pattern SHALL be
+read as `/`; elsewhere it SHALL stay a literal character. Includes, `--exclude` and
+the unmatched-pattern warning SHALL all use this matching. It is a CLI rule: the
+library's `members=` matches names exactly.
 `--exclude PATTERN` (repeatable, long-form only — no short flag) SHALL remove
 matching members; a member SHALL be processed when it matches an include (or none
 is given) AND matches no `--exclude`. The system SHALL NOT provide a redundant
@@ -168,6 +174,7 @@ other processed statuses are omitted from that line).
 | `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first **failure**; reports extracted/blocked counts before stop; policy blocks alone do not stop |
 | Subcommand includes fnmatch pattern(s) after the archive | Operation limited to matching member names (positional = include) |
 | `archivey extract <archive> out` where `out/` exists and matches no member | stderr warning with `(did you mean -d out?)`; exit `1` |
+| `archivey extract <archive> docs` with members `docs/`, `docs/a.txt`, `docs.txt` | Extracts `docs/` and `docs/a.txt`, not `docs.txt`; no warning |
 | `archivey extract <archive> '*.missing'` | stderr warning; exit `1` |
 | `archivey list <archive> '*.missing'` | stderr warning; exit `0` |
 | `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
@@ -345,3 +352,18 @@ filesystem entry literally named `-`.
 | --- | --- |
 | `archivey list -` | Non-zero exit; message states stdin archives are not supported yet |
 | `archivey extract -` | Same |
+
+### Requirement: The CLI uses only public API
+
+The `archivey.cli` package SHALL import nothing from `archivey.internal`. What it
+needs beyond `archivey.__all__` SHALL come from a public module, such as
+`archivey.terminal` for terminal-safe display. The CLI is the example other
+front ends copy, and an internal import would let an internal refactor break it
+without touching any public name.
+
+#### Scenario: CLI import boundary
+
+| Case | Expected |
+| --- | --- |
+| Any module under `src/archivey/cli/` | No `import archivey.internal…` or `from archivey.internal… import` |
+| One is added | `tests/test_cli_uses_public_api.py` fails, naming the file and line |

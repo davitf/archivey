@@ -22,8 +22,8 @@ from archivey.diagnostics import (
     NameNormalizationContext,
     raw_name_to_base64,
 )
-from archivey.escaping import quoted
 from archivey.internal.logs import normalization as logger
+from archivey.terminal import quoted
 from archivey.types import MemberType
 
 if TYPE_CHECKING:
@@ -311,8 +311,7 @@ def resolve_link_target_name(
     :func:`normalize_member_name`, which retains it in a name and leaves the refusal to
     extraction: a link that follows it would lead out of the extraction root, so a
     hardlink naming ``/abs`` does not resolve even when a member ``/abs`` exists. The escape test runs on the collapsed form for both kinds. The caller looks
-    the result up against normalized member names; directory members carry a trailing
-    ``/`` in their names, so lookups should try both forms.
+    the result up against normalized member names with :func:`link_target_name_keys`.
 
     A backslash in ``target`` is a literal character, exactly as in member names: the
     backend that decoded the member already converted ``\\`` to ``/`` where the source
@@ -336,3 +335,20 @@ def resolve_link_target_name(
     if member_type == MemberType.SYMLINK:
         return resolved
     return "/".join(seg for seg in joined.split("/") if seg not in ("", "."))
+
+
+def link_target_name_keys(target_name: str) -> tuple[str, ...]:
+    """The normalized member names that a resolved link target can refer to.
+
+    A link target is a raw name as the archiver stored it, and an archiver does not write
+    a trailing ``/`` on a directory target. The normalized name of a directory member
+    does carry one (:func:`normalize_member_name`). So a target without the ``/`` also
+    refers to the directory spelling. A target that ends in ``/`` refers only to itself:
+    the ``/`` says the target is a directory.
+
+    Names a caller passes (``members=``, ``get()``, ``open()``) are normalized names
+    already and match exactly; they do not go through this.
+    """
+    if target_name.endswith("/"):
+        return (target_name,)
+    return (target_name, target_name + "/")

@@ -48,7 +48,6 @@ from hashlib import pbkdf2_hmac
 from typing import BinaryIO, Protocol
 
 from archivey.config import ListingLimits
-from archivey.escaping import quoted
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
@@ -64,6 +63,7 @@ from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
 from archivey.internal.timestamps import filetime_to_datetime
+from archivey.terminal import quoted
 
 
 class _Readable(Protocol):

@@ -27,7 +27,6 @@ from archivey.config import (
 )
 from archivey.cost import AccessCost
 from archivey.diagnostics import DiagnosticCode
-from archivey.escaping import display_path
 from archivey.exceptions import (
     ArchiveyError,
     ConcurrentAccessError,
@@ -48,6 +47,7 @@ from archivey.internal.backends.rar_parser import (
     load_vint,
     parse_rar_archive,
 )
+from archivey.terminal import display_path
 from archivey.types import (
     EXTRA_RAR_CREATED_IS_CTIME,
     EXTRA_RAR_EXTRACT_VERSION,

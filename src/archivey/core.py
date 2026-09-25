@@ -23,12 +23,12 @@ from archivey.config import (
     ListingLimits,
     PasswordInput,
 )
+from archivey.detection import DetectionConfidence, FormatInfo
 from archivey.diagnostics import (
     DiagnosticCode,
     ExtractionReport,
     UnusedArgumentContext,
 )
-from archivey.escaping import display_path
 from archivey.exceptions import (
     ArchiveyUsageError,
     FormatDetectionError,
@@ -48,23 +48,9 @@ from archivey.internal.backends.zip_detect import (
     is_zip_split_segment_name,
 )
 from archivey.internal.config import stream_config_from_archivey
-from archivey.internal.detection import DetectionConfidence, FormatInfo, detect_format
+from archivey.internal.detection import detect_format
 from archivey.internal.diagnostics_collector import collector_from_config
-from archivey.internal.enum_args import (
-    coerce_enum,
-    coerce_enum_collection,
-)
-from archivey.internal.extraction_types import (
-    AbortOn,
-    AbortOnStr,
-    ExtractionPolicy,
-    ExtractionPolicyStr,
-    ExtractionProgress,
-    OnError,
-    OnErrorStr,
-    OverwritePolicy,
-    OverwritePolicyStr,
-)
+from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.format_args import (
     coerce_archive_format,
     coerce_stream_or_archive_format,
@@ -73,9 +59,6 @@ from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.open_site import OpenSite, capture_open_site
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import (
-    FormatAvailability,
-    FormatSupport,
-    MissingComponent,
     format_availability,
     get_registry,
     list_known_formats,
@@ -87,6 +70,7 @@ from archivey.internal.streams.codecs import codec_for_stream_format, open_codec
 from archivey.internal.streams.streamtools import (
     is_stream,
     raise_if_text_stream,
+    raise_if_write_only_stream,
 )
 from archivey.internal.volumes import (
     OpenSourceInput,
@@ -97,7 +81,25 @@ from archivey.internal.volumes import (
     resolve_source,
 )
 from archivey.reader import ArchiveReader
-from archivey.types import ArchiveFormat, ContainerFormat, MemberStreams, StreamFormat
+from archivey.terminal import display_path
+from archivey.types import (
+    AbortOn,
+    AbortOnStr,
+    ArchiveFormat,
+    ContainerFormat,
+    ExtractionPolicy,
+    ExtractionPolicyStr,
+    ExtractionProgress,
+    FormatAvailability,
+    FormatSupport,
+    MemberStreams,
+    MissingComponent,
+    OnError,
+    OnErrorStr,
+    OverwritePolicy,
+    OverwritePolicyStr,
+    StreamFormat,
+)
 
 if TYPE_CHECKING:
     from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -671,6 +673,7 @@ def open_stream(
     else:
         if not is_stream(source):
             raise_if_text_stream(source)
+            raise_if_write_only_stream(source)
             raise TypeError(
                 f"open_stream source must be a path or binary stream, got {type(source)!r}"
             )

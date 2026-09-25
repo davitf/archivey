@@ -15,26 +15,78 @@ if TYPE_CHECKING:
     from archivey.reader import ArchiveReader
 
 
+class _Pattern:
+    """One member pattern from the command line, as the CLI matches it.
+
+    Member names use ``/`` and a directory's name ends in ``/``, but a person typing a
+    pattern writes neither reliably. A pattern therefore matches a member when
+    ``fnmatchcase`` matches the name against any of:
+
+    - the pattern as written;
+    - the pattern without a trailing ``/``, plus ``/`` (``docs`` selects ``docs/``);
+    - that same base plus ``/*`` (``docs`` selects everything under ``docs/``, as
+      ``tar`` does). fnmatch's ``*`` also matches ``/``, so this is recursive.
+
+    On Windows a ``\\`` in the pattern is read as ``/``. Elsewhere it stays a literal
+    character, because a TAR member name can contain one.
+
+    This looseness is deliberate and CLI-only: the library's ``members=``, ``get()`` and
+    ``open()`` match stored names exactly (maintainer decision, easier to widen later).
+    Do not align the library with this.
+    """
+
+    __slots__ = ("forms", "text")
+
+    def __init__(self, text: str, *, backslash_is_separator: bool) -> None:
+        self.text = text
+        pattern = text.replace("\\", "/") if backslash_is_separator else text
+        base = pattern.rstrip("/")
+        # dict.fromkeys: "docs/" as written is already its own "base + /" form.
+        self.forms: tuple[str, ...] = (
+            tuple(dict.fromkeys((pattern, base + "/", base + "/*")))
+            if base
+            else (pattern,)
+        )
+
+    def matches(self, name: str) -> bool:
+        # fnmatchcase: deterministic across platforms (fnmatch is case-folding on Windows).
+        return any(fnmatch.fnmatchcase(name, form) for form in self.forms)
+
+
+def _compile(
+    texts: Sequence[str] | None, *, backslash_is_separator: bool | None = None
+) -> list[_Pattern]:
+    if backslash_is_separator is None:
+        backslash_is_separator = os.sep == "\\"
+    return [
+        _Pattern(text, backslash_is_separator=backslash_is_separator)
+        for text in texts or ()
+    ]
+
+
 def member_predicate(
     includes: Sequence[str] | None,
     excludes: Sequence[str] | None,
+    *,
+    backslash_is_separator: bool | None = None,
 ) -> Callable[[ArchiveMember], bool] | None:
     """Build a ``members=`` predicate from positional includes and ``--exclude``.
 
     A member is selected when it matches any include (or none are given) and matches
-    no exclude. Returns ``None`` when every member should be processed.
+    no exclude. Includes and excludes match the same way (see :class:`_Pattern`).
+    Returns ``None`` when every member should be processed.
+    ``backslash_is_separator`` defaults to whether this is Windows.
     """
-    include_pats = list(includes or ())
-    exclude_pats = list(excludes or ())
+    include_pats = _compile(includes, backslash_is_separator=backslash_is_separator)
+    exclude_pats = _compile(excludes, backslash_is_separator=backslash_is_separator)
     if not include_pats and not exclude_pats:
         return None
 
     def matches(member: ArchiveMember) -> bool:
         name = member.name
-        # fnmatchcase: deterministic across platforms (fnmatch is case-folding on Windows).
-        if include_pats and not any(fnmatch.fnmatchcase(name, p) for p in include_pats):
+        if include_pats and not any(p.matches(name) for p in include_pats):
             return False
-        if exclude_pats and any(fnmatch.fnmatchcase(name, p) for p in exclude_pats):
+        if exclude_pats and any(p.matches(name) for p in exclude_pats):
             return False
         return True
 
@@ -44,19 +96,33 @@ def member_predicate(
 def unmatched_include_patterns(
     includes: Sequence[str],
     members: Sequence[ArchiveMember],
+    *,
+    backslash_is_separator: bool | None = None,
 ) -> list[str]:
-    """Return include patterns that match no member names (order preserved)."""
+    """Return include patterns that match no member names (order preserved).
+
+    Uses the same pattern matching as :func:`member_predicate`, over the includes
+    only: ``--exclude`` is not considered, so an include whose every match is then
+    excluded is not reported here.
+    """
     if not includes:
         return []
-    hit = dict.fromkeys(includes, False)
+    patterns = _compile(
+        list(dict.fromkeys(includes)), backslash_is_separator=backslash_is_separator
+    )
+    hit = [False] * len(patterns)
     for member in members:
         name = member.name
-        for pattern, matched in hit.items():
-            if not matched and fnmatch.fnmatchcase(name, pattern):
-                hit[pattern] = True
-        if all(hit.values()):
+        for index, pattern in enumerate(patterns):
+            if not hit[index] and pattern.matches(name):
+                hit[index] = True
+        if all(hit):
             break
-    return [pattern for pattern, matched in hit.items() if not matched]
+    return [
+        pattern.text
+        for pattern, matched in zip(patterns, hit, strict=True)
+        if not matched
+    ]
 
 
 def warn_unmatched_includes(

@@ -1,27 +1,33 @@
-"""Escaping of attacker-controlled text for safe terminal display.
+"""Terminal-safe display of archive-derived text.
 
 Archive member names are attacker-controlled, and so is anything built from them —
 destination paths, link targets, the messages that embed them. A name carrying
 ``\\x1b[2K\\r`` can erase the line reporting it and author what the operator reads
 instead. GNU ``ls`` and ``tar`` quote for the same reason.
 
-This module is deliberately dependency-free: :mod:`archivey.exceptions` escapes its
-own messages with it, and ``archivey.cli`` escapes member names for display, so it
-has to sit below both without importing either.
+These helpers are for anyone who shows that text to a person: a command-line tool, a log
+viewer, a GUI's status line. archivey's own CLI is built on them, and so are its messages:
+:class:`~archivey.ArchiveyError` escapes its ``message`` with
+:func:`escape_control_chars`. The module is deliberately dependency-free, so it sits
+below :mod:`archivey.exceptions` without importing it.
 
-**Internal by convention.** Nothing here is exported from :mod:`archivey`, and none of
-it carries a stability promise — :func:`quoted` and :func:`display_path` in particular
-are call-site discipline for archivey's own messages (see
-:class:`~archivey.exceptions.ArchiveyError`) rather than an API for callers. If you are
-embedding archivey and need to render a member name safely in your own output,
-:func:`escape_control_chars` is the one to ask for; say so on the tracker and it can be
-promoted deliberately, with a requirement behind it.
+**Public, not re-exported.** Import from here (``from archivey.terminal import
+escape_control_chars``); these names are not in :mod:`archivey`. Everything in
+``__all__`` carries the same compatibility promise as ``archivey.__all__``.
+
+- :func:`escape_control_chars` — make text inert for display. The core defence.
+- :func:`display_path` — render a path ``/``-separated first, so escaping does not
+  double a Windows separator.
+- :func:`quoted` — delimit a name inside a message that is escaped once, later, as a
+  whole; ``!r`` would escape twice.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import PurePath
+
+__all__ = ["display_path", "escape_control_chars", "quoted"]
 
 # surrogateescape maps an undecodable byte 0xNN to U+DCNN, and only ever lands in this
 # range. A lone surrogate arriving by any other route is escaped as itself, not reversed

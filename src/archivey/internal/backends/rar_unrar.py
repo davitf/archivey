@@ -21,12 +21,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, cast
 
-from archivey.escaping import display_path
 from archivey.exceptions import (
     PackageNotInstalledError,
     ReadError,
     UnsupportedOperationError,
 )
+from archivey.terminal import display_path
 
 # Inclusive major.minor floor. ``-n`` glob demux and ``-ver`` were checked
 # against RARLAB unrar 6.02, 6.12, 6.24, and 7.00 (RAR data tests plus
@@ -656,6 +656,8 @@ def open_unrar_p(
         # anyway — every archive-read failure surfaces as an ArchiveyError, and a raw
         # RuntimeError here would cross open_archive untranslated.
         raise ReadError("unrar produced no stdout pipe")
+    # typeshed types Popen[bytes].stdout as IO[bytes], not BinaryIO; the pipe is opened
+    # in binary mode above, so it is one at runtime.
     return proc, cast(BinaryIO, proc.stdout)
 
 

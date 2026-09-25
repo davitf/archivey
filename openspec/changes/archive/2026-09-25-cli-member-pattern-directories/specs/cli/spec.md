@@ -1,0 +1,173 @@
+# cli — member pattern directories delta
+
+## MODIFIED Requirements
+
+### Requirement: archivey command with list, test, and extract subcommands
+
+The system SHALL provide an `archivey` command whose verbs are **subcommands**:
+each verb is a bare word (never dash-prefixed) with a single-letter bare-word
+alias. When no verb is present the verb SHALL default to `list`. Verb dispatch
+SHALL be **known-verb-wins**: if the first positional token is a registered verb
+or alias (including reserved verbs `hash` / `create` / `convert` / `cat`), the
+system SHALL dispatch that verb; otherwise it SHALL treat the token as an
+archive path and run `list`. Every token after a `--` separator is a
+positional, so a verb-shaped word there is an archive path: with no verb before
+the separator, the system SHALL insert `list` ahead of the `--` (`archivey --
+-weird.zip` lists `-weird.zip`; `archivey -- list` opens a file named `list`).
+The verb test SHALL be an exact match on the whole token: a bare
+verb word is a verb, and any path-qualified token (`./x`, `dir/x`, `/abs/x`)
+is an archive path and is listed. A file whose name equals a verb word SHALL be
+reachable by naming the verb explicitly (e.g. `archivey list x`) or by
+qualifying its path (`archivey ./x`). New verbs MAY
+be added later and take precedence over same-named files; the `list <path>`
+escape hatch is permanent. Verbs MUST NOT be selectable via a
+dash-prefixed option form (e.g. `-x` SHALL NOT mean `extract`); options always
+take a dash, verbs never do. Progress output SHALL use
+`tqdm` from `[recommended]` when available; core MUST NOT depend on `tqdm`. The console
+script and `python -m archivey` MUST be importable/runnable without installing
+`[recommended]` (progress suppressed if `tqdm` is absent).
+
+Supported verbs in this capability:
+
+| Verb | Alias | Role |
+| --- | --- | --- |
+| `list` | `l` | Inspect members (default verb) |
+| `test` | `t` | Full-read integrity check |
+| `extract` | `x` | Safe extraction |
+| `info` | `i`, `detect` | Format detection + archive identity |
+
+`list`, `test`, and `extract` SHALL support fnmatch member filters. Positional
+patterns after the archive path SHALL act as **include** filters (a member is
+selected when it matches any positional, or when no positional is given).
+A pattern SHALL match a member name as written, and also with any trailing `/`
+removed and `/` or `/*` appended, so `docs` and `docs/` select the directory `docs/`
+and every member under it, as `tar` does. On Windows a `\` in a pattern SHALL be
+read as `/`; elsewhere it SHALL stay a literal character. Includes, `--exclude` and
+the unmatched-pattern warning SHALL all use this matching. It is a CLI rule: the
+library's `members=` matches names exactly.
+`--exclude PATTERN` (repeatable, long-form only — no short flag) SHALL remove
+matching members; a member SHALL be processed when it matches an include (or none
+is given) AND matches no `--exclude`. The system SHALL NOT provide a redundant
+`--include` flag. When one or more include patterns are given, each pattern that
+matches no member SHALL produce a stderr warning
+(`warning: pattern matched no members: '…'`). When every include misses on
+`extract` or `test`, the command SHALL exit `1` after the warning(s). On `list`,
+the same warnings SHALL be emitted but the exit code SHALL remain `0` when the
+archive otherwise listed successfully. On `extract`, when there is exactly one
+unmatched include that names an existing directory or ends with `/`, the warning
+SHALL include a hint `(did you mean -d PATTERN?)`. Each invocation SHALL accept
+exactly **one** archive positional (multi-archive is out of scope for this
+capability). `--password` SHALL be accepted for encrypted archives; when an
+encrypted archive is opened, no `--password` was supplied, and stdin is a TTY,
+the system SHALL prompt for the password without echoing it.
+
+Command data output (member listings, info summaries) SHALL be written to
+**stdout**; progress bars, human summaries, prompts, and diagnostics SHALL be
+written to **stderr**.
+
+`--track-io` SHALL report I/O accounting for the operation using the internal
+measurement hook (decode/seek counters), without patching `builtins.open`. It is
+a maintainer/debug affordance and MUST NOT add a public library performance API.
+
+`list` SHALL obtain its member set via `ArchiveReader.members_report()` (or an
+equivalent report path). It SHALL print a human layer-1 member view by default
+(type, size, mtime, mode, encrypted flag, name; link target for links) for every
+recovered member in the report and MUST NOT show digests unless `--digests` is
+set (stored `member.hashes` only; no body read). When the report’s `error` is
+set, `list` SHALL still print the recovered members, SHALL emit a short stderr
+message naming the terminal archive error, and SHALL exit nonzero (`1`). `-v` /
+`--verbose` SHALL surface diagnostics when present.
+
+`test` SHALL fully read selected file members and verify stored digests through
+the shared verification stage (including CRC32 and Blake2sp where supported).
+Members with no stored digest SHALL count as OK when fully readable without
+error. `test` MUST NOT require emitting computed content hashes. By default
+`test` SHALL be quiet — printing only failures and a one-line summary
+(`N OK, M failed`) to stderr — and SHALL exit non-zero if any member fails;
+`-v` / `--verbose` SHALL add a per-member OK/FAIL line. When a cheap member
+index is available and the stream ends before every selected file member has
+been counted OK or failed (archive-wide error or solid/poisoned abort), the
+summary SHALL append `, K not tested` where `K` is the untested remainder.
+
+`extract` SHALL use safe-extraction defaults and SHALL expose
+`--policy {strict,standard,trusted}` mapping to `ExtractionPolicy` (CLI default
+`strict`). Destination SHALL be selected with `-d` / `--dest`; remaining
+positionals after the archive path SHALL be member filters only (no bare
+positional destination). When `-d` is given, extraction SHALL write into that
+directory verbatim (`-d .` reproduces classic splatter-into-cwd behavior). When
+`-d` is omitted, the destination SHALL default to a smart enclosing directory to
+avoid tarbombs. When a cheap member index is available without a streaming scan
+(ZIP / 7z / RAR central directory, etc.), tops SHALL be computed on the
+**filtered** member set: extract into `./<archive-stem>/` when that set has
+multiple top-level entries; extract into `.` when it already has a single
+top-level directory (no redundant nesting) or the archive is a
+single-file/single-stream archive. When no cheap index is available (plain TAR,
+future stdin sources, …), the destination SHALL initially be `./<archive-stem>/`
+(always wrap — no pre-extract metadata pass); after a successful extract, if
+that wrapper contains exactly one top-level entry, the system SHALL hoist it to
+the cwd and remove the wrapper. The hoist SHALL produce the same final layout
+as extracting directly into the cwd: directories merge into existing
+directories, and per-file collisions resolve by the overwrite policy (`rename`
+derives the library's `name (N)` spelling; `replace` replaces only the
+individual files being extracted; `skip` keeps the existing file). The hoist
+MUST NOT delete pre-existing files or directories under any policy. A collision
+the policy cannot resolve without deleting data (`error`, or a dir-vs-file
+shape under `replace`/`skip`) SHALL stop the hoist, leave the unmoved remainder
+under the wrapper, and exit nonzero — mirroring the failure a direct extraction
+would have hit. A sole root sharing the wrapper's own name (`src.tar.gz`
+containing `src/`) SHALL be flattened in place, not treated as a collision.
+Container-name collisions SHALL be resolved by the overwrite policy, with one
+exception: a symlink at the container name, dangling or live, SHALL be treated
+as taken under every overwrite policy and the next free `<stem> (N)` used,
+because the CLI chose that name rather than the operator. `-d` remains the way
+to extract through a link deliberately.
+Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME` exists
+(`--overwrite` may select `error` / `skip` / `replace` / `rename`).
+`extract` SHALL pass `OnError.CONTINUE` by default so policy rejections and
+per-member read failures are recorded (`blocked:` / `failed:` lines plus the
+closing summary) and remaining members are still extracted where the stream
+allows. `--stop-on-error` SHALL restore `OnError.STOP` for that invocation —
+stopping on member **failures** only. Policy `BLOCKED` outcomes are always
+reported-and-continued (library `OnError` does not halt on blocks; see
+`stop-on-failure-not-policy`). On an early stop (STOP-path failure or
+always-stop limit), the system SHALL still report how many members were
+**extracted** and how many were **blocked** before the stop (separate counts;
+other processed statuses are omitted from that line).
+
+#### Scenario: CLI behavior matrix
+
+| Case | Expected |
+| --- | --- |
+| `archivey <archive>` | Same as `archivey list <archive>` (first token is not a known verb → list) |
+| `archivey x <archive>` where `x` is also a file in the cwd | Dispatches `extract` (a bare verb word is a verb) |
+| `archivey ./x`, `archivey dir/x`, `archivey /abs/x` where the basename is a verb word | Lists that file (a path-qualified token is a path, never a verb) |
+| `archivey create <archive>` (reserved, unimplemented) | Usage error "not yet"; does not fall through to `list` |
+| `archivey cat <archive>` (reserved, unimplemented) | Usage error "not yet"; does not fall through to `list` |
+| `archivey list <archive>` / `archivey l <archive>` | Layer-1 member listing |
+| `archivey list <archive>` with recoverable prefix + terminal archive error | Prints recovered members on stdout; stderr names the error; exit `1` |
+| `archivey list <archive> --digests` | Listing includes stored digests; no member body read for digests alone |
+| `archivey test <archive>` / `archivey t <archive>` | Fully reads members, verifies stored digests, reports failures |
+| `archivey extract <archive>` / `archivey x …` | Extracts under `--policy` default `strict`, overwrite default `rename`, into the smart default dest |
+| `archivey extract <archive>` where archive has many top-level entries | Extracts into `./<archive-stem>/` (no cwd splatter) |
+| `archivey extract <indexed-archive>` where archive has a single top-level dir | Extracts into `.`; reuses the archive's root dir (no redundant `foo/foo/`) |
+| `archivey extract <indexed-archive> 'b/*'` where filtered set has single root `b/` | Extracts into `.` (tops on filtered set); lands as `./b/…` |
+| `archivey extract <no-index-archive>` (e.g. plain TAR) with a single top-level dir | Extracts into `./<stem>/` then hoists the single root to cwd |
+| `archivey extract <no-index-archive>` with multiple top-level entries | Extracts into `./<archive-stem>/` (no hoist) |
+| `archivey extract <archive>` needing a wrapper when `./<archive-stem>` is a symlink (dangling or to a directory), any `--overwrite` | Wraps in the next free `./<archive-stem> (N)/`; nothing is written through the link |
+| `archivey extract <archive> -d out/ '*.py'` | Dest is `out/` verbatim; `*.py` is a member filter |
+| `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
+| `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
+| `archivey extract <archive-with-traversal-and-safe-members>` | Safe members extracted; `blocked:` lines; exit `3` |
+| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first **failure**; reports extracted/blocked counts before stop; policy blocks alone do not stop |
+| Subcommand includes fnmatch pattern(s) after the archive | Operation limited to matching member names (positional = include) |
+| `archivey extract <archive> out` where `out/` exists and matches no member | stderr warning with `(did you mean -d out?)`; exit `1` |
+| `archivey extract <archive> docs` with members `docs/`, `docs/a.txt`, `docs.txt` | Extracts `docs/` and `docs/a.txt`, not `docs.txt`; no warning |
+| `archivey extract <archive> '*.missing'` | stderr warning; exit `1` |
+| `archivey list <archive> '*.missing'` | stderr warning; exit `0` |
+| `archivey extract <archive> '*.py' --exclude '*_test.py'` | Includes `*.py` minus `*_test.py`; exclude wins over include |
+| `archivey <verb> <archive> --include …` | Usage error — `--include` is not provided (use a positional) |
+| `[recommended]` extra absent / `tqdm` missing | Progress suppressed; command and library API remain functional |
+| `--track-io` supplied | Reports decode/seek accounting (bytes decompressed, compressed bytes consumed, source seeks) via the measurement hook; no `builtins` patching |
+| `archivey -- -weird.zip` | Lists `-weird.zip` (default `list` inserted ahead of `--`) |
+| `archivey -- list` | Opens a file named `list`; a verb word after `--` is an archive path |
+| `archivey -x <archive>` (dash-prefixed verb) | Usage error — verbs are bare words (`x`), not options; `-x` is not a mode selector |

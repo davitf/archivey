@@ -28,9 +28,8 @@ from archivey.exceptions import (
     SymlinkEscapeError,
     UnportableNameError,
 )
-from archivey.internal.extraction_types import ExtractionPolicy
 from archivey.internal.naming import BIDI_REORDERING_CONTROLS
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
 
 # Split a member name into path components on either separator; a ".." component after
 # this split is a traversal attempt regardless of which separator the archive used.

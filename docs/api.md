@@ -1,8 +1,9 @@
 # API reference
 
 Everything documented here is re-exported from the top-level `archivey` package and
-listed in `archivey.__all__`. Narrative guide: [Home](index.md). Authoritative
-contracts: `openspec/specs/`.
+listed in `archivey.__all__`, except the [front-end helpers](#front-end-helpers) at the
+end, which are imported from `archivey.terminal`. Narrative guide: [Home](index.md).
+Authoritative contracts: `openspec/specs/`.
 
 ## Opening archives
 
@@ -103,3 +104,13 @@ spec for lifecycle, retention, and policy.
 ::: archivey.DiagnosticRaisedError
 ::: archivey.ArchiveyUsageError
 ::: archivey.ConcurrentAccessError
+
+## Front-end helpers
+
+These live in the `archivey.terminal` module and are not re-exported from `archivey`.
+They are for showing archive-derived text, such as member names, to a person without
+letting it control the terminal. archivey's own command-line tool is built on them.
+
+::: archivey.terminal.escape_control_chars
+::: archivey.terminal.display_path
+::: archivey.terminal.quoted

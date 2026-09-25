@@ -33,6 +33,8 @@ _spec.loader.exec_module(gate)
 
 REPO = "davitf/archivey"
 SHA = "a" * 40
+# A head pushed after the round read `SHA`.
+LATER = "b" * 40
 
 
 def rounds(*verdicts: str, sha: str = "b" * 40) -> list[str]:
@@ -369,6 +371,19 @@ def test_every_finished_round_counts_and_records_what_it_read(name: str) -> None
     )
 
 
+def test_a_push_during_the_round_is_named_in_the_closing_comment() -> None:
+    later = "f" * 40
+    answer = finish(verdict_file(verdict="findings"), live_head_sha=later)
+    # The marker keeps the commit that was read: the fix-diff base and the retry guard
+    # key on it.
+    assert f"sha={SHA}" in answer.comment.splitlines()[0]
+    assert f"`{SHA[:8]}`" in answer.comment
+    assert f"`{later[:8]}`" in answer.comment
+    unmoved = finish(verdict_file(verdict="findings"), live_head_sha=SHA)
+    assert "Pushed during the round" not in unmoved.comment
+    assert "Pushed during the round" not in finish(verdict_file()).comment
+
+
 def test_a_garbled_verdict_file_still_counts() -> None:
     """The findings were posted; only the verdict could not be read."""
     answer = finish("unreadable")
@@ -508,9 +523,9 @@ def test_the_label_comes_off_before_the_review_runs() -> None:
 _BLOCK_INDENT = " " * 10
 
 
-def _close_step() -> str:
+def _close_step(name: str = "Close the round") -> str:
     lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if "- name: Close the round" in line)
+    start = next(i for i, line in enumerate(lines) if f"- name: {name}" in line)
     body = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
     out = []
     for line in lines[body + 1 :]:
@@ -534,8 +549,13 @@ def _close_step() -> str:
     ],
     ids=["missing", "conditional", "garbled", "not-an-object"],
 )
+@pytest.mark.parametrize("listing_fails", [False, True], ids=["listed", "unlisted"])
 def test_the_close_step_runs_as_written(
-    tmp_path: Path, verdict_text: str | None, counted: bool, label: str
+    tmp_path: Path,
+    verdict_text: str | None,
+    counted: bool,
+    label: str,
+    listing_fails: bool,
 ) -> None:
     """Run the step's own shell, with `gh` stubbed, against each shape of verdict file."""
     bash, jq = shutil.which("bash"), shutil.which("jq")
@@ -545,7 +565,19 @@ def test_the_close_step_runs_as_written(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stub = bin_dir / "gh"
-    stub.write_text(f'#!/bin/sh\necho "$@" >> {tmp_path}/gh.log\n', encoding="utf-8")
+    # The label listing answers with `labels.txt`, the live head with a commit the
+    # round did not read; every call is logged.
+    stub.write_text(
+        f'#!/bin/sh\necho "$@" >> {tmp_path}/gh.log\n'
+        f'case "$*" in *"labels[].name"*) cat {tmp_path}/labels.txt'
+        f"{' && exit 1' if listing_fails else ''} ;;\n"
+        f"  *headRefOid*) echo {LATER} ;; esac\n",
+        encoding="utf-8",
+    )
+    # Every outcome label but the first other is on, so the step must skip that one.
+    others = sorted(set(gate.OUTCOME_LABELS.values()) - {label})
+    present = [label, *others[1:]]
+    (tmp_path / "labels.txt").write_text("\n".join(["review", *present]) + "\n")
     stub.chmod(0o755)
 
     work = tmp_path / "work"
@@ -571,6 +603,9 @@ def test_the_close_step_runs_as_written(
     assert "pr comment 7" in calls
     posted = (work / "comment.md").read_text(encoding="utf-8")
     assert posted.startswith(gate.ROUND_MARKER) is counted
+    # The live head reaches the gate under the name it reads; a round that never
+    # finished reviewed nothing, so it has no push to name.
+    assert (f"now at `{LATER[:8]}`" in posted) is counted
 
     # One outcome label on, the other three off; none touched when nothing counted.
     added = [line for line in calls.splitlines() if "--method POST" in line]
@@ -580,7 +615,35 @@ def test_the_close_step_runs_as_written(
             f"api --method POST repos/{REPO}/issues/7/labels "
             f"-f labels[]={label} --silent"
         ]
-        assert len(removed) == len(set(gate.OUTCOME_LABELS.values())) - 1
-        assert not any(line.endswith(f"/labels/{label} --silent") for line in removed)
+        deleted = sorted(line.split("/labels/")[1].split()[0] for line in removed)
+        # A failed listing tries every other outcome label rather than none.
+        assert deleted == (others if listing_fails else others[1:])
     else:
         assert added == removed == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the step runs on ubuntu-latest")
+@pytest.mark.parametrize("comment", ["", "Not a round: the label is not on."])
+def test_a_refused_round_posts_only_a_comment_it_has(
+    tmp_path: Path, comment: str
+) -> None:
+    """An empty gate comment posts nothing: `gh` refuses a blank body and fails the job."""
+    bash, jq = shutil.which("bash"), shutil.which("jq")
+    if bash is None or jq is None:  # pragma: no cover - minimal runners
+        pytest.skip("needs bash and jq")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "gh"
+    stub.write_text(f'#!/bin/sh\necho "$@" >> {tmp_path}/gh.log\n', encoding="utf-8")
+    stub.chmod(0o755)
+    (tmp_path / "gate.json").write_text(json.dumps({"run": False, "comment": comment}))
+
+    script = _close_step("Say why no round runs").replace("/tmp/", f"{tmp_path}/")
+    env = os.environ | {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "PR": "7",
+        "GITHUB_REPOSITORY": REPO,
+    }
+    subprocess.run([bash, "-c", script], cwd=ROOT, env=env, check=True)  # noqa: S603
+    log = tmp_path / "gh.log"
+    assert log.exists() is bool(comment)

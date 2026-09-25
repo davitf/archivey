@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, TypeGuard
 
-from archivey.escaping import display_path
 from archivey.exceptions import (
     ArchiveyUsageError,
     OpenError,
@@ -30,6 +29,7 @@ from archivey.internal.streams.streamtools import (
     reject_source,
     source_name,
 )
+from archivey.terminal import display_path
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -953,7 +953,7 @@ class ResolvedSource:
     volume_count: int
 
 
-def _coerce_path_or_stream(item: SourceItem) -> Path | BinaryIO:
+def _coerce_path_or_stream(item: object) -> Path | BinaryIO:
     if isinstance(item, (str, Path)):
         return Path(item)
     # A caller stream goes into the join as it is: ``ConcatenatedFile`` gathers short
@@ -964,8 +964,17 @@ def _coerce_path_or_stream(item: SourceItem) -> Path | BinaryIO:
     return item
 
 
-def _is_source_sequence(source: OpenSourceInput) -> TypeGuard[SourceSequence]:
-    if isinstance(source, (str, Path, bytes)):
+def _is_source_sequence(source: object) -> TypeGuard[Sequence[object]]:
+    """Whether ``source`` is a list of volumes rather than one source.
+
+    Narrows to ``Sequence[object]``, not ``Sequence[SourceItem]``: the elements are
+    not checked here. Each one is checked where it is used, by
+    :func:`_coerce_path_or_stream` or :func:`_resolve_single`. The byte-buffer types
+    are excluded because they are sequences of ``int``, never of sources; they reach
+    the single-source refusal and are named there. The parameter is ``object`` because
+    the caller's value arrives unchecked, byte buffers included.
+    """
+    if isinstance(source, (str, Path, bytes, bytearray, memoryview)):
         return False
     if is_stream(source):
         return False

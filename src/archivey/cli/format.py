@@ -6,8 +6,8 @@ import os
 from datetime import datetime
 
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
-from archivey.escaping import display_path, escape_control_chars
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.terminal import display_path, escape_control_chars
 from archivey.types import ArchiveFormat, ArchiveMember, MemberType
 
 _TYPE_MARK = {
@@ -31,7 +31,7 @@ def format_format_label(fmt: ArchiveFormat) -> str:
 def escape_member_name(name: str) -> str:
     """Backslash-escape control bytes in a member name for safe terminal display.
 
-    A thin alias over :func:`archivey.escaping.escape_control_chars`, kept because
+    A thin alias over :func:`archivey.terminal.escape_control_chars`, kept because
     every CLI call site is escaping a member name (or a path built from one) and
     reads better for saying so. Exception messages escape themselves; the CLI does
     not escape them again, or the backslashes would double.
@@ -47,7 +47,7 @@ def escape_path(path: str | os.PathLike[str]) -> str:
     closing summary. Most are built from a member's top-level name or from the archive's
     own filename, and either can carry control bytes. Rendering ``/``-separated first
     keeps a native Windows path from having every separator doubled by the escape
-    (:func:`archivey.escaping.display_path`).
+    (:func:`archivey.terminal.display_path`).
     """
     return escape_control_chars(display_path(path))
 

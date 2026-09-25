@@ -40,7 +40,6 @@ from archivey.diagnostics import (
     SymlinkTargetContext,
     UnconfirmedFormatContext,
 )
-from archivey.escaping import escape_control_chars, quoted
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -63,23 +62,7 @@ from archivey.internal.diagnostics_collector import (
     EmitLog,
     collector_from_config,
 )
-from archivey.internal.enum_args import (
-    coerce_enum,
-    coerce_enum_collection,
-)
-from archivey.internal.extraction_types import (
-    AbortOn,
-    AbortOnStr,
-    ExtractionPolicy,
-    ExtractionPolicyStr,
-    ExtractionProgress,
-    MemberFilter,
-    MemberSelectorArg,
-    OnError,
-    OnErrorStr,
-    OverwritePolicy,
-    OverwritePolicyStr,
-)
+from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
 from archivey.internal.logs import backends as logger
@@ -90,13 +73,13 @@ from archivey.internal.measurement import (
 )
 from archivey.internal.naming import (
     emit_member_name_bidi_control,
+    link_target_name_keys,
     resolve_link_target_name,
 )
 from archivey.internal.open_site import OpenSite
 from archivey.internal.reader_state import LiveStreamReservation, ReaderState
 from archivey.internal.selection import (
     CollectionSelector,
-    member_name_keys,
     normalize_member_selector,
 )
 from archivey.internal.sfx import HitValidator
@@ -119,15 +102,27 @@ from archivey.internal.windows_reparse import (
     reparse_payload_length,
 )
 from archivey.reader import ArchiveReader, MemberSelector
+from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
+    AbortOn,
+    AbortOnStr,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    ExtractionPolicy,
+    ExtractionPolicyStr,
+    ExtractionProgress,
     HashAlgorithm,
     MagicSignature,
+    MemberFilter,
+    MemberSelectorArg,
     MemberStreams,
     MemberType,
+    OnError,
+    OnErrorStr,
+    OverwritePolicy,
+    OverwritePolicyStr,
 )
 
 MAX_LINK_TARGET_BYTES = 4096
@@ -1821,7 +1816,7 @@ class BaseArchiveReader(ArchiveReader):
         """Latest member matching ``target_name`` with ``member_id`` strictly before ``before_id``."""
         best: ArchiveMember | None = None
         best_id = -1
-        for name in member_name_keys(target_name):
+        for name in link_target_name_keys(target_name):
             for prior in reversed(by_name_lists.get(name, [])):
                 prior_id = prior._member_id
                 if prior_id is None:
@@ -1847,7 +1842,7 @@ class BaseArchiveReader(ArchiveReader):
         target_name: str, by_name_lists: Mapping[str, list[ArchiveMember]]
     ) -> ArchiveMember | None:
         """Last-wins lookup for a link target (tries bare and ``/``-suffixed names)."""
-        for name in member_name_keys(target_name):
+        for name in link_target_name_keys(target_name):
             candidates = by_name_lists.get(name)
             if candidates:
                 return candidates[-1]
@@ -1992,7 +1987,7 @@ class BaseArchiveReader(ArchiveReader):
         by_name_lists: Mapping[str, list[ArchiveMember]],
     ) -> ArchiveMember | None:
         """``_last_named_member``, looking only at members listed before ``before_id``."""
-        for name in member_name_keys(target_name):
+        for name in link_target_name_keys(target_name):
             for candidate in reversed(by_name_lists.get(name, [])):
                 candidate_id = candidate._member_id
                 if candidate_id is not None and candidate_id < before_id:

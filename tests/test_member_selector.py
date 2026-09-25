@@ -104,7 +104,7 @@ def test_stream_members_callable_collection_is_read_as_a_collection() -> None:
     assert selected == ["keep.txt"]
 
 
-# --- Directory spelling and unmatched entries (maintainer ruling on S25-K13) ---------
+# --- Exact name matching and unmatched entries (change member-selector-exact-names) ---
 
 
 def _tar(entries: list[tuple[str, bytes | None]]) -> bytes:
@@ -143,22 +143,21 @@ def _unmatched(summary: DiagnosticSummary) -> list[tuple[str, str]]:
 _DIR_TAR = [("dir", None), ("dir/f.txt", b"f")]
 
 
-def test_a_name_without_the_slash_selects_the_directory() -> None:
-    """``"dir"`` selects the member stored as ``"dir/"``, as link lookup does.
+def test_a_name_without_the_slash_does_not_select_the_directory() -> None:
+    """Names match exactly: ``"dir"`` is not ``"dir/"``, and the miss is reported.
 
-    Mutant: drop the ``name + "/"`` key from ``member_name_keys`` and nothing is
-    selected.
+    Mutant: add the ``name + "/"`` spelling to the selector's name keys and ``dir/`` is
+    selected with no diagnostic.
     """
     with open_archive(io.BytesIO(_tar(_DIR_TAR))) as ar:
         assert [m.name for m in ar.members()] == ["dir/", "dir/f.txt"]
-        selected = [m.name for m, _s in ar.stream_members(members=["dir"])]
-        assert selected == ["dir/"]
-        assert _unmatched(ar.diagnostics) == []
+        assert list(ar.stream_members(members=["dir"])) == []
+        assert _unmatched(ar.diagnostics) == [("dir", "name")]
 
 
-def test_extract_all_selects_the_directory_by_its_bare_name(tmp_path: Path) -> None:
+def test_extract_all_selects_the_directory_by_its_stored_name(tmp_path: Path) -> None:
     with open_archive(io.BytesIO(_tar(_DIR_TAR))) as ar:
-        report = ar.extract_all(tmp_path, members=["dir"])
+        report = ar.extract_all(tmp_path, members=["dir/"])
     assert [r.member.name for r in report] == ["dir/"]
     assert (tmp_path / "dir").is_dir()
     assert not (tmp_path / "dir" / "f.txt").exists()
@@ -166,16 +165,15 @@ def test_extract_all_selects_the_directory_by_its_bare_name(tmp_path: Path) -> N
 
 
 def test_a_name_with_the_slash_does_not_select_a_file() -> None:
-    """A trailing ``/`` says the caller meant a directory, so a file ``x`` is not it."""
     with open_archive(io.BytesIO(_tar([("x", b"file")]))) as ar:
         assert [m.name for m, _s in ar.stream_members(members=["x/"])] == []
         assert _unmatched(ar.diagnostics) == [("x/", "name")]
 
 
-def test_bare_name_selects_a_file_and_a_directory_of_that_name() -> None:
+def test_a_name_selects_only_the_member_with_that_exact_name() -> None:
     with open_archive(io.BytesIO(_tar([("x", b"file"), ("x", None)]))) as ar:
-        names = [m.name for m, _s in ar.stream_members(members=["x"])]
-    assert names == ["x", "x/"]
+        assert [m.name for m, _s in ar.stream_members(members=["x"])] == ["x"]
+        assert [m.name for m, _s in ar.stream_members(members=["x/"])] == ["x/"]
 
 
 def test_stream_members_reports_each_unmatched_name_once() -> None:
@@ -303,7 +301,7 @@ def test_stream_members_raise_comes_after_the_last_member() -> None:
 
 
 def test_get_matches_the_stored_directory_name_exactly() -> None:
-    """The directory spelling is a selector rule; get() still takes the stored name."""
+    """get() matches names exactly, the same as members=."""
     with open_archive(io.BytesIO(_tar(_DIR_TAR))) as ar:
         assert ar.get("dir") is None
         member = ar.get("dir/")
@@ -318,3 +316,39 @@ def test_a_repeated_member_entry_is_reported_once() -> None:
     with open_archive(io.BytesIO(data)) as ar:
         assert list(ar.stream_members(members=[foreign, foreign])) == []
         assert _unmatched(ar.diagnostics) == [("a.txt", "member")]
+
+
+def test_the_unmatched_report_names_the_directory_spelling() -> None:
+    """``"dir"`` against ``dir/`` is the one miss the strict rule creates, so its
+    message names the stored spelling. A plain typo gets no such hint."""
+    with open_archive(io.BytesIO(_tar(_DIR_TAR))) as ar:
+        list(ar.stream_members(members=["dir", "typo"]))
+        messages = {
+            d.context.entry: d.message
+            for d in ar.diagnostics.retained
+            if isinstance(d.context, SelectorUnmatchedContext)
+        }
+    assert "'dir/'" in messages["dir"]
+    assert "archive holds" not in messages["typo"]
+
+
+def test_a_symlink_target_without_the_slash_resolves_to_the_directory() -> None:
+    """Link targets are raw names, which carry no trailing ``/``; lookup tries both.
+
+    Mutant: make ``link_target_name_keys`` return only the name itself and
+    ``link_target_member`` becomes ``None``.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        directory = tarfile.TarInfo("subdir")
+        directory.type = tarfile.DIRTYPE
+        tar.addfile(directory)
+        link = tarfile.TarInfo("subdir_link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "subdir"
+        tar.addfile(link)
+    with open_archive(io.BytesIO(buf.getvalue())) as ar:
+        member = ar.get("subdir_link")
+        assert member is not None
+        assert member.link_target_member is not None
+        assert member.link_target_member.name == "subdir/"
