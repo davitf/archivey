@@ -283,6 +283,17 @@ raises `ResourceLimitError` at 1024:1. With the guard relaxed the output is dens
 seeking over holes is possible; whether holes should then still count against the ratio
 is an open question.
 
+## `max_metadata_bytes` weighs the values in `extra`, not the keys (open)
+
+`member_metadata_bytes` sums the string values of `extra`, one level of nested dicts
+included, and never counts a key. TAR keeps every PAX record as
+`extra["tar.pax_headers"]`, and a PAX keyword is a string of any length, so its bytes are
+retained unweighed. Measured: one member whose PAX record has a 100 000-byte keyword and a
+one-byte value weighs 4 bytes. 3 000 such members gzip to about 514 KiB and list under a
+1 MiB cap with about 300 MB of keywords held; only `max_members` ends that walk. Counting
+keys is a change to shared listing accounting, which moves the effective cap for every
+format that puts strings in `extra`.
+
 ## Pre-1970 Unix timestamps list as invalid on Windows only (open)
 
 Unix-seconds fields are converted with `datetime.fromtimestamp(ts, tz=timezone.utc)` in

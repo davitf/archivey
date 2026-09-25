@@ -126,8 +126,10 @@ def _header_text_bytes(info: tarfile.TarInfo) -> int:
     base weighs them at least as heavily (it adds ``raw_name`` and counts non-ASCII
     four to a character), so once this sum passes the cap the base has refused. The
     walk uses it to stop parsing where the byte cap would, without the base's running
-    total. ``linkname`` counts only on a link: on any other member ``_to_member``
-    drops it, so it is not retained.
+    total. ``linkname`` counts only on a link: on any other member
+    ``_drop_unweighed_link_name`` has already cleared it, so it is not retained.
+    PAX keywords are not counted, because the base does not weigh them either
+    (``dev-docs/known-issues.md``).
     """
     total = len(info.name) + len(info.uname) + len(info.gname)
     if info.issym() or info.islnk():
@@ -135,6 +137,17 @@ def _header_text_bytes(info: tarfile.TarInfo) -> int:
     for value in info.pax_headers.values():
         total += len(value)
     return total
+
+
+def _drop_unweighed_link_name(info: tarfile.TarInfo) -> None:
+    """Clear ``linkname`` on a member that is not a link.
+
+    A GNU long link name or PAX linkpath ahead of a header that is not a link has no
+    meaning, and no listing limit weighs it. Clearing it as the header is parsed keeps
+    it from being held for the rest of a batch, or on the retained ``TarInfo``.
+    """
+    if not (info.issym() or info.islnk()):
+        info.linkname = ""
 
 
 # Every compressed-tar combination the codec layer can decode: TAR composed with each
@@ -535,6 +548,7 @@ class TarReader(BaseArchiveReader):
                     # the shared fileobj, so it runs under the handle lock.
                     with self._handle_guard():
                         for info in tar_iter:
+                            _drop_unweighed_link_name(info)
                             batch.append(info)
                             text_bytes += _header_text_bytes(info)
                             if len(batch) == want or (
@@ -829,14 +843,15 @@ class TarReader(BaseArchiveReader):
             info, self._tar.encoding, self._tar.errors, self._tar.pax_headers
         )
 
-        if member_type in (MemberType.SYMLINK, MemberType.HARDLINK):
-            link_target = info.linkname
-        else:
-            link_target = None
-            # A GNU long link name or PAX linkpath on a member that is not a link has
-            # no meaning, and no listing limit weighs it; dropping it keeps the
-            # retained TarInfo within what max_metadata_bytes counted.
-            info.linkname = ""
+        # The random-access walk has already dropped a non-link's linkname as it
+        # parsed the header; the streaming walk parses one header at a time and
+        # drops it here.
+        _drop_unweighed_link_name(info)
+        link_target = (
+            info.linkname
+            if member_type in (MemberType.SYMLINK, MemberType.HARDLINK)
+            else None
+        )
 
         # tarfile folds a PAX mtime (sub-second/timezone) into TarInfo.mtime already, so this
         # one field honors both the standard ustar mtime and the PAX override. A hostile

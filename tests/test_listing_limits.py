@@ -269,7 +269,21 @@ def test_tar_drops_the_link_name_of_a_member_that_is_not_a_link(tmp_path: Path) 
             tf.addfile(info)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=100_000))
     with open_archive(tar_path, config=cfg) as reader:
+        # Headers are parsed a batch at a time, before any member is built, so the
+        # link names must already be gone when the first member is built, not only
+        # after the walk.
+        held_while_walking: list[int] = []
+        build = reader._to_member  # type: ignore[attr-defined]
+
+        def spy(info: tarfile.TarInfo, index: int) -> object:
+            held_while_walking.append(
+                sum(len(t.linkname) for t in reader._tar.members)  # type: ignore[attr-defined]
+            )
+            return build(info, index)
+
+        reader._to_member = spy  # type: ignore[attr-defined]
         members = reader.members()
+        assert held_while_walking and max(held_while_walking) == 0
         assert len(members) == 20
         assert all(m.link_target is None for m in members)
         tar = reader._tar  # type: ignore[attr-defined]
