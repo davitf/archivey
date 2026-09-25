@@ -319,9 +319,6 @@ argument. It MUST NOT raise.
 Each SHALL be emitted **at most once per `open_archive()` call**, before the reader is
 returned, so a caller can inspect `reader.diagnostics` without listing anything.
 
-An `encoding` value that came from detection's `encoding_hint` rather than from the
-caller SHALL NOT emit — the caller asked for nothing.
-
 `password=` SHALL open identically in all three forms (a single value, a sequence of
 candidates, a provider callable) on a format with no encryption: accepted, never
 consulted. A single value or a sequence SHALL record one diagnostic. A provider callable
@@ -335,7 +332,7 @@ wrong password on an *encrypted* archive is unaffected and still raises.
 | --- | --- |
 | `open_archive(iso, encoding="cp500")` | Opens; one `ENCODING_ARGUMENT_UNUSED`; names unchanged |
 | `open_archive(zip, encoding="cp500")` | No diagnostic; the encoding is applied |
-| Auto-detected encoding hint on a backend that ignores encoding | No diagnostic |
+| Auto-detected open with no `encoding=` on a backend that ignores encoding | No diagnostic |
 | `open_archive(tar, password="p")` / `password=["a","b"]` | Both open; one `PASSWORD_ARGUMENT_UNUSED` each; no `UnsupportedOperationError` |
 | `open_archive(tar \| gz \| directory, password=lambda r: "p")` | Opens; no `PASSWORD_ARGUMENT_UNUSED`; the provider is never called |
 | Wrong password on an encrypted ZIP | Unchanged: `EncryptionError` |

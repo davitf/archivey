@@ -282,6 +282,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   is now recognised by its sector sync pattern and refused with
   `UnsupportedFeatureError` naming the layout (Mode 1, Mode 2 Form 1 or 2, sector size).
   Reading one, by stripping its sectors to the 2048-byte payload, is not implemented.
+- **`FormatInfo` no longer has an `encoding_hint` field.** No detector ever set it, so it
+  was always `None`. The member-name encoding comes from `encoding=` or the backend's own
+  detection, as it already did in practice.
 - **`ArchiveReader.extract_all()` no longer takes `config=`.** It honoured only the
   extraction limits and silently dropped every other field, including a per-call
   diagnostic policy or callback. A reader runs under the config it was opened with;

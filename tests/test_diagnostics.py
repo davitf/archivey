@@ -768,12 +768,8 @@ def test_empty_archive_is_emitted_once_per_reader() -> None:
         assert reader.diagnostics.counts[DiagnosticCode.EMPTY_ARCHIVE] == 1
 
 
-def test_encoding_hint_from_detection_is_not_reported_unused() -> None:
-    """Only the *caller's* explicit encoding counts.
-
-    The detector's ``encoding_hint`` reaches the same backend parameter; a hint nobody
-    asked for going unused is not news, and reporting it would fire on ordinary opens.
-    """
+def test_auto_detected_open_without_encoding_is_not_reported_unused() -> None:
+    """Only the *caller's* explicit encoding counts; an ordinary open passes none."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("a.txt", b"hello")

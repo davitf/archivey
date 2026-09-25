@@ -3,8 +3,8 @@
 ## Purpose
 
 Identify archive format of a path or binary stream without fully opening it.
-Returns frozen `FormatInfo` (format, confidence, encoding hint, optional SFX
-offset, detection diagnostics). Detection never discards bytes the opener still
+Returns frozen `FormatInfo` (format, confidence, optional SFX offset, detection
+diagnostics). Detection never discards bytes the opener still
 needs.
 
 ## Related specs
@@ -41,14 +41,12 @@ class FormatInfo:
     format: ArchiveFormat
     confidence: DetectionConfidence
     detected_by: Literal["magic", "extension", "content_probe", "sfx_scan", "directory"]
-    encoding_hint: str | None
     payload_offset: int = 0
     diagnostics: DiagnosticSummary = DiagnosticSummary.empty()
 ```
 
 `config=None` → library default. `confidence` = magic / structural probe /
-extension-guess. `encoding_hint` is format-signal only (never a member scan).
-`payload_offset > 0` marks an SFX payload start.
+extension-guess. `payload_offset > 0` marks an SFX payload start.
 
 A **directory path** SHALL return `FormatInfo(format=DIRECTORY,
 confidence=CERTAIN, detected_by="directory")` without reading anything, the same
