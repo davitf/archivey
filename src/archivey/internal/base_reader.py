@@ -90,13 +90,13 @@ from archivey.internal.measurement import (
 )
 from archivey.internal.naming import (
     emit_member_name_bidi_control,
+    link_target_name_keys,
     resolve_link_target_name,
 )
 from archivey.internal.open_site import OpenSite
 from archivey.internal.reader_state import LiveStreamReservation, ReaderState
 from archivey.internal.selection import (
     CollectionSelector,
-    member_name_keys,
     normalize_member_selector,
 )
 from archivey.internal.sfx import HitValidator
@@ -1821,7 +1821,7 @@ class BaseArchiveReader(ArchiveReader):
         """Latest member matching ``target_name`` with ``member_id`` strictly before ``before_id``."""
         best: ArchiveMember | None = None
         best_id = -1
-        for name in member_name_keys(target_name):
+        for name in link_target_name_keys(target_name):
             for prior in reversed(by_name_lists.get(name, [])):
                 prior_id = prior._member_id
                 if prior_id is None:
@@ -1847,7 +1847,7 @@ class BaseArchiveReader(ArchiveReader):
         target_name: str, by_name_lists: Mapping[str, list[ArchiveMember]]
     ) -> ArchiveMember | None:
         """Last-wins lookup for a link target (tries bare and ``/``-suffixed names)."""
-        for name in member_name_keys(target_name):
+        for name in link_target_name_keys(target_name):
             candidates = by_name_lists.get(name)
             if candidates:
                 return candidates[-1]
@@ -1992,7 +1992,7 @@ class BaseArchiveReader(ArchiveReader):
         by_name_lists: Mapping[str, list[ArchiveMember]],
     ) -> ArchiveMember | None:
         """``_last_named_member``, looking only at members listed before ``before_id``."""
-        for name in member_name_keys(target_name):
+        for name in link_target_name_keys(target_name):
             for candidate in reversed(by_name_lists.get(name, [])):
                 candidate_id = candidate._member_id
                 if candidate_id is not None and candidate_id < before_id:
