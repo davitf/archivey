@@ -1,6 +1,6 @@
 # Typing escape hatches — SUMMARY
 
-Brief: [`brief.md`](brief.md). Linear [ARC-20](https://linear.app/archivey/issue/ARC-20).
+Brief: [`brief.md`](brief.md). Tracked internally.
 Measured at `main` @ `94468bd0` (2026-09-17). Inventory plus Q1 (public
 `extra: dict[str, object]`). Theme files: [`inventory.md`](inventory.md),
 [`typeguards.md`](typeguards.md), [`binaryio-and-typeshed.md`](binaryio-and-typeshed.md),
