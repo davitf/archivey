@@ -54,9 +54,10 @@ def test_liblzma_still_words_an_unknown_filter_as_an_options_error() -> None:
 def test_xz_with_an_unknown_filter_is_unsupported_not_corrupt(tmp_path: Path) -> None:
     archive = tmp_path / "a.txt.xz"
     archive.write_bytes(_xz_with_unknown_filter())
-    with open_archive(archive) as reader:
+    # The first block fails to decode, so open_archive's one-byte probe raises it.
+    with pytest.raises(UnsupportedFeatureError), open_archive(archive) as reader:
         (entry,) = reader.members()
-        with pytest.raises(UnsupportedFeatureError), reader.open(entry) as stream:
+        with reader.open(entry) as stream:
             stream.read()
 
 
@@ -65,9 +66,10 @@ def test_corrupt_xz_data_is_still_corruption(tmp_path: Path) -> None:
     data[30] ^= 0xFF  # inside the first block's compressed data
     archive = tmp_path / "a.txt.xz"
     archive.write_bytes(bytes(data))
-    with open_archive(archive) as reader:
+    # The first block fails to decode, so open_archive's one-byte probe raises it.
+    with pytest.raises(CorruptionError), open_archive(archive) as reader:
         (entry,) = reader.members()
-        with pytest.raises(CorruptionError), reader.open(entry) as stream:
+        with reader.open(entry) as stream:
             stream.read()
 
 

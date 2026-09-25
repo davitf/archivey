@@ -47,7 +47,7 @@ states its own position and reasoning in task `0.0`, following the convention #2
 | # | change | depends on |
 | --- | --- | --- |
 | 1 | `detection-format-gaps` — three false negatives + the far-magic reorder that unblocks one | — |
-| 2 | `single-file-open-time-validation` — P15 and P16; not a detection change, can run in parallel with 1 | — (before 4) |
+| 2 | `single-file-open-time-validation` — P15 and P16; not a detection change, can run in parallel with 1. **Done, archived 2026-09-25** | — (before 4) |
 | 3 | `detection-prefix-workspace` — one monotone prefix buffer, access-shape rule, budget/capability/receipt | after 1 (avoids colliding in `_detect_format_body`) |
 | 4 | `detection-evidence-ledger` — ranked evidence classes, validators, scheduler, ambiguity | **3** |
 | 5 | `detection-result-surface` — the ledger becomes public; `detection=` handoff | **4** |

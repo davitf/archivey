@@ -175,14 +175,28 @@ class SingleFileReader(BaseArchiveReader):
             # source normally hands the path to the codec (independent FDs) and shares
             # only under measurement, so the source's seeks are visible.
             self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
-        if self._seekable:
-            # Eagerly open+close a codec stream so format/seekability errors surface at
-            # archive-open time rather than on a later read. Not cached — every
-            # _open_member builds a fresh codec stream.
-            probe = self._open_codec_stream()
-            probe.close()
-        else:
+        if not self._seekable:
+            # Non-seekable: validation waits for the first read (see _validate_at_open).
             self._pending_stream = self._open_codec_stream()
+
+    def _validate_at_open(self) -> None:
+        """Decode one byte, so a source that is not the claimed codec fails at open.
+
+        Constructing a codec stream checks nothing, because every codec checks its header
+        on the first read. One byte is the whole guarantee; a corrupt tail still fails on
+        read. An empty result is a valid empty stream: each decoder raises on input too
+        short to hold its own header, and the accelerated bzip2 path hands an empty result
+        to the stdlib engine to confirm it. The probe stream is not cached; every
+        ``_open_member`` builds a fresh one. The error names no member, since nobody asked
+        for one yet.
+
+        A non-seekable source is not probed: the read would consume a byte of the one
+        pass the first ``open_member`` hands out, so it still fails on that read.
+        """
+        if not self._seekable:
+            return
+        with self._open_codec_stream(attribute_member=False) as probe:
+            probe.read(1)
 
     def _build_member(self, archive_name: str | None) -> ArchiveMember:
         member = ArchiveMember(
@@ -337,8 +351,11 @@ class SingleFileReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield self._member
 
-    def _open_codec_stream(self) -> ArchiveStream:
+    def _open_codec_stream(self, *, attribute_member: bool = True) -> ArchiveStream:
         """Open a fresh decompression stream over the source.
+
+        ``attribute_member=False`` leaves ``member_name`` off errors the stream raises, for
+        the open-time probe that no caller asked for.
 
         A seekable stream source goes through a whole-source ``SharedSource`` view so
         concurrent / re-entrant opens never clobber the shared handle's position. A path
@@ -346,6 +363,11 @@ class SingleFileReader(BaseArchiveReader):
         same concurrent-open shape as ZIP path-source). A non-seekable source is read
         once, forward-only.
         """
+        member_name = self._member.name if attribute_member else None
+
+        def stamp(exc: ArchiveyError) -> None:
+            self._stamp_error_context(exc, member_name)
+
         if self._shared is not None:
             # Whole-source view + fresh codec per open (no per-member byte range for a
             # single-file archive). The view is non-owning; the SharedSource outlives it.
@@ -355,7 +377,7 @@ class SingleFileReader(BaseArchiveReader):
                 self._codec,
                 counted,
                 config=self._codec_config,
-                stamp=lambda exc: self._stamp_error_context(exc, self._member.name),
+                stamp=stamp,
                 collector=self._diagnostics_collector,
             )
         else:
@@ -373,12 +395,12 @@ class SingleFileReader(BaseArchiveReader):
                 self._codec,
                 codec_source,
                 config=self._codec_config,
-                stamp=lambda exc: self._stamp_error_context(exc, self._member.name),
+                stamp=stamp,
                 collector=self._diagnostics_collector,
             )
         # Wrap so the handle carries the reader's diagnostic collector/operation id.
         # (open_codec_stream already returns an ArchiveStream; nesting is fine.)
-        return self._wrap_member_stream(raw, self._member.name, size=self._member.size)
+        return self._wrap_member_stream(raw, member_name, size=self._member.size)
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         if self._seekable:

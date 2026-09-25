@@ -896,7 +896,7 @@ inventory.
 | `archive-origin-reporting` | 1/34 | Merged as a proposal 2026-09-19 via #274. Overlaps `detection-result-surface` on `ArchiveInfo` |
 | `bounded-source-spooling` | 0/31 | Merged 2026-09-19 via #251. Its four design questions are answered; subsumes the RAR stream-copy bound (`rar.md` §7) and the lazy stream-volume copy (shipped) |
 | `bounded-password-confirmation` | 0/26 | In tree since #319. Ready to implement; closes most of **O12** |
-| `single-file-open-time-validation` | 0/25 | Self-contained. Closes [`open-issues.md`](open-issues.md) **P15** and **P16** |
+| `single-file-open-time-validation` | 25/25 | **Archived 2026-09-25.** Closed [`open-issues.md`](open-issues.md) **P15** and **P16** |
 | `seekable-gzip-and-block-writing` | 0/24 | Self-contained, no `.openspec.yaml` (predates the schema). BGZF + mgzip random access, zero new dependencies |
 | `rar5-stored-encrypted-native-read` | 0/24 | Merged 2026-09-18 via #347. Drops the `not info.is_encrypted` clause from `_can_direct_read` for RAR5. Amends ADR 0002 — the boundary is *decompression*, not *data* |
 | `sevenzip-aes-tail-key-check` | 0/17 | After `bounded-password-confirmation`. Split out deliberately: the only piece resting on an empirical premise about writer padding, so the easiest to revert alone |

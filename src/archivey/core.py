@@ -616,6 +616,12 @@ def _open_resolved(
         detected,
         is_directory=archive_source.is_directory,
     )
+    # After provenance, so an open-time decode failure carries format_unconfirmed.
+    try:
+        reader._validate_at_open()
+    except BaseException:
+        reader.close()
+        raise
     return reader
 
 

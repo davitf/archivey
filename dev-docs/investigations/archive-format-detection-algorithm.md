@@ -670,6 +670,11 @@ Two adjacent behaviours, both real, neither needing a rule of its own:
   than one read. This matters to this document because the deferred failure is the mechanism
   that keeps the empty-listing diagnostic from ever firing.
 
+  **Since fixed** (`single-file-open-time-validation`): a seekable single-file source now
+  raises at `open_archive` under all ten codecs, `.Z` included (its decoder now rejects a
+  source shorter than the 3-byte header). The failure moved to open; the
+  `format_unconfirmed` rekeying above is still this document's to make.
+
 - **A zero-byte source with no name** raises `FormatDetectionError: no magic-byte match and
   no usable file extension`, which is misleading — there were no bytes to match. The
   incomplete-search record §1 already requires is the natural place to fix this: an empty or

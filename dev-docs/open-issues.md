@@ -480,7 +480,16 @@ re-verified failing against the unfixed code). Original write-up below.
   `docs/errors-and-diagnostics.md`. The data types are the gap.
 - **Check:** compare `archivey.__all__` against `^::: archivey\.(\S+)` across `docs/*.md`.
 
-### P15. `SingleFileReader`'s eager open-time validation is a no-op — **confirmed bug**
+### P15. `SingleFileReader`'s eager open-time validation is a no-op — **CLOSED**
+
+**Fixed** in `single-file-open-time-validation`: `open_archive` now decodes one byte of a
+seekable single-file source (`SingleFileReader._validate_at_open`, called after format
+provenance is set so `format_unconfirmed` still stamps), and the error names no member.
+The `.Z` minimum-header floor below turned out unnecessary: the native LZW decoder now
+raises `TruncatedError` on a source shorter than its 3-byte header. Measured cost on a
+1.85 MB payload: gzip open unchanged (~1.6 ms), bzip2 open 29 ms → 59 ms. Original
+write-up below.
+
 
 - **What it intends.** `src/archivey/internal/backends/single_file_reader.py:183-190`:
 
@@ -548,7 +557,14 @@ re-verified failing against the unfixed code). Original write-up below.
   malformed single-file stream raises at `open_archive` time — which is why an eager check
   that never checks anything went unnoticed. A red-green test belongs with the fix.
 
-### P16. A corrupt bzip2 member reads as empty under the accelerator — **confirmed bug**
+### P16. A corrupt bzip2 member reads as empty under the accelerator — **CLOSED**
+
+**Fixed** in `single-file-open-time-validation`. rapidgzip 0.16's `IndexedBzip2File`
+reports the same `size()`, `tell_compressed()` and block offsets for garbage as for a
+valid empty stream, so nothing it exposes distinguishes them. `_Bzip2EmptyStreamCheck`
+instead hands the first empty read to stdlib `bz2` over a fresh view of the source, the
+same shape as the gzip empty→stdlib fallback. Original write-up below.
+
 
 - **What happens.** With `[seekable]` installed and `seekable_members=True`, a bzip2
   single-file member opens through **rapidgzip's bundled bzip2 decoder**
@@ -591,7 +607,7 @@ re-verified failing against the unfixed code). Original write-up below.
   stream, decline acceleration below the codec's minimum framing size.
 
 - **Refs:** found while measuring P15's fix; both are addressed together by
-  `openspec/changes/single-file-open-time-validation/` (spec delta:
+  `openspec/changes/archive/2026-09-25-single-file-open-time-validation/` (spec delta:
   `compressed-streams` → *An accelerator preserves the error contract of the path it
   replaces*). Adjacent but distinct from P5, which is an accelerator **abort**, not a
   silent success.
@@ -746,6 +762,7 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 
 | Item | Closed by |
 | --- | --- |
+| **P15** Single-file open-time validation decodes one byte; **P16** a corrupt `.bz2` raises under the accelerator | `openspec/changes/archive/2026-09-25-single-file-open-time-validation/` |
 | **P17** Old-scheme SFX first volumes (`name.exe` + `.r00`) discovered; lone numbered parts name missing siblings | #309 |
 | Three false negatives from the detection-algorithm analysis §5: a zstd stream behind skippable frames, a zlib stream at any window below 32 KiB, an LZMA Alone stream with a zero dictionary size — all decoded by their own decoders, none detected. Plus the bootable ISO claimed by the Brotli probe, which the far-magic hoist that ships with them closes | `openspec/changes/detection-format-gaps/` |
 | **P10** A wrong-typed `format=` argument is refused, not answered (all four public entry points) | archived `openspec/changes/archive/2026-08-17-reject-wrong-typed-format-arguments/` |

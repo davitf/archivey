@@ -9,7 +9,10 @@ SHALL NOT convert a decode failure into a successful empty read.
 
 Specifically, a decoder that ends a stream having produced no output, without consuming its
 input and without reaching a valid end-of-stream marker, SHALL raise rather than report
-end-of-file. Accelerator mode is a performance choice and SHALL NOT be observable as a
+end-of-file. Where the accelerator cannot report enough to tell that apart from a genuine
+empty stream (rapidgzip's bundled bzip2 decoder cannot), the first empty read before any
+output SHALL be re-decoded by the non-accelerated decoder over a fresh view of the
+source, which raises or confirms the empty stream. Accelerator mode is a performance choice and SHALL NOT be observable as a
 difference in whether a corrupt source raises.
 
 #### Scenario: accelerator error parity

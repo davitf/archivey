@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import tarfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import Diagnostic, DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
@@ -35,6 +36,25 @@ from archivey.types import ContainerFormat, StreamFormat
 from tests.conftest import requires
 
 TAR_BROTLI = ArchiveFormat(ContainerFormat.TAR, StreamFormat.BROTLI)
+
+
+def _open_and_read(
+    source: Path | io.BytesIO,
+    diagnostics: list[Diagnostic] | None = None,
+    *,
+    config: ArchiveyConfig | None = None,
+) -> None:
+    """Open ``source`` and read its first member, collecting every diagnostic.
+
+    A single-file source that does not decode raises from ``open_archive`` itself, so
+    there is no reader left to ask for ``diagnostics``; ``on_diagnostic`` sees them
+    wherever the failure lands.
+    """
+    config = config or ArchiveyConfig()
+    if diagnostics is not None:
+        config = replace(config, on_diagnostic=diagnostics.append)
+    with open_archive(source, config=config) as reader:
+        reader.open(next(iter(reader))).read()
 
 
 def _probable_brotli_probe_only_residual() -> bytes:
@@ -80,19 +100,17 @@ def test_compressed_first_probable_failure_sets_format_unconfirmed() -> None:
     assert info.detected_by == "content_probe"
     assert info.corroborated is False
 
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises((TruncatedError, CorruptionError)) as caught:
-            reader.open(next(iter(reader))).read()
-        exc = caught.value
-        assert exc.format_unconfirmed is True
-        assert "unconfirmed" in exc.message.lower()
-        assert "Partial output may already have been produced" in exc.raw_message
-        assert "GUESS" not in exc.raw_message
-        messages = " ".join(d.message for d in reader.diagnostics.retained)
-        assert "GUESS" not in messages
-        assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in {
-            d.code for d in reader.diagnostics.retained
-        }
+    diagnostics: list[Diagnostic] = []
+    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        _open_and_read(io.BytesIO(blob), diagnostics)
+    exc = caught.value
+    assert exc.format_unconfirmed is True
+    assert "unconfirmed" in exc.message.lower()
+    assert "Partial output may already have been produced" in exc.raw_message
+    assert "GUESS" not in exc.raw_message
+    messages = " ".join(d.message for d in diagnostics)
+    assert "GUESS" not in messages
+    assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in {d.code for d in diagnostics}
 
 
 def test_lzma_alone_probable_failure_sets_format_unconfirmed() -> None:
@@ -106,13 +124,13 @@ def test_lzma_alone_probable_failure_sets_format_unconfirmed() -> None:
     # The OLE header's bytes 1-4 read as a 2.7 GiB dictionary, over the default cap;
     # this case lifts the cap to reach the decode failure, and the next one keeps it.
     config = ArchiveyConfig(decoder_limits=DecoderLimits.UNLIMITED)
-    with open_archive(io.BytesIO(blob), config=config) as reader:
-        with pytest.raises((TruncatedError, CorruptionError)) as caught:
-            reader.open(next(iter(reader))).read()
-        assert caught.value.format_unconfirmed is True
-        codes = {d.code for d in reader.diagnostics.retained}
-        assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in codes
-        assert DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED not in codes
+    diagnostics: list[Diagnostic] = []
+    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        _open_and_read(io.BytesIO(blob), diagnostics, config=config)
+    assert caught.value.format_unconfirmed is True
+    codes = {d.code for d in diagnostics}
+    assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in codes
+    assert DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED not in codes
 
 
 def test_lzma_alone_probable_limit_refusal_sets_format_unconfirmed() -> None:
@@ -123,18 +141,18 @@ def test_lzma_alone_probable_limit_refusal_sets_format_unconfirmed() -> None:
     never ``.lzma``.
     """
     blob = _ole_lzma_alone_residual()
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(ResourceLimitError) as caught:
-            reader.open(next(iter(reader))).read()
-        assert caught.value.format_unconfirmed is True
-        message = str(caught.value)
-        assert "unconfirmed" in message
-        # Nothing was decoded: the refusal comes before any decoder is built.
-        assert "stopped by a limit" in message
-        assert "Decode failed" not in message
-        assert "Partial output" not in message
-        codes = {d.code for d in reader.diagnostics.retained}
-        assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in codes
+    diagnostics: list[Diagnostic] = []
+    with pytest.raises(ResourceLimitError) as caught:
+        _open_and_read(io.BytesIO(blob), diagnostics)
+    assert caught.value.format_unconfirmed is True
+    message = str(caught.value)
+    assert "unconfirmed" in message
+    # Nothing was decoded: the refusal comes before any decoder is built.
+    assert "stopped by a limit" in message
+    assert "Decode failed" not in message
+    assert "Partial output" not in message
+    codes = {d.code for d in diagnostics}
+    assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in codes
 
 
 def test_lzma_alone_limit_refusal_with_extension_is_not_stamped(
@@ -142,10 +160,9 @@ def test_lzma_alone_limit_refusal_with_extension_is_not_stamped(
 ) -> None:
     path = tmp_path / "x.lzma"
     path.write_bytes(_ole_lzma_alone_residual())
-    with open_archive(path) as reader:
-        with pytest.raises(ResourceLimitError) as caught:
-            reader.open(next(iter(reader))).read()
-        assert caught.value.format_unconfirmed is False
+    with pytest.raises(ResourceLimitError) as caught:
+        _open_and_read(path)
+    assert caught.value.format_unconfirmed is False
 
 
 @requires("brotli")
@@ -157,13 +174,11 @@ def test_br_extension_failure_does_not_stamp(tmp_path: Path) -> None:
     assert info.format == ArchiveFormat.BROTLI
     assert info.detected_by == "content_probe"
     assert info.corroborated is True
-    with open_archive(path) as reader:
-        with pytest.raises((TruncatedError, CorruptionError)) as caught:
-            reader.open(next(iter(reader))).read()
-        assert caught.value.format_unconfirmed is False
-        assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in {
-            d.code for d in reader.diagnostics.retained
-        }
+    diagnostics: list[Diagnostic] = []
+    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        _open_and_read(path, diagnostics)
+    assert caught.value.format_unconfirmed is False
+    assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in {d.code for d in diagnostics}
 
 
 @requires("brotli")
@@ -180,10 +195,9 @@ def test_deferred_tar_br_extension_corroborates(tmp_path: Path) -> None:
     assert info.detected_by == "content_probe"
     assert info.corroborated is True
 
-    with open_archive(path) as reader:
-        with pytest.raises((TruncatedError, CorruptionError)) as caught:
-            reader.open(next(iter(reader))).read()
-        assert caught.value.format_unconfirmed is False
+    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        _open_and_read(path)
+    assert caught.value.format_unconfirmed is False
 
 
 @requires("brotli")
@@ -203,10 +217,9 @@ def test_disagreeing_extension_does_not_corroborate(tmp_path: Path, name: str) -
     assert info.detected_by == "content_probe"
     assert info.corroborated is False
 
-    with open_archive(path) as reader:
-        with pytest.raises((TruncatedError, CorruptionError)) as caught:
-            reader.open(next(iter(reader))).read()
-        assert caught.value.format_unconfirmed is True
+    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        _open_and_read(path)
+    assert caught.value.format_unconfirmed is True
 
 
 def test_extension_corroborates_rejects_cross_container_stream_match() -> None:
@@ -299,14 +312,12 @@ def test_probe_only_clean_read_stays_success() -> None:
 def test_pedantic_probable_probe_keeps_typed_error() -> None:
     blob = _probable_brotli_probe_only_residual()
     cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic())
-    with open_archive(io.BytesIO(blob), config=cfg) as reader:
-        with pytest.raises((TruncatedError, CorruptionError)) as caught:
-            reader.open(next(iter(reader))).read()
-        assert not isinstance(caught.value, DiagnosticRaisedError)
-        assert caught.value.format_unconfirmed is True
-        assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in {
-            d.code for d in reader.diagnostics.retained
-        }
+    diagnostics: list[Diagnostic] = []
+    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        _open_and_read(io.BytesIO(blob), diagnostics, config=cfg)
+    assert not isinstance(caught.value, DiagnosticRaisedError)
+    assert caught.value.format_unconfirmed is True
+    assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED in {d.code for d in diagnostics}
 
 
 @requires("brotli")
@@ -335,13 +346,11 @@ def test_exact_magic_failure_untouched_by_probe_channel(tmp_path: Path) -> None:
     info = detect_format(path)
     assert info.detected_by == "magic"
     assert info.corroborated is False
-    with open_archive(path) as reader:
-        with pytest.raises((TruncatedError, CorruptionError)) as caught:
-            reader.open(next(iter(reader))).read()
-        assert caught.value.format_unconfirmed is False
-        assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in {
-            d.code for d in reader.diagnostics.retained
-        }
+    diagnostics: list[Diagnostic] = []
+    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        _open_and_read(path, diagnostics)
+    assert caught.value.format_unconfirmed is False
+    assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in {d.code for d in diagnostics}
 
 
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"

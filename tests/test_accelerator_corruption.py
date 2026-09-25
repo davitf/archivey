@@ -368,3 +368,52 @@ def test_indexed_bzip2_intact_reads_clean(tmp_path: Path) -> None:
     path = _write(tmp_path, "ok.bz2", bz2.compress(payload))
     with open_codec_stream(Codec.BZIP2, path, config=_BZ_ON) as s:
         assert s.read() == payload
+
+
+# The bundled bzip2 decoder ends the stream with no output and no error when the input is
+# not bzip2 at all: its offsets, ``tell_compressed()`` and ``size()`` read the same for
+# garbage as for a valid empty stream. The accelerated path must still raise what the
+# stdlib path raises (compressed-streams: an accelerator preserves the error contract).
+_BZ2_EMPTY = bz2.compress(b"")
+
+_BZ2_NOT_A_STREAM = {
+    "zeros": (b"\x00" * 40_000, CorruptionError),
+    "zero-byte": (b"", TruncatedError),
+    "magic-only": (b"BZh9", TruncatedError),
+    "magic-then-zeros": (b"BZh9" + b"\x00" * 100, CorruptionError),
+}
+
+
+@pytest.mark.parametrize("source_kind", ["path", "bytesio"])
+@pytest.mark.parametrize("case", sorted(_BZ2_NOT_A_STREAM))
+@pytest.mark.parametrize("mode", [AcceleratorMode.ON, AcceleratorMode.OFF])
+def test_bzip2_not_a_stream_raises_in_every_accelerator_mode(
+    tmp_path: Path, case: str, source_kind: str, mode: AcceleratorMode
+) -> None:
+    if mode is AcceleratorMode.ON:
+        pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    data, expected = _BZ2_NOT_A_STREAM[case]
+    source = (
+        _write(tmp_path, "bad.bz2", data) if source_kind == "path" else io.BytesIO(data)
+    )
+    config = StreamConfig(use_indexed_bzip2=mode, seekable=True)
+    with open_codec_stream(Codec.BZIP2, source, config=config) as s:
+        with pytest.raises(expected):
+            s.read(1)
+
+
+@pytest.mark.parametrize("source_kind", ["path", "bytesio"])
+@pytest.mark.parametrize("streams", [1, 2], ids=["one-empty", "two-empty"])
+def test_indexed_bzip2_valid_empty_stream_reads_empty(
+    tmp_path: Path, source_kind: str, streams: int
+) -> None:
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    data = _BZ2_EMPTY * streams
+    source = (
+        _write(tmp_path, "empty.bz2", data)
+        if source_kind == "path"
+        else io.BytesIO(data)
+    )
+    with open_codec_stream(Codec.BZIP2, source, config=_BZ_ON) as s:
+        assert s.read(1) == b""
+        assert s.read() == b""

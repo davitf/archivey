@@ -579,13 +579,13 @@ def _open_rapidgzip(source: CodecSource) -> BinaryIO:
     return _AcceleratorStream(_rapidgzip.open(trap, parallelization=0), trap=trap)
 
 
-def _gzip_backstop_source(
+def _accelerator_backstop_source(
     source: CodecSource,
 ) -> tuple[CodecSource, Callable[[], BinaryIO] | None]:
     """Resolve ``(source to feed the accelerator, factory for independent views @ offset 0)``.
 
-    The truncation backstop's empty→stdlib fallback and its multi-member scan each need a
-    fresh, position-isolated seekable stream over the whole compressed source that never
+    The accelerators' empty→stdlib fallbacks (gzip and bzip2) and the gzip multi-member scan
+    each need a fresh, position-isolated seekable stream over the whole compressed source that never
     disturbs the live accelerator's cursor. How that is obtained depends on the source:
 
     - **path** — hand the accelerator the path (its own fd); the factory opens a fresh
@@ -819,6 +819,80 @@ class _GzipTruncationCheckStream(DelegatingStream):
                 return gzip_has_additional_member(f)
         except OSError:
             return True  # cannot rule out a second member -> do not raise
+
+
+class _Bzip2EmptyStreamCheck(DelegatingStream):
+    """Hand a silent empty result from rapidgzip's bzip2 decoder to the stdlib engine.
+
+    The bundled bzip2 decoder ends the stream with no output and no error when the input is
+    not bzip2 at all: forty thousand zero bytes, a zero-byte file and a bare ``BZh9`` read as
+    an empty stream. Its ``size()``, ``tell_compressed()`` and block offsets read the same
+    for that garbage as for a valid empty stream, so nothing the accelerator reports can
+    tell them apart.
+
+    The stdlib path raises on the same inputs, and an accelerator must not change whether a
+    corrupt source raises. So the first read that comes back empty, before any byte was
+    delivered, retargets the stream at ``bz2`` over a fresh view of the source. That engine
+    raises the translated error for garbage and reads a genuinely empty stream (one or more
+    header-plus-end-of-stream records) as ``b""``. The fallback costs nothing on a stream
+    with content: the first non-empty read disarms the check. It costs at most one stdlib
+    decode of an input that produced nothing, which for a valid stream is a few bytes per
+    concatenated empty record.
+
+    A caller ``seek`` away from offset 0 before the first read disarms the check, as it does
+    for the gzip backstop: a position past the end is not evidence of an empty stream.
+    """
+
+    # Side-effecting read() (first-empty fallback); disable passthrough so readinto does
+    # not skip it.
+    readinto_passthrough = False
+
+    def __init__(
+        self,
+        inner: BinaryIO,
+        *,
+        reopen: Callable[[], BinaryIO],
+        fallback_path: str | None,
+    ) -> None:
+        super().__init__(inner)
+        self._reopen = reopen
+        self._fallback_path = fallback_path
+        self._armed = True
+
+    def read(self, size: int = -1, /) -> bytes:
+        if size == 0:
+            return b""  # an explicit read(0) is not EOF; it must not trip the check
+        data = self._inner.read(size)
+        if not self._armed:
+            return data
+        self._armed = False
+        if data:
+            return data
+        return self._begin_stdlib_fallback(size)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        result = super().seek(offset, whence)
+        if result != 0:
+            self._armed = False
+        return result
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        # Sits on the decompressed chain (accelerator, then maybe stdlib fallback).
+        return ask_resume_offset(self._inner, target)
+
+    def _begin_stdlib_fallback(self, size: int) -> bytes:
+        old = self._inner
+        # Path source: the stdlib engine opens and owns its own fd. Stream source: a fresh
+        # independent view at offset 0, non-owning like the accelerator's own view.
+        fallback: CodecSource = (
+            self._fallback_path if self._fallback_path is not None else self._reopen()
+        )
+        self._replace_inner(ensure_binaryio(bz2.open(fallback, "rb")))
+        try:
+            old.close()
+        except Exception:  # noqa: BLE001 - best-effort; ownership moved to stdlib handle
+            pass
+        return self._inner.read(size)
 
 
 def gzip_has_additional_member(stream: BinaryIO) -> bool:
@@ -1173,7 +1247,7 @@ class GzipCodec(StreamCodec):
             # per-member ISIZE sum is deferred). Capture the ISIZE tri-state up front so no
             # per-read reopen is needed and `size < 18` truncation is preserved.
             source_len, isize = _gzip_isize_and_length(source)
-            accel_source, reopen = _gzip_backstop_source(source)
+            accel_source, reopen = _accelerator_backstop_source(source)
             stream = _open_rapidgzip(accel_source)
             if reopen is None:
                 return stream  # non-seekable: rapidgzip needs a seekable source anyway
@@ -1290,11 +1364,23 @@ class Bzip2Codec(StreamCodec):
             # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
             # Bound the input: AES pad after EOS is trailing garbage that rapidgzip
             # prints to stderr outside DiagnosticCollector.
-            return _AcceleratorStream(
-                _rapidgzip_bzip2(
-                    _bound_rapidgzip_source(source, params, config),
-                    parallelization=0,
-                )
+            accel_source, reopen = _accelerator_backstop_source(
+                _bound_rapidgzip_source(source, params, config)
+            )
+            stream = _AcceleratorStream(
+                _rapidgzip_bzip2(accel_source, parallelization=0)
+            )
+            if reopen is None:
+                return stream  # non-seekable: rapidgzip needs a seekable source anyway
+            # The decoder reads garbage as an empty stream; see _Bzip2EmptyStreamCheck.
+            return _Bzip2EmptyStreamCheck(
+                stream,
+                reopen=reopen,
+                fallback_path=(
+                    os.fspath(accel_source)
+                    if isinstance(accel_source, (str, os.PathLike))
+                    else None
+                ),
             )
         # stdlib bz2 can seek, but a rewind re-decompresses from the start; the outer
         # ArchiveStream warns about that (see rewind_warning). The [seekable] accelerator
@@ -1363,6 +1449,9 @@ class Bzip2Codec(StreamCodec):
             return StreamNotSeekableError(
                 "indexed_bzip2 does not support non-seekable streams"
             )
+        if isinstance(exc, (EOFError, OSError)):
+            # The stdlib engine that _Bzip2EmptyStreamCheck falls back to raises these.
+            return self.translate(exc)
         return None
 
 

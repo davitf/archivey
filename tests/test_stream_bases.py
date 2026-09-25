@@ -376,6 +376,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         archive_stream.ArchiveStream,
         codecs._AcceleratorStream,  # owns rapidgzip available_block_offsets
         codecs._GzipTruncationCheckStream,
+        codecs._Bzip2EmptyStreamCheck,
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -540,6 +541,7 @@ def test_delegating_stream_close_inventory() -> None:
         counting.SeekCountingStream,
         iso_reader._PyCdlibStream,
         codecs._GzipTruncationCheckStream,
+        codecs._Bzip2EmptyStreamCheck,
         zip_reader._UnconfirmedZipCryptoStream,
     }
     subclass_closes_inner = {
@@ -585,7 +587,7 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
     ``DelegatingStream.readinto`` zero-copies to ``inner.readinto`` by default,
     which bypasses this class's ``read``. The two production cases that
     override ``read`` only (``_GzipTruncationCheckStream``,
-    ``_UnrarOwnedStream``) set ``readinto_passthrough = False`` on the class
+    ``_Bzip2EmptyStreamCheck``, ``_UnrarOwnedStream``) set ``readinto_passthrough = False`` on the class
     and omit the constructor kwarg so the side effect still runs. Deleting
     those two class flags leaves the rest of the suite green; this test is
     the gate that does not.
