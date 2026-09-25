@@ -115,6 +115,7 @@ Three things about this path are worth knowing before you debug it:
 | 7z internals | `sevenzip_parser.py` (headers) · `sevenzip_pipeline.py` (coder graph) · `sevenzip_reader.py` · `sevenzip_methods.py` · `sevenzip_aes.py` (KDF, AES properties, key cache) · `sevenzip_detect.py` (scan-hit validator); handbook [`formats/7z.md`](formats/7z.md) |
 | RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) · `rar_detect.py` (scan-hit validator); handbook [`formats/rar.md`](formats/rar.md) |
 | TAR internals | `tar_reader.py` (stdlib `tarfile` over the source or archivey's own decompressor; the end-of-archive checks) · `detection.py` `_probe_inner_tar` (a tar inside a compressor); handbook [`formats/tar.md`](formats/tar.md) |
+| ISO internals | `iso_reader.py` (`pycdlib` boundary, record walk, raw-sector refusal, the `pycdlib` cycle guard); handbook [`formats/iso.md`](formats/iso.md) |
 | A codec, or adding one | `streams/codecs.py` + `streams/decompress.py`; `xz.py` / `lzip.py` / `unix_compress.py` for the hand-written ones |
 | Seeking inside a compressed stream | `streams/decompressor_stream.py`; spec `seekable-decompressor-streams` |
 | Stream wrapping / slicing / locking | `streams/streamtools/`; handbook [`topics/stream-ownership.md`](topics/stream-ownership.md); archived review `review/archive/2026-07-19-stream-layering/` |
