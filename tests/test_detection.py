@@ -1336,15 +1336,16 @@ def _budget_config() -> ArchiveyConfig:
 
     from archivey.detection_cost import BALANCED_BUDGET
 
-    seen: list[object] = []
     return ArchiveyConfig(
         detection_budget=replace(BALANCED_BUDGET, max_scan_bytes=64 * 1024),
-        on_diagnostic=seen.append,
+        # Non-None on purpose: the probe configs must not inherit it, and the
+        # ``on_diagnostic is None`` assertions only mean something if it is set here.
+        on_diagnostic=lambda _diagnostic: None,
     )
 
 
 def _record_detect(
-    monkeypatch: pytest.MonkeyPatch, module: object, name: str
+    monkeypatch: pytest.MonkeyPatch, module: object
 ) -> list[tuple[str, ArchiveyConfig | None]]:
     """Record each call through ``module.detect_format`` as (source name, config)."""
     calls: list[tuple[str, ArchiveyConfig | None]] = []
@@ -1356,7 +1357,7 @@ def _record_detect(
         calls.append((Path(str(getattr(source, "path", None) or source)).name, config))
         return real(source, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(module, name, recording)
+    monkeypatch.setattr(module, "detect_format", recording)
     return calls
 
 
@@ -1377,12 +1378,11 @@ def test_format_argument_stub_checks_detect_under_the_config_budget(
     (tmp_path / "vol.7z.001").write_bytes(data[:half])
     (tmp_path / "vol.7z.002").write_bytes(data[half:])
     config = _budget_config()
-    calls = _record_detect(monkeypatch, core_module, "detect_format")
+    calls = _record_detect(monkeypatch, core_module)
     with open_archive(stub, format=ArchiveFormat.SEVEN_Z, config=config) as reader:
         assert any(m.is_file for m in reader)
-    by_source = dict(calls)
-    assert set(by_source) == {"vol.exe", "vol.7z.001"}
-    for probe in by_source.values():
+    assert sorted(name for name, _ in calls) == ["vol.7z.001", "vol.exe"]
+    for _name, probe in calls:
         assert probe is not None and probe is not config
         assert probe.detection_budget is config.detection_budget
         assert probe.on_diagnostic is None
@@ -1397,7 +1397,7 @@ def test_empty_listing_rescan_detects_under_the_config_budget(
     from archivey.internal import detection as detection_module
 
     config = _budget_config()
-    calls = _record_detect(monkeypatch, detection_module, "detect_format")
+    calls = _record_detect(monkeypatch, detection_module)
     path = tmp_path / "zeros.tar"
     path.write_bytes(b"\x00" * (32 * 1024))
     with open_archive(path, format=ArchiveFormat.TAR, config=config) as reader:

@@ -322,6 +322,16 @@
   not become a second scripting-language parser. The generic shebang+needle path stays
   the fallback for ad-hoc `cat stub.tar.gz` wrappers.
 
+- **Bound the SFX search at the PE overlay while holding a short 7z hit** — when a 7z
+  signature validates but its declared end falls short of the end of the file, the scan
+  keeps looking for a later 7z that ends there, through the whole scan window (2 MiB under
+  `BALANCED`). The maintainer chose to ship that cost in 2026-09 rather than bound it.
+  The short hit's own end is not a safe bound, because a decoy inside the stub ends before
+  the real payload starts. The end of a PE stub's last section (the overlay offset) is
+  safe, because a decoy inside the stub cannot pass it. PE stubs only: ELF and Mach-O
+  stubs would still pay the window. The cost is pinned by
+  `test_short_7z_hit_scan_cost_is_bounded_by_the_window`.
+
 - **Exhaustive ambiguity fallback for `open_archive()` / `open_stream()`** — when
   evidence-based detection yields two or more tied maximal candidates, the near-term
   contract should raise a dedicated ambiguity error rather than choose by registry order.

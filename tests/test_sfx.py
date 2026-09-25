@@ -1511,9 +1511,10 @@ def test_short_7z_hit_scan_cost_is_bounded_by_the_window(tmp_path: Path) -> None
     """Pins what a short hit costs: the whole scan window, never more.
 
     With the archive ending at EOF the scan stops at the hit. With data after it
-    (an Authenticode signature, say) the scan keeps looking for a later 7z that ends
-    at EOF, through the whole of the budget's scan window: a decoy in a stub ends before the real
-    payload starts, so the short hit cannot bound where that payload is.
+    (an Authenticode signature, say) the scan keeps looking for a later 7z that
+    ends at EOF, through the whole of the budget's scan window: a decoy in a stub
+    ends before the real payload starts, so the short hit cannot bound where that
+    payload is.
     """
     real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
     stub = b"MZ" + b"\x00" * 510
