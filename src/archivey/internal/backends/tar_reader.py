@@ -113,6 +113,11 @@ _TRAILING_SCAN_CHUNK = 64 * 1024
 # means on every other field there.
 _MAX_TRAILING_SCAN = 1 * 2**20
 
+# Headers the random-access walk parses per handle-lock hold. Large enough that the
+# walk runs as a dense pass (one header per hold measured about 1.3x slower on a
+# 100 000-member listing), small enough that a partial batch is cheap to hold.
+_HEADER_BATCH = 1024
+
 # Every compressed-tar combination the codec layer can decode: TAR composed with each
 # standalone stream codec (gz/bz2/xz/zst/lz4/lzip/lzma-alone/zlib/brotli/unix-compress).
 # The common ones have named ArchiveFormat constants; the rest are equal-by-value
@@ -469,32 +474,65 @@ class TarReader(BaseArchiveReader):
         if self._streaming:
             yield from self._iter_members_progressive()
             return
-        # The error boundary sits OUTSIDE the handle guard, so translation/stamping
-        # never run under the shared-fileobj lock. An exception the translator does
-        # not recognize (a genuine OSError from the source) propagates unchanged.
-        # One header at a time rather than getmembers(): the base counts each yielded
-        # member against ``max_members``, so a header bomb stops at the cap instead of
-        # after tarfile has parsed and kept every header in the file. ``iter(self._tar)``
-        # rather than bare next() calls, because it serves headers tarfile already
-        # loaded from its own list before reading more.
+        # Headers are pulled in batches rather than through getmembers(): the base
+        # counts each yielded member against ``max_members``, and a batch never asks
+        # for more than the cap has left, so a header bomb stops at the cap plus one
+        # header instead of after tarfile has parsed and kept every header in the
+        # file. Batches rather than one header per lock hold, because alternating
+        # header parsing with member construction measured about 1.3x slower on an
+        # ordinary 100 000-member listing; at 1 024 the difference is within noise.
+        # ``iter(self._tar)`` rather than bare next() calls, because it serves headers
+        # tarfile already loaded from its own list before reading more.
+        #
+        # Nothing opens a member while this walk is running: the base hands out no
+        # member of a random-access listing until the walk has ended. TarFile.next()
+        # would re-seek to its own offset if something did, so the walk would stay
+        # correct, but on a compressed tar that seek goes backwards in the
+        # decompressor and every later header would cost a decode from the start.
         tar_iter = iter(self._tar)
         index = 0
-        while True:
-            with self._translated_errors():
-                # Pinned-library audit: TarFile.next() drives seek/tell/read on the
-                # shared fileobj — must run under the handle lock. It re-seeks to its own
-                # offset first, so a member opened between two headers does not move it.
-                with self._handle_guard():
-                    info = next(tar_iter, None)
-                    if info is None:
-                        # Snapshot the EOF probe now, while the last read is still the
-                        # block tarfile stopped on and before any member read moves it.
-                        self._capture_eof_probe(index > 0)
-            if info is None:
-                break
-            yield self._to_member(info, index)
-            index += 1
+        ended = False
+        while not ended:
+            want = self._header_batch_size(index)
+            batch: list[tarfile.TarInfo] = []
+            failure: ArchiveyError | None = None
+            # The error boundary sits OUTSIDE the handle guard, so translation and
+            # stamping never run under the shared-fileobj lock. An exception the
+            # translator does not recognize (a genuine OSError from the source)
+            # propagates unchanged.
+            try:
+                with self._translated_errors():
+                    # Pinned-library audit: TarFile.next() drives seek/tell/read on
+                    # the shared fileobj, so it runs under the handle lock.
+                    with self._handle_guard():
+                        for info in tar_iter:
+                            batch.append(info)
+                            if len(batch) == want:
+                                break
+                        else:
+                            ended = True
+                            # Snapshot the EOF probe now, while the last read is still
+                            # the block tarfile stopped on.
+                            self._capture_eof_probe(index + len(batch) > 0)
+            except ArchiveyError as exc:
+                # Hand out the headers this batch already parsed first, so a
+                # members_report() keeps the same salvaged prefix it would have had
+                # one header at a time.
+                failure = exc
+            for info in batch:
+                yield self._to_member(info, index)
+                index += 1
+            if failure is not None:
+                raise failure
         self._verify_tar_eof()
+
+    def _header_batch_size(self, listed: int) -> int:
+        """How many headers the random-access walk may parse next: a full batch, or
+        what ``max_members`` has left plus the one header that trips it."""
+        cap = self._config.listing_limits.max_members
+        if cap is None:
+            return _HEADER_BATCH
+        return max(1, min(_HEADER_BATCH, cap - listed + 1))
 
     def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
         """Forward-only member walk — never calls ``getmembers()``.
@@ -562,12 +600,12 @@ class TarReader(BaseArchiveReader):
         header block, using the random-access EOF probe.
 
         When ``TarFile.next()`` returns ``None`` it has always attempted one more header
-        read first, so the probe's ``last_read`` *is* the
-        block tarfile stopped on — independent of the live handle position (later member
-        extraction may seek away) and independent of ``offset_data + roundup(size)``
-        (wrong for GNU sparse, where logical size ≫ packed size). A full non-null block
-        there is a rejected header, including when it is the archive's final block (which
-        the trailing-block check in :meth:`_verify_tar_eof` reads past and cannot see).
+        read first, so the probe's ``last_read`` *is* the block tarfile stopped on —
+        independent of the live handle position (later member extraction may seek away)
+        and independent of ``offset_data + roundup(size)`` (wrong for GNU sparse, where
+        logical size ≫ packed size). A full non-null block there is a rejected header,
+        including when it is the archive's final block (which the trailing-block check
+        in :meth:`_verify_tar_eof` reads past and cannot see).
         """
         self._eof_header_rejected = False
         probe = self._eof_probe_stream
