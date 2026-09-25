@@ -157,6 +157,19 @@ _BZIP2_INVALID_DATA = "Invalid data stream"
 # then the high byte of the DOS time rather than of the CRC-32.
 _ZIP_MASK_USE_DATA_DESCRIPTOR = 0x8
 
+# PKWARE Strong Encryption (APPNOTE §7): general-purpose bit 6 on an encrypted member
+# (bit 0 must be set with it), with the algorithm in extra field 0x0017. Archivey does not
+# implement it; without these checks such a member was taken for ZipCrypto.
+_ZIP_MASK_ENCRYPTED = 0x1
+_ZIP_MASK_STRONG_ENCRYPTION = 0x40
+_ZIP_EXTRA_STRONG_ENCRYPTION = 0x0017
+# Archive extra data record: written in front of a central directory that PKWARE
+# Strong Encryption has encrypted (APPNOTE §4.3.11, §7.3).
+_ZIP_ARCHIVE_EXTRA_DATA_SIG = b"PK\x06\x08"
+_STRONG_ENCRYPTION_MSG = (
+    "PKWARE Strong Encryption is not supported (only ZipCrypto and WinZip AES are)"
+)
+
 # Classic EOCD ``this_disk`` / ``cd_start_disk`` use 0xFFFF to mean "see ZIP64 EOCD",
 # not disk 65535. A naive ``!= 0`` check would refuse legitimate ZIP64 archives.
 _ZIP64_DISK_SENTINEL = 0xFFFF
@@ -680,6 +693,15 @@ class ZipReader(BaseArchiveReader):
             if _looks_like_multivolume(exc):
                 raise UnsupportedFeatureError(
                     ZIP_MULTI_VOLUME_MSG,
+                    archive_name=archive_name,
+                    source_format=ArchiveFormat.ZIP,
+                ) from exc
+            if _central_directory_looks_encrypted(
+                source if isinstance(zip_source, Path) else zip_source
+            ):
+                raise UnsupportedFeatureError(
+                    f"{_STRONG_ENCRYPTION_MSG}; this archive's central directory "
+                    "appears to be encrypted with it",
                     archive_name=archive_name,
                     source_format=ArchiveFormat.ZIP,
                 ) from exc
@@ -1755,6 +1777,19 @@ class ZipReader(BaseArchiveReader):
         fallback_type = MemberType.DIRECTORY if info.is_dir() else MemberType.FILE
         # The zero-data case does not appear here: `_to_member` settles it while the
         # member is being typed, so this hook is never reached for one.
+        if _uses_strong_encryption(info):
+            # No password opens it here, so the target is out of reach, not missing.
+            self._emit_link_target_unavailable(
+                member,
+                reason="target_data_encrypted",
+                message=(
+                    f"The symlink target of {quoted(member.name)} is encrypted with "
+                    f"PKWARE Strong Encryption, which archivey does not support; "
+                    f"leaving link_target unset."
+                ),
+                target_in_archive=True,
+            )
+            return
         # A symlink's target is its (possibly encrypted) file data. Listing must stay
         # usable without a password, so a missing/wrong password, or data that fails
         # its check under an unconfirmed ZipCrypto password, leaves link_target
@@ -1808,6 +1843,13 @@ class ZipReader(BaseArchiveReader):
         assert isinstance(info, zipfile.ZipInfo), (
             "ZIP member is missing its ZipInfo handle"
         )
+        if _uses_strong_encryption(info):
+            raise UnsupportedFeatureError(
+                _STRONG_ENCRYPTION_MSG,
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.ZIP,
+            )
         if info.compress_type == 99:
             return self._open_aes_member(info, member, member_name=member.name)
         if bool(info.flag_bits & 0x1):
@@ -1873,6 +1915,59 @@ def _classic_eocd_declares_split(fp: IO[bytes]) -> bool:
             return False
         this_disk, cd_start_disk = struct.unpack_from("<HH", data, idx + 4)
         return _disk_field_is_split(this_disk) or _disk_field_is_split(cd_start_disk)
+    finally:
+        fp.seek(pos)
+
+
+def _uses_strong_encryption(info: zipfile.ZipInfo) -> bool:
+    """True when ``info`` is a PKWARE Strong Encryption member (APPNOTE §7)."""
+    if not info.flag_bits & _ZIP_MASK_ENCRYPTED:
+        return False
+    if info.flag_bits & _ZIP_MASK_STRONG_ENCRYPTION:
+        return True
+    extra = info.extra or b""
+    pos = 0
+    while pos + 4 <= len(extra):
+        tag, length = struct.unpack_from("<HH", extra, pos)
+        if tag == _ZIP_EXTRA_STRONG_ENCRYPTION:
+            return True
+        pos += 4 + length
+    return False
+
+
+def _central_directory_looks_encrypted(fp: IO[bytes]) -> bool:
+    """True when an archive extra data record sits where the central directory should.
+
+    PKWARE Strong Encryption can encrypt the central directory itself (general-purpose
+    bit 13 on the local headers). stdlib then fails with a bad central-directory magic,
+    which would read as corruption. Checked only after stdlib has refused the archive.
+    It is best-effort: the record is written in front of an encrypted central directory,
+    but nothing else here can tell encrypted bytes from damaged ones.
+
+    Looks at the two places stdlib may expect the directory: the offset the EOCD
+    records, and the EOCD position minus the recorded size (stdlib's prefix-tolerant
+    reading).
+    """
+    pos = fp.tell()
+    try:
+        fp.seek(0, io.SEEK_END)
+        size = fp.tell()
+        if size < 22:
+            return False
+        window = min(size, (1 << 16) + 22)
+        fp.seek(size - window)
+        data = fp.read(window)
+        idx = data.rfind(b"PK\x05\x06")
+        if idx < 0 or idx + 20 > len(data):
+            return False
+        cd_size, cd_offset = struct.unpack_from("<II", data, idx + 12)
+        eocd_pos = size - window + idx
+        for candidate in {cd_offset, eocd_pos - cd_size}:
+            if 0 <= candidate <= size - 4:
+                fp.seek(candidate)
+                if fp.read(4) == _ZIP_ARCHIVE_EXTRA_DATA_SIG:
+                    return True
+        return False
     finally:
         fp.seek(pos)
 

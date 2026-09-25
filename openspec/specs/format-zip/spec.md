@@ -117,6 +117,28 @@ AES-encrypted). Traditional ZipCrypto behavior is unchanged.
 | AES member without `cryptography` installed | `PackageNotInstalledError`; still reported as encrypted |
 | Traditional ZipCrypto member | Unchanged (existing weak-check confirmation path) |
 
+### Requirement: Refuse PKWARE Strong Encryption
+
+The ZIP backend SHALL NOT decrypt PKWARE Strong Encryption (APPNOTE §7). An
+encrypted member (general-purpose bit 0) that also sets bit 6 or carries an extra
+field `0x0017` SHALL list with `is_encrypted=True`, and opening it SHALL raise
+`UnsupportedFeatureError` naming Strong Encryption, whatever passwords were given.
+Listing a symlink of this kind SHALL leave `link_target` unset and emit
+`SYMLINK_TARGET_UNAVAILABLE` with reason `"target_data_encrypted"`. When stdlib
+cannot read the central directory and an archive extra data record
+(`PK\x06\x08`) sits where the directory should start, opening the archive SHALL
+raise `UnsupportedFeatureError` naming Strong Encryption rather than
+`CorruptionError`.
+
+#### Scenario: Strong Encryption matrix
+
+| Case | Expected |
+| --- | --- |
+| Encrypted member with bit 6, or with extra `0x0017`, any password | Listed as encrypted; open raises `UnsupportedFeatureError` |
+| Such a member is a symlink | Listing continues; `link_target=None`; `SYMLINK_TARGET_UNAVAILABLE` with reason `"target_data_encrypted"` |
+| Archive extra data record where the central directory should be | Open raises `UnsupportedFeatureError` |
+| Damaged central directory without that record | `CorruptionError`, as before |
+
 ### Requirement: Reject non-seekable ZIP read sources
 
 The ZIP central directory is at EOF, so the ZIP reader SHALL raise

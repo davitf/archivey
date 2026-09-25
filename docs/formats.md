@@ -101,6 +101,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   `[recommended]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
   (integrity is the HMAC). Without it, an AES member raises
   `PackageNotInstalledError` but is still listed as encrypted.
+- **PKWARE Strong Encryption** is not supported. Such members list as encrypted, and
+  opening one raises `UnsupportedFeatureError`. An archive whose central directory is
+  itself encrypted this way cannot be listed; Archivey raises `UnsupportedFeatureError`
+  when it recognizes the layout, and `CorruptionError` otherwise.
 - ZipCrypto's check byte and WinZip AES's two-byte password check both admit some wrong
   passwords, so the member's CRC or HMAC at EOF is the real test. Closing a member stream
   before EOF emits `ENCRYPTED_MEMBER_UNVERIFIED` when only one of those short checks

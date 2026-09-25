@@ -80,18 +80,21 @@ def build_zipcrypto_zip(
     *,
     compression: int = zipfile.ZIP_DEFLATED,
     unix_mode: int | None = None,
+    extra_flags: int = 0,
+    extra: bytes = b"",
 ) -> bytes:
     """A single-entry ZIP whose one member is ZipCrypto-encrypted with ``password``.
 
     Supports the four compression methods decoded by stdlib ``zipfile``. No data
     descriptor is used, so the verification byte is the high byte of the payload CRC-32.
     ``unix_mode`` marks the entry as made on Unix with that mode (``0o120777`` for a
-    symlink, whose data is then its target).
+    symlink, whose data is then its target). ``extra_flags`` is OR-ed into the
+    general-purpose flags and ``extra`` is written as the extra field of both headers.
     """
     made_by = 20 if unix_mode is None else (3 << 8) | 20
     external_attr = 0 if unix_mode is None else unix_mode << 16
     crc = zlib.crc32(data) & 0xFFFFFFFF
-    flags = 0x1  # bit 0: encrypted; no data descriptor
+    flags = 0x1 | extra_flags  # bit 0: encrypted; no data descriptor
     if compression == zipfile.ZIP_STORED:
         stored = data
         version_needed = 20
@@ -124,9 +127,10 @@ def build_zipcrypto_zip(
             comp_size,
             len(data),
             len(name),
-            0,
+            len(extra),
         )
         + name
+        + extra
     )
     data_start = len(lfh)
     cdh = (
@@ -143,7 +147,7 @@ def build_zipcrypto_zip(
             comp_size,
             len(data),
             len(name),
-            0,
+            len(extra),
             0,
             0,
             0,
@@ -151,6 +155,7 @@ def build_zipcrypto_zip(
             0,
         )
         + name
+        + extra
     )
     cd_off = data_start + len(enc)
     eocd = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(cdh), cd_off, 0)

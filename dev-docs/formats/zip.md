@@ -16,7 +16,7 @@ states the behaviour and links the row.
 | Stream capability | `SEEKABLE` |
 | Core dependencies | None — ZIP reads on a zero-dependency install |
 | Optional | `[recommended]`: Deflate64 (`inflate64`), PPMd (`pyppmd`), Zstd (`backports.zstd`, stdlib on 3.14+), WinZip AES (`cryptography`) |
-| Refuses | Non-seekable sources · Info-ZIP spanned sets (7-Zip `.zip.NNN` byte splits are joined, §2.2) · unknown compression methods, at read · AES without `cryptography` |
+| Refuses | Non-seekable sources · Info-ZIP spanned sets (7-Zip `.zip.NNN` byte splits are joined, §2.2) · unknown compression methods, at read · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
 
 The extras are named for what they provide, not for ZIP, because every one of those
 codecs is shared with 7z or TAR. See [`packaging-and-extras`](../../openspec/specs/packaging-and-extras/spec.md).
@@ -330,6 +330,7 @@ Encryption is the one place the split is uneven:
 | --- | --- | --- |
 | Traditional ZipCrypto | stdlib `zipfile`'s decryptor | One-byte verifier, so ~1 in 256 wrong passwords passes it. When the 12-byte ZipCrypto header cannot be read (file pointer at EOF), both password dispatch paths report `TruncatedError`: `ZipFile.open` via stdlib `IndexError` from `_init_decrypter` (caught in `_zip_open_raw`, the only `ZipFile.open` call — a read-path `IndexError` stays a raw crash), and the STORED multi-candidate confirm path via `_read_zipcrypto_header`. A truncated ZipCrypto *body* is `EOFError` → `TruncatedError` |
 | WinZip AES (method 99, extra `0x9901`) | archivey, natively | PBKDF2-HMAC-SHA1 · AES-CTR · HMAC-SHA1 truncated to 10 bytes; then the codec layer for the real method |
+| PKWARE Strong Encryption (APPNOTE §7: bit 6, or extra `0x0017`) | refused | Listed as encrypted; opening it raises `UnsupportedFeatureError` naming Strong Encryption, with or without a password. A symlink of this kind lists with `link_target` unset (`target_data_encrypted`). When the central directory itself is encrypted (bit 13), stdlib cannot list the archive; an archive extra data record (`PK\x06\x08`) where the directory should start turns that into the same refusal instead of `CorruptionError`. Best-effort: without that record the archive reads as corrupt |
 
 ZipCrypto's weak verifier is why multiple password candidates need confirmation before one
 is accepted. For a compressed member the decompressor rejects a wrong key within a few
@@ -517,6 +518,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
 | Join `7z -v` byte slices; reject Info-ZIP spanned sets | The first are slices of one finished archive and rejoin exactly — archivey already rejoins the identical split for `.7z.NNN`, so refusing here answered the same input two ways. A linear join of the second lists correctly and then reads only the members that happen to sit on the last disk (§3) | Refusing both (the shape of the rule was the filename, not the structure); concatenating spanned segments and hoping |
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
+| Refuse PKWARE Strong Encryption at member open, not implement it | Without a bit-6 check such a member was taken for ZipCrypto and failed as a wrong password or as corruption. Implementing it is out: patent-encumbered and rare outside PKZIP. No real archive of this kind is in the corpora, so the tests use re-flagged ZipCrypto members | Leaving the misleading error; implementing SES |
 | Create-only writing, if and when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append (`history/ARCHITECTURE.md` §5.4) |
 | Short ZipCrypto header is `TruncatedError` on both password paths | Physical EOF, same condition as the stdlib `IndexError`; callers matching `TruncatedError` vs `CorruptionError` would otherwise see a dispatch-dependent split | Mapping the confirm path's `BadZipFile` through the generic ZIP translator (`CorruptionError`); leaving the split |
 | WinZip AES HMAC from the completing read, not `close()` | ADR 0014: `close()` is teardown. STORED members used to drain the MAC on close and raise `CorruptionError` there; compressed members already skipped it because the decompressor borrows the decrypt stream (S1-F1). Removing the drain makes both match CRC members | Wiring compressed members to authenticate on close too (the S1-F1 "fix" that would add a behaviour the ADR already ruled out) |
@@ -527,15 +529,7 @@ Gaps in what *we* know, not in what the format says — each would change someth
 answered, and none can be settled by reading more code. Distinct from §5, which is
 behaviour a caller already sees.
 
-- **Is PKWARE Strong Encryption worth an explicit refusal?** A different mechanism from
-  WinZip AES — APPNOTE §7, general-purpose bit 6, extra field `0x0017`, optionally
-  encrypting the central directory itself (bit 13) — and unmentioned anywhere else in this
-  repo. `zip_reader.py` tests only bit 0, so such a member is taken for ZipCrypto and
-  fails as a wrong password or as corruption rather than as something archivey does not
-  support. The question is not whether to implement it (no: patent-encumbered and
-  vanishingly rare outside PKZIP itself) but whether the misleading error justifies a bit-6
-  check raising `UnsupportedFeatureError`. No archive of this shape has turned up in our
-  corpora, so the cost of the wrong message is unmeasured.
+None open.
 
 ## 8. Verify
 
