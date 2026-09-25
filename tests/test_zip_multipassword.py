@@ -23,7 +23,7 @@ from archivey.exceptions import CorruptionError, EncryptionError
 from archivey.internal import password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
-from archivey.internal.password_confirm import CONFIRM_PREFIX_BYTES
+from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
 from tests.zipcrypto import (
     build_zipcrypto_zip,
     corrupt_zipcrypto_payload,
@@ -399,8 +399,8 @@ def test_wrong_key_rejected_within_tight_prefix_bound(
     compression: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Even a 4 KiB confirmation bound rejects colliding wrong keys (≪ 64 KiB)."""
-    monkeypatch.setattr(password_confirm, "CONFIRM_PREFIX_BYTES", 4 * 1024)
-    monkeypatch.setattr(zip_reader, "CONFIRM_PREFIX_BYTES", 4 * 1024)
+    monkeypatch.setattr(password_confirm, "PASSWORD_CONFIRM_PREFIX_BYTES", 4 * 1024)
+    monkeypatch.setattr(zip_reader, "PASSWORD_CONFIRM_PREFIX_BYTES", 4 * 1024)
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA * 64, compression=compression)
     collider = find_check_byte_collision(blob, NAME, RIGHT)
     assert _read_member(blob, [collider, RIGHT]) == DATA * 64
@@ -416,7 +416,7 @@ def test_large_compressed_confirmation_is_bounded(
 ) -> None:
     plaintext = b"bounded-confirm-payload\n" * 8000  # well over 64 KiB when repeated
     plaintext = plaintext * 8  # ~1.5 MiB+
-    assert len(plaintext) > CONFIRM_PREFIX_BYTES
+    assert len(plaintext) > PASSWORD_CONFIRM_PREFIX_BYTES
     blob = build_zipcrypto_zip(
         RIGHT, NAME.encode(), plaintext, compression=zipfile.ZIP_DEFLATED
     )
@@ -445,7 +445,7 @@ def test_large_compressed_confirmation_is_bounded(
 
     assert _read_member(blob, [collider, RIGHT]) == plaintext
     assert created_temps == []
-    assert bytes_read["n"] <= CONFIRM_PREFIX_BYTES
+    assert bytes_read["n"] <= PASSWORD_CONFIRM_PREFIX_BYTES
 
 
 # ---------------------------------------------------------------------------
@@ -543,8 +543,8 @@ def test_corruption_beyond_prefix_fails_caller_read_as_corruption(
     blob[late] ^= 0xFF
 
     # Tight bound so confirmation only sees the good prefix.
-    monkeypatch.setattr(password_confirm, "CONFIRM_PREFIX_BYTES", 4096)
-    monkeypatch.setattr(zip_reader, "CONFIRM_PREFIX_BYTES", 4096)
+    monkeypatch.setattr(password_confirm, "PASSWORD_CONFIRM_PREFIX_BYTES", 4096)
+    monkeypatch.setattr(zip_reader, "PASSWORD_CONFIRM_PREFIX_BYTES", 4096)
 
     with open_archive(io.BytesIO(bytes(blob)), password=[RIGHT, b"also-wrong"]) as ar:
         stream = ar.open(NAME)

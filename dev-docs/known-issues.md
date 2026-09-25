@@ -503,6 +503,22 @@ older `dev-docs/investigations/pyppmd-upstream-report.md` is folded into a point
 attributed the corruption to the model walk; §J corrects that to the output-buffer UAF).
 The deterministic valgrind gate is `scripts/ppmd_uaf_valgrind.py`.
 
+### Random input also corrupts, sized decode or not (found 2026-09-25)
+
+The "not adversarial input" line above describes how the defect was found, not its
+reach. Feeding random bytes — which is what a wrong 7z AES key hands the PPMd coder, and
+what a hostile archive can hand it directly — through archivey's own bounded `Codec.PPMD`
+path (order 6, 16 MiB, `unpack_size` and `pack_size` set) makes
+`Ppmd7Decoder.decode` return `NULL` without setting an exception: every decode of
+`random.Random(1).randbytes(256 * 1024)` surfaces as `CorruptionError` wrapping
+`SystemError: ... returned NULL without setting an exception`. That is the C extension
+reporting failure with its state already inconsistent. In a run of a few hundred such
+decodes in one process, after other codecs had run, the process died with SIGSEGV
+inside `decode` (faulthandler: `decompress.py` `_decode` → `Ppmd7Decoder.decode`). Found
+while measuring codec rejection for `bounded-password-confirmation`; that change keeps PPMd
+non-rejecting and never feeds it random input in-process in tests. Password confirmation
+decoding a wrong key into PPMd predates the change. Tracked internally.
+
 ### Windows: `STATUS_HEAP_CORRUPTION` on fresh PPMd children
 
 On `windows-latest` the suite has intermittently aborted during
@@ -822,8 +838,9 @@ quiesce-on-close is defense-in-depth (see *Residual*). See also: exploration doc
 D4; fixed by the spent-payload stop in the pyppmd section above (the same change as
 #315 thread K6).
 
-7z AES has no password check value, so confirm decrypts, decodes, and CRCs
-(`SevenZipReader._password_for_folder` → `_verify_decoded_folder`). A wrong key
+7z AES has no password check value, so confirm decrypted, decoded, and CRC'd the
+folder (`SevenZipReader._password_for_folder` → `_verify_decoded_folder` at the time;
+now a bounded `plan_password_confirm` / `run_password_confirm_plan` probe). A wrong key
 feeds PPMd garbage. On some keys that garbage stops PPMd short of the folder's
 declared size at native `eof` with the whole pack fed — the same state as a header
 that overstates `unpack_size` — and the next empty drain raised `MemoryError` from

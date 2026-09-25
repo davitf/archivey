@@ -41,10 +41,11 @@ has a rejecting codec, the plan SHALL NOT walk it (codec rejection settles a wro
 key). If the chain has no rejecting codec, the plan SHALL walk it anyway.
 
 **Codec rejection.** A chain rejects iff it contains a decompressor measured to fail on
-random AES output. Measured: LZMA1, LZMA2, BZip2, Deflate. Filters (Delta, BCJ) never
-reject — `MethodKind.LZMA_FAMILY` includes Delta and is the wrong predicate. PPMd,
-Deflate64, ZSTD, Brotli and LZ4 are treated as non-rejecting until task 5.2 measures
-them. A rejecting chain with no reachable anchor decodes a bounded plaintext prefix
+random AES output. Measured as rejecting: LZMA1, LZMA2, BZip2, Deflate, Deflate64,
+Zstandard and LZ4. Measured as non-rejecting: Brotli (about one random input in twenty
+decodes a full 64 KiB prefix) and PPMd. Filters (Delta, BCJ) never reject —
+`MethodKind.LZMA_FAMILY` includes Delta and is the wrong predicate. A codec not measured
+is non-rejecting. A rejecting chain with no reachable anchor decodes a bounded plaintext prefix
 and treats a survivor as `INCONCLUSIVE`. A non-rejecting chain follows the
 `archive-reading` rule: walk a late CRC; with no CRC at all, do not invent an
 unbounded decode.
@@ -79,5 +80,6 @@ silent empty listing.
 | Store/copy, no CRC, two candidates | First candidate; `DIGEST_UNVERIFIABLE`; confirmation ≤ budget |
 | Ambiguous candidates, store/copy folder, only CRC at folder end | Unbounded pass; the candidate matching the CRC wins |
 | AES → Delta → Copy or AES → BCJ → Copy | Treated as non-rejecting (the filter does not reject random input) |
+| Rejecting chain, packed input past 1 MiB before the prefix is decoded | Input capped at `CONFIRM_MAX_INPUT_BYTES`; running out of it is `INCONCLUSIVE`, not a rejection |
 | Solid folder, first member 4 KiB, folder 200 MiB | Confirmation decodes the first member only |
 | Folder carrying both a folder digest and per-member CRCs | Anchors on the earliest member CRC, not the folder digest |

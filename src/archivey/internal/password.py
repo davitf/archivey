@@ -276,6 +276,7 @@ class _PasswordCandidates:
         decrypt: Callable[[bytes], _T],
         *,
         on_failure: Callable[[bytes, Exception], EncryptionError | None] | None = None,
+        promote: Callable[[_T], bool] | None = None,
     ) -> _T:
         """Try passwords in order; consult the provider after static candidates fail.
 
@@ -284,6 +285,11 @@ class _PasswordCandidates:
         decrypt callable that returned ``None`` for a valid password would be treated
         as a failure and retried. Decrypt / key derivation runs outside password-state
         locks; only promotion and provider reentry bookkeeping take the locks.
+
+        A successful password is promoted to known-good unless ``promote`` says
+        otherwise for its result. A confirmation probe uses this to accept a candidate
+        that survived without a deciding signal while keeping it out of known-good,
+        where it would be tried first for every later unit.
         """
         last_error: EncryptionError | None = None
         tried: set[bytes] = set()
@@ -300,7 +306,8 @@ class _PasswordCandidates:
                     if mapped is not None:
                         last_error = mapped
                 return None
-            self.record_success(password)
+            if promote is None or promote(result):
+                self.record_success(password)
             return result
 
         for password in self.iter_candidates():

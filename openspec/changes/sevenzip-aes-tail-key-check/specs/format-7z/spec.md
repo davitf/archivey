@@ -45,7 +45,7 @@ to be dropped.
 than decoding the folder: per-member CRCs are consulted in substream order, and the plan
 terminates once CRC-verified bytes reach 4. A folder digest SHALL be used only when it is
 the earliest such anchor — a folder carrying both a digest and per-member CRCs SHALL
-anchor on the members. If that anchor sits past `CONFIRM_PREFIX_BYTES` and the chain
+anchor on the members. If that anchor sits past `PASSWORD_CONFIRM_PREFIX_BYTES` and the chain
 has a rejecting codec, the plan SHALL NOT walk it (codec rejection settles a wrong
 key). If the chain has no rejecting codec, the plan SHALL walk it anyway.
 

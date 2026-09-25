@@ -379,6 +379,22 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Security
 
+- **7z password confirmation decodes only what it needs.** 7z AES has no password
+  check, so the first read into an encrypted folder confirms a password by decoding.
+  That decode used to walk every member CRC to the end of the folder, and then the
+  folder was decoded again to serve the member: an attacker-sized cost per candidate,
+  paid even by the correct password. It now stops at the first member CRC covering 4
+  bytes, and a compressed folder stops at 64 KiB of output, since its codec rejects a
+  wrong key within a few bytes. Store/copy+AES with its only CRC at the folder end still
+  reads to that CRC per candidate. ZIP's multi-password confirmation uses the same
+  planner.
+- **New diagnostic `ENCRYPTED_MEMBER_UNVERIFIED`.** A ZipCrypto password that passes the
+  one-byte check can be wrong, and then a partial read returns garbage with no error:
+  only the CRC at EOF notices. Closing an encrypted member's stream before EOF, when the
+  password was accepted on a check weaker than the member's checksum, now emits this
+  code (ZipCrypto, WinZip AES, and 7z folders confirmed without reaching a CRC). It is
+  outside `ARCHIVE_INTEGRITY_CODES`, so `strict()` collects it; `pedantic()` raises.
+
 - **`repr()` of a 7z reader's key cache no longer prints passwords or keys.** The cache
   is a dataclass whose generated `repr` showed every candidate password tried and every
   AES key derived from them, so a traceback with locals, a debugger dump or a debug log
