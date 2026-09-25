@@ -40,7 +40,7 @@ class DetectionConfidence(Enum):
 class FormatInfo:
     format: ArchiveFormat
     confidence: DetectionConfidence
-    detected_by: str
+    detected_by: Literal["magic", "extension", "content_probe", "sfx_scan", "directory"]
     encoding_hint: str | None
     payload_offset: int = 0
     diagnostics: DiagnosticSummary = DiagnosticSummary.empty()

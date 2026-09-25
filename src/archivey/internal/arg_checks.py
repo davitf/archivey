@@ -53,15 +53,22 @@ __all__ = [
 ]
 
 
-def describe_value(value: object) -> str:
+def describe_value(value: object, *, expected: type | None = None) -> str:
     """Render ``value`` for a usage-error message: the value, then its type.
 
     A class object is described as the class rather than as an instance of ``type``,
     because ``config=ArchiveyConfig`` (the constructor, unparenthesised) is a common
-    enough slip that the message should name it back.
+    enough slip that the message should name it back. The "did you mean" hint is
+    offered only when ``expected`` says an instance of that class would have been
+    accepted: suggesting ``ListingLimits()`` to a caller who passed ``ListingLimits``
+    where an ``ExtractionLimits`` belongs sends them to a second usage error.
     """
     if isinstance(value, type):
-        return f"the {value.__name__} class itself (did you mean {value.__name__}()?)"
+        if expected is not None and issubclass(value, expected):
+            return (
+                f"the {value.__name__} class itself (did you mean {value.__name__}()?)"
+            )
+        return f"the {value.__name__} class itself"
     if value is None:
         return "None"
     return f"{value!r} ({type(value).__name__})"
@@ -85,7 +92,8 @@ def check_instance(
         return
     raise ArchiveyUsageError(
         f"{call} takes {_article(expected.__name__)} {expected.__name__}"
-        f"{' or None' if allow_none else ''}, but got {describe_value(value)}."
+        f"{' or None' if allow_none else ''}, "
+        f"but got {describe_value(value, expected=expected)}."
     )
 
 

@@ -73,6 +73,18 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A Windows symlink to a network share keeps its `//server/share` target.** A ZIP or
+  7z reparse buffer that named its target only as `\??\UNC\server\share` listed
+  the link as pointing at the relative path `UNC/server/share`, and extraction created
+  that relative link. The target is absolute now, so safe extraction blocks the member
+  with `SymlinkEscapeError`, as it does any link that leaves the destination.
+- **A 7z AES coder whose properties are one byte, with no salt and no IV, opens.** 7-Zip
+  reads that as an empty salt and a zero IV; archivey refused it as corrupt.
+- **`FormatInfo` and `DetectionConfidence` are on the API page**, with each field
+  documented. Both were public and returned by `detect_format`, but undocumented.
+- **A usage error no longer suggests calling the wrong class.** Passing
+  `limits=ListingLimits` where an `ExtractionLimits` belongs said "did you mean
+  ListingLimits()?"; the hint now appears only when that call would be accepted.
 - **Errors keep their real cause in four places where a blind `except` changed it.**
   Reading a bzip2 stream through the rapidgzip accelerator from a file object whose own
   `read` failed aborted the Python process; the file object's error now propagates, as it
