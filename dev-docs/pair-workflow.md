@@ -84,7 +84,7 @@ material actually had. Sections are numbered so a brief can cite `zip.md` §2.3.
 | **4. Threat surface** | Format-specific attack surface only; link [`threat-model.md`](threat-model.md) `O*` rows for status |
 | **5. Sharp edges** | *Symptoms someone observes*, each tagged **format** (inherent) / **library** (upstream or replace the library) / **archivey** (ours), so a reader can stop thinking about what they cannot fix. Details and fix plans stay behind the register link. **One table, not two**: a reader arrives with a symptom and does not yet know whether it is a bug or the format, so the tag sorts each row after they have found it rather than making them pick the right list first |
 | **6. Decisions** | Choice → why → rejected alternative. Light bullets, not ADRs |
-| **7. Open questions** | What we do not know and cannot settle by reading the code — each with what it would change and what would answer it. Omit the section when there is nothing honest to put in it |
+| **7. Open questions** | What we do not know and cannot settle by reading the code — each with what it would change and what would answer it. When there is nothing honest to put in it, keep the heading with one line saying none are open, so the numbers of §8 and §9 stay what briefs cite |
 | **8. Verify** | Commands and tests that pin the claims above, plus how to build fixtures for this format |
 | **9. References** | External spec sections *with numbers*, our investigations, upstream issues |
 
