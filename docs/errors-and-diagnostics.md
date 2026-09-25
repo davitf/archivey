@@ -117,15 +117,17 @@ config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
   report the archive's own bytes or metadata as anomalous — and collects the rest.
 - **`DiagnosticPolicy.pedantic()`** raises on everything.
 
-Seven codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
+Eight codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
 is legitimate), `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED` and
 `MEMBER_SELECTOR_UNMATCHED` (argument hygiene — a pipeline passing a password, or one
 list of names, to every call would otherwise raise on every archive they do not fit),
 `EXPLICIT_FORMAT_LISTED_EMPTY` (an override that halts you is not an override),
 `STREAM_REWIND_REDECOMPRESSES` (your access pattern, not the archive — most useful as a
-targeted tripwire), and `PROBE_FORMAT_UNCONFIRMED` (it is emitted while the matching
-`TruncatedError` or `CorruptionError` is raised, and that error already carries
-`format_unconfirmed=True`). `ARCHIVE_INTEGRITY_CODES` is exported, so you can
+targeted tripwire), `ENCRYPTED_MEMBER_UNVERIFIED` (it fires when you close an encrypted
+member's stream before EOF, having read bytes that no checksum has checked yet; under
+`strict()` a peek at a ZipCrypto member would raise), and `PROBE_FORMAT_UNCONFIRMED` (it
+is emitted while the matching `TruncatedError` or `CorruptionError` is raised, and that
+error already carries `format_unconfirmed=True`). `ARCHIVE_INTEGRITY_CODES` is exported, so you can
 build your own policy from it.
 
 **New codes may appear in minor releases.** A policy with `default=RAISE` is therefore

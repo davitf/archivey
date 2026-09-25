@@ -107,3 +107,6 @@ the format's normal lazy streaming path.
 | Cheap key check matches for one candidate at full strength | `CONFIRMED` with no payload decode |
 | Cheap key check matches no candidate | Ladder continues with every candidate; no candidate dropped |
 | `INCONCLUSIVE` accepted, another candidate may still be tried | Not added to known-good |
+| Confirmation fails, then provider raises `EncryptionError` | Provider exception propagates unchanged |
+| All candidates fail confirmation | Ambiguity message; no candidate bytes returned |
+| One distinct static value (incl. duplicates) | No eager consume for disambiguation; ordinary read-time errors |

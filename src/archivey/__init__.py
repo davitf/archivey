@@ -65,6 +65,7 @@ from archivey.diagnostics import (
     DiagnosticSummary,
     DigestContext,  # noqa: F401
     EmptyArchiveContext,  # noqa: F401
+    EncryptedVerificationContext,  # noqa: F401
     ExtractionReport,
     FormatConflictContext,  # noqa: F401
     MemberHeaderRecordContext,  # noqa: F401

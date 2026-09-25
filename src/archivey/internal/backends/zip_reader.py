@@ -34,7 +34,17 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, BinaryIO, Iterator, Mapping, NoReturn, cast
+from typing import (
+    IO,
+    TYPE_CHECKING,
+    BinaryIO,
+    Iterator,
+    Literal,
+    Mapping,
+    NoReturn,
+    TypeVar,
+    cast,
+)
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import (
@@ -45,6 +55,7 @@ from archivey.cost import (
 )
 from archivey.diagnostics import (
     DiagnosticCode,
+    EncryptedVerificationContext,
     MemberTimestampContext,
     NameEncodingContext,
     raw_name_to_base64,
@@ -77,6 +88,7 @@ from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.logs import backends as logger
+from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
     normalize_member_name,
@@ -89,7 +101,11 @@ from archivey.internal.password import (
 )
 from archivey.internal.password_confirm import (
     CONFIRM_PREFIX_BYTES,
+    ConfirmVerdict,
+    UnverifiedReadWatch,
     first_crc_match,
+    plan_confirm,
+    run_confirm_plan,
 )
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
@@ -263,6 +279,19 @@ def _decode_with_fallback(data: bytes) -> str:
         except UnicodeDecodeError:
             continue
     raise AssertionError("unreachable: cp437 decodes every byte")
+
+
+_T = TypeVar("_T")
+
+# ZipCrypto methods whose decompressor rejects random input (the confirm ladder's codec
+# rung): a wrong key dies inside the plaintext prefix, so confirmation stops there
+# rather than walk a large member to its CRC. Anything else zipfile can decode under
+# ZipCrypto walks to the CRC. The compressed-input half of the budget needs no cap of
+# its own here: DEFLATE and LZMA are stream codecs, and bzip2 produces output after one
+# block, whose compressed size its format bounds.
+_ZIP_REJECTING_METHODS = frozenset(
+    {zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA}
+)
 
 
 def _is_candidate_integrity_failure(exc: Exception) -> bool:
@@ -1062,6 +1091,16 @@ class ZipReader(BaseArchiveReader):
             raise
         except _ZIP_MEMBER_READ_ERRORS as exc:
             self._reraise_member_error(exc, member_name)
+        # Cheap key check rung: WinZip AES's two-byte ``pw_verify`` (2⁻¹⁶) accepted the
+        # password; the HMAC at EOF is the authoritative check.
+        decoded = self._watch_unverified(
+            decoded,
+            info,
+            member,
+            member_name,
+            check="weak_open_check",
+            seek_keeps_digest=False,
+        )
 
         hashes: Mapping[HashAlgorithm, bytes] = (
             member.hashes if member is not None else {}
@@ -1093,8 +1132,9 @@ class ZipReader(BaseArchiveReader):
             # Unencrypted members decode through the shared codec layer (not ZipExtFile).
             return self._open_codec_member(info, member, member_name=member_name)
 
-        # ZipCrypto's one-byte open check admits ~1/256 of wrong passwords. With more
-        # than one possible candidate (or a provider), confirm before accepting.
+        # Cheap key check rung: ZipCrypto's one-byte open check admits ~1/256 of wrong
+        # passwords (2⁻⁸). With more than one possible candidate (or a provider),
+        # confirm before accepting.
         # Confirmed winners are re-opened fresh — no plaintext retained.
         if not self._passwords.is_ambiguous():
             return self._open_encrypted_lazy(info, member, member_name=member_name)
@@ -1371,8 +1411,17 @@ class ZipReader(BaseArchiveReader):
                 )
             )
 
-        return self._finish_password_attempt(
+        stream = self._finish_password_attempt(
             member, member_name, decrypt, ambiguous_holder=None
+        )
+        # Only the check byte vouched for this password; the CRC at EOF is the check.
+        return self._watch_unverified(
+            stream,
+            info,
+            member,
+            member_name,
+            check="weak_open_check",
+            seek_keeps_digest=True,
         )
 
     def _open_compressed_confirmed(
@@ -1383,38 +1432,70 @@ class ZipReader(BaseArchiveReader):
         member_name: str,
     ) -> BinaryIO:
         ambiguous_holder: list[EncryptionError] = []
+        # One substream, the member itself: its CRC is the anchor when the member fits
+        # the prefix, and codec rejection decides a larger one.
+        plan = plan_confirm(
+            [(info.file_size, info.CRC)],
+            None,
+            budget=CONFIRM_PREFIX_BYTES,
+            codec_rejects=info.compress_type in _ZIP_REJECTING_METHODS,
+        )
 
-        def decrypt(password: bytes) -> BinaryIO:
+        def candidate_failed(cause: Exception | None) -> EncryptionError:
+            failure = EncryptionError(
+                "Password candidate failed integrity validation for this ZIP member"
+            )
+            if not ambiguous_holder:
+                ambiguous_holder.append(failure)
+            if cause is not None:
+                failure.__cause__ = cause
+            return failure
+
+        def decrypt(password: bytes) -> tuple[BinaryIO, ConfirmVerdict]:
             stream: BinaryIO | None = None
             try:
                 stream = self._zip_open_raw(
                     info, password=password, member_name=member_name
                 )
-                read_exact(stream, CONFIRM_PREFIX_BYTES)
+                verdict = run_confirm_plan(stream, plan)
+                if verdict is ConfirmVerdict.REJECTED:
+                    raise candidate_failed(None)
                 self._zip_close_raw(stream)
                 stream = None
                 # Fresh stream for the caller; zipfile re-checks CRC at EOF.
-                return self._open_zipfile_member(
+                fresh = self._open_zipfile_member(
                     info, password=password, member_name=member_name
                 )
+                return fresh, verdict
             except _ZIP_MEMBER_READ_ERRORS as exc:
                 if _is_candidate_integrity_failure(exc):
-                    failure = EncryptionError(
-                        "Password candidate failed integrity validation for this ZIP member"
-                    )
-                    if not ambiguous_holder:
-                        ambiguous_holder.append(failure)
-                    raise failure from exc
+                    raise candidate_failed(exc) from exc
                 self._reraise_member_error(exc, member_name)
             finally:
                 if stream is not None:
                     self._zip_close_raw(stream)
 
-        return self._finish_password_attempt(
+        def promote(result: tuple[BinaryIO, ConfirmVerdict]) -> bool:
+            # This path runs only for an ambiguous candidate set, so a survivor with no
+            # CRC match stays out of known-good.
+            return result[1] is ConfirmVerdict.CONFIRMED
+
+        stream, verdict = self._finish_password_attempt(
             member,
             member_name,
             decrypt,
             ambiguous_holder=ambiguous_holder,
+            promote=promote,
+        )
+        if verdict is ConfirmVerdict.CONFIRMED:
+            return stream
+        return self._watch_unverified(
+            stream,
+            info,
+            member,
+            member_name,
+            check="confirm_budget_exhausted",
+            seek_keeps_digest=True,
         )
 
     def _open_stored_confirmed(
@@ -1520,16 +1601,61 @@ class ZipReader(BaseArchiveReader):
         self._stamp_error_context(wrong, member_name)
         raise wrong
 
+    def _watch_unverified(
+        self,
+        stream: BinaryIO,
+        info: zipfile.ZipInfo,
+        member: ArchiveMember | None,
+        member_name: str,
+        *,
+        check: Literal["weak_open_check", "confirm_budget_exhausted"],
+        seek_keeps_digest: bool,
+    ) -> BinaryIO:
+        """Report ``ENCRYPTED_MEMBER_UNVERIFIED`` if ``stream`` is abandoned before EOF.
+
+        For a password that a check weaker than the member's digest accepted: a wrong
+        ZipCrypto password that passes the check byte decrypts to readable garbage,
+        and only the CRC at EOF notices.
+        """
+
+        def report() -> None:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
+                message=(
+                    f"Encrypted ZIP member {quoted(member_name)} was closed before its "
+                    f"integrity check was reached, and the password was accepted on a "
+                    f"weaker check: the bytes read may have been decrypted with a "
+                    f"wrong password."
+                ),
+                context=EncryptedVerificationContext(
+                    archive_name=self._archive_name,
+                    member_name=member_name,
+                    member_id=member._member_id if member is not None else None,
+                    check=check,
+                    reason="partial_read",
+                ),
+                member=member,
+                logger=integrity_logger,
+            )
+
+        return UnverifiedReadWatch(
+            stream,
+            size=info.file_size,
+            on_unverified=report,
+            seek_keeps_digest=seek_keeps_digest,
+        )
+
     def _finish_password_attempt(
         self,
         member: ArchiveMember | None,
         member_name: str,
-        decrypt: Callable[[bytes], BinaryIO],
+        decrypt: Callable[[bytes], _T],
         *,
         ambiguous_holder: list[EncryptionError] | None,
-    ) -> BinaryIO:
+        promote: Callable[[_T], bool] | None = None,
+    ) -> _T:
         try:
-            return self._passwords.attempt(member, decrypt)
+            return self._passwords.attempt(member, decrypt, promote=promote)
         except _PasswordCandidatesExhausted as exc:
             ambiguous_failure = ambiguous_holder[0] if ambiguous_holder else None
             if ambiguous_failure is not None:

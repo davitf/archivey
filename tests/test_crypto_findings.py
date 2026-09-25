@@ -46,16 +46,12 @@ from archivey.internal.backends.sevenzip_parser import (
     SevenZipFileRecord,
     SevenZipFolder,
 )
-from archivey.internal.backends.sevenzip_reader import (
-    _PASSWORD_CONFIRM_CHUNK,
-    SevenZipReader,
-    _verify_decoded_folder,
-)
+from archivey.internal.backends.sevenzip_reader import SevenZipReader
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, crc32_digest
-from tests.conftest import ReadSizeSpy, requires, requires_binary
+from tests.conftest import requires, requires_binary
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 
@@ -291,120 +287,8 @@ def test_f1_forward_transform_detects_corrupt_tweaked_blake2sp() -> None:
 # --- F2: 7z no-anchor encrypted folder -------------------------------------------------
 
 
-def test_f2_verify_decoded_folder_accepts_when_no_digests() -> None:
-    folder = SevenZipFolder(
-        coders=[],
-        bind_pairs=[],
-        packed_indices=[],
-        unpack_sizes=[4],
-        crc=None,
-        digest_defined=False,
-    )
-    # Best-effort: no folder digest and CRC-less members → accept (matches 7-Zip).
-    _verify_decoded_folder(
-        folder,
-        io.BytesIO(b"abcd"),
-        expected_size=4,
-        member_digests=[(4, None)],
-    )
-    _verify_decoded_folder(folder, io.BytesIO(b"abcd"), expected_size=4)
-
-
-def _plain_folder(
-    *,
-    unpack_size: int,
-    digest_defined: bool = False,
-    crc: int | None = None,
-) -> SevenZipFolder:
-    return SevenZipFolder(
-        coders=[],
-        bind_pairs=[],
-        packed_indices=[],
-        unpack_sizes=[unpack_size],
-        crc=crc,
-        digest_defined=digest_defined,
-    )
-
-
-def test_verify_decoded_folder_accepts_matching_folder_crc() -> None:
-    payload = b"folder-crc-ok"
-    folder = _plain_folder(
-        unpack_size=len(payload),
-        digest_defined=True,
-        crc=zlib.crc32(payload),
-    )
-    _verify_decoded_folder(folder, io.BytesIO(payload), expected_size=len(payload))
-
-
-def test_verify_decoded_folder_rejects_mismatched_folder_crc() -> None:
-    payload = b"folder-crc-bad"
-    folder = _plain_folder(
-        unpack_size=len(payload),
-        digest_defined=True,
-        crc=0xDEADBEEF,
-    )
-    with pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"):
-        _verify_decoded_folder(folder, io.BytesIO(payload), expected_size=len(payload))
-
-
-def test_verify_decoded_folder_accepts_matching_member_crc() -> None:
-    first, second = b"aaaa", b"bbbb"
-    payload = first + second
-    folder = _plain_folder(unpack_size=len(payload))
-    _verify_decoded_folder(
-        folder,
-        io.BytesIO(payload),
-        expected_size=len(payload),
-        member_digests=[
-            (len(first), zlib.crc32(first)),
-            (len(second), zlib.crc32(second)),
-        ],
-    )
-
-
-def test_verify_decoded_folder_rejects_mismatched_member_crc() -> None:
-    payload = b"abcd"
-    folder = _plain_folder(unpack_size=len(payload))
-    with pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"):
-        _verify_decoded_folder(
-            folder,
-            io.BytesIO(payload),
-            expected_size=len(payload),
-            member_digests=[(len(payload), 0xDEADBEEF)],
-        )
-
-
-def test_verify_decoded_folder_rejects_short_stream() -> None:
-    # The CRC must be the one the truncated bytes actually hash to, so the only thing
-    # that can raise is the short-read guard. With a mismatching CRC (0, say) the
-    # digest compare raises too and the test proves nothing about truncation.
-    folder = _plain_folder(unpack_size=8, digest_defined=True, crc=zlib.crc32(b"short"))
-    with pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"):
-        _verify_decoded_folder(folder, io.BytesIO(b"short"), expected_size=8)
-
-
-def test_verify_decoded_folder_no_anchor_still_rejects_short_stream() -> None:
-    folder = _plain_folder(unpack_size=8)
-    with pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"):
-        _verify_decoded_folder(
-            folder,
-            io.BytesIO(b"ab"),
-            expected_size=8,
-            member_digests=[(8, None)],
-        )
-
-
-def test_verify_decoded_folder_reads_in_bounded_chunks() -> None:
-    payload = b"x" * (_PASSWORD_CONFIRM_CHUNK * 2 + 17)
-    folder = _plain_folder(
-        unpack_size=len(payload),
-        digest_defined=True,
-        crc=zlib.crc32(payload),
-    )
-
-    spy = ReadSizeSpy(io.BytesIO(payload))
-    _verify_decoded_folder(folder, spy, expected_size=len(payload))
-    assert spy.max_requested <= _PASSWORD_CONFIRM_CHUNK
+# The confirm walk itself (earliest anchor, short reads, bounded chunks) is unit-tested
+# in tests/test_password_confirm.py, against the shared planner and runner.
 
 
 def test_f2_no_anchor_encrypted_member_emits_diagnostic() -> None:

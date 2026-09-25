@@ -216,7 +216,7 @@ Archive order and identity matter more than “the” name.
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` / `streaming=True` are intentionally unguarded, except on formats that already apply `max_members` at parse (7z and RAR): `open_archive` itself raises. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES. |
+| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` / `streaming=True` are intentionally unguarded, except on formats that already apply `max_members` at parse (7z and RAR): `open_archive` itself raises. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
 
 ## Limits
 
@@ -257,10 +257,10 @@ a sequential subset, except on 7z and RAR where `max_members` is already checked
 open (`stream_members()` / `streaming=True` included). Encrypted 7z folders
 confirm the password by decoding on the first
 member read, which is neither listing nor extract: peak memory is a 64 KiB chunk plus
-codec buffers. Wall time is *at most* folder size per candidate, and reaches that only
-for **store/copy+AES**, where nothing rejects a wrong key early — a compressed folder's
-codec rejects one within a few bytes, and confirmation stops at the first member CRC
-that fails.
+codec buffers. The decode stops at the first member CRC covering 4 bytes, or at 64 KiB
+of output for a compressed folder, whose codec rejects a wrong key within a few bytes.
+It reaches folder size per candidate only for **store/copy+AES** whose only CRC is at
+the folder end, where nothing rejects a wrong key early.
 
 **Symlink targets stored as member data.** ZIP, 7z and RAR4 keep a symlink's target in
 the member's data rather than its header, so learning where a link points means reading

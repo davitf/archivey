@@ -463,7 +463,7 @@ itself — and whether limits are per-detection aggregates or per-candidate — 
 that lands, a hostile prefix can still force unbounded decode work under the
 default budget's scan path once those tiers are enabled.
 
-### O12. 7z password confirmation decoded the whole folder into RAM — memory mitigated
+### O12. 7z password confirmation decoded the whole folder into RAM — memory mitigated, work mostly bounded
 
 O1 covers listing-time metadata bombs; `ExtractionLimits` covers bytes *written
 during extract*. Neither saw 7z password confirmation.
@@ -506,6 +506,24 @@ byte-cap (first-member CRC rather than a hard ceiling, so a legitimate huge
 folder still opens) or routing confirm through `ExtractionLimits` /
 `_track_decompressed` would close that; neither is in this change. Found on
 PR #315; tracked from PR #318.
+
+*Work bounded (`bounded-password-confirmation`).* Confirmation is now a planned
+ladder (`internal/password_confirm.py`), not a folder walk. It stops at the
+earliest CRC covering at least 4 bytes, so a solid folder's first member
+decides. A chain holding a codec that rejects random input (LZMA1, LZMA2,
+BZip2, Deflate, Deflate64, Zstandard, LZ4) never walks a CRC past
+`CONFIRM_PREFIX_BYTES` (64 KiB of plaintext): the decoder settles a wrong key
+inside that prefix, and the compressed input feeding it is capped at
+`CONFIRM_MAX_INPUT_BYTES` (1 MiB). A folder with no CRC is never decoded past
+the prefix just to find that out. The correct password no longer pays a full
+folder decode before its member is served.
+
+*What stays open.* One shape: a Copy, PPMd, Brotli or filter-only chain whose
+only CRC is at the folder end, opened with an ambiguous candidate set (several
+passwords, or a provider). Nothing short of that CRC can tell a wrong key there,
+so each candidate still walks the folder. `sevenzip-aes-tail-key-check` closes
+it with an O(1) check on the AES padding at the end of the packed stream. O12
+stays open until then.
 
 ### O13. 7z `NumUnpackStreams` allocated an unbounded list — closed
 

@@ -73,6 +73,7 @@ class DiagnosticCode(str, Enum):
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
+    ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
     MEMBER_SELECTOR_UNMATCHED = "member_selector_unmatched"
@@ -307,6 +308,28 @@ class DigestContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class EncryptedVerificationContext(_JsonSafeContext):
+    """An encrypted member's stream closed before its digest checked the password.
+
+    ``check`` names what accepted the password: ``"weak_open_check"`` (a per-open
+    check weaker than 2⁻³², such as ZipCrypto's check byte or WinZip AES's
+    ``pw_verify``) or ``"confirm_budget_exhausted"`` (confirmation survived its bounded
+    prefix without reaching a checksum). ``reason`` names why the digest was not
+    reached: ``"partial_read"``. No password or key material is ever carried.
+
+    The code answers a question a member stream cannot answer for itself yet. Retire it
+    when ``stream.verified`` lands (``dev-docs/IDEAS.md``, §API & ergonomics).
+    """
+
+    kind: Literal["encrypted_verification"] = "encrypted_verification"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    check: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class SeekIndexContext(_JsonSafeContext):
     """Seek index build failed, was skipped, or was thinned.
 
@@ -369,6 +392,7 @@ DiagnosticContext = (
     | MemberHeaderRecordContext
     | SymlinkTargetContext
     | DigestContext
+    | EncryptedVerificationContext
     | SeekIndexContext
     | StreamRewindContext
     | SelectorUnmatchedContext
@@ -394,6 +418,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
+        DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED: "encrypted_verification",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: "stream_rewind",
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
@@ -421,7 +446,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The membership of :meth:`DiagnosticPolicy.strict`. Seven codes are deliberately **out**,
+The membership of :meth:`DiagnosticPolicy.strict`. Eight codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -433,6 +458,10 @@ and the reasons are part of the contract rather than an oversight:
   halts the caller is not an override.
 - ``STREAM_REWIND_REDECOMPRESSES`` — reports the caller's access pattern rather than the
   archive, and is most useful as a deliberately targeted tripwire.
+- ``ENCRYPTED_MEMBER_UNVERIFIED`` — fires only when the caller abandons a member stream
+  before EOF (extraction reads every member to EOF and never fires it). In ``strict`` it
+  would turn a peek at a ZipCrypto member into ``DiagnosticRaisedError``. Revisit when a
+  ``stream.verified`` attribute lands (``dev-docs/IDEAS.md``) and retires this code.
 - ``PROBE_FORMAT_UNCONFIRMED`` — emitted while stamping a typed ``TruncatedError`` /
   ``CorruptionError`` that already carries ``format_unconfirmed=True``. Putting it in
   ``strict`` would replace that typed error with ``DiagnosticRaisedError`` mid-raise.
@@ -702,6 +731,7 @@ __all__ = [
     "DiagnosticSummary",
     "DigestContext",
     "EmptyArchiveContext",
+    "EncryptedVerificationContext",
     "ExtractionReport",
     "FormatConflictContext",
     "MemberListReport",

@@ -500,6 +500,22 @@ older `dev-docs/investigations/pyppmd-upstream-report.md` is folded into a point
 attributed the corruption to the model walk; §J corrects that to the output-buffer UAF).
 The deterministic valgrind gate is `scripts/ppmd_uaf_valgrind.py`.
 
+### Random input also corrupts, sized decode or not (found 2026-09-25)
+
+The "not adversarial input" line above describes how the defect was found, not its
+reach. Feeding random bytes — which is what a wrong 7z AES key hands the PPMd coder, and
+what a hostile archive can hand it directly — through archivey's own bounded `Codec.PPMD`
+path (order 6, 16 MiB, `unpack_size` and `pack_size` set) makes
+`Ppmd7Decoder.decode` return `NULL` without setting an exception: every decode of
+`random.Random(1).randbytes(256 * 1024)` surfaces as `CorruptionError` wrapping
+`SystemError: ... returned NULL without setting an exception`. That is the C extension
+reporting failure with its state already inconsistent. In a run of a few hundred such
+decodes in one process, after other codecs had run, the process died with SIGSEGV
+inside `decode` (faulthandler: `decompress.py` `_decode` → `Ppmd7Decoder.decode`). Found
+while measuring codec rejection for `bounded-password-confirmation`; that change keeps PPMd
+non-rejecting and never feeds it random input in-process in tests. Password confirmation
+decoding a wrong key into PPMd predates the change. Tracked internally.
+
 ### Windows: `STATUS_HEAP_CORRUPTION` on fresh PPMd children
 
 On `windows-latest` the suite has intermittently aborted during

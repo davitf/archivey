@@ -872,6 +872,9 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.STREAM_REWIND_REDECOMPRESSES,
         DiagnosticCode.PROBE_FORMAT_UNCONFIRMED,
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED,
+        # Fires only on a stream abandoned before EOF; in strict it would turn a peek
+        # at a ZipCrypto member into DiagnosticRaisedError.
+        DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
     }
 
 

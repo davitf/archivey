@@ -361,6 +361,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.zip_aes as zip_aes
     import archivey.internal.backends.zip_reader as zip_reader
     import archivey.internal.detection as detection
+    import archivey.internal.password_confirm as password_confirm
     import archivey.internal.source as source_mod
     import archivey.internal.streams.archive_stream as archive_stream
     import archivey.internal.streams.codecs as codecs
@@ -404,6 +405,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         zip_aes.WinZipAesDecryptStream,
         # Wraps a stdlib ZipExtFile, which keeps no seek-point table.
         zip_reader._UnconfirmedZipCryptoStream,
+        # Wraps an encrypted member's decoded stream to watch for an abandoned read;
+        # nothing above it asks it for a resume offset.
+        password_confirm.UnverifiedReadWatch,
         detection._BoundedPeekReader,
         # Stands in for a refused .lzma decoder: every read raises, so it produces no
         # bytes and has no seek-point table to forward to.
@@ -528,6 +532,7 @@ def test_delegating_stream_close_inventory() -> None:
     import archivey.internal.backends.iso_reader as iso_reader
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.backends.zip_reader as zip_reader
+    import archivey.internal.password_confirm as password_confirm
     import archivey.internal.streams.codecs as codecs
     import archivey.internal.streams.counting as counting
     import archivey.internal.streams.streamtools.locked as locked
@@ -541,6 +546,7 @@ def test_delegating_stream_close_inventory() -> None:
         iso_reader._PyCdlibStream,
         codecs._GzipTruncationCheckStream,
         zip_reader._UnconfirmedZipCryptoStream,
+        password_confirm.UnverifiedReadWatch,
     }
     subclass_closes_inner = {
         rar_reader._UnrarOwnedStream,
