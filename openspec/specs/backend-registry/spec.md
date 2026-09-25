@@ -76,7 +76,7 @@ Multiple readers from the same backend class MUST be independent.
 The system SHALL keep format detection and backend selection separate.
 `detect_format()` is the authority for source format: it aggregates backend
 `MAGIC`, `EXTENSIONS`, and `CONTENT_PROBES`, performs special probes through
-`PeekableStream`, consumes no bytes, and raises `FormatDetectionError` when no
+the detection workspace, consumes no bytes, and raises `FormatDetectionError` when no
 format matches. The registry SHALL map the resolved `ArchiveFormat` to a
 registered available backend. If a detected format has no available backend,
 lookup SHALL raise `UnsupportedFormatError` with the install hint.
