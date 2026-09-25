@@ -29,7 +29,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Callable, Collection
+from typing import TYPE_CHECKING, BinaryIO, Callable, Collection, assert_never
 
 from archivey.config import ExtractionLimits
 from archivey.exceptions import (
@@ -701,7 +701,7 @@ class ExtractionCoordinator:
                     recorded_index = len(results)
                     results.append(result)
                 # OnError governs failures only; a policy BLOCKED is always continued.
-                if self._on_error is OnError.STOP and status is ExtractionStatus.FAILED:
+                if self._stops_on_failure() and status is ExtractionStatus.FAILED:
                     raise error
                 # ...unless the caller asked to be stopped by an unsafe member. This is
                 # the fail-closed strict-security opt-in; it applies under either OnError
@@ -1168,6 +1168,18 @@ class ExtractionCoordinator:
             return prior.path, prior, collided
         return requested, None, None
 
+    def _stops_on_failure(self) -> bool:
+        """Whether ``OnError`` halts on a member failure.
+
+        Exhaustive on purpose: an ``OnError`` member this does not name raises instead
+        of being treated as ``CONTINUE``, which would swallow its failures.
+        """
+        if self._on_error is OnError.STOP:
+            return True
+        if self._on_error is OnError.CONTINUE:
+            return False
+        assert_never(self._on_error)
+
     def _check_collision_abort(
         self, original: ArchiveMember, transformed: ArchiveMember, prior: _Claim
     ) -> None:
@@ -1544,7 +1556,7 @@ class ExtractionCoordinator:
                 # results themselves, so a caller can tell N separate failures from one
                 # failure seen N times without joining against a diagnostic.
                 self._record_failure_group(results, group, exc)
-                if self._on_error is OnError.STOP:
+                if self._stops_on_failure():
                     raise
                 logger.warning(
                     "Skipping orphaned hardlink source %r: %s", member.name, exc
@@ -1560,7 +1572,7 @@ class ExtractionCoordinator:
         for source_id in needed:
             err = ExtractionError("Hardlink source was not found on the second pass")
             self._record_failure_group(results, orphans_by_source[source_id], err)
-            if self._on_error is OnError.STOP:
+            if self._stops_on_failure():
                 raise err
 
     def _record_failure_group(
@@ -1753,7 +1765,7 @@ class ExtractionCoordinator:
                         collided_with=collided_with,
                     ),
                 )
-                if self._on_error is OnError.STOP:
+                if self._stops_on_failure():
                     raise
                 # A single link's failure, not a source fan-out: no group id.
                 logger.warning("Skipping hardlink %r: %s", orphan.original.name, exc)
@@ -1876,6 +1888,13 @@ class ExtractionCoordinator:
             )
         if self._overwrite is OverwritePolicy.SKIP:
             return False
+        if (
+            self._overwrite is not OverwritePolicy.REPLACE
+            and self._overwrite is not OverwritePolicy.RENAME
+        ):
+            # The arm below destroys the existing entry. A policy nobody taught this
+            # chain must not inherit that, so an unknown member stops here.
+            assert_never(self._overwrite)
 
         # REPLACE (and RENAME for the residual directory case — non-directory RENAME members
         # are pre-resolved to a free path, so they never reach an existing entry here):
