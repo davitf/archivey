@@ -669,10 +669,14 @@ RAR-specific only. General extraction and name hazards are §2.4.
 - **Per-member comments expand after the parse-time bound.** RAR 1.5/2.x FILE `COMM`
   subblocks hold *compressed* bytes at parse, and `_resolve_rar3_comment` unpacks each one
   in the reader once the walk has returned (§2.2), so `max_members` never weighs them. Each
-  is `uint16`-bounded at 64 KiB and nothing bounds the sum, but every compressed comment
-  forks its own `unrar`, so the process cost arrives long before the memory does — and the
-  path is inert without the binary, which drops comments. Parked in
-  [`review/backlog.md`](../../review/backlog.md); the budget belongs in that reader loop.
+  is `uint16`-bounded at 64 KiB. **The sum is bounded:** before decoding any, the reader
+  adds up every compressed comment's declared `unpacked_size` (archive comment included)
+  and raises `ResourceLimitError` past `listing_limits.max_metadata_bytes`, so a refused
+  archive spawns nothing. **The spawn count is not:** every compressed comment still forks
+  its own `unrar`, and comments that each declare a few bytes pass the byte budget, so the
+  process cost remains open — decoding all of them in one `unrar` call is tracked
+  internally ([`review/backlog.md`](../../review/backlog.md) "#353 F12"). The path is inert
+  without the binary, which drops comments.
 - **RAR3 names are themselves compressed.** The *retained* name bytes are roughly 1:1 with
   header bytes on a successful decode. Before #292 the transient cost was the lever: the
   decoder continued past a failed 8-bit read with `?`, so an empty 8-bit field plus
@@ -952,6 +956,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | RAR 1.5 / 2.x list and read; extract version ≤ 20 is not a rejection | `tests/test_rar_reader.py::test_rar15_and_rar2_list_and_read`, `::test_extract_version_20_payload_accepted` |
 | RAR 1.5 / 2.x archive and member comments match `rarfile`; stored old-style comments need no binary; RAR3 CMT reaches `member.comment`; RAR5 CMT stays archive-only | `::test_rar15_and_rar2_comments_match_rarfile`, `::test_rar3_stored_old_style_main_comment_needs_no_unrar`, `::test_rar3_service_comment_maps_to_member_comment`, `::test_rar5_comment_service_stays_archive_only` |
 | An encrypted old-style comment is `None` and spawns nothing | `::test_rar3_parser_drops_encrypted_old_style_comment`, `::test_rar3_encrypted_old_style_comment_is_skipped_up_front` |
+| Compressed old-style comments over `max_metadata_bytes` (member and archive comments summed by declared size) refuse at open before any decode | `::test_rar3_compressed_comments_over_metadata_budget_refused_before_decode`, `::test_rar3_compressed_comments_within_metadata_budget_are_decoded`, `::test_rar3_compressed_archive_comment_counts_toward_budget` |
 | RAR3 non-BMP name recovery from the 8-bit field | `::test_fix_rar3_astral_truncation`, `::test_rar3_non_bmp_filename_not_truncated` |
 | Listing without QO is a header-to-header walk; with QO, FILE headers already in it are not read (§1.1) | `::test_listing_without_qo_walks_header_to_header`, `::test_listing_with_qo_does_not_seek_per_member`, `::test_listing_qo_skip_count_does_not_scale_with_member_count` |
 | QO listing matches the FILE-header walk field-for-field | `::test_qo_listing_matches_file_walk_on_corpus`, `::test_qo_listing_matches_file_walk_live` |

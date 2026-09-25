@@ -1611,8 +1611,13 @@ def _rar3_file_block(
     method: int = 0x30,
     block_type: int = 0x74,
     extract_version: int = 20,
+    trailing_subblock: bytes = b"",
 ) -> bytes:
-    """Build one RAR3 FILE block with a valid 16-bit header CRC."""
+    """Build one RAR3 FILE block with a valid 16-bit header CRC.
+
+    ``trailing_subblock`` (an old-style COMMENT, say) counts in ``header_size`` but
+    sits after the CRC-covered fields, which is where RAR 1.5/2.x put it.
+    """
     from archivey.internal.backends.rar_parser import (
         _RAR3_FILE_LARGE,
         _RAR3_LONG_BLOCK,
@@ -1635,10 +1640,11 @@ def _rar3_file_block(
         file_fields += struct.pack("<LL", pack_hi, unp_hi)
     file_fields += name
     flags |= _RAR3_LONG_BLOCK
-    header_without_crc = struct.pack("<BHH", block_type, flags, 7 + len(file_fields))
+    header_size = 7 + len(file_fields) + len(trailing_subblock)
+    header_without_crc = struct.pack("<BHH", block_type, flags, header_size)
     header_without_crc += file_fields
     file_crc = _crc32(header_without_crc) & 0xFFFF
-    return struct.pack("<H", file_crc) + header_without_crc
+    return struct.pack("<H", file_crc) + header_without_crc + trailing_subblock
 
 
 def _rar3_main_and_end() -> tuple[bytes, bytes]:
@@ -1651,35 +1657,55 @@ def _rar3_main_and_end() -> tuple[bytes, bytes]:
     return main_hdr, end_hdr
 
 
-def _rar3_commented_member(name: bytes, unpacked_size: int) -> bytes:
-    """One RAR3 FILE block carrying a *compressed* old-style COMMENT subblock.
+def _rar3_compressed_comment_subblock(unpacked_size: int) -> bytes:
+    """An old-style COMMENT subblock declaring a *compressed* (non-M0) payload.
 
     The packed bytes are junk: the tests below never let ``unrar`` see them. Only the
     declared ``unpacked_size`` matters, which is what the listing budget weighs.
     """
     from archivey.internal.backends import rar_parser as rp
 
-    packed = b"\x00" * 16
-    body = rp._S_COMMENT_HDR.pack(unpacked_size, 29, 0x33, 0) + packed
-    subblock = (
+    body = rp._S_COMMENT_HDR.pack(unpacked_size, 29, 0x33, 0) + b"\x00" * 16
+    return (
         rp._S_BLK_HDR.pack(0, rp._RAR3_OLD_COMMENT, 0, rp._S_BLK_HDR.size + len(body))
         + body
     )
-    file_fields = (
-        struct.pack("<LLBLLBBHL", 0, 0, 3, 0, 0, 20, 0x30, len(name), 0o100644) + name
+
+
+def _rar3_commented_archive(
+    count: int, unpacked_size: int, *, archive_comment_size: int | None = None
+) -> bytes:
+    """RAR3 archive of ``count`` members, each with a compressed old-style comment.
+
+    ``archive_comment_size`` also gives the MAIN header a compressed comment.
+    """
+    from archivey.internal.backends.rar_parser import (
+        _RAR3_FILE_COMMENT,
+        _RAR3_MAIN_COMMENT,
+        _crc32,
+        rar3_main_crc_end,
     )
-    flags = rp._RAR3_LONG_BLOCK | rp._RAR3_FILE_COMMENT
-    header_size = 7 + len(file_fields) + len(subblock)
-    # Old COMMENT subblocks are inside header_size but outside the FILE CRC.
-    without_crc = struct.pack("<BHH", 0x74, flags, header_size) + file_fields
-    crc = rp._crc32(without_crc) & 0xFFFF
-    return struct.pack("<H", crc) + without_crc + subblock
 
-
-def _rar3_commented_archive(count: int, unpacked_size: int) -> bytes:
     main_hdr, end_hdr = _rar3_main_and_end()
+    if archive_comment_size is not None:
+        subblock = _rar3_compressed_comment_subblock(archive_comment_size)
+        main_body = b"\0" * 6 + subblock
+        main_without_crc = (
+            struct.pack("<BHH", 0x73, _RAR3_MAIN_COMMENT, 7 + len(main_body))
+            + main_body
+        )
+        # Old COMMENT subblocks are inside header_size but outside the MAIN CRC.
+        crc_end = rar3_main_crc_end(_RAR3_MAIN_COMMENT) - 2
+        main_crc = _crc32(main_without_crc[:crc_end]) & 0xFFFF
+        main_hdr = struct.pack("<H", main_crc) + main_without_crc
     members = b"".join(
-        _rar3_commented_member(f"m{i}.txt".encode(), unpacked_size)
+        _rar3_file_block(
+            f"m{i}.txt".encode(),
+            flags=_RAR3_FILE_COMMENT,
+            pack_lo=0,
+            unp_lo=0,
+            trailing_subblock=_rar3_compressed_comment_subblock(unpacked_size),
+        )
         for i in range(count)
     )
     return RAR_ID + main_hdr + members + end_hdr
@@ -1727,6 +1753,30 @@ def test_rar3_compressed_comments_within_metadata_budget_are_decoded(
         with open_archive(io.BytesIO(blob), config=config) as archive:
             assert [m.name for m in archive.members()] == ["m0.txt", "m1.txt"]
         assert len(calls) == 2
+
+
+def test_rar3_compressed_archive_comment_counts_toward_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The MAIN header's compressed comment is weighed with the members' comments.
+
+    The members alone sit exactly at the budget, so only the archive comment's
+    bytes push the total over it.
+    """
+    calls = _count_comment_decodes(monkeypatch)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=100_000))
+    at_budget = _rar3_commented_archive(count=2, unpacked_size=50_000)
+    with open_archive(io.BytesIO(at_budget), config=config):
+        pass
+    assert len(calls) == 2
+
+    calls.clear()
+    over = _rar3_commented_archive(
+        count=2, unpacked_size=50_000, archive_comment_size=1
+    )
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        open_archive(io.BytesIO(over), config=config)
+    assert calls == []
 
 
 def test_rar3_large_packed_member_skips_full_64bit_size() -> None:

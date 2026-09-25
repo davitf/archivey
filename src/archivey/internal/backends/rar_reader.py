@@ -46,7 +46,6 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
-    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -85,6 +84,7 @@ from archivey.internal.base_reader import (
 )
 from archivey.internal.config import KeyDerivationBudget
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.listing_limits import check_metadata_budget
 from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
@@ -1208,14 +1208,23 @@ class RarReader(BaseArchiveReader):
     def _check_rar3_comment_budget(self) -> None:
         """Refuse compressed old-style comments whose declared sizes exceed the budget.
 
-        Each one is decoded by spawning ``unrar`` and expands to up to 64 KiB, so
-        ``max_members`` alone lets one archive cost a million forks. The header
-        declares every ``unpacked_size`` up front, so the total is checked before
-        anything is decoded: a refusal spawns no process at all.
+        Each compressed comment expands to up to 64 KiB, and ``max_members`` alone
+        lets one archive carry a million of them. The header declares every
+        ``unpacked_size`` up front, so the total is checked before anything is
+        decoded, and a refused archive spawns no ``unrar`` at all. The declared size
+        is a real bound on the decode, not a trusted attacker number:
+        ``decompress_rar3_blob`` reads at most ``unpacked_size + 1`` bytes from
+        ``unrar`` and discards a result of any other length.
+
+        This bounds comment **bytes**, not the number of ``unrar`` spawns: comments
+        that each declare a few bytes still cost one process apiece. Decoding every
+        comment in a single ``unrar`` call is tracked separately.
+
+        Refusing, rather than dropping the remaining comments to ``None`` the way an
+        undecodable comment is dropped, is the maintainer's ruling (``review/backlog.md``,
+        "#353 F12"): ``max_metadata_bytes`` means retained metadata on every format, and
+        an over-budget listing raises on all of them.
         """
-        max_meta = self._config.listing_limits.max_metadata_bytes
-        if max_meta is None:
-            return
         comments = [self._archive.comment]
         comments.extend(info.comment for info in self._archive.members)
         total = sum(
@@ -1223,11 +1232,11 @@ class RarReader(BaseArchiveReader):
             for comment in comments
             if isinstance(comment, _Rar3Comment)
         )
-        if total > max_meta:
-            raise ResourceLimitError(
-                f"Listing limit reached: max_metadata_bytes={max_meta} "
-                f"(RAR3 compressed comments declare {total} bytes)"
-            )
+        check_metadata_budget(
+            self._config.listing_limits,
+            total,
+            detail=f"RAR3 compressed comments declare {total} bytes",
+        )
 
     def _resolve_rar3_comment(self, comment: str | _Rar3Comment | None) -> str | None:
         """Return a parsed old-style comment, dropping unavailable/invalid payloads."""

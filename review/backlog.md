@@ -122,7 +122,11 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   each comment's `unpacked_size` from the header, so this can be a pre-check over the sum
   and refuse a hostile archive before any `unrar` fork. Decoding every comment through a
   single synthetic RAR, rather than one subprocess each, is tracked separately and does
-  not block this. Handbook: [`formats/rar.md`](../dev-docs/formats/rar.md) §4, §6.
+  not block this. **Byte budget landed** (`RarReader._check_rar3_comment_budget`, #458).
+  **Still open: the fork count.** The budget weighs declared bytes, so a million comments
+  that each declare a few bytes pass it and still cost a million `unrar` spawns at open;
+  that closes with the single-synthetic-RAR decode above, not with this entry's budget.
+  Handbook: [`formats/rar.md`](../dev-docs/formats/rar.md) §4, §6.
 
 - **#333 follow-up — drop `read_exact` where the receiver is the source handle.**
   `ensure_full_count_reads` now makes every archive source full-count on both branches,
