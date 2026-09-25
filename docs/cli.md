@@ -39,6 +39,10 @@ archivey extract photos.zip --policy trusted -d /tmp/out
 ### Notes
 
 - Verbs are bare words (`x`, `list`); dash-prefixed forms like `-x` are not mode selectors.
+- A pattern naming a directory selects the directory and everything under it, as `tar`
+  does: `archivey extract a.zip docs` and `archivey extract a.zip docs/` both extract
+  `docs/` and its contents, but not a file named `docs.txt`. On Windows, `docs\sub`
+  works like `docs/sub`. `--exclude` matches the same way.
 - A bare verb word is always a verb: `archivey x a.zip` extracts. Any path-qualified
   token is a path and gets listed, so a file named `x` is reached as `archivey ./x`
   (or `archivey dir/x`, `archivey /abs/x`, `archivey list x`).
