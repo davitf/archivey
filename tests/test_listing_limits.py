@@ -133,6 +133,28 @@ def test_tar_extract_all_enforces_listing_limits(tmp_path: Path) -> None:
             reader.extract_all(dest)
 
 
+def test_tar_listing_stops_reading_headers_at_max_members(tmp_path: Path) -> None:
+    """The cap bounds what tarfile parses, not only what archivey keeps.
+
+    A random-access listing used to call ``getmembers()``, which parses and keeps every
+    header in the file before the first member reaches the cap, so a header bomb cost
+    memory in proportion to its size and ``max_members`` only decided whether to refuse
+    it afterwards.
+    """
+    import tarfile
+
+    tar_path = tmp_path / "many.tar"
+    with tarfile.open(tar_path, "w", format=tarfile.USTAR_FORMAT) as tf:
+        for i in range(200):
+            tf.addfile(tarfile.TarInfo(name=f"f{i:03d}"))
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
+    with open_archive(tar_path, config=cfg) as reader:
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            reader.members()
+        tar = reader._tar  # type: ignore[attr-defined]
+        assert len(tar.members) <= 6
+
+
 def test_streaming_scan_members_enforces_listing_limits(tmp_path: Path) -> None:
     """scan_members on a streaming reader must enforce caps and not publish a cache."""
     import tarfile

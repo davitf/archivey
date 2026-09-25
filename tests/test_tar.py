@@ -767,6 +767,41 @@ def test_sparse_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> N
     assert _eof_warnings(caplog) == []
 
 
+def _tar_sparse_pax_1_0() -> bytes:
+    """A PAX 1.0 sparse member, the encoding GNU tar writes under ``--format=pax``.
+
+    Unlike the old GNU form its typeflag is a plain ``0``: only the ``GNU.sparse.*``
+    records and the map at the head of the data say it is sparse. One 5-byte region at
+    offset 100 of a 1 000-byte file.
+    """
+    sparse_map = b"1\n100\n5\n".ljust(512, b"\0")
+    stored = sparse_map + b"hello"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        info = tarfile.TarInfo("GNUSparseFile.0/holes.bin")
+        info.size = len(stored)
+        info.pax_headers = {
+            "GNU.sparse.major": "1",
+            "GNU.sparse.minor": "0",
+            "GNU.sparse.name": "holes.bin",
+            "GNU.sparse.realsize": "1000",
+        }
+        t.addfile(info, io.BytesIO(stored))
+    return buf.getvalue()
+
+
+def test_pax_sparse_member_is_reported_sparse() -> None:
+    with open_archive(
+        io.BytesIO(_tar_sparse_pax_1_0()), format=ArchiveFormat.TAR
+    ) as ar:
+        (member,) = ar.members()
+        assert member.name == "holes.bin"
+        assert member.extra["tar.type"] == tarfile.REGTYPE
+        assert member.is_sparse
+        assert member.size == 1000
+        assert ar.read(member) == bytes(100) + b"hello" + bytes(895)
+
+
 def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:
     # Compressed path also carries the EOF probe (no re-decompression / backward seek).
     import gzip

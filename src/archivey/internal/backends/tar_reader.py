@@ -24,7 +24,7 @@ After a full scan or streaming pass, :meth:`_verify_tar_eof` checks the end:
 Both codes follow the diagnostic policy like any other: a caller who wants either to
 fail sets it to ``RAISE`` (``DiagnosticPolicy.strict()`` does so for both).
 
-Note: after ``getmembers()`` / a walk, ``tarfile`` has typically already consumed the
+Note: after the header walk, ``tarfile`` has typically already consumed the
 *first* trailer zero-block; the EOF probe therefore inspects the *next* 512 bytes.
 """
 
@@ -472,16 +472,28 @@ class TarReader(BaseArchiveReader):
         # The error boundary sits OUTSIDE the handle guard, so translation/stamping
         # never run under the shared-fileobj lock. An exception the translator does
         # not recognize (a genuine OSError from the source) propagates unchanged.
-        with self._translated_errors():
-            # Pinned-library audit: TarFile.getmembers() drives seek/tell/read through
-            # _load()/next() on the shared fileobj — must run under the handle lock.
-            with self._handle_guard():
-                members = self._tar.getmembers()  # forces the full header scan
-                # Snapshot the EOF probe now, while the handle sits just past the scan and
-                # before any member extraction can move it.
-                self._capture_eof_probe(members)
-        for index, info in enumerate(members):
+        # One header at a time rather than getmembers(): the base counts each yielded
+        # member against ``max_members``, so a header bomb stops at the cap instead of
+        # after tarfile has parsed and kept every header in the file. ``iter(self._tar)``
+        # rather than bare next() calls, because it serves headers tarfile already
+        # loaded from its own list before reading more.
+        tar_iter = iter(self._tar)
+        index = 0
+        while True:
+            with self._translated_errors():
+                # Pinned-library audit: TarFile.next() drives seek/tell/read on the
+                # shared fileobj — must run under the handle lock. It re-seeks to its own
+                # offset first, so a member opened between two headers does not move it.
+                with self._handle_guard():
+                    info = next(tar_iter, None)
+                    if info is None:
+                        # Snapshot the EOF probe now, while the last read is still the
+                        # block tarfile stopped on and before any member read moves it.
+                        self._capture_eof_probe(index > 0)
+            if info is None:
+                break
             yield self._to_member(info, index)
+            index += 1
         self._verify_tar_eof()
 
     def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
@@ -545,12 +557,12 @@ class TarReader(BaseArchiveReader):
                 close_previous=False,
             )
 
-    def _capture_eof_probe(self, members: list[tarfile.TarInfo]) -> None:
+    def _capture_eof_probe(self, any_members: bool) -> None:
         """Snapshot whether tarfile stopped the header scan on a *rejected* (non-null)
         header block, using the random-access EOF probe.
 
-        After ``getmembers()`` / ``_load()``, ``TarFile.next()`` has always attempted one
-        more header read before returning ``None``, so the probe's ``last_read`` *is* the
+        When ``TarFile.next()`` returns ``None`` it has always attempted one more header
+        read first, so the probe's ``last_read`` *is* the
         block tarfile stopped on — independent of the live handle position (later member
         extraction may seek away) and independent of ``offset_data + roundup(size)``
         (wrong for GNU sparse, where logical size ≫ packed size). A full non-null block
@@ -559,7 +571,7 @@ class TarReader(BaseArchiveReader):
         """
         self._eof_header_rejected = False
         probe = self._eof_probe_stream
-        if probe is None or not members:
+        if probe is None or not any_members:
             return
         _offset, chunk = probe.last_read
         if len(chunk) == 512 and chunk != b"\x00" * 512:
@@ -800,7 +812,10 @@ class TarReader(BaseArchiveReader):
             member.gname = info.gname
         if link_target is not None:
             member.link_target = link_target
-        if info.type == tarfile.GNUTYPE_SPARSE:
+        # issparse() covers all four GNU encodings: the old ``S`` typeflag and PAX
+        # sparse 0.0 / 0.1 / 1.0, which GNU tar writes under ``--format=pax`` with a
+        # plain ``0`` typeflag.
+        if info.issparse():
             member.is_sparse = True
         emit_member_name_normalized(
             self._diagnostics_collector,
