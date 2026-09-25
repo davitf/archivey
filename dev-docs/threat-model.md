@@ -45,7 +45,8 @@ and parse of that payload is linear (PR #311). 7z may still allocate up to
 its header-size ceilings during `open_archive()` (`max_members` or header
 size, whichever is tighter). `max_metadata_bytes` budgets
 *retained* member metadata; it does not see a transient decode buffer discarded
-before any member exists. RAR3 compressed Unicode names used to expand ~100×
+before any member exists. (RAR's compressed-comment check above is the one place
+it weighs a declared size before decoding, because the decode is the cost.) RAR3 compressed Unicode names used to expand ~100×
 that way (listing-time CPU at the `uint16` `name_size` ceiling, not unbounded
 memory). Decode now fails closed on overrun (PR #292); O1's status is unchanged.
 
