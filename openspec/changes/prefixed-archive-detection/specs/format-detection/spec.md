@@ -260,7 +260,6 @@ class FormatInfo:
     format: ArchiveFormat
     confidence: DetectionConfidence
     detected_by: str
-    encoding_hint: str | None
     payload_offset: int = 0
     diagnostics: DiagnosticSummary = DiagnosticSummary.empty()
     prefix_kind: PrefixKind = PrefixKind.NONE
@@ -271,8 +270,7 @@ class FormatInfo:
 `detection-result-surface` freezes the root surface; this change does not re-export them.
 `detect_format` SHALL NOT grow a `budget=` / `detection_budget=` keyword — `#273`'s
 `budget=` argument is removed when the config field lands. `confidence` = magic /
-structural probe / extension-guess. `encoding_hint` is format-signal only (never a
-member scan). `payload_offset > 0` marks an SFX payload start.
+structural probe / extension-guess. `payload_offset > 0` marks an SFX payload start.
 
 `prefix_kind` SHALL always be present, defaulting to `NONE`, so a caller may read it
 without testing `payload_offset` first. `NONE` SHALL correspond exactly to

@@ -149,7 +149,6 @@ class DetectionConfidence(Enum):
 class FormatInfo:
     format: ArchiveFormat
     evidence: tuple[DetectionEvidence, ...]   # the winning candidate's ledger
-    encoding_hint: str | None
     payload_offset: int = 0
     search_complete: bool = True
     cost: DetectionCostReceipt = ...
@@ -161,7 +160,7 @@ class FormatInfo:
     def detected_by(self) -> str: ...                  # derived from evidence kind
 ```
 
-`config=None` → library default. `encoding_hint` is format-signal only (never a member scan).
+`config=None` → library default.
 
 `payload_offset` SHALL remain an `int`: zero means "confirmed at the detection origin" and a
 positive value marks a payload starting later. Where an exact offset was not computed within

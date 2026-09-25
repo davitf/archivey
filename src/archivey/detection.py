@@ -54,12 +54,6 @@ class FormatInfo:
     """Which evidence decided: ``"magic"``, ``"extension"``, ``"content_probe"``,
     ``"sfx_scan"`` or ``"directory"``."""
 
-    encoding_hint: str | None = None
-    """A codec name for member names, from a format signal rather than a member scan.
-
-    No detector sets it today, so it is always ``None``; ``open_archive`` passes it on
-    as the encoding when the caller gave none."""
-
     payload_offset: int = 0
     """Where the archive starts in the source. Nonzero only for a self-extracting
     archive, so ``payload_offset > 0`` is the test for one."""
