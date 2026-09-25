@@ -182,8 +182,8 @@ there both lists grow for the whole pass.
 | `size` | `TarInfo.size` for a file, which for a sparse member is its logical size. `None` for everything else. `compressed_size` is never set |
 | `modified` | `TarInfo.mtime`, where tarfile has already applied a PAX `mtime` with its fraction. A value `datetime` cannot hold is `None` plus `MEMBER_TIMESTAMP_INVALID` |
 | `accessed` | PAX `atime` only |
-| `created` | Always `None`: TAR records no birth time |
-| `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created` |
+| `created` | The PAX `LIBARCHIVE.creationtime` keyword, which libarchive writes when the source OS has a birth time. No other TAR writer is known to store one, so it is `None` for most archives |
+| `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created`. A libarchive tar can carry both |
 | `mode`, `uid`, `gid`, `uname`, `gname` | Straight from the header. `mode` keeps the permission and setuid/setgid/sticky bits only |
 | `is_sparse` | `TarInfo.issparse()`, which is true for the old GNU `S` typeflag and for all three PAX sparse encodings |
 | `extra` | `tar.type` always; `tar.pax_headers` when there are any; `tar.devmajor` / `tar.devminor` for device members |
@@ -383,7 +383,7 @@ extraction checks (§2.4).
 | Cost matrix, plain and compressed | `tests/test_tar.py::test_plain_tar_cost`, `::test_compressed_tar_cost_and_read` |
 | No member count and no report peek before a pass | `::test_member_list_not_available_without_scan`; `tests/test_review_simplicity_consistency.py::test_tar_has_no_report_peek_before_a_pass` |
 | Random access needs a seekable source; streaming works on a pipe, plain and compressed | `::test_non_seekable_tar_fails_fast`, `::test_non_seekable_tar_streaming_opens_without_scanning`, `::test_non_seekable_plain_tar_stream_members`, `::test_non_seekable_tar_gz_streaming` |
-| Metadata mapping, PAX `mtime`, PAX `atime` and `ctime` | `::test_member_metadata`, `::test_pax_mtime_override`, `::test_pax_atime_ctime` |
+| Metadata mapping, PAX `mtime`, PAX `atime` and `ctime`, libarchive birth time | `::test_member_metadata`, `::test_pax_mtime_override`, `::test_pax_atime_ctime`, `::test_pax_libarchive_creationtime_is_created` |
 | `raw_name` for PAX and ustar names under a non-UTF-8 `encoding` | `::test_pax_raw_name_is_the_stored_utf8_whatever_the_encoding`, `::test_ustar_raw_name_follows_the_archive_encoding`, `::test_pax_raw_name_with_undecodable_bytes_round_trips`, `::test_gnu_long_name_under_a_global_pax_path_keeps_the_archive_codec` |
 | Out-of-range `mtime` degrades | `::test_out_of_range_mtime_degrades_to_none` |
 | Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically | `::test_sparse_tar_eof_no_false_positive`, `::test_pax_sparse_member_is_reported_sparse` (one case per PAX encoding) |
