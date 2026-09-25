@@ -261,8 +261,8 @@ behaviour. The complete list is on the two classes.
 
 `member.hashes` holds digests the archive **already stores** (or, for multi-member
 lzip, derives via CRC combine from per-member stored CRCs), keyed by
-:class:`~archivey.HashAlgorithm` (values always ``bytes`` — CRC-32 is four
-big-endian bytes via :func:`~archivey.crc32_digest`). They are readable without
+[`HashAlgorithm`][archivey.HashAlgorithm] (values always ``bytes`` — CRC-32 is four
+big-endian bytes via [`crc32_digest()`][archivey.crc32_digest]). They are readable without
 decompressing when the backend documents them. They are **not** computed digests —
 a full `read()` still verifies through the normal path.
 
