@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from archivey import DEFAULT_ARCHIVEY_CONFIG, detect_format, open_archive
+from archivey.config import ArchiveyConfig
 from archivey.detection_cost import (
     BALANCED_BUDGET,
     FAST_BUDGET,
@@ -623,12 +624,17 @@ def test_start_offset_is_believed_rather_than_rescanned(tmp_path: Path) -> None:
     With the offset supplied the decoy sits behind the origin and is invisible; without
     it the forced-format scan accepts the first VALID signature — the decoy — and fails
     parsing its header. An invalid decoy (bare magic) is skipped, so it cannot make
-    this distinction.
+    this distinction, and neither can one whose declared end stops short of EOF (the
+    scan prefers the real payload over it): this decoy declares its end at EOF.
     """
     inner = tmp_path / "decoy-inner.7z"
     _write_7z(inner)
-    decoy = _sevenzip_signature(next_offset=100, next_size=10)
+    decoy_origin = 2 + 512
+    stub_len = decoy_origin + 32 + 3576
+    remaining = stub_len + inner.stat().st_size - decoy_origin
+    decoy = _sevenzip_signature(next_offset=remaining - 32 - 10, next_size=10)
     stub = b"MZ" + b"\x90" * 512 + decoy + b"\x90" * 3576
+    assert len(stub) == stub_len
     path = tmp_path / "decoy.exe"
     path.write_bytes(stub + inner.read_bytes())
 
@@ -1238,6 +1244,12 @@ def _crc_damaged_sevenzip_signature() -> bytes:
             HitOutcome.VALID,
             id="trailing-bytes",
         ),
+        pytest.param(
+            _sevenzip_signature(next_offset=0, next_size=10),
+            _SIGNATURE_HEADER_SIZE + 10 + 5,
+            HitOutcome.VALID_SHORT,
+            id="declared-end-short-of-known-remaining",
+        ),
     ],
 )
 def test_sevenzip_signature_validator(
@@ -1429,7 +1441,7 @@ def test_sevenzip_sfx_declared_end_uses_source_remaining_not_the_scan_window(
     declared = _SIGNATURE_HEADER_SIZE + next_offset + next_size
     blob = stub + sig + b"\x00" * (declared - len(sig))
     src = InstrumentedBytesIO(blob)
-    detected = detect_format(src, budget=budget)
+    detected = detect_format(src, config=ArchiveyConfig(detection_budget=budget))
     assert detected.format == ArchiveFormat.SEVEN_Z
     assert detected.detected_by == "sfx_scan"
     assert detected.payload_offset == stub_len
@@ -1455,20 +1467,12 @@ def test_crc_valid_empty_7z_decoy_is_skipped_for_the_real_payload(
         assert any(m.is_file for m in archive.members())
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Exact-EOF ranking among CRC-valid 7z hits is the unlanded remainder of "
-        "task 2.3; first VALID still wins. See dev-docs/known-issues.md."
-    ),
-)
 def test_inexact_7z_decoy_loses_to_a_later_exact_payload(tmp_path: Path) -> None:
-    """Red half: a later exact 7z payload should beat an earlier CRC-valid inexact decoy.
+    """A later 7z payload that ends at EOF beats an earlier CRC-valid decoy that does not.
 
     The decoy at 512 is a CRC-valid signature whose declared end is nonzero,
     self-consistent, and inside ``remaining`` — so the empty-header reject does
-    not apply. Today's first-VALID scan reports that decoy. The contract is the
-    real payload at 3544.
+    not apply. It is ``VALID_SHORT``; the real payload at 3544 ends exactly at EOF.
     """
     decoy = _sevenzip_signature(next_offset=100, next_size=10)
     prefix = b"MZ" + b"\x00" * 510 + decoy
@@ -1480,6 +1484,66 @@ def test_inexact_7z_decoy_loses_to_a_later_exact_payload(tmp_path: Path) -> None
     assert detected.format == ArchiveFormat.SEVEN_Z
     assert detected.detected_by == "sfx_scan"
     assert detected.payload_offset == real_origin
+    # The forced-format scan ranks the same way.
+    with open_archive(path, format=ArchiveFormat.SEVEN_Z) as archive:
+        assert any(m.is_file for m in archive.members())
+
+
+def test_short_7z_hit_is_not_displaced_by_a_later_zip(tmp_path: Path) -> None:
+    """The exact-end preference is a tie-break among 7z hits, not across formats.
+
+    The 7z is short only because a ZIP follows it; the earliest validated candidate,
+    the 7z the stub would extract, stays the answer.
+    """
+    real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("hello.txt", "hi there")
+    stub = b"MZ" + b"\x00" * 510
+    path = tmp_path / "7z-then-zip.exe"
+    path.write_bytes(stub + real + buf.getvalue())
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.payload_offset == len(stub)
+
+
+def test_short_7z_hit_scan_cost_is_bounded_by_the_window(tmp_path: Path) -> None:
+    """Pins what a short hit costs: the whole scan window, never more.
+
+    With the archive ending at EOF the scan stops at the hit. With data after it
+    (an Authenticode signature, say) the scan keeps looking for a later 7z that
+    ends at EOF, through the whole of the budget's scan window: a decoy in a stub
+    ends before the real payload starts, so the short hit cannot bound where that
+    payload is.
+    """
+    real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
+    stub = b"MZ" + b"\x00" * 510
+    exact = tmp_path / "exact.exe"
+    exact.write_bytes(stub + real)
+    exact_cost = detect_format(exact).cost_receipt
+    assert exact_cost is not None
+    assert exact_cost.scanned_bytes <= len(stub) + len(real)
+
+    trailing = tmp_path / "trailing.exe"
+    trailing.write_bytes(stub + real + b"\x00" * (3 << 20))
+    detected = detect_format(trailing)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.payload_offset == len(stub)
+    assert detected.cost_receipt is not None
+    # The whole window, not a ceiling that every scan meets: if the bound changes,
+    # this is the line to edit.
+    assert detected.cost_receipt.scanned_bytes == BALANCED_BUDGET.max_scan_bytes
+
+
+def test_short_7z_hit_is_kept_when_nothing_ends_at_eof(tmp_path: Path) -> None:
+    """With no exact candidate, the first short one is still the answer."""
+    real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
+    stub = b"MZ" + b"\x00" * 510
+    path = tmp_path / "trailing-sig.exe"
+    path.write_bytes(stub + real + b"appended signature block" * 4)
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.payload_offset == len(stub)
 
 
 @requires("py7zr")
@@ -1658,14 +1722,17 @@ def test_budget_truncated_zip_header_still_detects_when_remaining_is_known(
         return stub + payload
 
     straddle_at = scan_limit - (needed - 2)
-    detected = detect_format(io.BytesIO(blob(straddle_at)), budget=FAST_BUDGET)
+    detected = detect_format(
+        io.BytesIO(blob(straddle_at)),
+        config=ArchiveyConfig(detection_budget=FAST_BUDGET),
+    )
     assert detected.format == ArchiveFormat.ZIP
     assert detected.detected_by == "sfx_scan"
     assert detected.payload_offset == straddle_at
 
     path = tmp_path / "edge-straddle.bin"
     path.write_bytes(blob(straddle_at))
-    found = detect_format(path, budget=FAST_BUDGET)
+    found = detect_format(path, config=ArchiveyConfig(detection_budget=FAST_BUDGET))
     assert found.format == ArchiveFormat.ZIP
     assert found.detected_by == "sfx_scan"
     assert found.payload_offset == straddle_at
@@ -1673,7 +1740,9 @@ def test_budget_truncated_zip_header_still_detects_when_remaining_is_known(
     hit_at = scan_limit - needed
     hit_path = tmp_path / "edge-hit.bin"
     hit_path.write_bytes(blob(hit_at))
-    inside = detect_format(hit_path, budget=FAST_BUDGET)
+    inside = detect_format(
+        hit_path, config=ArchiveyConfig(detection_budget=FAST_BUDGET)
+    )
     assert inside.format == ArchiveFormat.ZIP
     assert inside.detected_by == "sfx_scan"
     assert inside.payload_offset == hit_at

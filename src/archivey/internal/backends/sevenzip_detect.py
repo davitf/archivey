@@ -45,10 +45,11 @@ def validate_sevenzip_signature_header(
     under forced ``format=SEVEN_Z``. A genuine empty ``.7z`` at offset 0 is
     claimed by near magic and never reaches here.
 
-    Exact-EOF versus trailing bytes is not a reject: some SFX tools append
-    configuration after the payload. Earliest CRC-valid hit still wins;
-    preferring an exact end among several ``VALID`` hits is the unlanded
-    remainder of task 2.3.
+    A declared end short of ``remaining`` is :attr:`HitOutcome.VALID_SHORT`, not
+    a reject: some SFX tools append configuration or a signature after the
+    payload. The scan keeps looking for a later hit that ends exactly at EOF and
+    falls back to the first short one, so a CRC-valid decoy in the stub cannot
+    beat the real payload appended after it.
     """
     header = peek_more(SIGNATURE_HEADER_SIZE)
     if len(header) < SIGNATURE_HEADER_SIZE or header[: len(MAGIC_7Z)] != MAGIC_7Z:
@@ -70,4 +71,6 @@ def validate_sevenzip_signature_header(
     declared = SIGNATURE_HEADER_SIZE + next_header_offset + next_header_size
     if remaining is not None and declared > remaining:
         return HitOutcome.DAMAGED
+    if remaining is not None and declared < remaining:
+        return HitOutcome.VALID_SHORT
     return HitOutcome.VALID

@@ -98,7 +98,9 @@ def detect_format_one(data: bytes) -> None:
     from archivey.detection_cost import BALANCED_BUDGET
 
     try:
-        info = detect_format(io.BytesIO(data), budget=BALANCED_BUDGET)
+        info = detect_format(
+            io.BytesIO(data), config=ArchiveyConfig(detection_budget=BALANCED_BUDGET)
+        )
     except ArchiveyError:
         return
     # Aggregate cost must stay inside the declared budget — pins the invariant whether

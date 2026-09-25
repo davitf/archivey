@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveFormat, DetectionConfidence, FormatInfo, detect_format
+from archivey.config import ArchiveyConfig
 from archivey.exceptions import FormatDetectionError
 from archivey.internal.streams import codecs as codecs_module
 from archivey.types import MagicSignature
@@ -608,11 +609,9 @@ def test_detection_from_mid_positioned_stream() -> None:
 # ---------------------------------------------------------------------------
 # detection-format-gaps: formats archivey decodes but could not recognise
 #
-# Confidence assertions below are **pre-ledger**. ``detection-evidence-ledger``
-# regrades ISO (DISCRIMINATING_HEADER -> PROBABLE) and caps unvalidated signatures
-# (SIGNATURE_ONLY -> PROBABLE), so the durable pins here are ``format`` and
-# ``detected_by``; a ``confidence`` assertion is provisional and that change updates
-# it deliberately.
+# ``confidence`` is documented as provisional (a graded-evidence regrade was decided
+# against for 0.2.0 but could still come), so the durable pins here are ``format`` and
+# ``detected_by``; a ``confidence`` assertion would be updated deliberately.
 # ---------------------------------------------------------------------------
 
 
@@ -1025,7 +1024,7 @@ def test_far_budget_below_the_iso_span_records_the_far_tier_as_cut_short(
     path.write_bytes(bytes(image))
     assert detect_format(path).detected_by == "magic"
     budget = replace(BALANCED_BUDGET, max_far_bytes=4096)
-    info = detect_format(path, budget=budget)
+    info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
     assert info.detected_by == "extension"
     assert any(
         s.tier == "far_magic" and s.reason is TierSkipReason.BUDGET_EXHAUSTED
@@ -1044,7 +1043,9 @@ def test_far_budget_skip_is_not_recorded_for_a_source_too_short_for_the_iso_span
     from archivey.detection_cost import BALANCED_BUDGET
 
     budget = replace(BALANCED_BUDGET, max_far_bytes=4096)
-    info = detect_format(io.BytesIO(_zip_bytes()), budget=budget)
+    info = detect_format(
+        io.BytesIO(_zip_bytes()), config=ArchiveyConfig(detection_budget=budget)
+    )
     assert not any(s.tier == "far_magic" for s in info.unavailable_tiers)
 
 
@@ -1099,7 +1100,9 @@ def test_inner_tar_probe_stays_inside_the_decode_budget() -> None:
     )
 
     data = _incompressible_tar_bz2(850_000)
-    fast = detect_format(io.BytesIO(data), budget=FAST_BUDGET)
+    fast = detect_format(
+        io.BytesIO(data), config=ArchiveyConfig(detection_budget=FAST_BUDGET)
+    )
     assert fast.format == ArchiveFormat.BZ2
     assert fast.cost_receipt is not None
     assert fast.cost_receipt.decode_input <= FAST_BUDGET.max_decode_input
@@ -1109,7 +1112,9 @@ def test_inner_tar_probe_stays_inside_the_decode_budget() -> None:
         for s in fast.unavailable_tiers
     ), fast.unavailable_tiers
 
-    balanced = detect_format(io.BytesIO(data), budget=BALANCED_BUDGET)
+    balanced = detect_format(
+        io.BytesIO(data), config=ArchiveyConfig(detection_budget=BALANCED_BUDGET)
+    )
     assert balanced.format == ArchiveFormat.TAR_BZ2
     assert not any(s.tier == "inner_tar" for s in balanced.unavailable_tiers)
 
@@ -1140,7 +1145,10 @@ def test_inner_tar_probe_is_skipped_when_the_output_budget_is_below_one_header()
     from archivey.detection_cost import BALANCED_BUDGET, TierSkipReason
 
     budget = replace(BALANCED_BUDGET, max_decode_output=256)
-    info = detect_format(io.BytesIO(bz2.compress(_tar_bytes(), 9)), budget=budget)
+    info = detect_format(
+        io.BytesIO(bz2.compress(_tar_bytes(), 9)),
+        config=ArchiveyConfig(detection_budget=budget),
+    )
     assert info.format == ArchiveFormat.BZ2
     assert info.cost_receipt is not None
     assert info.cost_receipt.decode_input == 0
@@ -1159,7 +1167,10 @@ def test_inner_tar_probe_is_off_when_the_decode_budget_is_zero() -> None:
     from archivey.detection_cost import BALANCED_BUDGET, TierSkipReason
 
     budget = replace(BALANCED_BUDGET, max_decode_input=0, max_decode_output=0)
-    info = detect_format(io.BytesIO(bz2.compress(_tar_bytes(), 9)), budget=budget)
+    info = detect_format(
+        io.BytesIO(bz2.compress(_tar_bytes(), 9)),
+        config=ArchiveyConfig(detection_budget=budget),
+    )
     assert info.format == ArchiveFormat.BZ2
     assert info.cost_receipt is not None
     assert info.cost_receipt.decode_input == 0
@@ -1185,11 +1196,13 @@ def test_sfx_miss_in_a_budget_shortened_window_records_the_scan_as_cut_short(
     path.write_bytes(b"MZ" + b"\x00" * (1024 * 1024 - 2) + _zip_bytes())
     cut_short = TierSkip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
 
-    balanced = detect_format(path, budget=BALANCED_BUDGET)
+    balanced = detect_format(
+        path, config=ArchiveyConfig(detection_budget=BALANCED_BUDGET)
+    )
     assert balanced.detected_by == "sfx_scan"
     assert cut_short not in balanced.unavailable_tiers
 
-    fast = detect_format(path, budget=FAST_BUDGET)
+    fast = detect_format(path, config=ArchiveyConfig(detection_budget=FAST_BUDGET))
     assert fast.detected_by == "extension"
     assert cut_short in fast.unavailable_tiers
 
@@ -1197,10 +1210,17 @@ def test_sfx_miss_in_a_budget_shortened_window_records_the_scan_as_cut_short(
     # the scan, not the budget, so nothing is recorded.
     long_miss = tmp_path / "stub.zip"
     long_miss.write_bytes(b"MZ" + b"\x00" * (3 * 1024 * 1024))
-    missed = detect_format(long_miss, budget=BALANCED_BUDGET)
+    missed = detect_format(
+        long_miss, config=ArchiveyConfig(detection_budget=BALANCED_BUDGET)
+    )
     assert missed.detected_by == "extension"
     assert cut_short not in missed.unavailable_tiers
-    assert cut_short in detect_format(long_miss, budget=FAST_BUDGET).unavailable_tiers
+    assert (
+        cut_short
+        in detect_format(
+            long_miss, config=ArchiveyConfig(detection_budget=FAST_BUDGET)
+        ).unavailable_tiers
+    )
 
 
 def test_sfx_miss_in_a_source_shorter_than_the_window_is_not_cut_short(
@@ -1210,7 +1230,7 @@ def test_sfx_miss_in_a_source_shorter_than_the_window_is_not_cut_short(
 
     path = tmp_path / "stub.zip"
     path.write_bytes(b"MZ" + b"\x00" * 8190)
-    info = detect_format(path, budget=FAST_BUDGET)
+    info = detect_format(path, config=ArchiveyConfig(detection_budget=FAST_BUDGET))
     assert info.detected_by == "extension"
     assert not any(s.tier == "sfx_scan" for s in info.unavailable_tiers)
 
@@ -1309,3 +1329,140 @@ def test_reader_keeps_the_detection_it_opened_by(tmp_path: Path) -> None:
         assert reader.format_info == detect_format(tree)
         assert reader.format_info is not None
         assert reader.format_info.cost_receipt == detect_format(tree).cost_receipt
+
+
+def _budget_config() -> ArchiveyConfig:
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET
+
+    return ArchiveyConfig(
+        detection_budget=replace(BALANCED_BUDGET, max_scan_bytes=64 * 1024),
+        # Non-None on purpose: the probe configs must not inherit it, and the
+        # ``on_diagnostic is None`` assertions only mean something if it is set here.
+        on_diagnostic=lambda _diagnostic: None,
+    )
+
+
+def _record_detect(
+    monkeypatch: pytest.MonkeyPatch, module: object
+) -> list[tuple[str, ArchiveyConfig | None]]:
+    """Record each call through ``module.detect_format`` as (source name, config)."""
+    calls: list[tuple[str, ArchiveyConfig | None]] = []
+    real = getattr(module, "detect_format")
+
+    def recording(source: object, *args: object, **kwargs: object) -> FormatInfo:
+        config = kwargs.get("config")
+        assert config is None or isinstance(config, ArchiveyConfig)
+        calls.append((Path(str(getattr(source, "path", None) or source)).name, config))
+        return real(source, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(module, "detect_format", recording)
+    return calls
+
+
+def test_format_argument_stub_checks_detect_under_the_config_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under ``format=``, the stub-only check and the stub/first-volume conflict check
+    both run detection. They spend the caller's budget, and nothing else of the
+    caller's config reaches them (a discarded probe's diagnostics are not the
+    reader's)."""
+    import archivey.core as core_module
+    from archivey import open_archive
+
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(b"MZ" + b"\x00" * 1022)
+    data = (Path(__file__).parent / "fixtures" / "sevenzip" / "lz4.7z").read_bytes()
+    half = len(data) // 2
+    (tmp_path / "vol.7z.001").write_bytes(data[:half])
+    (tmp_path / "vol.7z.002").write_bytes(data[half:])
+    config = _budget_config()
+    calls = _record_detect(monkeypatch, core_module)
+    with open_archive(stub, format=ArchiveFormat.SEVEN_Z, config=config) as reader:
+        assert any(m.is_file for m in reader)
+    assert sorted(name for name, _ in calls) == ["vol.7z.001", "vol.exe"]
+    for _name, probe in calls:
+        assert probe is not None and probe is not config
+        assert probe.detection_budget is config.detection_budget
+        assert probe.on_diagnostic is None
+
+
+def test_empty_listing_rescan_detects_under_the_config_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rescan that words an empty-listing advisory under ``format=`` spends the
+    caller's budget, and only that."""
+    from archivey import open_archive
+    from archivey.internal import detection as detection_module
+
+    config = _budget_config()
+    calls = _record_detect(monkeypatch, detection_module)
+    path = tmp_path / "zeros.tar"
+    path.write_bytes(b"\x00" * (32 * 1024))
+    with open_archive(path, format=ArchiveFormat.TAR, config=config) as reader:
+        assert list(reader) == []
+    assert [name for name, _ in calls] == ["zeros.tar"]
+    probe = calls[0][1]
+    assert probe is not None and probe is not config
+    assert probe.detection_budget is config.detection_budget
+    assert probe.on_diagnostic is None
+
+
+def test_empty_listing_rescan_stays_internal_under_strict(tmp_path: Path) -> None:
+    """Under ``strict()`` the rescan's own findings neither reach the caller nor raise
+    inside it: an empty ZIP named ``x.tar.gz`` opened with ``format=ZIP`` reports the
+    empty archive and nothing else, because detection does identify it as ZIP."""
+    from archivey import open_archive
+    from archivey.diagnostics import Diagnostic, DiagnosticCode, DiagnosticPolicy
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w"):
+        pass
+    path = tmp_path / "x.tar.gz"
+    path.write_bytes(buf.getvalue())
+    seen: list[Diagnostic] = []
+    config = ArchiveyConfig(
+        diagnostic_policy=DiagnosticPolicy.strict(), on_diagnostic=seen.append
+    )
+    with open_archive(path, format=ArchiveFormat.ZIP, config=config) as reader:
+        assert list(reader) == []
+    assert [d.code for d in seen] == [DiagnosticCode.EMPTY_ARCHIVE]
+
+
+def test_open_archive_detects_under_the_config_budget(tmp_path: Path) -> None:
+    """``ArchiveyConfig.detection_budget`` reaches the detection ``open_archive`` runs."""
+    from dataclasses import replace
+
+    from archivey import open_archive
+    from archivey.detection_cost import BALANCED_BUDGET
+
+    path = tmp_path / "payload.bin"
+    path.write_bytes(b"MZ" + b"\x00" * (64 * 1024) + _zip_bytes())
+    with open_archive(path) as reader:
+        assert reader.format == ArchiveFormat.ZIP
+
+    narrow = ArchiveyConfig(
+        detection_budget=replace(BALANCED_BUDGET, max_scan_bytes=16 * 1024)
+    )
+    with pytest.raises(FormatDetectionError):
+        open_archive(path, config=narrow)
+    with pytest.raises(FormatDetectionError):
+        detect_format(path, config=narrow)
+
+
+def test_empty_source_says_it_is_empty(tmp_path: Path) -> None:
+    for source in (io.BytesIO(b""), NonSeekableBytesIO(b"")):
+        with pytest.raises(FormatDetectionError, match="no bytes to read"):
+            detect_format(source)
+    # Detection reads from the current position, so a non-empty file whose handle is
+    # at its end has nothing to read either; the message must not call it empty.
+    path = tmp_path / "a.bin"
+    path.write_bytes(b"hello world, not an archive at all")
+    with path.open("rb") as f:
+        f.seek(0, io.SEEK_END)
+        with pytest.raises(FormatDetectionError) as caught:
+            detect_format(f)
+    assert "positioned at its end" in str(caught.value)
+    with pytest.raises(FormatDetectionError, match="no magic bytes"):
+        detect_format(io.BytesIO(b"plain text, not an archive"))

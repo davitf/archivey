@@ -4,29 +4,21 @@
 > codec and why — including why `rapidgzip` is the single accelerator library (the issue below)
 > and why an `indexed_zstd` zstd accelerator would face the same constraint.
 
-## 7z SFX scan: a CRC-valid inexact decoy still beats a later real payload (open)
+## 7z SFX scan: a CRC-valid inexact decoy beat a later real payload (fixed)
 
-**Status:** open in `prefixed-archive-detection` task 2.3 (`[~]`). CRC identity, the
-remaining-length overrun, and empty-next-header (`NextHeaderSize == 0`) behind a stub
-are in; exact-EOF ranking among several CRC-valid hits is not.
+**Status: fixed.** The SFX scan used to return the earliest `HitOutcome.VALID` 7z
+needle. A 32-byte signature header in the stub, with a matching `StartHeaderCRC` and a
+nonzero declared end inside the remaining source, won over the real archive appended
+after it, and `open_archive` failed on the decoy's header.
 
-The SFX scan returns the earliest `HitOutcome.VALID` needle. A 32-byte 7z signature
-header whose `StartHeaderCRC` matches and whose declared end is a nonzero size that
-fits in the remaining source is `VALID` even when it is not the real payload — a
-later genuine archive that does end at EOF never gets a chance. Detection then
-reports `SEVEN_Z` at the decoy origin, so `open_archive` never sees the real
-files: a **wrong answer**, not `FormatDetectionError`.
-
-The empty-header reject closes the reproduced F4 fixture (an empty 32-byte decoy
-at offset 512). The residual is a decoy with a **nonzero, self-consistent
-declared size that still fits in `remaining`**.
-
-**Gate (not yet written).** Prefer an exact-EOF 7z (`declared == remaining`) over
-an earlier inexact `VALID` — task 2.3's original intra-format tie-break. Until
-then, `test_inexact_7z_decoy_loses_to_a_later_exact_payload` is
-`@pytest.mark.xfail(strict=True)` on that contract (`xfail_strict` is not set in
-`pyproject.toml`, so `strict=True` is on the marker). `[~]` on task 2.3 stops
-`prefixed-archive-detection` from archiving while this stands.
+The 7z validator now grades a hit whose declared end stops short of the known source end
+`VALID_SHORT`. Both scans (detection's and the forced-format one in
+`internal/sfx.scan_for_magic`) keep the first such hit as a fallback and keep looking for
+a hit that ends exactly at EOF; only when none does is the short one the answer. Trailing
+bytes after a real payload (SFX configuration, an appended signature) therefore still
+open. A decoy that declares its end exactly at EOF is still accepted: that is a
+constructed polyglot, and `format=` with `start_offset` is the escape. Pinned by
+`test_inexact_7z_decoy_loses_to_a_later_exact_payload` in `tests/test_sfx.py`.
 
 ## 7z BCJ branch filters: two `pybcj` defects, now decoded through liblzma (fixed)
 

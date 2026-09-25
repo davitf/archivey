@@ -1,3 +1,16 @@
+> **Decided against (2026-09-25). Not implemented; archived without applying its specs.**
+> A design review found that each of the four measured defects below has a small fix on
+> the existing detector, and that nothing user-visible remained that only a graded-evidence
+> scheduler could deliver. Those fixes shipped instead: content probes sample the whole
+> 4 KiB window and re-check a hit against the whole source up to 64 KiB, the probes share one
+> decode allowance per call, a read failure on an extension-only format sets
+> `format_unconfirmed` (`EXTENSION_FORMAT_UNCONFIRMED`), the 7z scan prefers a hit that ends
+> at end of file, and `detected_by` / `confidence` are documented as an open set and a
+> provisional grade so a ledger can still be added later without a break. The budget fields
+> this change reserved (`max_index_bytes`, `collect_nonmaximal_candidates`) were removed.
+> What this gives up: sub-`CERTAIN` grades on truncated magic, a loud error on polyglots
+> instead of the documented tier-then-registry-order rule, and an inspectable evidence record.
+
 ## Why
 
 Detection answers with one format string and one of three confidence values, produced by

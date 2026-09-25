@@ -8,6 +8,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import ClassVar
 
+from archivey.detection_cost import (
+    BALANCED_BUDGET,
+    DetectionBudget,
+    DetectionBudgetPreset,
+)
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
 from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.arg_checks import (
@@ -501,6 +506,16 @@ class ArchiveyConfig:
     See :class:`DecoderLimits`.
     """
 
+    detection_budget: DetectionBudget = BALANCED_BUDGET
+    """Upper bounds on what format detection may read and decode.
+
+    Used by :func:`~archivey.open_archive` and :func:`~archivey.detect_format` alike.
+    The default, ``BALANCED``, covers every format archivey reads at the offset it
+    specifies, a self-extracting archive within 2 MiB of the start, and the content
+    probes. ``FAST_BUDGET`` and ``THOROUGH_BUDGET`` in ``archivey.detection_cost``
+    are the other presets; to change a single limit, ``dataclasses.replace`` one.
+    """
+
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
     """Whether each diagnostic code is ignored, collected or raised.
 
@@ -573,6 +588,23 @@ class ArchiveyConfig:
             call="ArchiveyConfig(diagnostic_policy=…)",
             allow_none=False,
         )
+        if not isinstance(self.detection_budget, DetectionBudget):
+            # A preset member, or its name, is converted here so the field always
+            # holds the budget detection reads. The annotation stays the budget alone,
+            # as it does for ``use_rapidgzip`` below: it is read by every consumer of
+            # the attribute, not only by the constructor's callers, and after
+            # construction it always holds a ``DetectionBudget``.
+            # ``tests/test_enum_arguments.py`` records the exemption.
+            preset = coerce_enum(
+                self.detection_budget,
+                DetectionBudgetPreset,
+                call="ArchiveyConfig()",
+                param="detection_budget=",
+                also_accepts="DetectionBudget",
+            )
+            object.__setattr__(
+                self, "detection_budget", DetectionBudget.for_preset(preset)
+            )
         check_callable(self.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
         check_encoding(
             self.zip_unflagged_fallback_encoding,

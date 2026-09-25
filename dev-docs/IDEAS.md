@@ -322,6 +322,16 @@
   not become a second scripting-language parser. The generic shebang+needle path stays
   the fallback for ad-hoc `cat stub.tar.gz` wrappers.
 
+- **Bound the SFX search at the PE overlay while holding a short 7z hit** — when a 7z
+  signature validates but its declared end falls short of the end of the file, the scan
+  keeps looking for a later 7z that ends there, through the whole scan window (2 MiB under
+  `BALANCED`). The maintainer chose to ship that cost in 2026-09 rather than bound it.
+  The short hit's own end is not a safe bound, because a decoy inside the stub ends before
+  the real payload starts. The end of a PE stub's last section (the overlay offset) is
+  safe, because a decoy inside the stub cannot pass it. PE stubs only: ELF and Mach-O
+  stubs would still pay the window. The cost is pinned by
+  `test_short_7z_hit_scan_cost_is_bounded_by_the_window`.
+
 - **Exhaustive ambiguity fallback for `open_archive()` / `open_stream()`** — when
   evidence-based detection yields two or more tied maximal candidates, the near-term
   contract should raise a dedicated ambiguity error rather than choose by registry order.
@@ -384,38 +394,38 @@
   Stated as a rule: agreement between two independent signals outranks an unconsulted
   *expensive* alternative, never an unconsulted *cheap and stronger* one.
 
-- **`FormatInfo.corroborated` is interim — it belongs in the detection evidence ledger** —
-  `probe-provenance-unconfirmed` added an internal `corroborated: bool` to `FormatInfo` to
-  key the `format_unconfirmed` channel. It cannot become public as a bool: `False` means
-  both "a probe with nothing corroborating it" and "not a probe at all", so a ZIP named
-  `a.zip` (extension agrees) and one named `b.tar` (extension contradicts) produce
-  identical output — `magic` / `certain` / `False` — as do an extensionless Brotli probe
-  hit and one whose `.zip` name contradicts it. The replacement is **not** a wider public
-  field here: PR #263's analysis §1 already specifies the evidence ledger (typed
-  `DetectionEvidence` on an internal `FormatCandidate`, totally ranked classes, ordered
-  tie-breakers) and explicitly rejects additive scoring over correlated signals, so a
-  counted bit-set would be wrong too. Recorded here only so the interim field is not
-  mistaken for a settled design; the work belongs to that redesign, after
-  `prefixed-archive-detection` adds its two further `detected_by` values. Full truth table
-  in `probe-provenance-unconfirmed` task 5.1.
+- **`FormatInfo.corroborated` is interim** (the evidence ledger that was to replace it was
+  decided against on 2026-09-25) — `probe-provenance-unconfirmed` added an internal
+  `corroborated: bool` to `FormatInfo` to key the `format_unconfirmed` channel. It cannot
+  become public as a bool: `False` means both "a probe with nothing corroborating it" and
+  "not a probe at all", so a ZIP named `a.zip` (extension agrees) and one named `b.tar`
+  (extension contradicts) produce identical output — `magic` / `certain` / `False` — as do
+  an extensionless Brotli probe hit and one whose `.zip` name contradicts it. The
+  replacement is **not** a wider public field here: PR #263's analysis §1 already specifies
+  the evidence ledger (typed `DetectionEvidence` on an internal `FormatCandidate`, totally
+  ranked classes, ordered tie-breakers) and explicitly rejects additive scoring over
+  correlated signals, so a counted bit-set would be wrong too. Recorded here only so the
+  interim field is not mistaken for a settled design; it stays internal, and any public
+  provenance signal needs a design of its own now that the ledger is not coming. Full truth
+  table in `probe-provenance-unconfirmed` task 5.1.
 
 - **Volume-shaped names: detect first, then upgrade `FormatDetectionError`** — parked from
   PR #285 (ZIP split refuse). Today `open_archive` early-refuses Info-ZIP `.zNN` — and a
-  7-Zip `.zip.NNN` part whose siblings are absent, a complete set being joined instead —
-  by filename before detection, on the auto-detect path and when `format=ZIP`, so
-  magic-less middle parts get `UnsupportedFeatureError` instead of `FormatDetectionError`.
-  An explicit non-ZIP `format=` is already honoured (the name refuse does not run) — that
-  is separate from this parking (H1 / P8). A later shape worth trying once the evidence
-  ledger exists: run detection as usual; if it fails *and* the name looks like a
-  multi-volume segment, raise `UnsupportedFeatureError` (rejoin-first) rather than
-  `FormatDetectionError`. Keeps odd-but-valid archives that happen to end in `.z02` openable
-  via magic; shrinks false positives vs early-refuse; extends naturally to a shared
-  volume-name table across formats (ZIP today; careful messages for RAR/7z sets we *do*
-  join). Because detection is skipped when the caller supplies a format, that shape also
-  preserves explicit-`format=` precedence without a special case. Do **not** layer this on
-  top of early-refuse — replace that control flow when the ledger/name policy lands.
-  Nameless streams stay out of scope. Refs: #285 D1/H1 discussion; in-flight
-  `openspec/changes/detection-evidence-ledger/`; `formats/zip.md` §3 split naming.
+  7-Zip `.zip.NNN` part whose siblings are absent, a complete set being joined instead — by
+  filename before detection, on the auto-detect path and when `format=ZIP`, so magic-less
+  middle parts get `UnsupportedFeatureError` instead of `FormatDetectionError`. An explicit
+  non-ZIP `format=` is already honoured (the name refuse does not run) — that is separate
+  from this parking (H1 / P8). A later shape worth trying: run detection as usual; if it
+  fails *and* the name looks like a multi-volume segment, raise `UnsupportedFeatureError`
+  (rejoin-first) rather than `FormatDetectionError`. Keeps odd-but-valid archives that
+  happen to end in `.z02` openable via magic; shrinks false positives vs early-refuse;
+  extends naturally to a shared volume-name table across formats (ZIP today; careful
+  messages for RAR/7z sets we *do* join). Because detection is skipped when the caller
+  supplies a format, that shape also preserves explicit-`format=` precedence without a
+  special case. Do **not** layer this on top of early-refuse — replace that control flow if
+  this is ever taken up. Nameless streams stay out of scope. Refs: #285 D1/H1 discussion;
+  the archived `openspec/changes/archive/2026-09-25-detection-evidence-ledger/`;
+  `formats/zip.md` §3 split naming.
 
 - **Archive *role*: tell the caller whether to care what is inside** — `open_archive()`
   reads a photo backup, a `.docx`, a `.jar`, a LibreOffice icon bundle and a JPEG with an
@@ -600,8 +610,9 @@
 - **Detection budget scope: aggregate vs per-candidate** — left open by
   `detection-prefix-workspace`. A fuzz assertion pins that *aggregate* detection cost stays
   inside the declared budget either way; the deciding measurement (209 715 decoy gzip
-  headers → 683-fold decode amplification) is a scan-tier property owned by
-  `detection-evidence-ledger`. Carry the question there.
+  headers → 683-fold decode amplification) is a scan-tier property. **Settled 2026-09-25:**
+  the decode limits are one allowance for the whole call, shared by every tier that
+  decodes (`detection-cost` spec).
 
 - **Pricing a detection source in round trips rather than bytes** — `StreamCapability` is
   only `FORWARD_ONLY < SEEKABLE`, so an HTTP range reader and a local file are

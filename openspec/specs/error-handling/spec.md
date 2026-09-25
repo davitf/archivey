@@ -403,17 +403,19 @@ a `TAR` result. No content probe can produce a container format today — every 
 `RAW_STREAM` codec — but `ReadBackend.CONTENT_PROBES` exists so a container backend can
 register one, and that seam MUST NOT silently arm this.
 
-> **Contested, and scheduled for replacement.** PR #263's design analysis holds that the
-> filename must not decide whether a failure is stamped, keying the signal on the winning
-> candidate's **content-evidence class** instead: `NAME` ranks below `BOUNDED_PROBE`, so a
-> matching extension is retained as evidence but cannot promote the class, and a failure
-> whose winning class is still `BOUNDED_PROBE` is stamped whether or not the name agrees
-> (§6). Its §9 goes further and drops the `.br`-raises-confidence rule too, so a bounded
-> Brotli probe is `GUESS` with or without the extension. It accepts the consequence
-> explicitly — a genuinely truncated `x.br` carries the flag — on the grounds that
-> `format_unconfirmed` must mean "the bytes did not confirm this identity", not "the
-> identity is probably wrong", and requires the winning evidence ledger to be a public
-> outcome so a caller can see the `NAME` item and present the error accordingly.
+> **Contested; the replacement was decided against on 2026-09-25**, with the evidence
+> ledger it depended on, so the matching extension still suppresses the stamp. PR #263's
+> design analysis holds that the filename must not decide whether a failure is stamped,
+> keying the signal on the winning candidate's **content-evidence class** instead: `NAME`
+> ranks below `BOUNDED_PROBE`, so a matching extension is retained as evidence but cannot
+> promote the class, and a failure whose winning class is still `BOUNDED_PROBE` is stamped
+> whether or not the name agrees (§6). Its §9 goes further and drops the
+> `.br`-raises-confidence rule too, so a bounded Brotli probe is `GUESS` with or without
+> the extension. It accepts the consequence explicitly — a genuinely truncated `x.br`
+> carries the flag — on the grounds that `format_unconfirmed` must mean "the bytes did not
+> confirm this identity", not "the identity is probably wrong", and requires the winning
+> evidence ledger to be a public outcome so a caller can see the `NAME` item and present
+> the error accordingly.
 >
 > **Scope of that follow-up: two sites, not one.** The filename decides the stamp here via
 > `_extension_corroborates`, and in `_brotli_probe_confidence` via the `.br`-to-`PROBABLE`

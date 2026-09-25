@@ -93,6 +93,14 @@ The system SHALL execute format detection with this algorithm:
 Steps are ordered attempts, not alternatives: a step that produces no match falls through,
 and attempting one never prevents a later one from running.
 
+**Tie rule.** When more than one format could match, the earlier step wins, and within a
+step the earlier entry in registry order wins. This is the documented rule, not an
+accident of iteration: `confidence` is a provisional grade and `detected_by` an open set,
+so a later release may grade evidence more finely without breaking a caller that treats
+unknown values as possible. A source with no bytes left at its current position (empty,
+or already read to its end) SHALL raise `FormatDetectionError` saying there are no bytes
+to read, not that nothing matched.
+
 #### Scenario: unrecognised bytes, no path
 
 | Case | Expected |
@@ -374,12 +382,12 @@ already locates the EOCD from the tail, so a leading stub is tolerated without a
 separate parser scan; detection still SHALL return `ZIP` with `payload_offset`
 rather than a stream codec when the ZIP needle matches.
 
-The scan takes the **earliest** matching needle in the window. A stub that itself
-contains one of these magics therefore decides `payload_offset`, and the backend opens
-there rather than at a later real payload. That is a **loud** failure, not a silent one
-— 7z raises `CorruptionError` on the signature CRC — and is accepted for now;
-validating a hit and resuming the scan past a rejected one is deliberately out of scope
-(see the change's design).
+The scan takes the **earliest** matching needle in the window that its format's hit
+validator accepts, and resumes past one it rejects. A 7z hit whose declared end falls
+short of a known end of source (`HitOutcome.VALID_SHORT`) is kept only as a fallback: the
+scan goes on, and a later 7z hit that ends exactly at end of source wins over it, so a
+stub that embeds a whole small 7z archive does not hide the real payload after it. With no
+such later hit the short one is used, which keeps a 7z followed by trailing data readable.
 
 #### Scenario: SFX matrix
 
@@ -391,7 +399,9 @@ validating a hit and resuming the scan past a rejected one is deliberately out o
 | `MZ` + low-entropy filler + RAR/7z/ZIP magic in window | Same as above — **not** `BROTLI` / fabricated single-file member |
 | **Strong** executable cue (validated PE / ELF), no RAR/7z/ZIP in window | No content probe runs; extension guess or `FormatDetectionError` — never a fabricated member |
 | **Weak** executable cue (bare `MZ` / `\x7fELF`), no RAR/7z/ZIP in window | Content probes run unchanged, so a probe may still claim the stub — the accepted residual, per the sibling requirement and `open-issues.md` P12 |
-| Stub containing a decoy needle before the real payload | Earliest match wins; the backend opens at the decoy and fails **loudly** (7z: `CorruptionError`). ZIP usually still succeeds via EOCD-from-tail |
+| Stub containing a decoy needle the validator rejects | The scan resumes past it and finds the real payload |
+| Stub containing a whole valid 7z before the real 7z payload | The real payload, which ends at end of source; the embedded one is only a fallback |
+| A valid 7z followed by trailing bytes, nothing later | That 7z, at its offset |
 | Bare brotli / non-executable stream | Unchanged content-probe behaviour |
 | Strong cue, no archive in the stub, exactly one of `vol.exe.001` / `vol.7z.001` / `vol.zip.001` beside it | `detect_format` reports that volume's format; `open_archive` (including with `format=` matching that container) opens the set |
 | Same stub, but it *does* contain archive magic | The embedded archive; sibling volumes are ignored |
@@ -519,8 +529,7 @@ model because `StreamCapability` cannot distinguish a cheap seek from an expensi
 
 Resolving an exact `payload_offset` through a central-directory walk does not fit this
 shape — the directory is reached backwards from the end and points backwards again. Offset
-resolution is therefore separable from identification and is scoped by
-`detection-evidence-ledger`.
+resolution is therefore separable from identification, and no tier does it today.
 
 #### Scenario: access-shape matrix
 

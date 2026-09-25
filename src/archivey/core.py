@@ -48,7 +48,11 @@ from archivey.internal.backends.zip_detect import (
     is_zip_split_segment_name,
 )
 from archivey.internal.config import stream_config_from_archivey
-from archivey.internal.detection import detect_format, directory_format_info
+from archivey.internal.detection import (
+    detect_format,
+    directory_format_info,
+    probe_config,
+)
 from archivey.internal.diagnostics_collector import collector_from_config
 from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.format_args import (
@@ -214,10 +218,15 @@ def _refuse_unjoined_volume_names(
 
 
 def _refuse_if_stub_format_conflict(
-    stub: Path, first_volume: Path, requested: ArchiveFormat
+    stub: Path,
+    first_volume: Path,
+    requested: ArchiveFormat,
+    config: ArchiveyConfig | None,
 ) -> None:
     try:
-        info = detect_format(first_volume, follow_stub_volumes=False)
+        info = detect_format(
+            first_volume, config=probe_config(config), follow_stub_volumes=False
+        )
     except FormatDetectionError:
         return
     if info.format.container == requested.container:
@@ -230,13 +239,13 @@ def _refuse_if_stub_format_conflict(
 
 
 def _follow_stub_volume(
-    stub: Path, format: ArchiveFormat | None
+    stub: Path, format: ArchiveFormat | None, config: ArchiveyConfig | None
 ) -> ResolvedSource | None:
     alt = first_volume_for_stub(stub)
     if alt is None:
         return None
     if format is not None:
-        _refuse_if_stub_format_conflict(stub, alt, format)
+        _refuse_if_stub_format_conflict(stub, alt, format, config)
     resolved = resolve_source(alt)
     _refuse_unjoined_volume_names(resolved, format, resolved.archive_name)
     return resolved
@@ -462,17 +471,22 @@ def _open_resolved(
         # handing the stub bytes to the backend.
         try:
             detected = detect_format(
-                archive_source, collector=collector, follow_stub_volumes=False
+                archive_source,
+                config=config,
+                collector=collector,
+                follow_stub_volumes=False,
             )
         except FormatDetectionError:
             stub = archive_source.path
-            followed = _follow_stub_volume(stub, format) if stub is not None else None
+            followed = (
+                _follow_stub_volume(stub, format, config) if stub is not None else None
+            )
             if followed is None:
                 raise
             resolved = followed
             archive_source = slot.replace(resolved.source)
             archive_name = resolved.archive_name
-            detected = detect_format(archive_source, collector=collector)
+            detected = detect_format(archive_source, config=config, collector=collector)
         resolved_format = detected.format
         format_info = detected
     elif archive_source.path is not None and is_sfx_stub_name(archive_source.path.name):
@@ -481,9 +495,9 @@ def _open_resolved(
         # bytes as ZIP/7z while auto-detect joined the split set.
         stub = archive_source.path
         try:
-            detect_format(stub, follow_stub_volumes=False)
+            detect_format(stub, config=probe_config(config), follow_stub_volumes=False)
         except FormatDetectionError:
-            followed = _follow_stub_volume(stub, resolved_format)
+            followed = _follow_stub_volume(stub, resolved_format, config)
             if followed is not None:
                 resolved = followed
                 archive_source = slot.replace(resolved.source)
@@ -721,7 +735,9 @@ def _open_stream_from_source(
             "forward-only pass."
         )
 
-    stream_format = _resolve_stream_format(format, codec_input, collector)
+    stream_format = _resolve_stream_format(
+        format, codec_input, collector, effective_config
+    )
     if stream_format is StreamFormat.UNCOMPRESSED:
         raise UnsupportedFormatError(
             "open_stream requires a compressed stream format "
@@ -753,6 +769,7 @@ def _resolve_stream_format(
     format: StreamFormat | ArchiveFormat | None,
     open_source: ArchiveSource,
     collector: DiagnosticCollector,
+    config: ArchiveyConfig,
 ) -> StreamFormat:
     """Map open_stream's ``format=`` argument (or auto-detect) to a StreamFormat.
 
@@ -777,7 +794,7 @@ def _resolve_stream_format(
     # which is the silent fall-through this function's boundary check exists to close.
     assert format is None, f"unvalidated format argument reached detection: {format!r}"
 
-    detected = detect_format(open_source, collector=collector)
+    detected = detect_format(open_source, config=config, collector=collector)
     if detected.format.container is not ContainerFormat.RAW_STREAM:
         raise UnsupportedFormatError(
             f"Detected {detected.format!r}, which is not a single-file compressed "

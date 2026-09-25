@@ -54,12 +54,9 @@ from archivey.config import DEFAULT_ARCHIVEY_CONFIG, AcceleratorMode
 from archivey.detection import DetectedBy, DetectionConfidence, FormatInfo
 from archivey.detection_cost import (
     DetectionBudget,
-    DetectionBudgetPreset,
-    DetectionBudgetPresetStr,
     DetectionCapability,
     MutableDetectionCostReceipt,
     TierSkipReason,
-    default_detection_budget,
 )
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -72,7 +69,6 @@ from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     collector_from_config,
 )
-from archivey.internal.enum_args import coerce_enum
 from archivey.internal.logs import detection as logger
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.sfx import (
@@ -505,7 +501,16 @@ def _scan_for_sfx_payload(
     that needle lands). The returned ``payload_offset`` is the **candidate origin**, not
     the raw needle position. A hit whose format-owned validator returns anything other
     than :attr:`HitOutcome.VALID` is skipped and the scan continues — earliest
-    *valid* match, not earliest needle. ``PROBABLE`` rather than ``CERTAIN``: an exact
+    *valid* match, not earliest needle. The first :attr:`HitOutcome.VALID_SHORT` hit
+    (a 7z that declares its end before the source ends) is the answer unless a later
+    ``VALID`` hit **of the same format** follows it: a CRC-valid decoy in the stub
+    must not beat the real payload appended after it. A ``VALID`` hit of another
+    format ends the scan with the short hit, so the tie-break never reorders formats.
+    Holding a short hit, the scan keeps reading to ``scan_limit``: a decoy in the
+    stub ends before the real payload starts, so nothing about the short hit bounds
+    where that payload can be. That is the cost of a short hit with data after it
+    (an Authenticode signature, say): up to the whole window, as a miss already
+    pays. ``PROBABLE`` rather than ``CERTAIN``: an exact
     magic found at a *searched-for* offset is a weaker claim than one found at the
     offset the format specifies.
 
@@ -523,6 +528,7 @@ def _scan_for_sfx_payload(
     by_needle = {entry.magic: entry for entry in entries}
     needles = tuple(ScanNeedle(entry.magic, entry.offset) for entry in entries)
     result: FormatInfo | None = None
+    short: FormatInfo | None = None
     for hit in iter_magic_in_prefix(peek_more, needles, limit=scan_limit):
         entry = by_needle[hit.needle]
         validator = validators.get(entry.format)
@@ -534,8 +540,23 @@ def _scan_for_sfx_payload(
                 if source_len is None
                 else max(0, source_len - hit.candidate_origin)
             )
-            if validator(view, remaining) is not HitOutcome.VALID:
+            outcome = validator(view, remaining)
+            if outcome is HitOutcome.VALID_SHORT and short is None:
+                short = FormatInfo(
+                    entry.format,
+                    DetectionConfidence.PROBABLE,
+                    "sfx_scan",
+                    payload_offset=hit.candidate_origin,
+                )
+            if outcome is not HitOutcome.VALID:
                 continue
+        if short is not None and entry.format != short.format:
+            # The preference for a hit that ends at the end of the source is a
+            # tie-break among candidates of one format. A later hit of another
+            # format does not displace the short one: the earliest validated
+            # candidate stands, as it does everywhere else in this scan.
+            result = short
+            break
         result = FormatInfo(
             entry.format,
             DetectionConfidence.PROBABLE,
@@ -543,6 +564,8 @@ def _scan_for_sfx_payload(
             payload_offset=hit.candidate_origin,
         )
         break
+    if result is None:
+        result = short
     if workspace.take_clamped_view_read():
         workspace.record_skip("sfx_scan", TierSkipReason.BUDGET_EXHAUSTED)
     # Charge the window actually examined — a miss is the expensive case.
@@ -550,29 +573,22 @@ def _scan_for_sfx_payload(
     return result
 
 
-def _resolve_budget(
-    budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr | None,
-) -> DetectionBudget:
-    """Normalize the ``budget=`` argument, refusing anything that is neither.
+def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
+    """The library default config carrying only ``config``'s detection budget.
 
-    A ``DetectionBudget`` passes through. Anything else is read as a preset, including
-    its name as a string — ``budget="fast"`` is the mistake to expect, because
-    ``DetectionBudgetPreset.FAST.value`` *is* ``"fast"``. Before this, an unrecognised
-    value was returned unchanged and failed several frames down with a bare
-    ``AttributeError`` naming a budget field.
+    For a detection whose result is internal (a stub check, the rescan that words an
+    empty-listing advisory): it spends what the caller allowed, but its diagnostics
+    are judged by the default policy and never reach the caller's ``on_diagnostic``,
+    as with any collector-less emission. Passing the caller's config instead would
+    deliver a discarded probe's findings as the reader's, and a ``strict()`` policy
+    would raise inside the probe.
     """
-    if budget is None:
-        return default_detection_budget()
-    if isinstance(budget, DetectionBudget):
-        return budget
-    preset = coerce_enum(
-        budget,
-        DetectionBudgetPreset,
-        call="detect_format()",
-        param="budget=",
-        also_accepts="DetectionBudget",
-    )
-    return DetectionBudget.for_preset(preset)
+    if (
+        config is None
+        or config.detection_budget is DEFAULT_ARCHIVEY_CONFIG.detection_budget
+    ):
+        return DEFAULT_ARCHIVEY_CONFIG
+    return replace(DEFAULT_ARCHIVEY_CONFIG, detection_budget=config.detection_budget)
 
 
 def directory_format_info() -> FormatInfo:
@@ -595,10 +611,6 @@ def detect_format(
     *,
     config: ArchiveyConfig | None = None,
     collector: DiagnosticCollector | None = None,
-    budget: DetectionBudget
-    | DetectionBudgetPreset
-    | DetectionBudgetPresetStr
-    | None = None,
     follow_stub_volumes: bool = True,
 ) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.
@@ -610,9 +622,9 @@ def detect_format(
     detection diagnostics into the prospective reader's shared collector. When omitted,
     a finite standalone collector is created from ``config`` (or the library default).
 
-    ``budget`` caps what detection may spend; the default is
-    :data:`~archivey.detection_cost.BALANCED_BUDGET` (import from
-    ``archivey.detection_cost`` — not yet re-exported at the package root).
+    What detection may read and decode is ``config.detection_budget``
+    (:attr:`ArchiveyConfig.detection_budget`), ``BALANCED`` by default — the same
+    budget :func:`~archivey.open_archive` detects under for that config.
 
     A stub-only ``.exe`` / ``.sfx`` (no archive magic) beside a 7-Zip split first
     volume is detected as that volume's format when ``follow_stub_volumes`` is true
@@ -636,15 +648,15 @@ def detect_format(
     if _is_directory_source(source):
         return directory_format_info()
 
+    effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
     owned_collector = collector is None
     if owned_collector:
-        effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
         collector = collector_from_config(effective_config)
         detection_wm = None
     else:
         detection_wm = collector.watermark()
 
-    resolved_budget = _resolve_budget(budget)
+    resolved_budget = effective_config.detection_budget
     # One receipt across both passes: the stub pass is usually the expensive one (a
     # strong executable cue runs the full SFX scan), so the sibling-volume answer
     # carries its cost and its skips too. ``passes`` says there were two.
@@ -871,7 +883,18 @@ def _detect_format_body(
                 workspace,
             )
 
+        if length == 0:
+            # Every step "declined" an empty source, but there was nothing to match;
+            # saying no magic matched would send the caller looking for a wrong byte.
+            # ``length`` counts from the current position, so a handle already read
+            # to its end lands here too; the message covers both.
+            raise FormatDetectionError(
+                "Could not detect archive format: there are no bytes to read (the "
+                "source is empty, or already positioned at its end).",
+                archive_name=name,
+            )
         raise FormatDetectionError(
-            "Could not detect archive format: no magic-byte match and no usable file extension.",
+            "Could not detect archive format: no magic bytes, content probe or file "
+            "extension matched.",
             archive_name=name,
         )

@@ -1,3 +1,8 @@
+> **Cut on 2026-09-25.** The ZIP tail probe (Block 2) and `prefix_kind` / `PrefixKind` are
+> struck, the exhaustive scan is deferred unless asked, and `ArchiveyConfig.detection_budget`
+> has landed. The spec deltas below still describe the struck parts and must be trimmed
+> before this change is archived. See the note at the top of `tasks.md`.
+
 ## Why
 
 An archive does not have to start at byte zero, and archivey currently finds only one

@@ -5,18 +5,17 @@ Detection's I/O happens before a reader exists, so its measured work is a siblin
 kinds of work; they are never summed together. See the ``detection-cost`` and
 ``access-mode-and-cost`` capability specs.
 
-**Not yet part of the frozen package-root surface.** Names here are importable as
-``archivey.detection_cost.…`` for tests and for ``detect_format(..., budget=)``, but they
-are deliberately omitted from ``archivey.__all__`` until ``detection-result-surface``
-decides what belongs at the top level, what belongs in a subpackage, and what stays
-internal (PR #273 Decision 3A).
+**Not part of the package-root surface.** Callers reach :class:`DetectionBudget`, its
+presets and :class:`DetectionBudgetPreset` here, as ``archivey.detection_cost.…``, to
+set :attr:`ArchiveyConfig.detection_budget <archivey.ArchiveyConfig.detection_budget>`.
+The receipt and the capability and skip types serve tests and the fuzz harness and are
+internal in all but location.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Literal
 
 
 class DetectionBudgetPreset(Enum):
@@ -25,14 +24,6 @@ class DetectionBudgetPreset(Enum):
     BALANCED = "balanced"
     FAST = "fast"
     THOROUGH = "thorough"
-
-
-# The string spellings of ``DetectionBudgetPreset``, so a type checker flags a bad one at the
-# call rather than leaving it to the runtime. Deliberately narrower than what
-# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
-# case, and a literal can express neither, so this is the canonical spelling.
-# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
-DetectionBudgetPresetStr = Literal["balanced", "fast", "thorough"]
 
 
 class DetectionCapability(Enum):
@@ -96,13 +87,11 @@ class DetectionBudget:
     ``completion_window_bytes`` is the largest source a content-probe hit is re-checked
     against in full (see ``format-detection``); ``0`` turns the check off.
 
-    Fields marked reserved in ``openspec/specs/detection-cost/spec.md``
-    (``max_index_bytes``, ``collect_nonmaximal_candidates``, and the ZIP-tail pair
-    ``max_tail_bytes`` / ``max_seeks`` on every shipping preset) are carried so
-    follow-on changes can wire them without a second public shape break.
-    ``max_probe_links`` is live for :meth:`DetectionCostReceipt.within_budget` (seek-based
-    content-probe allowance); the Brotli walk follows its own ``CHAIN_MAX_LINKS`` (8),
-    and no planned change threads the budget through.
+    The ZIP-tail pair ``max_tail_bytes`` / ``max_seeks`` is reserved: 0 on every
+    preset, because no tier reads the tail yet. ``max_probe_links`` is live for
+    :meth:`DetectionCostReceipt.within_budget` (seek-based content-probe allowance);
+    the Brotli walk follows its own ``CHAIN_MAX_LINKS`` (8), so a larger value only
+    widens that allowance.
     """
 
     max_prefix_bytes: int
@@ -113,10 +102,8 @@ class DetectionBudget:
     max_decode_input: int
     max_decode_output: int
     completion_window_bytes: int
-    max_index_bytes: int
     max_probe_links: int
     spool_non_seekable_up_to: int
-    collect_nonmaximal_candidates: bool
 
     @classmethod
     def for_preset(cls, preset: DetectionBudgetPreset) -> DetectionBudget:
@@ -152,7 +139,6 @@ class DetectionCostReceipt:
     seeks: int = 0
     decode_input: int = 0
     decode_output: int = 0
-    index_bytes: int = 0
     spooled_bytes: int = 0
     passes: int = 1
     """Detection passes this receipt sums, each run under the full budget.
@@ -172,7 +158,6 @@ class DetectionCostReceipt:
         seeks: int = 0,
         decode_input: int = 0,
         decode_output: int = 0,
-        index_bytes: int = 0,
         spooled_bytes: int = 0,
     ) -> DetectionCostReceipt:
         return replace(
@@ -185,7 +170,6 @@ class DetectionCostReceipt:
             seeks=self.seeks + seeks,
             decode_input=self.decode_input + decode_input,
             decode_output=self.decode_output + decode_output,
-            index_bytes=self.index_bytes + index_bytes,
             spooled_bytes=self.spooled_bytes + spooled_bytes,
         )
 
@@ -227,7 +211,6 @@ class DetectionCostReceipt:
             and self.scanned_bytes <= n * budget.max_scan_bytes
             and self.decode_input <= n * budget.max_decode_input
             and self.decode_output <= n * budget.max_decode_output
-            and self.index_bytes <= n * budget.max_index_bytes
             and self.spooled_bytes <= n * budget.spool_non_seekable_up_to
         )
 
@@ -250,10 +233,8 @@ BALANCED_BUDGET = DetectionBudget(
     max_decode_input=_INNER_TAR_DECODE,
     max_decode_output=_INNER_TAR_DECODE,
     completion_window_bytes=_COMPLETION_WINDOW,
-    max_index_bytes=0,
     max_probe_links=8,
     spool_non_seekable_up_to=0,
-    collect_nonmaximal_candidates=False,
 )
 
 FAST_BUDGET = DetectionBudget(
@@ -265,10 +246,8 @@ FAST_BUDGET = DetectionBudget(
     max_decode_input=64 * 1024,
     max_decode_output=64 * 1024,
     completion_window_bytes=0,  # no whole-source completion
-    max_index_bytes=0,
     max_probe_links=2,
     spool_non_seekable_up_to=0,
-    collect_nonmaximal_candidates=False,
 )
 
 THOROUGH_BUDGET = DetectionBudget(
@@ -283,11 +262,8 @@ THOROUGH_BUDGET = DetectionBudget(
     # Whole-source completion as far as the decode allowance reaches; the allowance
     # (``max_decode_input``) is the real bound, so this is the same 1 MiB.
     completion_window_bytes=_INNER_TAR_DECODE,
-    # Reserved numeric defaults for detection-evidence-ledger — not honoured yet.
-    max_index_bytes=1 << 20,
     max_probe_links=32,
     spool_non_seekable_up_to=0,  # still opt-in via replace()
-    collect_nonmaximal_candidates=True,
 )
 
 
@@ -307,7 +283,6 @@ class MutableDetectionCostReceipt:
     seeks: int = 0
     decode_input: int = 0
     decode_output: int = 0
-    index_bytes: int = 0
     spooled_bytes: int = 0
     passes: int = 1
     skips: list[TierSkip] = field(default_factory=list)
@@ -322,7 +297,6 @@ class MutableDetectionCostReceipt:
             seeks=self.seeks,
             decode_input=self.decode_input,
             decode_output=self.decode_output,
-            index_bytes=self.index_bytes,
             spooled_bytes=self.spooled_bytes,
             passes=self.passes,
         )

@@ -382,14 +382,25 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
   detected as `.lzma`. A real size and the all-ones "unknown" sentinel are both accepted,
   and an empty `.lzma` still opens through its extension.
 - Self-extracting (SFX) stubs are detected when the archive payload sits behind an
-  executable header — today a Windows (`MZ`/PE) or Linux (ELF) one. A macOS
-  Mach-O stub is **not** recognised yet, so a `.7z`/`.rar`/`.zip` appended to one is
-  still misidentified; pass `format=` explicitly for those until that gap closes.
+  executable header (Windows `MZ`/PE, Linux ELF, or a macOS Mach-O header that parses)
+  or a `#!` launcher line (a zipapp `.pyz`, a Spring Boot jar). The 2 MiB scan behind
+  the stub reports where the archive starts as `payload_offset`. A launcher is text, so
+  behind `#!` only formats with a structural check (ZIP, 7z, RAR) are searched for.
+  Among several 7z candidates, one that ends exactly at the end of the file is
+  preferred over an earlier one that ends short of it.
+- **Ties go to the earlier step, then to registration order.** Detection stops at the
+  first step that matches, in the order above, and within a step the first backend
+  registered wins. A file that is two formats at once (a polyglot) therefore gets one
+  deterministic answer; pass `format=` to read it as the other.
+- **`confidence` is provisional in 0.2.x**: what each step reports may be regraded
+  later (a two-byte magic such as gzip's reported below `CERTAIN`, say). Branch on
+  `format`, not on `confidence`. **`detected_by` is an open set**: new detection steps
+  may add values, so handle an unknown one rather than matching every value.
 - **Brotli** has no magic, so detection uses a content probe plus framing checks
   **when the source length is known** (paths, `BytesIO`, and short non-seekable
   peeks): a first meta-block that *declares* more bytes than the source holds is
-  rejected; when the whole source fits in the peeked prefix, a bounded completeness
-  check rejects a decode that still wants more input after a declared output drain; and
+  rejected; when the source is 64 KiB or less, the whole of it is decoded and a stream
+  that still wants more input after a declared output drain is rejected; and
   a bounded walk of self-describing meta-blocks
   rejects a later link that overruns or a declared end with trailing bytes. On a
   non-seekable stream of unknown length those checks are skipped and today's

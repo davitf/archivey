@@ -1,3 +1,13 @@
+> **Scope cut on 2026-09-25.** `detection-evidence-ledger` was decided against and archived,
+> so everything here that exposes or renders a ledger is withdrawn: the always-present
+> ledger field, `DECLARED_BY_CALLER` / `DECLARED_BY_CONTAINER`, `confidence` and
+> `detected_by` as derived properties, the `sfx_scan` rename (kept, and documented as an open
+> set instead), ledger rendering in `__str__` and `archivey info -v`, and the golden `info`
+> pins. The small half shipped separately: the reader keeps the `FormatInfo` it opened by
+> (`ArchiveReader.format_info`) and `archivey info` reads it instead of detecting twice.
+> **What remains is the `detection=` handoff** (below, and `tasks.md` §2), which can follow
+> 0.2.0. Read "the ledger" in the text below as "the `FormatInfo`".
+
 ## Why
 
 `detection-evidence-ledger` makes detection produce a defensible account of *why* it chose a

@@ -128,8 +128,11 @@ ZIP's other two magics are deliberately **not** needles;
 [`formats/zip.md`](../formats/zip.md) §2.1 has the reasoning, which is ZIP's own. The survey
 below is the evidence behind it.
 
-Validators return a `HitOutcome` rather than a boolean, so a later evidence ledger can treat
-a damaged-but-identified payload as identified without changing any signature.
+Validators return a `HitOutcome` rather than a boolean, so a later policy can treat a
+damaged-but-identified payload as identified without changing any signature. `VALID_SHORT`
+is a valid 7z hit whose declared end falls short of the known end of source: the scan keeps
+it only as a fallback, so an archive that ends at end of file beats a decoy embedded in the
+stub.
 
 **Validation makes a hit trustworthy, not cheap.** It justifies reporting high confidence on
 a hit; it does not justify removing the gate.
@@ -247,7 +250,8 @@ the full stub matrix is task 4.3 of `prefixed-archive-detection`.
 - Specs: [`format-detection`](../../openspec/specs/format-detection/spec.md) ·
   [`detection-cost`](../../openspec/specs/detection-cost/spec.md)
 - In flight: `openspec/changes/prefixed-archive-detection/` (the four implementation blocks;
-  Block 1 is what ships today) · `openspec/changes/detection-evidence-ledger/`
+  Block 1 ships today; Block 2 and `prefix_kind` were struck on 2026-09-25) · decided against:
+  `openspec/changes/archive/2026-09-25-detection-evidence-ledger/`
 - Archived: `openspec/changes/archive/2026-08-21-sfx-format-detection/` ·
   `2026-08-31-detection-prefix-workspace/` · `2026-08-30-detection-format-gaps/`
 - Investigation: [`archive-format-detection-algorithm.md`](../investigations/archive-format-detection-algorithm.md)

@@ -42,7 +42,7 @@ from archivey.cli.choices import cli_choices, from_cli_choice
 from archivey.cli.errors import CliError
 from archivey.cli.main import build_parser
 from archivey.config import AcceleratorMode, ArchiveyConfig
-from archivey.detection_cost import DetectionBudgetPreset, DetectionBudgetPresetStr
+from archivey.detection_cost import DetectionBudgetPreset
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.enum_args import (
     coerce_enum,
@@ -286,44 +286,43 @@ def test_archivey_config_refuses_a_bad_accelerator_spelling() -> None:
     assert "use_rapidgzip" in str(exc_info.value)
 
 
-def test_detect_format_takes_a_budget_preset_by_name(archive: Path) -> None:
+def test_detection_budget_takes_a_preset_by_name(archive: Path) -> None:
+    from archivey.detection_cost import FAST_BUDGET
     from archivey.internal.detection import detect_format
 
-    assert detect_format(archive, budget="fast").format is not None
+    config = ArchiveyConfig(detection_budget="fast")
+    assert config.detection_budget == FAST_BUDGET
+    assert detect_format(archive, config=config).format is not None
 
 
-def test_detect_format_refuses_an_unknown_budget_without_an_attribute_error(
-    archive: Path,
-) -> None:
-    """It used to return the string unchanged and die on ``budget.max_tail_bytes``."""
-    from archivey.internal.detection import detect_format
-
+def test_detection_budget_refuses_an_unknown_preset_name() -> None:
     with pytest.raises(ArchiveyUsageError) as exc_info:
-        detect_format(archive, budget="turbo")
+        ArchiveyConfig(detection_budget="turbo")
 
     assert "'fast'" in str(exc_info.value)
 
 
-def test_detect_format_still_takes_a_budget_object(archive: Path) -> None:
+def test_detection_budget_still_takes_a_budget_object(archive: Path) -> None:
     """The preset arm is an addition, not a replacement."""
-    from archivey.detection_cost import default_detection_budget
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET
     from archivey.internal.detection import detect_format
 
-    assert detect_format(archive, budget=default_detection_budget()).format is not None
+    budget = replace(BALANCED_BUDGET, max_scan_bytes=1024)
+    config = ArchiveyConfig(detection_budget=budget)
+    assert config.detection_budget is budget
+    assert detect_format(archive, config=config).format is not None
 
 
-def test_a_wrong_typed_budget_message_names_every_type_it_accepts(
-    archive: Path,
-) -> None:
-    """``budget=`` takes three shapes, so a message naming two reads as a denial.
+def test_a_wrong_typed_budget_message_names_every_type_it_accepts() -> None:
+    """``detection_budget=`` takes three shapes, so a message naming two reads as a denial.
 
     A caller holding a ``DetectionBudget`` who mistypes the argument would otherwise
-    be told the parameter takes a preset, and conclude their object is not allowed.
+    be told the field takes a preset, and conclude their object is not allowed.
     """
-    from archivey.internal.detection import detect_format
-
     with pytest.raises(ArchiveyUsageError) as exc_info:
-        detect_format(archive, budget=0)
+        ArchiveyConfig(detection_budget=0)
 
     message = str(exc_info.value)
     assert "DetectionBudget or a DetectionBudgetPreset" in message
@@ -338,7 +337,6 @@ LITERAL_ALIASES: tuple[tuple[type[Enum], object], ...] = (
     (OverwritePolicy, OverwritePolicyStr),
     (OnError, OnErrorStr),
     (AbortOn, AbortOnStr),
-    (DetectionBudgetPreset, DetectionBudgetPresetStr),
 )
 
 
@@ -356,6 +354,12 @@ ALIASES_NOT_WANTED = {
         "ArchiveFormat's container field, for the same reason as AcceleratorMode: "
         "__post_init__ converts a hand-built string pair, so the field always holds a "
         "member, and the code that reads it tests it with `is`."
+    ),
+    "DetectionBudgetPreset": (
+        "ArchiveyConfig.detection_budget stays annotated DetectionBudget, for the same "
+        "reason as AcceleratorMode: __post_init__ converts a preset member or its name, "
+        "so the field always holds a budget, and every consumer reads it as one. Its "
+        "only other consumer, detect_format(budget=), was removed."
     ),
     "StreamFormat": (
         "ArchiveFormat's stream field; see ContainerFormat. format= arguments take "
