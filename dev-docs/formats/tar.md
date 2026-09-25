@@ -164,8 +164,10 @@ was measurably slower on ordinary listings. When the walk fails partway through 
 batch, the headers already parsed are handed out first, so `members_report()` keeps
 its salvaged prefix. tarfile still keeps every header it has parsed in
 `TarFile.members`, so a listing holds each header twice: once as tarfile's `TarInfo` and
-once as the `ArchiveMember`. `streaming=True` is not capped, by design, and there both
-lists grow for the whole pass.
+once as the `ArchiveMember`. On a streaming reader, `scan_members()` and
+`members_report()` count members against the cap as they arrive and raise at the one
+past it. `stream_members()` and forward-only iteration are not capped, by design, and
+there both lists grow for the whole pass.
 
 **Member metadata** is mapped in `_to_member`:
 
@@ -199,10 +201,12 @@ Random opens cost one seek each, and members can be read in any order.
 Backward goes to the nearest resume point before the target and decodes forward from
 there: the start of the stream for plain gzip, bzip2 and zlib, a `rapidgzip` index point
 when that accelerator is engaged, and a block or member boundary for xz and lzip. Each
-backward seek emits a log line saying how many decompressed bytes it discards. A
-listing ends at the far end of the stream, so the first `open()` after `members()` is
-already a backward seek. `stream_members()` decodes the stream once and is the path
-`docs/formats.md` tells callers to use.
+backward seek that discards 1 MiB or more reports `STREAM_REWIND_REDECOMPRESSES` with
+the byte count; the first on a stream logs, later ones only escalate, and a caller who
+wants a rewind to fail sets that code to `RAISE`. A listing ends at the far end of the
+stream, so the first `open()` after `members()` is already a backward seek.
+`stream_members()` decodes the stream once and is the path `docs/formats.md` tells
+callers to use.
 
 **`streaming=True` hands each member out as the pass reaches it.** A member's stream is
 good only until the pass moves on, because tarfile reads the next header from the same
@@ -290,8 +294,9 @@ extraction checks (§2.4).
   the header. Bounded where the read reaches bytes, so a 10 KiB archive cannot allocate
   6 GiB ([`threat-model.md`](../threat-model.md) O15).
 - **Every header is a member to keep.** Headers compress to a few bytes each: 300 000
-  empty headers gzip to 1.8 MB. The walk stops at `max_members` plus one (§2.2). A
-  streaming pass is not capped, and holds every header until it ends (O1).
+  empty headers gzip to 1.8 MB. The walk stops at `max_members` plus one (§2.2).
+  `stream_members()` and forward-only iteration are not capped, and hold every header
+  until the pass ends (O1).
 - **A sparse member is a ratio claim.** A few hundred bytes of sparse map can declare a
   logical size of terabytes. Extraction writes the logical bytes, so what stops it is the
   decompression-ratio guard, the same one that stops a gzip bomb; `ExtractionLimits`
@@ -318,7 +323,7 @@ extraction checks (§2.4).
 | --- | --- | --- |
 | `member_count` is `None`, even after listing | **format** | No index (§1). `len(reader.members())` after the walk is the count |
 | Listing a `.tar.gz` takes as long as extracting it | **format** | Headers are spread through the compressed stream, so finding them decodes everything (§1) |
-| Reading members of a `.tar.gz` by name is slow, and logs backward-seek warnings | **format** / **archivey** | Each backward seek decodes from the nearest resume point (§2.3). `stream_members()` decodes once. `[seekable]` adds resume points for gzip and bzip2 |
+| Reading members of a `.tar.gz` by name is slow, and reports `STREAM_REWIND_REDECOMPRESSES` | **format** / **archivey** | Each backward seek decodes from the nearest resume point (§2.3). `stream_members()` decodes once. `[seekable]` adds resume points for gzip and bzip2 |
 | A tar with no trailer warns `ARCHIVE_EOF_MARKER_MISSING` and still lists | **format** | Complete-without-trailer and truncated-at-a-boundary are the same bytes. Set the code to `RAISE` when completeness matters |
 | A corrupt last header raises in random access and only warns when streaming | **library** | tarfile's `_Stream` hides the block the walk stopped on. A native header walker would close it (open-issues **P3**, [`known-issues.md`](../known-issues.md)) |
 | Two tars joined with `cat` list as one archive's members plus `ARCHIVE_TRAILING_DATA` | **format** / **archivey** | The first trailer ends the walk. archivey does not read past it the way `tar -i` does (§6) |
@@ -326,7 +331,7 @@ extraction checks (§2.4).
 | A `.tar` of nothing but zeros opens as an empty archive | **format** | That is what an empty tar is ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)). `detect_format()` still refuses it |
 | A v7 tar with no extension is not detected | **format** | No magic to find (§2.1). Pass `format=ArchiveFormat.TAR` |
 | A hardlink's `link_target` is `./d/b` while the member it names is `d/b` | **format** / **archivey** | `link_target` is documented as stored text. Use `link_target_member` |
-| Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with 2 bytes of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. Tracked internally |
+| Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with one byte of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. Tracked internally |
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
 | `modified` is `None` for a pre-1970 member on Windows and correct on Linux and macOS | **archivey** | The conversion goes through `datetime.fromtimestamp`, which uses `gmtime()` on Windows. Shared with ZIP, RAR and gzip. Tracked internally |
 | A streaming pass over millions of members uses memory in proportion | **library** / **archivey** | tarfile appends every header to `TarFile.members`, and the pass keeps its own list for `scan_members()` |
@@ -368,7 +373,8 @@ extraction checks (§2.4).
 
 ```bash
 ./scripts/test.sh tests/test_tar.py tests/test_listing_limits.py \
-    tests/test_review_simplicity_consistency.py tests/test_extraction.py -k "tar or trailing or zero"
+    tests/test_review_simplicity_consistency.py tests/test_extraction.py \
+    tests/test_detection.py tests/test_concurrent_multithread.py
 ```
 
 | Claim | Pinned by |
@@ -414,7 +420,7 @@ GNU `tar` writes the real thing; BSD and Windows `tar` refuse
 truncate -s 10M f && printf x | dd of=f bs=1 seek=5000000 conv=notrunc
 tar cf sparse.tar --sparse f     # 10 240 bytes; add --format=pax for the PAX encoding
 python -c "import archivey; archivey.open_archive('sparse.tar').extract_all('out')"
-# ResourceLimitError: Archive-wide decompression ratio 1024:1 exceeds max_ratio=1000:1
+# _AlwaysStopResourceLimitError: Archive-wide decompression ratio 1024:1 exceeds limit max_ratio=1000:1
 ```
 
 ## 9. References
