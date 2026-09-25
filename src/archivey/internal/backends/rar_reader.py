@@ -172,8 +172,10 @@ _RAR_HOST_OS_TO_CREATE_SYSTEM: dict[int, CreateSystem] = {
 # _RAR_HOST_OS_TO_CREATE_SYSTEM above (the parser maps RAR5 Windows->2, Unix->3).
 _RAR_HOST_OS_WIN32 = 2
 _RAR_HOST_OS_UNIX = 3
-# Hosts whose creation-time slot is a birth time: every known host but Unix.
-_RAR_BIRTH_TIME_HOSTS = frozenset(_RAR_HOST_OS_TO_CREATE_SYSTEM) - {_RAR_HOST_OS_UNIX}
+# Hosts whose creation-time slot is a birth time: MS-DOS, OS/2, Win32, Mac OS, BeOS.
+# Listed, not derived from the map above: a host added there is not a birth-time host
+# until someone says so, since its slot would otherwise flow into ``created``.
+_RAR_BIRTH_TIME_HOSTS = frozenset({0, 1, _RAR_HOST_OS_WIN32, 4, 5})
 
 _RAR_METHOD_STORED = 0x30
 _RAR_METHOD_MAX = 0x35  # RAR M5

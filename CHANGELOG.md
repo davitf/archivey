@@ -283,8 +283,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   key in `extra` and `created` stays `None`: `iso.ctime` (the Rock Ridge
   attribute-change time, which `created` used to fall back to), `rar.ctime` (a Unix
   RAR's creation slot), `tar.ctime` (PAX `ctime`), `7z.ctime` (a member written on Unix,
-  marked by the Unix-extension attribute bit) and `zip.ctime` (the Extended Timestamp's
-  third time, which also no longer overrides the NTFS creation time). `rar.ctime` is
+  marked by the Unix-extension attribute bit or a Unix mode) and `zip.ctime` (a ZIP
+  member written on Unix or an unknown host, where 7-Zip and Info-ZIP fill both the NTFS
+  and the Extended Timestamp creation slots from `st_ctime`). `rar.ctime` is
   set on every RAR member with a creation slot, Win32 ones too. The
   `rar.created_is_ctime` key is gone.
 - **Every public class and function reports `archivey` as its `__module__`.** Seventeen

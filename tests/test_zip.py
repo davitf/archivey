@@ -31,7 +31,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.types import HashAlgorithm, crc32_digest
+from archivey.types import CreateSystem, HashAlgorithm, crc32_digest
 from tests.conftest import requires_binary
 from tests.streams_util import NonSeekableBytesIO
 from tests.zipcrypto import zip_with_truncated_zipcrypto_header
@@ -483,12 +483,13 @@ def test_unknown_extra_field_before_timestamp(tmp_path: Path) -> None:
 
 def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
     # An Extended Timestamp (0x5455) with flags 0x07 carries modification, access and
-    # "creation" times (in that order). Info-ZIP fills the third from st_ctime, so it
-    # goes to extra["zip.ctime"] and `created` stays None.
+    # "creation" times (in that order). Info-ZIP on Unix fills the third from st_ctime,
+    # so from a Unix writer it goes to extra["zip.ctime"] and `created` stays None.
     mtime, atime, ctime = 1_600_000_000, 1_600_000_100, 1_600_000_200
     extra = struct.pack("<HHB iii", 0x5455, 13, 0x07, mtime, atime, ctime)
     path = tmp_path / "ts3.zip"
     info = zipfile.ZipInfo("t.txt")
+    info.create_system = 3  # Unix; ZipInfo defaults to the running host
     info.extra = extra
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(info, b"data")
@@ -1135,10 +1136,12 @@ def _to_filetime(unix_time: int) -> int:
 
 def test_ntfs_timestamps_used_when_no_extended_timestamp(tmp_path: Path) -> None:
     # An NTFS extra field (0x000A) carries FILETIME mtime/atime/ctime; with no 0x5455
-    # field they populate all three member times as tz-aware UTC datetimes.
+    # field and a Windows writer they populate all three member times as tz-aware UTC
+    # datetimes.
     mtime, atime, ctime = 1_600_000_000, 1_600_000_100, 1_600_000_200
     path = tmp_path / "ntfs.zip"
     info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.create_system = 10  # NTFS
     info.extra = _ntfs_extra(
         _to_filetime(mtime), _to_filetime(atime), _to_filetime(ctime)
     )
@@ -1172,26 +1175,81 @@ def test_extended_timestamp_beats_ntfs(tmp_path: Path) -> None:
         assert "zip.ctime" not in member.extra
 
 
-def test_extended_timestamp_ctime_does_not_override_ntfs_birth_time(
-    tmp_path: Path,
+_NT_CTIME, _UT_CTIME = 1_500_000_000, 1_600_000_200
+
+
+@pytest.mark.parametrize(
+    ("create_system", "birth_time"),
+    [
+        (0, True),  # MS-DOS / FAT
+        (10, True),  # NTFS
+        (14, True),  # VFAT
+        (3, False),  # Unix: 7-Zip and Info-ZIP fill both slots from st_ctime
+        (19, False),  # OS X: not a DOS-attribute host
+        (99, False),  # unknown host: meaning unknown
+    ],
+)
+@pytest.mark.parametrize(
+    ("fields", "stored"),
+    [
+        ("ntfs", _NT_CTIME),
+        ("ut", _UT_CTIME),
+        ("both", _UT_CTIME),  # Extended Timestamp wins, as for the other times
+    ],
+)
+def test_writer_host_decides_whether_creation_time_is_created(
+    tmp_path: Path, create_system: int, birth_time: bool, fields: str, stored: int
 ) -> None:
-    # NTFS creation time is a Windows birth time and stays in `created`; the UT third
-    # time (st_ctime) goes to extra["zip.ctime"] and no longer overwrites it.
-    nt_birth, ut_ctime = 1_500_000_000, 1_600_000_200
-    extra = _ntfs_extra(
-        _to_filetime(1_500_000_100), _to_filetime(1_500_000_100), _to_filetime(nt_birth)
-    ) + struct.pack("<HHBii", 0x5455, 9, 0x05, 1_600_000_000, ut_ctime)
-    path = tmp_path / "birth.zip"
+    # The field that carries a "creation" time does not say what it is: 7-Zip on Unix
+    # writes st_ctime into the NTFS FILETIME. The writer's host does. A DOS-attribute
+    # host's time is `created`; any other host's is extra["zip.ctime"].
+    extra = b""
+    if fields in ("ntfs", "both"):
+        extra += _ntfs_extra(
+            _to_filetime(1_500_000_100),
+            _to_filetime(1_500_000_100),
+            _to_filetime(_NT_CTIME),
+        )
+    if fields in ("ut", "both"):
+        extra += struct.pack("<HHBii", 0x5455, 9, 0x05, 1_600_000_000, _UT_CTIME)
+    path = tmp_path / "host.zip"
     info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.create_system = create_system
     info.extra = extra
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(info, b"data")
+    expected = datetime.fromtimestamp(stored, tz=timezone.utc)
     with open_archive(path) as ar:
         member = ar.get("t.txt")
-        assert member.created == datetime.fromtimestamp(nt_birth, tz=timezone.utc)
-        assert member.extra["zip.ctime"] == datetime.fromtimestamp(
-            ut_ctime, tz=timezone.utc
-        )
+        if birth_time:
+            assert member.created == expected
+            assert "zip.ctime" not in member.extra
+        else:
+            assert member.created is None
+            assert member.extra["zip.ctime"] == expected
+
+
+@requires_binary("7z")
+def test_unix_7zip_ntfs_creation_time_is_zip_ctime(tmp_path: Path) -> None:
+    # The real writer behind the rule: 7-Zip on Unix stores st_ctime in the NTFS
+    # creation FILETIME and marks the entry as made on Unix.
+    (tmp_path / "a.txt").write_bytes(b"hi")
+    archive = tmp_path / "unix7z.zip"
+    result = subprocess.run(
+        ["7z", "a", "-tzip", "-mtc=on", str(archive), "a.txt", "-y"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build a -mtc=on ZIP: {result.stderr}")
+    with open_archive(archive) as ar:
+        member = ar.get("a.txt")
+        if member.create_system is not CreateSystem.UNIX:
+            pytest.skip("7z on this host does not write Unix ZIP entries")
+        assert member.created is None
+        assert member.extra["zip.ctime"].tzinfo is not None
 
 
 def test_compressed_source_size(simple_zip: Path) -> None:

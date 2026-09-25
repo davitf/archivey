@@ -136,7 +136,10 @@ from archivey.types import (
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 # FILE_ATTRIBUTE_UNIX_EXTENSION: the high word holds a Unix mode. 7-Zip and p7zip set
-# it when writing on Unix, where the "Created" slot is filled from st_ctime.
+# it when writing on Unix, where the "Created" slot is filled from st_ctime. The bit
+# or a non-zero high word (what ``mode`` and ``create_system`` already key on) marks
+# a Unix writer; a record with only one of the two is nonstandard, and either one
+# moves the time out of ``created``, the side that keeps st_ctime out of it.
 _UNIX_EXTENSION_BIT = 0x8000
 
 
@@ -699,7 +702,9 @@ class SevenZipReader(BaseArchiveReader):
             if is_reparse_point
             else MemberExtra()
         )
-        if created is not None and attrs is not None and attrs & _UNIX_EXTENSION_BIT:
+        if created is not None and (
+            unix_mode is not None or (attrs is not None and attrs & _UNIX_EXTENSION_BIT)
+        ):
             # A Unix writer (7-Zip on Linux, p7zip) fills "Created" from st_ctime,
             # which ``created`` never holds.
             extra[EXTRA_SEVENZIP_CTIME] = created

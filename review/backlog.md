@@ -175,12 +175,13 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   add `accessed_utc()` / `created_utc()` on a shared private `_as_utc` with
   `modified_utc()` moved onto it (not a string-keyed `timestamp_utc(field)`),
   and a cross-format `created_meaning` field (`CREATION` / `METADATA_CHANGE` /
-  `UNKNOWN`) populated by every backend. Do **not** infer that field from
-  `create_system`: 7z hardcodes `CreateSystem.UNIX` while reading a FILETIME
-  birth time; ZIP splits by extra source (NTFS `0x000A` is birth, UT `0x04` is
-  Unix `st_ctime`). RAR4 is the first naive `accessed`/`created` in the library;
-  until the helpers exist those two fields are the only timestamps a caller
-  cannot normalize. #300 records the RAR case as `extra["rar.created_is_ctime"]`.
+  `UNKNOWN`) populated by every backend. `created_meaning` is overtaken: `created`
+  now never holds `st_ctime`, and each format's `st_ctime` goes to a `<format>.ctime`
+  extra key, decided per format from the writer (RAR `host_os`, the 7z Unix bits, the
+  ZIP "version made by" host; 7-Zip on Unix writes `st_ctime` into the ZIP NTFS
+  `0x000A` field, measured 2026-09-25). RAR4 is the first naive
+  `accessed`/`created` in the library; until the helpers exist those two fields are
+  the only timestamps a caller cannot normalize.
 - **#300 F5 secondary** — `tests/sample_archives.py` has no atime/ctime notion, so
   the format×shape sweep cannot cover xtime today.
 - **#320 F2 — integrity check for the Windows `unrar` download.** `scripts/install-rarlab-unrar.ps1`

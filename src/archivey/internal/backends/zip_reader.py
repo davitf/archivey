@@ -382,7 +382,7 @@ def _zip_timestamps(
     datetime | None,
     list[TimestampIssue],
 ]:
-    """Return ``(modified, accessed, created, ut_ctime, issues)`` for a member.
+    """Return ``(modified, accessed, ntfs_ctime, ut_ctime, issues)`` for a member.
 
     Sources, lowest to highest precedence (each layer overrides only the times it
     actually carries):
@@ -397,9 +397,10 @@ def _zip_timestamps(
        signed 32-bit Unix time interpreted as UTC. The central directory typically
        carries only the modification time even when the flags advertise more.
 
-    The NTFS creation time is a Windows birth time and is the only source of
-    ``created``. The Extended Timestamp third time is what Info-ZIP on Unix fills from
-    st_ctime, so it is returned apart as ``ut_ctime`` and never overrides ``created``.
+    The two "creation" times come back raw, apart from each other: ``ntfs_ctime``
+    from the NTFS field and ``ut_ctime`` from the Extended Timestamp's third time.
+    Whether either is a birth time depends on the writer, not the field, so the caller
+    decides (``_zip_created``).
     """
     issues: list[TimestampIssue] = []
     if info.date_time == (1980, 0, 0, 0, 0, 0):
@@ -421,7 +422,7 @@ def _zip_timestamps(
             )
             modified = None
     accessed: datetime | None = None
-    created: datetime | None = None
+    ntfs_ctime: datetime | None = None
     ut_ctime: datetime | None = None
 
     # One scan collecting both timestamp extra fields, applied afterwards in precedence
@@ -431,7 +432,7 @@ def _zip_timestamps(
     ut_field: bytes | None = None
     extra = info.extra or b""
     if not extra:
-        return modified, accessed, created, ut_ctime, issues
+        return modified, accessed, ntfs_ctime, ut_ctime, issues
     pos = 0
     while pos + 4 <= len(extra):
         tag, length = struct.unpack("<HH", extra[pos : pos + 4])
@@ -472,7 +473,7 @@ def _zip_timestamps(
                     elif field_name == "atime":
                         accessed = dt
                     else:
-                        created = dt
+                        ntfs_ctime = dt
                 break
             cursor += attr_size
 
@@ -512,7 +513,28 @@ def _zip_timestamps(
                 else:
                     ut_ctime = when
 
-    return modified, accessed, created, ut_ctime, issues
+    return modified, accessed, ntfs_ctime, ut_ctime, issues
+
+
+def _zip_created(
+    create_system: CreateSystem,
+    ntfs_ctime: datetime | None,
+    ut_ctime: datetime | None,
+) -> tuple[datetime | None, datetime | None]:
+    """Split a member's stored creation time into ``(created, zip_ctime)``.
+
+    The writer's host decides what the time means, not the field that carries it: 7-Zip
+    on Unix fills the NTFS creation FILETIME from st_ctime, and Info-ZIP on Unix fills
+    the Extended Timestamp's third time from it too. Only a DOS-attribute host (FAT,
+    OS/2, NTFS, VFAT) stores a birth time there. Any other host, unknown included, has
+    its time reported as ``zip.ctime`` and ``created`` left None, as RAR does for an
+    unknown ``host_os``. The Extended Timestamp wins when both are present, the same
+    precedence ``_zip_timestamps`` gives it for the other times.
+    """
+    stored = ut_ctime if ut_ctime is not None else ntfs_ctime
+    if create_system in _DOS_ATTRIBUTE_SYSTEMS:
+        return stored, None
+    return None, stored
 
 
 def _is_windows_reparse_point(
@@ -851,7 +873,8 @@ class ZipReader(BaseArchiveReader):
                 (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),),
             )
 
-        modified, accessed, created, ut_ctime, ts_issues = _zip_timestamps(info)
+        modified, accessed, ntfs_ctime, ut_ctime, ts_issues = _zip_timestamps(info)
+        created, zip_ctime = _zip_created(create_system, ntfs_ctime, ut_ctime)
         # Surface the central-directory CRC-32 as a stored digest (archive-data-model:
         # HashAlgorithm.CRC32 → 4 big-endian bytes), so a dedupe pass can key on it
         # without decompressing (VISION "hashes without decompression"). Only for FILE and
@@ -871,8 +894,8 @@ class ZipReader(BaseArchiveReader):
             extra["zip.aes_vendor_version"] = aes_info.vendor_version
             extra["zip.aes_strength"] = aes_info.strength
             extra["zip.aes_actual_method"] = aes_info.actual_method
-        if ut_ctime is not None:
-            extra[EXTRA_ZIP_CTIME] = ut_ctime
+        if zip_ctime is not None:
+            extra[EXTRA_ZIP_CTIME] = zip_ctime
         # Skip defaulted None/False kwargs on the listing hot path (perf review L2).
         member = ArchiveMember(
             type=member_type,

@@ -169,8 +169,9 @@ halts with `DiagnosticRaisedError`.
 | Unix entry with non-zero `external_attr` | `member.mode = external_attr >> 16` |
 | Non-Unix entry or missing attrs | `member.mode is None` |
 | Extended Timestamp carries modification time | `member.modified` is timezone-aware UTC from `0x5455`, overriding DOS / NTFS |
-| NTFS FILETIMEs present, no Extended Timestamp | Present `modified` / `accessed` / `created` fields are timezone-aware UTC from `0x000A` |
-| Extended Timestamp carries its third time | `extra["zip.ctime"]` holds it; `created` is only ever the NTFS creation time |
+| NTFS FILETIMEs present, no Extended Timestamp, DOS-attribute host | Present `modified` / `accessed` / `created` fields are timezone-aware UTC from `0x000A` |
+| Creation time stored (NTFS or Extended Timestamp third time), FAT / OS2 / NTFS / VFAT host | `created` holds it (the Extended Timestamp wins); no `zip.ctime` |
+| Creation time stored, Unix or any other host | `created is None`; `extra["zip.ctime"]` holds it (7-Zip and Info-ZIP on Unix store `st_ctime`) |
 | `flag_bits & 0x1` | `member.is_encrypted is True` |
 | Out-of-range NTFS or DOS timestamp | Fallback value used; `MEMBER_TIMESTAMP_INVALID` counted and may attach to member |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |

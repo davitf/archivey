@@ -231,6 +231,12 @@ class ArchiveMember:
     def replace(self, **kwargs: object) -> "ArchiveMember": ...
 ```
 
+`created` SHALL be a birth time or `None`, in every format, and SHALL NOT hold Unix
+`st_ctime` (inode change). Where a writer stores `st_ctime`, in a creation slot or a
+field of its own, the time SHALL go to that format's `extra` key instead: `iso.ctime`,
+`rar.ctime`, `tar.ctime`, `7z.ctime` or `zip.ctime`. Each format spec says which
+writers store it.
+
 `is_anti` SHALL be derived (`type == MemberType.ANTI`); there is no `is_anti` field.
 `is_current` SHALL mean “live for default extract / path identity”: last-entry-wins
 semantics apply uniformly across ALL container formats (ZIP, TAR, 7z, RAR, ISO,

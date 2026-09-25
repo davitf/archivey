@@ -30,7 +30,11 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import sevenzip_aes
-from archivey.internal.backends.sevenzip_parser import SevenZipCoder, SevenZipFolder
+from archivey.internal.backends.sevenzip_parser import (
+    SevenZipCoder,
+    SevenZipFileRecord,
+    SevenZipFolder,
+)
 from archivey.internal.backends.sevenzip_reader import (
     SevenZipReader,
     open_folder_pipeline,
@@ -2610,16 +2614,61 @@ print("ok")
     )
 
 
+def _created_slot_record(attributes: int | None) -> SevenZipFileRecord:
+    return SevenZipFileRecord(
+        filename="a.txt",
+        emptystream=True,
+        is_anti=False,
+        is_directory=False,
+        is_empty_file=True,
+        attributes=attributes,
+        creation_time=_to_filetime_ticks(1_600_000_200),
+        last_access_time=None,
+        last_write_time=None,
+        folder_index=None,
+        file_in_folder=None,
+        uncompressed_size=0,
+        crc32=None,
+        compressed_size=None,
+        is_encrypted=False,
+    )
+
+
+def _to_filetime_ticks(unix_seconds: int) -> int:
+    return (unix_seconds + 11_644_473_600) * 10_000_000
+
+
+@pytest.mark.parametrize(
+    ("attributes", "unix_written"),
+    [
+        (0x8000 | 0x20 | (0o100644 << 16), True),  # 7-Zip on Linux, p7zip
+        (0o100644 << 16, True),  # Unix mode, bit clear (nonstandard)
+        (0x8000 | 0x20, True),  # bit set, no mode (nonstandard)
+        (0x20, False),  # FILE_ATTRIBUTE_ARCHIVE: 7-Zip on Windows
+        (None, False),  # no attribute word
+    ],
+)
+def test_created_slot_follows_the_writer(
+    attributes: int | None, unix_written: bool
+) -> None:
+    """A Unix writer's "Created" is st_ctime: ``7z.ctime``, not ``created``."""
+    from datetime import datetime, timezone
+
+    with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
+        assert isinstance(reader, SevenZipReader)
+        member = reader._to_member(_created_slot_record(attributes), 0)
+    expected = datetime.fromtimestamp(1_600_000_200, tz=timezone.utc)
+    if unix_written:
+        assert member.created is None
+        assert member.extra["7z.ctime"] == expected
+    else:
+        assert member.created == expected
+        assert "7z.ctime" not in member.extra
+
+
 @requires_binary("7z")
-def test_unix_written_created_slot_goes_to_7z_ctime(tmp_path: Path) -> None:
-    """A member with the Unix-extension bit has st_ctime in "Created": not ``created``.
-
-    Without the bit the slot is a birth time and stays in ``created``. The CLI sets the
-    bit on Unix and not on Windows, so both attribute words are also checked on the
-    same record whichever host built the archive.
-    """
-    import dataclasses
-
+def test_real_7z_cli_created_slot_matches_its_host(tmp_path: Path) -> None:
+    """The real writer behind the rule, on whichever host runs the suite."""
     (tmp_path / "a.txt").write_bytes(b"hi")
     archive = tmp_path / "ctime.7z"
     result = subprocess.run(
@@ -2632,7 +2681,6 @@ def test_unix_written_created_slot_goes_to_7z_ctime(tmp_path: Path) -> None:
     if result.returncode != 0:
         pytest.skip(f"7z CLI cannot build a -mtc=on fixture: {result.stderr}")
     with open_archive(archive) as reader:
-        assert isinstance(reader, SevenZipReader)
         member = reader.get("a.txt")
         record = member._raw.record
         if record.creation_time is None:
@@ -2640,22 +2688,7 @@ def test_unix_written_created_slot_goes_to_7z_ctime(tmp_path: Path) -> None:
         assert record.attributes is not None
         if record.attributes & 0x8000:
             assert member.created is None
-            stored = member.extra["7z.ctime"]
+            assert member.extra["7z.ctime"].tzinfo is not None
         else:
             assert "7z.ctime" not in member.extra
-            stored = member.created
-        assert stored is not None and stored.tzinfo is not None
-
-        unix_attrs = 0x8000 | 0x20 | (0o100644 << 16)
-        unix_member = reader._to_member(
-            dataclasses.replace(record, attributes=unix_attrs), 0
-        )
-        assert unix_member.created is None
-        assert unix_member.extra["7z.ctime"] == stored
-
-        windows_member = reader._to_member(
-            dataclasses.replace(record, attributes=0x20),
-            0,  # ARCHIVE
-        )
-        assert windows_member.created == stored
-        assert "7z.ctime" not in windows_member.extra
+            assert member.created is not None

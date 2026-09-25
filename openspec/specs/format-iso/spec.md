@@ -66,6 +66,7 @@ Fields unavailable in the selected namespace SHALL be `None`.
 | Image contains Joliet but no Rock Ridge | Use Joliet names; POSIX fields `None`; `iso.namespace="joliet"` |
 | Image contains neither extension | Use plain ISO 9660 names; POSIX fields `None`; `iso.namespace="iso9660"` |
 | Rock Ridge symlink | Symlink metadata is available through the selected namespace |
+| Rock Ridge TF record with an attribute-change time | `extra["iso.ctime"]` holds it; `created` comes only from a TF creation time, else `None` |
 
 ### Requirement: Serialize shared pycdlib handle operations for concurrent reads
 
