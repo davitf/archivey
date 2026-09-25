@@ -665,9 +665,9 @@ class IsoReader(BaseArchiveReader):
         # the record walk traverses in-memory parsed catalog records and reads nothing
         # from the image. ``_make_member`` can: for a repeated identifier or a file
         # whose data ends at the end of the image, ``_raw_directory`` re-reads the
-        # directory's extent through ``_cdfp`` and takes the handle guard itself. Any other image read added to listing needs
-        # the same guard. If a future pycdlib version gains handle access in the walk,
-        # lock the complete call.
+        # directory's extent through ``_cdfp`` and takes the handle guard itself. Any
+        # other image read added to listing needs the same guard. If a future pycdlib
+        # version gains handle access in the walk, lock the complete call.
         with self._translated_errors():
             # ``index`` is each member's position in the walk, the id registration
             # stamps, so a diagnostic raised while typing can name it.
