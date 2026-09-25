@@ -79,7 +79,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   and then failed to read. The probe now decodes the whole 4 KiB detection window, and a
   content-probe hit on a source up to 64 KiB is checked against the whole source, which
   also turns away a truncated stream the window alone cannot tell apart. The detection
-  budget's decode limits now bound the content probes too, as one allowance for the call.
+  budget's decode-input limit (`max_decode_input`) now bounds the content probes too, as
+  one allowance for the call; a probe's output stays bounded per probe by the codec's
+  drain, not by `max_decode_output`.
 - **A Windows symlink to a network share keeps its `//server/share` target.** A ZIP or
   7z reparse buffer that named its target only as `\??\UNC\server\share` listed
   the link as pointing at the relative path `UNC/server/share`, and extraction created

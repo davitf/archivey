@@ -87,17 +87,17 @@ per tier or per candidate: every tier that decodes draws on what earlier tiers l
 adding tiers or candidates cannot multiply the compressed input a budget allows decoded.
 Today three tiers draw on it. `max_decode_output` bounds the inner-TAR probe only; a
 content probe's output is bounded by the codec's own drain (4 KiB, or 64 KiB when the
-whole source is in hand) and is not charged to `decode_output`. Each content probe is charged the sample it was
-handed, whether or not a header check turned it away before decoding; a probe the
-remaining allowance cannot cover does not run, and `content_probe` is recorded *budget
-exhausted* (or *not enabled by policy* when `max_decode_input` is 0). The completion check
-is charged the whole source it decodes and records `probe_completion` *budget exhausted*
-when the allowance cannot cover it (a zero allowance stops the probes before any hit asks
-for completion), and *not enabled by policy* when `completion_window_bytes` is 0. The
-inner-TAR probe caps its compressed input at the smaller of what is left and 1 MiB, is
-charged whether its decode succeeds or fails, and records `inner_tar` as *budget
-exhausted* when the cap cut it short or less than one 512-byte TAR header of output is
-left. Content-probe `read_at` seeks on cheap
+whole source is in hand) and is not charged to `decode_output`. Each content probe is
+charged the sample it was handed, whether or not a header check turned it away before
+decoding; a probe the remaining allowance cannot cover does not run, and `content_probe`
+is recorded *budget exhausted* (or *not enabled by policy* when `max_decode_input` is 0).
+The completion check is charged the whole source it decodes and records `probe_completion`
+*budget exhausted* when the allowance cannot cover it (a zero allowance stops the probes
+before any hit asks for completion), and *not enabled by policy* when
+`completion_window_bytes` is 0. The inner-TAR probe caps its compressed input at the
+smaller of what is left and 1 MiB, is charged whether its decode succeeds or fails, and
+records `inner_tar` as *budget exhausted* when the cap cut it short or less than one
+512-byte TAR header of output is left. Content-probe `read_at` seeks on cheap
 random-access sources (path, full spool, non-`ArchiveStream` seekable streams) without
 growing the prefix through `[0, offset)`; non-seekable and expensive-seek sources grow
 under the smaller of 1 MiB and the budget's prefix/far/scan ceiling, and record

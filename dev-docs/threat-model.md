@@ -471,10 +471,10 @@ fuzz assertion that aggregate detection cost stays inside the declared budget. T
 decode input limit is now a per-call aggregate, not per-candidate: `max_decode_input` is
 one allowance that every decoding tier draws on (the content probes, their whole-source
 completion check, the inner-TAR probe), and a tier the remaining allowance cannot cover
-does not run (`detection-cost` spec). Output is bounded per probe by the codec's drain. No tier decodes
-scan candidates today, so the amplification above is not reachable yet; a tier that
-does (makeself compressor needles under `#!`, planned after 0.2.0) must draw on the same
-allowance, which is what keeps this open until it lands and is measured. The
+does not run (`detection-cost` spec). Output is bounded per probe by the codec's drain.
+No tier decodes scan candidates today, so the amplification above is not reachable yet;
+a tier that does (makeself compressor needles under `#!`, planned after 0.2.0) must draw
+on the same allowance, which is what keeps this open until it lands and is measured. The
 `detection-evidence-ledger` change that was to own this bound was decided against.
 
 ### O12. 7z password confirmation decoded the whole folder into RAM — memory mitigated

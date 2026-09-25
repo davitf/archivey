@@ -985,12 +985,15 @@ _ALONE_HEADER_SIZE = 13
 # Alone header marks unknown uncompressed size with all-ones uint64.
 _ALONE_UNKNOWN_SIZE = (1 << 64) - 1
 
-# Bytes a content probe decodes. The probe clamps its sample to this whatever the caller
-# peeked, because the false-positive measurement is for 4096 specifically; it equals
-# ``DETECTION_LIMIT`` and, on every shipping budget, ``max_prefix_bytes``. A shorter
-# sample let text through: 256 bytes of a Perl module starting
-# ``package`` decode as a Brotli meta-block that only turns invalid further in (measured:
-# 7 of 800 ``/usr/share/perl`` modules detected as Brotli at 256, none at 4096).
+# Bytes a content probe decodes when the source is not fully visible: the sample is
+# clamped to this whatever the caller peeked, because the false-positive measurement is
+# for 4096 specifically; it equals ``DETECTION_LIMIT`` and, on every shipping budget,
+# ``max_prefix_bytes``. A fully visible source (including the whole-source re-run in
+# detection's ``_probe_completes``) is fed whole and drained to
+# ``_PROBE_COMPLETENESS_OUTPUT``. A shorter sample let text through: 256 bytes of a Perl
+# module starting ``package`` decode as a Brotli meta-block that only turns invalid
+# further in (measured: 7 of 800 ``/usr/share/perl`` modules detected as Brotli at 256,
+# none at 4096).
 _PROBE_PREFIX = DETECTION_LIMIT
 # Output drain when the whole source is visible and completeness is checked. Caps
 # expansion bomb cost (a 4 KiB zlib sample can expand to ~4 MiB); large enough to

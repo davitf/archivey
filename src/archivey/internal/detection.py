@@ -269,11 +269,10 @@ def _probe_inner_tar(
         if budget.max_decode_input <= 0 or budget.max_decode_output <= 0:
             workspace.record_skip("inner_tar", TierSkipReason.NOT_ENABLED_BY_POLICY)
             return False
-        # What is left, not the budget's face value: a content probe and its completion
-        # check may already have drawn on the same allowance.
-        # Output is checked against the budget's face value: this is the one tier that
-        # charges output (the content probes' output is bounded per probe by the
-        # codec's drain), so nothing has drawn on it yet.
+        # Output against the budget's face value: this is the only tier that charges
+        # output, and a pass that reaches it returns a format, so no earlier pass (the
+        # sibling-volume retry shares the receipt) has charged any. Input against what
+        # is left: a content probe and its completion check draw on the same allowance.
         if (
             budget.max_decode_output < _INNER_TAR_PROBE_BYTES
             or workspace.decode_input_left <= 0
