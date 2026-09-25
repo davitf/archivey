@@ -2707,6 +2707,15 @@ class BaseArchiveReader(ArchiveReader):
     def __exit__(self, *args: object) -> None:
         self.close()
 
+    def _validate_at_open(self) -> None:
+        """Check the source decodes, once ``open_archive`` has set format provenance.
+
+        A no-op by default. A backend that validates at open does it here rather than in
+        ``__init__``, so a failure is stamped by :meth:`_stamp_error_context` with the
+        provenance ``open_archive`` sets after construction (``format_unconfirmed`` and
+        its diagnostic). ``open_archive`` closes the reader if this raises.
+        """
+
     def _stamp_error_context(
         self, exc: ArchiveyError, member_name: str | None = None
     ) -> None:

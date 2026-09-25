@@ -104,6 +104,11 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   remains. Use `use_rapidgzip=OFF` when you need certainty. This is about **bare**
   streams — ZIP/7z members carry their own CRC and fail properly.
   → [Single-file compressors](formats.md#single-file-compressors)
+- **A misnamed single-file archive fails at `open_archive`, not on the read.** Opening
+  a seekable `.gz` / `.bz2` / … decodes one byte, so a file that is not that codec
+  raises there. From a pipe the failure still waits for the first read. Opening a
+  `.bz2` costs one decoded block for this check.
+  → [Single-file compressors](formats.md#single-file-compressors)
 - **`.Z` truncation is partly silent.** Only nonzero leftover bits raise; a cut on a
   code boundary stays quiet.
 - **`import archivey` patches pycdlib process-globally.** A hang-safety guard is
