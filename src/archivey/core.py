@@ -462,7 +462,10 @@ def _open_resolved(
         # handing the stub bytes to the backend.
         try:
             detected = detect_format(
-                archive_source, collector=collector, follow_stub_volumes=False
+                archive_source,
+                config=config,
+                collector=collector,
+                follow_stub_volumes=False,
             )
         except FormatDetectionError:
             stub = archive_source.path
@@ -472,7 +475,7 @@ def _open_resolved(
             resolved = followed
             archive_source = slot.replace(resolved.source)
             archive_name = resolved.archive_name
-            detected = detect_format(archive_source, collector=collector)
+            detected = detect_format(archive_source, config=config, collector=collector)
         resolved_format = detected.format
         format_info = detected
     elif archive_source.path is not None and is_sfx_stub_name(archive_source.path.name):
@@ -721,7 +724,9 @@ def _open_stream_from_source(
             "forward-only pass."
         )
 
-    stream_format = _resolve_stream_format(format, codec_input, collector)
+    stream_format = _resolve_stream_format(
+        format, codec_input, collector, effective_config
+    )
     if stream_format is StreamFormat.UNCOMPRESSED:
         raise UnsupportedFormatError(
             "open_stream requires a compressed stream format "
@@ -753,6 +758,7 @@ def _resolve_stream_format(
     format: StreamFormat | ArchiveFormat | None,
     open_source: ArchiveSource,
     collector: DiagnosticCollector,
+    config: ArchiveyConfig,
 ) -> StreamFormat:
     """Map open_stream's ``format=`` argument (or auto-detect) to a StreamFormat.
 
@@ -777,7 +783,7 @@ def _resolve_stream_format(
     # which is the silent fall-through this function's boundary check exists to close.
     assert format is None, f"unvalidated format argument reached detection: {format!r}"
 
-    detected = detect_format(open_source, collector=collector)
+    detected = detect_format(open_source, config=config, collector=collector)
     if detected.format.container is not ContainerFormat.RAW_STREAM:
         raise UnsupportedFormatError(
             f"Detected {detected.format!r}, which is not a single-file compressed "

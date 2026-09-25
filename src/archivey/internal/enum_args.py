@@ -117,15 +117,13 @@ def coerce_enum(
     A member of the class passes through untouched. A string is matched against the
     spellings described in the module docstring. Anything else — including a member of a
     *different* enum, which is the mistake a type checker would have caught — is
-    refused. No caller passes ``None``: the one parameter that defaults to it,
-    ``detect_format(budget=)``, handles ``None`` in ``_resolve_budget`` before reaching
-    here, so there is no ``allow_none`` arm to maintain.
+    refused. No caller passes ``None``, so there is no ``allow_none`` arm to maintain.
 
     ``also_accepts`` names a further type the *caller's* parameter takes but this helper
     does not handle, so the wrong-type message stays true to the signature the caller
-    read. ``detect_format(budget=)`` is the case: it takes a ``DetectionBudget`` object
-    as well as a preset, and a message naming only the preset reads as a denial that the
-    object is allowed.
+    read. ``ArchiveyConfig(detection_budget=)`` is the case: it takes a
+    ``DetectionBudget`` object as well as a preset, and a message naming only the preset
+    reads as a denial that the object is allowed.
     """
     if isinstance(value, enum_cls):
         return value

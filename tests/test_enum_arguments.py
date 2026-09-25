@@ -286,44 +286,43 @@ def test_archivey_config_refuses_a_bad_accelerator_spelling() -> None:
     assert "use_rapidgzip" in str(exc_info.value)
 
 
-def test_detect_format_takes_a_budget_preset_by_name(archive: Path) -> None:
+def test_detection_budget_takes_a_preset_by_name(archive: Path) -> None:
+    from archivey.detection_cost import FAST_BUDGET
     from archivey.internal.detection import detect_format
 
-    assert detect_format(archive, budget="fast").format is not None
+    config = ArchiveyConfig(detection_budget="fast")
+    assert config.detection_budget == FAST_BUDGET
+    assert detect_format(archive, config=config).format is not None
 
 
-def test_detect_format_refuses_an_unknown_budget_without_an_attribute_error(
-    archive: Path,
-) -> None:
-    """It used to return the string unchanged and die on ``budget.max_tail_bytes``."""
-    from archivey.internal.detection import detect_format
-
+def test_detection_budget_refuses_an_unknown_preset_name() -> None:
     with pytest.raises(ArchiveyUsageError) as exc_info:
-        detect_format(archive, budget="turbo")
+        ArchiveyConfig(detection_budget="turbo")
 
     assert "'fast'" in str(exc_info.value)
 
 
-def test_detect_format_still_takes_a_budget_object(archive: Path) -> None:
+def test_detection_budget_still_takes_a_budget_object(archive: Path) -> None:
     """The preset arm is an addition, not a replacement."""
-    from archivey.detection_cost import default_detection_budget
+    from dataclasses import replace
+
+    from archivey.detection_cost import BALANCED_BUDGET
     from archivey.internal.detection import detect_format
 
-    assert detect_format(archive, budget=default_detection_budget()).format is not None
+    budget = replace(BALANCED_BUDGET, max_scan_bytes=1024)
+    config = ArchiveyConfig(detection_budget=budget)
+    assert config.detection_budget is budget
+    assert detect_format(archive, config=config).format is not None
 
 
-def test_a_wrong_typed_budget_message_names_every_type_it_accepts(
-    archive: Path,
-) -> None:
-    """``budget=`` takes three shapes, so a message naming two reads as a denial.
+def test_a_wrong_typed_budget_message_names_every_type_it_accepts() -> None:
+    """``detection_budget=`` takes three shapes, so a message naming two reads as a denial.
 
     A caller holding a ``DetectionBudget`` who mistypes the argument would otherwise
-    be told the parameter takes a preset, and conclude their object is not allowed.
+    be told the field takes a preset, and conclude their object is not allowed.
     """
-    from archivey.internal.detection import detect_format
-
     with pytest.raises(ArchiveyUsageError) as exc_info:
-        detect_format(archive, budget=0)
+        ArchiveyConfig(detection_budget=0)
 
     message = str(exc_info.value)
     assert "DetectionBudget or a DetectionBudgetPreset" in message

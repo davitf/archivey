@@ -136,6 +136,33 @@ def test_validated_scan_hits_are_unchanged() -> None:
     assert [h[:6] for h in seen] == [RAR5_ID[:6], MAGIC_7Z, RAR_ID[:6]]
 
 
+def test_validated_scan_prefers_a_later_valid_hit_over_a_short_one() -> None:
+    """A ``VALID_SHORT`` hit is the fallback, ahead of a skipped ``DAMAGED`` one."""
+    payload = (
+        b"MZ" + b"\x00" * 40 + MAGIC_7Z + b"D" * 40 + MAGIC_7Z + b"S" * 40 + MAGIC_7Z
+    )
+    payload += b"V" * 40
+    grades = {
+        ord("D"): HitOutcome.DAMAGED,
+        ord("S"): HitOutcome.VALID_SHORT,
+        ord("V"): HitOutcome.VALID,
+    }
+
+    def validator(
+        peek_more: Callable[[int], bytes], remaining: int | None
+    ) -> HitOutcome:
+        return grades[peek_more(len(MAGIC_7Z) + 1)[-1]]
+
+    origins = [i for i in range(len(payload)) if payload.startswith(MAGIC_7Z, i)]
+    scan = scan_for_magic(io.BytesIO(payload), [MAGIC_7Z], validator=validator)
+    assert scan.hit is not None and scan.hit.candidate_origin == origins[2]
+
+    # Without the VALID hit, the short one wins over the earlier damaged one.
+    no_valid = payload[: origins[2]]
+    scan = scan_for_magic(io.BytesIO(no_valid), [MAGIC_7Z], validator=validator)
+    assert scan.hit is not None and scan.hit.candidate_origin == origins[1]
+
+
 def _fat_macho64(endian: str, align: int) -> bytes:
     header = struct.pack(endian + "II", 0xCAFEBABF, 1)
     # fat_arch_64: cputype, cpusubtype, offset(64), size(64), align, reserved.

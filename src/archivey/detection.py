@@ -25,7 +25,12 @@ DetectedBy = Literal["magic", "extension", "content_probe", "sfx_scan", "directo
 
 
 class DetectionConfidence(Enum):
-    """How much :func:`~archivey.detect_format` trusts the format it reports."""
+    """How much :func:`~archivey.detect_format` trusts the format it reports.
+
+    Provisional in 0.2.x: which grade a detection step reports may change in a later
+    release (a two-byte magic reported below ``CERTAIN``, for instance). Branch on the
+    format, not on the grade.
+    """
 
     CERTAIN = "certain"
     """An exact magic-byte match at the expected offset."""
@@ -52,7 +57,12 @@ class FormatInfo:
 
     detected_by: DetectedBy
     """Which evidence decided: ``"magic"``, ``"extension"``, ``"content_probe"``,
-    ``"sfx_scan"`` or ``"directory"``."""
+    ``"sfx_scan"`` or ``"directory"``.
+
+    An open set: a later release may add a detection step with a new value, so code
+    that matches on it should handle a value it does not know. ``"sfx_scan"`` covers
+    any archive found behind a prefix, a ``#!`` launcher included, not only a
+    self-extractor's executable stub."""
 
     payload_offset: int = 0
     """Where the archive starts in the source. Nonzero only for a self-extracting

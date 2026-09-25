@@ -14,6 +14,7 @@ from archivey import (
     DetectionConfidence,
     detect_format,
 )
+from archivey.config import ArchiveyConfig
 from archivey.exceptions import FormatDetectionError
 from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.source import ArchiveSource
@@ -377,7 +378,9 @@ def test_probe_hit_under_the_completion_window_is_checked_whole() -> None:
 
     # ``FAST`` has no completion window, so the window's answer stands, and the
     # receipt says the check was off.
-    fast = detect_format(io.BytesIO(blob), budget=FAST_BUDGET)
+    fast = detect_format(
+        io.BytesIO(blob), config=ArchiveyConfig(detection_budget=FAST_BUDGET)
+    )
     assert fast.format == ArchiveFormat.BROTLI
     assert any(
         s.tier == "probe_completion"
@@ -425,7 +428,9 @@ def test_completion_the_decode_allowance_cannot_cover_is_recorded() -> None:
     blob = truncated_brotli(20_000)
     # Enough for the probes' windows, not for the whole source on top.
     budget = replace(BALANCED_BUDGET, max_decode_input=4 * DETECTION_LIMIT)
-    info = detect_format(io.BytesIO(blob), budget=budget)
+    info = detect_format(
+        io.BytesIO(blob), config=ArchiveyConfig(detection_budget=budget)
+    )
     assert info.format == ArchiveFormat.BROTLI
     assert any(
         s.tier == "probe_completion" and s.reason is TierSkipReason.BUDGET_EXHAUSTED

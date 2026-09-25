@@ -1,6 +1,6 @@
 # detection-evidence-ledger — grade the evidence instead of taking the first hit
 
-**Status:** Ready to implement. Depends on the prefix-workspace change. Blocks the result-surface change and the revised prefixed-archive change. Behaviour-changing, deliberately and visibly. Effort: large.
+**Status:** Decided against on 2026-09-25 and archived unimplemented; see the note at the top of `proposal.md`.
 
 **Why it matters:** Four defects, all measured. Every magic signature reports certain, so two bytes of gzip magic on a two-byte file is a certain gzip — all fifteen registered signatures do this. A zlib stream of stored blocks, where the decoder literally copied the bytes, reports probable on the strength of that decode. When several detectors accept the same bytes the answer is whichever backend registered first, which is an undocumented intent policy rather than a decision rule. And the unconfirmed-format flag is backwards in both directions: a zero-filled file named backup dot gz fails while reporting the bytes are to blame, when only the filename ever claimed gzip, while a matching extension suppresses the flag on a genuine probe result.
 

@@ -443,7 +443,7 @@ refuses a set that cannot be read whole, not one that happened to work.
 
 A possible later refinement for the refuse path — detect first, upgrade a failed detection
 to rejoin-first when the name looks volume-shaped — is parked in [`IDEAS.md`](../IDEAS.md)
-until the detection evidence ledger lands; do not invent a ZIP-only half-step here.
+until someone takes it up; do not invent a ZIP-only half-step here.
 
 **Producers disagree about encryption defaults.** 7-Zip's `-tzip` default is ZipCrypto and
 `-mem=AES256` selects WinZip AES; stdlib `zipfile` writes neither. That is why the

@@ -188,7 +188,7 @@ def decoy_dense_prefix(mutator_tail: bytes = b"", *, window: int = 64 * 1024) ->
     against many candidate-looking hits, not only against sparse mutator luck. The
     measured amplification that motivates a bound — 209 715 valid gzip headers in 2 MiB
     yielding 683-fold decode work — is a scan-tier property; this seed family keeps that
-    class of input in the corpus even before the evidence-ledger lands those tiers.
+    class of input in the corpus for any scan tier that grades them.
     """
     # Near-miss / exact needles packed back-to-back. Exact magics that would short-circuit
     # detection at offset 0 are shifted so the densest region sits past the near window.

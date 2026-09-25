@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from archivey import detect_format
+from archivey.config import ArchiveyConfig
 from archivey.detection_cost import (
     BALANCED_BUDGET,
     THOROUGH_BUDGET,
@@ -310,10 +311,8 @@ def test_zero_seek_budget_withdraws_seek_from_a_file(tmp_path: Path) -> None:
         max_decode_input=0,
         max_decode_output=0,
         completion_window_bytes=0,
-        max_index_bytes=0,
         max_probe_links=0,
         spool_non_seekable_up_to=0,
-        collect_nonmaximal_candidates=False,
     )
     with PrefixWorkspace(path, budget) as ws:
         caps = ws.capabilities()
@@ -333,10 +332,8 @@ def test_spool_policy_grants_tail_to_a_pipe() -> None:
         max_decode_input=0,
         max_decode_output=0,
         completion_window_bytes=0,
-        max_index_bytes=0,
         max_probe_links=0,
         spool_non_seekable_up_to=len(payload) + 64,
-        collect_nonmaximal_candidates=False,
     )
     with PrefixWorkspace(NonSeekableBytesIO(payload), budget) as ws:
         caps = ws.capabilities()
@@ -346,7 +343,9 @@ def test_spool_policy_grants_tail_to_a_pipe() -> None:
 
 def test_pipe_without_spool_records_tail_unavailable() -> None:
     stream = ArchiveSource.for_stream(NonSeekableBytesIO(_zip_bytes()))
-    info = detect_format(stream, budget=THOROUGH_BUDGET)
+    info = detect_format(
+        stream, config=ArchiveyConfig(detection_budget=THOROUGH_BUDGET)
+    )
     # Every shipping preset leaves ZIP tail off (Decision 1B) — policy, not capability.
     assert any(
         s.tier == "zip_tail" and s.reason is TierSkipReason.NOT_ENABLED_BY_POLICY
@@ -385,8 +384,10 @@ def test_fast_sfx_scan_respects_max_scan_bytes(tmp_path: Path) -> None:
     mz = b"MZ" + b"\x00" * 62
     path = tmp_path / "stub.zip"
     path.write_bytes(mz + b"\x00" * (3 * 1024 * 1024))
-    balanced = detect_format(path, budget=BALANCED_BUDGET)
-    fast = detect_format(path, budget=FAST_BUDGET)
+    balanced = detect_format(
+        path, config=ArchiveyConfig(detection_budget=BALANCED_BUDGET)
+    )
+    fast = detect_format(path, config=ArchiveyConfig(detection_budget=FAST_BUDGET))
     assert balanced.cost_receipt is not None and fast.cost_receipt is not None
     assert fast.cost_receipt.unique_bytes_read <= FAST_BUDGET.max_scan_bytes
     assert fast.cost_receipt.unique_bytes_read < balanced.cost_receipt.unique_bytes_read
@@ -398,7 +399,7 @@ def test_sfx_miss_charges_scanned_bytes(tmp_path: Path) -> None:
     mz = b"MZ" + b"\x00" * 62
     path = tmp_path / "stub.zip"
     path.write_bytes(mz + b"\x00" * (2 * 1024 * 1024))
-    info = detect_format(path, budget=BALANCED_BUDGET)
+    info = detect_format(path, config=ArchiveyConfig(detection_budget=BALANCED_BUDGET))
     assert info.detected_by == "extension"
     assert info.cost_receipt is not None
     assert info.cost_receipt.scanned_bytes > 0
@@ -413,7 +414,7 @@ def test_sfx_miss_extension_guess_stays_within_budget(tmp_path: Path) -> None:
     path = tmp_path / "stub.zip"
     path.write_bytes(mz + b"\x00" * (3 * 1024 * 1024))
     for budget in (BALANCED_BUDGET, FAST_BUDGET):
-        info = detect_format(path, budget=budget)
+        info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
         assert info.detected_by == "extension"
         assert info.cost_receipt is not None
         assert info.cost_receipt.within_budget(budget), info.cost_receipt
@@ -453,10 +454,8 @@ def test_abandoned_spool_keeps_lookahead_byte_and_unknown_remaining() -> None:
         max_decode_input=0,
         max_decode_output=0,
         completion_window_bytes=0,
-        max_index_bytes=0,
         max_probe_links=0,
         spool_non_seekable_up_to=100,
-        collect_nonmaximal_candidates=False,
     )
     with PrefixWorkspace(NonSeekableBytesIO(data), budget) as ws:
         assert ws.buffered_length == 101  # 100 spooled + 1 lookahead
@@ -479,10 +478,8 @@ def test_successful_spool_is_closed_and_reports_size_known() -> None:
         max_decode_input=0,
         max_decode_output=0,
         completion_window_bytes=0,
-        max_index_bytes=0,
         max_probe_links=0,
         spool_non_seekable_up_to=len(data) + 64,
-        collect_nonmaximal_candidates=False,
     )
     ws = PrefixWorkspace(NonSeekableBytesIO(data), budget)
     spool = ws._spool
@@ -506,10 +503,8 @@ def test_zero_seek_budget_does_not_advertise_tail_on_spool() -> None:
         max_decode_input=0,
         max_decode_output=0,
         completion_window_bytes=0,
-        max_index_bytes=0,
         max_probe_links=0,
         spool_non_seekable_up_to=len(data) + 64,
-        collect_nonmaximal_candidates=False,
     )
     with PrefixWorkspace(NonSeekableBytesIO(data), budget) as ws:
         caps = ws.capabilities()
@@ -684,7 +679,7 @@ def test_over_budget_receipt_always_names_a_cut_short_tier(
     else:
         source = ArchiveSource.for_stream(NonSeekableBytesIO(payload))
     try:
-        info = detect_format(source, budget=budget)  # type: ignore[arg-type]
+        info = detect_format(source, config=ArchiveyConfig(detection_budget=budget))  # type: ignore[arg-type]
     except FormatDetectionError:
         return  # extensionless stub: nothing to inspect, and nothing claimed
     receipt = info.cost_receipt
@@ -714,7 +709,9 @@ def test_two_pass_receipt_over_budget_also_names_a_cut_short_tier(
     }[budget_name]
     (tmp_path / "vol.exe").write_bytes(_mz_stub_bytes())
     (tmp_path / "vol.7z.001").write_bytes(b"7z\xbc\xaf\x27\x1c" + b"\x00" * 8192)
-    info = detect_format(tmp_path / "vol.exe", budget=budget)
+    info = detect_format(
+        tmp_path / "vol.exe", config=ArchiveyConfig(detection_budget=budget)
+    )
     assert info.format == ArchiveFormat.SEVEN_Z
     receipt = info.cost_receipt
     assert receipt is not None

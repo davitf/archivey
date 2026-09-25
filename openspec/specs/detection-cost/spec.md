@@ -7,17 +7,15 @@ Detection declares what it may spend (`DetectionBudget`) and reports what it spe
 A sibling of `access-mode-and-cost`'s archive-open `CostReceipt` — detection's I/O
 happens before a reader exists.
 
-**Stability note.** The types live in `archivey.detection_cost` and are accepted by
-`detect_format(..., budget=)`, but they are **not** re-exported from `archivey.__all__`
-yet. Public freeze of the root surface (top-level vs subpackage vs internal) is deferred
-to `detection-result-surface` (Decision 3A on the prefix-workspace PR).
+**Stability note.** The types live in `archivey.detection_cost` and a caller sets one
+through `ArchiveyConfig.detection_budget`, which `detect_format`, `open_archive` and
+`open_stream` all read; they are **not** re-exported from `archivey.__all__`.
 
-This spec describes **what ships today** after `detection-prefix-workspace`. Tiers and
-knobs that the budget type *reserves* but that no code schedules yet are named explicitly
-as reserved; they MUST NOT be read as current behaviour. The ZIP tail tier,
-whole-source completion, probe-link capping, non-maximal candidate collection, and index
-bounds land in `detection-evidence-ledger` / `prefixed-archive-detection` /
-`detection-result-surface`.
+This spec describes **what ships today**. Knobs that the budget type *reserves* but that
+no code schedules yet are named explicitly as reserved; they MUST NOT be read as current
+behaviour. The only reserved knobs left are the ZIP-tail pair, which lands with
+`prefixed-archive-detection` if a caller ever needs it. A candidate ledger with its own
+budget fields was considered and decided against.
 
 ## Related specs
 
@@ -44,10 +42,8 @@ class DetectionBudget:
     max_decode_input: int
     max_decode_output: int
     completion_window_bytes: int   # largest source a content-probe hit is re-checked whole
-    max_index_bytes: int           # reserved → evidence-ledger
     max_probe_links: int           # live for within_budget probe allowance; walk still uses CHAIN_MAX_LINKS
     spool_non_seekable_up_to: int
-    collect_nonmaximal_candidates: bool  # reserved → evidence-ledger
 
 @dataclass(frozen=True)
 class DetectionCostReceipt:
@@ -59,20 +55,22 @@ class DetectionCostReceipt:
     seeks: int             # ZIP-tail seeks only; probe read_at restores and exit restore are not charged
     decode_input: int
     decode_output: int
-    index_bytes: int
     spooled_bytes: int
     passes: int            # detection passes summed (2 after following a stub), each under the full budget
 ```
 
-`detect_format` SHALL accept a budget. The receipt SHALL be detection's own and SHALL NOT
-be merged into the archive-open `CostReceipt`: detection's I/O happens before a reader
-exists. The receipt SHALL cover the work of the whole `detect_format` call: when a
-stub-only executable is followed to its sibling split volume, the receipt and the skips
-SHALL be those of both passes together, with each repeated skip kept once. Each pass runs
-under the full budget, so the receipt SHALL say how many passes it sums (`passes`, 2 here)
-and `within_budget` SHALL judge it against that many budgets. `max_far_bytes` is separate
-from `max_prefix_bytes` because a far fixed-offset signature needs a ~32 KiB window that a
-4 096-byte near budget would otherwise forbid.
+The budget SHALL be set through `ArchiveyConfig.detection_budget`, which takes a
+`DetectionBudget`, a `DetectionBudgetPreset` or its string spelling, and the same budget
+SHALL govern `detect_format` and the detection `open_archive` / `open_stream` run. The
+receipt SHALL be detection's own and SHALL NOT be merged into the archive-open
+`CostReceipt`: detection's I/O happens before a reader exists. The receipt SHALL cover the
+work of the whole `detect_format` call: when a stub-only executable is followed to its
+sibling split volume, the receipt and the skips SHALL be those of both passes together,
+with each repeated skip kept once. Each pass runs under the full budget, so the receipt
+SHALL say how many passes it sums (`passes`, 2 here) and `within_budget` SHALL judge it
+against that many budgets. `max_far_bytes` is separate from `max_prefix_bytes` because a
+far fixed-offset signature needs a ~32 KiB window that a 4 096-byte near budget would
+otherwise forbid.
 
 Live budget fields today: `max_prefix_bytes` (near peek clamp), `max_far_bytes`,
 `max_scan_bytes` (SFX window), `max_decode_input` / `max_decode_output`,
@@ -113,10 +111,8 @@ overlapping requests in full and `unique_bytes_read` stands in for it. A receipt
 fails `within_budget` SHALL carry a *budget exhausted* or *capability unavailable* skip
 naming the tier that was cut short, except where a budget field is not yet honoured by the
 tier spending against it: the Brotli walk follows its own `CHAIN_MAX_LINKS` (8), not
-`max_probe_links`, and no planned change wires it. The remaining reserved fields
-(`max_index_bytes`, `collect_nonmaximal_candidates`, and the ZIP-tail pair) MAY appear on
-the type and in presets; they are unowned since the evidence ledger was decided against,
-and no tier SHALL claim to honour them.
+`max_probe_links`. The ZIP-tail pair MAY appear on the type and in presets so a tail tier
+can wire it without a shape break; no tier SHALL claim to honour it until one does.
 
 #### Scenario: receipt reflects the source kind
 
@@ -174,7 +170,7 @@ value across presets so follow-on changes inherit a ready table.
 | --- | --- |
 | `BALANCED` | near prefix; far fixed-offset evidence; cued bounded SFX scan (`max_scan_bytes` = 2 MiB); bounded content probes; whole-source completion of a probe hit up to 64 KiB; inner TAR; **no** ZIP tail; no exhaustive scan; no implicit spool |
 | `FAST` | same tiers as `BALANCED` with a smaller SFX scan (`max_scan_bytes` = 256 KiB), smaller decode ceilings, and no whole-source completion (`probe_completion` recorded *not enabled by policy* when a probe hit could have used it) |
-| `THOROUGH` | same scheduled tiers as `BALANCED` today, with whole-source completion as far as the 1 MiB decode allowance reaches (the probes' samples are charged first, so a source just under 1 MiB may not complete); reserved fields (`max_probe_links`, `collect_nonmaximal_candidates`, `max_index_bytes`) carry values but are **not honoured** by any tier. ZIP tail stays off (`max_tail_bytes = 0`, `max_seeks = 0`) until `prefixed-archive-detection` schedules it |
+| `THOROUGH` | same scheduled tiers as `BALANCED` today, with whole-source completion as far as the 1 MiB decode allowance reaches (the probes' samples are charged first, so a source just under 1 MiB may not complete); a larger `max_probe_links` widens only the `within_budget` allowance. ZIP tail stays off (`max_tail_bytes = 0`, `max_seeks = 0`) until `prefixed-archive-detection` schedules it |
 
 The ZIP tail tier SHALL remain outside every preset until its aggregate cost is measured on
 the founding backup workload, in seeks as well as bytes, **and** a caller exists. Format

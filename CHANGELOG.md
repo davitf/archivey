@@ -73,6 +73,10 @@ promise with that line; treat `0.2.0` as the first release of this library.
   streaming pass, and the data shows a reparse-flagged "link" is really a file,
   `extract_all` calls the filter again on the file and writes it; a streaming pass,
   already past its content, fails that member under `on_error`.
+- `ArchiveyConfig.detection_budget` sets how much work format detection may do, as a
+  `DetectionBudget` from `archivey.detection_cost` or a preset name (`"balanced"`, the
+  default, `"fast"` or `"thorough"`). It governs `detect_format` and the detection
+  `open_archive` and `open_stream` run, which before this always used the default.
 
 ### Fixed
 
@@ -90,6 +94,10 @@ promise with that line; treat `0.2.0` as the first release of this library.
   that survive and then raises `TruncatedError`, and files before the cut read normally.
 - **ISO: `ArchiveInfo.format_version` is `None`.** It reported pycdlib's guess at the
   interchange level, which reads 3 on nearly every image; ISO 9660 does not store one.
+- **A self-extracting 7z whose stub embeds another 7z archive opens the real one.** When
+  more than one 7z signature validates, detection now prefers the one whose archive ends
+  at the end of the file, and falls back to a shorter one only when nothing ends there.
+- **Detecting an empty file says the file is empty**, rather than that nothing matched.
 - **Text files are no longer detected as Brotli.** Brotli has no magic, so detection
   decodes the start of a source to recognise it, and a 256-byte sample let ordinary text
   through: 7 of the first 800 Perl modules under `/usr/share/perl` detected as `BROTLI`
@@ -315,6 +323,10 @@ promise with that line; treat `0.2.0` as the first release of this library.
   both. A TAR member's `created` now comes from libarchive's `LIBARCHIVE.creationtime`.
   Directory listing fills `ctime` from `st_ctime` except on Windows. The
   `rar.created_is_ctime` key is gone.
+- **`detect_format(budget=)` is removed**; set `ArchiveyConfig.detection_budget` and pass
+  `config=` instead. `DetectionBudget` loses the two fields it only reserved,
+  `max_index_bytes` and `collect_nonmaximal_candidates`, and `DetectionCostReceipt` loses
+  `index_bytes`.
 - **Every public class and function reports `archivey` as its `__module__`.** Seventeen
   names in `__all__` are defined under `archivey.internal` (the extraction types,
   `detect_format`, the registry queries, `ArchiveStream`, `enable_measurement`). They

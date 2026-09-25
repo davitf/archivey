@@ -334,7 +334,7 @@ later the same day.
 | S15-K12 resume point | [#373](https://github.com/davitf/archivey/pull/373) | `composed = 0` at `q == 0`; the `min` kept, as ruled |
 | slice forward the question | #373 | `SlicingStream.nearest_resume_offset` translates and clamps at 0 |
 | K5 BCJ over 2 GiB | [#370](https://github.com/davitf/archivey/pull/370) | `pybcj` is not imported anywhere in `src/` |
-| S19-K4 `budget=` unvalidated | [#382](https://github.com/davitf/archivey/pull/382) | `_resolve_budget` ends in `check_instance` |
+| S19-K4 `budget=` unvalidated | [#382](https://github.com/davitf/archivey/pull/382) | `_resolve_budget` ended in `check_instance`; both are gone since `detect_format(budget=)` was removed |
 | S20-K16 `members="a.txt"` | #382 | `selection.py:21` refuses a bare `str`/`bytes` |
 | S18-K7 short read on a truncated member | — | **Withdrawn by its own author**: today's behaviour is ADR 0014 |
 | 56 `DelegatingStream` flag style | [#365](https://github.com/davitf/archivey/pull/365) | `peel_for_source_size` and `readinto_passthrough` both class-flag-plus-constructor-override, like `_SUBCLASS_CLOSES_INNER` |
@@ -893,8 +893,8 @@ inventory.
 | `prefixed-archive-detection` | **32/68** | The only one in flight. Finish or explicitly park it before opening another detection change |
 | `single-archive-source` | 31/31 | **Archived 2026-09-25** after #419 implemented it. One `ArchiveSource` replaces the stack of source wrappers (borrow, full-count, the ISO bound) and absorbs the detection replay buffer (davi, 2026-09-22). Builds on #400 |
 | `one-member-listing-per-reader` | 0/38 | Merged 2026-09-23 via #404, proposal only. The base reader owns one member list, filled by one backend walk. Fixes the unset `member_id` on streamed 7z and solid RAR members, and adds `ArchiveyConfig.read_link_targets` (default `True`, davi 2026-09-23) |
-| `detection-evidence-ledger` | 0/70 | The big one. Rebuilds detection on graded evidence |
-| `detection-result-surface` | 0/44 | **Blocked by the ledger** — it exposes what the ledger produces. Its own proposal says so |
+| `detection-evidence-ledger` | 0/70 | **Decided against and archived 2026-09-25.** Small fixes on the existing detector shipped instead |
+| `detection-result-surface` | 3/15 | **Cut 2026-09-25** to the `detection=` handoff; the reader keeping its `FormatInfo` shipped |
 | `archive-origin-reporting` | 1/34 | Merged as a proposal 2026-09-19 via #274. Overlaps `detection-result-surface` on `ArchiveInfo` |
 | `bounded-source-spooling` | 0/31 | Merged 2026-09-19 via #251. Its four design questions are answered; subsumes the RAR stream-copy bound (`rar.md` §7) and the lazy stream-volume copy (shipped) |
 | `bounded-password-confirmation` | 0/26 | In tree since #319. Ready to implement; closes most of **O12** |
@@ -949,7 +949,7 @@ one-member-listing (#404) ─────┘  one at a time, and not beside a sw
 #342 seekable AES-CBC ──> #347 rar5-stored-encrypted-native-read  (proposal, unscheduled)
                      └──> #347 fold-rar-header-decrypt-stream     (proposal, unscheduled)
 
-prefixed-archive-detection (32/68) ──> detection-evidence-ledger ──> detection-result-surface
+prefixed-archive-detection (Block 4 left) ···· detection-result-surface (handoff only)
                                                  │                          │
                                                  │                          └──> #274 archive-origin-reporting
                                                  └──> 4 IDEAS.md §API entries retire
@@ -1220,8 +1220,8 @@ they are step 5 of the list at the top of this section rather than this wave, be
 rewrite the files the sweep fixes touch.
 
 **Wave 4 — decisions, then detection.** Answer #251's four questions. Finish or park
-`prefixed-archive-detection`. Then `detection-evidence-ledger` → `detection-result-surface`
-→ #274, in that order, retiring the four `IDEAS.md` §API entries as the ledger absorbs them.
+`prefixed-archive-detection` (only makeself is left). The evidence ledger was decided
+against on 2026-09-25; `detection-result-surface` is cut to the `detection=` handoff.
 
 **Wave 6 — the docs, continuously and in parallel with everything above.** Not a wave in the
 sense the others are: a long-running programme that should have one page in flight at a time

@@ -1,6 +1,6 @@
 # prefixed-archive-detection — find archives that do not start at byte zero
 
-**Status:** Ready to implement. Its prerequisite is met — `sfx-format-detection`, which this rewrites rather than extends, merged as #254 and archived into the live specs as #258. Blocks nothing. Behaviour-changing: files that used to raise a detection error now open, which is the point. Effort: medium.
+**Status:** Cut on 2026-09-25: the ZIP tail probe and `prefix_kind` are struck and the exhaustive scan is deferred, leaving makeself installers as the remaining block, after 0.2.0. Its prerequisite is met — `sfx-format-detection`, which this rewrites rather than extends, merged as #254 and archived into the live specs as #258. Blocks nothing. Behaviour-changing: files that used to raise a detection error now open, which is the point. Effort: medium.
 
 **Why it matters:** archivey finds only one shape of late-starting archive — an executable stub in front of RAR or 7z. It misses things that are neither rare nor exotic. A Python zipapp file, a Spring Boot executable JAR, and a JPEG with a ZIP appended to it all fail detection today, and all three open perfectly if you force the format, because the ZIP reader already handles them. Standard library zipfile opens all three too, so we are currently worse than the standard library on a file the standard library itself produces. The cause is simply that the executable cue never fires on a shebang line.
 

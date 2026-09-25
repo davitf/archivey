@@ -51,7 +51,7 @@ raw, and so does `raw_message`: escape them with
 [`escape_control_chars()`][archivey.terminal.escape_control_chars] before you show them.
 
 The same applies to an argument that is the wrong type or an unusable value — a
-`config=` that is not an `ArchiveyConfig`, a `budget=` that is not a
+`config=` that is not an `ArchiveyConfig`, a `detection_budget=` that is not a
 `DetectionBudget`, an `encoding=` naming a codec Python does not have, a
 `members=` holding something that is neither a name nor an `ArchiveMember`.
 Each is refused as `ArchiveyUsageError` at the call that made it, rather than failing

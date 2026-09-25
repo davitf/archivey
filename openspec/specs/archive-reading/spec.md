@@ -946,6 +946,7 @@ class ArchiveyConfig:
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
     decoder_limits: DecoderLimits = DecoderLimits()
+    detection_budget: DetectionBudget = BALANCED_BUDGET
     diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
     max_retained_diagnostic_references: int = 256
     on_diagnostic: Callable[[Diagnostic], None] | None = None
@@ -972,6 +973,9 @@ check SHALL run before the derivation that would cross the cap, and SHALL raise
 candidate iteration. Per-call `limits`
 still beat `config.extraction_limits`, then reader/library default. Other
 per-call operational args stay outside `ArchiveyConfig`.
+`detection_budget` SHALL bound what format detection spends, for `detect_format` and for
+the detection `open_archive` and `open_stream` run (see `detection-cost`); it accepts a
+`DetectionBudgetPreset` or its string spelling, and has no effect under `format=`.
 `read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
 the format stores as member data (see "Link targets stored as member data are read only
 when configured"); like `listing_limits`, it holds for the reader's lifetime.

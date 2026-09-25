@@ -39,6 +39,7 @@ from archivey import (
     open_archive,
     open_stream,
 )
+from archivey.config import DEFAULT_ARCHIVEY_CONFIG
 from archivey.core import _resolve_stream_format
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.enum_args import normalize_spelling
@@ -416,7 +417,9 @@ def test_the_stream_accepted_list_only_recommends_spellings_open_stream_takes() 
 
     for spelling in _quoted(accepted):
         resolved = coerce_stream_or_archive_format(spelling, call="open_stream")
-        stream = _resolve_stream_format(resolved, io.BytesIO(), DiagnosticCollector())
+        stream = _resolve_stream_format(
+            resolved, io.BytesIO(), DiagnosticCollector(), DEFAULT_ARCHIVEY_CONFIG
+        )
         assert stream is not StreamFormat.UNCOMPRESSED, (
             f"{spelling!r} is recommended but open_stream refuses it"
         )

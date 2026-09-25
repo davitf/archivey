@@ -98,18 +98,25 @@ class HitOutcome(Enum):
 
     ``NOT_THIS_FORMAT`` — identity never held (decoy magic, unparseable header).
     ``VALID`` — identity and cheap structure both hold.
+    ``VALID_SHORT`` — identity and structure hold, but the archive declares an end
+    before the source ends, which a decoy can do and a payload appended last does
+    not. A scan keeps the first one as a fallback and looks on for a ``VALID`` hit;
+    only a validator that knows where its format ends (7z) returns it, and only when
+    ``remaining`` is known. Trailing bytes are legitimate (SFX configuration, a
+    signature), so it is never a reject.
     ``DAMAGED`` — identity holds, structure does not (a 7z whose ``StartHeaderCRC``
     fails, or whose declared end overruns the source). A validated
     :func:`scan_for_magic` skips both non-``VALID`` grades while looking for a
     later ``VALID`` hit, then falls back to the first of them if none validate
     (so a damaged payload still reaches the parser). :func:`iter_magic_in_prefix`
-    yields every structural match and lets the caller grade it. The later
-    evidence-ledger scheduler may treat ``DAMAGED`` as a still-identified
-    candidate without changing this enum.
+    yields every structural match and lets the caller grade it. A later policy
+    may treat ``DAMAGED`` as a still-identified candidate without changing this
+    enum.
     """
 
     NOT_THIS_FORMAT = "not_this_format"
     VALID = "valid"
+    VALID_SHORT = "valid_short"
     DAMAGED = "damaged"
 
 
@@ -496,9 +503,10 @@ def scan_for_magic(
 
     ``validator``, when given, is the same :class:`HitValidator` shape the detector
     uses: a candidate-relative ``peek_more(n)`` plus known remaining from that origin.
-    Non-``VALID`` candidates are skipped while a later ``VALID`` hit is sought; if
-    none validate, the first of them is returned so a damaged payload still reaches
-    the parser. With no validator the first structural match wins, as before.
+    Non-``VALID`` candidates are skipped while a later ``VALID`` hit is sought; if none
+    validate, the first ``VALID_SHORT`` candidate is returned, else the first skipped
+    one, so a damaged payload still reaches the parser. With no validator the first
+    structural match wins.
 
     ``peek_more`` is served from the scan window and may pull extra bytes *forward*
     if the header extends past what has been read. It does not seek back. The source
@@ -544,6 +552,7 @@ def scan_for_magic(
     searched = 0
     rejected = 0
     fallback: MagicHit | None = None
+    short_fallback: MagicHit | None = None
     scan_start = _scan_start_position(source) if validator is not None else None
     # One probe: the total cannot change during a forward scan, and repeating it
     # inside the candidate loop is 256 metadata reads (or 512 seeks on an
@@ -575,6 +584,8 @@ def scan_for_magic(
     def finish(*, capped: bool = False) -> MagicScan:
         if capped:
             return MagicScan(None, ScanMiss.CAPPED, rejected)
+        if short_fallback is not None:
+            return MagicScan(short_fallback, None, rejected)
         if fallback is not None:
             return MagicScan(fallback, None, rejected)
         return MagicScan(None, ScanMiss.NO_MATCH, rejected)
@@ -619,6 +630,8 @@ def scan_for_magic(
             outcome = validator(bind_view(origin), remaining)
             if outcome is HitOutcome.VALID:
                 return MagicScan(found, None, rejected)
+            if outcome is HitOutcome.VALID_SHORT and short_fallback is None:
+                short_fallback = found
             if fallback is None:
                 fallback = found
             rejected += 1

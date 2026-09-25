@@ -666,6 +666,12 @@ same shape as the gzip empty→stdlib fallback. Original write-up below.
 
 ### P18. `detected_by="sfx_scan"` names a motive the tier cannot know
 
+- **Resolved 2026-09-25: kept, not renamed.** `detected_by` is documented as an open set
+  and `sfx_scan` as covering every prefixed hit (a `#!` script or Mach-O stub included),
+  in `docs/formats.md` and the `FormatInfo` docstring. The rename's home,
+  `detection-result-surface`, was cut to the `detection=` handoff. The analysis below is
+  kept as the record.
+
 - **Today:** the prefix-scanning detection tier reports `detected_by="sfx_scan"`
   (`src/archivey/internal/detection.py:478`, plus two skip sites and a comment). The tier
   finds an archive behind arbitrary leading bytes; *self-extracting* is one reason those

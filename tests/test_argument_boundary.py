@@ -174,16 +174,16 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
             ),
         ]
 
-    # Object shape of budget=, not preset spellings. ``"balanced"`` is a real
+    # Object shape of detection_budget=, not preset spellings. ``"balanced"`` is a real
     # DetectionBudgetPreset value, coerced by ``enum_args`` and asserted in
     # ``tests/test_enum_arguments.py``; the values below are none of the three types.
     for bad in (0, object(), "x"):
         rows.append(
             _case(
-                "detect_format",
-                "budget",
+                "ArchiveyConfig",
+                "detection_budget",
                 bad,
-                lambda b=bad: detect_format(archive, budget=b),
+                lambda b=bad: ArchiveyConfig(detection_budget=b),
             )
         )
 
@@ -696,16 +696,9 @@ def test_valid_arguments_still_work(archive: Path, tmp_path: Path) -> None:
     dest.mkdir()
 
     assert detect_format(archive).format.container.name == "ZIP"
-    assert (
-        detect_format(
-            archive, budget=DetectionBudgetPreset.BALANCED
-        ).format.container.name
-        == "ZIP"
-    )
-    assert (
-        detect_format(archive, budget=default_detection_budget()).format.container.name
-        == "ZIP"
-    )
+    for budget in (DetectionBudgetPreset.BALANCED, default_detection_budget()):
+        config = ArchiveyConfig(detection_budget=budget)
+        assert detect_format(archive, config=config).format.container.name == "ZIP"
     assert extract(archive, dest / "a", config=ArchiveyConfig()).results
     assert extract(archive, dest / "b", limits=ExtractionLimits.UNLIMITED).results
     assert extract(archive, dest / "c", encoding="UTF8").results  # an alias, not a name
