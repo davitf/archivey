@@ -245,7 +245,8 @@ default filter records it as `BLOCKED` with `SpecialFileError` rather than creat
 
 **A sparse member is written dense and its holes count as output.** Extraction copies the
 member's logical bytes, so every hole becomes zeros on disk and in the decompression-ratio
-count. The consequence is in §5.
+count. Counting the holes is a decision (§6): written out, they fill the disk like any
+other output. The consequence is in §5.
 
 Where the ratio check draws its numbers from depends on the source. A compressed tar
 opened from a path is checked against the file's size; one read from a stream is checked
@@ -333,7 +334,7 @@ extraction checks (§2.4).
 | A `.tar` of nothing but zeros opens as an empty archive | **format** | That is what an empty tar is ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)). `detect_format()` still refuses it |
 | A v7 tar with no extension is not detected | **format** | No magic to find (§2.1). Pass `format=ArchiveFormat.TAR` |
 | A hardlink's `link_target` is `./d/b` while the member it names is `d/b` | **format** / **archivey** | `link_target` is documented as stored text. Use `link_target_member` |
-| Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with one byte of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. Tracked internally |
+| Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with one byte of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. By design (§6); raise `max_ratio` for an archive known to hold sparse files |
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
 | `modified` is `None` for a pre-1970 member on Windows and correct on Linux and macOS | **archivey** | The conversion goes through `datetime.fromtimestamp`, which uses `gmtime()` on Windows. Shared with ZIP, RAR and gzip. Tracked internally |
 | A streaming pass over millions of members uses memory in proportion | **library** / **archivey** | tarfile appends every header to `TarFile.members`, and the pass keeps its own list for `scan_members()` |
@@ -350,6 +351,7 @@ extraction checks (§2.4).
 | A zero-filled file is a valid empty tar | It is byte-identical to one, at every block-aligned length ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)) | Refusing zero-member tars; a length rule |
 | Report trailing data, do not read past it | Two archives in one file is a fact worth reporting, and listing both would present members from an archive the caller did not name | `ignore_zeros=True`, which is how `tar -i` reads concatenated archives |
 | Bound the trailing-data scan at 1 MiB, as a constant | On a compressed tar the tail must be decoded to be read. A constant can become a config field later; a field cannot become a constant | Scanning to EOF; a `ListingLimits` field whose `None` would mean "unbounded", the reverse of every other field there |
+| Count a sparse member's holes as output | Extraction writes them as zeros, so they cost the disk what any decompressed byte costs, and the ratio guard is what protects the disk | Counting only the data blocks, which would let a few hundred bytes of sparse map fill the disk |
 | Keep `extractfile()`, under one lock | It is the only sparse expansion in the tree, and it is stdlib's | Reading member bytes directly, which would need a sparse implementation |
 | A backslash is part of the name | TAR is a POSIX format, and `a\b` is a legal filename there | Treating it as a separator the way the ZIP and 7z backends do |
 | Walk headers in batches sized by what the caps have left | The cap then bounds what tarfile parses, not only what archivey keeps, at the speed of one dense pass | `getmembers()`, which parsed the whole file before the first member was counted; one header per lock hold, which alternated parsing with member construction and was slower |
@@ -361,10 +363,6 @@ extraction checks (§2.4).
   bad header, and drops tarfile's duplicate member list. It would not settle the
   missing-trailer ambiguity, which is in the bytes. What would answer it: whether any
   of those three matters to a real caller before 1.0 (open-issues **P3**).
-- **Whether a sparse member's holes should count against `max_ratio`.** If extraction
-  seeked over holes instead of writing zeros, the disk would hold only the data, and the
-  ratio could be counted against written bytes. What would answer it: a ruling on what
-  the ratio guard is protecting, the disk or the write time. Tracked internally.
 - **Whether to detect v7 tars by their header checksum.** A 512-byte block whose checksum
   field matches its byte sum is strong evidence, and it is what `tarfile.is_tarfile`
   checks. It would also admit random blocks that happen to match, which the current
@@ -405,7 +403,7 @@ extraction checks (§2.4).
 | Concurrent reads through the handle lock | `tests/test_concurrent_multithread.py::test_multithread_plain_tar_open_read`, `::test_multithread_gzip_tar_open_read` |
 | Inner-TAR detection over each codec, and its budget | `tests/test_detection.py::test_inner_tar_over_gzip_is_tar_gz` and its siblings, `::test_inner_tar_probe_stays_inside_the_decode_budget` |
 | Passwords accepted and never consulted | `tests/test_tar.py::test_password_is_accepted_in_every_form` |
-| A sparse member's extraction and its ratio | **Nothing pins it.** The page's measurement is the reproduction below |
+| A sparse member's extraction and its ratio (holes count, §6) | **Nothing pins it.** The page's measurement is the reproduction below |
 | Pre-1970 times on Windows | **Nothing pins it.** `::test_out_of_range_mtime_degrades_to_none` covers an out-of-range value on every platform, not a valid negative one |
 
 **Building fixtures.** Most TAR tests build their archives with stdlib `tarfile` in
