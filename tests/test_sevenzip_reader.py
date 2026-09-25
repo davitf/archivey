@@ -2614,7 +2614,9 @@ print("ok")
 def test_unix_written_created_slot_goes_to_7z_ctime(tmp_path: Path) -> None:
     """A member with the Unix-extension bit has st_ctime in "Created": not ``created``.
 
-    Without the bit the slot is a birth time and stays in ``created``.
+    Without the bit the slot is a birth time and stays in ``created``. The CLI sets the
+    bit on Unix and not on Windows, so both attribute words are also checked on the
+    same record whichever host built the archive.
     """
     import dataclasses
 
@@ -2635,12 +2637,25 @@ def test_unix_written_created_slot_goes_to_7z_ctime(tmp_path: Path) -> None:
         record = member._raw.record
         if record.creation_time is None:
             pytest.skip("this 7z CLI stored no creation time")
-        assert record.attributes is not None and record.attributes & 0x8000
-        assert member.created is None
-        ctime = member.extra["7z.ctime"]
-        assert ctime.tzinfo is not None
+        assert record.attributes is not None
+        if record.attributes & 0x8000:
+            assert member.created is None
+            stored = member.extra["7z.ctime"]
+        else:
+            assert "7z.ctime" not in member.extra
+            stored = member.created
+        assert stored is not None and stored.tzinfo is not None
 
-        windows_record = dataclasses.replace(record, attributes=0x20)  # ARCHIVE
-        windows_member = reader._to_member(windows_record, 0)
-        assert windows_member.created == ctime
+        unix_attrs = 0x8000 | 0x20 | (0o100644 << 16)
+        unix_member = reader._to_member(
+            dataclasses.replace(record, attributes=unix_attrs), 0
+        )
+        assert unix_member.created is None
+        assert unix_member.extra["7z.ctime"] == stored
+
+        windows_member = reader._to_member(
+            dataclasses.replace(record, attributes=0x20),
+            0,  # ARCHIVE
+        )
+        assert windows_member.created == stored
         assert "7z.ctime" not in windows_member.extra
