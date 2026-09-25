@@ -17,13 +17,13 @@ or been dropped:
 - the rest of the detection series (`#468` and whatever follows it; `detect_format` lost
   its `budget=` argument in `#466`, and the budget is expected to reappear as an
   `ArchiveyConfig` field),
-- `#470` (`created` never holds `st_ctime`; five new `extra` keys, `rar.created_is_ctime`
-  removed),
+- `#470` (`created` never holds `st_ctime`; a new `ArchiveMember.ctime` field beside it,
+  `rar.created_is_ctime` removed),
 - `#465` (release docs: `how-it-works.md`, the full exception tree on `docs/api.md`, and a
   test that fails when a name in `__all__` has no entry there).
 
 Confirm before starting: `ArchiveReader.format_info` exists (from `#468`),
-`EXTRA_ISO_CTIME` and its four siblings are in `src/archivey/types.py` (from `#470`), and
+`ArchiveMember.ctime` is in `src/archivey/types.py` (from `#470`), and
 `tests/test_public_api.py::test_every_public_name_is_on_the_api_page` exists (from
 `#465`). If any is missing, that PR has not landed; the review would be filing against a
 surface that is about to move.
@@ -146,7 +146,7 @@ this brief; re-check rather than assume, but do not reopen the decision.
 | `extract_all(config=)`, `strict_archive_eof` | Dropped and removed respectively (`#415`). |
 | A detection evidence ledger on `FormatInfo` | Decided against 2026-09-25 after a design review; small fixes in `#466`/`#468` instead. |
 | Decoder memory caps as a public type | `DecoderLimits` on `ArchiveyConfig`, `ResourceLimitError` on breach (`#398`, `#413`, `#434`). The *shape* is yours to judge next to `ListingLimits` / `ExtractionLimits`; the existence is settled. |
-| `created` holding `st_ctime` | Never, in any format; ctime goes to per-format `extra` keys (`#470`). |
+| `created` holding `st_ctime` | Never, in any format; the time goes to `ArchiveMember.ctime`, one cross-format field rather than per-format `extra` keys (`#470`, the maintainer's ruling). A member has at most one of the two. |
 | 29 names in `__all__` with no entry on `docs/api.md` (21 of them exceptions) | Fixed in `#465`, which also adds a test that keeps it fixed. Do not file the gap; do file any name whose new entry reads as though it should not be public. |
 
 Also read `dev-docs/open-issues.md` and `dev-docs/code-map.md` §"Where the answers live"
