@@ -10,7 +10,9 @@ as written or needed only a better comment. Six were wrong, and the brief's inst
 about where to look first was correct twice. Two unmarked handlers "re-raised" in the
 sense ruff checks (a `raise` in the handler) while converting every exception to one
 `ArchiveyError` type, which is the catch-all the error contract forbids. One C-boundary
-trap was missing entirely from a backend, and that one aborted the interpreter.
+trap was missing entirely from a backend, and that one aborted the interpreter. The four
+reviewed after the password-confirmation PR merged (two deferred, two it added) were right
+too.
 
 Baseline: `[all]` leg 5174 passed, 39 skipped, 5 xfailed; `./scripts/check.sh` green.
 
@@ -49,8 +51,9 @@ so none went to the maintainer as a decision.
 67 handlers on `5bbbfdc`, counted from the AST (the brief counted 55 on `8e88e4f`; the
 difference is code that landed since): 37 catch `BaseException`, 30 catch `Exception`, 36
 carry `# noqa: BLE001`. Five sat in files two open pull requests were changing. The three
-in `extraction.py` were reviewed once the streaming-extraction PR merged; the two in
-`sevenzip_reader.py` are **deferred** until the password-confirmation PR merges. Pattern
+in `extraction.py` were reviewed once the streaming-extraction PR merged, and the two in
+`sevenzip_reader.py` once the password-confirmation PR merged (`c599fc5`). That PR also
+added two handlers in `password_confirm.py`, reviewed with them, which makes 69. Pattern
 names are the ones in
 [`dev-docs/topics/exception-handlers.md`](../../dev-docs/topics/exception-handlers.md).
 
@@ -82,7 +85,8 @@ Locations are by function, because line numbers drift.
 | `backends/rar_reader.py` | `_open_member._spawn` ×2, `_open_member` | Base | cleanup and re-raise | keep |
 | `backends/iso_reader.py` | `IsoReader.__init__` | Base | cleanup and re-raise | keep (reason already in code) |
 | `backends/tar_reader.py` | `TarReader.__init__` | Base | cleanup and re-raise | keep |
-| `backends/sevenzip_reader.py` | `_open_member` ×2 | Base | cleanup and re-raise | deferred |
+| `backends/sevenzip_reader.py` | `_open_member` ×2 | Base | cleanup and re-raise | keep (reviewed after the password-confirmation PR merged): the slice and the password watch own what they wrap, and the watch stays silent when closed before any read |
+| `password_confirm.py` | `UnverifiedPasswordReadWatch.read`, `.seek` | Base | cleanup and re-raise | keep (added by the password-confirmation PR): drops the close-time report, since a failed read or seek already told the caller; the original propagates |
 | `extraction.py` | `_write_file_atomic`, `_place_link` | Base | cleanup and re-raise | keep (reviewed after the streaming-extraction PR merged) |
 | `extraction.py` | `_close` | Exc | teardown hygiene | keep; reason sharpened: both callers close after the member's result is recorded |
 | `streams/archive_stream.py` | `_attach_finalizer._finalize` ×2 | Exc | teardown hygiene | keep |
