@@ -239,15 +239,41 @@ def test_tar_listing_stops_reading_headers_at_max_metadata_bytes(
     tar_path = tmp_path / "long-names.tar"
     with tarfile.open(tar_path, "w", format=tarfile.GNU_FORMAT) as tf:
         for i in range(200):
-            tf.addfile(tarfile.TarInfo(name=f"{i:03d}" + "n" * 10_000))
+            tf.addfile(tarfile.TarInfo(name=f"{i:03d}" + "n" * 9_997))
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=50_000))
     with open_archive(tar_path, config=cfg) as reader:
         with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
             reader.members()
         tar = reader._tar  # type: ignore[attr-defined]
-        # 50 000 bytes of names is five of these; the header that passes the cap is
-        # the sixth, and the walk parses no further.
+        # Each name is 10 000 characters. The walk counts names only, so its count
+        # passes 50 000 on the sixth header and it parses no further. The base also
+        # weighs raw_name, so it has already refused on the third.
         assert len(tar.members) <= 6
+
+
+def test_tar_drops_the_link_name_of_a_member_that_is_not_a_link(tmp_path: Path) -> None:
+    """A long link name on a regular file is text no listing limit weighs.
+
+    GNU tar stores a long link name in a LONGLINK block ahead of the header, and
+    tarfile applies it to whatever header follows. On a regular file it means nothing,
+    but the TarInfo each member keeps held it, so a small gzipped tar could retain
+    hundreds of megabytes under a 1 MiB ``max_metadata_bytes``.
+    """
+    import tarfile
+
+    tar_path = tmp_path / "longlink.tar"
+    with tarfile.open(tar_path, "w", format=tarfile.GNU_FORMAT) as tf:
+        for i in range(20):
+            info = tarfile.TarInfo(name=f"f{i}")
+            info.linkname = "l" * 100_000
+            tf.addfile(info)
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=100_000))
+    with open_archive(tar_path, config=cfg) as reader:
+        members = reader.members()
+        assert len(members) == 20
+        assert all(m.link_target is None for m in members)
+        tar = reader._tar  # type: ignore[attr-defined]
+        assert sum(len(t.linkname) for t in tar.members) == 0
 
 
 def test_tar_header_batch_returns_to_full_size_past_max_members(tmp_path: Path) -> None:

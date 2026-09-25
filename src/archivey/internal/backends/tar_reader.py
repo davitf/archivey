@@ -122,14 +122,16 @@ _HEADER_BATCH = 1024
 def _header_text_bytes(info: tarfile.TarInfo) -> int:
     """Header text a member built from ``info`` retains, counted low.
 
-    The base weighs each yielded member against ``max_metadata_bytes`` with about
-    these characters or more (it adds ``raw_name`` and counts non-ASCII four to a
-    character), so once this sum passes the cap the base has refused, or is about to.
-    The walk uses it to stop parsing where the byte cap would, without the base's
-    running total. Only ``./`` prefixes the base strips make it count higher, and
-    counting high only cuts one batch short.
+    Counts only fields the base also weighs against ``max_metadata_bytes``, and the
+    base weighs them at least as heavily (it adds ``raw_name`` and counts non-ASCII
+    four to a character), so once this sum passes the cap the base has refused. The
+    walk uses it to stop parsing where the byte cap would, without the base's running
+    total. ``linkname`` counts only on a link: on any other member ``_to_member``
+    drops it, so it is not retained.
     """
-    total = len(info.name) + len(info.linkname) + len(info.uname) + len(info.gname)
+    total = len(info.name) + len(info.uname) + len(info.gname)
+    if info.issym() or info.islnk():
+        total += len(info.linkname)
     for value in info.pax_headers.values():
         total += len(value)
     return total
@@ -514,9 +516,10 @@ class TarReader(BaseArchiveReader):
         text_bytes = 0
         while not ended:
             want = self._header_batch_size(index)
-            # Only the batch that crosses the byte cap is cut short. Past it the base
-            # has refused already, or is not enforcing, and a batch of one would be
-            # the slow walk batching exists to avoid.
+            # Only the batch that crosses the byte cap is cut short. The count is a
+            # lower bound on the base's, so past it the base has refused already, or
+            # is not enforcing, and a batch of one would be the slow walk batching
+            # exists to avoid.
             byte_stop = (
                 byte_cap if byte_cap is not None and text_bytes <= byte_cap else None
             )
@@ -826,11 +829,14 @@ class TarReader(BaseArchiveReader):
             info, self._tar.encoding, self._tar.errors, self._tar.pax_headers
         )
 
-        link_target = (
-            info.linkname
-            if member_type in (MemberType.SYMLINK, MemberType.HARDLINK)
-            else None
-        )
+        if member_type in (MemberType.SYMLINK, MemberType.HARDLINK):
+            link_target = info.linkname
+        else:
+            link_target = None
+            # A GNU long link name or PAX linkpath on a member that is not a link has
+            # no meaning, and no listing limit weighs it; dropping it keeps the
+            # retained TarInfo within what max_metadata_bytes counted.
+            info.linkname = ""
 
         # tarfile folds a PAX mtime (sub-second/timezone) into TarInfo.mtime already, so this
         # one field honors both the standard ustar mtime and the PAX override. A hostile
