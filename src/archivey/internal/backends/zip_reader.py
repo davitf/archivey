@@ -127,6 +127,7 @@ from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
+    EXTRA_ZIP_CTIME,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -374,8 +375,14 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
 
 def _zip_timestamps(
     info: zipfile.ZipInfo,
-) -> tuple[datetime | None, datetime | None, datetime | None, list[TimestampIssue]]:
-    """Return ``(modified, accessed, created, issues)`` for a member.
+) -> tuple[
+    datetime | None,
+    datetime | None,
+    datetime | None,
+    datetime | None,
+    list[TimestampIssue],
+]:
+    """Return ``(modified, accessed, created, ut_ctime, issues)`` for a member.
 
     Sources, lowest to highest precedence (each layer overrides only the times it
     actually carries):
@@ -386,9 +393,13 @@ def _zip_timestamps(
        creation) in 100 ns UTC ticks since 1601; zero means "not set". Written by
        Windows tools (e.g. 7-Zip).
     3. An Extended Timestamp extra field (0x5455): real Unix timestamps, its flags byte
-       signaling which of modification/access/creation follow (in that order), each a
+       signaling which of modification/access/"creation" follow (in that order), each a
        signed 32-bit Unix time interpreted as UTC. The central directory typically
        carries only the modification time even when the flags advertise more.
+
+    The NTFS creation time is a Windows birth time and is the only source of
+    ``created``. The Extended Timestamp third time is what Info-ZIP on Unix fills from
+    st_ctime, so it is returned apart as ``ut_ctime`` and never overrides ``created``.
     """
     issues: list[TimestampIssue] = []
     if info.date_time == (1980, 0, 0, 0, 0, 0):
@@ -411,6 +422,7 @@ def _zip_timestamps(
             modified = None
     accessed: datetime | None = None
     created: datetime | None = None
+    ut_ctime: datetime | None = None
 
     # One scan collecting both timestamp extra fields, applied afterwards in precedence
     # order (NTFS below Extended Timestamp) regardless of their order in the blob.
@@ -419,7 +431,7 @@ def _zip_timestamps(
     ut_field: bytes | None = None
     extra = info.extra or b""
     if not extra:
-        return modified, accessed, created, issues
+        return modified, accessed, created, ut_ctime, issues
     pos = 0
     while pos + 4 <= len(extra):
         tag, length = struct.unpack("<HH", extra[pos : pos + 4])
@@ -498,9 +510,9 @@ def _zip_timestamps(
                 elif bit == 0x02:
                     accessed = when
                 else:
-                    created = when
+                    ut_ctime = when
 
-    return modified, accessed, created, issues
+    return modified, accessed, created, ut_ctime, issues
 
 
 def _is_windows_reparse_point(
@@ -839,7 +851,7 @@ class ZipReader(BaseArchiveReader):
                 (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),),
             )
 
-        modified, accessed, created, ts_issues = _zip_timestamps(info)
+        modified, accessed, created, ut_ctime, ts_issues = _zip_timestamps(info)
         # Surface the central-directory CRC-32 as a stored digest (archive-data-model:
         # HashAlgorithm.CRC32 → 4 big-endian bytes), so a dedupe pass can key on it
         # without decompressing (VISION "hashes without decompression"). Only for FILE and
@@ -859,6 +871,8 @@ class ZipReader(BaseArchiveReader):
             extra["zip.aes_vendor_version"] = aes_info.vendor_version
             extra["zip.aes_strength"] = aes_info.strength
             extra["zip.aes_actual_method"] = aes_info.actual_method
+        if ut_ctime is not None:
+            extra[EXTRA_ZIP_CTIME] = ut_ctime
         # Skip defaulted None/False kwargs on the listing hot path (perf review L2).
         member = ArchiveMember(
             type=member_type,

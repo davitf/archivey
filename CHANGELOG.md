@@ -278,6 +278,15 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **`created` is a birth time or nothing.** It never holds Unix `st_ctime` (inode
+  change), in any format. Where a writer stores `st_ctime`, the time moves to a format
+  key in `extra` and `created` stays `None`: `iso.ctime` (the Rock Ridge
+  attribute-change time, which `created` used to fall back to), `rar.ctime` (a Unix
+  RAR's creation slot), `tar.ctime` (PAX `ctime`), `7z.ctime` (a member written on Unix,
+  marked by the Unix-extension attribute bit) and `zip.ctime` (the Extended Timestamp's
+  third time, which also no longer overrides the NTFS creation time). `rar.ctime` is
+  set on every RAR member with a creation slot, Win32 ones too. The
+  `rar.created_is_ctime` key is gone.
 - **Every public class and function reports `archivey` as its `__module__`.** Seventeen
   names in `__all__` are defined under `archivey.internal` (the extraction types,
   `detect_format`, the registry queries, `ArchiveStream`, `enable_measurement`). They

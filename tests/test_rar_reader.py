@@ -49,7 +49,7 @@ from archivey.internal.backends.rar_parser import (
 )
 from archivey.terminal import display_path
 from archivey.types import (
-    EXTRA_RAR_CREATED_IS_CTIME,
+    EXTRA_RAR_CTIME,
     EXTRA_RAR_EXTRACT_VERSION,
     ArchiveMember,
     CompressionAlgorithm,
@@ -2046,33 +2046,33 @@ def test_parse_rar3_ext_time_slot_order_is_mtime_ctime_atime() -> None:
     assert atime.tzinfo is None
 
 
-def test_rar5_xtime_fixture_surfaces_accessed_and_created() -> None:
-    """Listing, no unrar: RAR5 ``-tsmca`` fills accessed/created as aware UTC."""
+def test_rar5_xtime_fixture_surfaces_accessed_and_ctime() -> None:
+    """Listing, no unrar: RAR5 ``-tsmca`` fills accessed and ``rar.ctime`` as aware UTC."""
     with open_archive(_fixture("xtime__.rar")) as archive:
         member = archive.get("file.txt")
         assert member.modified == datetime(2020, 1, 15, 12, 0, tzinfo=timezone.utc)
         assert member.accessed == datetime(2021, 6, 20, 18, 30, tzinfo=timezone.utc)
-        assert member.created is not None
-        assert member.created.tzinfo is timezone.utc
-        assert member.created != member.modified
-        assert member.created != member.accessed
-        # Unix-built fixture: creation slot is st_ctime.
-        assert member.extra[EXTRA_RAR_CREATED_IS_CTIME] is True
+        # Unix-built fixture: the creation slot is st_ctime, so it is not ``created``.
+        assert member.created is None
+        ctime = member.extra[EXTRA_RAR_CTIME]
+        assert ctime.tzinfo is timezone.utc
+        assert ctime != member.modified
+        assert ctime != member.accessed
 
 
-def test_rar4_xtime_fixture_surfaces_accessed_and_created() -> None:
-    """Listing, no unrar: RAR4 EXTTIME fills accessed/created as naive wall-clock."""
+def test_rar4_xtime_fixture_surfaces_accessed_and_ctime() -> None:
+    """Listing, no unrar: RAR4 EXTTIME fills accessed and ``rar.ctime`` as naive wall-clock."""
     with open_archive(_fixture("xtime__rar4.rar")) as archive:
         member = archive.get("file.txt")
         assert member.modified == datetime(2020, 1, 15, 12, 0, 0)
         assert member.accessed == datetime(2021, 6, 20, 18, 30, 0)
         assert member.modified.tzinfo is None
         assert member.accessed.tzinfo is None
-        assert member.created is not None
-        assert member.created.tzinfo is None
-        assert member.created != member.modified
-        assert member.created != member.accessed
-        assert member.extra[EXTRA_RAR_CREATED_IS_CTIME] is True
+        assert member.created is None  # Unix-built: the slot is st_ctime
+        ctime = member.extra[EXTRA_RAR_CTIME]
+        assert ctime.tzinfo is None
+        assert ctime != member.modified
+        assert ctime != member.accessed
 
 
 @pytest.mark.parametrize(
@@ -2091,23 +2091,29 @@ def test_xtime_absent_accessed_created_are_none(name: str) -> None:
             assert member.accessed is None
             assert member.created is None
             assert member.modified is not None
-            assert EXTRA_RAR_CREATED_IS_CTIME not in member.extra
+            assert EXTRA_RAR_CTIME not in member.extra
+
+
+_CTIME = datetime(2019, 6, 1, 8, 0, tzinfo=timezone.utc)
 
 
 @pytest.mark.parametrize(
-    ("host_os", "ctime", "expected"),
+    ("host_os", "ctime", "birth_time"),
     [
-        (3, datetime(2019, 6, 1, 8, 0, tzinfo=timezone.utc), True),
-        (2, datetime(2019, 6, 1, 8, 0, tzinfo=timezone.utc), False),
-        (0, datetime(2019, 6, 1, 8, 0, tzinfo=timezone.utc), False),
-        (3, None, None),
-        (None, datetime(2019, 6, 1, 8, 0, tzinfo=timezone.utc), None),
+        (3, _CTIME, False),  # Unix: st_ctime
+        (2, _CTIME, True),  # Win32
+        (0, _CTIME, True),  # RAR3 MS-DOS/FAT
+        (5, _CTIME, True),  # RAR3 BeOS
+        (7, _CTIME, False),  # unknown host: meaning unknown
+        (None, _CTIME, False),
+        (3, None, False),
+        (2, None, False),
     ],
 )
-def test_created_is_ctime_extra_follows_host_os(
-    host_os: int | None, ctime: datetime | None, expected: bool | None
+def test_created_follows_host_os_and_rar_ctime_is_raw(
+    host_os: int | None, ctime: datetime | None, birth_time: bool
 ) -> None:
-    """``extra["rar.created_is_ctime"]`` is Unix-only and omitted without a ctime."""
+    """``created`` is the slot only from a birth-time host; ``rar.ctime`` always is."""
     reader = object.__new__(rar_reader.RarReader)
     reader._diagnostics_collector = None
     reader._archive_name = "<test>"
@@ -2141,10 +2147,11 @@ def test_created_is_ctime_extra_follows_host_os(
         split_after=False,
     )
     member = rar_reader.RarReader._to_member(reader, info, 0)
-    if expected is None:
-        assert EXTRA_RAR_CREATED_IS_CTIME not in member.extra
+    assert member.created == (ctime if birth_time else None)
+    if ctime is None:
+        assert EXTRA_RAR_CTIME not in member.extra
     else:
-        assert member.extra[EXTRA_RAR_CREATED_IS_CTIME] is expected
+        assert member.extra[EXTRA_RAR_CTIME] == ctime
 
 
 def test_rar_reader_masks_hostile_unix_mode() -> None:

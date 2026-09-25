@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from archivey import MemberType, open_archive
-from archivey.types import EXTRA_RAR_EXTRACT_VERSION, CompressionAlgorithm
+from archivey.types import (
+    EXTRA_RAR_CTIME,
+    EXTRA_RAR_EXTRACT_VERSION,
+    CompressionAlgorithm,
+)
 from tests.conftest import requires, requires_binary
 from tests.sample_archives import CORPUS, CorpusEntry, corpus_archive_path
 
@@ -68,7 +72,9 @@ def _assert_compression_matches(member, info) -> None:
 def _assert_timestamps_match(member, info) -> None:
     for field, native, oracle in (
         ("modified", member.modified, getattr(info, "mtime", None)),
-        ("created", member.created, getattr(info, "ctime", None)),
+        # rarfile reports the raw creation slot whatever the host; archivey keeps it
+        # in ``rar.ctime`` and reports ``created`` only from a birth-time host.
+        ("rar.ctime", member.extra.get(EXTRA_RAR_CTIME), getattr(info, "ctime", None)),
         ("accessed", member.accessed, getattr(info, "atime", None)),
     ):
         if native is None and oracle is None:

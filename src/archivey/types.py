@@ -435,14 +435,27 @@ EXTRA_IS_JUNCTION: Final = "is_junction"
 # point. So a junction written by 7-Zip carries this key and not that one.
 EXTRA_IS_REPARSE_POINT: Final = "is_reparse_point"
 
-# Key in ArchiveMember.extra: True when this RAR member's ``created`` is Unix
-# ``st_ctime`` (inode-change), False when the writer OS stores a birth time
-# (Win32, and RAR3 FAT/OS2/Mac/BeOS). Derived from ``host_os``; omitted when
-# ``created`` is None or ``host_os`` is unknown. A later OpenSpec change will
-# promote this to a cross-format ``created_meaning`` field — do not infer that
-# meaning from ``create_system`` (7z hardcodes UNIX while reading a FILETIME
-# birth time; ZIP splits by extra source, not OS).
-EXTRA_RAR_CREATED_IS_CTIME: Final = "rar.created_is_ctime"
+# Keys in ArchiveMember.extra holding a stored time that may be Unix ``st_ctime``
+# (inode change), which ``created`` never holds. Each is set only when the member
+# records that time; each value is a ``datetime`` in the format's own tz convention.
+#
+# ISO: the Rock Ridge TF attribute-change time. Always st_ctime.
+EXTRA_ISO_CTIME: Final = "iso.ctime"
+# RAR: the header's creation-time slot, always, as stored. A Unix writer fills it
+# from st_ctime; a Win32 (or RAR3 FAT/OS2/Mac/BeOS) writer from the birth time, and
+# only then does ``created`` carry it too.
+EXTRA_RAR_CTIME: Final = "rar.ctime"
+# TAR: the PAX ``ctime`` record. Always st_ctime.
+EXTRA_TAR_CTIME: Final = "tar.ctime"
+# 7z: the "Created" FILETIME of a member carrying the Unix-extension attribute bit
+# (0x8000). A Unix 7-Zip / p7zip writer fills that slot from st_ctime, so it goes
+# here and ``created`` stays None. Without the bit the slot is a birth time and is
+# reported as ``created``.
+EXTRA_SEVENZIP_CTIME: Final = "7z.ctime"
+# ZIP: the third time of an Extended Timestamp (0x5455) extra field. Info-ZIP on
+# Unix writes st_ctime there. The NTFS (0x000A) creation time is a birth time and
+# stays in ``created``.
+EXTRA_ZIP_CTIME: Final = "zip.ctime"
 
 # RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
 # because RAR5 records no per-file unpack version. Lives here, not on
@@ -471,7 +484,15 @@ class MemberExtra(dict[str, object]):
     * ``is_reparse_point`` (``bool``) — ZIP, 7z, RAR, directory. The weaker,
       metadata-only sibling of ``is_junction``: a Windows symlink or junction
       rather than a POSIX one.
-    * ``rar.created_is_ctime`` (``bool``)
+    * ``iso.ctime`` (``datetime``) — the Rock Ridge attribute-change time
+      (``st_ctime``).
+    * ``rar.ctime`` (``datetime``) — the header's creation-time slot as stored:
+      ``st_ctime`` from a Unix writer, the birth time from any other host.
+    * ``tar.ctime`` (``datetime``) — the PAX ``ctime`` record (``st_ctime``).
+    * ``7z.ctime`` (``datetime``) — the "Created" time of a member with the
+      Unix-extension attribute bit, where a Unix writer stores ``st_ctime``.
+    * ``zip.ctime`` (``datetime``) — the third time of an Extended Timestamp
+      field, which Info-ZIP fills from ``st_ctime``.
     * ``rar.extract_version`` (``int``)
     * ``rar.file_version`` (``int``)
     * ``rar.tweaked_crc32`` (``int``)
@@ -507,7 +528,15 @@ class MemberExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["is_reparse_point"], /) -> bool: ...
     @overload
-    def __getitem__(self, key: Literal["rar.created_is_ctime"], /) -> bool: ...
+    def __getitem__(self, key: Literal["iso.ctime"], /) -> datetime: ...
+    @overload
+    def __getitem__(self, key: Literal["rar.ctime"], /) -> datetime: ...
+    @overload
+    def __getitem__(self, key: Literal["tar.ctime"], /) -> datetime: ...
+    @overload
+    def __getitem__(self, key: Literal["7z.ctime"], /) -> datetime: ...
+    @overload
+    def __getitem__(self, key: Literal["zip.ctime"], /) -> datetime: ...
     @overload
     def __getitem__(self, key: Literal["rar.extract_version"], /) -> int: ...
     @overload
@@ -604,13 +633,15 @@ class ArchiveMember:
     """Last-access time, if recorded."""
 
     created: datetime | None = None
-    """The format's creation-time slot, if recorded (rare; most formats store only mtime).
+    """The birth (creation) time, if recorded (rare; most formats store only mtime).
 
-    Meaning follows the writer, not a cross-format guarantee. A Unix RARLAB
-    archive stores inode-change time (``st_ctime``) here; those members set
-    ``extra["rar.created_is_ctime"]`` to ``True``. A Win32 RAR stores birth
-    time and sets the same key to ``False``. Directory listing uses
-    ``st_birthtime`` only and never ``st_ctime``.
+    Never Unix ``st_ctime`` (inode change), in any format. Where a writer
+    stores ``st_ctime`` in a creation slot (a Unix RAR, 7-Zip or p7zip on
+    Unix) or in a field of its own (Rock Ridge, PAX, a ZIP Extended
+    Timestamp), that time goes to a format key in ``extra`` instead:
+    ``iso.ctime``, ``rar.ctime``, ``tar.ctime``, ``7z.ctime`` or
+    ``zip.ctime``, and ``created`` stays ``None``. Directory listing uses
+    ``st_birthtime`` only.
     """
 
     mode: int | None = None

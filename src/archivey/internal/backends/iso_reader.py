@@ -79,6 +79,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.terminal import quoted
 from archivey.types import (
+    EXTRA_ISO_CTIME,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -626,7 +627,9 @@ class IsoReader(BaseArchiveReader):
             else MemberExtra()
         )
 
-        modified, accessed, created = self._timestamps(record, rr)
+        modified, accessed, created, ctime = self._timestamps(record, rr)
+        if ctime is not None:
+            extra[EXTRA_ISO_CTIME] = ctime
         mode, uid, gid = self._posix_metadata(rr)
         link_target = self._symlink_target(member_type, rr)
 
@@ -689,10 +692,16 @@ class IsoReader(BaseArchiveReader):
 
     def _timestamps(
         self, record: DirectoryRecord, rr: RockRidge | None
-    ) -> tuple[datetime | None, datetime | None, datetime | None]:
+    ) -> tuple[datetime | None, datetime | None, datetime | None, datetime | None]:
+        """Return ``(modified, accessed, created, ctime)``.
+
+        ``ctime`` is the Rock Ridge attribute-change time (POSIX ``st_ctime``). It
+        never fills ``created``, which holds only a TF creation time.
+        """
         modified: datetime | None = None
         accessed: datetime | None = None
         created: datetime | None = None
+        ctime: datetime | None = None
         if rr is not None:
             # Rock Ridge TF entries carry the POSIX times (in dr_entries, or the CE
             # overflow area). A TF modification time wins over the directory-record
@@ -707,16 +716,14 @@ class IsoReader(BaseArchiveReader):
                 accessed = accessed or _dr_date_to_datetime(
                     getattr(tf, "access_time", None)
                 )
-                # Without a TF creation time, ``created`` falls back to the POSIX
-                # attribute-change time (st_ctime), as RAR's Unix members do. Nothing in
-                # ``extra`` marks the difference for ISO yet.
-                created = (
-                    created
-                    or _dr_date_to_datetime(getattr(tf, "creation_time", None))
-                    or _dr_date_to_datetime(getattr(tf, "attribute_change_time", None))
+                created = created or _dr_date_to_datetime(
+                    getattr(tf, "creation_time", None)
+                )
+                ctime = ctime or _dr_date_to_datetime(
+                    getattr(tf, "attribute_change_time", None)
                 )
         modified = modified or _dr_date_to_datetime(getattr(record, "date", None))
-        return modified, accessed, created
+        return modified, accessed, created, ctime
 
     def _px_mode(self, rr: RockRidge | None) -> int | None:
         """The full POSIX mode from a Rock Ridge PX record, file-type bits included."""

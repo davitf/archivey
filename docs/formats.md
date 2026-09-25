@@ -46,6 +46,12 @@ mutating the existing bag in place is unchanged.
 The format sections below mention a key only when it is part of that format's
 behaviour. The complete list is on the two classes.
 
+`ArchiveMember.created` is a birth time or `None`, never Unix `st_ctime` (inode
+change). Several writers store `st_ctime` where a reader might expect a creation
+time: a Rock Ridge ISO, a Unix RAR, a PAX TAR, 7-Zip or p7zip on Unix, and Info-ZIP's
+Extended Timestamp. That time is kept in `extra` under `iso.ctime`, `rar.ctime`,
+`tar.ctime`, `7z.ctime` or `zip.ctime`.
+
 ## ZIP
 
 - Stdlib ``zipfile`` for **central-directory parsing / listing**; member **data** decodes

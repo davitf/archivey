@@ -84,6 +84,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.terminal import quoted
 from archivey.types import (
+    EXTRA_TAR_CTIME,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -169,7 +170,7 @@ def _pax_time(info: tarfile.TarInfo, key: str) -> datetime | None:
     """Parse a PAX ``atime``/``ctime`` (float Unix seconds) into a tz-aware UTC datetime.
 
     ``tarfile`` folds the PAX ``mtime`` into ``TarInfo.mtime`` itself, but leaves the
-    access/creation times only in ``pax_headers``; surface them here for completeness.
+    access and inode-change times only in ``pax_headers``; surface them here.
     """
     raw = info.pax_headers.get(key)
     if raw is None:
@@ -791,9 +792,11 @@ class TarReader(BaseArchiveReader):
         accessed = _pax_time(info, "atime")
         if accessed is not None:
             member.accessed = accessed
-        created = _pax_time(info, "ctime")
-        if created is not None:
-            member.created = created
+        # PAX ``ctime`` is st_ctime (inode change), never a birth time, so it goes to
+        # ``extra`` and ``created`` stays None: TAR records no birth time.
+        ctime = _pax_time(info, "ctime")
+        if ctime is not None:
+            extra[EXTRA_TAR_CTIME] = ctime
         if info.uname:
             member.uname = info.uname
         if info.gname:

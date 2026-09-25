@@ -134,6 +134,10 @@ def test_rock_ridge_namespace_and_fidelity(rock_ridge_iso: Path) -> None:
         f = by_name["file.txt"]  # original case + length preserved
         assert f.mode is not None and f.uid is not None and f.gid is not None
         assert f.modified is not None and f.modified.tzinfo is not None
+        # pycdlib's TF record carries no creation time, only the attribute-change
+        # time (st_ctime): that goes to extra and ``created`` stays None.
+        assert f.created is None
+        assert f.extra["iso.ctime"].tzinfo is not None
         sym = by_name["sym"]
         assert sym.type == MemberType.SYMLINK
         assert sym.link_target == "file.txt"
@@ -148,6 +152,7 @@ def test_joliet_namespace_and_fidelity(tmp_path: Path) -> None:
         f = ar.get("file.txt")  # Joliet preserves case
         # Joliet carries no POSIX metadata.
         assert f.mode is None and f.uid is None and f.gid is None
+        assert "iso.ctime" not in f.extra
 
 
 def test_plain_iso_namespace_and_fidelity(tmp_path: Path) -> None:

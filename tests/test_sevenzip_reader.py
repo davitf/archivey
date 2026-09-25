@@ -2608,3 +2608,39 @@ with open_archive({str(archive)!r}, password=["wrong856", "secret"]) as reader:
 print("ok")
 """
     )
+
+
+@requires_binary("7z")
+def test_unix_written_created_slot_goes_to_7z_ctime(tmp_path: Path) -> None:
+    """A member with the Unix-extension bit has st_ctime in "Created": not ``created``.
+
+    Without the bit the slot is a birth time and stays in ``created``.
+    """
+    import dataclasses
+
+    (tmp_path / "a.txt").write_bytes(b"hi")
+    archive = tmp_path / "ctime.7z"
+    result = subprocess.run(
+        ["7z", "a", "-t7z", "-mtc=on", str(archive), "a.txt", "-y"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build a -mtc=on fixture: {result.stderr}")
+    with open_archive(archive) as reader:
+        assert isinstance(reader, SevenZipReader)
+        member = reader.get("a.txt")
+        record = member._raw.record
+        if record.creation_time is None:
+            pytest.skip("this 7z CLI stored no creation time")
+        assert record.attributes is not None and record.attributes & 0x8000
+        assert member.created is None
+        ctime = member.extra["7z.ctime"]
+        assert ctime.tzinfo is not None
+
+        windows_record = dataclasses.replace(record, attributes=0x20)  # ARCHIVE
+        windows_member = reader._to_member(windows_record, 0)
+        assert windows_member.created == ctime
+        assert "7z.ctime" not in windows_member.extra

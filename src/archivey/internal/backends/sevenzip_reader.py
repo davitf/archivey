@@ -119,6 +119,7 @@ from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
+    EXTRA_SEVENZIP_CTIME,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -134,6 +135,9 @@ from archivey.types import (
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+# FILE_ATTRIBUTE_UNIX_EXTENSION: the high word holds a Unix mode. 7-Zip and p7zip set
+# it when writing on Unix, where the "Created" slot is filled from st_ctime.
+_UNIX_EXTENSION_BIT = 0x8000
 
 
 def _is_windows_reparse_point(attrs: int | None) -> bool:
@@ -690,6 +694,16 @@ class SevenZipReader(BaseArchiveReader):
             )
             if issue is not None:
                 ts_issues.append(issue)
+        extra = (
+            MemberExtra({EXTRA_IS_REPARSE_POINT: True})
+            if is_reparse_point
+            else MemberExtra()
+        )
+        if created is not None and attrs is not None and attrs & _UNIX_EXTENSION_BIT:
+            # A Unix writer (7-Zip on Linux, p7zip) fills "Created" from st_ctime,
+            # which ``created`` never holds.
+            extra[EXTRA_SEVENZIP_CTIME] = created
+            created = None
         member = ArchiveMember(
             type=member_type,
             name=name,
@@ -707,9 +721,7 @@ class SevenZipReader(BaseArchiveReader):
             else CreateSystem.WINDOWS_NTFS,
             windows_attrs=attrs & 0xFFFF if attrs is not None else None,
             hashes=hashes,
-            extra=MemberExtra({EXTRA_IS_REPARSE_POINT: True})
-            if is_reparse_point
-            else MemberExtra(),
+            extra=extra,
             _raw=_MemberRaw(record, folder_index, record.file_in_folder),
         )
         # Every report below names the member by `index`, its position in the walk,

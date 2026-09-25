@@ -483,7 +483,8 @@ def test_unknown_extra_field_before_timestamp(tmp_path: Path) -> None:
 
 def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
     # An Extended Timestamp (0x5455) with flags 0x07 carries modification, access and
-    # creation times (in that order); all three should populate the member.
+    # "creation" times (in that order). Info-ZIP fills the third from st_ctime, so it
+    # goes to extra["zip.ctime"] and `created` stays None.
     mtime, atime, ctime = 1_600_000_000, 1_600_000_100, 1_600_000_200
     extra = struct.pack("<HHB iii", 0x5455, 13, 0x07, mtime, atime, ctime)
     path = tmp_path / "ts3.zip"
@@ -495,7 +496,10 @@ def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
         member = ar.get("t.txt")
         assert member.modified == datetime.fromtimestamp(mtime, tz=timezone.utc)
         assert member.accessed == datetime.fromtimestamp(atime, tz=timezone.utc)
-        assert member.created == datetime.fromtimestamp(ctime, tz=timezone.utc)
+        assert member.created is None
+        assert member.extra["zip.ctime"] == datetime.fromtimestamp(
+            ctime, tz=timezone.utc
+        )
 
 
 def test_duplicate_member_names_read_independently(tmp_path: Path) -> None:
@@ -1165,6 +1169,29 @@ def test_extended_timestamp_beats_ntfs(tmp_path: Path) -> None:
         assert member.modified == datetime.fromtimestamp(ut_mtime, tz=timezone.utc)
         assert member.accessed == datetime.fromtimestamp(nt_atime, tz=timezone.utc)
         assert member.created is None  # NTFS ctime was 0 = "not set"
+        assert "zip.ctime" not in member.extra
+
+
+def test_extended_timestamp_ctime_does_not_override_ntfs_birth_time(
+    tmp_path: Path,
+) -> None:
+    # NTFS creation time is a Windows birth time and stays in `created`; the UT third
+    # time (st_ctime) goes to extra["zip.ctime"] and no longer overwrites it.
+    nt_birth, ut_ctime = 1_500_000_000, 1_600_000_200
+    extra = _ntfs_extra(
+        _to_filetime(1_500_000_100), _to_filetime(1_500_000_100), _to_filetime(nt_birth)
+    ) + struct.pack("<HHBii", 0x5455, 9, 0x05, 1_600_000_000, ut_ctime)
+    path = tmp_path / "birth.zip"
+    info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
+    info.extra = extra
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(info, b"data")
+    with open_archive(path) as ar:
+        member = ar.get("t.txt")
+        assert member.created == datetime.fromtimestamp(nt_birth, tz=timezone.utc)
+        assert member.extra["zip.ctime"] == datetime.fromtimestamp(
+            ut_ctime, tz=timezone.utc
+        )
 
 
 def test_compressed_source_size(simple_zip: Path) -> None:

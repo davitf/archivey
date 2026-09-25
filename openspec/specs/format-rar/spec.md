@@ -364,10 +364,12 @@ mapping SHALL preserve RAR version semantics for `modified`, `accessed`, and
 RAR5 UTC/sub-second timestamps become timezone-aware UTC `datetime` values.
 `accessed` and `created` come from the RAR5 `0x03` time extra (`HAS_ATIME` /
 `HAS_CTIME`) or RAR3 EXTTIME; they SHALL be `None` when that extra or slot is
-absent. When `created` is present and `host_os` is known, the member SHALL set
-`extra["rar.created_is_ctime"]` to `True` for a Unix host (`host_os == 3`) and
-`False` otherwise — a Unix RARLAB writer stores `st_ctime` (inode-change) in
-the creation slot, not birth time. RAR5 Blake2sp-only members SHALL store the
+absent. The creation slot SHALL always be reported as stored in
+`extra["rar.ctime"]`. `created` SHALL carry it only when `host_os` names a
+birth-time host (Win32, or RAR3 MS-DOS / OS2 / Mac / BeOS) and SHALL be `None`
+for a Unix host (`host_os == 3`) or an unknown one: a Unix RARLAB writer
+stores `st_ctime` (inode change) in the creation slot, and `created` never
+holds `st_ctime`. RAR5 Blake2sp-only members SHALL store the
 digest bytes at `member.hashes["blake2sp"]` and omit `"crc32"`.
 
 A **RAR5 redirect** member — symlink, hard link, or file copy — SHALL surface **no**
@@ -391,11 +393,12 @@ member type.
 | Solid RAR | `ArchiveInfo.is_solid` true; `solid_block_count is None` |
 | RAR4 timestamp | `ArchiveMember.modified` is naive local wall-clock time |
 | RAR5 timestamp | `ArchiveMember.modified` is timezone-aware UTC |
-| RAR5 `-tsmca` archive | `modified` / `accessed` / `created` are timezone-aware UTC |
-| RAR4 `-tsmca` archive | `modified` / `accessed` / `created` are naive local wall-clock |
-| mtime-only archive (no atime/ctime extra) | `accessed` / `created` are `None`; `modified` populated |
-| Unix-written member with `created` set | `extra["rar.created_is_ctime"] is True` |
-| Win32-written member with `created` set | `extra["rar.created_is_ctime"] is False` |
+| RAR5 `-tsmca` archive | `modified` / `accessed` / `extra["rar.ctime"]` are timezone-aware UTC |
+| RAR4 `-tsmca` archive | `modified` / `accessed` / `extra["rar.ctime"]` are naive local wall-clock |
+| mtime-only archive (no atime/ctime extra) | `accessed` / `created` are `None`; no `rar.ctime`; `modified` populated |
+| Unix-written member with a creation slot | `created is None`; `extra["rar.ctime"]` holds the slot |
+| Win32-written member with a creation slot | `created` and `extra["rar.ctime"]` both hold the slot |
+| Member with an unknown `host_os` | `created is None`; `extra["rar.ctime"]` holds the slot when present |
 | RAR5 member with Blake2sp only | `"blake2sp"` present as bytes; `"crc32"` absent |
 | RAR5 symlink / hard link / file copy | `member.hashes` empty — never `crc32 == 0` |
 | RAR4 symlink (target stored as data) | `"crc32"` present, equal to the target string's CRC32 |

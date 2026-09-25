@@ -170,6 +170,7 @@ halts with `DiagnosticRaisedError`.
 | Non-Unix entry or missing attrs | `member.mode is None` |
 | Extended Timestamp carries modification time | `member.modified` is timezone-aware UTC from `0x5455`, overriding DOS / NTFS |
 | NTFS FILETIMEs present, no Extended Timestamp | Present `modified` / `accessed` / `created` fields are timezone-aware UTC from `0x000A` |
+| Extended Timestamp carries its third time | `extra["zip.ctime"]` holds it; `created` is only ever the NTFS creation time |
 | `flag_bits & 0x1` | `member.is_encrypted is True` |
 | Out-of-range NTFS or DOS timestamp | Fallback value used; `MEMBER_TIMESTAMP_INVALID` counted and may attach to member |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
