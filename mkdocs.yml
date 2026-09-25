@@ -16,6 +16,7 @@ nav:
   - Migrating from zipfile/tarfile: migrating.md
   - Platforms and threading: support-matrix.md
   - Philosophy: philosophy.md
+  - How it works: how-it-works.md
   - API reference: api.md
   - Acknowledgements: acknowledgements.md
 

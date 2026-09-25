@@ -140,6 +140,13 @@ seekability is declared **and** the known compressed input is at least
 so archives of many tiny entries do not pay per-stream accelerator setup. Set
 `use_rapidgzip=ON` to force the accelerator regardless of size, or `OFF` to disable it.
 
+The two settings differ when `rapidgzip` is not installed. `ON` is a request, so it
+raises `PackageNotInstalledError` naming `[seekable]` — even without
+`seekable_members=True`, at the first gzip, zlib or deflate stream it would handle.
+`AUTO` treats the accelerator as an enhancement and falls back to the stdlib decoder
+without raising. The stream is still seekable, but a backward seek may re-decode from
+the start. `use_indexed_bzip2` behaves the same way for bzip2.
+
 Declare seek only when you need it (e.g. parquet-in-zip random reads).
 
 ## Concurrent member streams
@@ -214,6 +221,27 @@ One residual is genuinely upstream and not contained: some **path**-source trunc
 and CRC mismatches can still `std::terminate` during worker finalization after a Python
 exception. Details:
 [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
+
+## Measuring what a read cost
+
+`reader.cost` predicts; `reader.io_stats()` counts. Counting is off by default and costs
+nothing then. It is decided when the reader is opened, so open inside
+`enable_measurement()`:
+
+```python
+from archivey import enable_measurement, open_archive
+
+with enable_measurement():
+    reader = open_archive("data.zip")
+
+with reader:
+    reader.read("file.txt")
+    stats = reader.io_stats()   # None if the reader was opened outside the block
+```
+
+The reader keeps counting after the `with` block ends. `io_stats()` returns `None` for
+a reader opened outside it. The fields are listed on
+[`IoStats`][archivey.IoStats]. The CLI's `--track-io` prints the same counters.
 
 ## Checklist
 

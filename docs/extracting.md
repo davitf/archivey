@@ -181,6 +181,7 @@ read `ExtractionResult.presented_name` and let extraction finish.
 | Policy | Intent |
 | --- | --- |
 | `STRICT` | Untrusted archives (default) |
+| `STANDARD` | Archives you trust more, such as your own older ones. Keeps the stored permission bits, execute included, but strips setuid, setgid and sticky and never applies ownership. Keeps trailing dots and spaces in names; the other name rules are the same as under `STRICT` |
 | `TRUSTED` | Allow ownership / sticky bits when running as root; still no traversal |
 
 Selective extract on an open reader:
@@ -252,6 +253,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` on `Archive
 Loosen per call with `limits=` (extraction only), raise `listing_limits` or
 `decoder_limits` at `open_archive(config=…)`, or use `ExtractionLimits.UNLIMITED` /
 `ListingLimits.UNLIMITED` / `DecoderLimits.UNLIMITED` for trusted inputs you control.
+An open reader keeps the config it was opened with: `extract_all()` takes no `config=`,
+and its `limits=` covers extraction limits only. To raise a listing or decoder ceiling,
+open the archive again with a new `ArchiveyConfig`.
 
 Bomb guards apply during **extraction**. Listing caps apply when a full member list is
 materialized — prefer `stream_members()` for huge untrusted archives when you only need

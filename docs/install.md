@@ -29,6 +29,46 @@ RARLAB `unrar` or `rar` **6.0 or later** on `PATH` — not `unrar-free`, `unar`,
 `rarfile` accepts those last two as data backends; archivey does not: they either cannot
 read solid RAR or fail silently on it. Listing and metadata work without it.
 
+What each install line adds, by what you type. [Formats and extras](formats.md) stays
+the authority on what each format can do:
+
+| You install | It adds |
+| --- | --- |
+| `archivey` (core) | ZIP, TAR, directories, 7z with its common codecs, and RAR listing and metadata. The stdlib codecs — gzip, bzip2, xz, LZMA, zlib — plus lzip and `.Z`, as single files and inside TAR. zstd too on Python 3.14 and later |
+| `[recommended]` | ISO, `.lz4`, Brotli, zstd before Python 3.14; PPMd, Deflate64 and zstd members in ZIP and 7z, and Brotli members in 7z; AES encryption in 7z, WinZip AES ZIP and RAR headers; progress bars in the CLI |
+| `[seekable]` | No new format. `seekable_members=True` streams over gzip, zlib, raw deflate and bzip2 use `rapidgzip` for random access |
+| `[free-threaded]` | The part of `[recommended]` that keeps the GIL disabled: ISO, `.lz4`, zstd, CLI progress bars, and AES on 3.14t. Not PPMd, Deflate64, Brotli or `[seekable]` |
+| `[all]` | `[recommended]` and `[seekable]` |
+
+### Check what this install can read
+
+`format_availability()` answers at runtime, so a program can check a format before it
+promises a user that it works:
+
+```python
+from archivey import FormatSupport, format_availability
+
+availability = format_availability("7z")
+if availability.support is not FormatSupport.FULL:
+    for component in availability.missing:
+        print(component.name, component.install_hint)
+```
+
+- **`FULL`** — the format opens, and every optional codec it can use is installed.
+- **`PARTIAL`** — the format opens and lists, and members in its common codecs read. A
+  member that needs a missing codec raises `PackageNotInstalledError` when you read it.
+  Only ZIP and 7z can be `PARTIAL`.
+- **`NONE`** — the format cannot be opened. `open_archive()` raises
+  `UnsupportedFormatError` naming the package: ISO without `pycdlib`, `.lz4` without
+  `lz4`, `.tar.zst` without a zstd backend.
+
+`missing` names each absent package with the `pip install` line that adds it, and is
+empty when support is `FULL`. Two requirements are not counted: `cryptography`, which
+only encrypted members need, and `unrar`, so RAR reports `FULL` whatever is on `PATH`.
+`list_supported_formats()` returns every format that is `FULL` or `PARTIAL`. Whether a
+format can be read from a pipe is a separate question, answered by `required_source` on
+[Opening and listing](opening-and-listing.md).
+
 ## Getting RARLAB `unrar` or `rar`
 
 Listing a RAR works without either. Reading member bytes does not. Archivey looks for

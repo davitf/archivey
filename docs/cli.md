@@ -36,6 +36,28 @@ archivey extract photos.zip -d out/ '*.py' --exclude '*_test.py'
 archivey extract photos.zip --policy trusted -d /tmp/out
 ```
 
+### Defaults that differ from the library
+
+`archivey extract` uses the library's `policy=strict`, but two of its defaults differ
+from `archivey.extract()`. They are what breaks a script ported from one to the other:
+
+| Setting | CLI default | Library default |
+| --- | --- | --- |
+| Name collision | `--overwrite rename` (`photo (1).jpg`) | `OverwritePolicy.ERROR` |
+| Member failure | continue and report; exit `1` at the end | `OnError.STOP`: raise at the first one |
+
+Where the library raises, the CLI finishes the run and reports. To get the library's
+behaviour, pass `--overwrite error --stop-on-error`. For the CLI's in Python, pass
+`overwrite="rename", on_error="continue"`.
+
+### Passwords
+
+`--password` puts the password on the command line, where other users of the machine can
+see it in the process list (`ps`) and your shell may keep it in its history. Leave it out
+if you can: when an archive needs a password and stdin is a terminal, `archivey` asks for
+it without echoing. With no terminal, as in a pipe or a cron job, it does not ask, and the
+encrypted members fail as if no password had been given.
+
 ### Notes
 
 - Verbs are bare words (`x`, `list`); dash-prefixed forms like `-x` are not mode selectors.
@@ -58,6 +80,9 @@ archivey extract photos.zip --policy trusted -d /tmp/out
   `--overwrite` says: it uses the next free `name (N)` instead. Pass `-d name` to
   extract through the link on purpose.
 - `test` exits `1` when its summary reports members as not tested, even if none failed.
+- Member names, paths and messages are printed with control characters escaped, so a
+  hostile name cannot rewrite the terminal line that reports it
+  (see [Errors and diagnostics](errors-and-diagnostics.md#the-exception-tree)).
 - Exit codes: `0` success, `1` operation failed or extract aborted on a member
   failure (`--stop-on-error`), `2` usage error (argparse), `3` extract
   **completed** with ≥1 safety-policy block and no member failure (safe members
