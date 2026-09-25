@@ -149,6 +149,11 @@ _SPHINX_ROLE_RE = re.compile(
 )
 
 
+# Marks the inline code a role became, so ``scripts/check_docs_rendered.py`` can tell a
+# role that failed to resolve from mkdocstrings' own optional references (annotations).
+ROLE_CODE_CLASS = "sphinx-role"
+
+
 class SphinxRolesToAutorefs(Extension):
     """Render Sphinx cross-reference roles as links instead of leaking them as text.
 
@@ -168,7 +173,9 @@ class SphinxRolesToAutorefs(Extension):
     This runs on ``on_package``, after every object exists, so bare names can resolve.
     By then other extensions may already have parsed a docstring (and edited the parsed
     sections), so both the raw value and any parsed sections are rewritten.
-    ``scripts/check_docs_rendered.py`` checks the built site for any role that survives.
+    ``scripts/check_docs_rendered.py`` checks the built site for any role that survives,
+    and for any role target that did not resolve to a link and is not on its list of
+    targets known to have no anchor.
     """
 
     def on_package(self, *, pkg: Module, **kwargs: Any) -> None:
@@ -248,7 +255,7 @@ def _render_role(obj: Object, match: re.Match[str], public: dict[str, str]) -> s
     identifier = _resolve(obj, target, public)
     return (
         f'<autoref identifier="{html.escape(identifier)}" optional>'
-        f"<code>{html.escape(title)}</code></autoref>"
+        f'<code class="{ROLE_CODE_CLASS}">{html.escape(title)}</code></autoref>'
     )
 
 

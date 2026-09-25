@@ -180,10 +180,9 @@ naming what the branch moved, paragraphs edited and not rewrapped, "fails on `ma
 claims) before a review round is spent on them. `address-review-findings` §5 says how to
 read its output.
 
-`check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs: `ruff check`,
-`ruff format --check`, `pyrefly`, `ty`, `check_openspec_archived.py`,
-`openspec validate --all`, `check_docs_nav.py`, strict docs build. It runs every gate even
-after one fails and names what failed, so one run gives you the whole picture; without
+`check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs (the script is the list of
+gates). It runs every gate even after one fails and names what failed, so one run gives
+you the whole picture; without
 `--fix` it writes nothing. `test.sh --all-configs` restores `uv.lock` and the everyday
 environment on exit, so the `[all-lowest]` leg cannot leave a downgraded resolution behind.
 

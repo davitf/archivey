@@ -1,4 +1,4 @@
-"""Assert no Sphinx cross-reference role survives into the built docs site.
+"""Assert every Sphinx cross-reference role in the docstrings renders as intended.
 
 The docstrings use Sphinx roles (``:class:`~archivey.ArchiveMember```), and
 mkdocstrings does not understand them. ``scripts/griffe_extensions.py`` rewrites them
@@ -6,10 +6,20 @@ into links at build time; before it did, 129 of them reached the published API p
 literal text (``:class:~archivey.ArchiveMember``), and ``mkdocs build --strict`` was
 green the whole time. It has nothing to warn about: to Markdown a role is just text.
 
-This scans the built HTML (and the search index, which is what search results show)
-for any role that got through: a new docstring spelling the extension does not match,
-a role written into a page under ``docs/``, or the extension being dropped from
-``mkdocs.yml``.
+Two checks over the built site:
+
+**No role leaks as text.** The HTML and the search index (which is what search results
+show) must hold no role: a new docstring spelling the extension does not match, a role
+written into a page under ``docs/``, or the extension dropped from ``mkdocs.yml``.
+
+**Every role resolves, or is known not to.** The extension emits *optional* autorefs,
+and an optional reference that finds no anchor falls back to plain code at DEBUG level,
+so ``--strict`` never reports it. A renamed public symbol, or a broken mapping from
+defining module to public path, would otherwise turn links into plain code silently.
+The extension marks the code it emits with ``class="sphinx-role"``; one that renders
+inside ``<span title="target">`` rather than a link did not resolve. Its target must be
+in ``UNRESOLVED_OK`` below, and every entry there must still occur, so the list cannot
+go stale.
 
 Run after a build:
 
@@ -29,6 +39,42 @@ from pathlib import Path
 LEAKED_ROLE_RE = re.compile(
     r":(?:py:)?(?:class|func|meth|attr|data|const|exc|mod|obj|any):(?:[`~\w<&]|\\u003c)"
 )
+
+
+# autorefs renders an optional reference with no anchor as <span title="identifier">.
+UNRESOLVED_RE = re.compile(r'<span title="([^"]*)"><code class="sphinx-role">')
+ROLE_MARKER = 'class="sphinx-role"'
+
+# Role targets that exist but have no anchor on the site, so they render as plain code.
+# Adding to this list is a decision that the reference is fine unlinked; removing an
+# entry is required once the target gains an anchor or its last role goes away.
+UNRESOLVED_OK = {
+    # Not documented on the API page (internal, or public but not in docs/api.md).
+    "archivey.ARCHIVE_INTEGRITY_CODES",
+    "archivey.DEFAULT_ARCHIVEY_CONFIG",
+    "archivey.ExtractionError",
+    "archivey.FormatDetectionError",
+    "archivey.FormatInfo",
+    "archivey.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
+    "archivey.detection_cost.BALANCED_BUDGET",
+    "archivey.exceptions.raw_message_of",
+    # Members the page shows in a table or not at all, so they get no heading anchor.
+    "archivey.ArchiveFormat.DIRECTORY",
+    "archivey.ArchiveyError.__str__",
+    "archivey.DecoderLimits.UNLIMITED",
+    "archivey.DecoderLimits.max_key_derivation_rounds",
+    "archivey.Diagnostic.to_dict",
+    "archivey.ExtractionLimits.UNLIMITED",
+    "archivey.ListingLimits.UNLIMITED",
+    # Standard library: the site has no inventory for Python's own docs.
+    "ascii",
+    "dataclasses.replace",
+    "repr",
+    # ArchiveMember properties: folded into the class's table (PropertyFieldExtension),
+    # so they are no longer members to resolve against, and have no anchor anyway.
+    "is_junction",
+    "is_reparse_point",
+}
 
 
 def main(argv: list[str]) -> int:
@@ -54,7 +100,34 @@ def main(argv: list[str]) -> int:
             "scripts/griffe_extensions.py the new spelling."
         )
         return 1
-    print(f"ok: no Sphinx roles in {len(files)} built files")
+
+    html_files = [path for path in files if path.suffix == ".html"]
+    html = [path.read_text(encoding="utf-8") for path in html_files]
+    total = sum(text.count(ROLE_MARKER) for text in html)
+    if total == 0:
+        print(
+            f"error: no {ROLE_MARKER} in the built site; the resolution check would "
+            "pass vacuously (is SphinxRolesToAutorefs still in mkdocs.yml?)"
+        )
+        return 1
+    unresolved = [target for text in html for target in UNRESOLVED_RE.findall(text)]
+    unexpected = sorted(set(unresolved) - UNRESOLVED_OK)
+    stale = sorted(UNRESOLVED_OK - set(unresolved))
+    if unexpected or stale:
+        for target in unexpected:
+            print(f"role target did not resolve to a link: {target}")
+        for target in stale:
+            print(f"UNRESOLVED_OK entry no longer occurs, remove it: {target}")
+        print(
+            "\nFix the docstring's target, or record it in UNRESOLVED_OK in "
+            "scripts/check_docs_rendered.py if it genuinely has no anchor."
+        )
+        return 1
+    print(
+        f"ok: no Sphinx roles in {len(files)} built files; "
+        f"{total - len(unresolved)} of {total} role references link, "
+        f"{len(unresolved)} are known to have no anchor"
+    )
     return 0
 
 

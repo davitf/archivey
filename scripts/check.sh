@@ -6,7 +6,7 @@
 # scripts/test.sh, which takes minutes rather than seconds, and the two get run at
 # different cadences.
 #
-# It exists because the gate is seven commands and people were running one of them.
+# It exists because the gate is a dozen commands and people were running one of them.
 # Pushing after `ruff` alone, with `pyrefly` or `ty` red, is the most common
 # self-inflicted CI failure in this repo.
 #
@@ -85,8 +85,14 @@ fi
 # syncs on demand instead of using --no-sync.
 run "docs nav"   uv run --group docs python scripts/check_docs_nav.py
 run "internal md links" uv run --no-sync python scripts/check_internal_md_links.py
-run "docs build" uv run --group docs mkdocs build --strict --quiet
-run "docs roles" python3 scripts/check_docs_rendered.py site
+# `docs roles` reads the site `docs build` just wrote, so it runs only when that build
+# succeeded: against a stale or missing `site/` it would report a build that is not this
+# tree's.
+if run "docs build" uv run --group docs mkdocs build --strict --quiet; then
+  run "docs roles" python3 scripts/check_docs_rendered.py site
+else
+  printf '\n\033[1m=== docs roles\033[0m\nSKIPPED — needs the site from `docs build`, which failed\n'
+fi
 
 # --- verdict -----------------------------------------------------------------------
 if [ ${#FAILED[@]} -eq 0 ]; then
