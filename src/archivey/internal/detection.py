@@ -575,6 +575,21 @@ def _resolve_budget(
     return DetectionBudget.for_preset(preset)
 
 
+def directory_format_info() -> FormatInfo:
+    """The fixed answer for a directory source, shared by ``detect_format`` and the
+    reader ``open_archive`` builds over a directory.
+
+    Nothing is read, so the receipt is the zero one: every other return carries a
+    receipt, and callers compare them across sources.
+    """
+    return FormatInfo(
+        ArchiveFormat.DIRECTORY,
+        DetectionConfidence.CERTAIN,
+        "directory",
+        cost_receipt=MutableDetectionCostReceipt().freeze(),
+    )
+
+
 def detect_format(
     source: str | Path | BinaryIO,
     *,
@@ -619,14 +634,7 @@ def detect_format(
     require_source(source)
     check_config(config, call="detect_format(config=…)")
     if _is_directory_source(source):
-        # Nothing is read, so the receipt is the zero one: every other return
-        # carries a receipt, and callers compare them across sources.
-        return FormatInfo(
-            ArchiveFormat.DIRECTORY,
-            DetectionConfidence.CERTAIN,
-            "directory",
-            cost_receipt=MutableDetectionCostReceipt().freeze(),
-        )
+        return directory_format_info()
 
     owned_collector = collector is None
     if owned_collector:

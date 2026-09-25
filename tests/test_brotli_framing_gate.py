@@ -226,11 +226,12 @@ def test_guess_decode_failure_sets_format_unconfirmed() -> None:
 
 
 @requires("brotli")
-def test_probable_br_decode_failure_does_not_set_unconfirmed(tmp_path: Path) -> None:
+def test_br_cut_above_completion_window_does_not_set_unconfirmed(
+    tmp_path: Path,
+) -> None:
     # Truncated real Brotli with .br extension: the probe accepts it and the extension
     # corroborates the probe. The cut has to leave more than the probe can check whole
-    # (the completion window); a shorter truncated stream is refused by the probe, the
-    # extension alone decides, and the failure is stamped as extension-only instead.
+    # (the completion window); the shorter cut is the next test.
     from archivey.detection_cost import BALANCED_BUDGET
 
     path = tmp_path / "x.br"
@@ -243,6 +244,27 @@ def test_probable_br_decode_failure_does_not_set_unconfirmed(tmp_path: Path) -> 
             reader.open(next(iter(reader))).read()
     assert caught.value.format_unconfirmed is False
     assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in {d.code for d in diagnostics}
+
+
+@requires("brotli")
+def test_br_cut_below_completion_window_is_extension_only(tmp_path: Path) -> None:
+    # A shorter cut fits inside the completion window, so the probe checks the whole
+    # source, sees it never finish, and declines. Only the .br name is left, and the
+    # failed read is stamped as an extension-only identification.
+    import brotli
+
+    full = brotli.compress(b"enough payload " * 200)
+    path = tmp_path / "x.br"
+    path.write_bytes(full[: len(full) // 3])
+    diagnostics: list[Diagnostic] = []
+    config = ArchiveyConfig(on_diagnostic=diagnostics.append)
+    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        with open_archive(path, config=config) as reader:
+            reader.open(next(iter(reader))).read()
+    assert caught.value.format_unconfirmed is True
+    codes = [d.code for d in diagnostics]
+    assert codes.count(DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED) == 1
+    assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in codes
 
 
 @requires("brotli")

@@ -48,7 +48,7 @@ from archivey.internal.backends.zip_detect import (
     is_zip_split_segment_name,
 )
 from archivey.internal.config import stream_config_from_archivey
-from archivey.internal.detection import detect_format
+from archivey.internal.detection import detect_format, directory_format_info
 from archivey.internal.diagnostics_collector import collector_from_config
 from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.format_args import (
@@ -450,7 +450,7 @@ def _open_resolved(
     # What ``reader.format_info`` reports. A directory is decided without running
     # detection, but ``detect_format`` gives it a fixed answer, so the reader does too.
     format_info: FormatInfo | None = (
-        FormatInfo(ArchiveFormat.DIRECTORY, DetectionConfidence.CERTAIN, "directory")
+        directory_format_info()
         if archive_source.is_directory and format is None
         else None
     )

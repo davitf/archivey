@@ -90,7 +90,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `backup.gz`), the read error now has `format_unconfirmed=True`, its message says the
   identification rested on the extension only, and `EXTENSION_FORMAT_UNCONFIRMED` is
   emitted, as it already was for an empty listing. It used to look like a damaged gzip
-  file.
+  file. The same now holds for a real Brotli file named `x.br` that was cut short: once
+  less than the detection budget's completion window remains, the probe declines it and
+  the name decides, so its read error carries the flag too.
 - **A Windows symlink to a network share keeps its `//server/share` target.** A ZIP or
   7z reparse buffer that named its target only as `\??\UNC\server\share` listed
   the link as pointing at the relative path `UNC/server/share`, and extraction created

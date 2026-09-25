@@ -49,7 +49,9 @@ class FormatProvenance:
     probe_only: bool = False
     """True when detection chose the format via a content probe with no corroboration.
 
-    That is the channel for ``format_unconfirmed`` on a later decode failure, at any
-    ``DetectionConfidence``. Magic, SFX, extension, and probe hits corroborated by a
-    matching extension or an inner-TAR upgrade leave this ``False``.
+    That is the probe channel for ``format_unconfirmed`` on a later decode failure, at
+    any ``DetectionConfidence``; the other is ``chosen_by == "extension"``, which is
+    stamped through that field and leaves this one ``False``. Magic, SFX, and probe hits
+    corroborated by a matching extension or an inner-TAR upgrade leave it ``False`` and
+    are not stamped.
     """

@@ -166,6 +166,10 @@ info = archivey.detect_format("mystery.bin")
 print(info.format, info.confidence)
 ```
 
+Already have a reader? `reader.format_info` is the same answer from the detection
+`open_archive` ran, so it costs nothing extra. It is `None` when you passed `format=`,
+since no detection ran.
+
 **Content wins over filename.** Archivey looks at the bytes first and falls back to
 the extension only when they are inconclusive. When the two disagree it uses the
 bytes and tells you, via a `FORMAT_EXTENSION_CONFLICT`

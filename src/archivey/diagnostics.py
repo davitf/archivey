@@ -436,11 +436,13 @@ and the reasons are part of the contract rather than an oversight:
   halts the caller is not an override.
 - ``STREAM_REWIND_REDECOMPRESSES`` — reports the caller's access pattern rather than the
   archive, and is most useful as a deliberately targeted tripwire.
-- ``PROBE_FORMAT_UNCONFIRMED`` — emitted while stamping a typed ``TruncatedError`` /
-  ``CorruptionError`` that already carries ``format_unconfirmed=True``. Putting it in
-  ``strict`` would replace that typed error with ``DiagnosticRaisedError`` mid-raise.
-  Default disposition is COLLECT (via ``DiagnosticPolicy``'s default); it is not a
-  member of :data:`ARCHIVE_INTEGRITY_CODES`.
+- ``PROBE_FORMAT_UNCONFIRMED`` — a probe-only identification is an advisory about
+  what the file *is* (its bytes passed that format's content check), not a finding
+  about the archive's own bytes, and it only accompanies a read that already failed
+  with a typed error that carries ``format_unconfirmed=True``. A policy that resolves
+  it to RAISE still gets that typed error, through ``escalate_as``. Its sibling
+  ``EXTENSION_FORMAT_UNCONFIRMED`` is **in** the set: it also fires on an
+  extension-only empty listing, a successful open that no byte confirmed.
 - ``MEMBER_SELECTOR_UNMATCHED`` — reports the caller's ``members=`` argument, not the
   archive. A job that passes one fixed list of names to many archives would otherwise
   raise on every archive that lacks one of them.

@@ -421,9 +421,15 @@ unencrypted archive; `EXPLICIT_FORMAT_LISTED_EMPTY` because `format=` is an over
 and an override that halts the caller is not an override; and
 `STREAM_REWIND_REDECOMPRESSES` because it reports the caller's access pattern rather
 than the archive, and is most useful as a deliberately targeted tripwire;
-`PROBE_FORMAT_UNCONFIRMED` because it is emitted while stamping a typed
-`TruncatedError` / `CorruptionError` that already carries `format_unconfirmed=True`,
-and putting it in `strict` would replace that typed error with `DiagnosticRaisedError`.
+`PROBE_FORMAT_UNCONFIRMED` because a probe-only identification is an advisory about
+what the file *is* (its bytes did pass that format's content check), not a finding
+about the archive's own bytes, and the code only ever accompanies a read that has
+already failed with a typed error, so `strict` would have nothing further to stop.
+(The emit keeps that typed error through `escalate_as` when a policy does resolve the
+code to RAISE, so the exclusion is not what protects it.)
+`EXTENSION_FORMAT_UNCONFIRMED`, its sibling, is **in** the set because it also fires
+on a successful open: an extension-only empty listing, where no byte confirmed the
+format at all, is exactly the case a `strict` caller wants stopped.
 
 Presets SHALL return ordinary frozen `DiagnosticPolicy` values with per-code
 overrides — no new resolution axis, and no field on `Diagnostic`. A caller MAY build
@@ -501,8 +507,9 @@ fact. The exception attribute and the diagnostic are two views of one provenance
 neither replaces the other.
 
 `PROBE_FORMAT_UNCONFIRMED` SHALL NOT be a member of the `ARCHIVE_INTEGRITY_CODES`
-strict set: it is emitted while stamping a typed `TruncatedError` / `CorruptionError`,
-and putting it in `strict` would replace that typed error with `DiagnosticRaisedError`.
+strict set: a probe-only identification is an advisory about what the file is, not a
+finding about the archive's own bytes, and the code only accompanies a read that has
+already failed with a typed `TruncatedError` / `CorruptionError`.
 Default disposition is COLLECT. When a caller's policy resolves this code to RAISE
 (notably `DiagnosticPolicy.pedantic()`), the emit SHALL surface the same typed error
 via `escalate_as` (carrying `format_unconfirmed=True`) rather than

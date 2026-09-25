@@ -438,11 +438,12 @@ A corroborated result keeps today's type, message, and `format_unconfirmed=False
 | Probe-only Brotli result, **compressed-first** (`PROBABLE`), decode fails | Same treatment — stamped. Confidence does not gate the signal |
 | Probe-only **LZMA Alone** result (`PROBABLE`), decode fails | Same treatment — stamped |
 | Probe-only **LZMA Alone** result whose header declares a dictionary over `max_decoder_memory` | `ResourceLimitError`, stamped: `format_unconfirmed is True`; message names unconfirmed identification and a limit stop, not a decode failure; `PROBE_FORMAT_UNCONFIRMED` diagnostic |
-| Probe match corroborated by extension, decode fails | Ordinary truncation/corruption message; `format_unconfirmed is False`; no probe-unconfirmed diagnostic |
+| Probe match corroborated by extension, decode fails | Ordinary truncation/corruption message; `format_unconfirmed is False`; no probe-unconfirmed diagnostic. A source the probe declined is not a probe match: a `.br` cut below the completion window falls to the extension-only requirement below |
 | Probe hit upgraded to `TAR_BROTLI` via an inner-TAR header, decode fails | Corroborated: `format_unconfirmed is False` |
 | Probe-only result, decode succeeds | Success; no error and no diagnostic |
 | Decode fails after bytes were already delivered | Error still raised; message does not claim zero output |
 | `DiagnosticPolicy.pedantic()`, probe-only decode fails | Same typed error with `format_unconfirmed=True` — not `DiagnosticRaisedError` |
+| Format came from exact magic, decode fails | Untouched — this requirement does not apply |
 
 ### Requirement: A decode failure on an extension-only format names its provenance
 
@@ -457,10 +458,14 @@ added for it. Forty thousand zero bytes named `backup.gz` are the measured case:
 this, the read raised `CorruptionError` with `format_unconfirmed=False`, as if a real gzip
 file were damaged.
 
-`EXTENSION_FORMAT_UNCONFIRMED` is in `ARCHIVE_INTEGRITY_CODES`, so a `strict` policy
-resolves it to RAISE; the emit SHALL then surface the same typed error via `escalate_as`,
-as the probe code does under `pedantic()`, never `DiagnosticRaisedError`. It is emitted
-at most once per reader for a failed read.
+`EXTENSION_FORMAT_UNCONFIRMED` is in `ARCHIVE_INTEGRITY_CODES`, where
+`PROBE_FORMAT_UNCONFIRMED` is not, because the extension code also reports a successful
+open that no byte confirmed (an extension-only empty listing), which `strict` exists to
+stop; a probe-only identification is an advisory about what the file is (see
+`diagnostics`). So a `strict` policy resolves the extension code to RAISE; on a failed
+read the emit SHALL then surface the same typed error via `escalate_as`, as the probe
+code does under `pedantic()`, never `DiagnosticRaisedError`. It is emitted at most once
+per reader for a failed read.
 
 A filename that agrees with a content-probe hit still corroborates it: that failure stays
 unstamped, as above.
@@ -472,7 +477,7 @@ unstamped, as above.
 | 40 000 zero bytes named `backup.gz`, opened | `CorruptionError`; `format_unconfirmed is True`; message says "extension only"; `EXTENSION_FORMAT_UNCONFIRMED` with `chosen_by="extension"` |
 | Same file under `DiagnosticPolicy.strict()` | The same typed `CorruptionError`, not `DiagnosticRaisedError` |
 | A real gzip file cut short (exact magic) | Unchanged: `format_unconfirmed is False`; no unconfirmed diagnostic |
-| Format came from exact magic, decode fails | Untouched — this requirement does not apply |
+| A real Brotli stream named `x.br`, cut to less than the detection budget's completion window | **Changed**: the probe re-checks the whole source and declines, so the extension decides; `TruncatedError` or `CorruptionError` with `format_unconfirmed is True` and one `EXTENSION_FORMAT_UNCONFIRMED`. It used to be unstamped |
 
 ### Requirement: Object-typed public arguments are refused at the boundary
 

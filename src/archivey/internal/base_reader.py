@@ -1018,6 +1018,10 @@ class BaseArchiveReader(ArchiveReader):
         escalate_kwargs: dict[str, object] | None = None,
         read_failed: bool = False,
     ) -> None:
+        # ``read_failed`` picks which event the code reports. Only ``"extension"``
+        # has both: an empty listing (False) and a failed decode (True). The probe
+        # code is only emitted on a failed read, so ``"content_probe"`` ignores the
+        # flag; ``"argument"`` only ever reports an empty listing.
         if chosen_by == "argument":
             code = DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY
         elif chosen_by == "extension":

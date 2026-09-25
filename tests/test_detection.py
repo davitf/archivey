@@ -1306,4 +1306,8 @@ def test_reader_keeps_the_detection_it_opened_by(tmp_path: Path) -> None:
     tree = tmp_path / "tree"
     tree.mkdir()
     with open_archive(tree) as reader:
+        # cost_receipt is compare=False on FormatInfo, so check it separately: both
+        # paths share one answer, zero receipt included.
         assert reader.format_info == detect_format(tree)
+        assert reader.format_info is not None
+        assert reader.format_info.cost_receipt == detect_format(tree).cost_receipt
