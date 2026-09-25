@@ -236,9 +236,6 @@ def test_seek_to_start_rereads(member: tuple[Path, str]) -> None:
 
 _BY_ID: dict[str, CorpusEntry] = {e.id: e for e in CORPUS}
 
-_DECRYPT_WRAPPER_REASON = "decrypting stream wrapper does not seek"
-_DECRYPT_WRAPPER_XFAIL = pytest.mark.xfail(strict=True, reason=_DECRYPT_WRAPPER_REASON)
-
 
 @dataclass(frozen=True)
 class _SeekSpec:
@@ -258,11 +255,11 @@ class _SeekSpec:
 _SEEK_ARCHIVES: tuple[_SeekSpec, ...] = (
     # ZIP store / deflate / bzip2 / lzma
     _SeekSpec("zip-compression-methods", "zip"),
-    # ZipCrypto (stdlib decryptor already seeks)
+    # ZipCrypto (the decrypt stage rewinds, or decrypts what it skips)
     _SeekSpec("encrypted", "zip"),
     _SeekSpec("encrypted-mixed", "zip"),
-    # WinZip AES (decrypt wrapper — xfail on encrypted members; mixed
-    # plaintext member is per-file and must still seek)
+    # WinZip AES (CTR restarts at the target block; the mixed archive's
+    # plaintext member is per-file and seeks as an unencrypted one)
     _SeekSpec("encrypted", "zip-aes"),
     _SeekSpec("encrypted-mixed", "zip-aes"),
     # 7z solid LZMA2 (`basic`), stored COPY, encrypted (now seeks).
@@ -311,18 +308,7 @@ def _is_only_stored(member) -> bool:
     return bool(chain) and all(c.algo is CompressionAlgorithm.STORED for c in chain)
 
 
-def _decrypt_wrapper_member(key: str, spec: _SeekSpec, corpus_member) -> bool:
-    """WinZip AES members still use a non-seeking decrypt wrapper.
-
-    ZIP AES is per-member: only a corpus file with a password is wrapped.
-    Encrypted 7z members seek (CBC restart); they are not in this xfail.
-    """
-    if key == "zip-aes":
-        return corpus_member.password is not None
-    return False
-
-
-def _seek_member_params(*, requested: bool) -> list:
+def _seek_member_params() -> list:
     params = []
     for spec in _SEEK_ARCHIVES:
         entry = _BY_ID[spec.entry_id]
@@ -334,14 +320,10 @@ def _seek_member_params(*, requested: bool) -> list:
         for member in entry.members:
             if member.type is not MemberType.FILE:
                 continue
-            marks = []
-            if requested and _decrypt_wrapper_member(spec.key, spec, member):
-                marks.append(_DECRYPT_WRAPPER_XFAIL)
             params.append(
                 pytest.param(
                     spec,
                     member.name,
-                    marks=marks,
                     id=f"{spec.entry_id}/{spec.key}/{member.name}",
                 )
             )
@@ -398,7 +380,7 @@ def _assert_packing(spec: _SeekSpec, member, *, name: str) -> None:
         )
 
 
-@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params(requested=False))
+@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params())
 def test_corpus_default_member_stream_is_not_seekable(
     spec: _SeekSpec, member_name: str, tmp_path: Path
 ) -> None:
@@ -411,7 +393,7 @@ def test_corpus_default_member_stream_is_not_seekable(
                 f.seek(0)
 
 
-@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params(requested=True))
+@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params())
 def test_corpus_seekable_members_seek_and_reread(
     spec: _SeekSpec, member_name: str, tmp_path: Path
 ) -> None:

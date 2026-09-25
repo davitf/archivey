@@ -553,3 +553,106 @@ def test_aes_lone_colliding_password_fails_on_the_hmac(
     with open_archive(io.BytesIO(data), password=_COLLIDER) as ar:
         with pytest.raises(CorruptionError, match="HMAC"):
             ar.read(ar.members()[0])
+
+
+def _ctr_stream(payload: bytes, *, tamper_mac: bool = False) -> WinZipAesDecryptStream:
+    """A decrypt stream over ``payload`` encrypted as WinZip AES-256, MAC appended."""
+    enc_key, auth_key = os.urandom(32), os.urandom(32)
+    cipher = aes_ctr_le_encrypt(enc_key, payload)
+    mac = hmac.new(auth_key, cipher, hashlib.sha1).digest()[:10]
+    if tamper_mac:
+        mac = bytes([mac[0] ^ 1]) + mac[1:]
+    return WinZipAesDecryptStream(
+        io.BytesIO(cipher + mac),
+        enc_key=enc_key,
+        auth_key=auth_key,
+        cipher_len=len(cipher),
+    )
+
+
+@requires("cryptography")
+def test_aes_decrypt_stream_seeks_at_every_block_phase() -> None:
+    # The counter for byte p is 1 + p // 16 and the stage discards p % 16 keystream
+    # bytes; every phase of the first blocks, and backward after forward.
+    payload = os.urandom(100)
+    stream = _ctr_stream(payload)
+    for target in [*range(0, 50), 99, 100, 17, 0, 64, 3]:
+        assert stream.seek(target) == target
+        assert stream.tell() == target
+        assert stream.read(7) == payload[target : target + 7]
+        assert stream.tell() == min(target + 7, 100)
+    assert stream.seek(-10, io.SEEK_END) == 90
+    assert stream.read() == payload[90:]
+    assert stream.seek(-5, io.SEEK_CUR) == 95
+    assert stream.read() == payload[95:]
+
+
+@requires("cryptography")
+def test_aes_decrypt_stream_seek_forfeits_the_hmac() -> None:
+    payload = os.urandom(100)
+    stream = _ctr_stream(payload, tamper_mac=True)
+    stream.seek(5)
+    assert stream.read() == payload[5:]  # no HMAC verdict after a seek
+
+
+@requires("cryptography")
+def test_aes_decrypt_stream_seek_to_current_position_keeps_the_hmac() -> None:
+    payload = os.urandom(100)
+    stream = _ctr_stream(payload, tamper_mac=True)
+    assert stream.read(20) == payload[:20]
+    stream.seek(20)
+    with pytest.raises(CorruptionError, match="HMAC"):
+        stream.read()
+
+
+@pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
+@requires("cryptography")
+def test_aes_member_seeks(method: int) -> None:
+    payload = os.urandom(5000) + _PAYLOAD
+    data = _build_aes_zip(
+        payload=payload,
+        password=_PASSWORD,
+        vendor_version=1,
+        strength=3,
+        method=method,
+    )
+    with open_archive(
+        io.BytesIO(data), password=_PASSWORD, seekable_members=True
+    ) as ar:
+        with ar.open(ar.members()[0]) as stream:
+            assert stream.seekable()
+            stream.seek(4099)
+            assert stream.read(100) == payload[4099:4199]
+            stream.seek(17)
+            assert stream.read() == payload[17:]
+            stream.seek(0)
+            assert stream.read() == payload
+
+
+@requires("cryptography")
+def test_aes_stored_out_of_range_seeks_match_an_unencrypted_member() -> None:
+    """A STORED member's seek reaches the decrypt stage directly, and lands where the
+    same member unencrypted does: a relative underflow clamps to 0 and a past-end
+    seek keeps its position."""
+    payload = b"hello"
+    encrypted = _build_aes_zip(
+        payload=payload, password=_PASSWORD, vendor_version=2, strength=3, method=0
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("x.txt", payload)
+    results = []
+    for blob in (encrypted, buf.getvalue()):
+        with open_archive(
+            io.BytesIO(blob), password=_PASSWORD, seekable_members=True
+        ) as ar:
+            with ar.open(ar.members()[0]) as stream:
+                out: list[object] = []
+                for offset, whence in (
+                    (-10, io.SEEK_END),
+                    (-100, io.SEEK_CUR),
+                    (1000, io.SEEK_SET),
+                ):
+                    out += [stream.seek(offset, whence), stream.tell(), stream.read(2)]
+                results.append(out)
+    assert results[0] == results[1] == [0, 0, b"he", 0, 0, b"he", 1000, 1000, b""]
