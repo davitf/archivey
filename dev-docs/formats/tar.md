@@ -156,10 +156,13 @@ In random-access mode the fileobj is wrapped in `_EofProbeStream`, which does tw
   the file's last block reads there as a missing trailer
   ([`known-issues.md`](../known-issues.md), open-issues **P3**).
 
-**The walk stops at the listing cap.** Random-access listing pulls one header at a time
-through `iter(TarFile)`, and the base counts each member against
-`ListingLimits.max_members` as it arrives, so a header bomb costs the cap plus one
-headers and no more. tarfile still keeps every header it has parsed in
+**The walk stops at the listing cap.** Random-access listing pulls headers through
+`iter(TarFile)` in batches of up to 1 024 under one lock hold, and never asks for more
+than `ListingLimits.max_members` has left plus one, so a header bomb costs the cap plus
+one header and no more. Batching keeps the walk a dense pass; one header per lock hold
+was measurably slower on ordinary listings. When the walk fails partway through a
+batch, the headers already parsed are handed out first, so `members_report()` keeps
+its salvaged prefix. tarfile still keeps every header it has parsed in
 `TarFile.members`, so a listing holds each header twice: once as tarfile's `TarInfo` and
 once as the `ArchiveMember`. `streaming=True` is not capped, by design, and there both
 lists grow for the whole pass.
@@ -342,7 +345,7 @@ extraction checks (§2.4).
 | Bound the trailing-data scan at 1 MiB, as a constant | On a compressed tar the tail must be decoded to be read. A constant can become a config field later; a field cannot become a constant | Scanning to EOF; a `ListingLimits` field whose `None` would mean "unbounded", the reverse of every other field there |
 | Keep `extractfile()`, under one lock | It is the only sparse expansion in the tree, and it is stdlib's | Reading member bytes directly, which would need a sparse implementation |
 | A backslash is part of the name | TAR is a POSIX format, and `a\b` is a legal filename there | Treating it as a separator the way the ZIP and 7z backends do |
-| Walk one header at a time in random access | The cap then bounds what tarfile parses, not only what archivey keeps | `getmembers()`, which parsed the whole file before the first member was counted |
+| Walk headers in batches sized by what the cap has left | The cap then bounds what tarfile parses, not only what archivey keeps, at the speed of one dense pass | `getmembers()`, which parsed the whole file before the first member was counted; one header per lock hold, which alternated parsing with member construction and was slower |
 
 ## 7. Open questions
 
@@ -376,7 +379,7 @@ extraction checks (§2.4).
 | Metadata mapping, PAX `mtime`, PAX `atime` and `ctime` | `::test_member_metadata`, `::test_pax_mtime_override`, `::test_pax_atime_ctime` |
 | `raw_name` for PAX and ustar names under a non-UTF-8 `encoding` | `::test_pax_raw_name_is_the_stored_utf8_whatever_the_encoding`, `::test_ustar_raw_name_follows_the_archive_encoding`, `::test_pax_raw_name_with_undecodable_bytes_round_trips`, `::test_gnu_long_name_under_a_global_pax_path_keeps_the_archive_codec` |
 | Out-of-range `mtime` degrades | `::test_out_of_range_mtime_degrades_to_none` |
-| Old GNU and PAX sparse members list as sparse and read back logically | `::test_sparse_tar_eof_no_false_positive`, `::test_pax_sparse_member_is_reported_sparse` |
+| Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically | `::test_sparse_tar_eof_no_false_positive`, `::test_pax_sparse_member_is_reported_sparse` (one case per PAX encoding) |
 | End classification: good, minimal and padded trailers stay silent | `::test_valid_tar_eof_silent`, `::test_minimal_eof_trailer_silent`, `::test_padded_tar_eof_no_false_positive` |
 | Missing trailer warns, and raises under `RAISE` | `::test_missing_eof_blocks_warns_by_default`, `::test_missing_eof_blocks_raise_disposition_raises`, and the `_streaming_` pair |
 | Rejected header, mid-archive and last block, plain, gzip and sparse | `::test_corrupt_mid_header_raises_corruption_by_default`, `::test_corrupt_final_header_raises_corruption_by_default`, `::test_corrupt_final_header_gzip_raises_corruption`, `::test_corrupt_final_header_sparse_raises_corruption` |
@@ -387,7 +390,7 @@ extraction checks (§2.4).
 | Trailing data reported, bounded, quiet on an undecodable tail; zeros pass | `tests/test_review_simplicity_consistency.py::test_trailing_data_is_reported`, `::test_trailing_data_scan_is_bounded`, `::test_compressed_tail_that_will_not_decode_ends_the_scan_quietly`, `::test_zero_padding_after_the_trailer_still_passes`, `::test_wrong_explicit_format_on_iso_reports_trailing_data` |
 | Zero-filled files are empty tars; detection refuses them | `::test_legitimately_empty_tar_stays_valid`, `::test_every_block_aligned_zero_length_is_a_valid_empty_tar`, `::test_zero_filled_dot_tar_opens_empty_via_extension`, `::test_content_detection_refuses_a_zero_filled_file` |
 | A PAX header's size does not drive an allocation (O15) | `tests/test_tar.py::test_extended_header_size_does_not_drive_the_allocation` |
-| The listing stops reading headers at `max_members` | `tests/test_listing_limits.py::test_tar_listing_stops_reading_headers_at_max_members`, `::test_tar_extract_all_enforces_listing_limits` |
+| The listing stops reading headers at `max_members`, and keeps its prefix when it fails mid-batch | `tests/test_listing_limits.py::test_tar_listing_stops_reading_headers_at_max_members`, `::test_tar_extract_all_enforces_listing_limits`; `tests/test_tar.py::test_members_report_keeps_the_prefix_when_the_walk_raises_mid_batch` |
 | Links: relative, `..`, absolute, archive-relative hardlinks, duplicate names, cycles | `tests/test_tar.py::test_relative_symlink_resolves_against_link_directory` through `::test_chain_through_same_named_members_not_false_cycle` |
 | Hardlink extraction: one pass, orphans, cross-device | `tests/test_extraction.py::test_tar_hardlink_shares_inode`, `::test_tar_hardlink_orphan_recovered_seekable`, `::test_tar_hardlink_orphan_forward_only_onerror`, `::test_cross_device_hardlink_reuses_sibling` |
 | Ratio guard: static for a path, live for a piped `.tar.gz`, no live check on a plain tar | `::test_seekable_targz_uses_static_not_live`, `::test_streaming_targz_bomb_caught_by_live_ratio`, `::test_streaming_plain_tar_no_live_ratio_trip` |
@@ -400,8 +403,10 @@ extraction checks (§2.4).
 **Building fixtures.** Most TAR tests build their archives with stdlib `tarfile` in
 memory, and corrupt them by hand: a header checksum byte, a truncation, a block of junk
 where the trailer belongs. Stdlib cannot write sparse members, so the old GNU sparse
-fixture is assembled byte by byte (`_tar_sparse_gnu`) and the PAX 1.0 one is a `tarfile`
-member carrying the `GNU.sparse.*` records and the map as data (`_tar_sparse_pax_1_0`).
+fixture is assembled byte by byte (`_tar_sparse_gnu`), the PAX 1.0 one is a `tarfile`
+member carrying the `GNU.sparse.*` records and the map as data (`_tar_sparse_pax_1_0`),
+and the PAX 0.0 and 0.1 extended headers are written by hand (`_tar_sparse_pax_0_x`),
+since 0.0 repeats keys a `pax_headers` dict cannot hold.
 GNU `tar` writes the real thing; BSD and Windows `tar` refuse
 `--sparse`, which is why no test shells out for it. The sparse-extraction measurement in §5:
 

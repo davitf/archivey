@@ -764,8 +764,8 @@ it tracks.
 
 Four of the intended set exist: [`rar.md`](formats/rar.md),
 [`zip.md`](formats/zip.md), [`7z.md`](formats/7z.md) and [`tar.md`](formats/tar.md).
-`rar.md` is the longest by some way, at least twice the length of any other. (Byte counts used to be written out
-here and were wrong twice, because any edit to a page invalidates the number describing
+`rar.md` is the longest by some way, at least twice the length of any other. (Byte
+counts used to be written out here and were wrong twice, because any edit to a page invalidates the number describing
 it — `wc -c` the files if you need the exact figures.) All four follow the same
 nine-section shape — At a glance, Shape, The pipeline here, In the wild, Threat surface,
 Sharp edges, Decisions, Open questions, Verify, References — so the template is settled
