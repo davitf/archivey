@@ -823,8 +823,10 @@ def test_the_record_walk_descends_each_directory_extent_once() -> None:
 
 
 def test_listing_reads_nothing_from_the_image() -> None:
-    """Materialization only touches catalog records pycdlib parsed at open: the
-    audit the handle-lock requirement relies on."""
+    """On an image with no repeated identifier, materialization only touches catalog
+    records pycdlib parsed at open: the audit the handle-lock requirement relies on.
+    A repeated identifier makes listing re-read one directory extent, under the
+    handle guard (``IsoReader._flagged_in_image``)."""
 
     class Counting(io.BytesIO):
         calls = 0
