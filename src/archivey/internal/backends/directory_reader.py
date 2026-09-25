@@ -334,6 +334,9 @@ class DirectoryReader(BaseArchiveReader):
         # Unix, NOT creation, so we never use it for `created`. Hence the getattr.
         birthtime = getattr(st, "st_birthtime", None)
         created = _stat_datetime(birthtime) if birthtime is not None else None
+        # On Windows st_ctime was the creation time before 3.12 (deprecated since),
+        # so it is only an inode change time elsewhere.
+        ctime = _stat_datetime(st.st_ctime) if os.name != "nt" else None
 
         # os.stat_result always defines st_uid/st_gid (both 0 on Windows), so no
         # getattr guard is needed.
@@ -351,6 +354,7 @@ class DirectoryReader(BaseArchiveReader):
             modified=modified,
             accessed=accessed,
             created=created,
+            ctime=ctime,
             mode=stat.S_IMODE(st.st_mode),
             uid=uid,
             gid=gid,

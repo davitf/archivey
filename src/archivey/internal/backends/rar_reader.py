@@ -31,6 +31,7 @@ import tempfile
 import threading
 import zlib
 from collections.abc import Callable, Iterator, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Literal
 
@@ -112,7 +113,6 @@ from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     EXTRA_IS_REPARSE_POINT,
-    EXTRA_RAR_CREATED_IS_CTIME,
     EXTRA_RAR_EXTRACT_VERSION,
     ArchiveFormat,
     ArchiveInfo,
@@ -171,6 +171,10 @@ _RAR_HOST_OS_TO_CREATE_SYSTEM: dict[int, CreateSystem] = {
 # _RAR_HOST_OS_TO_CREATE_SYSTEM above (the parser maps RAR5 Windows->2, Unix->3).
 _RAR_HOST_OS_WIN32 = 2
 _RAR_HOST_OS_UNIX = 3
+# Hosts whose creation-time slot is a birth time: MS-DOS, OS/2, Win32, Mac OS, BeOS.
+# Listed, not derived from the map above: a host added there is not a birth-time host
+# until someone says so, since its slot would otherwise flow into ``created``.
+_RAR_BIRTH_TIME_HOSTS = frozenset({0, 1, _RAR_HOST_OS_WIN32, 4, 5})
 
 _RAR_METHOD_STORED = 0x30
 _RAR_METHOD_MAX = 0x35  # RAR M5
@@ -321,14 +325,26 @@ def _rar_member_extra_and_link(
             extra["rar.tweaked_crc32"] = info.crc32
         if info.blake2sp_hash is not None:
             extra["rar.tweaked_blake2sp"] = info.blake2sp_hash
-    host_os = info.host_os
-    # Unix (_RAR_HOST_OS_UNIX): RAR3 Unix, and the parser maps RAR5 Unix→3.
-    # That writer's creation slot is st_ctime, not birth; Win32
-    # (_RAR_HOST_OS_WIN32) and the other RAR3 hosts store a creation time.
-    # Omit the key when there is no created value or host_os is unknown.
-    if info.ctime is not None and host_os is not None:
-        extra[EXTRA_RAR_CREATED_IS_CTIME] = host_os == _RAR_HOST_OS_UNIX
     return extra, link_target
+
+
+def _rar_created(info: RarMemberInfo) -> datetime | None:
+    """The member's birth time: the creation slot, when ``host_os`` stores one there.
+
+    A Unix writer (RAR3 Unix; the parser maps RAR5 Unix to 3) fills the slot from
+    st_ctime, which ``created`` never holds. Win32 and the other RAR3 hosts store a
+    birth time. An unknown ``host_os`` says neither, so it gets None too.
+    """
+    if info.host_os in _RAR_BIRTH_TIME_HOSTS:
+        return info.ctime
+    return None
+
+
+def _rar_ctime(info: RarMemberInfo) -> datetime | None:
+    """The creation slot when it is not ``created``: a Unix or unknown ``host_os``."""
+    if info.host_os in _RAR_BIRTH_TIME_HOSTS:
+        return None
+    return info.ctime
 
 
 def _tweaked_hash_key(
@@ -1310,7 +1326,8 @@ class RarReader(BaseArchiveReader):
             compressed_size=info.compress_size,
             modified=info.mtime,
             accessed=info.atime,
-            created=info.ctime,
+            created=_rar_created(info),
+            ctime=_rar_ctime(info),
             mode=mode,
             compression=_compression_for(info),
             # Fails closed: a member whose header stopped before the encryption

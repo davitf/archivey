@@ -172,15 +172,15 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   non-seekable, and would therefore break against a real pipe while passing the suite.
 
 - **#300 F4 / D3 + `created_meaning`** — one follow-up OpenSpec change, not #300:
-  add `accessed_utc()` / `created_utc()` on a shared private `_as_utc` with
-  `modified_utc()` moved onto it (not a string-keyed `timestamp_utc(field)`),
-  and a cross-format `created_meaning` field (`CREATION` / `METADATA_CHANGE` /
-  `UNKNOWN`) populated by every backend. Do **not** infer that field from
-  `create_system`: 7z hardcodes `CreateSystem.UNIX` while reading a FILETIME
-  birth time; ZIP splits by extra source (NTFS `0x000A` is birth, UT `0x04` is
-  Unix `st_ctime`). RAR4 is the first naive `accessed`/`created` in the library;
-  until the helpers exist those two fields are the only timestamps a caller
-  cannot normalize. #300 records the RAR case as `extra["rar.created_is_ctime"]`.
+  add `accessed_utc()` / `created_utc()` / `ctime_utc()` on a shared private `_as_utc`
+  with `modified_utc()` moved onto it (not a string-keyed `timestamp_utc(field)`).
+  The cross-format `created_meaning` field (`CREATION` / `METADATA_CHANGE` /
+  `UNKNOWN`) is overtaken: `created` never holds `st_ctime`, and a stored `st_ctime`
+  goes to the `ArchiveMember.ctime` field, decided per format from the writer (RAR
+  `host_os`, the 7z Unix bits, the ZIP "version made by" host; 7-Zip on Unix writes
+  `st_ctime` into the ZIP NTFS `0x000A` field, measured 2026-09-25). RAR4 is the first
+  naive `accessed`/`created`/`ctime` in the library; until the helpers exist those
+  three fields are the only timestamps a caller cannot normalize.
 - **#300 F5 secondary** — `tests/sample_archives.py` has no atime/ctime notion, so
   the format×shape sweep cannot cover xtime today.
 - **#320 F2 — integrity check for the Windows `unrar` download.** `scripts/install-rarlab-unrar.ps1`

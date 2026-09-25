@@ -435,15 +435,6 @@ EXTRA_IS_JUNCTION: Final = "is_junction"
 # point. So a junction written by 7-Zip carries this key and not that one.
 EXTRA_IS_REPARSE_POINT: Final = "is_reparse_point"
 
-# Key in ArchiveMember.extra: True when this RAR member's ``created`` is Unix
-# ``st_ctime`` (inode-change), False when the writer OS stores a birth time
-# (Win32, and RAR3 FAT/OS2/Mac/BeOS). Derived from ``host_os``; omitted when
-# ``created`` is None or ``host_os`` is unknown. A later OpenSpec change will
-# promote this to a cross-format ``created_meaning`` field — do not infer that
-# meaning from ``create_system`` (7z hardcodes UNIX while reading a FILETIME
-# birth time; ZIP splits by extra source, not OS).
-EXTRA_RAR_CREATED_IS_CTIME: Final = "rar.created_is_ctime"
-
 # RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
 # because RAR5 records no per-file unpack version. Lives here, not on
 # CompressionMethod.level, which carries the method-byte offset instead.
@@ -471,7 +462,6 @@ class MemberExtra(dict[str, object]):
     * ``is_reparse_point`` (``bool``) — ZIP, 7z, RAR, directory. The weaker,
       metadata-only sibling of ``is_junction``: a Windows symlink or junction
       rather than a POSIX one.
-    * ``rar.created_is_ctime`` (``bool``)
     * ``rar.extract_version`` (``int``)
     * ``rar.file_version`` (``int``)
     * ``rar.tweaked_crc32`` (``int``)
@@ -506,8 +496,6 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["is_junction"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["is_reparse_point"], /) -> bool: ...
-    @overload
-    def __getitem__(self, key: Literal["rar.created_is_ctime"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["rar.extract_version"], /) -> int: ...
     @overload
@@ -604,13 +592,32 @@ class ArchiveMember:
     """Last-access time, if recorded."""
 
     created: datetime | None = None
-    """The format's creation-time slot, if recorded (rare; most formats store only mtime).
+    """The birth (creation) time, if recorded (rare; most formats store only mtime).
 
-    Meaning follows the writer, not a cross-format guarantee. A Unix RARLAB
-    archive stores inode-change time (``st_ctime``) here; those members set
-    ``extra["rar.created_is_ctime"]`` to ``True``. A Win32 RAR stores birth
-    time and sets the same key to ``False``. Directory listing uses
-    ``st_birthtime`` only and never ``st_ctime``.
+    Never Unix ``st_ctime`` (inode change), in any format. Where a writer stores
+    ``st_ctime``, or may, that time is :attr:`ctime` instead: a creation slot filled
+    on Unix (a RAR or 7z made there, a ZIP from any host but FAT, OS/2, NTFS or
+    VFAT, an unknown host too) and the Rock Ridge and PAX change times. A TAR gets
+    ``created`` only from libarchive's PAX ``LIBARCHIVE.creationtime``. Directory
+    listing uses ``st_birthtime`` only.
+    """
+
+    ctime: datetime | None = None
+    """The Unix inode change time (``st_ctime``), if recorded, or a time that may be it.
+
+    From an archive: the Rock Ridge attribute-change time (ISO), the PAX ``ctime``
+    record (TAR), or a creation slot whose writer fills it from ``st_ctime`` or
+    cannot be shown not to (RAR, 7z, ZIP; see :attr:`created`). It is what the
+    archive stored, so a Windows writer can put a birth time here: libarchive on
+    Windows fills the PAX ``ctime`` with it and stamps its ZIP and 7z members as
+    Unix. A format with a single creation slot (RAR, 7z, ZIP) fills at most one of
+    ``created`` and ``ctime``. Rock Ridge and libarchive's PAX records store both
+    times separately and so can fill both, as can a directory listing.
+    ``member.created or member.ctime`` prefers the birth time when there is one. A
+    directory listing reports ``st_ctime`` on every OS but Windows, where Python's
+    ``st_ctime`` was the creation time before 3.12.
+
+    Extraction cannot restore it: every OS sets a file's ``st_ctime`` itself.
     """
 
     mode: int | None = None

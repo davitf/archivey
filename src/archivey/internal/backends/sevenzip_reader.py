@@ -134,6 +134,21 @@ from archivey.types import (
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_S_IFMT = 0o170000
+
+
+def _written_on_unix(attrs: int | None) -> bool:
+    """True when 7z's attribute word carries a real Unix mode, file type included.
+
+    7-Zip and p7zip writing on Unix, where "Created" is filled from st_ctime, set
+    FILE_ATTRIBUTE_UNIX_EXTENSION (``0x8000``) and put ``st_mode`` in the high word.
+    Neither signal alone identifies the writer: ``0x8000`` is also Windows
+    FILE_ATTRIBUTE_INTEGRITY_STREAM (ReFS), and Windows has attributes above
+    ``0xFFFF`` (PINNED ``0x80000``, which OneDrive sets, and others) that make the
+    high word non-zero. A Windows word never has ``S_IFMT`` bits there, while every
+    Unix ``st_mode`` does, so the file type is the test.
+    """
+    return attrs is not None and bool((attrs >> 16) & _S_IFMT)
 
 
 def _is_windows_reparse_point(attrs: int | None) -> bool:
@@ -690,6 +705,16 @@ class SevenZipReader(BaseArchiveReader):
             )
             if issue is not None:
                 ts_issues.append(issue)
+        extra = (
+            MemberExtra({EXTRA_IS_REPARSE_POINT: True})
+            if is_reparse_point
+            else MemberExtra()
+        )
+        ctime = None
+        if created is not None and _written_on_unix(attrs):
+            # A Unix writer (7-Zip, p7zip, libarchive on Linux and macOS) fills
+            # "Created" from st_ctime, which ``created`` never holds.
+            created, ctime = None, created
         member = ArchiveMember(
             type=member_type,
             name=name,
@@ -699,6 +724,7 @@ class SevenZipReader(BaseArchiveReader):
             modified=modified,
             accessed=accessed,
             created=created,
+            ctime=ctime,
             mode=mode,
             compression=compression,
             is_encrypted=record.is_encrypted,
@@ -707,9 +733,7 @@ class SevenZipReader(BaseArchiveReader):
             else CreateSystem.WINDOWS_NTFS,
             windows_attrs=attrs & 0xFFFF if attrs is not None else None,
             hashes=hashes,
-            extra=MemberExtra({EXTRA_IS_REPARSE_POINT: True})
-            if is_reparse_point
-            else MemberExtra(),
+            extra=extra,
             _raw=_MemberRaw(record, folder_index, record.file_in_folder),
         )
         # Every report below names the member by `index`, its position in the walk,

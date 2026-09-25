@@ -134,10 +134,31 @@ def test_rock_ridge_namespace_and_fidelity(rock_ridge_iso: Path) -> None:
         f = by_name["file.txt"]  # original case + length preserved
         assert f.mode is not None and f.uid is not None and f.gid is not None
         assert f.modified is not None and f.modified.tzinfo is not None
+        # pycdlib's TF record carries no creation time, only the attribute-change
+        # time (st_ctime): that is ``ctime`` and ``created`` stays None.
+        assert f.created is None
+        assert f.ctime.tzinfo is not None
         sym = by_name["sym"]
         assert sym.type == MemberType.SYMLINK
         assert sym.link_target == "file.txt"
         assert by_name["subdir/"].type == MemberType.DIRECTORY
+
+
+def test_rock_ridge_tf_with_both_times_fills_created_and_ctime(tmp_path: Path) -> None:
+    # Rock Ridge stores a creation time and an attribute-change time side by side, so
+    # a member can carry both. pycdlib writes TF flags 0x0e (modify, access,
+    # attributes); rewriting them to 0x0b (creation, modify, attributes) keeps the
+    # record length and turns the first stamp into a creation time, moved to 2020.
+    image = _build_iso(rock_ridge=True, joliet=True)
+    written = b"TF\x1a\x01\x0e\x7e"
+    assert written in image
+    path = tmp_path / "rr-created.iso"
+    path.write_bytes(image.replace(written, b"TF\x1a\x01\x0b\x78"))
+    with open_archive(path) as ar:
+        f = ar.get("file.txt")
+    assert f.created is not None and f.ctime is not None
+    assert f.created.year == 2020
+    assert f.ctime.year != 2020
 
 
 def test_joliet_namespace_and_fidelity(tmp_path: Path) -> None:
@@ -148,6 +169,7 @@ def test_joliet_namespace_and_fidelity(tmp_path: Path) -> None:
         f = ar.get("file.txt")  # Joliet preserves case
         # Joliet carries no POSIX metadata.
         assert f.mode is None and f.uid is None and f.gid is None
+        assert f.ctime is None
 
 
 def test_plain_iso_namespace_and_fidelity(tmp_path: Path) -> None:

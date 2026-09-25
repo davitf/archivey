@@ -30,7 +30,11 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import sevenzip_aes
-from archivey.internal.backends.sevenzip_parser import SevenZipCoder, SevenZipFolder
+from archivey.internal.backends.sevenzip_parser import (
+    SevenZipCoder,
+    SevenZipFileRecord,
+    SevenZipFolder,
+)
 from archivey.internal.backends.sevenzip_reader import (
     SevenZipReader,
     open_folder_pipeline,
@@ -2608,3 +2612,86 @@ with open_archive({str(archive)!r}, password=["wrong856", "secret"]) as reader:
 print("ok")
 """
     )
+
+
+def _created_slot_record(attributes: int | None) -> SevenZipFileRecord:
+    return SevenZipFileRecord(
+        filename="a.txt",
+        emptystream=True,
+        is_anti=False,
+        is_directory=False,
+        is_empty_file=True,
+        attributes=attributes,
+        creation_time=_to_filetime_ticks(1_600_000_200),
+        last_access_time=None,
+        last_write_time=None,
+        folder_index=None,
+        file_in_folder=None,
+        uncompressed_size=0,
+        crc32=None,
+        compressed_size=None,
+        is_encrypted=False,
+    )
+
+
+def _to_filetime_ticks(unix_seconds: int) -> int:
+    return (unix_seconds + 11_644_473_600) * 10_000_000
+
+
+@pytest.mark.parametrize(
+    ("attributes", "unix_written"),
+    [
+        (0x8000 | 0x20 | (0o100644 << 16), True),  # 7-Zip on Linux, p7zip
+        (0x8000 | (0o040755 << 16), True),  # a directory from the same writers
+        (0o100644 << 16, True),  # Unix mode, bit clear (nonstandard)
+        (0x20, False),  # FILE_ATTRIBUTE_ARCHIVE: 7-Zip on Windows
+        (0x8000 | 0x20, False),  # 0x8000 alone: also INTEGRITY_STREAM (ReFS)
+        (0x80020, False),  # ARCHIVE | PINNED (OneDrive): high word, no file type
+        (0x400020, False),  # ARCHIVE | RECALL_ON_DATA_ACCESS
+        (None, False),  # no attribute word
+    ],
+)
+def test_created_slot_follows_the_writer(
+    attributes: int | None, unix_written: bool
+) -> None:
+    """A Unix writer's "Created" is st_ctime: ``ctime``, not ``created``."""
+    from datetime import datetime, timezone
+
+    with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
+        assert isinstance(reader, SevenZipReader)
+        member = reader._to_member(_created_slot_record(attributes), 0)
+    expected = datetime.fromtimestamp(1_600_000_200, tz=timezone.utc)
+    if unix_written:
+        assert member.created is None
+        assert member.ctime == expected
+    else:
+        assert member.created == expected
+        assert member.ctime is None
+
+
+@requires_binary("7z")
+def test_real_7z_cli_created_slot_matches_its_host(tmp_path: Path) -> None:
+    """The real writer behind the rule, on whichever host runs the suite."""
+    (tmp_path / "a.txt").write_bytes(b"hi")
+    archive = tmp_path / "ctime.7z"
+    result = subprocess.run(
+        ["7z", "a", "-t7z", "-mtc=on", str(archive), "a.txt", "-y"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z CLI cannot build a -mtc=on fixture: {result.stderr}")
+    with open_archive(archive) as reader:
+        member = reader.get("a.txt")
+        record = member._raw.record
+        if record.creation_time is None:
+            pytest.skip("this 7z CLI stored no creation time")
+        assert record.attributes is not None
+        if record.attributes & 0x8000:
+            assert member.created is None
+            assert member.ctime.tzinfo is not None
+        else:
+            assert member.ctime is None
+            assert member.created is not None
