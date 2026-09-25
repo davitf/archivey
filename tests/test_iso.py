@@ -1045,50 +1045,66 @@ def test_a_boot_catalog_declared_past_the_image_end_reads_short() -> None:
             ar.read("BOOT.CAT")
 
 
-def _truncated_image(*, joliet: bool) -> bytes:
-    """Three files, cut in the middle of the second: A.TXT survives whole, B.BIN
-    keeps 3 000 of its 5 000 bytes, and C.BIN starts past the cut."""
+def _truncated_image(*, joliet: bool, cut: str) -> bytes:
+    """Three files and an empty one, cut in the middle of B.BIN (``"mid_b"``: B.BIN
+    keeps 3 000 of its 5 000 bytes) or exactly where C.BIN starts (``"at_c"``: B.BIN
+    survives whole). A.TXT always survives whole, and C.BIN has nothing left. At the
+    sector-aligned cut, the empty file's extent is moved to the cut, where an empty
+    file must still list as empty."""
     import pycdlib
 
     iso = pycdlib.PyCdlib()
     iso.new(joliet=3 if joliet else None)
-    for name, fill, size in (("A.TXT", b"a", 100), ("B.BIN", b"b", 5000)):
+    files = (("A.TXT", b"a", 100), ("B.BIN", b"b", 5000), ("C.BIN", b"c", 3000))
+    for name, fill, size in (*files, ("E.TXT", b"", 0)):
         iso.add_fp(
             io.BytesIO(fill * size),
             size,
             f"/{name};1",
             joliet_path=f"/{name.lower()}" if joliet else None,
         )
-    iso.add_fp(
-        io.BytesIO(b"c" * 3000),
-        3000,
-        "/C.BIN;1",
-        joliet_path="/c.bin" if joliet else None,
-    )
     out = io.BytesIO()
     iso.write_fp(out)
     iso.close()
-    data = out.getvalue()
-    return data[: data.index(b"b" * 5000) + 3000]
+    data = bytearray(out.getvalue())
+    if cut == "mid_b":
+        return bytes(data[: data.index(b"b" * 5000) + 3000])
+    end = data.index(b"c" * 3000)
+    for ident in (b"E.TXT;1", "e.txt".encode("utf-16-be")):
+        at = data.find(ident)
+        while at != -1:
+            record = at - 33
+            struct.pack_into("<I", data, record + 2, end // 2048)
+            struct.pack_into(">I", data, record + 6, end // 2048)
+            at = data.find(ident, at + 1)
+    return bytes(data[:end])
 
 
+@pytest.mark.parametrize("cut", ["mid_b", "at_c"])
 @pytest.mark.parametrize("joliet", [False, True], ids=["iso9660", "joliet"])
 def test_a_truncated_image_lists_declared_sizes_and_reads_to_the_cut(
-    joliet: bool,
+    joliet: bool, cut: str
 ) -> None:
     """pycdlib clamps a file running past the end of the image to end there and
-    overwrites its declared length, negative for a file starting past the end. The
-    listing reported those clamped sizes, and reading returned short with no error.
-    The declared lengths are still in the directory records on disc."""
+    overwrites its declared length: zero for a file starting at the cut, negative
+    for one starting past it. The listing reported those clamped sizes, and reading
+    returned short with no error. The declared lengths are still in the directory
+    records on disc."""
     from archivey.exceptions import TruncatedError
 
-    image = _truncated_image(joliet=joliet)
+    image = _truncated_image(joliet=joliet, cut=cut)
     with open_archive(io.BytesIO(image)) as ar:
         by_name = {m.name.upper(): m for m in ar.members()}
         sizes = {name: m.size for name, m in by_name.items()}
-        assert sizes == {"A.TXT": 100, "B.BIN": 5000, "C.BIN": 3000}
+        assert sizes == {"A.TXT": 100, "B.BIN": 5000, "C.BIN": 3000, "E.TXT": 0}
         assert ar.read(by_name["A.TXT"]) == b"a" * 100
-        for name, available in (("B.BIN", 3000), ("C.BIN", 0)):
+        assert ar.read(by_name["E.TXT"]) == b""
+        cut_files = [("C.BIN", 0)]
+        if cut == "mid_b":
+            cut_files.insert(0, ("B.BIN", 3000))
+        else:
+            assert ar.read(by_name["B.BIN"]) == b"b" * 5000
+        for name, available in cut_files:
             with ar.open(by_name[name]) as stream:
                 assert len(stream.read(available)) == available
                 with pytest.raises(TruncatedError, match="expected bytes"):

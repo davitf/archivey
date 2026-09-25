@@ -884,8 +884,8 @@ class IsoReader(BaseArchiveReader):
         pycdlib linked to another with the same identifier (possibly a multi-extent
         file), or one whose data ends exactly at the end of the image. pycdlib clamps a
         file running past the end of the image to end there, and overwrites the
-        declared length with the clamped one, negative when the extent itself is past
-        the end.
+        declared length with the clamped one: zero when the extent starts at the end,
+        negative when it starts past it.
         """
         return (
             record.inode is not None
@@ -894,10 +894,9 @@ class IsoReader(BaseArchiveReader):
         )
 
     def _reaches_image_end(self, record: DirectoryRecord) -> bool:
-        end = record.extent_location() * self._iso.logical_block_size
-        return record.data_length != 0 and end + record.data_length == (
-            self._image_length
-        )
+        # Zero included: a file whose extent starts exactly at the cut is clamped to 0.
+        start = record.extent_location() * self._iso.logical_block_size
+        return start + record.data_length == self._image_length
 
     def _layout(self, record: DirectoryRecord) -> tuple[_Extent, ...] | None:
         """A file's extents with their lengths as declared on disc.
@@ -927,9 +926,12 @@ class IsoReader(BaseArchiveReader):
                 declared = self._raw_directory(parent).lengths_to_end.get(
                     (chunk.extent_location(), chunk.file_ident)
                 )
-                if declared is None:
+                if declared is not None:
+                    length = declared
+                elif length:
                     return None
-                length = declared
+                # Otherwise an empty file whose extent sits at the image end: only
+                # non-zero lengths are recorded, and 0 is what it declares.
             layout.append(_Extent(chunk.extent_location(), length))
         return tuple(layout)
 

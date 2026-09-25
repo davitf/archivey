@@ -207,11 +207,12 @@ here, over the extents read straight from the image (`_data_inode`):
   stops at the end of the image, like any other (§4).
 - **A file cut by the end of the image.** `pycdlib` clamps a file whose data runs past
   the end of the image to end there, and overwrites the declared length with the clamped
-  one on every record sharing the inode, negative when the extent itself is past the end.
-  So a clamped record is one whose data ends exactly at the end of the image. For those
-  alone, archivey re-reads the directory's extent and takes the declared length from the
-  record on disc (`_parse_raw_directory`, keyed by extent and identifier); if it is not
-  there, `size` is `None`. Reading such a file returns the bytes the image holds and then
+  one on every record sharing the inode: zero when the extent starts at the end, negative
+  when it starts past it. So a clamped record is one whose data ends exactly at the end
+  of the image. For those alone, archivey re-reads the directory's extent and takes the
+  declared length from the record on disc (`_parse_raw_directory`, keyed by extent and
+  identifier). A record not found there keeps length 0 if it has it (an empty file whose
+  extent sits at the image end); otherwise `size` is `None`. Reading such a file returns the bytes the image holds and then
   raises `TruncatedError`.
 
 `MemberStreams.CONCURRENT` puts one per-reader lock around everything that moves
