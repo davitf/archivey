@@ -103,10 +103,10 @@ one category.
      added ahead of it narrows on both checkers, so the cast was dead.
 4. ~~**TypeGuard predicates**~~ **done.** G2: `is_stream` refuses a handle that
    is writable and not readable (a closed one still qualifies), and every entry
-   point names it. The text duck stays a documented caller bug. G3: `bytearray`/`memoryview` are
-   excluded, and the guard narrows to `Sequence[object]` because the elements are
-   checked where they are used. Both refusals stay `TypeError`, the contract for a
-   wrong-typed source.
+   point names it. The text duck stays a documented caller bug. G3:
+   `bytearray`/`memoryview` are excluded, and the guard narrows to
+   `Sequence[object]` because the elements are checked where they are used. Both
+   refusals stay `TypeError`, the contract for a wrong-typed source.
 5. ~~**Remaining `Any`**~~ **done**, codec half in #378. ISO half: the pycdlib
    records, Rock Ridge entries and dates are typed as pycdlib's own classes
    (it ships `py.typed`), `_open_member` narrows `_raw` with a `TypeGuard`, the
