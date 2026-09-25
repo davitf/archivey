@@ -282,7 +282,8 @@ data is a 10 240-byte archive, and `extract_all()` under the default `Extraction
 raises `ResourceLimitError` at 1024:1. With the guard relaxed the output is dense, where
 `tar -x` recreates the holes. The holes count by maintainer ruling (2026-09-25): written
 out, they fill the disk like any other output, so the ratio guard is right to weigh them.
-A caller that expects sparse files raises `max_ratio`. Handbook:
+A caller that expects sparse files raises `max_ratio`. Revisit if extraction ever
+preserves holes, since the disk would then hold only the data. Handbook:
 [`formats/tar.md`](formats/tar.md) §6.
 
 ## `max_metadata_bytes` weighs the values in `extra`, not the keys (open)
