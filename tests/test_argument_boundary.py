@@ -59,7 +59,6 @@ from archivey import (
 )
 from archivey.detection_cost import DetectionBudgetPreset, default_detection_budget
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
-from archivey.internal.arg_checks import check_instance
 
 # TypeError is permitted only for the arguments named here; see the module docstring.
 _TYPE_ERROR_OK = frozenset({"source", "dest"})
@@ -765,16 +764,23 @@ def test_members_bytes_message_does_not_advise_wrapping(
     assert "Pass [" not in str(caught.value)
 
 
-def test_class_passed_for_a_config_suggests_calling_it() -> None:
-    """``config=ArchiveyConfig`` (unparenthesised) is named back with the fix."""
-    with pytest.raises(ArchiveyUsageError, match=r"did you mean ArchiveyConfig\(\)\?"):
-        check_instance(ArchiveyConfig, ArchiveyConfig, call="f(config=…)")
+def _as_any(value: object) -> Any:
+    """Hand a deliberately wrong-typed value to a typed parameter, as an untyped caller would."""
+    return value
+
+
+def test_class_passed_for_a_field_suggests_calling_it() -> None:
+    """``extraction_limits=ExtractionLimits`` (unparenthesised) is named back with the fix."""
+    with pytest.raises(
+        ArchiveyUsageError, match=r"did you mean ExtractionLimits\(\)\?"
+    ):
+        ArchiveyConfig(extraction_limits=_as_any(ExtractionLimits))
 
 
 def test_class_of_the_wrong_kind_gets_no_constructor_hint() -> None:
     """Calling the wrong class would only trade one usage error for another."""
     with pytest.raises(ArchiveyUsageError) as info:
-        check_instance(ListingLimits, ExtractionLimits, call="f(limits=…)")
+        ArchiveyConfig(extraction_limits=_as_any(ListingLimits))
     message = str(info.value)
     assert "the ListingLimits class itself" in message
     assert "did you mean" not in message

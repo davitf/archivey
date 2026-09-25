@@ -31,7 +31,7 @@ from archivey.diagnostics import (
     DiagnosticDisposition,
     DiagnosticPolicy,
 )
-from archivey.exceptions import LinkTargetNotFoundError
+from archivey.exceptions import LinkTargetNotFoundError, SymlinkEscapeError
 from archivey.internal.backends import directory_reader
 from archivey.internal.backends.rar_parser import RarMemberInfo
 from archivey.internal.backends.rar_reader import _rar_member_extra_and_link
@@ -512,6 +512,30 @@ def _zip_with_reparse_member(
         info.create_system = 0  # FAT, as every Windows writer of these uses
         info.external_attr = attributes
         zf.writestr(info, data)
+
+
+def test_a_unc_symlink_is_blocked_at_extraction(tmp_path: Path) -> None:
+    """A UNC target leaves the destination, so extraction refuses the link.
+
+    Before the parser kept the leading `//`, the same buffer produced the relative
+    `UNC/server/share/dir`, which resolves inside the destination and was created.
+    """
+    archive = tmp_path / "unc_link.zip"
+    _zip_with_reparse_member(
+        archive,
+        name="link",
+        attributes=FILE_ATTRIBUTE_REPARSE_POINT,
+        data=_reparse_buffer(
+            IO_REPARSE_TAG_SYMLINK, "\\??\\UNC\\server\\share\\dir", ""
+        ),
+    )
+    dest = tmp_path / "out"
+    with open_archive(archive) as opened:
+        (result,) = opened.extract_all(dest, on_error=OnError.CONTINUE).results
+    assert result.member.link_target == "//server/share/dir"
+    assert result.status is ExtractionStatus.BLOCKED
+    assert isinstance(result.error, SymlinkEscapeError)
+    assert not (dest / "link").is_symlink()
 
 
 def test_a_stored_junction_buffer_sets_the_flag(tmp_path: Path) -> None:

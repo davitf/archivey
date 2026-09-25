@@ -140,17 +140,21 @@ def newest_per_path(markers: list[Marker]) -> dict[str, Marker]:
     return latest
 
 
-def orphaned_paths(latest: dict[str, Marker], tree: dict[str, int]) -> list[str]:
+def orphaned_paths(
+    markers: list[Marker], latest: dict[str, Marker], tree: dict[str, int]
+) -> list[str]:
     """Marker paths that are gone from the tree and that no re-anchor marker answers.
 
     A re-anchor is a marker at a path in the tree whose `moved_from=` names the old
     path. The old marker is left alone on the hub as the record; it is only no longer
-    news.
+    news. Every marker is consulted, not just the newest per path: a later re-sweep at
+    the new path supersedes the re-anchor for coverage but carries no `moved_from=`,
+    and must not bring the old path back.
     """
     re_anchored = {
         marker.moved_from
-        for path, marker in latest.items()
-        if path in tree and marker.moved_from is not None
+        for marker in markers
+        if marker.path in tree and marker.moved_from is not None
     }
     return sorted(set(latest) - set(tree) - re_anchored)
 
@@ -222,7 +226,7 @@ def main() -> int:
     tree = tree_line_counts()
 
     swept = {path: marker for path, marker in latest.items() if path in tree}
-    orphaned = orphaned_paths(latest, tree)
+    orphaned = orphaned_paths(markers, latest, tree)
     drifted = [
         (path, marker.lines, tree[path])
         for path, marker in sorted(swept.items())

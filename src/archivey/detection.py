@@ -67,24 +67,26 @@ class FormatInfo:
     diagnostics: DiagnosticSummary = field(default_factory=DiagnosticSummary.empty)
     """What detection reported on its way to the answer."""
 
-    # Internal provenance for ``format_unconfirmed``: True when a matching extension or
-    # an inner-TAR upgrade corroborated a content-probe claim. ``compare=False`` keeps it
-    # out of the generated ``__eq__``, ``repr=False`` out of ``__repr__``; that is what
-    # actually holds it outside the public ``detect_format`` contract — the field is
-    # reachable but constrains nothing. Deliberate: ``False`` here is overloaded — it means
-    # both "a probe with no corroboration" and "not a probe at all", so an exact magic hit
-    # reads False — and a bool cannot separate those. ``probe-provenance-unconfirmed``
-    # task 5.1 tracks the public evidence-set shape that could.
     corroborated: bool = field(default=False, compare=False, repr=False)
-    # Detection's own cost receipt — not merged into ``CostReceipt`` / ``ArchiveInfo.cost``.
-    # Public exposure on ``FormatInfo`` is ``detection-result-surface``; kept here so tests
-    # and the fuzz harness can assert the access-shape and budget invariants. It is the
-    # work the whole ``detect_format`` call did, both passes when it followed a stub.
+    """Internal, not part of the ``detect_format`` contract: whether a matching
+    extension or an inner-TAR upgrade corroborated a content-probe claim."""
+    # ``compare=False`` keeps it out of ``__eq__`` and ``repr=False`` out of ``__repr__``;
+    # that is what holds it outside the public contract. Deliberate: ``False`` is
+    # overloaded — it means both "a probe with no corroboration" and "not a probe at
+    # all", so an exact magic hit reads False — and a bool cannot separate those.
+    # ``probe-provenance-unconfirmed`` task 5.1 tracks the evidence-set shape that could.
+
     cost_receipt: DetectionCostReceipt | None = field(
         default=None, compare=False, repr=False
     )
-    # The detection tiers that did not run, and why (a missing package, the budget).
-    # Internal like the two above, and for the same reason: tests assert on it.
+    """Internal, not part of the ``detect_format`` contract: the work the whole call
+    did, both passes when it followed a stub."""
+    # Not merged into ``CostReceipt`` / ``ArchiveInfo.cost``. Public exposure is the
+    # ``detection-result-surface`` change; kept here so tests and the fuzz harness can
+    # assert the access-shape and budget invariants.
+
     unavailable_tiers: tuple[TierSkip, ...] = field(
         default=(), compare=False, repr=False
     )
+    """Internal, not part of the ``detect_format`` contract: the detection tiers that
+    did not run, and why (a missing package, the budget)."""

@@ -75,7 +75,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 - **A Windows symlink to a network share keeps its `//server/share` target.** A ZIP or
   7z reparse buffer that named its target only as `\??\UNC\server\share` listed
-  the link as pointing at the relative path `UNC/server/share`.
+  the link as pointing at the relative path `UNC/server/share`, and extraction created
+  that relative link. The target is absolute now, so safe extraction blocks the member
+  with `SymlinkEscapeError`, as it does any link that leaves the destination.
 - **A 7z AES coder whose properties are one byte, with no salt and no IV, opens.** 7-Zip
   reads that as an empty salt and a zero IV; archivey refused it as corrupt.
 - **`FormatInfo` and `DetectionConfidence` are on the API page**, with each field

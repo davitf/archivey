@@ -213,7 +213,7 @@ def test_a_marker_recording_no_lines_is_not_infinite_drift() -> None:
 def test_a_marker_for_a_missing_path_is_orphaned() -> None:
     markers, _ = sweep.parse_markers(marker("src/archivey/old.py"))
     latest = sweep.newest_per_path(markers)
-    assert sweep.orphaned_paths(latest, {"src/archivey/new.py": 100}) == [
+    assert sweep.orphaned_paths(markers, latest, {"src/archivey/new.py": 100}) == [
         "src/archivey/old.py"
     ]
 
@@ -231,7 +231,7 @@ def test_a_re_anchor_marker_counts_the_new_path_and_answers_the_orphan() -> None
     tree = {"src/archivey/new.py": 100}
     assert "src/archivey/new.py" in latest
     assert latest["src/archivey/new.py"].moved_from == "src/archivey/old.py"
-    assert sweep.orphaned_paths(latest, tree) == []
+    assert sweep.orphaned_paths(markers, latest, tree) == []
 
 
 def test_a_re_anchor_whose_own_path_is_gone_answers_nothing() -> None:
@@ -244,7 +244,22 @@ def test_a_re_anchor_whose_own_path_is_gone_answers_nothing() -> None:
     )
     markers, _ = sweep.parse_markers(text)
     latest = sweep.newest_per_path(markers)
-    assert sweep.orphaned_paths(latest, {"src/archivey/new.py": 100}) == [
+    assert sweep.orphaned_paths(markers, latest, {"src/archivey/new.py": 100}) == [
         "src/archivey/gone.py",
         "src/archivey/old.py",
     ]
+
+
+def test_a_re_sweep_after_a_re_anchor_keeps_the_old_path_answered() -> None:
+    """The re-sweep supersedes the re-anchor for coverage, not for the orphan report."""
+    text = "\n".join(
+        [
+            marker("src/archivey/old.py"),
+            marker("src/archivey/new.py", extra=" moved_from=src/archivey/old.py"),
+            marker("src/archivey/new.py", batch="S30", date="2026-10-01"),
+        ]
+    )
+    markers, _ = sweep.parse_markers(text)
+    latest = sweep.newest_per_path(markers)
+    assert latest["src/archivey/new.py"].batch == "S30"
+    assert sweep.orphaned_paths(markers, latest, {"src/archivey/new.py": 100}) == []
