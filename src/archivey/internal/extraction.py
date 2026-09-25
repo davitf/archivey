@@ -370,14 +370,15 @@ class ExtractionCoordinator:
         # ``(1)``. Reset per ``run()``, and cleared whenever a claim is released (a freed
         # name may be the first free one again).
         self._rename_next: dict[str, int] = {}
-        # A streaming pass's superseded copy, left in place while the later copy of the
-        # same name is handled so that copy can replace it atomically. Only ever one, and
-        # only for the length of one member; see ``_supersede_written_copy``.
-        self._stale_path: Path | None = None
+        # A streaming pass's superseded copies, left in place while the later copy of the
+        # same name is handled so that copy can replace one atomically: path -> index of
+        # the superseded result. Only for the length of one member; see
+        # ``_supersede_written_copy``.
+        self._stale: dict[Path, int] = {}
         # Superseded copies the filesystem refused to remove, by archive name. The next
-        # member of that name gets it back as its ``_stale_path``, so it can still
-        # replace the run's own leftover instead of meeting it as a pre-existing entry.
-        self._unremoved: dict[str, Path] = {}
+        # member of that name parks them in ``_stale`` again, so it can still replace
+        # the run's own leftover instead of meeting it as a pre-existing entry.
+        self._unremoved: dict[str, dict[Path, int]] = {}
         # The reader ``run()`` is extracting from, for the one read ``_transform`` makes
         # on it: an accepted link's target. Set per ``run()``.
         self._reader: BaseArchiveReader | None = None
@@ -390,7 +391,7 @@ class ExtractionCoordinator:
         dest = Path(dest)
         forward_only = reader._streaming
         self._rename_next = {}
-        self._stale_path = None
+        self._stale = {}
         self._unremoved = {}
 
         tracker = BombTracker(
@@ -558,7 +559,12 @@ class ExtractionCoordinator:
             self._collided_with = None
             self._retyped = False
             try:
-                self._stale_path = self._unremoved.pop(original.name, None)
+                for held, held_index in self._unremoved.pop(original.name, {}).items():
+                    # Unless another member has since replaced it under its own claim.
+                    key = collision_key(self._rel_name(dest, held), self._policy)
+                    if collision_map.get(key) == _Claim(held, held_index):
+                        self._stale[held] = held_index
+                        del collision_map[key]
                 earlier = current_by_name.get(original.name)
                 if earlier is not None:
                     self._supersede_written_copy(
@@ -715,8 +721,10 @@ class ExtractionCoordinator:
             finally:
                 self._emit_progress = None
                 self._close(stream)
-                if self._stale_path is not None:
-                    self._drop_stale_copy(original, results, written_paths)
+                if self._stale:
+                    self._drop_stale_copies(
+                        original, results, written_paths, collision_map, dest
+                    )
 
             if member_started and recorded_index is not None:
                 counted[recorded_index] = tracker.member_bytes
@@ -777,9 +785,9 @@ class ExtractionCoordinator:
         random access supersedes it whatever then happens to the later copy.
 
         The earlier copy's file stays where it is while the later copy is handled, as
-        ``_stale_path``: the destination checks treat that path as free, so the later
+        ``_stale``: the destination checks treat that path as free, so the later
         copy replaces it atomically, under any overwrite policy. If the later copy does
-        not land there, ``_drop_stale_copy`` removes it once the member is done. Its
+        not land there, ``_drop_stale_copies`` removes it once the member is done. Its
         claim, its place in the hardlink source lists and its bomb-limit counts are
         released now. A hardlink already made to it is its own directory entry and
         stays, and its bytes stay counted against the byte cap while it holds them. A
@@ -813,7 +821,7 @@ class ExtractionCoordinator:
                     written_paths.discard(path)
             else:
                 written_paths.discard(path)
-                self._stale_path = path
+                self._stale[path] = index
         if index in counted:
             member_bytes = counted.pop(index)
             tracker.refund(0 if content_kept else member_bytes)
@@ -832,41 +840,52 @@ class ExtractionCoordinator:
             presented_name=prior.presented_name,
         )
 
-    def _drop_stale_copy(
+    def _drop_stale_copies(
         self,
         original: ArchiveMember,
         results: list[ExtractionResult],
         written_paths: set[Path],
+        collision_map: dict[str, _Claim],
+        dest: Path,
     ) -> None:
-        """Remove the superseded copy unless the member just handled replaced it.
+        """Remove each parked superseded copy unless the member just handled replaced it.
 
         A removal the filesystem refuses is logged, not raised: this runs in a
         ``finally``, where raising would replace the member's own error. The entry is
         then still the run's own, so it goes back into ``written_paths`` (an anti-item
-        can still delete it) and is held for the next member of the same name.
+        can still delete it) and into the collision map (a different name on the same
+        key still collides with it), and is held for the next member of the same name.
+        Its claim points at its ``SUPERSEDED`` result, which ``_mark_overwritten``
+        leaves as it is.
         """
-        stale, self._stale_path = self._stale_path, None
-        assert stale is not None
+        stale, self._stale = self._stale, {}
         latest = results[-1] if results else None
-        if (
-            latest is not None
+        landed = (
+            latest.path
+            if latest is not None
             and latest.member is original
             and latest.status is ExtractionStatus.EXTRACTED
-            and latest.path == stale
-        ):
-            return
-        try:
-            os.unlink(stale)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            logger.warning("Could not remove superseded %r: %s", str(stale), exc)
-            written_paths.add(stale)
-            self._unremoved[original.name] = stale
+            else None
+        )
+        for path, index in stale.items():
+            if path == landed:
+                continue
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                written_paths.discard(path)
+            except OSError as exc:
+                logger.warning("Could not remove superseded %r: %s", str(path), exc)
+                written_paths.add(path)
+                key = collision_key(self._rel_name(dest, path), self._policy)
+                collision_map[key] = _Claim(path, index)
+                self._unremoved.setdefault(original.name, {})[path] = index
+            else:
+                written_paths.discard(path)
 
     def _occupied(self, path: Path) -> bool:
         """Whether ``path`` holds an entry, not counting a superseded copy in waiting."""
-        return path != self._stale_path and os.path.lexists(path)
+        return path not in self._stale and os.path.lexists(path)
 
     # --- selection / transform -----------------------------------------------------
 
@@ -1769,6 +1788,9 @@ class ExtractionCoordinator:
         if prior is None or self._overwrite is not OverwritePolicy.REPLACE:
             return
         clobbered = results[prior.result_index]
+        if clobbered.status is ExtractionStatus.SUPERSEDED:
+            # A superseded copy the filesystem would not remove: it keeps its status.
+            return
         results[prior.result_index] = replace(
             clobbered,
             path=None,
@@ -1831,7 +1853,7 @@ class ExtractionCoordinator:
         exists = os.path.lexists(dest_path)
         if not exists:
             return True
-        if dest_path == self._stale_path:
+        if dest_path in self._stale:
             # A superseded copy of this same name that this run wrote: the member
             # replaces it under any policy, as random access would never have written it.
             # Never a directory (see ``_supersede_written_copy``).

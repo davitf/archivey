@@ -86,7 +86,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `ExtractionError` on the second copy. A ZIP, 7z or RAR lists every member before the
   pass starts, so the earlier copy is never written. A streaming TAR has no index, so it
   writes the earlier copy and takes it back when the later one arrives: the later copy
-  replaces it, and it no longer counts toward `max_entries` or `max_extracted_bytes`.
+  replaces it, and it no longer counts toward `max_entries`, nor toward
+  `max_extracted_bytes` unless a hardlink written in between still holds its bytes.
   The few cases where the result can still differ, all involving something that
   depended on the earlier copy before the later one arrived, are listed in the
   `safe-extraction` spec.

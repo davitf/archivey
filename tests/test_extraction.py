@@ -2054,6 +2054,77 @@ def test_streaming_duplicate_name_holds_a_copy_it_could_not_remove(
     assert (dest / "a.txt").read_bytes() == b"three"
 
 
+def test_streaming_duplicate_name_holds_an_unremoved_copy_across_take_backs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A held copy survives a member that takes back another copy of the name."""
+    archive = _tar_bytes([("file", "a.txt", b"%d" % n) for n in range(1, 5)])
+    renames = {2: "b.txt", 3: "c.txt"}
+    dest = tmp_path / "out"
+    real_unlink = os.unlink
+
+    def refusing_unlink(path: object, *args: object, **kwargs: object) -> None:
+        if Path(str(path)) == dest / "a.txt":
+            raise PermissionError(errno.EACCES, "refused", str(path))
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    seen: list[str] = []
+
+    def rename_middle(member: ArchiveMember) -> ArchiveMember | None:
+        seen.append(member.name)
+        new_name = renames.get(len(seen))
+        return member.replace(name=new_name) if new_name else member
+
+    monkeypatch.setattr(os, "unlink", refusing_unlink)
+    with open_archive(io.BytesIO(archive), streaming=True) as reader:
+        results = reader.extract_all(dest, filter=rename_middle).results
+    assert [r.status for r in results] == [ExtractionStatus.SUPERSEDED] * 3 + [
+        ExtractionStatus.EXTRACTED
+    ]
+    tree = _tree(dest)
+    tree.pop(("hardlinks",), None)
+    assert tree == {"a.txt": b"4"}
+
+
+def test_streaming_duplicate_name_unremoved_copy_still_collides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A copy the filesystem would not remove keeps its collision claim."""
+    archive = _tar_bytes(
+        [
+            ("file", "a.txt", b"one"),
+            ("file", "a.txt", b"two"),
+            ("file", "A.TXT", b"upper"),
+        ]
+    )
+    dest = tmp_path / "out"
+    real_unlink = os.unlink
+
+    def refusing_unlink(path: object, *args: object, **kwargs: object) -> None:
+        if Path(str(path)) == dest / "a.txt":
+            raise PermissionError(errno.EACCES, "refused", str(path))
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    seen: list[str] = []
+
+    def drop_second(member: ArchiveMember) -> ArchiveMember | None:
+        seen.append(member.name)
+        return None if len(seen) == 2 else member
+
+    monkeypatch.setattr(os, "unlink", refusing_unlink)
+    with open_archive(io.BytesIO(archive), streaming=True) as reader:
+        results = reader.extract_all(
+            dest,
+            filter=drop_second,
+            policy=ExtractionPolicy.STANDARD,
+            on_error=OnError.CONTINUE,
+        ).results
+    assert [(r.status, r.collided_with) for r in results] == [
+        (ExtractionStatus.SUPERSEDED, None),
+        (ExtractionStatus.FAILED, dest / "a.txt"),
+    ]
+
+
 def test_streaming_duplicate_name_kept_by_a_hardlink_still_counts(
     tmp_path: Path,
 ) -> None:

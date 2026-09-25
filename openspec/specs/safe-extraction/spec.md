@@ -281,7 +281,9 @@ holds them, and the archive-wide ratio still counts its decoded bytes. What the
 earlier member wrote in this run SHALL stay in place until the later member is done, so
 a later member that lands at the same path replaces it atomically under any overwrite
 policy; if the later member does not land there, the earlier member's entry SHALL then be
-removed. A directory that other members were written into stays, as their parent.
+removed. If the filesystem refuses that removal, a warning is logged and the entry stays
+the run's own: other names still collide with it, and the next member of the same name
+may replace it. A directory that other members were written into stays, as their parent.
 
 Results and the tree on disk then match random access, except where something that
 happened before the later member arrived depended on the earlier member. A streaming pass
