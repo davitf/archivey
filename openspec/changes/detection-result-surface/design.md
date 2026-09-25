@@ -1,8 +1,8 @@
 ## Context
 
-`core.py:386` is where the detection result dies. `open_archive` reads four things off the
-`FormatInfo` — `format`, `encoding_hint`, `payload_offset`, and `chosen_by`/`probe_only` via
-the private `_format_provenance` — and drops the object. Nothing downstream can recover
+`core.py:386` is where the detection result dies. `open_archive` reads three things off the
+`FormatInfo` — `format`, `payload_offset`, and `chosen_by`/`probe_only` via the private
+`_format_provenance` — and drops the object. Nothing downstream can recover
 confidence, provenance or corroboration.
 
 `detection-evidence-ledger` makes the result worth keeping: a ranked ledger with a defensible

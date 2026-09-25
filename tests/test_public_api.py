@@ -78,6 +78,7 @@ def test_public_symbols_are_in_all() -> None:
         "ArchiveEofContext",
         "DigestContext",
         "EmptyArchiveContext",
+        "EncryptedVerificationContext",
         "FormatConflictContext",
         "MemberHeaderRecordContext",
         "MemberNameControlsContext",

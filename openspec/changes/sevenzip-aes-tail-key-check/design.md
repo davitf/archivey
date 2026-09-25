@@ -108,7 +108,8 @@ Forging the declared `pack_size` on a store+AES fixture (file 2186 bytes, honest
 **Clamping is not the discriminator.** Row 3 is clamped and reads fine. The raise fires on
 one condition only: the intact plaintext (`view_len - view_len % 16`) falls short of what
 the consumer asked for **and** `view_len % 16 != 0`. A block-aligned shortfall (row 5)
-leaves the stream silent and `_crc_exactly` reports a wrong password instead.
+leaves the stream silent and the confirm's short read (`run_password_confirm_plan`) reports a
+wrong password instead.
 
 **Row 5 is a live misdiagnosis.** A header declaring `pack_size < unpack_size` is reported
 as `Wrong password or corrupt 7z folder` under the *correct* password — the same class as

@@ -22,6 +22,7 @@ from archivey import (
     detect_format,
     open_archive,
 )
+from archivey.detection_cost import BALANCED_BUDGET
 from archivey.diagnostics import Diagnostic, DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,
@@ -30,10 +31,10 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.detection import _extension_corroborates
-from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.streams.brotli_framing import BrotliBlock, parse_metablock
 from archivey.types import ContainerFormat, StreamFormat
 from tests.conftest import requires
+from tests.streams_util import truncated_brotli
 
 TAR_BROTLI = ArchiveFormat(ContainerFormat.TAR, StreamFormat.BROTLI)
 
@@ -58,20 +59,15 @@ def _open_and_read(
 
 
 def _probable_brotli_probe_only_residual() -> bytes:
-    """Compressed-first ASCII residual above ``DETECTION_LIMIT``, no extension cue.
+    """A real Brotli stream cut short, larger than the completion window, no extension cue.
 
-    Completeness rejects sources no larger than the peeked prefix, so the fixture must
-    sit above that line. Ordinary Perl-module text of a few KiB is the measured class;
-    a short distinctive unit repeated past the limit is enough to keep the probe at
-    ``BROTLI`` / ``PROBABLE`` / ``content_probe``.
+    The probe sees a valid compressed-first stream in its window and reports
+    ``BROTLI`` / ``PROBABLE`` / ``content_probe``; the source is too large for the
+    whole-source completion check, so only the read finds the truncation. Text that
+    merely decodes for a while no longer serves: the 4 KiB probe sample and the
+    completion check both reject it.
     """
-    unit = (
-        b"package TAP::Parser::SourceHandler;\n\n"
-        b"use strict;\nuse warnings;\n\n"
-        b"use TAP::Parser::Iterator;\n"
-    )
-    target = DETECTION_LIMIT + 104
-    blob = (unit * ((target // len(unit)) + 1))[:target]
+    blob = truncated_brotli(BALANCED_BUDGET.completion_window_bytes + 4096)
     assert parse_metablock(blob).outcome is BrotliBlock.COMPRESSED
     return blob
 

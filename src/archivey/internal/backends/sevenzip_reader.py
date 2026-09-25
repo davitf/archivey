@@ -24,14 +24,18 @@ from __future__ import annotations
 import io
 import re
 import stat
-import zlib
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import BinaryIO, ContextManager
 
 from archivey.config import ArchiveyConfig
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
-from archivey.diagnostics import DiagnosticCode, DigestContext, MemberTimestampContext
+from archivey.diagnostics import (
+    DiagnosticCode,
+    DigestContext,
+    EncryptedVerificationContext,
+    MemberTimestampContext,
+)
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -47,7 +51,7 @@ from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
 from archivey.internal.backends.sevenzip_detect import (
     validate_sevenzip_signature_header,
 )
-from archivey.internal.backends.sevenzip_methods import is_aes
+from archivey.internal.backends.sevenzip_methods import is_aes, lookup
 from archivey.internal.backends.sevenzip_parser import (
     EncodedHeader,
     PlainHeader,
@@ -58,6 +62,7 @@ from archivey.internal.backends.sevenzip_parser import (
     empty_archive,
     find_signature_offset,
     folder_is_encrypted,
+    folder_unpack_size,
     materialize_archive,
     parse_header_block,
     read_signature_and_next_header,
@@ -88,9 +93,19 @@ from archivey.internal.password import (
     _PasswordCandidatesExhausted,
     wrong_password_error,
 )
+from archivey.internal.password_confirm import (
+    PASSWORD_CONFIRM_MAX_INPUT_BYTES,
+    PASSWORD_CONFIRM_PREFIX_BYTES,
+    PasswordConfirmPlan,
+    PasswordConfirmVerdict,
+    UnverifiedPasswordReadWatch,
+    plan_password_confirm,
+    run_password_confirm_plan,
+)
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.codecs import Codec
 from archivey.internal.streams.crypto import _AesCbcTruncatedError
 from archivey.internal.streams.streamtools import (
     ReadableStream,
@@ -137,11 +152,32 @@ def _is_windows_reparse_point(attrs: int | None) -> bool:
 
 
 _SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
-# Drain/CRC step for encrypted-folder password confirm. 7z AES has no check
-# value, so a candidate is judged by decoding and CRCing; this keeps peak
-# memory at one chunk instead of the whole folder (same size as the sized
-# drain in ``verify.py`` and ZipCrypto's parallel CRC).
-_PASSWORD_CONFIRM_CHUNK = 65536
+# Codecs measured to fail on random input, which is what a wrong AES key feeds them
+# (``tests/test_password_confirm.py`` re-measures every one). A folder whose chain
+# contains one settles a wrong key inside the confirm prefix. Measured as non-rejecting
+# and left out: Brotli (about one random input in twenty decodes a full prefix) and PPMd.
+# Filters never reject: ``MethodKind.LZMA_FAMILY`` also holds Delta and BCJ, which is
+# why this is a codec set and not a method kind. A codec not listed is non-rejecting.
+_REJECTING_CODECS = frozenset(
+    {
+        Codec.LZMA,
+        Codec.LZMA2,
+        Codec.BZIP2,
+        Codec.DEFLATE,
+        Codec.DEFLATE64,
+        Codec.ZSTD,
+        Codec.LZ4,
+    }
+)
+
+
+def _folder_codec_rejects(folder: SevenZipFolder) -> bool:
+    """Whether a decoder in ``folder`` rejects random input (confirm rung 3)."""
+    for coder in folder.coders:
+        method = lookup(coder.method)
+        if method is not None and method.codec in _REJECTING_CODECS:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -173,67 +209,6 @@ def _folder_position(member: ArchiveMember) -> int:
 
 def _member_stream_size(member: ArchiveMember) -> int:
     return member.size if member.size is not None else 0
-
-
-def _crc_exactly(
-    stream: ReadableStream,
-    nbytes: int,
-    *,
-    chunk_size: int = _PASSWORD_CONFIRM_CHUNK,
-) -> int:
-    """Read ``nbytes`` from ``stream``, folding CRC32.
-
-    Raise ``EncryptionError`` on a short read. Peak extra memory is one chunk.
-    """
-    remaining = nbytes
-    crc = 0
-    # `> 0`, not truthiness: a stream that over-returns would drive `remaining`
-    # negative, and `read(negative)` is read-everything — the whole-folder gather
-    # this function exists to avoid.
-    while remaining > 0:
-        chunk = stream.read(min(chunk_size, remaining))
-        if not chunk:
-            raise wrong_password_error("Wrong password or corrupt 7z folder")
-        crc = zlib.crc32(chunk, crc)
-        remaining -= len(chunk)
-    return crc
-
-
-def _verify_decoded_folder(
-    folder: SevenZipFolder,
-    stream: ReadableStream,
-    *,
-    expected_size: int,
-    member_digests: list[tuple[int, int | None]] | None = None,
-) -> None:
-    """Raise ``EncryptionError`` when decoded folder bytes fail CRC checks.
-
-    Reads incrementally so peak memory is O(chunk), not O(folder). A stream
-    that ends early still fails, including the no-anchor case (no folder
-    digest and CRC-less members): that case accepts only after a full-length
-    drain, matching 7-Zip's best-effort decrypt.
-    """
-    if folder.digest_defined:
-        actual = _crc_exactly(stream, expected_size)
-        expected = (folder.crc if folder.crc is not None else 0) & 0xFFFFFFFF
-        if actual & 0xFFFFFFFF != expected:
-            raise wrong_password_error("Wrong password or corrupt 7z folder")
-        return
-    if not member_digests:
-        _crc_exactly(stream, expected_size)
-        return
-    # The per-member walk covers `expected_size` by construction: the caller derives
-    # it from these same member sizes (`_folder_members_total_size`). Pinned here because
-    # nothing else records the coupling now the whole-folder length check is gone.
-    assert expected_size == sum(size for size, _ in member_digests), (
-        "member digest sizes must sum to the folder unpack size"
-    )
-    for size, raw_expected in member_digests:
-        actual = _crc_exactly(stream, size)
-        if raw_expected is None:
-            continue
-        if actual & 0xFFFFFFFF != raw_expected & 0xFFFFFFFF:
-            raise wrong_password_error("Wrong password or corrupt 7z folder")
 
 
 class SevenZipReader(BaseArchiveReader):
@@ -271,6 +246,10 @@ class SevenZipReader(BaseArchiveReader):
             budget=KeyDerivationBudget(self._config.decoder_limits)
         )
         self._folder_passwords: dict[int, bytes | None] = {}
+        # Folders whose password was accepted on an INCONCLUSIVE confirm: no checksum
+        # vouched for the key, so a member stream abandoned before its digest reports
+        # ``ENCRYPTED_MEMBER_UNVERIFIED``.
+        self._folders_unconfirmed: set[int] = set()
         # A symlink's target is its member data, usually mid-way through a solid
         # folder, so link bytes are read ahead of resolution, a folder at a time
         # (``format-7z``, "A 7z folder is decoded at most once for its link targets"):
@@ -838,18 +817,6 @@ class SevenZipReader(BaseArchiveReader):
         pack_size = self._archive.pack_sizes[pack_index]
         return self._view(pack_offset, pack_size)
 
-    def _folder_members_total_size(self, folder_index: int) -> int:
-        """Sum of the listed members' sizes in the folder.
-
-        Not the coder graph's unpack size (``sevenzip_parser.folder_unpack_size``).
-        The two agree for any folder that has members: the parser rejects a folder
-        whose substreams leave bytes unaccounted for, and skips a folder declaring
-        zero substreams, which never reaches this helper. This is the one the
-        per-member CRC walk is built from.
-        """
-        members = self._folder_members.get(folder_index, [])
-        return sum(_member_stream_size(member) for member in members)
-
     def _open_folder_stream(
         self,
         folder_index: int,
@@ -884,66 +851,193 @@ class SevenZipReader(BaseArchiveReader):
         if folder_index in self._folder_passwords:
             return self._folder_passwords[folder_index]
 
-        member_digests: list[tuple[int, int | None]] = []
+        plan = self._folder_password_confirm_plan(folder_index)
+
+        # The two callbacks below run once per candidate password, inside
+        # ``_PasswordCandidates.attempt``: the first judges the candidate against the
+        # folder (raising the wrong-password error to move on), the second decides
+        # whether the accepted candidate joins the known-good passwords that later
+        # folders try first.
+        def confirm_candidate_password(
+            candidate: bytes,
+        ) -> tuple[bytes, PasswordConfirmVerdict]:
+            kdf_password = _password_to_kdf_bytes(candidate)
+            return kdf_password, self._confirm_folder_password(
+                folder_index, kdf_password, plan
+            )
+
+        def promote_candidate_password(
+            accepted: tuple[bytes, PasswordConfirmVerdict],
+        ) -> bool:
+            # A candidate password that survived without a checksum match is accepted
+            # for this folder but kept out of known-good when another candidate could
+            # still be the right one (archive-reading, "Confirm candidates when a weak
+            # check permits retries").
+            _, verdict = accepted
+            return (
+                verdict is PasswordConfirmVerdict.CONFIRMED
+                or not self._passwords.is_ambiguous()
+            )
+
+        try:
+            password, verdict = self._passwords.attempt(
+                member, confirm_candidate_password, promote=promote_candidate_password
+            )
+        except _PasswordCandidatesExhausted as exc:
+            raise EncryptionError(raw_message_of(exc)) from exc
+        if verdict is PasswordConfirmVerdict.INCONCLUSIVE:
+            self._folders_unconfirmed.add(folder_index)
+        self._folder_passwords[folder_index] = password
+        return password
+
+    def _folder_password_confirm_plan(self, folder_index: int) -> PasswordConfirmPlan:
+        """The confirm ladder's plan for one encrypted folder (rungs 2 and 3).
+
+        7z AES has no password check value, so rung 1 is empty here and the ladder
+        starts at the integrity anchor: member CRCs in substream order, then the folder
+        digest. The earliest anchor covering at least 4 bytes wins; one past
+        ``PASSWORD_CONFIRM_PREFIX_BYTES`` is walked only when no decoder in the chain rejects
+        random input.
+        """
+        folder = self._archive.folders[folder_index]
+        substreams: list[tuple[int, int | None]] = []
         for folder_member in self._folder_members.get(folder_index, []):
-            size = _member_stream_size(folder_member)
             raw_expected = (
                 folder_member.hashes.get(HashAlgorithm.CRC32)
                 if folder_member.hashes
                 else None
             )
-            if isinstance(raw_expected, bytes):
-                expected: int | None = int.from_bytes(raw_expected, "big") & 0xFFFFFFFF
-            else:
-                expected = None
-            member_digests.append((size, expected))
-
-        def confirm(password: bytes) -> bytes:
-            kdf_password = _password_to_kdf_bytes(password)
-            stream = open_folder_pipeline(
-                self._folder_pack_view(folder_index),
-                folder,
-                password=kdf_password,
-                key_cache=self._key_cache,
-                stream_config=self._stream_config,
-                collector=self._diagnostics_collector,
+            expected = (
+                int.from_bytes(raw_expected, "big") & 0xFFFFFFFF
+                if isinstance(raw_expected, bytes)
+                else None
             )
-            try:
-                # AES has no check value. Confirm by decoding and CRCing, in
-                # chunks: materialising the folder peaked at ~3× unpack size.
-                _verify_decoded_folder(
-                    folder,
-                    stream,
-                    expected_size=self._folder_members_total_size(folder_index),
-                    member_digests=member_digests,
-                )
-                return kdf_password
-            except (
-                UnsupportedFeatureError,
-                PackageNotInstalledError,
-                ResourceLimitError,
-                _AesCbcTruncatedError,
-            ):
-                # Hostile NumCyclesPower / missing cryptography / a spent
-                # key-derivation budget / an AES-CBC mid-block truncation must
-                # not look like a wrong password.
-                # Other TruncatedError (PPMd "File is truncated" on
-                # wrong-key garbage) remaps below: PasswordManager.attempt
-                # advances only on EncryptionError.
-                raise
-            except ArchiveyError as exc:
-                raise wrong_password_error(
-                    "Wrong password or corrupt 7z folder"
-                ) from exc
-            finally:
-                stream.close()
+            substreams.append((_member_stream_size(folder_member), expected))
+        tail_crc = (
+            (folder.crc if folder.crc is not None else 0) & 0xFFFFFFFF
+            if folder.digest_defined
+            else None
+        )
+        # The folder digest covers the coder graph's unpack size, and the plan checks it
+        # over the substream sum. The two agree because the parser rejects a folder
+        # whose substreams leave bytes unaccounted for (and skips one declaring zero
+        # substreams, which has no members to reach this). If they ever diverged, a
+        # correct password would be reported as wrong, so the coupling is pinned here.
+        assert tail_crc is None or sum(size for size, _ in substreams) == (
+            folder_unpack_size(folder)
+        ), "member sizes must sum to the folder unpack size"
+        return plan_password_confirm(
+            substreams,
+            tail_crc,
+            budget=PASSWORD_CONFIRM_PREFIX_BYTES,
+            codec_rejects=_folder_codec_rejects(folder),
+        )
 
+    def _confirm_folder_password(
+        self, folder_index: int, kdf_password: bytes, plan: PasswordConfirmPlan
+    ) -> PasswordConfirmVerdict:
+        """Run ``plan`` over the folder decoded with ``kdf_password``.
+
+        Raises the wrong-password ``EncryptionError`` on ``REJECTED`` so
+        ``_PasswordCandidates.attempt`` moves to the next candidate. A bounded plan
+        reads at most ``PASSWORD_CONFIRM_MAX_INPUT_BYTES`` of packed input: a block-transform
+        codec can otherwise consume far more input than the plaintext prefix it
+        produces. Running out of that capped input (a short read, or a decoder error,
+        once the cap is spent) is not evidence about the key, so it is
+        ``INCONCLUSIVE``. A mismatched anchor stays a rejection, however much input it
+        took to produce.
+        """
+        folder = self._archive.folders[folder_index]
+        pack = self._folder_pack_view(folder_index)
+        source: BinaryIO = pack
+        capped: SlicingStream | None = None
+        pack_size = self._archive.pack_sizes[self._folder_pack_starts[folder_index]]
+        if plan.bounded and pack_size > PASSWORD_CONFIRM_MAX_INPUT_BYTES:
+            # The cap is a whole number of AES blocks, so the cut never lands mid-block.
+            capped = SlicingStream(pack, length=PASSWORD_CONFIRM_MAX_INPUT_BYTES)
+            source = capped
+
+        def input_ran_out() -> bool:
+            return (
+                capped is not None and capped.tell() >= PASSWORD_CONFIRM_MAX_INPUT_BYTES
+            )
+
+        stream = open_folder_pipeline(
+            source,
+            folder,
+            password=kdf_password,
+            key_cache=self._key_cache,
+            stream_config=self._stream_config,
+            collector=self._diagnostics_collector,
+        )
         try:
-            password = self._passwords.attempt(member, confirm)
-        except _PasswordCandidatesExhausted as exc:
-            raise EncryptionError(raw_message_of(exc)) from exc
-        self._folder_passwords[folder_index] = password
-        return password
+            verdict = run_password_confirm_plan(
+                stream, plan, input_exhausted=input_ran_out
+            )
+        except (
+            UnsupportedFeatureError,
+            PackageNotInstalledError,
+            ResourceLimitError,
+            _AesCbcTruncatedError,
+        ):
+            # Hostile NumCyclesPower / missing cryptography / a spent key-derivation
+            # budget / an AES-CBC mid-block truncation must not look like a wrong
+            # password. Other TruncatedError (PPMd "File is truncated" on wrong-key
+            # garbage) remaps below: ``attempt`` advances only on EncryptionError.
+            raise
+        except ArchiveyError as exc:
+            # Any decoder error once the cap is spent, not only ``TruncatedError``: a
+            # decoder cut mid-block does not reliably say so (indexed_bzip2 raises a
+            # bare ``RuntimeError``, mapped to ``CorruptionError``), so the error type
+            # cannot tell the cut from a wrong key. A mismatched anchor can, and the
+            # runner keeps that one ``REJECTED``.
+            if input_ran_out():
+                return PasswordConfirmVerdict.INCONCLUSIVE
+            raise wrong_password_error("Wrong password or corrupt 7z folder") from exc
+        finally:
+            stream.close()
+        if verdict is PasswordConfirmVerdict.REJECTED:
+            raise wrong_password_error("Wrong password or corrupt 7z folder")
+        return verdict
+
+    def _watch_unverified(self, stream: BinaryIO, member: ArchiveMember) -> BinaryIO:
+        """Wrap ``stream`` to report an abandoned read of an unconfirmed folder's member.
+
+        Only folders accepted on an ``INCONCLUSIVE`` confirm are watched. A folder
+        confirmed against a CRC needs no report: the key was checked, whatever the
+        caller reads.
+        """
+        raw = member._raw
+        assert isinstance(raw, _MemberRaw)
+        if raw.folder_index not in self._folders_unconfirmed:
+            return stream
+
+        def report() -> None:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
+                message=(
+                    f"Encrypted 7z member {quoted(member.name)} was closed before its "
+                    f"checksum was reached, and no checksum confirmed the password: "
+                    f"the bytes read may have been decrypted with a wrong password."
+                ),
+                context=EncryptedVerificationContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    check="confirm_budget_exhausted",
+                    reason="partial_read",
+                ),
+                member=member,
+                logger=integrity_logger,
+            )
+
+        return UnverifiedPasswordReadWatch(
+            stream,
+            size=_member_stream_size(member),
+            on_unverified=report,
+            # The fused verifier forfeits the checksum on a seek off the read frontier.
+            seek_keeps_digest=False,
+        )
 
     def _member_prefix(self, member: ArchiveMember) -> int:
         raw = member._raw
@@ -988,7 +1082,9 @@ class SevenZipReader(BaseArchiveReader):
         return self._wrap_member_stream(
             None,
             member.name,
-            open_fn=lambda: open_solid().open_member(prefix, size, lazy=True),
+            open_fn=lambda: self._watch_unverified(
+                open_solid().open_member(prefix, size, lazy=True), member
+            ),
             size=member.size,
             track_output=False,
             seekable=False,
@@ -1093,6 +1189,7 @@ class SevenZipReader(BaseArchiveReader):
             folder_stream.close()
             raise
         try:
+            inner = self._watch_unverified(inner, member)
             return self._wrap_folder_member(inner, member)
         except BaseException:
             inner.close()

@@ -73,6 +73,15 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **Text files are no longer detected as Brotli.** Brotli has no magic, so detection
+  decodes the start of a source to recognise it, and a 256-byte sample let ordinary text
+  through: 7 of the first 800 Perl modules under `/usr/share/perl` detected as `BROTLI`
+  and then failed to read. The probe now decodes the whole 4 KiB detection window, and a
+  content-probe hit on a source up to 64 KiB is checked against the whole source, which
+  also turns away a truncated stream the window alone cannot tell apart. The detection
+  budget's decode-input limit (`max_decode_input`) now bounds the content probes too, as
+  one allowance for the call; a probe's output stays bounded per probe by the codec's
+  drain, not by `max_decode_output`.
 - **A Windows symlink to a network share keeps its `//server/share` target.** A ZIP or
   7z reparse buffer that named its target only as `\??\UNC\server\share` listed
   the link as pointing at the relative path `UNC/server/share`, and extraction created
@@ -282,6 +291,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   is now recognised by its sector sync pattern and refused with
   `UnsupportedFeatureError` naming the layout (Mode 1, Mode 2 Form 1 or 2, sector size).
   Reading one, by stripping its sectors to the 2048-byte payload, is not implemented.
+- **`FormatInfo` no longer has an `encoding_hint` field.** No detector ever set it, so it
+  was always `None`. The member-name encoding comes from `encoding=` or the backend's own
+  detection, as it already did in practice.
 - **`ArchiveReader.extract_all()` no longer takes `config=`.** It honoured only the
   extraction limits and silently dropped every other field, including a per-call
   diagnostic policy or callback. A reader runs under the config it was opened with;
@@ -366,6 +378,24 @@ promise with that line; treat `0.2.0` as the first release of this library.
   the prior v1 repo was renamed to `archivey-old`.
 
 ### Security
+
+- **7z password confirmation decodes only what it needs.** 7z AES has no password
+  check, so the first read into an encrypted folder confirms a password by decoding.
+  That decode used to walk every member CRC to the end of the folder, and then the
+  folder was decoded again to serve the member: an attacker-sized cost per candidate,
+  paid even by the correct password. It now stops at the first member CRC covering 4
+  bytes, and a compressed folder stops at 64 KiB of output, since its codec rejects a
+  wrong key within a few bytes. Store/copy+AES with its only CRC at the folder end still
+  reads to that CRC per candidate. ZIP's multi-password confirmation uses the same
+  planner.
+- **New diagnostic `ENCRYPTED_MEMBER_UNVERIFIED`.** A ZipCrypto password that passes the
+  one-byte check can be wrong, and then a partial read returns garbage with no error:
+  only the CRC at EOF notices. Closing an encrypted member's stream before EOF, when the
+  password was accepted on a check weaker than the member's checksum, now emits this
+  code (ZipCrypto, WinZip AES, and 7z folders confirmed without reaching a CRC). It is
+  outside `ARCHIVE_INTEGRITY_CODES`, so `strict()` collects it; `pedantic()` raises. A
+  read that raises silences it; a seek that raises does not, since the stream stays
+  usable.
 
 - **`repr()` of a 7z reader's key cache no longer prints passwords or keys.** The cache
   is a dataclass whose generated `repr` showed every candidate password tried and every
