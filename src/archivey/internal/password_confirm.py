@@ -251,7 +251,8 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
     but before the reads reach ``size``, ``on_unverified`` runs once: those bytes may
     have decrypted under a wrong key, and nothing checked them. A stream closed before
     any read delivered nothing to distrust, and a read that raised has already told the
-    caller something is wrong; neither reports.
+    caller something is wrong; neither reports. A seek that raised has not: the caller
+    can catch it and keep reading, so the report stays armed.
 
     ``seek_keeps_digest`` says whether the inner stream still checks its digest after a
     seek. When it does not (a fused verifier forfeits the checksum on a seek off the
@@ -279,6 +280,9 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         self._delivered = False
         self._reached = size <= 0
         self._forfeited = False
+        # Set when a failed seek left the position unreadable: ``_watch_pos`` is then
+        # stale, and only an EOF read can show the digest ran.
+        self._pos_unknown = False
         super().__init__(inner)
 
     def _note_position(self) -> None:
@@ -288,7 +292,11 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         # over-run probe) on that read, and CPython's ``ZipExtFile`` checks its CRC as
         # soon as nothing is left. An inner stream that deferred the check to the next
         # read would silence this report; check a new wrap target against it.
-        if self._watch_pos >= self._watch_size and not self._forfeited:
+        if (
+            self._watch_pos >= self._watch_size
+            and not self._forfeited
+            and not self._pos_unknown
+        ):
             self._reached = True
 
     def read(self, n: int = -1, /) -> bytes:
@@ -314,14 +322,42 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         try:
             position = super().seek(offset, whence)
         except BaseException:
-            self._on_unverified = None
+            # Unlike a failed read, a failed seek need not end the stream: the caller
+            # can catch it and read on, so the report stays armed.
+            self._note_failed_seek()
             raise
         if position != self._watch_pos and not self._seek_keeps_digest:
             self._forfeited = True
         self._watch_pos = position
+        self._pos_unknown = False
         if self._seek_keeps_digest:
             self._note_position()
         return position
+
+    def _note_failed_seek(self) -> None:
+        """Keep the position true to where a seek that raised left the stream.
+
+        A refused seek (a negative position) moves nothing, and the digest is intact.
+        A seek can also raise after it moved (``ArchiveStream._note_raised_seek``), and
+        then it counts as a seek. When the position cannot be read, the tracked one is
+        no longer trusted: a digest dropped on a seek is forfeited, and a kept one
+        counts as reached only on an EOF read.
+        """
+        try:
+            position = self.tell()
+        except Exception:  # noqa: BLE001 - the seek's own error propagates instead
+            if not self._seek_keeps_digest:
+                self._forfeited = True
+            self._pos_unknown = True
+            return
+        if position == self._watch_pos:
+            return
+        if not self._seek_keeps_digest:
+            self._forfeited = True
+        self._watch_pos = position
+        self._pos_unknown = False
+        if self._seek_keeps_digest:
+            self._note_position()
 
     def close(self) -> None:
         if self.closed:
