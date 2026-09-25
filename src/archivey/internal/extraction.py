@@ -1889,26 +1889,25 @@ class ExtractionCoordinator:
         if self._overwrite is OverwritePolicy.SKIP:
             return False
         if (
-            self._overwrite is not OverwritePolicy.REPLACE
-            and self._overwrite is not OverwritePolicy.RENAME
+            self._overwrite is OverwritePolicy.REPLACE
+            or self._overwrite is OverwritePolicy.RENAME
         ):
-            # The arm below destroys the existing entry. A policy nobody taught this
-            # chain must not inherit that, so an unknown member stops here.
-            assert_never(self._overwrite)
-
-        # REPLACE (and RENAME for the residual directory case — non-directory RENAME members
-        # are pre-resolved to a free path, so they never reach an existing entry here):
-        # never write-through a symlink. For an atomic FILE write, os.replace
-        # handles a file/symlink target atomically, so only a real directory must be
-        # removed up front. Otherwise unlink a symlink/file (bytes never follow the link)
-        # and rmtree a real directory tree.
-        if dest_path.is_dir() and not dest_path.is_symlink():
-            shutil.rmtree(dest_path)
-            self._removed_existing = True
-        elif not atomic:
-            dest_path.unlink()
-            self._removed_existing = True
-        return True
+            # REPLACE (and RENAME for the residual directory case — non-directory RENAME
+            # members are pre-resolved to a free path, so they never reach an existing
+            # entry here): never write-through a symlink. For an atomic FILE write,
+            # os.replace handles a file/symlink target atomically, so only a real
+            # directory must be removed up front. Otherwise unlink a symlink/file (bytes
+            # never follow the link) and rmtree a real directory tree.
+            if dest_path.is_dir() and not dest_path.is_symlink():
+                shutil.rmtree(dest_path)
+                self._removed_existing = True
+            elif not atomic:
+                dest_path.unlink()
+                self._removed_existing = True
+            return True
+        # This arm destroys the existing entry, so a policy nobody taught this chain
+        # must not inherit it: an unknown member stops here.
+        assert_never(self._overwrite)
 
     def _write_file_atomic(
         self,

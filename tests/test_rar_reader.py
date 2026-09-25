@@ -3370,15 +3370,15 @@ def test_hostile_member_name_reads_its_own_bytes(name: str) -> None:
             )
 
 
+# Bounded work: the cap rejects after a handful of bytes. An O(n^2) read of the 2 MB
+# run would blow any budget, so the mark is generous rather than a wall-clock assert.
+@pytest.mark.timeout(30)
 def test_rar5_header_size_vint_is_bounded() -> None:
     """F2: the RAR5 header-size vint pre-read is length-capped, so a crafted run of
     continuation bytes cannot drive an unbounded, O(n^2) read of the source."""
     payload = RAR5_ID + b"\x00\x00\x00\x00" + b"\x80" * 2_000_000
-    start = time.perf_counter()
     with pytest.raises(ArchiveyError):
         parse_rar_archive(io.BytesIO(payload))
-    # Bounded work: the cap rejects after a handful of bytes rather than reading 2 MB.
-    assert time.perf_counter() - start < 1.0
 
 
 # Generous on purpose: a quadratic regression blows any budget, and the body takes

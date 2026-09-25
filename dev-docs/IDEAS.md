@@ -918,7 +918,7 @@
   mutates malformed input for 7 required stream codecs plus 4 optional ones, while the
   PPMd harness repeats *valid* decodes across threads and interpreter teardown. PPMd is
   not a stream codec, so the fuzzer reaches it only through 7z or ZIP members; adding a
-  PPMd 7z archive to the fuzz corpus is tracked separately and does not replace the
+  PPMd 7z archive to the fuzz corpus is tracked internally and does not replace the
   harness. Measured state of the eight libraries:
   [`open-work-inventory.md`](open-work-inventory.md) §Native codec stress coverage.
 - **Establish that the Windows UnRAR download is rarlab's.** The Windows CI leg

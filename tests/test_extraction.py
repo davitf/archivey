@@ -3508,7 +3508,7 @@ def test_unknown_overwrite_policy_raises_instead_of_unlinking(
     coordinator = ExtractionCoordinator(overwrite=future)
     member = ArchiveMember(type=MemberType.FILE, name="keep.txt")
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError, match="unreachable"):
         coordinator._prepare_destination(member, existing, atomic=atomic)
     assert existing.read_bytes() == b"keep me"
 
@@ -3524,5 +3524,5 @@ def test_unknown_on_error_raises_instead_of_continuing() -> None:
     """An ``OnError`` member the chain does not name is not treated as CONTINUE."""
     future = cast(OnError, SimpleNamespace(name="FUTURE"))
     coordinator = ExtractionCoordinator(on_error=future)
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError, match="unreachable"):
         coordinator._stops_on_failure()
