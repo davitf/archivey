@@ -115,10 +115,10 @@ than `CD001`, and High Sierra has `CDROM` at 32 777, so neither is detected.
 tables agree, and walks every tree the image has: the PVD tree, the Joliet tree, and UDF
 descriptors when present. That is where the cost is. After it, listing touches only
 records already in memory (`test_listing_reads_nothing_from_the_image`), which is what
-lets the member walk run without the handle lock. There are two exceptions, both read
-a directory's extent once more, under the handle lock (§2.3): a directory holding a
-repeated identifier, to check the multi-extent flags as written, and a directory holding
-a file whose data ends at the end of the image, to recover its declared length.
+lets the member walk run without the handle lock. Two exceptions read a directory's
+extent once more, under the handle lock (§2.3): a directory holding a repeated
+identifier, to check the multi-extent flags as written, and a directory holding a file
+whose data ends at the end of the image, to recover its declared length.
 
 **The namespace is picked once for the image: Rock Ridge, then Joliet, then plain.**
 `ArchiveInfo.extra["iso.namespace"]` reports which. Rock Ridge counts as present when
@@ -211,9 +211,9 @@ here, over the extents read straight from the image (`_data_inode`):
   when it starts past it. So a clamped record is one whose data ends exactly at the end
   of the image. For those alone, archivey re-reads the directory's extent and takes the
   declared length from the record on disc (`_parse_raw_directory`, keyed by extent and
-  identifier). A record not found there keeps length 0 if it has it (an empty file whose
-  extent sits at the image end); otherwise `size` is `None`. Reading such a file returns the bytes the image holds and then
-  raises `TruncatedError`.
+  identifier). A record not found there keeps length 0 if it has it (an empty file
+  whose extent sits at the image end); otherwise `size` is `None`. Reading such a file
+  returns the bytes the image holds and then raises `TruncatedError`.
 
 `MemberStreams.CONCURRENT` puts one per-reader lock around everything that moves
 `pycdlib`'s shared image handle: `PyCdlibIO` construction and entry, every read and seek,

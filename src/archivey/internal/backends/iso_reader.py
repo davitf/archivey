@@ -332,9 +332,12 @@ def _parse_raw_directory(
     Walks the raw records as ECMA-119 §9.1 lays them out: byte 0 is the record length,
     bytes 2-5 the extent and bytes 10-13 the data length (little-endian), byte 25 the
     file flags (bit 7 multi-extent), byte 32 the identifier length and the identifier
-    from byte 33. A zero length byte pads to the end of the sector. Only the lengths
-    that reach ``image_length`` are kept, so the result grows with the records pycdlib
-    may have changed rather than with the directory.
+    from byte 33. A zero length byte pads to the end of the sector. Only the non-zero
+    lengths that reach ``image_length`` are kept, so the result grows with the records
+    pycdlib may have changed rather than with the directory. The ``>=`` is
+    load-bearing: pycdlib clamps on ``>``, so every clamped length is kept, including
+    one clamped to zero, and ``IsoReader._layout`` reads a zero-length miss as a
+    genuinely empty file.
     """
     flagged: set[int] = set()
     lengths: dict[tuple[int, bytes], int] = {}
@@ -909,8 +912,10 @@ class IsoReader(BaseArchiveReader):
         the flag in the image itself. Otherwise the file is its own record alone, as
         it was before multi-extent files were read.
 
-        A length pycdlib clamped is read back from the directory's records on disc;
-        ``None`` if it is not there.
+        A record whose data ends at the end of the image takes its length from the
+        directory's records on disc. One not found there keeps a length of 0 if it has
+        one (an empty file whose extent sits at the end of the image), and the layout
+        is ``None`` otherwise.
         """
         chain = _continuation_chain(record)
         parent = record.parent
@@ -931,7 +936,9 @@ class IsoReader(BaseArchiveReader):
                 elif length:
                     return None
                 # Otherwise an empty file whose extent sits at the image end: only
-                # non-zero lengths are recorded, and 0 is what it declares.
+                # non-zero lengths are recorded, and 0 is what it declares. A length
+                # pycdlib clamped to 0 never lands here: pycdlib clamps on ``>`` and
+                # ``_parse_raw_directory`` keeps ``>=``.
             layout.append(_Extent(chunk.extent_location(), length))
         return tuple(layout)
 
