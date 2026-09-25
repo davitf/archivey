@@ -9,8 +9,9 @@ record carries the first fact forward to the place that learns the second
 
 It also carries whether a content-probe match was the *sole* evidence (no matching
 extension, no inner-TAR upgrade): a later decode failure then stamps
-``format_unconfirmed`` and emits ``PROBE_FORMAT_UNCONFIRMED``. Confidence is not part of
-that channel.
+``format_unconfirmed`` and emits ``PROBE_FORMAT_UNCONFIRMED``. A decode failure under
+``chosen_by == "extension"`` is stamped the same way and emits
+``EXTENSION_FORMAT_UNCONFIRMED``. Confidence is not part of either channel.
 
 It lives on the reader rather than in ``ReadBackend.open_read``'s signature because no
 backend uses it: adding a parameter would touch every backend for a fact none of them

@@ -28,7 +28,7 @@ from archivey.internal.streams.brotli_framing import (
 )
 from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec
 from tests.conftest import requires
-from tests.streams_util import brotli_compressed_metablock_header
+from tests.streams_util import brotli_compressed_metablock_header, truncated_brotli
 
 
 @requires("brotli")
@@ -227,12 +227,14 @@ def test_guess_decode_failure_sets_format_unconfirmed() -> None:
 
 @requires("brotli")
 def test_probable_br_decode_failure_does_not_set_unconfirmed(tmp_path: Path) -> None:
-    # Truncated real Brotli with .br extension: format is corroborated.
-    import brotli
+    # Truncated real Brotli with .br extension: the probe accepts it and the extension
+    # corroborates the probe. The cut has to leave more than the probe can check whole
+    # (the completion window); a shorter truncated stream is refused by the probe, the
+    # extension alone decides, and the failure is stamped as extension-only instead.
+    from archivey.detection_cost import BALANCED_BUDGET
 
     path = tmp_path / "x.br"
-    full = brotli.compress(b"enough payload " * 200)
-    path.write_bytes(full[: max(8, len(full) // 3)])
+    path.write_bytes(truncated_brotli(BALANCED_BUDGET.completion_window_bytes + 4096))
     diagnostics: list[Diagnostic] = []
     config = ArchiveyConfig(on_diagnostic=diagnostics.append)
     # The failure may come from open_archive's one-byte probe or from the read.

@@ -388,3 +388,60 @@ def test_empty_directory_with_format_directory_is_not_unconfirmed(
         assert archive.members() == []
         codes = [d.code for d in archive.diagnostics.retained]
     assert codes == [DiagnosticCode.EMPTY_ARCHIVE]
+
+
+# ---------------------------------------------------------------------------
+# Extension-only guesses: the filename decided because every content signal declined.
+# ---------------------------------------------------------------------------
+
+
+def test_extension_only_failure_sets_format_unconfirmed(tmp_path: Path) -> None:
+    path = tmp_path / "backup.gz"
+    path.write_bytes(b"\x00" * 40_000)
+    info = detect_format(path)
+    assert info.format == ArchiveFormat.GZ
+    assert info.detected_by == "extension"
+
+    diagnostics: list[Diagnostic] = []
+    with pytest.raises(CorruptionError) as caught:
+        _open_and_read(path, diagnostics)
+    exc = caught.value
+    assert exc.format_unconfirmed is True
+    assert "extension only" in exc.message
+    codes = [d.code for d in diagnostics]
+    assert codes.count(DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED) == 1
+    assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in codes
+    (diag,) = [
+        d for d in diagnostics if d.code is DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
+    ]
+    assert diag.context.chosen_by == "extension"
+    assert diag.context.detected_format is None
+    assert "file extension" in diag.message
+
+
+def test_strict_extension_only_failure_keeps_typed_error(tmp_path: Path) -> None:
+    # EXTENSION_FORMAT_UNCONFIRMED is in the strict set, so strict() resolves it to
+    # RAISE: the emit must surface the typed error, not DiagnosticRaisedError.
+    path = tmp_path / "backup.gz"
+    path.write_bytes(b"\x00" * 40_000)
+    cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with pytest.raises(CorruptionError) as caught:
+        _open_and_read(path, config=cfg)
+    assert not isinstance(caught.value, DiagnosticRaisedError)
+    assert caught.value.format_unconfirmed is True
+
+
+def test_magic_confirmed_failure_is_not_stamped_as_extension_only(
+    tmp_path: Path,
+) -> None:
+    import gzip
+
+    path = tmp_path / "x.gz"
+    path.write_bytes(gzip.compress(b"hello world" * 100)[:30])
+    diagnostics: list[Diagnostic] = []
+    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        _open_and_read(path, diagnostics)
+    assert caught.value.format_unconfirmed is False
+    assert DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED not in {
+        d.code for d in diagnostics
+    }

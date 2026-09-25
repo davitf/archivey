@@ -388,6 +388,46 @@ def test_info_and_detect(sample_zip: Path, capsys: pytest.CaptureFixture[str]) -
     assert main(["detect", str(sample_zip)]) == EXIT_OK
 
 
+def test_info_detects_once(
+    sample_zip: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``info`` prints the detection the open ran instead of detecting again."""
+    from typing import Any
+
+    from archivey import FormatInfo
+    from archivey.internal import detection
+
+    calls = 0
+    real = detection._detect_format_body
+
+    def counting(*args: Any, **kwargs: Any) -> FormatInfo:
+        nonlocal calls
+        calls += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(detection, "_detect_format_body", counting)
+    assert main(["info", str(sample_zip)]) == EXIT_OK
+    assert calls == 1
+    out = capsys.readouterr().out
+    assert "confidence:  certain" in out
+    assert "detected_by: magic" in out
+
+
+def test_info_prints_identity_once_when_the_open_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A recognised format that fails to open still gets its identity lines, once."""
+    bad = tmp_path / "bad.zip"
+    bad.write_bytes(b"PK\x03\x04" + b"\x00" * 40)
+    assert main(["info", str(bad)]) != EXIT_OK
+    captured = capsys.readouterr()
+    assert captured.out.count("path:") == 1
+    assert "format:" in captured.out
+    assert "open:" in captured.err
+
+
 def test_info_on_a_directory_reports_the_directory_format(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

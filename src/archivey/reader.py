@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Callable, Collection, Iterator
 
 from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt
+from archivey.detection import FormatInfo
 from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
 from archivey.types import (
     AbortOn,
@@ -58,6 +59,19 @@ class ArchiveReader(ABC):
     @abstractmethod
     def format(self) -> ArchiveFormat:
         """The detected ``(container, stream)`` format of the open archive."""
+        ...
+
+    @property
+    @abstractmethod
+    def format_info(self) -> FormatInfo | None:
+        """How :func:`archivey.open_archive` identified the format, as
+        :func:`archivey.detect_format` would report it.
+
+        The result of the detection the open ran, kept rather than repeated: its
+        ``confidence``, ``detected_by`` and ``payload_offset`` describe this reader's
+        source. A directory reports ``DIRECTORY`` / ``CERTAIN`` / ``"directory"``.
+        ``None`` when ``format=`` was passed, so no detection ran.
+        """
         ...
 
     @property

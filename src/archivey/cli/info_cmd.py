@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from typing import TextIO
 
-from archivey import detect_format, open_archive
+from archivey import FormatInfo, detect_format, open_archive
 from archivey.cli.common import reject_stdin_token
 from archivey.cli.format import (
     escape_path,
@@ -59,6 +59,15 @@ def _print_cost_axes(cost: CostReceipt, out: TextIO) -> None:
         _line("cost_note", note, out)
 
 
+def _print_identity(archive: str, detected: FormatInfo, out: TextIO) -> None:
+    _field("path", escape_path(archive), out)
+    _line("format", _format_label(detected.format), out)
+    _line("confidence", detected.confidence.value, out)
+    _line("detected_by", detected.detected_by, out)
+    if detected.payload_offset:
+        _line("sfx_offset", detected.payload_offset, out)
+
+
 def run_info(
     *,
     archive: str,
@@ -74,17 +83,16 @@ def run_info(
     if track_io:
         print("track-io: n/a for info (no member-body decode)", file=err)
 
-    detected = detect_format(archive)
-    _field("path", escape_path(archive), out)
-    _line("format", _format_label(detected.format), out)
-    _line("confidence", detected.confidence.value, out)
-    _line("detected_by", detected.detected_by, out)
-    if detected.payload_offset:
-        _line("sfx_offset", detected.payload_offset, out)
-
     pwd: PasswordInput = resolve_password(password)
+    identity_printed = False
     try:
         with open_archive(archive, password=pwd) as reader:
+            # The open already detected the format; print what it found rather than
+            # detecting a second time. No format= is passed, so it is never None.
+            detected = reader.format_info
+            assert detected is not None
+            _print_identity(archive, detected, out)
+            identity_printed = True
             info = reader.info
             _line("version", info.format_version or "-", out)
             _line("solid", info.is_solid, out)
@@ -104,7 +112,11 @@ def run_info(
                 for key, value in sorted(info.extra.items()):
                     _line(f"extra.{key}", value, out)
     except ArchiveyError as exc:
-        # Detection succeeded enough to print identity; open failure is still a fail.
+        # When the open itself failed, identity comes from detection alone: printed
+        # when the format was recognised (the open error is still a failure), and when
+        # it was not, detection's own error is the one to report.
+        if not identity_printed:
+            _print_identity(archive, detect_format(archive), out)
         _field("open", format_error_detail(exc), err)
         return 1
     return 0

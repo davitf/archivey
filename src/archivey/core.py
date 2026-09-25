@@ -447,6 +447,13 @@ def _open_resolved(
         resolved_format = ArchiveFormat.DIRECTORY
 
     detected: FormatInfo | None = None
+    # What ``reader.format_info`` reports. A directory is decided without running
+    # detection, but ``detect_format`` gives it a fixed answer, so the reader does too.
+    format_info: FormatInfo | None = (
+        FormatInfo(ArchiveFormat.DIRECTORY, DetectionConfidence.CERTAIN, "directory")
+        if archive_source.is_directory and format is None
+        else None
+    )
     if resolved_format is None:
         # A non-seekable source keeps what detection peeks in its own replay prefix,
         # so the backend gets the same object and reads those bytes first.
@@ -467,6 +474,7 @@ def _open_resolved(
             archive_name = resolved.archive_name
             detected = detect_format(archive_source, collector=collector)
         resolved_format = detected.format
+        format_info = detected
     elif archive_source.path is not None and is_sfx_stub_name(archive_source.path.name):
         # format= still follows a stub-only miss. Skipping this made
         # detect_format(p); open_archive(p, format=info.format) open the MZ
@@ -616,6 +624,7 @@ def _open_resolved(
         detected,
         is_directory=archive_source.is_directory,
     )
+    reader._format_info = format_info
     # After provenance, so an open-time decode failure carries format_unconfirmed.
     try:
         reader._validate_at_open()

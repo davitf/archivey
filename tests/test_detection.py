@@ -1286,3 +1286,24 @@ def test_content_probes_share_one_decode_allowance() -> None:
     info, receipt = detect(zlib_needs)
     assert info is not None and info.format == ArchiveFormat.ZLIB
     assert receipt.decode_input == zlib_needs
+
+
+def test_reader_keeps_the_detection_it_opened_by(tmp_path: Path) -> None:
+    from archivey import open_archive
+
+    path = tmp_path / "a.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("a.txt", b"hello")
+    with open_archive(path) as reader:
+        info = reader.format_info
+        assert info == detect_format(path)
+        assert info is not None and info.detected_by == "magic"
+
+    # format= skips detection, so there is nothing to report.
+    with open_archive(path, format=ArchiveFormat.ZIP) as reader:
+        assert reader.format_info is None
+
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    with open_archive(tree) as reader:
+        assert reader.format_info == detect_format(tree)

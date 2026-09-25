@@ -443,6 +443,35 @@ A corroborated result keeps today's type, message, and `format_unconfirmed=False
 | Probe-only result, decode succeeds | Success; no error and no diagnostic |
 | Decode fails after bytes were already delivered | Error still raised; message does not claim zero output |
 | `DiagnosticPolicy.pedantic()`, probe-only decode fails | Same typed error with `format_unconfirmed=True` — not `DiagnosticRaisedError` |
+
+### Requirement: A decode failure on an extension-only format names its provenance
+
+When the format came from the filename alone (`detected_by="extension"`: magic, the
+content probes and far magic all declined), a `TruncatedError`, `CorruptionError` or
+`ResourceLimitError` while opening or reading SHALL be treated the same way as a
+probe-only failure: same type, `format_unconfirmed=True`, and a message that names the
+identification as unconfirmed ("extension only"). The diagnostic is
+`EXTENSION_FORMAT_UNCONFIRMED`, the code that already reports an extension-only empty
+listing, with `detected_format=None`. That is the same provenance fact, and no new code is
+added for it. Forty thousand zero bytes named `backup.gz` are the measured case: before
+this, the read raised `CorruptionError` with `format_unconfirmed=False`, as if a real gzip
+file were damaged.
+
+`EXTENSION_FORMAT_UNCONFIRMED` is in `ARCHIVE_INTEGRITY_CODES`, so a `strict` policy
+resolves it to RAISE; the emit SHALL then surface the same typed error via `escalate_as`,
+as the probe code does under `pedantic()`, never `DiagnosticRaisedError`. It is emitted
+at most once per reader for a failed read.
+
+A filename that agrees with a content-probe hit still corroborates it: that failure stays
+unstamped, as above.
+
+#### Scenario: extension-only decode failure
+
+| Case | Expected |
+| --- | --- |
+| 40 000 zero bytes named `backup.gz`, opened | `CorruptionError`; `format_unconfirmed is True`; message says "extension only"; `EXTENSION_FORMAT_UNCONFIRMED` with `chosen_by="extension"` |
+| Same file under `DiagnosticPolicy.strict()` | The same typed `CorruptionError`, not `DiagnosticRaisedError` |
+| A real gzip file cut short (exact magic) | Unchanged: `format_unconfirmed is False`; no unconfirmed diagnostic |
 | Format came from exact magic, decode fails | Untouched — this requirement does not apply |
 
 ### Requirement: Object-typed public arguments are refused at the boundary

@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
+from archivey.detection import FormatInfo
 from archivey.diagnostics import (
     DiagnosticCode,
     DiagnosticDisposition,
@@ -468,9 +469,13 @@ class BaseArchiveReader(ArchiveReader):
         # Set by open_archive on the reader it is about to return; read only by the
         # empty-listing check in _publish_materialized. None for a reader built directly.
         self._format_provenance: FormatProvenance | None = None
-        # PROBE_FORMAT_UNCONFIRMED is one provenance fact per reader, not per raised
-        # exception — retries must not multiply the diagnostic (or burn retention slots).
-        self._probe_unconfirmed_emitted: bool = False
+        # Set by open_archive beside the provenance: the detection result it opened by,
+        # served as ``format_info``. None for a reader built directly or under format=.
+        self._format_info: FormatInfo | None = None
+        # PROBE_/EXTENSION_FORMAT_UNCONFIRMED on a failed read is one provenance fact
+        # per reader, not per raised exception — retries must not multiply the
+        # diagnostic (or burn retention slots).
+        self._unconfirmed_failure_emitted: bool = False
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
         self._forward_pass_started: bool = False
         # When true, progressive registration enforces ListingLimits (scan_members).
@@ -1011,6 +1016,7 @@ class BaseArchiveReader(ArchiveReader):
         escalate_as: type[BaseException] | None = None,
         escalate_message: str | None = None,
         escalate_kwargs: dict[str, object] | None = None,
+        read_failed: bool = False,
     ) -> None:
         if chosen_by == "argument":
             code = DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY
@@ -1019,10 +1025,15 @@ class BaseArchiveReader(ArchiveReader):
         else:
             code = DiagnosticCode.PROBE_FORMAT_UNCONFIRMED
         format_name = self._format.display_name
-        if chosen_by == "content_probe":
+        if chosen_by == "content_probe" or read_failed:
+            evidence = (
+                "a content probe"
+                if chosen_by == "content_probe"
+                else "its file extension"
+            )
             message = (
                 f"Reading {format_name} failed (a decode failure or a limit), and it "
-                f"was identified only by a content probe; the source may not be that "
+                f"was identified only by {evidence}; the source may not be that "
                 f"format"
             )
         else:
@@ -1046,13 +1057,27 @@ class BaseArchiveReader(ArchiveReader):
             escalate_kwargs=escalate_kwargs,
         )
 
-    def _mark_format_unconfirmed(self, exc: ArchiveyError) -> None:
-        """Stamp a probe-only decode failure and emit the matching diagnostic."""
+    def _mark_format_unconfirmed(
+        self,
+        exc: ArchiveyError,
+        chosen_by: Literal["extension", "content_probe"],
+    ) -> None:
+        """Stamp a decode failure under an unconfirmed format and emit its diagnostic.
+
+        ``chosen_by`` says what the format rested on: a content probe with nothing
+        corroborating it (``PROBE_FORMAT_UNCONFIRMED``), or the filename alone, because
+        every content signal declined (``EXTENSION_FORMAT_UNCONFIRMED``).
+        """
         if not exc.format_unconfirmed:
             format_name = (exc.source_format or self._format).display_name
             detail = exc.raw_message.rstrip(".")
+            evidence = (
+                "content probe only"
+                if chosen_by == "content_probe"
+                else "extension only"
+            )
             unconfirmed = (
-                f"Format identification was unconfirmed (content probe only); "
+                f"Format identification was unconfirmed ({evidence}); "
                 f"the source may not be {format_name}."
             )
             if isinstance(exc, ResourceLimitError):
@@ -1071,7 +1096,7 @@ class BaseArchiveReader(ArchiveReader):
             exc.args = (escaped,)
             exc.format_unconfirmed = True
 
-        if self._probe_unconfirmed_emitted:
+        if self._unconfirmed_failure_emitted:
             return
 
         # Under pedantic() (default=RAISE), a bare emit would raise DiagnosticRaisedError
@@ -1084,6 +1109,8 @@ class BaseArchiveReader(ArchiveReader):
         escalate_message: str | None = None
         disposition = self._diagnostics_collector.policy.resolve(
             DiagnosticCode.PROBE_FORMAT_UNCONFIRMED
+            if chosen_by == "content_probe"
+            else DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
         )
         if disposition is DiagnosticDisposition.RAISE:
             escalate_as = type(exc)
@@ -1104,13 +1131,16 @@ class BaseArchiveReader(ArchiveReader):
         # such re-escalation: the caller re-raises the stamped `exc` — same type, same
         # `format_unconfirmed=True` — on every occurrence, so a caller who asked to be
         # stopped is stopped whether or not the diagnostic fires a second time.
-        self._probe_unconfirmed_emitted = True
+        self._unconfirmed_failure_emitted = True
         self._emit_unconfirmed_format(
-            "content_probe",
-            self._format.display_name,
+            chosen_by,
+            # An extension guess is what detection falls back to when it refuses the
+            # bytes, so it has no content answer to restate.
+            self._format.display_name if chosen_by == "content_probe" else None,
             escalate_as=escalate_as,
             escalate_message=escalate_message,
             escalate_kwargs=escalate_kwargs,
+            read_failed=True,
         )
 
     def _publish_materialized(
@@ -2071,6 +2101,11 @@ class BaseArchiveReader(ArchiveReader):
         return self._format
 
     @property
+    def format_info(self) -> FormatInfo | None:
+        self._state.require_open("format_info")
+        return self._format_info
+
+    @property
     def info(self) -> ArchiveInfo:
         self._state.require_open("info")
         return self._get_archive_info()
@@ -2729,12 +2764,14 @@ class BaseArchiveReader(ArchiveReader):
         if exc.member_name is None and member_name is not None:
             exc.member_name = member_name
         provenance = self._format_provenance
-        if (
-            provenance is not None
-            and provenance.probe_only
-            and isinstance(exc, (TruncatedError, CorruptionError, ResourceLimitError))
+        if provenance is None or not isinstance(
+            exc, (TruncatedError, CorruptionError, ResourceLimitError)
         ):
-            self._mark_format_unconfirmed(exc)
+            return
+        if provenance.probe_only:
+            self._mark_format_unconfirmed(exc, "content_probe")
+        elif provenance.chosen_by == "extension":
+            self._mark_format_unconfirmed(exc, "extension")
 
     def io_stats(self) -> "IoStats | None":
         """Return I/O counters if measurement is enabled, else ``None``.

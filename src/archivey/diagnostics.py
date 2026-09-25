@@ -178,6 +178,9 @@ class UnconfirmedFormatContext(_JsonSafeContext):
       with zero members under a format chosen by an override or the filename, not by
       content. ``detected_format`` is what a fresh content detection reports now —
       ``None`` when every content signal declines (the extension fallback's usual case).
+    * **Extension-only decode failure** (``chosen_by="extension"``): a read of a format
+      chosen by the filename alone raised. ``detected_format`` is ``None``: detection
+      had declined the bytes, which is why the filename decided.
     * **Probe-only decode failure** (``chosen_by="content_probe"``): listing succeeded
       (typically one fabricated single-file member) and a later read raised. ``format``
       is the probe's claim; ``detected_format`` is the same claim restated (there is no
