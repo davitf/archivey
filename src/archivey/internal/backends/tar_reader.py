@@ -206,7 +206,9 @@ def _pax_time(info: tarfile.TarInfo, key: str) -> datetime | None:
     """Parse a PAX time record (float Unix seconds) into a tz-aware UTC datetime.
 
     ``tarfile`` folds the PAX ``mtime`` into ``TarInfo.mtime`` itself, but leaves the
-    access and inode-change times only in ``pax_headers``; surface them here.
+    access and inode-change times, and libarchive's ``LIBARCHIVE.creationtime``
+    extension keyword (not a standard PAX record), only in ``pax_headers``; surface
+    them here.
     """
     raw = info.pax_headers.get(key)
     if raw is None:

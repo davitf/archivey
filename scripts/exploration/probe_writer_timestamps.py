@@ -152,7 +152,8 @@ def writers(payload: Path) -> list[tuple[str, str, list[str] | None, Path]]:
         argv = [bsdtar, "--format", fmt, "-cf"] if bsdtar else None
         out.append((f"bsdtar/libarchive {fmt}", kind, argv, payload))
 
-    # GNU tar (Linux) writes PAX atime/ctime with --format=pax, never a birth time.
+    # GNU tar (Linux, and gtar where installed) writes PAX atime/ctime with
+    # --format=pax, never a birth time.
     gnu_tar = _which("gtar") or (
         _which("tar") if sys.platform.startswith("linux") else None
     )
@@ -290,7 +291,7 @@ def inspect_zip(path: Path) -> dict[str, object]:
     }
 
 
-# --------------------------------------------------------------------------- 7z
+# --------------------------------------------------------------------------- TAR
 
 
 def inspect_tar(path: Path) -> dict[str, object]:
@@ -306,6 +307,9 @@ def inspect_tar(path: Path) -> dict[str, object]:
             except ValueError:
                 fields[f"pax {key}"] = value
     return fields
+
+
+# --------------------------------------------------------------------------- 7z
 
 
 def inspect_7z(path: Path) -> dict[str, object]:

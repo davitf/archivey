@@ -1,18 +1,21 @@
-# Writer timestamp slots — which time ZIP and 7z writers store as "creation"
+# Writer timestamp slots — which time ZIP, 7z and TAR writers store as "creation"
 
 **Status:** measured 2026-09-25 on GitHub-hosted runners (`ubuntu-latest`,
 `macos-latest` arm64 on macOS 26, `windows-latest` on Windows Server 2025), CI run
-[36161789865](https://github.com/davitf/archivey/actions/runs/36161789865). The method
-is the script, not the numbers in this page. It settles which ZIP and 7z readers may put
-a stored creation time in `Member.created`.
+[36161789865](https://github.com/davitf/archivey/actions/runs/36161789865); the TAR
+rows come from run
+[36172269114](https://github.com/davitf/archivey/actions/runs/36172269114). The method
+is the script, not the numbers in this page. It settles which ZIP, 7z and TAR readers may
+put a stored creation time in `Member.created`.
 
 ## Question
 
 `Member.created` holds a birth time or nothing. It never holds `st_ctime`, the Unix
 inode change time. ZIP's NTFS extra field (`0x000A`), the third time of ZIP's Extended
-Timestamp (`0x5455`) and 7z's `CTime` property are each documented as a creation time.
-But Unix has no portable birth time, so a Unix writer may put `st_ctime` there. The
-reader must know which writers do that, and how to recognise their archives.
+Timestamp (`0x5455`), 7z's `CTime` property and libarchive's PAX
+`LIBARCHIVE.creationtime` are each documented as a creation time. But Unix has no
+portable birth time, so a Unix writer may put `st_ctime` there. The reader must know
+which writers do that, and how to recognise their archives.
 
 ## Re-run
 
@@ -99,9 +102,11 @@ time.
    with the birth time. So a rule based on the field alone, where the NTFS field means
    `created` and the UT third time means ctime, is wrong for 7-Zip on Unix in one
    direction and for Info-ZIP on Windows in the other.
-2. **macOS writers store `st_ctime`, not the birth time they have.** 7-Zip 26.03,
-   p7zip and libarchive all do this on macOS, although APFS keeps a birth time. So host
-   3 correctly means "not a birth time" for every macOS writer measured.
+2. **macOS writers store `st_ctime` in the ZIP and 7z slots, not the birth time they
+   have.** 7-Zip 26.03, p7zip and libarchive all do this on macOS, although APFS keeps
+   a birth time. So host 3 correctly means "not a birth time" for every macOS ZIP and 7z
+   writer measured. The exception is libarchive's PAX TAR, which writes the APFS birth
+   time as `LIBARCHIVE.creationtime`, beside `st_ctime` in the PAX `ctime`.
 3. **The header's host marks the writer's OS, with one exception.** 7-Zip, p7zip and
    Info-ZIP stamp their real OS: host 3 and a Unix mode on Linux and macOS, FAT/`0x20`
    on Windows. libarchive on Windows stamps itself Unix in both formats (host 3 and

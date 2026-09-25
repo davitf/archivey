@@ -144,32 +144,21 @@ def test_rock_ridge_namespace_and_fidelity(rock_ridge_iso: Path) -> None:
         assert by_name["subdir/"].type == MemberType.DIRECTORY
 
 
-def test_rock_ridge_tf_with_both_times_fills_created_and_ctime() -> None:
-    # Rock Ridge is the one archive format that stores a creation time and an
-    # attribute-change time side by side, so a member can carry both.
-    import time
-    from types import SimpleNamespace
-
-    import pycdlib.dates
-
-    def short_date(*fields: int) -> pycdlib.dates.DirectoryRecordDate:
-        date = pycdlib.dates.DirectoryRecordDate()
-        date.new(time.mktime((*fields, 0, 0, 0)))
-        return date
-
-    tf = SimpleNamespace(
-        modification_time=None,
-        access_time=None,
-        creation_time=short_date(2020, 1, 2, 3, 4, 5),
-        attribute_change_time=short_date(2021, 6, 7, 8, 9, 10),
-    )
-    rr = SimpleNamespace(dr_entries=SimpleNamespace(tf_record=tf), ce_entries=None)
-    record = SimpleNamespace(date=None)
-    reader = object.__new__(IsoReader)
-    _, _, created, ctime = reader._timestamps(record, rr)  # type: ignore[arg-type]
-    assert created is not None and ctime is not None
-    assert (created.year, created.month, created.day) == (2020, 1, 2)
-    assert (ctime.year, ctime.month, ctime.day) == (2021, 6, 7)
+def test_rock_ridge_tf_with_both_times_fills_created_and_ctime(tmp_path: Path) -> None:
+    # Rock Ridge stores a creation time and an attribute-change time side by side, so
+    # a member can carry both. pycdlib writes TF flags 0x0e (modify, access,
+    # attributes); rewriting them to 0x0b (creation, modify, attributes) keeps the
+    # record length and turns the first stamp into a creation time, moved to 2020.
+    image = _build_iso(rock_ridge=True, joliet=True)
+    written = b"TF\x1a\x01\x0e\x7e"
+    assert written in image
+    path = tmp_path / "rr-created.iso"
+    path.write_bytes(image.replace(written, b"TF\x1a\x01\x0b\x78"))
+    with open_archive(path) as ar:
+        f = ar.get("file.txt")
+    assert f.created is not None and f.ctime is not None
+    assert f.created.year == 2020
+    assert f.ctime.year != 2020
 
 
 def test_joliet_namespace_and_fidelity(tmp_path: Path) -> None:
