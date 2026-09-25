@@ -845,15 +845,31 @@ _SINGLE_FILE_CODECS = {
 _NOT_A_STREAM = {"zeros": b"\x00" * 40_000, "zero-byte": b""}
 
 
-def _codec_params() -> list:
+def test_open_validation_table_covers_every_single_file_codec() -> None:
+    # A new standalone codec gets open-time validation without a backend change; this
+    # makes it fail here until the tables below cover it too.
+    from archivey.internal.streams.codecs import SINGLE_FILE_CODECS
+
+    suffixes = {ext for codec in SINGLE_FILE_CODECS for ext in codec.extensions}
+    assert suffixes == set(_SINGLE_FILE_CODECS)
+
+
+def _codec_params(*, decode_only: bool = False) -> list:
+    """One param per codec, skipped where the test's needs are missing.
+
+    ``decode_only`` is for tests that never call the compressor: ``.Z`` decodes natively
+    and needs ``ncompress`` only to write fixtures, so it must run in the zero-dep leg.
+    """
     return [
-        pytest.param(suffix, id=suffix, marks=marks)
+        pytest.param(
+            suffix, id=suffix, marks=() if decode_only and suffix == ".Z" else marks
+        )
         for suffix, (_compress, marks) in _SINGLE_FILE_CODECS.items()
     ]
 
 
 @pytest.mark.parametrize("contents", sorted(_NOT_A_STREAM))
-@pytest.mark.parametrize("suffix", _codec_params())
+@pytest.mark.parametrize("suffix", _codec_params(decode_only=True))
 @pytest.mark.parametrize("seekable_members", [False, True])
 def test_undecodable_source_raises_at_open(
     tmp_path: Path, suffix: str, contents: str, seekable_members: bool

@@ -468,8 +468,10 @@ input and without reaching a valid end-of-stream marker, SHALL raise rather than
 end-of-file. Where the accelerator cannot report enough to tell that apart from a genuine
 empty stream (rapidgzip's bundled bzip2 decoder cannot), the first empty read before any
 output SHALL be re-decoded by the non-accelerated decoder over a fresh view of the
-source, which raises or confirms the empty stream. Accelerator mode is a performance choice and SHALL NOT be observable as a
-difference in whether a corrupt source raises.
+source, which raises or confirms the empty stream. A seek before that first read does not
+bypass the check: on such a stream the accelerator clamps the seek to 0. Accelerator mode
+is a performance choice and SHALL NOT be observable as a difference in whether a corrupt
+source raises.
 
 #### Scenario: accelerator error parity
 

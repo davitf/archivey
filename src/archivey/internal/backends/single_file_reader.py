@@ -92,8 +92,10 @@ class SingleFileReader(BaseArchiveReader):
     - Seekable stream → :class:`SharedSource` views from position 0
     - Non-seekable → one pending stream; first open consumes it
 
-    Seekable sources may probe-open at init so format/size errors surface at
-    ``open_archive`` time rather than first ``read``.
+    A seekable source is validated by :meth:`_validate_at_open`, which ``open_archive``
+    calls after setting format provenance: it decodes one byte, so a source that is not
+    the claimed codec raises from ``open_archive`` rather than the first ``read``. A
+    non-seekable source is not validated until that read.
     """
 
     _SUPPORTS_RANDOM_ACCESS = True

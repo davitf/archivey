@@ -839,8 +839,11 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
     decode of an input that produced nothing, which for a valid stream is a few bytes per
     concatenated empty record.
 
-    A caller ``seek`` away from offset 0 before the first read disarms the check, as it does
-    for the gzip backstop: a position past the end is not evidence of an empty stream.
+    A caller ``seek`` that lands away from offset 0 before the first read disarms the
+    check, as it does for the gzip backstop: the stream has shown it has content there.
+    That cannot hide garbage. For input it reads as empty, the decoder clamps every seek
+    to 0 (measured on rapidgzip 0.16: ``seek(100)`` over 40 000 zero bytes returns 0), so
+    the check stays armed and the next read still falls back.
     """
 
     # Side-effecting read() (first-empty fallback); disable passthrough so readinto does
@@ -1451,6 +1454,8 @@ class Bzip2Codec(StreamCodec):
             )
         if isinstance(exc, (EOFError, OSError)):
             # The stdlib engine that _Bzip2EmptyStreamCheck falls back to raises these.
+            # This does not widen translation: translate maps only an OSError saying
+            # "Invalid data stream"; any other OSError comes back None and propagates.
             return self.translate(exc)
         return None
 

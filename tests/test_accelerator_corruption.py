@@ -417,3 +417,20 @@ def test_indexed_bzip2_valid_empty_stream_reads_empty(
     with open_codec_stream(Codec.BZIP2, source, config=_BZ_ON) as s:
         assert s.read(1) == b""
         assert s.read() == b""
+
+
+@pytest.mark.parametrize("source_kind", ["path", "bytesio"])
+def test_indexed_bzip2_seek_before_read_still_raises(
+    tmp_path: Path, source_kind: str
+) -> None:
+    # A seek before the first read disarms the empty-stream check only when it lands off
+    # 0; the accelerator clamps a seek on input it reads as empty, so garbage still raises.
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    data = b"\x00" * 40_000
+    source = (
+        _write(tmp_path, "bad.bz2", data) if source_kind == "path" else io.BytesIO(data)
+    )
+    with open_codec_stream(Codec.BZIP2, source, config=_BZ_ON) as s:
+        s.seek(100)
+        with pytest.raises(CorruptionError):
+            s.read()
