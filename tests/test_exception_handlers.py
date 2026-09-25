@@ -213,12 +213,28 @@ def test_fault_parked_during_accelerator_open_raises_at_open() -> None:
         _open_accelerator(_open_fails, _Broken())
     assert isinstance(info.value.__context__, ValueError)
 
+    # An interrupt from the open itself is never replaced by a different parked fault.
+    class _FailingSeekable(io.BytesIO):
+        def seekable(self) -> bool:
+            raise OSError("disk gone")
+
+    def _open_interrupted(source: io.RawIOBase, parallelization: int) -> io.BytesIO:
+        source.seekable()
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        _open_accelerator(_open_interrupted, _FailingSeekable())
+
 
 def test_interrupted_teardown_still_marks_the_lifecycle_complete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """base_reader.py ``_maybe_teardown``: teardown is never retried, so an interrupt
-    in the backend's close still leaves the lifecycle at TEARDOWN_COMPLETE."""
+    in the backend's close still leaves the lifecycle at TEARDOWN_COMPLETE.
+
+    The lifecycle assertion is on internal state on purpose: the fix is bookkeeping with
+    no external effect today (the retry is refused by the claim flag either way), so
+    the state is the only thing that can pin it."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("a.txt", b"a")
@@ -234,6 +250,6 @@ def test_interrupted_teardown_still_marks_the_lifecycle_complete(
     monkeypatch.setattr(reader, "_close_archive", _interrupted)
     with pytest.raises(KeyboardInterrupt):
         reader.close()
-    reader.close()  # a retry does not run the backend's close again
+    reader.close()  # quiet; the claim flag, not the lifecycle, refuses a second run
     assert calls == 1
     assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE

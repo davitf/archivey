@@ -20,7 +20,7 @@ Baseline: `[all]` leg 5174 passed, 39 skipped, 5 xfailed; `./scripts/check.sh` g
 |---|---|---|---|---|
 | F1 | high | `codecs.py` bzip2 accelerator open | `open_stream(fileobj, seekable=True)` on a `.bz2` with rapidgzip installed: an `OSError` from the caller's stream crossed into rapidgzip's C++ callback and **aborted the process** (`std::invalid_argument`). The gzip/zlib/deflate path had the `_TrappingSource` shim; the bzip2 path never did | Fixed: every rapidgzip decoder opens through `_open_accelerator`, which traps a caller-owned source |
 | F2 | medium | `verify.py` `MemberVerifier._read_sized_all` | A corrupt deflate member read with `read()` raised `TruncatedError`; the same member read with `read(n)` raised `CorruptionError`. The handler relabelled every raw decoder error as truncation (only `OSError` / `MemoryError` escaped) | Fixed: the raw error propagates to the `ArchiveStream` translator, as on the bounded path |
-| F3 | medium | `rar_parser.py` RAR3 and RAR5 encrypted-header walks | A header-encrypted RAR cut inside a header's salt (RAR3) or IV (RAR5) raised `EncryptionError` "Failed to decrypt … headers", even with the right password, after the reader tried every candidate. Also any `OSError` or bug in that span | Fixed: the handlers are gone; nothing in that span depends on the password, so its errors propagate as they are (`CorruptionError` for the short read). The one password-dependent step in front, normalizing a `bytes` candidate, now raises a wrong-password `EncryptionError` for bytes with no Unicode form, so the candidate loop moves on (on the RAR5 walk that also fixes a raw `UnicodeDecodeError` the base already let out) |
+| F3 | medium | `rar_parser.py` RAR3 and RAR5 encrypted-header walks | A header-encrypted RAR cut inside a header's salt (RAR3) or IV (RAR5) raised `EncryptionError` "Failed to decrypt … headers", even with the right password, after the reader tried every candidate. Also any `OSError` or bug in that span | Fixed: the handlers are gone; nothing in that span depends on the password, so its errors propagate as they are (`CorruptionError` for the short read). The one password-dependent step in front, normalizing a `bytes` candidate, now raises a wrong-password `EncryptionError` for bytes with no Unicode form (and, on RAR5, for a password whose 127-unit cut splits a surrogate pair), so the candidate loop moves on (on the RAR5 walk that also fixes a raw `UnicodeDecodeError` the base already let out) |
 | F4 | low | `verify.py` over-run probe (two sites, now `_probe_past_declared`) | An `OSError` or `MemoryError` on the read one byte past a member's declared size was taken as "no trailing data" | Tightened: those propagate; an opaque decoder error there still reads as end of data, with the reason written down |
 | F5 | low | `codecs.py` `_AcceleratorStream` read / readinto / seek, and accelerator open | When the trap's EOF-shaped answer made rapidgzip raise its own error, that error propagated and the real source fault stayed parked. A fault parked while the decoder opened waited for the first read | Fixed: the parked fault wins (the accelerator's error is its `__context__`), and an open-time fault raises at open |
 | F6 | low | `base_reader.py` `_maybe_teardown` | A `KeyboardInterrupt` in the backend's close left the lifecycle at `TEARDOWN_RUNNING`, against the docstring's "marked complete even when `_close_archive` fails". Nothing reads the state today | Fixed: `complete_teardown` runs in a `finally` |
@@ -47,11 +47,12 @@ so none went to the maintainer as a decision.
 ## Census
 
 67 handlers on `5bbbfdc`, counted from the AST (the brief counted 55 on `8e88e4f`; the
-difference is code that landed since): 37 catch `BaseException`, 30 catch `Exception`,
-36 carry `# noqa: BLE001`. Five sat in files two open pull requests were changing. The three
+difference is code that landed since): 37 catch `BaseException`, 30 catch `Exception`, 36
+carry `# noqa: BLE001`. Five sat in files two open pull requests were changing. The three
 in `extraction.py` were reviewed once the streaming-extraction PR merged; the two in
-`sevenzip_reader.py` are **deferred** until the password-confirmation PR merges. Pattern names are the ones
-in [`dev-docs/topics/exception-handlers.md`](../../dev-docs/topics/exception-handlers.md).
+`sevenzip_reader.py` are **deferred** until the password-confirmation PR merges. Pattern
+names are the ones in
+[`dev-docs/topics/exception-handlers.md`](../../dev-docs/topics/exception-handlers.md).
 
 Locations are by function, because line numbers drift.
 

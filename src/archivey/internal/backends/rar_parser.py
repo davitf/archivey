@@ -825,26 +825,37 @@ def _load_windowstime(
     return dt, pos
 
 
+_NO_UNICODE_FORM = (
+    "Wrong password: it has no Unicode form, so it cannot be a RAR password"
+)
+
+
 def _normalize_password_utf8(password: str | bytes) -> bytes:
-    """RAR password normalization: UTF-16LE truncate → UTF-8."""
+    """RAR5 password normalization: UTF-16LE truncate → UTF-8.
+
+    The truncation counts UTF-16 code units, so a password whose last kept unit is
+    the first half of a surrogate pair has no UTF-8 form. That is typed like the
+    ``bytes`` case in :func:`_normalize_password_utf16le`: a wrong candidate.
+    """
     wstr = _normalize_password_utf16le(password)
-    return wstr.decode("utf-16le").encode("utf8")
+    try:
+        return wstr.decode("utf-16le").encode("utf8")
+    except UnicodeError:
+        raise wrong_password_error(_NO_UNICODE_FORM) from None
 
 
 def _normalize_password_utf16le(password: str | bytes) -> bytes:
     """The password as RAR hashes it: UTF-16LE, truncated to the format's maximum.
 
-    A candidate with no UTF-16 form (``bytes`` that are not UTF-8, or a ``str`` with a
-    lone surrogate) cannot be any RAR password, so it is a wrong password: the
-    candidate loop moves on to the next one, as the member path already does.
+    A ``bytes`` candidate that is not UTF-8 has no Unicode form, so it cannot be any
+    RAR password: it is a wrong password, and the candidate loop moves on to the next
+    one, as the member path already does.
     """
     try:
         pwd = password.decode("utf8") if isinstance(password, bytes) else password
         wstr = pwd.encode("utf-16le")
     except UnicodeError:
-        raise wrong_password_error(
-            "Wrong password: it has no Unicode form, so it cannot be a RAR password"
-        ) from None
+        raise wrong_password_error(_NO_UNICODE_FORM) from None
     return wstr[: _RAR_MAX_PASSWORD * 2]
 
 

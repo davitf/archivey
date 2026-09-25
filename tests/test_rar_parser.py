@@ -137,6 +137,21 @@ def test_a_password_with_no_unicode_form_is_a_wrong_candidate(name: str) -> None
 
 
 @requires("cryptography")
+def test_a_rar5_password_cut_inside_a_surrogate_pair_is_a_wrong_candidate() -> None:
+    """RAR5 truncates the password to 127 UTF-16 units before its UTF-8 step, so an
+    astral character straddling the cut leaves half a pair with no UTF-8 form. That
+    candidate is rejected and the list moves on, instead of ``UnicodeDecodeError``."""
+    import archivey
+
+    data = _fixture("encrypted_header__.rar").read_bytes()
+    straddling = "a" * 126 + "\U0001f600"  # 128 UTF-16 units; the emoji spans 127/128
+    with archivey.open_archive(
+        io.BytesIO(data), password=[straddling, "header_password"]
+    ) as reader:
+        assert reader.members()
+
+
+@requires("cryptography")
 @pytest.mark.parametrize(
     "name",
     ["encrypted_header__.rar", "encrypted_header__rar4.rar"],
