@@ -1125,6 +1125,22 @@ def test_strong_encryption_member_is_unsupported(
             reader.open(member)
 
 
+def test_zipcrypto_member_with_unrelated_extra_still_reads() -> None:
+    # The Strong Encryption extra-field walk must step over other records whole. The
+    # mtime of this extended-timestamp record (0x5455) begins with the bytes 17 00, so a
+    # walk that lands inside the record's data reads a 0x0017 tag there.
+    timestamp = struct.pack("<HH", 0x5455, 5) + b"\x01" + struct.pack("<i", 0x80017)
+    data = build_zipcrypto_zip(
+        b"pw",
+        b"secret.txt",
+        b"payload",
+        compression=zipfile.ZIP_STORED,
+        extra=timestamp,
+    )
+    with open_archive(io.BytesIO(data), password="pw") as reader:
+        assert reader.read("secret.txt") == b"payload"
+
+
 def test_strong_encryption_symlink_lists_with_target_unset() -> None:
     data = build_zipcrypto_zip(
         b"pw",
@@ -1146,10 +1162,14 @@ def test_strong_encryption_symlink_lists_with_target_unset() -> None:
         assert diag.context.reason == "target_data_encrypted"
 
 
-def test_encrypted_central_directory_is_unsupported() -> None:
-    # Strong Encryption can encrypt the central directory; an archive extra data record
-    # (PK\x06\x08) then sits where stdlib expects PK\x01\x02. Keep the EOCD offsets
-    # valid and replace the directory's bytes with such a record plus opaque bytes.
+def _zip_with_encrypted_directory() -> bytes:
+    """A one-member ZIP whose central directory reads as Strong-Encryption encrypted.
+
+    Strong Encryption can encrypt the central directory; an archive extra data record
+    (PK\\x06\\x08) then sits where stdlib expects PK\\x01\\x02. The EOCD offsets stay
+    valid: the directory's bytes are replaced by such a record plus opaque bytes of the
+    same total length.
+    """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("a.txt", b"data")
@@ -1158,8 +1178,35 @@ def test_encrypted_central_directory_is_unsupported() -> None:
     eocd = raw.rindex(b"PK\x05\x06")
     body = eocd - cd - 8
     raw[cd:eocd] = b"PK\x06\x08" + struct.pack("<I", body) + bytes([0xA5]) * body
+    return bytes(raw)
+
+
+# A self-extractor stub whose EOCD offsets were left unadjusted: the offset the EOCD
+# records then points into the stub, and only the EOCD position minus the directory
+# size (where stdlib reads) finds the directory.
+_STUB = b"#!/bin/sh\necho stub\n" + bytes(64)
+
+
+@pytest.mark.parametrize("prefix", [b"", _STUB], ids=["plain", "stub-prefixed"])
+def test_encrypted_central_directory_is_unsupported(prefix: bytes) -> None:
     with pytest.raises(UnsupportedFeatureError, match="central directory"):
-        open_archive(io.BytesIO(bytes(raw)))
+        open_archive(io.BytesIO(prefix + _zip_with_encrypted_directory()))
+
+
+def test_record_at_the_stale_declared_offset_is_not_read_as_encryption() -> None:
+    # A damaged directory in a stub-prefixed archive, with an archive extra data record
+    # signature in the stub exactly where the stale declared offset points. Only where
+    # stdlib reads decides, so this stays corruption.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("a.txt", b"data")
+    raw = bytearray(buf.getvalue())
+    cd = raw.index(b"PK\x01\x02")
+    raw[cd : cd + 4] = b"XXXX"
+    stub = bytearray(max(cd + 4, 64))
+    stub[cd : cd + 4] = b"PK\x06\x08"
+    with pytest.raises(CorruptionError):
+        open_archive(io.BytesIO(bytes(stub) + bytes(raw)), format=ArchiveFormat.ZIP)
 
 
 def test_damaged_central_directory_stays_corruption() -> None:

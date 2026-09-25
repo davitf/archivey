@@ -126,18 +126,16 @@ field `0x0017` SHALL list with `is_encrypted=True`, and opening it SHALL raise
 Listing a symlink of this kind SHALL leave `link_target` unset and emit
 `SYMLINK_TARGET_UNAVAILABLE` with reason `"target_data_encrypted"`. When stdlib
 cannot read the central directory and an archive extra data record
-(`PK\x06\x08`) sits where the directory should start, opening the archive SHALL
+(`PK\x06\x08`) sits where stdlib reads the directory (the EOCD position minus
+the recorded directory size), opening the archive SHALL
 raise `UnsupportedFeatureError` naming Strong Encryption rather than
 `CorruptionError`.
 
-#### Scenario: Strong Encryption matrix
+#### Scenario: Damaged central directory without the record
 
-| Case | Expected |
-| --- | --- |
-| Encrypted member with bit 6, or with extra `0x0017`, any password | Listed as encrypted; open raises `UnsupportedFeatureError` |
-| Such a member is a symlink | Listing continues; `link_target=None`; `SYMLINK_TARGET_UNAVAILABLE` with reason `"target_data_encrypted"` |
-| Archive extra data record where the central directory should be | Open raises `UnsupportedFeatureError` |
-| Damaged central directory without that record | `CorruptionError`, as before |
+- **WHEN** stdlib cannot read the central directory and no archive extra data
+  record sits where it reads it
+- **THEN** opening raises `CorruptionError`, not `UnsupportedFeatureError`
 
 ### Requirement: Reject non-seekable ZIP read sources
 

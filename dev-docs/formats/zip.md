@@ -518,7 +518,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
 | Join `7z -v` byte slices; reject Info-ZIP spanned sets | The first are slices of one finished archive and rejoin exactly — archivey already rejoins the identical split for `.7z.NNN`, so refusing here answered the same input two ways. A linear join of the second lists correctly and then reads only the members that happen to sit on the last disk (§3) | Refusing both (the shape of the rule was the filename, not the structure); concatenating spanned segments and hoping |
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
-| Refuse PKWARE Strong Encryption at member open, not implement it | Without a bit-6 check such a member was taken for ZipCrypto and failed as a wrong password or as corruption. Implementing it is out: patent-encumbered and rare outside PKZIP. No real archive of this kind is in the corpora, so the tests use re-flagged ZipCrypto members | Leaving the misleading error; implementing SES |
+| Refuse PKWARE Strong Encryption at member open, not implement it | Without these checks, a member marked only by extra `0x0017` (no bit 6) was decrypted as ZipCrypto: a wrong-password or corruption error, or with the right password bytes handed back as plaintext. A bit-6 member already reached stdlib's own `NotImplementedError`, translated to `UnsupportedFeatureError`; checking bit 6 here gives it a message archivey owns and refuses a symlink's target before its data is read. Implementing it is out: patent-encumbered and rare outside PKZIP. No real archive of this kind is in the corpora, so the tests use re-flagged ZipCrypto members | Leaving the misleading error; implementing SES |
 | Create-only writing, if and when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append (`history/ARCHITECTURE.md` §5.4) |
 | Short ZipCrypto header is `TruncatedError` on both password paths | Physical EOF, same condition as the stdlib `IndexError`; callers matching `TruncatedError` vs `CorruptionError` would otherwise see a dispatch-dependent split | Mapping the confirm path's `BadZipFile` through the generic ZIP translator (`CorruptionError`); leaving the split |
 | WinZip AES HMAC from the completing read, not `close()` | ADR 0014: `close()` is teardown. STORED members used to drain the MAC on close and raise `CorruptionError` there; compressed members already skipped it because the decompressor borrows the decrypt stream (S1-F1). Removing the drain makes both match CRC members | Wiring compressed members to authenticate on close too (the S1-F1 "fix" that would add a behaviour the ADR already ruled out) |
@@ -529,7 +529,8 @@ Gaps in what *we* know, not in what the format says — each would change someth
 answered, and none can be settled by reading more code. Distinct from §5, which is
 behaviour a caller already sees.
 
-None open.
+None open. The heading stays so the section numbers after it, which briefs cite, do not
+move.
 
 ## 8. Verify
 
@@ -562,6 +563,7 @@ None open.
 | Our AE-1 fixtures cross-checked against an independent implementation | `tests/test_zip_aes.py::test_handbuilt_ae1_is_accepted_by_7z` |
 | A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
 | ZipCrypto candidate confirmation, STORED CRC pass | `tests/test_zip_multipassword.py` |
+| PKWARE Strong Encryption refused at open, a symlink of it listed with the target unset; unrelated extra records still read; an encrypted central directory recognized where stdlib reads it, a damaged one (and a record at a stale declared offset) still `CorruptionError` | `tests/test_zip.py::test_strong_encryption_member_is_unsupported`, `::test_strong_encryption_symlink_lists_with_target_unset`, `::test_zipcrypto_member_with_unrelated_extra_still_reads`, `::test_encrypted_central_directory_is_unsupported`, `::test_damaged_central_directory_stays_corruption`, `::test_record_at_the_stale_declared_offset_is_not_read_as_encryption` |
 | Truncated ZipCrypto header is `TruncatedError` on both password dispatch paths (`IndexError` cause on `ZipFile.open`); codec-path and member-read `IndexError` stay raw; CONCURRENT stamp releases the handle lock | `tests/test_zip.py::test_truncated_zipcrypto_header_is_typed_error` (`single` / `multi`), `::test_unencrypted_codec_indexerror_is_not_truncated`, `::test_unencrypted_member_read_indexerror_is_not_truncated`, `::test_truncated_zipcrypto_stamp_releases_handle_lock` |
 | Cross-format member equivalence, per-method decode, AE-2 CRC absence | `tests/test_corpus_sweep.py` (13 ZIP corpus entries) |
 
@@ -584,9 +586,10 @@ fixture would skip on every machine that matters and prove nothing about the ref
 ## 9. References
 
 - [APPNOTE.TXT](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT): §4.3.6 overall format · §4.3.9 data descriptor · §4.3.16 EOCD · §4.4.4
-  general-purpose flags (bits 3 and 11) · §4.4.6 MS-DOS date/time · §4.4.15 external file
-  attributes · §4.5.5 extended timestamp · §7 traditional encryption · §8 splitting and
-  spanning · Appendix D CP437
+  general-purpose flags (bits 0, 3, 6, 11 and 13) · §4.4.6 MS-DOS date/time · §4.4.15
+  external file attributes · §4.5.5 extended timestamp · §4.5.12 strong encryption header
+  (`0x0017`) · §4.3.11 archive extra data record · §6 traditional encryption · §7 strong
+  encryption · §8 splitting and spanning · Appendix D CP437
 - Specs: [`format-zip`](../../openspec/specs/format-zip/spec.md) ·
   [`compressed-streams`](../../openspec/specs/compressed-streams/spec.md) ·
   [`format-detection`](../../openspec/specs/format-detection/spec.md)

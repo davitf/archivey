@@ -775,7 +775,7 @@ and the remaining pages are writing, not design.
 | Page | State |
 | --- | --- |
 | `rar.md` | **Written**; `§7` has 5 open questions. The temporary to-fix list is gone: #19 and #21 shipped, #6 layer 2 lives in §7, the `unrar` mask port in [`IDEAS.md`](IDEAS.md) |
-| `zip.md` | **Written**; `§7` has 1 open question (whether PKWARE Strong Encryption deserves an explicit refusal rather than a misleading wrong-password error) |
+| `zip.md` | **Written**; `§7` has no open questions; the PKWARE Strong Encryption one was settled by refusing it (§6) |
 | `7z.md` | **Written.** `§7` has 3 open questions. The file is `7z.md`, not the `sevenzip.md` this row used to name — the format is spelled `7z` everywhere else that faces a reader (`format-7z`, `docs/formats.md`, `review/backlog.md`). Thirteen open #315 findings still sit against the backend: six on `sevenzip_parser.py` (bind-pair arithmetic, pack-size overrun, substream mapping, the `kComment` external flag), three on the reader, two on the pipeline, one each on `sevenzip_methods.py` and `sevenzip_detect.py` |
 | `tar.md` | **Missing.** Includes the stdlib-leniency question that `open-issues.md` **P3** is about |
 | `iso.md` | **Written.** `§7` has 2 open questions. Writing it against genisoimage, xorriso and libarchive's images, rather than the `pycdlib`-built corpus, found six bugs: four fixed with it (the El Torito boot catalog failed every bootable image, a file over 4 GiB was cut to its first extent, `format_version` was `pycdlib`'s guess, a truncated image listed clamped or negative sizes and read short silently), two tracked (Rock Ridge name charset, `pycdlib` refusing zisofs and some genisoimage symlinks as corrupt) |

@@ -157,10 +157,11 @@ _BZIP2_INVALID_DATA = "Invalid data stream"
 # then the high byte of the DOS time rather than of the CRC-32.
 _ZIP_MASK_USE_DATA_DESCRIPTOR = 0x8
 
-# PKWARE Strong Encryption (APPNOTE §7): general-purpose bit 6 on an encrypted member
-# (bit 0 must be set with it), with the algorithm in extra field 0x0017. Archivey does not
-# implement it; without these checks such a member was taken for ZipCrypto.
+# ZIP general-purpose bit 0: the member is encrypted.
 _ZIP_MASK_ENCRYPTED = 0x1
+# PKWARE Strong Encryption (APPNOTE §7): general-purpose bit 6 on an encrypted member
+# (bit 0 is set with it), with the algorithm in extra field 0x0017. Either marks the
+# member; archivey does not implement the algorithm.
 _ZIP_MASK_STRONG_ENCRYPTION = 0x40
 _ZIP_EXTRA_STRONG_ENCRYPTION = 0x0017
 # Archive extra data record: written in front of a central directory that PKWARE
@@ -956,7 +957,7 @@ class ZipReader(BaseArchiveReader):
             member.ctime = ctime
         if mode is not None:
             member.mode = mode
-        if info.flag_bits & 0x1:
+        if info.flag_bits & _ZIP_MASK_ENCRYPTED:
             member.is_encrypted = True
         if info.comment:
             member.comment = _decode_with_fallback(info.comment)
@@ -1204,7 +1205,7 @@ class ZipReader(BaseArchiveReader):
         if info.compress_type == 99:
             return self._open_aes_member(info, member, member_name=member_name)
 
-        encrypted = bool(info.flag_bits & 0x1)
+        encrypted = bool(info.flag_bits & _ZIP_MASK_ENCRYPTED)
         if not encrypted:
             # Unencrypted members decode through the shared codec layer (not ZipExtFile).
             return self._open_codec_member(info, member, member_name=member_name)
@@ -1765,18 +1766,6 @@ class ZipReader(BaseArchiveReader):
         assert isinstance(info, zipfile.ZipInfo), (
             "ZIP member is missing its ZipInfo handle"
         )
-        # A Windows reparse point stores a REPARSE_DATA_BUFFER rather than a bare
-        # path, and that buffer is where the junction tag lives. Decoding it as UTF-8
-        # would report ~92 bytes of binary as this member's link target.
-        create_system = _CREATE_SYSTEM_BY_VALUE.get(
-            info.create_system, CreateSystem.UNKNOWN
-        )
-        is_reparse_point = _is_windows_reparse_point(info, create_system)
-        # What the member would be if its data turns out not to be a link buffer —
-        # the same test `_to_member` used before the reparse bit overrode it.
-        fallback_type = MemberType.DIRECTORY if info.is_dir() else MemberType.FILE
-        # The zero-data case does not appear here: `_to_member` settles it while the
-        # member is being typed, so this hook is never reached for one.
         if _uses_strong_encryption(info):
             # No password opens it here, so the target is out of reach, not missing.
             self._emit_link_target_unavailable(
@@ -1790,6 +1779,18 @@ class ZipReader(BaseArchiveReader):
                 target_in_archive=True,
             )
             return
+        # A Windows reparse point stores a REPARSE_DATA_BUFFER rather than a bare
+        # path, and that buffer is where the junction tag lives. Decoding it as UTF-8
+        # would report ~92 bytes of binary as this member's link target.
+        create_system = _CREATE_SYSTEM_BY_VALUE.get(
+            info.create_system, CreateSystem.UNKNOWN
+        )
+        is_reparse_point = _is_windows_reparse_point(info, create_system)
+        # What the member would be if its data turns out not to be a link buffer —
+        # the same test `_to_member` used before the reparse bit overrode it.
+        fallback_type = MemberType.DIRECTORY if info.is_dir() else MemberType.FILE
+        # The zero-data case does not appear here: `_to_member` settles it while the
+        # member is being typed, so this hook is never reached for one.
         # A symlink's target is its (possibly encrypted) file data. Listing must stay
         # usable without a password, so a missing/wrong password, or data that fails
         # its check under an unconfirmed ZipCrypto password, leaves link_target
@@ -1852,7 +1853,7 @@ class ZipReader(BaseArchiveReader):
             )
         if info.compress_type == 99:
             return self._open_aes_member(info, member, member_name=member.name)
-        if bool(info.flag_bits & 0x1):
+        if bool(info.flag_bits & _ZIP_MASK_ENCRYPTED):
             # Traditional ZipCrypto stays on the stdlib zipfile decryption path.
             raw = self._open_zip_entry(info, member, member_name=member.name)
             return self._wrap_member_stream(raw, member.name, size=member.size)
@@ -1888,6 +1889,36 @@ class ZipReader(BaseArchiveReader):
             self._archive.close()
 
 
+def _find_classic_eocd(fp: IO[bytes]) -> tuple[bytes, int, int] | None:
+    """Locate the classic end-of-central-directory record in ``fp``'s tail.
+
+    Returns ``(tail, idx, file_size)``: the buffer read from the end of the file, the
+    signature's index within it, and the file size (so the record's absolute position is
+    ``file_size - len(tail) + idx``). ``None`` when the file is too short or holds no
+    signature. ``fp``'s position is restored.
+
+    Uses the same last-occurrence ``rfind`` for ``PK\\x05\\x06`` that stdlib
+    ``zipfile._EndRecData`` does, so callers inspect the EOCD stdlib actually parsed: a
+    decoy signature earlier in the file (or in the comment) cannot make the two disagree
+    about which record is real. Callers bound-check the fields they unpack.
+    """
+    pos = fp.tell()
+    try:
+        fp.seek(0, io.SEEK_END)
+        size = fp.tell()
+        if size < 22:
+            return None
+        window = min(size, (1 << 16) + 22)
+        fp.seek(size - window)
+        tail = fp.read(window)
+        idx = tail.rfind(b"PK\x05\x06")
+        if idx < 0:
+            return None
+        return tail, idx, size
+    finally:
+        fp.seek(pos)
+
+
 def _classic_eocd_declares_split(fp: IO[bytes]) -> bool:
     """True when the classic EOCD names a real non-zero disk.
 
@@ -1895,28 +1926,15 @@ def _classic_eocd_declares_split(fp: IO[bytes]) -> bool:
     sentinel ("value lives in the ZIP64 EOCD"), not disk 65535 — skip it so a
     legitimate ZIP64 archive is not refused. ZIP64 multi-disk sets are already
     caught via the locator path (``_looks_like_multivolume``).
-
-    Uses the same last-occurrence ``rfind`` for ``PK\\x05\\x06`` that stdlib
-    ``zipfile._EndRecData`` does, so this inspects the EOCD stdlib actually
-    parsed — a decoy signature earlier in the file (or in the comment) cannot
-    make the two disagree about which record is real.
     """
-    pos = fp.tell()
-    try:
-        fp.seek(0, io.SEEK_END)
-        size = fp.tell()
-        if size < 22:
-            return False
-        window = min(size, (1 << 16) + 22)
-        fp.seek(size - window)
-        data = fp.read(window)
-        idx = data.rfind(b"PK\x05\x06")
-        if idx < 0 or idx + 8 > len(data):
-            return False
-        this_disk, cd_start_disk = struct.unpack_from("<HH", data, idx + 4)
-        return _disk_field_is_split(this_disk) or _disk_field_is_split(cd_start_disk)
-    finally:
-        fp.seek(pos)
+    found = _find_classic_eocd(fp)
+    if found is None:
+        return False
+    tail, idx, _size = found
+    if idx + 8 > len(tail):
+        return False
+    this_disk, cd_start_disk = struct.unpack_from("<HH", tail, idx + 4)
+    return _disk_field_is_split(this_disk) or _disk_field_is_split(cd_start_disk)
 
 
 def _uses_strong_encryption(info: zipfile.ZipInfo) -> bool:
@@ -1936,7 +1954,7 @@ def _uses_strong_encryption(info: zipfile.ZipInfo) -> bool:
 
 
 def _central_directory_looks_encrypted(fp: IO[bytes]) -> bool:
-    """True when an archive extra data record sits where the central directory should.
+    """True when an archive extra data record sits where stdlib reads the central directory.
 
     PKWARE Strong Encryption can encrypt the central directory itself (general-purpose
     bit 13 on the local headers). stdlib then fails with a bad central-directory magic,
@@ -1944,30 +1962,28 @@ def _central_directory_looks_encrypted(fp: IO[bytes]) -> bool:
     It is best-effort: the record is written in front of an encrypted central directory,
     but nothing else here can tell encrypted bytes from damaged ones.
 
-    Looks at the two places stdlib may expect the directory: the offset the EOCD
-    records, and the EOCD position minus the recorded size (stdlib's prefix-tolerant
-    reading).
+    Looks only where stdlib ``_RealGetContents`` reads: the EOCD position minus the
+    recorded directory size. The offset the EOCD records is not consulted: it matches
+    that position whenever it is right, and in a stub-prefixed archive with stale offsets
+    it points into the stub, where four arbitrary bytes would turn damage into a false
+    Strong Encryption report. Classic EOCD only: a ZIP64 archive stores ``0xFFFFFFFF``
+    there and keeps the real size in the ZIP64 EOCD, which this does not read, so an
+    encrypted ZIP64 central directory is reported as corruption.
     """
+    found = _find_classic_eocd(fp)
+    if found is None:
+        return False
+    tail, idx, size = found
+    if idx + 16 > len(tail):
+        return False
+    (cd_size,) = struct.unpack_from("<I", tail, idx + 12)
+    start_dir = size - len(tail) + idx - cd_size
+    if not 0 <= start_dir <= size - 4:
+        return False
     pos = fp.tell()
     try:
-        fp.seek(0, io.SEEK_END)
-        size = fp.tell()
-        if size < 22:
-            return False
-        window = min(size, (1 << 16) + 22)
-        fp.seek(size - window)
-        data = fp.read(window)
-        idx = data.rfind(b"PK\x05\x06")
-        if idx < 0 or idx + 20 > len(data):
-            return False
-        cd_size, cd_offset = struct.unpack_from("<II", data, idx + 12)
-        eocd_pos = size - window + idx
-        for candidate in {cd_offset, eocd_pos - cd_size}:
-            if 0 <= candidate <= size - 4:
-                fp.seek(candidate)
-                if fp.read(4) == _ZIP_ARCHIVE_EXTRA_DATA_SIG:
-                    return True
-        return False
+        fp.seek(start_dir)
+        return fp.read(4) == _ZIP_ARCHIVE_EXTRA_DATA_SIG
     finally:
         fp.seek(pos)
 
