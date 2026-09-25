@@ -210,7 +210,8 @@ the previous revision listed as waiting on a maintainer answer, including both d
 
 **Three PRs were closed on 2026-09-11** — #101 (superseded by `formats/rar.md` §9), #243
 (the thinner of the two catalogues) and #187 (native stress harnesses). That clears Wave 0
-items 3 and 4. #187's closure does **not** answer the question underneath it; see
+items 3 and 4. The question underneath #187 was answered on 2026-09-17 (a harness follows an observed
+upstream defect); see
 [Native codec stress coverage](#native-codec-stress-coverage-its-own-evaluation).
 
 Both former dormant drafts (#244, #185) merged on 2026-09-19. For the record, their shared
@@ -984,6 +985,11 @@ ready for whoever picks it up next.
 wants work that blocks on no decision.
 
 ## Native codec stress coverage (its own evaluation)
+
+> **Decided 2026-09-17 (davi):** *a native stress harness is built when an upstream defect
+> is observed, not before.* The `pyppmd` harness stays; #187's closure stands on that
+> criterion. Recorded in [`IDEAS.md`](IDEAS.md) §Testing. The analysis below is what led
+> there.
 
 **#187 was closed on 2026-09-11, and the question it was standing in for is still open.**
 The PR added native stress harnesses for rapidgzip and inflate64. This page argued it was not
