@@ -1226,8 +1226,9 @@ rewrite the files the sweep fixes touch.
 sense the others are: a long-running programme that should have one page in flight at a time
 rather than a slot in the order. `7z.md`, `tar.md` and `iso.md` are written (see §1
 above); `single-file.md` is next. The user guide's remaining prose is the one item here
-with no agent-shaped unit of work defined for it yet. **The sweep half of this wave is spent**: the reading is done, and the
-second pass davi gated on it also waits on the drain, so there is no batch to schedule.
+with no agent-shaped unit of work defined for it yet. **The sweep half of this wave is
+spent**: the reading is done, and the second pass davi gated on it also waits on the
+drain, so there is no batch to schedule.
 
 **Wave 5 — the review topics.** Topic 8 ∥ Topic 10 → Topic 6 → Topic 7 last, per
 [`review/STATUS.md`](../review/STATUS.md). Unchanged; this page does not re-rank them. Note
