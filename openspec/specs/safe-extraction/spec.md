@@ -273,11 +273,20 @@ How surfaces interact:
 
 There is no extract-all flag to force writing non-current revisions; callers that need those bytes use `open`/`read` (or a future opt-in).
 
+A streaming pass learns that a member is shadowed only when the later same-name member
+arrives. At that point it SHALL remove what it wrote for the earlier member in this run
+and report the earlier member `SUPERSEDED`, before the later member reaches the filter,
+so both modes end with the same results and the same tree on disk. A directory that
+later members were written into stays, as their parent. One difference remains: a
+different name that collides with the earlier member between the two (a case variant
+outside `TRUSTED`) meets that member's write in a streaming pass, not an empty key.
+
 #### Scenario: non-current skip matrix
 
 | Case | Expected |
 | --- | --- |
 | Content superseded by later same-name or anti | `SUPERSEDED` on extract; path absent on fresh dest |
+| Streaming TAR holding `a.txt` twice, default overwrite policy | `SUPERSEDED`, then `EXTRACTED`; `a.txt` holds the later bytes, as in random access |
 | User `filter` receives non-current member | Filter is called; returning the member does not force a write |
 | `open` superseded content `FILE` | Bytes returned (random access still works) |
 

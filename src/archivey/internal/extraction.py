@@ -507,6 +507,12 @@ class ExtractionCoordinator:
         members_done = 0
         members_blocked = 0
         self._members_extracted = 0
+        # Archive name -> result index of the latest member of that name that went on to
+        # be written (or tried). Random access stamps last-entry-wins before the pass, so
+        # a shadowed copy reaches the SUPERSEDED branch below and is never recorded here.
+        # A streaming pass learns of the later copy only when it arrives; see
+        # ``_supersede_written_copy``.
+        current_by_name: dict[str, int] = {}
 
         for original, stream in reader.stream_members(stream_selector):
             member_started = False
@@ -517,6 +523,19 @@ class ExtractionCoordinator:
             self._collided_with = None
             self._retyped = False
             try:
+                # Inside the try: a removal the filesystem refuses fails this member
+                # under OnError, like any other write it makes.
+                earlier = current_by_name.pop(original.name, None)
+                if earlier is not None:
+                    self._supersede_written_copy(
+                        earlier,
+                        results,
+                        source_paths,
+                        written_paths,
+                        collision_map,
+                        orphans,
+                        dest,
+                    )
                 # User filter sees every selected member (including non-current); the
                 # is_current skip is hardwired after the filter and does not force a write
                 # even if the filter returns the member.
@@ -534,6 +553,7 @@ class ExtractionCoordinator:
                     )
                 else:
                     result_index = recorded_index = len(results)
+                    current_by_name[original.name] = result_index
                     results.append(
                         ExtractionResult(original, None, ExtractionStatus.FAILED, None)
                     )
@@ -693,6 +713,69 @@ class ExtractionCoordinator:
             self._resolve_orphans(
                 reader, source_paths, orphans, tracker, results, collision_map, dest
             )
+
+    def _supersede_written_copy(
+        self,
+        index: int,
+        results: list[ExtractionResult],
+        source_paths: dict[int, list[Path]],
+        written_paths: set[Path],
+        collision_map: dict[str, _Claim],
+        orphans: list[_Orphan],
+        dest: Path,
+    ) -> None:
+        """Take back an earlier copy of a name the archive holds again, streaming only.
+
+        Random access knows every duplicate before it writes anything, so the shadowed
+        copy is reported ``SUPERSEDED`` and never written. A streaming pass finds out
+        when the later copy arrives, after the earlier one was already handled. To end in
+        the same state on disk, the earlier copy's write is removed and its result
+        becomes ``SUPERSEDED``, before the later copy is filtered or written: random
+        access supersedes the earlier copy whatever then happens to the later one.
+
+        Only what this run wrote is removed. A directory that other members were written
+        into since stays, as it would exist as their parent in random access too. A path
+        that still backs a hardlink written earlier leaves the hardlink intact: that link
+        is its own directory entry. An orphaned hardlink waiting on the second pass is
+        dropped with the result it would have filled.
+        """
+        prior = results[index]
+        path = prior.path
+        if (
+            prior.status is ExtractionStatus.EXTRACTED
+            and path is not None
+            and path in written_paths
+        ):
+            removed = True
+            try:
+                if os.path.isdir(path) and not os.path.islink(path):
+                    os.rmdir(path)
+                else:
+                    os.unlink(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                if not os.path.isdir(path):
+                    raise
+                removed = False  # not empty: later members live under it
+            if removed:
+                written_paths.discard(path)
+                self._release_claim(collision_map, dest, path)
+                for source_id, paths in list(source_paths.items()):
+                    if path in paths:
+                        paths.remove(path)
+                        if not paths:
+                            del source_paths[source_id]
+        if prior.status is ExtractionStatus.EXTRACTED:
+            self._members_extracted -= 1
+        orphans[:] = [o for o in orphans if o.result_index != index]
+        results[index] = ExtractionResult(
+            prior.member,
+            None,
+            ExtractionStatus.SUPERSEDED,
+            None,
+            presented_name=prior.presented_name,
+        )
 
     # --- selection / transform -----------------------------------------------------
 
