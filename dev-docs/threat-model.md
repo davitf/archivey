@@ -31,7 +31,9 @@ per folder) and keep the header-size bound only. RAR applies
 `listing_limits.max_members` while parsing the member table at
 `open_archive`, so an over-limit archive fails at open —
 `stream_members()` / `streaming=True` are not an escape hatch for RAR. ZIP
-still caps at `members()`. `None` (`ListingLimits.UNLIMITED`) disables that
+still caps at `members()`. TAR's random-access walk parses headers in batches that never
+reach past `max_members` plus one header, so an over-limit tar costs the cap
+rather than the archive; its streaming walk is uncapped, as on every format. `None` (`ListingLimits.UNLIMITED`) disables that
 bound. `max_metadata_bytes` remains a materialization guard on every format,
 including 7z and RAR. RAR also checks it at `open_archive` against the summed
 declared sizes of compressed RAR 1.5/2.x comments, before decoding any, since

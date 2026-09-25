@@ -538,25 +538,24 @@ class TarReader(BaseArchiveReader):
         """Forward-only member walk — never calls ``getmembers()``.
 
         Yields bare members; the base's shared progressive pass stamps ids and resolves
-        backward links. Shared-handle ops run under ``_handle_lock`` when present.
+        backward links. Every shared-handle op runs under ``_handle_lock``, which a
+        streaming reader always has (the constructor creates it for ``streaming``).
         """
+        lock = self._handle_lock
+        assert lock is not None, "a streaming TAR reader always holds a handle lock"
         with self._translated_errors():
-            if self._handle_lock is not None:
-                # Hold the lock only around each next() so a yielded consumer can open
-                # the current member without deadlock (streaming is single-owner).
-                tar_iter = iter(self._tar)
-                index = 0
-                while True:
-                    with self._handle_lock:
-                        try:
-                            info = next(tar_iter)
-                        except StopIteration:
-                            break
-                    yield self._to_member(info, index)
-                    index += 1
-            else:
-                for index, info in enumerate(self._tar):
-                    yield self._to_member(info, index)
+            # Hold the lock only around each next() so a yielded consumer can open
+            # the current member without deadlock (streaming is single-owner).
+            tar_iter = iter(self._tar)
+            index = 0
+            while True:
+                with lock:
+                    try:
+                        info = next(tar_iter)
+                    except StopIteration:
+                        break
+                yield self._to_member(info, index)
+                index += 1
         self._verify_tar_eof()
 
     def _iter_with_data(self) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:

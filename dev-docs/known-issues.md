@@ -272,6 +272,27 @@ this case. A native TAR header walker (the 7z/RAR strategy applied to TAR, open-
 would validate each header at its offset and close the streaming gap. Documented for users
 in `docs/formats.md` and `docs/gotchas.md`.
 
+## TAR sparse members are extracted dense, and their holes count against `max_ratio` (open)
+
+A sparse member (old GNU `S` typeflag, or the PAX 0.0 / 0.1 / 1.0 encodings) is written
+through the ordinary file path, so every hole becomes zero bytes on disk and in the
+extraction ratio count. Measured: GNU `tar --sparse` of a 10 MiB file holding one byte of
+data is a 10 240-byte archive, and `extract_all()` under the default `ExtractionLimits`
+raises `ResourceLimitError` at 1024:1. With the guard relaxed the output is dense, where
+`tar -x` recreates the holes. tarfile already knows the map (`TarInfo.sparse`), so
+seeking over holes is possible; whether holes should then still count against the ratio
+is an open question.
+
+## Pre-1970 Unix timestamps list as invalid on Windows only (open)
+
+Unix-seconds fields are converted with `datetime.fromtimestamp(ts, tz=timezone.utc)` in
+the TAR, ZIP (UT extra field), RAR and gzip paths. On Windows that goes through
+`gmtime()`, which rejects negative values, so a member dated 1969 lists with
+`modified=None` plus `MEMBER_TIMESTAMP_INVALID` there and with the right date on Linux
+and macOS. The fix is one helper, `epoch + timedelta(seconds=ts)`, used at every site.
+Not reproduced on Windows here; the behaviour is the one the ZIP reader's UT-field
+comment already records.
+
 ## WinRAR 3.x SHA-1 KDF mutates its input buffer (emulated)
 
 **Status: emulated, not an archivey bug.** WinRAR's RAR3 string-to-key runs SHA-1's
