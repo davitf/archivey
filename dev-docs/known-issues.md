@@ -271,17 +271,20 @@ and surfaces as a missing-trailer warning, not `CorruptionError`. Random access 
 this case. A native TAR header walker (the 7z/RAR strategy applied to TAR, open-issues P3)
 would validate each header at its offset and close the streaming gap. Documented for users
 in `docs/formats.md` and `docs/gotchas.md`.
+Handbook: [`formats/tar.md`](formats/tar.md) §2.2, §7.
 
-## TAR sparse members are extracted dense, and their holes count against `max_ratio` (open)
+## TAR sparse members are extracted dense, and their holes count against `max_ratio` (by design)
 
 A sparse member (old GNU `S` typeflag, or the PAX 0.0 / 0.1 / 1.0 encodings) is written
 through the ordinary file path, so every hole becomes zero bytes on disk and in the
 extraction ratio count. Measured: GNU `tar --sparse` of a 10 MiB file holding one byte of
 data is a 10 240-byte archive, and `extract_all()` under the default `ExtractionLimits`
 raises `ResourceLimitError` at 1024:1. With the guard relaxed the output is dense, where
-`tar -x` recreates the holes. tarfile already knows the map (`TarInfo.sparse`), so
-seeking over holes is possible; whether holes should then still count against the ratio
-is an open question.
+`tar -x` recreates the holes. The holes count by maintainer ruling (2026-09-25): written
+out, they fill the disk like any other output, so the ratio guard is right to weigh them.
+A caller that expects sparse files raises `max_ratio`. Revisit if extraction ever
+preserves holes, since the disk would then hold only the data. Handbook:
+[`formats/tar.md`](formats/tar.md) §6.
 
 ## `max_metadata_bytes` weighs the values in `extra`, not the keys (open)
 

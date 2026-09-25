@@ -58,7 +58,8 @@ same change when relevant.
   cases. The `absent`/`short` residual remains intrinsically ambiguous even with a native
   walker (byte-identical trailer-less-complete vs. truncated-at-boundary).
 - **Larger than closed P1** (Option F EOF honesty); this is the structural follow-on.
-- **Refs:** `known-issues.md`; `IDEAS.md` (implied by native-first); W1 longer-term.
+- **Refs:** `known-issues.md`; `IDEAS.md` (implied by native-first); W1 longer-term;
+  handbook [`formats/tar.md`](formats/tar.md) §7.
 
 ### P4. ZIP UTF-8 general-purpose bit 11 “lie”
 

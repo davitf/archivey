@@ -762,22 +762,21 @@ it tracks.
 
 ### 1. The format handbook — `dev-docs/formats/`
 
-Four of the intended set exist: [`rar.md`](formats/rar.md),
-[`zip.md`](formats/zip.md), [`7z.md`](formats/7z.md) and [`iso.md`](formats/iso.md).
-`rar.md` is the longest by some way; `zip.md` and `7z.md` are each a little over 40% of
-it, and `iso.md` is shorter again. (Byte counts used to be written out
-here and were wrong twice, because any edit to a page invalidates the number describing
-it — `wc -c` the files if you need the exact figures.) All four follow the same
-nine-section shape — At a glance, Shape, The pipeline here, In the wild, Threat surface,
-Sharp edges, Decisions, Open questions, Verify, References — so the template is settled
-and the remaining pages are writing, not design.
+Five of the intended set exist: [`rar.md`](formats/rar.md), [`zip.md`](formats/zip.md),
+[`7z.md`](formats/7z.md), [`tar.md`](formats/tar.md) and [`iso.md`](formats/iso.md).
+`rar.md` is the longest by some way. (Byte counts used to be written out here and were
+wrong twice, because any edit to a page invalidates the number describing it — `wc -c`
+the files if you need the exact figures.) All five follow the same nine-section shape —
+At a glance, Shape, The pipeline here, In the wild, Threat surface, Sharp edges,
+Decisions, Open questions, Verify, References — so the template is settled and the
+remaining pages are writing, not design.
 
 | Page | State |
 | --- | --- |
 | `rar.md` | **Written**; `§7` has 5 open questions. The temporary to-fix list is gone: #19 and #21 shipped, #6 layer 2 lives in §7, the `unrar` mask port in [`IDEAS.md`](IDEAS.md) |
 | `zip.md` | **Written**; `§7` has 1 open question (whether PKWARE Strong Encryption deserves an explicit refusal rather than a misleading wrong-password error) |
 | `7z.md` | **Written.** `§7` has 3 open questions. The file is `7z.md`, not the `sevenzip.md` this row used to name — the format is spelled `7z` everywhere else that faces a reader (`format-7z`, `docs/formats.md`, `review/backlog.md`). Thirteen open #315 findings still sit against the backend: six on `sevenzip_parser.py` (bind-pair arithmetic, pack-size overrun, substream mapping, the `kComment` external flag), three on the reader, two on the pipeline, one each on `sevenzip_methods.py` and `sevenzip_detect.py` |
-| `tar.md` | **Missing.** Includes the stdlib-leniency question that `open-issues.md` **P3** is about |
+| `tar.md` | **Written.** `§7` has 2 open questions: the native header walker (`open-issues.md` **P3**) and v7 detection. Sparse holes counting against `max_ratio` is decided (§6). Writing it found four bugs, all tracked internally; the listing cap and the PAX sparse flag are fixed in #472 |
 | `iso.md` | **Written.** `§7` has 2 open questions. Writing it against genisoimage, xorriso and libarchive's images, rather than the `pycdlib`-built corpus, found six bugs: four fixed with it (the El Torito boot catalog failed every bootable image, a file over 4 GiB was cut to its first extent, `format_version` was `pycdlib`'s guess, a truncated image listed clamped or negative sizes and read short silently), two tracked (Rock Ridge name charset, `pycdlib` refusing zisofs and some genisoimage symlinks as corrupt) |
 | `single-file.md` | **Missing.** gzip, bzip2, xz, lzip, zstd, lz4, brotli, `.Z`: the seek-point and truncation behaviour is spread across `codecs.py`, `xz.py`, `lzip.py` and `unix_compress.py` with no single page |
 | `directory.md` | **Missing.** Thinnest of all; may not earn a page |
@@ -785,7 +784,7 @@ and the remaining pages are writing, not design.
 **The handbook is how a format's to-fix register gets created**, which is the argument for continuing it:
 writing `rar.md` produced 21 tracked code changes, 19 of which have shipped, and `7z.md`
 surfaced two of its own (a refusal that names the wrong coder, and the folder decode that
-listing a solid archive with a symlink in it pays for), and `iso.md` six. That is the
+listing a solid archive with a symlink in it pays for), `tar.md` four and `iso.md` six. That is the
 highest-yield documentation work in the repo, and it is also why each new page should be
 expected to *add* open items rather than only close them.
 
@@ -970,7 +969,7 @@ sweep S0..S25 ──> 209 #315 threads, 111 open ──> new parcels, new change
         │              (first pass over src/ complete 2026-09-20; draining is what is left)
         └── a second pass waits on those threads being drained, not on a decision
 
-formats/tar.md, single-file.md ──> more §10-style registers
+formats/single-file.md ──> more §10-style registers
 docs/ prose + how-it-works.md ──> (nothing; skeleton, scope and claims all done)
 ```
 
@@ -1225,11 +1224,11 @@ rewrite the files the sweep fixes touch.
 
 **Wave 6 — the docs, continuously and in parallel with everything above.** Not a wave in the
 sense the others are: a long-running programme that should have one page in flight at a time
-rather than a slot in the order. `7z.md` and `iso.md` are written (see §1 above); `tar.md` is the next page
-by value, because the stdlib-leniency question `open-issues.md` **P3** is about has no other
-home. The user guide's remaining prose is the one item here with no agent-shaped unit of work
-defined for it yet. **The sweep half of this wave is spent**: the reading is done, and the
-second pass davi gated on it also waits on the drain, so there is no batch to schedule.
+rather than a slot in the order. `7z.md`, `tar.md` and `iso.md` are written (see §1
+above); `single-file.md` is next. The user guide's remaining prose is the one item here
+with no agent-shaped unit of work defined for it yet. **The sweep half of this wave is
+spent**: the reading is done, and the second pass davi gated on it also waits on the
+drain, so there is no batch to schedule.
 
 **Wave 5 — the review topics.** Topic 8 ∥ Topic 10 → Topic 6 → Topic 7 last, per
 [`review/STATUS.md`](../review/STATUS.md). Unchanged; this page does not re-rank them. Note

@@ -26,11 +26,11 @@ The TAR backend SHALL expose these properties for every opened TAR archive:
 | Format | `tarfile` mode | Listing cost | Access cost |
 | --- | --- | --- | --- |
 | Plain `.tar` | `r:` | `REQUIRES_SCANNING` | `DIRECT` |
-| `.tar.gz` | `r:gz` | `REQUIRES_DECOMPRESSION` | `SOLID` |
-| `.tar.bz2` | `r:bz2` | `REQUIRES_DECOMPRESSION` | `SOLID` |
-| `.tar.xz` | `r:xz` | `REQUIRES_DECOMPRESSION` | `SOLID` |
-| `.tar.zst` | zstd-backed equivalent | `REQUIRES_DECOMPRESSION` | `SOLID` |
-| Auto-detected TAR | `r:*` where needed | Based on detected compression | Based on detected compression |
+| `.tar.gz` | `r:` over archivey's gzip decompressor | `REQUIRES_DECOMPRESSION` | `SOLID` |
+| `.tar.bz2` | `r:` over archivey's bzip2 decompressor | `REQUIRES_DECOMPRESSION` | `SOLID` |
+| `.tar.xz` | `r:` over archivey's xz decompressor | `REQUIRES_DECOMPRESSION` | `SOLID` |
+| `.tar.zst` and every other codec | `r:` over archivey's decompressor for it | `REQUIRES_DECOMPRESSION` | `SOLID` |
+| Any of the above with `streaming=True` | `r\|` over the same fileobj | As above | As above |
 
 TAR is read-only here: writing is not shipped for any format (`PLAN.md` phase 9).
 Compressed variants remain solid even when the source is seekable: random member
@@ -42,8 +42,8 @@ progressive path.
 | Case | Expected |
 | --- | --- |
 | Open `TAR` | `cost.listing_cost=REQUIRES_SCANNING`; `cost.access_cost=DIRECT`; mode `r:` |
-| Open `TAR_GZ`, `TAR_BZ2`, `TAR_XZ`, or `TAR_ZST` | `cost.listing_cost=REQUIRES_DECOMPRESSION`; `cost.access_cost=SOLID`; matching decompressor mode |
-| Open `.tar.gz` | `tarfile` invoked with gzip mode |
+| Open `TAR_GZ`, `TAR_BZ2`, `TAR_XZ`, or `TAR_ZST` | `cost.listing_cost=REQUIRES_DECOMPRESSION`; `cost.access_cost=SOLID`; archivey's decompressor for that codec |
+| Open `.tar.gz` | `tarfile` reads archivey's gzip stream through `fileobj=`; its own `r:gz` mode is never used |
 | Open plain `.tar` | No decompression wrapper |
 
 ### Requirement: Map TAR member metadata to ArchiveMember
