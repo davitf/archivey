@@ -2,10 +2,11 @@
 """Record which file time each archiver stores in its "creation time" slots.
 
 ZIP's NTFS extra field (0x000A), 7z's CTime property and libarchive's PAX
-``LIBARCHIVE.creationtime`` are documented as a creation (birth) time, but a Unix writer has no portable birth time and may store
-st_ctime (inode change time) there instead. archivey's ``Member.created`` must hold
-a birth time or nothing, so the readers need to know which writers do what. This
-script measures it on whatever OS it runs on; the CI workflow
+``LIBARCHIVE.creationtime`` are documented as a creation (birth) time, but a Unix
+writer has no portable birth time and may store st_ctime (inode change time) there
+instead. archivey's ``Member.created`` must hold a birth time or nothing, so the
+readers need to know which writers do what. This script measures it on whatever OS
+it runs on; the CI workflow
 ``.github/workflows/writer-timestamps.yml`` runs it on Linux, macOS and Windows.
 Results and conclusions: ``dev-docs/investigations/writer-timestamp-slots.md``.
 

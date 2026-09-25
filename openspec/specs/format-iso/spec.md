@@ -67,6 +67,7 @@ Fields unavailable in the selected namespace SHALL be `None`.
 | Image contains neither extension | Use plain ISO 9660 names; POSIX fields `None`; `iso.namespace="iso9660"` |
 | Rock Ridge symlink | Symlink metadata is available through the selected namespace |
 | Rock Ridge TF record with an attribute-change time | `ctime` holds it; `created` comes only from a TF creation time, else `None` |
+| Rock Ridge TF record with both a creation and an attribute-change time | `created` holds the creation time and `ctime` the attribute-change time |
 
 ### Requirement: Serialize shared pycdlib handle operations for concurrent reads
 
