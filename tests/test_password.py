@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import re
 import subprocess
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -410,7 +411,18 @@ def test_exhaustion_message_follows_the_marker_not_the_wording(
 def test_a_wrong_zip_password_raises_a_plain_encryption_error(tmp_path: Path) -> None:
     """The mark rides on the exception; the type a caller sees stays public."""
     archive = tmp_path / "secret.zip"
-    _make_multi_password_zip(archive)
+    # ZipCrypto checks a password against one byte of a random header, so about one
+    # archive in 256 accepts "wrongpw" and the read fails its CRC instead. Build until
+    # the stdlib rejects it up front, which is the case this test is about.
+    for _ in range(20):
+        archive.unlink(missing_ok=True)
+        _make_multi_password_zip(archive)
+        try:
+            zipfile.ZipFile(archive).open("f1.txt", pwd=b"wrongpw").close()
+        except RuntimeError:
+            break
+    else:  # pragma: no cover - (1/256) ** 20
+        pytest.fail("every archive built accepted the wrong password's check byte")
     with open_archive(archive, password="wrongpw") as reader:
         member = next(m for m in reader.members() if m.name == "f1.txt")
         with pytest.raises(EncryptionError) as caught:

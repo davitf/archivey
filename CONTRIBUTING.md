@@ -242,7 +242,7 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   that motivated it. Those docs are for approach and contract; they are not a
   substitute for local clarity. Reviews in this repo cold-read the changed code before
   loading design narrative and treat non-obvious logic that only makes sense after
-  external prose as important documentation debt (see the archivey review addendum §8).
+  external prose as important documentation debt (see `code-review-skill`'s `reference/code-pr.md`).
 - **Comments explain *why*, not *what*.** Match the comment density and style of the
   surrounding code. Don't narrate what the code obviously does; do explain non-obvious
   decisions, format quirks, and edge cases (these archives are full of them). For a

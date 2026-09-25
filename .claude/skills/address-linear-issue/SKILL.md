@@ -12,7 +12,7 @@ description: |
 # Address a Linear issue
 
 Orchestrator only. Review process stays in
-[`code-review-skill`](../code-review-skill/SKILL.md) (addendum §10 for posting);
+[`code-review-skill`](../code-review-skill/SKILL.md) (its §6 for posting);
 dispositions stay in [`address-review-findings`](../address-review-findings/SKILL.md).
 Do not restate those files here.
 

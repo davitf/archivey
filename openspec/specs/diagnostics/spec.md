@@ -99,7 +99,7 @@ and cross-run id stability are not promised.
 | --- | --- |
 | Name normalization | `MEMBER_NAME_NORMALIZED` + typed JSON-safe context; no backend/mutable mapping |
 | Same occurrence on aggregate + member | Same `occurrence_id`; value equality; no object-identity promise |
-| Encrypted symlink unavailable | May use reason `"password_required"` + member name; no secret material |
+| Encrypted symlink unavailable | May use reason `"password_required"` (or `"password_or_damage"` when a ZIP target's data failed its check under an unconfirmed password) + member name; no secret material |
 | Member blocked by a universal/policy check | No diagnostic; a `BLOCKED` `ExtractionResult` is the whole record |
 | `password=["a","b"]` on a format with no encryption | `PASSWORD_ARGUMENT_UNUSED`; context carries no candidate value and no count |
 | Non-zero byte within 1 MiB past a complete TAR trailer | `ARCHIVE_TRAILING_DATA` sharing `ArchiveEofContext`; distinguished by `expected_marker` |
@@ -304,7 +304,7 @@ argument. It MUST NOT raise.
 | Condition | Code | `reason` |
 | --- | --- | --- |
 | Caller passed `encoding=` and `ReadBackend.USES_ENCODING` is `False` | `ENCODING_ARGUMENT_UNUSED` | why the backend decodes names another way |
-| Caller passed any `password=` form and `ReadBackend.SUPPORTS_PASSWORD` is `False` | `PASSWORD_ARGUMENT_UNUSED` | that the format carries no encryption |
+| Caller passed a concrete `password=` (a single value or a sequence) and `ReadBackend.SUPPORTS_PASSWORD` is `False` | `PASSWORD_ARGUMENT_UNUSED` | that the format carries no encryption |
 
 Each SHALL be emitted **at most once per `open_archive()` call**, before the reader is
 returned, so a caller can inspect `reader.diagnostics` without listing anything.
@@ -312,10 +312,12 @@ returned, so a caller can inspect `reader.diagnostics` without listing anything.
 An `encoding` value that came from detection's `encoding_hint` rather than from the
 caller SHALL NOT emit — the caller asked for nothing.
 
-`password=` SHALL behave identically in all three forms (a single value, a sequence of
+`password=` SHALL open identically in all three forms (a single value, a sequence of
 candidates, a provider callable) on a format with no encryption: accepted, never
-consulted, one diagnostic. A wrong password on an *encrypted* archive is unaffected and
-still raises.
+consulted. A single value or a sequence SHALL record one diagnostic. A provider callable
+SHALL record none: it offers a password only if asked, and a format with no encryption
+never asks, so no password was supplied. (The CLI passes a provider on every run.) A
+wrong password on an *encrypted* archive is unaffected and still raises.
 
 #### Scenario: unused argument matrix
 
@@ -324,7 +326,8 @@ still raises.
 | `open_archive(iso, encoding="cp500")` | Opens; one `ENCODING_ARGUMENT_UNUSED`; names unchanged |
 | `open_archive(zip, encoding="cp500")` | No diagnostic; the encoding is applied |
 | Auto-detected encoding hint on a backend that ignores encoding | No diagnostic |
-| `open_archive(tar, password="p")` / `password=["a","b"]` / `password=lambda r: "p"` | All three open; one `PASSWORD_ARGUMENT_UNUSED` each; no `UnsupportedOperationError` |
+| `open_archive(tar, password="p")` / `password=["a","b"]` | Both open; one `PASSWORD_ARGUMENT_UNUSED` each; no `UnsupportedOperationError` |
+| `open_archive(tar \| gz \| directory, password=lambda r: "p")` | Opens; no `PASSWORD_ARGUMENT_UNUSED`; the provider is never called |
 | Wrong password on an encrypted ZIP | Unchanged: `EncryptionError` |
 
 ### Requirement: Report an empty listing as a diagnostic

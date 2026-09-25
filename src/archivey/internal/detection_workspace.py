@@ -329,6 +329,8 @@ class PrefixWorkspace:
         if self._path_handle is not None:
             return self._path_handle
         if self._spool is not None and not self._spool_abandoned:
+            # typeshed types SpooledTemporaryFile apart from BinaryIO; at runtime it is
+            # a binary read/seek file object.
             return cast(BinaryIO, self._spool)
         if self._seekable_stream is not None:
             if self._seek_is_expensive(self._seekable_stream):

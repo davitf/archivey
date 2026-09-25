@@ -50,12 +50,13 @@ contracts. `format=None` auto-detects; an explicit format bypasses detection.
 | Argument | Intent | Behaviour when the backend cannot act on it |
 | --- | --- | --- |
 | `format=` | assertion — "I claim this is a ZIP" | refuse when it cannot hold (see the directory rule below) |
-| `password=` | resource — a keyring | permit in **every** form; `PASSWORD_ARGUMENT_UNUSED` |
+| `password=` | resource — a keyring | permit in **every** form; `PASSWORD_ARGUMENT_UNUSED` for a concrete value, none for a provider |
 | `encoding=` | resource — a hint for name decoding | permit; `ENCODING_ARGUMENT_UNUSED` |
 
 `password=` on a format with no encryption SHALL NOT raise, in any of its forms — a
-single value, an ordered sequence, and a provider callable SHALL behave identically
-(accepted, never consulted, one diagnostic). A *wrong* password on an *encrypted*
+single value, an ordered sequence, and a provider callable SHALL open identically
+(accepted, never consulted). A single value or a sequence records one diagnostic; a
+provider callable records none, because it offers a password only if asked. A *wrong* password on an *encrypted*
 archive is unaffected and still raises. Each backend SHALL declare whether it consumes
 `encoding` (`ReadBackend.USES_ENCODING`) the same way it declares
 `ReadBackend.SUPPORTS_PASSWORD`, so the check is central rather than per-backend
@@ -86,7 +87,8 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 | `format=ArchiveFormat.ZIP` succeeds | No detection diagnostics from open |
 | Open raises | No reader returned |
 | `password="secret"` | Returned reader uses that password for encrypted members |
-| `password=` any form, format with no encryption | Opens; `PASSWORD_ARGUMENT_UNUSED`; no raise |
+| `password=` a value or a sequence, format with no encryption | Opens; `PASSWORD_ARGUMENT_UNUSED`; no raise |
+| `password=` a provider callable, format with no encryption | Opens; no diagnostic; provider never called |
 | `encoding=` on a backend that decodes names another way | Opens; `ENCODING_ARGUMENT_UNUSED`; names unchanged |
 | Directory path, no `format=` | Opens as `DIRECTORY` |
 | Directory path, `format=ArchiveFormat.DIRECTORY` | Opens as `DIRECTORY` |
@@ -936,11 +938,10 @@ normalized to a predicate at the API boundary:
 
 - `str` matches **every** member with that normalized name (duplicates all match;
   extraction keeps sequential last-wins-on-disk)
-- A `str` entry that does not end in `/` SHALL also match every member whose name is
-  that entry plus `/`, because a directory member's normalized name carries a trailing
-  `/`. An entry that ends in `/` SHALL match only that name. Link-target lookup uses the
-  same rule. It is a selector rule only: `get(name)` and `open(name)` match the stored
-  name exactly, so `get("dir")` returns `None` for a member stored as `dir/`.
+- A `str` entry SHALL match the stored name exactly. A directory member's normalized
+  name carries a trailing `/`, so `"dir"` does not select `dir/`. `get(name)` and
+  `open(name)` match the same way. The missing `/` is reported like any other
+  unmatched entry.
 - `ArchiveMember` matches by **identity** (`archive_id` + `member_id`; members are
   unhashable → id set, never member set)
 - String and member entries MAY mix
@@ -953,8 +954,9 @@ has been offered to the selector:
   that the caller stops early SHALL NOT report, because a later member could match.
 - `extract_all()` reports before it writes any member when the member list is available
   without a scan, and otherwise at the end of the pass. Under a `RAISE` disposition the
-  first case refuses the call before the destination is created. In the second case the members
-  already written stay on disk and `DiagnosticRaisedError` replaces the report.
+  first case refuses the call before the destination is created. In the second case
+  the members already written stay on disk and `DiagnosticRaisedError` replaces the
+  report.
 - Under a `RAISE` disposition, `stream_members()` yields every selected member and
   then raises `DiagnosticRaisedError` from the iterator.
 - A predicate selector SHALL NOT be reported.
@@ -965,14 +967,13 @@ has been offered to the selector:
 | --- | --- |
 | `stream_members(members=["a.txt"])` with two `a.txt` | Both yielded, archive order |
 | Specific `ArchiveMember` among duplicates | Only that identity |
-| `members=["dir"]` on an archive holding `dir/` and `dir/f.txt` | `dir/` selected, `dir/f.txt` not; no diagnostic |
+| `members=["dir"]` on an archive holding `dir/` | Nothing selected; `MEMBER_SELECTOR_UNMATCHED` for `dir`, naming `dir/` |
 | `members=["x/"]` on an archive holding only the file `x` | Nothing selected; one `MEMBER_SELECTOR_UNMATCHED` for `x/` |
 | `members=["a.txt", "typo.txt", "typo.txt"]`, pass to the end | `a.txt` selected; one `MEMBER_SELECTOR_UNMATCHED` for `typo.txt` |
 | Same selector, caller breaks after the first member | No `MEMBER_SELECTOR_UNMATCHED` |
 | `ArchiveMember` from another reader | Nothing selected; `MEMBER_SELECTOR_UNMATCHED` with `entry_kind="member"` |
 | `extract_all(members=["typo.txt"])` on ZIP with `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | `DiagnosticRaisedError` before any member is written |
 | `extract_all(members=["a.txt", "typo.txt"])` on TAR with the code set to `RAISE` | `a.txt` written, then `DiagnosticRaisedError`; no report |
-| `get("dir")` on an archive holding `dir/` | `None`: `get()` matches the stored name exactly |
 
 ### Requirement: Honour detection payload_offset at open
 

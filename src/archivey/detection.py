@@ -34,7 +34,7 @@ class FormatInfo:
 
     format: ArchiveFormat
     confidence: DetectionConfidence
-    detected_by: str  # "magic", "extension", "content_probe", "sfx_scan"
+    detected_by: str  # "magic", "extension", "content_probe", "sfx_scan", "directory"
     encoding_hint: str | None = None
     payload_offset: int = (
         0  # nonzero only for SFX archives (is-SFX == payload_offset > 0)

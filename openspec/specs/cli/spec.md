@@ -27,8 +27,11 @@ archive path and run `list`. Every token after a `--` separator is a
 positional, so a verb-shaped word there is an archive path: with no verb before
 the separator, the system SHALL insert `list` ahead of the `--` (`archivey --
 -weird.zip` lists `-weird.zip`; `archivey -- list` opens a file named `list`).
-A file whose name equals a verb word SHALL be
-reachable by naming the verb explicitly (e.g. `archivey list x`). New verbs MAY
+The verb test SHALL be an exact match on the whole token: a bare
+verb word is a verb, and any path-qualified token (`./x`, `dir/x`, `/abs/x`)
+is an archive path and is listed. A file whose name equals a verb word SHALL be
+reachable by naming the verb explicitly (e.g. `archivey list x`) or by
+qualifying its path (`archivey ./x`). New verbs MAY
 be added later and take precedence over same-named files; the `list <path>`
 escape hatch is permanent. Verbs MUST NOT be selectable via a
 dash-prefixed option form (e.g. `-x` SHALL NOT mean `extract`); options always
@@ -143,7 +146,8 @@ other processed statuses are omitted from that line).
 | Case | Expected |
 | --- | --- |
 | `archivey <archive>` | Same as `archivey list <archive>` (first token is not a known verb → list) |
-| `archivey ./x` where `x` is a file and also the `extract` alias | Dispatches `extract` (known-verb-wins); list the file via `archivey list ./x` |
+| `archivey x <archive>` where `x` is also a file in the cwd | Dispatches `extract` (a bare verb word is a verb) |
+| `archivey ./x`, `archivey dir/x`, `archivey /abs/x` where the basename is a verb word | Lists that file (a path-qualified token is a path, never a verb) |
 | `archivey create <archive>` (reserved, unimplemented) | Usage error "not yet"; does not fall through to `list` |
 | `archivey cat <archive>` (reserved, unimplemented) | Usage error "not yet"; does not fall through to `list` |
 | `archivey list <archive>` / `archivey l <archive>` | Layer-1 member listing |
@@ -250,6 +254,7 @@ also print the raw cost axes (`listing`, `access_cost`, `stream`,
 | --- | --- |
 | `archivey info <archive>` / `archivey detect <archive>` | Prints format/identity summary including `access:`; does not dump full member listing |
 | `archivey info -v <indexed-zip>` | Includes `access: random (indexed)` and raw cost axes |
+| `archivey info <directory>` | Exit `0`; reports format `directory` (the answer `detect_format` gives); no "cannot open" error |
 | Unreadable/unknown file | Non-zero exit; clear error (no stack trace by default) |
 | `archivey list <archive>` | Member listing; not a substitute for info's format summary |
 

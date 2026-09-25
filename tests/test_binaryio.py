@@ -341,6 +341,62 @@ def test_is_stream_rejects_text_mode(tmp_path) -> None:
         assert not is_stream(f)
 
 
+def test_is_stream_rejects_write_only_handle(tmp_path) -> None:
+    """A write-only file is an IOBase but not a readable BinaryIO."""
+    with open(tmp_path / "out.bin", "wb") as f:
+        assert not is_stream(f)
+        assert not is_stream(f.raw)
+
+
+def test_is_stream_accepts_closed_binary_handle(tmp_path) -> None:
+    """A handle that can no longer answer still qualifies, so the caller's first read
+    reports the closed file rather than a type error. That includes a closed buffered
+    writer, whose ``writable()`` raises."""
+    stream = io.BytesIO(b"x")
+    stream.close()
+    assert is_stream(stream)
+    with open(tmp_path / "out.bin", "wb") as f:
+        pass
+    assert is_stream(f)
+
+
+def test_is_stream_accepts_subclass_that_never_declares_readable() -> None:
+    """``IOBase.readable()`` defaults to ``False``; a subclass that reads but does not
+    override it is not a writer and keeps passing through."""
+
+    class _MinimalBuffered(io.BufferedIOBase):
+        def __init__(self, data: bytes) -> None:
+            self._d = io.BytesIO(data)
+
+        def read(self, n: int | None = -1) -> bytes:
+            return self._d.read(n)
+
+    assert is_stream(_MinimalBuffered(b"x"))
+
+
+@pytest.mark.parametrize("entry", ["open_archive", "open_stream", "detect_format"])
+def test_entry_points_name_a_write_only_source(entry) -> None:
+    """The same words at every entry point, including ``open_stream``, which keeps its
+    own message for other wrong types."""
+    import archivey
+
+    writer = io.BufferedWriter(io.BytesIO())
+    with pytest.raises(TypeError, match="BufferedWriter is write-only"):
+        getattr(archivey, entry)(writer)
+
+
+@pytest.mark.parametrize("buffer_type", [bytearray, memoryview])
+def test_open_archive_names_a_byte_buffer_source(buffer_type) -> None:
+    """A byte buffer is a Sequence of int, not a volume list: the refusal names the
+    buffer's type, not ``int``."""
+    import archivey
+
+    with pytest.raises(
+        TypeError, match=f"unsupported source type: <class '{buffer_type.__name__}'>"
+    ):
+        archivey.open_archive(buffer_type(b"PK\x03\x04"))
+
+
 def test_is_stream_rejects_partial_object() -> None:
     # Has read() but is missing the rest of the BinaryIO surface (and isn't io.IOBase).
     assert not is_stream(OnlyReadStream(b"x"))

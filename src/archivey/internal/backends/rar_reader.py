@@ -49,7 +49,6 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
-    UnsupportedOperationError,
     raw_message_of,
 )
 from archivey.internal.backends.rar_detect import validate_rar_main_header
@@ -1216,18 +1215,14 @@ class RarReader(BaseArchiveReader):
                 unpacked_size=comment.unpacked_size,
                 flags=comment.flags,
                 crc16=comment.crc16,
-                password=self._unrar_data_password(),
             )
         except (
             OSError,
             PackageNotInstalledError,
-            UnsupportedOperationError,
             subprocess.SubprocessError,
         ):
             # An undecodable comment degrades to None rather than sinking the
-            # listing. UnsupportedOperationError belongs here for the same reason:
-            # a password unrar cannot be given is a reason to lose the comment, not
-            # a reason for open_archive to fail.
+            # listing.
             return None
         if unpacked is None or zlib.crc32(unpacked) & 0xFFFF != comment.crc16:
             return None

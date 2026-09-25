@@ -179,7 +179,7 @@ is ever deleted.
   separable. Observed on #379 (2026-09-20).
 - **The review reads its own previous rounds from the pull request**, not from a
   handoff. Stable finding IDs make that work
-  ([addendum §10](../.claude/skills/code-review-skill/reference/archivey-review-addendum.md)),
+  ([`code-review-skill` §6](../.claude/skills/code-review-skill/SKILL.md)),
   so renumbering between rounds breaks the status bullets the next round opens with.
   Each round is a fresh session with no memory of the last one, which is deliberate: a
   reviewer that remembers proposing a fix is a poor judge of that fix. Keeping one warm

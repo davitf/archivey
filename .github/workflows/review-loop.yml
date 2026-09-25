@@ -69,12 +69,16 @@ jobs:
           SENDER_LOGIN: ${{ github.event.sender.login }}
           # Labelling bumps it, so it dates the label this run is for.
           LABEL_SINCE: ${{ github.event.pull_request.updated_at }}
+          # The branch head when the label went on. The checkout above is this commit
+          # merged with the base, so its tree is this head's changes. A push after the
+          # label moves the live head but not this; the round records this one, and
+          # its closing comment names any later commits.
+          REVIEWED_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           # Read now, not from the event: the label may have come off since the event
-          # fired, and a push may have moved the head.
-          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
-            --json labels,headRefOid > /tmp/pr.json
+          # fired.
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels > /tmp/pr.json
 
           # The first line of each of this workflow's own closing comments: the rounds
           # that ran, their verdicts, and the commits a review failed on. One line per
@@ -112,7 +116,8 @@ jobs:
             --arg label_since "$LABEL_SINCE" \
             --slurpfile label_events /tmp/label-events.jsonl \
             --arg repository "$GITHUB_REPOSITORY" \
-            '{labels: [$pr[0].labels[].name], head_sha: $pr[0].headRefOid,
+            --arg head_sha "$REVIEWED_SHA" \
+            '{labels: [$pr[0].labels[].name], head_sha: $head_sha,
               markers: ($markers | split("\n") | map(select(length > 0))),
               sender_type: $sender_type, sender_login: $sender_login,
               label_since: $label_since, label_events: $label_events,
@@ -125,7 +130,7 @@ jobs:
             echo "round=$(jq -r .round /tmp/gate.json)"
             echo "final=$(jq -r .final /tmp/gate.json)"
             echo "max_rounds=$(jq -r .max_rounds /tmp/gate.json)"
-            echo "head_sha=$(jq -r .headRefOid /tmp/pr.json)"
+            echo "head_sha=$REVIEWED_SHA"
           } >> "$GITHUB_OUTPUT"
           jq -r '"Gate: run=\(.run) round=\(.round) — \(.reason)"' /tmp/gate.json \
             >> "$GITHUB_STEP_SUMMARY"
@@ -153,7 +158,9 @@ jobs:
         if: steps.gate.outputs.run == 'false'
         run: |
           set -euo pipefail
-          jq -r .comment /tmp/gate.json > /tmp/comment.md
+          # `-j`, not `-r`: an empty comment must leave an empty file, and `-r` would
+          # write a newline that `-s` counts, then post a blank body and fail the job.
+          jq -j '.comment // ""' /tmp/gate.json > /tmp/comment.md
           if [ -s /tmp/comment.md ]; then
             gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
           fi
@@ -179,19 +186,19 @@ jobs:
             whether the closing comment asks for another round; the implementer adds
             one otherwise only if its fixes grow beyond what you described. An agent can
             ask for at most ${{ steps.gate.outputs.max_rounds }} rounds — which is the
-            addendum's own round budget, so review as it tells you to and let the
+            skill's own round budget (its §4), so review as it tells you to and let the
             verdict say whether another round is needed rather than padding one to
             reach it.
 
             Follow this repository's own review skill, in full, as if it had been invoked
-            by name: read `.claude/skills/code-review-skill/SKILL.md` and
-            `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`
-            first, and obey them over any generic review habit. In particular:
+            by name: read `.claude/skills/code-review-skill/SKILL.md` first, then the one
+            reference doc its §1 names for this kind of review, and obey them over any
+            generic review habit. In particular:
 
-            - The three-block output shape (§0), stable finding IDs kept across rounds,
-              and §10 for posting: inline review comments for located findings, blocks 1
+            - The three-block output shape (§3), stable finding IDs kept across rounds,
+              and §6 for posting: inline review comments for located findings, blocks 1
               and 3 in the review body, `event: COMMENT`.
-            - Open every comment you post with a heading, per §10: the round and the
+            - Open every comment you post with a heading, per §6: the round and the
               verdict on the review body, the ID with its severity and confidence on an
               inline finding. Post no table in anything — bullets instead.
             - On any round after the first, open with one status bullet per previous ID
@@ -218,7 +225,7 @@ jobs:
             decision stops the review, and that beats the findings. It is "clean" only
             if block 2 is empty.
 
-            Otherwise it carries your §0 verdict line, and this is the field that decides
+            Otherwise it carries your verdict line (§4), and this is the field that decides
             whether another round is asked for, so match it to what you actually wrote:
 
             - "approved" for a plain ✅ Approve: nothing is left for the implementer to
@@ -261,19 +268,25 @@ jobs:
             verdict='"unreadable"'
           fi
 
+          # The head now, to name any push that landed while the review ran.
+          live="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+            --json headRefOid --jq .headRefOid || true)"
+
           jq -n \
             --argjson round "$ROUND" \
             --argjson final "$FINAL" \
             --arg head_sha "$HEAD_SHA" \
+            --arg live_head_sha "$live" \
             --arg repository "$GITHUB_REPOSITORY" \
             --argjson verdict "$verdict" \
             '{round: $round, final: $final, head_sha: $head_sha,
-              repository: $repository, verdict: $verdict}' \
+              live_head_sha: $live_head_sha, repository: $repository,
+              verdict: $verdict}' \
             | python3 scripts/review_loop_gate.py --finish > /tmp/finish.json
           jq -r '"Verdict: \(.verdict) stop=\(.stop) counted=\(.counted) — \(.reason)"' \
             /tmp/finish.json >> "$GITHUB_STEP_SUMMARY"
 
-          jq -r .comment /tmp/finish.json > /tmp/comment.md
+          jq -j '.comment // ""' /tmp/finish.json > /tmp/comment.md
           if [ -s /tmp/comment.md ]; then
             gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
           fi
@@ -282,9 +295,16 @@ jobs:
           # reads it, and a failure here must not fail a round that already posted.
           label="$(jq -r .label /tmp/finish.json)"
           if [ -n "$label" ]; then
+            # Only the ones that are on: deleting an absent label is a 404 in the log.
+            # If the listing fails, try them all rather than leave a stale one on.
+            present="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+              --json labels --jq '.labels[].name')" \
+              || present="$(jq -r '.unlabel[]' /tmp/finish.json)"
             for other in $(jq -r '.unlabel[]' /tmp/finish.json); do
-              gh api --method DELETE \
-                "repos/$GITHUB_REPOSITORY/issues/$PR/labels/$other" --silent || true
+              if grep -qxF -- "$other" <<< "$present"; then
+                gh api --method DELETE \
+                  "repos/$GITHUB_REPOSITORY/issues/$PR/labels/$other" --silent || true
+              fi
             done
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" \
               -f "labels[]=$label" --silent || true

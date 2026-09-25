@@ -18,7 +18,6 @@ codecs is tracked under Phase 8 in ``PLAN.md``.
 from __future__ import annotations
 
 import io
-import struct
 from collections.abc import Callable
 from dataclasses import replace
 from typing import BinaryIO, Iterator, TypeVar
@@ -48,7 +47,6 @@ from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
     Codec,
     MetadataContext,
-    gzip_has_additional_member,
     open_codec_stream,
     resolve_codec,
     stream_codec_for_format,
@@ -206,9 +204,7 @@ class SingleFileReader(BaseArchiveReader):
     def _metadata_context(self) -> MetadataContext:
         return MetadataContext(
             peek_header=self._peek_header,
-            peek_trailer=self._peek_trailer,
             probe_decompressed_size=self._probe_decompressed_size,
-            probe_gzip_stored_crc32=self._probe_gzip_stored_crc32,
             probe_lzip_index=self._probe_lzip_index,
         )
 
@@ -265,22 +261,6 @@ class SingleFileReader(BaseArchiveReader):
         """
         return self._with_seekable_source(lambda f: f.seek(0, io.SEEK_END))
 
-    def _peek_trailer(self, length: int) -> bytes | None:
-        """The last ``length`` bytes of the compressed source, when cheaply readable.
-
-        Returns ``None`` for a non-seekable source (never forces a decode pass) or when the
-        source is shorter than ``length``.
-        """
-
-        def read_trailer(f: BinaryIO) -> bytes | None:
-            size = f.seek(0, io.SEEK_END)
-            if size < length:
-                return None
-            f.seek(-length, io.SEEK_END)
-            return f.read(length)
-
-        return self._with_seekable_source(read_trailer)
-
     def _read_source_prefix(self, length: int) -> bytes:
         src = self._source
         assert src is not None  # always set in __init__
@@ -296,26 +276,6 @@ class SingleFileReader(BaseArchiveReader):
         data = read_exact(src, length)
         src.seek(pos)
         return data
-
-    def _probe_gzip_stored_crc32(self) -> int | None:
-        """Trailer CRC-32 for a single-member gzip, in one seekable pass.
-
-        Returns ``None`` when the source is non-seekable, too short, or multi-member.
-        """
-
-        def probe(f: BinaryIO) -> int | None:
-            size = f.seek(0, io.SEEK_END)
-            if size < 18:  # header(10) + min deflate + trailer(8)
-                return None
-            if gzip_has_additional_member(f):
-                return None
-            f.seek(-8, io.SEEK_END)
-            trailer = f.read(8)
-            if len(trailer) < 8:
-                return None
-            return struct.unpack_from("<I", trailer, 0)[0]
-
-        return self._with_seekable_source(probe)
 
     def _probe_lzip_index(self) -> tuple[int, int] | None:
         """Decompressed size + combined CRC-32 from one seekable lzip index scan.

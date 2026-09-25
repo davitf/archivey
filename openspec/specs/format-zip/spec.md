@@ -152,11 +152,15 @@ precedence layer or `None` and emit `MEMBER_TIMESTAMP_INVALID`. With
 `read_link_targets=True` (the default), if listing cannot read an encrypted
 symlink target because no correct password is available, `link_target` SHALL
 remain unset and `SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with reason
-`"password_required"`. With `read_link_targets=False`, listing reads no symlink
-target and emits nothing for it (`archive-reading`, "Link targets stored as member
-data are read only when configured"). Diagnostic payloads SHALL
-not include passwords, candidates, provider returns, key material, or decrypted
-target bytes. Under `RAISE`, listing halts with `DiagnosticRaisedError`.
+`"password_required"`. When a ZipCrypto target's data fails its integrity check
+under a password only the verification byte vouched for (the ambiguous
+`EncryptionError` of "Confirm multi-candidate ZipCrypto passwords"), the reason
+SHALL be `"password_or_damage"` and the message SHALL name both causes. With
+`read_link_targets=False`, listing reads no symlink target and emits nothing for it
+(`archive-reading`, "Link targets stored as member data are read only when
+configured"). Diagnostic payloads SHALL not include passwords, candidates,
+provider returns, key material, or decrypted target bytes. Under `RAISE`, listing
+halts with `DiagnosticRaisedError`.
 
 #### Scenario: ZIP metadata matrix
 
@@ -170,6 +174,7 @@ target bytes. Under `RAISE`, listing halts with `DiagnosticRaisedError`.
 | Out-of-range NTFS or DOS timestamp | Fallback value used; `MEMBER_TIMESTAMP_INVALID` counted and may attach to member |
 | Timestamp diagnostic resolves to `RAISE` | Listing halts with `DiagnosticRaisedError` |
 | Encrypted symlink target unavailable | Listing continues with `link_target=None`; `SYMLINK_TARGET_UNAVAILABLE` contains no secret |
+| ZipCrypto symlink target fails its integrity check under an unconfirmed password | Listing continues with `link_target=None`; `SYMLINK_TARGET_UNAVAILABLE` with reason `"password_or_damage"` |
 | Encrypted symlink, `read_link_targets=False` | Listing reads no target data; `link_target=None`; no diagnostic |
 
 ### Requirement: Join 7-Zip .zip.NNN sets; reject spanned ZIP cleanly
@@ -217,8 +222,12 @@ authoritative check is CRC-32 plus decompressor completion. When another
 distinct candidate may be tried, the ZIP reader SHALL confirm a candidate that
 passes the byte check before accepting it, following `archive-reading` weak-check
 confirmation and bounded-storage rules. With one distinct static candidate
-(duplicates included), the reader SHALL keep the normal lazy stream path; any
-read-time integrity failure is translated normally.
+(duplicates included), the reader SHALL keep the normal lazy stream path, with no
+confirmation read. Because only the verification byte vouched for that password, a
+candidate failure (defined below) on the caller's `read`, `readinto` or forward
+`seek` SHALL raise `EncryptionError` explaining that the password may be wrong or
+the member may be corrupt, not `CorruptionError`. It SHALL NOT be marked as a wrong-password verdict:
+nothing in the archive tells a colliding wrong password from a damaged member.
 
 Compressed members (`DEFLATE`, `BZIP2`, `LZMA`) SHALL confirm by decompressing a
 bounded plaintext prefix and discarding it. If EOF is reached within the bound,
@@ -245,6 +254,7 @@ Rejected-candidate streams SHALL be closed before trying the next candidate.
 | --- | --- |
 | Wrong candidate passes verification byte before correct one (STORED / DEFLATE / BZIP2 / LZMA) | Wrong candidate rejected; fresh stream opened with correct candidate |
 | One distinct static candidate | No confirmation read; member streams lazily |
+| One distinct static candidate that passes the verification byte but is wrong, or right on a corrupt member | Caller `read`/`readinto`/`seek` raises `EncryptionError` saying the password may be wrong or the member corrupt; no wrong-password mark |
 | Large compressed member | At most bounded prefix decompressed per candidate; no proportional plaintext storage; caller stream still checks CRC at EOF |
 | STORED member with several surviving candidates | One shared ciphertext pass computes every candidate CRC; matching candidate accepted and reopened |
 | Multiple STORED CRC matches | Earliest matching candidate in order wins |

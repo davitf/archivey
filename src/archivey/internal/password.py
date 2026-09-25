@@ -6,7 +6,7 @@ import threading
 from collections.abc import Callable, Container, Iterator
 from collections.abc import Sequence as ABCSequence
 from contextvars import ContextVar
-from typing import TypeGuard, TypeVar, cast
+from typing import TypeGuard, TypeVar
 
 from archivey.config import PasswordInput, PasswordProvider, PasswordRequest
 from archivey.exceptions import ArchiveyUsageError, EncryptionError
@@ -139,13 +139,22 @@ class _PasswordCandidates:
                 f"password= takes a str, bytes, a sequence of those, a provider "
                 f"callable, or None, but got {describe_value(password)}."
             )
-        return cls(provider=cast(PasswordProvider, password))
+        return cls(provider=password)
 
     def has_passwords(self) -> bool:
         with self._state_lock:
             return bool(
                 self._known_good or self._candidates or self._provider is not None
             )
+
+    def has_concrete_passwords(self) -> bool:
+        """Whether the caller gave a password value (a str, bytes or a list of them).
+
+        A provider callable alone does not count: it offers a password only if asked,
+        so a format that never asks has not been given one.
+        """
+        with self._state_lock:
+            return bool(self._known_good or self._candidates)
 
     def is_ambiguous(self) -> bool:
         """Whether a weak password check needs confirmation before accepting a result.

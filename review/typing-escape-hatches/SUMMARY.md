@@ -1,6 +1,6 @@
 # Typing escape hatches — SUMMARY
 
-Brief: [`brief.md`](brief.md). Linear [ARC-20](https://linear.app/archivey/issue/ARC-20).
+Brief: [`brief.md`](brief.md). Tracked internally.
 Measured at `main` @ `94468bd0` (2026-09-17). Inventory plus Q1 (public
 `extra: dict[str, object]`). Theme files: [`inventory.md`](inventory.md),
 [`typeguards.md`](typeguards.md), [`binaryio-and-typeshed.md`](binaryio-and-typeshed.md),
@@ -63,12 +63,12 @@ Tree restored after each probe.
 | **S1** | 🟡 | `CONTRIBUTING.md` offered `# type: ignore[attr-defined]` as a *specific* suppression | rewrite the rule to pyrefly/ty native forms | **done in this PR** |
 | **S6** | 🟢 | "12 warnings not shown" | `--min-severity=warn`; list below | **answered** |
 | **C-del** | 🟢 | 5 casts both checkers accept without | DELETE | staged PR 1 |
-| **G2** | 🟡 | `is_stream` still True for write-only `IOBase` and duck objects whose `read()` returns `str` | FIX-IN-CODE the predicate | staged PR 4 |
-| **G3** | 🟡 | `_is_source_sequence` proves `Sequence`, not `Sequence[SourceItem]` (`bytearray` is True) | TIGHTEN the predicate | staged PR 4 |
-| **C-overload** | 🟢 | 4 casts exist only because `_track_source_seeks: Path \| BinaryIO -> Path \| BinaryIO` | `@overload` | staged PR 3 |
-| **C-typeshed** | 🟢 | ~10 casts are `IO[bytes]` / `BufferedIOBase` / `SpooledTemporaryFile` / `PyCdlibIO` vs `BinaryIO` | KEEP-WITH-REASON (S5b gap) | staged PR 7 comments |
+| **G2** | 🟡 | `is_stream` still True for write-only `IOBase` and duck objects whose `read()` returns `str` | FIX-IN-CODE the predicate | **done** — write-only `IOBase` refused by name; the text duck is documented as a caller bug (see typeguards.md G2 for why the `bytes` backstop was dropped) |
+| **G3** | 🟡 | `_is_source_sequence` proves `Sequence`, not `Sequence[SourceItem]` (`bytearray` is True) | TIGHTEN the predicate | **done** — byte buffers excluded; the guard narrows to `Sequence[object]` |
+| **C-overload** | 🟢 | 4 casts exist only because `_track_source_seeks: Path \| BinaryIO -> Path \| BinaryIO` | `@overload` | **moot** — #419 narrowed the signature to `BinaryIO -> BinaryIO` and the four casts went with it |
+| **C-typeshed** | 🟢 | ~10 casts are `IO[bytes]` / `BufferedIOBase` / `SpooledTemporaryFile` / `PyCdlibIO` vs `BinaryIO` | KEEP-WITH-REASON (S5b gap) | **done** — every surviving cast carries its reason |
 | **A-object** | 🟢 | ~25 `Any` sites accept `object` on both checkers | TIGHTEN | staged PR 2 |
-| **A-iso** | 🟢 | pycdlib dir-record / date bags | Protocol or `TYPE_CHECKING` stubs | staged PR 5 |
+| **A-iso** | 🟢 | pycdlib dir-record / date bags | Protocol or `TYPE_CHECKING` stubs | **done** — pycdlib ships `py.typed`, so its own classes under `TYPE_CHECKING` |
 | **A-codec** | 🟢 | `_decomp: Any` on four optional codec wrappers | small Protocol per codec | staged PR 5 |
 | **Q1** | 🟡 | public `ArchiveMember.extra` / `ArchiveInfo.extra` / `replace(**kwargs)` are `Any` | **DECIDED A** — `dict[str, object]` | **done** |
 
@@ -88,22 +88,45 @@ one category.
    (`binaryio.py` helpers, `verify` algorithm params, `ReadOnlyIOStream.write`,
    ISO getattr/kwargs). `listing_limits` already moved with Q1. **`_raw` is not in
    this PR** — see the nested item.
-   - **Staged PR 2b — `ArchiveMember._raw: Any` → `object`** (A25), its own
-     change, after PR 1. It must add a narrowing at `tar_reader.py:470` that
-     does not exist today: the assert R11 records is in a different function.
-     The inventory's sequence note has the detail.
-3. **`@overload` on `_track_source_seeks`** — drops four Path/BinaryIO casts in
-   `tar_reader` / `zip_reader`.
-4. **TypeGuard predicates** — G2 and G3. Runtime-visible; needs tests.
-5. **Remaining `Any`** — ISO pycdlib Protocol, codec `_decomp` Protocols,
-   `ZipFile._lock` as `ContextManager`, `verify.py` `Mapping[HashAlgorithm \| str, …]`.
+   - ~~**Staged PR 2b — `ArchiveMember._raw: Any` → `object`**~~ (A25)
+     **done**, with C7; see item 3. The narrowing this item said it must add
+     at the tar `_open` closure already existed by then.
+3. ~~**`@overload` on `_track_source_seeks`**~~ **moot.** #419 (one
+   `ArchiveSource`) made it `BinaryIO -> BinaryIO`; the four casts are gone.
+   - **C7** (the tar EOF probe cast) and **A25** (`_raw: object`) landed
+     together after it: the probe now subclasses `ReadOnlyIOStream`, and the
+     `assert isinstance` narrowing A25 needed was already in place at every
+     backend that reads a typed handle, so both checkers stayed clean. The ISO
+     directory record was the exception until item 5 typed it; it now narrows
+     through a `TypeGuard` too.
+   - **C16** (`password.py`) went in the same change. The `callable()` check
+     added ahead of it narrows on both checkers, so the cast was dead.
+4. ~~**TypeGuard predicates**~~ **done.** G2: `is_stream` refuses a handle that
+   is writable and not readable (a closed one still qualifies), and every entry
+   point names it. The text duck stays a documented caller bug. G3:
+   `bytearray`/`memoryview` are excluded, and the guard narrows to
+   `Sequence[object]` because the elements are checked where they are used. Both
+   refusals stay `TypeError`, the contract for a wrong-typed source.
+5. ~~**Remaining `Any`**~~ **done**, codec half in #378. ISO half: the pycdlib
+   records, Rock Ridge entries and dates are typed as pycdlib's own classes
+   (it ships `py.typed`), `_open_member` narrows `_raw` with a `TypeGuard`, the
+   cycle-guard `deque` takes `(iterable, maxlen)`, and two casts from `Any` went.
+   Typing the date exposed a real miss: long-form (17-byte) Rock Ridge TF times
+   were read with the 7-byte field names and came back `None`; both forms are
+   read now. `source_byte_size` takes `object`; `ZipFile._lock` is an
+   `AbstractContextManager[object]`. **Kept:** `BinaryIOWrapper.__init__(raw: Any)`
+   (A46) — its callers take `object`, so a "has `read`" Protocol would move the
+   claim without making it true; the reason is beside it. A41 (`SeekPoint.state:
+   Any`) was already kept with its reason on `main`. `verify.py` carries no `Any`
+   on `main`.
 6. ~~**Public `Any` on `types.py`**~~ **done (Q1 A).** `replace(**kwargs: object)`
    removes the `Any` but adds no checking — the keyword names and value types are
    still unverified, and the docstring now says so. The key → type map that Q1's
    contract now needs is PR 8.
-7. **KEEP comments** on surviving typeshed `BinaryIO` casts, and name
-   `FullCountStream` next to `PeekableStream` in the `ReadOnlyIOStream.name`
-   docstring.
+7. ~~**KEEP comments**~~ **done.** Every surviving typeshed cast carries its
+   reason. The docstring half is moot: the `ReadOnlyIOStream.name` docstring now
+   names both remaining suppression sites (`DelegatingStream`, `ArchiveSource`),
+   and `FullCountStream.name` no longer exists.
 8. **The `extra` key map as an overloaded `dict` subclass** (maintainer,
    2026-09-20, revised the same day on #384 K1) — **this PR.**
    Q1 made every `extra` value an `object` a caller must narrow, and narrowing
@@ -146,12 +169,12 @@ one category.
   naming `PeekableStream` and not `FullCountStream`.
 - **`is_filename`.** `isinstance(obj, (str, bytes, os.PathLike))` matches the
   `TypeGuard` target. Not a #324.
-- **Every `assert isinstance`** (13 as measured, 12 on the merged tree). Both
-  checkers stay clean without them *because `member._raw` is `Any`*. They are
-  runtime invariants for backend handles (`ZipInfo`, `TarInfo`, `RarMemberInfo`,
-  `_MemberRaw`, `PlainHeader`), not checker appeasement. Keep them. If `_raw` is
-  later tightened to `object`, they become the narrowing — do not delete them in
-  PR 1. Note that `tar_reader.py:470` has **no** assert to become one; PR 2b adds it.
+- **Every `assert isinstance`** on a `member._raw` read. They are runtime
+  invariants for backend handles (`ZipInfo`, `TarInfo`, `RarMemberInfo`,
+  `_MemberRaw`), and since A25 made `_raw` an `object` they are also the
+  narrowing both checkers rely on. Keep them. The tar `_open` closure has one
+  too (it did not when this inventory was measured). The ISO read narrows
+  through `_is_directory_record`, a `TypeGuard` (A-iso).
 - **`selection.py:18`.** Pyrefly warns `redundant-cast`; ty still needs the
   cast (`Collection ∩ Callable`). Checker disagreement is data: keep the cast
   for ty, no pyrefly suppression (warnings are not the gate).
@@ -180,4 +203,4 @@ one category.
 | `CONTRIBUTING.md` describes forms that are actually specific | **yes** | |
 | "12 warnings not shown" answered | **yes** | |
 | `SUMMARY.md` records what is fine | **yes** | |
-| Staged fix PRs | 6 done (Q1); 8 this PR | 1, 2, 2b, 3, 4, 5, 7 |
+| Staged fix PRs | 6 done (Q1); 8 this PR; later 1, 2, 2b, 3 (moot), 4, 5, 7 | none |

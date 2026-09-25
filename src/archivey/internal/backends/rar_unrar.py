@@ -118,7 +118,6 @@ _RAR3_MAIN = 0x73
 _RAR3_FILE = 0x74
 _RAR3_FILE_PASSWORD = 0x0004
 _RAR3_FILE_SALT = 0x0400
-_RAR3_FILE_DICTMASK = 0x00E0
 _RAR3_LONG_BLOCK = 0x8000
 _RAR3_M0 = 0x30
 _RAR3_BLOCK_HEADER = struct.Struct("<HBHH")
@@ -492,7 +491,6 @@ def decompress_rar3_blob(
     unpacked_size: int,
     flags: int,
     crc16: int,
-    password: str | bytes | None = None,
 ) -> bytes | None:
     """Decode a non-file RAR3 payload by wrapping it in a temporary RAR.
 
@@ -504,14 +502,24 @@ def decompress_rar3_blob(
     ``unrar`` can report a CRC error for the synthetic FILE because old comment
     blocks retain only a CRC16. The caller validates that CRC16 against the
     returned bytes, which is the integrity check the on-disk comment provides.
+
+    An encrypted comment (the PASSWORD or SALT flag) returns ``None`` before any
+    archive is built. The parser already drops one
+    (``_parse_rar3_old_comment_subblocks``), so this is a second guard for direct
+    callers. No available writer produces such a comment, so a decode path for it
+    could not be tested.
+    The synthetic FILE header sets only the flag it needs (a long block): it writes
+    no salt, so it must not claim one, and it copies no other bit of the comment's
+    flag word.
     """
     if unpacked_size < 0 or unpacked_size > 0xFFFF:
         return None
-    if compress_type == _RAR3_M0 and not flags & _RAR3_FILE_PASSWORD:
+    if flags & (_RAR3_FILE_PASSWORD | _RAR3_FILE_SALT):
+        return None
+    if compress_type == _RAR3_M0:
         return packed if len(packed) == unpacked_size else None
 
-    file_flags = flags & (_RAR3_FILE_PASSWORD | _RAR3_FILE_SALT | _RAR3_FILE_DICTMASK)
-    file_flags |= _RAR3_LONG_BLOCK
+    file_flags = _RAR3_LONG_BLOCK
     filename = b"data"
     file_body = (
         _RAR3_FILE_HEADER.pack(
@@ -551,7 +559,7 @@ def decompress_rar3_blob(
     try:
         with os.fdopen(fd, "wb") as archive:
             archive.write(_RAR3_ID + main_header + file_header + packed)
-        proc, stdout = open_unrar_p(path, password=password)
+        proc, stdout = open_unrar_p(path)
         try:
             # A comment's declared unpacked length is a uint16. Bound the
             # process output so a malformed blob cannot turn archive listing
@@ -593,6 +601,13 @@ def open_unrar_p(
     stdin when redirected, keeping the secret out of ``argv``. A password containing a
     line break is refused rather than sent, because ``unrar`` would read only the part
     before it — see :func:`_password_stdin_bytes`.
+
+    Reading ``stdout`` has no time bound. A read waits for as long as the child
+    takes to produce bytes, and nothing here stops a child that stalls. A solid
+    archive can legitimately produce no bytes for a long time while ``unrar``
+    decodes the members before the target, so an idle timeout would refuse valid
+    work. The only timeouts in this module are the version probe and the teardown
+    in :func:`terminate_unrar`.
 
     Returns ``(proc, stdout)``. Caller must terminate/wait/close.
     """
@@ -641,6 +656,8 @@ def open_unrar_p(
         # anyway — every archive-read failure surfaces as an ArchiveyError, and a raw
         # RuntimeError here would cross open_archive untranslated.
         raise ReadError("unrar produced no stdout pipe")
+    # typeshed types Popen[bytes].stdout as IO[bytes], not BinaryIO; the pipe is opened
+    # in binary mode above, so it is one at runtime.
     return proc, cast(BinaryIO, proc.stdout)
 
 

@@ -198,11 +198,12 @@ re-resolve):
 ### Gates from a `git worktree`
 
 For implementers and `review/` briefs — ordinary PR review doesn't run the gates
-(`code-review-skill` addendum §10). Working from a `git worktree` is fine, and **both scripts work there unchanged** —
-`./scripts/check.sh` and `./scripts/test.sh`, exactly as in the primary checkout. A
-worktree starts without a `.venv`, so they create one for it (`check.sh` announces
-`=== no .venv in this tree — creating one`). That takes about a second and ~11 MiB: uv
-hardlinks from its global cache, so the second environment on a machine is nearly free.
+(`code-review-skill` `SKILL.md` §6). Working from a `git worktree` is fine, and **both
+scripts work there unchanged** — `./scripts/check.sh` and `./scripts/test.sh`, exactly
+as in the primary checkout. A worktree starts without a `.venv`, so they create one for
+it (`check.sh` announces `=== no .venv in this tree — creating one`). That takes about a
+second and ~11 MiB: uv hardlinks from its global cache, so the second environment on a
+machine is nearly free.
 
 The tree gets its **own** environment rather than sharing another checkout's, which is
 what makes `test.sh --all-configs` and any dependency change on the branch meaningful
@@ -421,16 +422,16 @@ defect was fixed twice. The split is by *reader*:
 |--------|-------|-------|
 | Implementer | `CONTRIBUTING.md` | Every coding and testing rule — typing, exceptions, comments, config bounds, red–green, the three-config gate |
 | Implementer | `address-review-findings/SKILL.md` | How a finding gets dispositioned |
-| Reviewer | `CONTRIBUTING.md` + the review addendum | The addendum is review-only: finding discipline and output shape (§0), what to check (§3–§5, citing CONTRIBUTING rather than repeating it), review order (§8), posting (§10) |
-| Reviewer, sometimes | `code-review-skill/reference/reviewing-proposals.md`, `…/deep-reviews.md` | Opened only for what they name — a proposal or delta spec, a commissioned `review/` brief. A contract-moving code PR opens the first for its values check alone. Addendum §6 and §9 are stubs pointing here |
+| Reviewer | `CONTRIBUTING.md` + `code-review-skill/SKILL.md` | Review-only: finding discipline, output shape, verdicts, severity, posting. It routes to one doc per kind of review — `code-pr.md` (two passes, what to check, citing CONTRIBUTING rather than repeating it), `fix-round.md`, `whole-file-sweep.md` |
+| Reviewer, sometimes | `code-review-skill/reference/reviewing-proposals.md`, `…/deep-reviews.md` | Opened only for what they name — a proposal or delta spec, a commissioned `review/` brief. A contract-moving code PR opens the first for its values check alone |
 | Autopilot | `steward/SKILL.md` | Only where this repo differs from a generic watcher |
 
 `SKILL.md`, `.cursor/commands/*.md` and this section are **entrypoints**. An entrypoint
 routes: it names a concern and points at the file the rule lives in, and it may bind
 host-specific facts — which finding-ID prefix *this* host uses, which command name lands
 where. It does **not** restate the rule, because the restatement is the copy that drifts.
-`SKILL.md` owns one thing outright and says so: the ≤1-minute logistics list, which
-addendum §8 points at.
+`code-review-skill/SKILL.md` is the exception: since 2026-09-24 it holds the review rules
+themselves rather than routing to an addendum (the addendum path is a redirect stub).
 
 Adding a rule means editing one file — if you find yourself editing a second, the rule is
 in the wrong place.
@@ -443,9 +444,9 @@ in the wrong place.
    1–2 for the implementor; block 3 packets for the maintainer). When also chatting with
    the maintainer, send **decision packets only** unless they ask for the full handoff
    ([`dev-docs/pair-workflow.md`](dev-docs/pair-workflow.md) §Decision packet). The review
-   rules live in `.claude/skills/code-review-skill/reference/archivey-review-addendum.md`
-   and only there: **§0** is the output shape and the verdicts, **§3–§5** are what to check
-   (against `CONTRIBUTING.md`, which holds the rules themselves), and **§10** is posting —
+   rules live in `.claude/skills/code-review-skill/` and only there: `SKILL.md` §3–§4 are
+   the output shape and the verdicts, `reference/code-pr.md` is what to check (against
+   `CONTRIBUTING.md`, which holds the rules themselves), and `SKILL.md` §6 is posting —
    stable finding IDs carrying the reviewer's own initial, a header on every comment
    carrying the round and the verdict, the findings themselves in inline threads with the
    body carrying only an index, no tables in anything posted, and one status bullet per
@@ -460,7 +461,7 @@ in the wrong place.
    activity reacts to a review comment or a CI failure as an *event*, from its own generic
    posture — it never invokes a skill nobody named, so the two-skill handoff above does not
    reach it on its own. Two things close that: `code-review-skill` names the responder skill
-   in the review body (addendum §10), and `.claude/skills/steward/SKILL.md`, which a Claude
+   in the review body (`SKILL.md` §6), and `.claude/skills/steward/SKILL.md`, which a Claude
    Code session subscribed to PR activity is instructed to read *before* it acts on a CI or
    review event. That instruction is a harness convention rather than a documented
    extension point — ADR 0018 §"Where the filename comes from" records what it rests on,

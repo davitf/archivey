@@ -438,8 +438,7 @@ The asserted matrix SHALL match the documented policy:
 | 7z | FILE | `crc32` present |
 | RAR5 | FILE with CRC32 | `crc32` present |
 | RAR5 | FILE with Blake2sp only | `blake2sp` present, `crc32` absent |
-| single-file GZIP | single member, seekable | `crc32` present |
-| single-file GZIP | multi-member or non-seekable | digest keys absent |
+| single-file GZIP | any, listed or after a full read | digest keys absent |
 | single-file LZIP | seekable lzip index (one or many members) | `crc32` present |
 | single-file LZIP | no seekable index | digest keys absent |
 | single-file BZ2/XZ/ZLIB/BR/`.Z`, TAR, directory | any | no stored-digest key |

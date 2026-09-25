@@ -1458,6 +1458,67 @@ def test_rar3_stored_old_style_main_comment_needs_no_unrar(
         assert archive.info.comment == text.decode()
 
 
+@pytest.mark.parametrize(
+    "flag", [rar_unrar._RAR3_FILE_PASSWORD, rar_unrar._RAR3_FILE_SALT]
+)
+@pytest.mark.parametrize("compress_type", [0x30, 0x33])
+def test_rar3_encrypted_old_style_comment_is_skipped_up_front(
+    monkeypatch: pytest.MonkeyPatch, flag: int, compress_type: int
+) -> None:
+    """An encrypted old-style comment decodes to None and never spawns ``unrar``.
+
+    The comment subblock keeps no salt, so the synthetic FILE header could not carry
+    one. No writer produces such a comment, so this is the only test of the branch.
+    """
+
+    def _no_spawn(*args: object, **kwargs: object) -> None:
+        raise AssertionError("unrar must not be spawned for an encrypted comment")
+
+    monkeypatch.setattr(rar_unrar, "open_unrar_p", _no_spawn)
+    packed = b"old-style comment"
+    assert (
+        rar_unrar.decompress_rar3_blob(
+            extract_version=29,
+            compress_type=compress_type,
+            packed=packed,
+            unpacked_size=len(packed),
+            flags=flag,
+            crc16=zlib.crc32(packed) & 0xFFFF,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "flag", [rar_unrar._RAR3_FILE_PASSWORD, rar_unrar._RAR3_FILE_SALT]
+)
+@pytest.mark.parametrize("compress_type", [0x30, 0x33])
+def test_rar3_parser_drops_encrypted_old_style_comment(
+    flag: int, compress_type: int
+) -> None:
+    """The listing path drops an encrypted comment, stored ones included.
+
+    A stored comment with only the SALT flag used to be taken as plaintext whenever
+    its CRC16 matched, which a crafted archive can arrange.
+    """
+    from archivey.internal.backends import rar_parser as rp
+
+    payload = b"secret comment"
+    body = (
+        rp._S_COMMENT_HDR.pack(
+            len(payload), 29, compress_type, zlib.crc32(payload) & 0xFFFF
+        )
+        + payload
+    )
+    block = (
+        rp._S_BLK_HDR.pack(
+            0, rp._RAR3_OLD_COMMENT, flag, rp._S_BLK_HDR.size + len(body)
+        )
+        + body
+    )
+    assert rp._parse_rar3_old_comment_subblocks(block, 0) is None
+
+
 def test_rar3_service_comment_maps_to_member_comment() -> None:
     """RAR3's existing solid CMT attachment reaches ArchiveMember.comment."""
     from archivey.internal.backends.rar_parser import _RAR3_FILE_SOLID

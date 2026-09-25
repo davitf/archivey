@@ -70,6 +70,7 @@ from archivey.internal.streams.codecs import codec_for_stream_format, open_codec
 from archivey.internal.streams.streamtools import (
     is_stream,
     raise_if_text_stream,
+    raise_if_write_only_stream,
 )
 from archivey.internal.volumes import (
     OpenSourceInput,
@@ -309,16 +310,21 @@ def open_archive(
     reject garbage the reader must scan the member once (CRC over every surviving
     candidate in parallel) to decide. That full pass is rare in practice (multiple
     passwords *and* a colliding wrong candidate *and* a STORED member) but can matter
-    for very large stored members.
+    for very large stored members. With a single password there is no confirmation
+    read, so a wrong ZipCrypto password that passes the one-byte check fails on the
+    member's own read, as an ``EncryptionError`` saying the password may be wrong or
+    the member corrupt.
 
     A password supplied for a *format* with no encryption at all (TAR, ISO, a
     directory, the single-file compressed streams) is **accepted, not refused** — it is
-    a resource offered, not a claim about this archive — and recorded as
-    ``PASSWORD_ARGUMENT_UNUSED``. That is what lets a batch job pass one keyring at
-    every archive. The check is per format, made before any header is read: an
-    unencrypted ZIP, 7z or RAR records nothing, because those formats can use a
-    password. Diagnostics also log at ``WARNING`` by default, so such a job will log
-    once per archive of a format without encryption; silence it with
+    a resource offered, not a claim about this archive. A concrete password (a string,
+    bytes, or a list of them) is recorded as ``PASSWORD_ARGUMENT_UNUSED``; a provider
+    callable is not, because it is only a way to ask for a password, and such a format
+    never asks. That is what lets a batch job pass one keyring at every archive. The
+    check is per format, made before any header is read: an unencrypted ZIP, 7z or RAR
+    records nothing, because those formats can use a password. Diagnostics also log
+    at ``WARNING`` by default, so a job passing a password list will log once per
+    archive of a format without encryption; silence it with
     ``ArchiveyConfig(diagnostic_policy=DiagnosticPolicy(overrides={
     DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: DiagnosticDisposition.IGNORE}))``, which
     keeps the count without the log line.
@@ -506,10 +512,11 @@ def _open_resolved(
     # assertions about this archive, so a backend that cannot use one is a diagnostic
     # rather than a refusal (``archive-reading`` §"assertion vs resource"). `format=` is
     # the assertion, and it is still refused above for a directory path.
-    if passwords.has_passwords() and not backend_cls.SUPPORTS_PASSWORD:
-        # Every form behaves alike now. A provider callable already opened fine here
-        # while a plain string raised — an asymmetry reachable only by wrapping your
-        # password list in a lambda, which nobody would guess.
+    if passwords.has_concrete_passwords() and not backend_cls.SUPPORTS_PASSWORD:
+        # Every form opens alike: none is refused. Only a concrete value is recorded,
+        # because a provider callable offers a password only if asked, and a format
+        # with no encryption never asks. A caller (the CLI, a batch job) can then pass
+        # one provider everywhere without a warning on every TAR or gzip.
         collector.emit(
             code=DiagnosticCode.PASSWORD_ARGUMENT_UNUSED,
             message=(
@@ -666,6 +673,7 @@ def open_stream(
     else:
         if not is_stream(source):
             raise_if_text_stream(source)
+            raise_if_write_only_stream(source)
             raise TypeError(
                 f"open_stream source must be a path or binary stream, got {type(source)!r}"
             )

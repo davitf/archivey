@@ -193,7 +193,7 @@ Agent tooling, not documentation. Consumed by tools at fixed paths.
 |---|---:|---:|---|---|---|
 | `.claude/commands/opsx/*.md` | 5 | 737 | Contrib (tooling) | **KEEP** | Slash-command definitions; path is the contract. |
 | `.claude/skills/openspec-*/SKILL.md` | 5 | 838 | Contrib (tooling) | **KEEP** | Same. |
-| `.claude/skills/code-review-skill/**` | 13 | 3,369 | Contrib (tooling) | **KEEP** | Vendored review guidance + the archivey addendum (573 lines) that `CONTRIBUTING.md:120` cites. |
+| `.claude/skills/code-review-skill/**` | 13 | 3,369 | Contrib (tooling) | **KEEP** | Archivey's review skill: `SKILL.md` plus one reference doc per kind of review; the old addendum is a redirect stub. |
 | `.cursor/commands/code-review.md` | 1 | 92 | Contrib (tooling) | **KEEP** | Wires Cursor `/code-review` to the skill. |
 
 > Not folded into the taxonomy on purpose: these are **executable configuration

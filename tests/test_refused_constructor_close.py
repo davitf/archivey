@@ -252,6 +252,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.iso_reader._PyCdlibStream": (
         "raw.__enter__() runs after DelegatingStream.__init__ has set what close() reads"
     ),
+    "archivey.internal.backends.zip_reader._UnconfirmedZipCryptoStream": (
+        "no __init__ of its own; DelegatingStream's"
+    ),
     "archivey.internal.backends.rar_reader._UnrarOwnedStream": "plain assignments only",
     "archivey.internal.backends.rar_reader._UnrarRespawnStream": "plain assignments only",
     "archivey.internal.streams.streamtools.slice.SlicingStream": (

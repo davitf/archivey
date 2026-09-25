@@ -8,7 +8,6 @@ from enum import Enum, Flag, auto
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
-    Any,
     Callable,
     ClassVar,
     Collection,
@@ -690,10 +689,12 @@ class ArchiveMember:
     # Private internal fields (not part of the public contract)
     _member_id: int | None = field(default=None, repr=False, compare=False)
     _archive_id: str | None = field(default=None, repr=False, compare=False)
-    _raw: Any = field(default=None, repr=False, compare=False)
+    _raw: object = field(default=None, repr=False, compare=False)
     """Opaque backend handle carried on the member (e.g. the stdlib ``ZipInfo`` /
     ``TarInfo``), so a backend can open the member's data straight from the member without
-    a separate name/id lookup table. Not part of the public contract."""
+    a separate name/id lookup table. Not part of the public contract. Typed ``object``:
+    each backend narrows it with an ``isinstance`` check on its own handle type before
+    use."""
     # Typed ``object`` rather than ``Diagnostic``: ``archivey.diagnostics`` imports this
     # module, so the name cannot be imported here at runtime, and an unresolvable field
     # annotation would make ``typing.get_type_hints(ArchiveMember)`` raise. The
