@@ -9,11 +9,14 @@ Layout this code assumes::
 Who does what:
 
 - ``zipfile.ZipFile`` / ``ZipInfo`` — central-directory parse, listing, shared ``fp`` lock.
-- Unencrypted member **data** — slice the local payload and decode via the shared
-  codec layer (not ``ZipExtFile``), so accelerators / rewind warnings stay uniform.
-- ZipCrypto — encryption header + weak 1-byte check (+ CRC confirm when ambiguous).
-- WinZip AES (method 99) — ``internal.backends.zip_aes``, then the codec for the real method
-  from extra field ``0x9901``.
+- Member **data** — slice the local payload, decrypt it if encrypted, and decode via the
+  shared codec layer (never ``ZipExtFile``), so accelerators / rewind warnings / CRC
+  verification stay uniform.
+- Decrypt stages: ZipCrypto (``internal.backends.zipcrypto``, weak 1-byte check) and
+  WinZip AES (method 99, ``internal.backends.zip_aes``, real method from extra field
+  ``0x9901``). One password ladder for both: a bounded confirm per candidate when
+  several are possible (a shared CRC pass for STORED ZipCrypto).
+- PKWARE Strong Encryption — refused (``UnsupportedFeatureError``).
 
 Split/spanned multi-volume sets are rejected — rejoin first (see ``format-zip``):
 Info-ZIP ``.zNN`` / final ``.zip`` (EOCD disk fields), 7-Zip ``.zip.NNN``, and
@@ -46,7 +49,7 @@ from typing import (
     cast,
 )
 
-from archivey.config import ArchiveyConfig
+from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.cost import (
     AccessCost,
     CostReceipt,
@@ -66,12 +69,14 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
+    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
     raw_message_of,
 )
 from archivey.internal.backends.zip_aes import (
+    WinZipAesInfo,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
@@ -81,6 +86,9 @@ from archivey.internal.backends.zip_detect import (
     validate_zip_local_header,
 )
 from archivey.internal.backends.zipcrypto import (
+    ZIPCRYPTO_HEADER_LEN,
+    ZipCryptoDecryptStream,
+    keys_after_header,
     parallel_plaintext_crc32,
     password_matches_check_byte,
 )
@@ -101,6 +109,7 @@ from archivey.internal.password import (
 )
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_PREFIX_BYTES,
+    PasswordConfirmPlan,
     PasswordConfirmVerdict,
     UnverifiedPasswordReadWatch,
     first_crc_match,
@@ -116,12 +125,12 @@ from archivey.internal.streams.codecs import (
     open_codec_stream,
 )
 from archivey.internal.streams.streamtools import (
-    CloseLockedStream,
     DelegatingStream,
     SharedView,
     SlicingStream,
     read_exact,
 )
+from archivey.internal.streams.verify import VerifyingStream
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import quoted
@@ -320,15 +329,22 @@ _ZIP_REJECTING_METHODS = frozenset(
 )
 
 
-def _is_candidate_integrity_failure(exc: Exception) -> bool:
-    """Whether ``exc`` can be caused by a ZipCrypto verification-byte collision."""
-    if isinstance(exc, zipfile.BadZipFile):
-        # A wrong ZipCrypto candidate can produce a CRC mismatch after decrypting bytes,
-        # but cannot alter the unencrypted local header or archive structure.
-        return str(exc).startswith("Bad CRC-32 for file ")
-    return isinstance(exc, (zlib.error, lzma.LZMAError)) or (
-        isinstance(exc, OSError) and str(exc) == _BZIP2_INVALID_DATA
-    )
+def _is_candidate_integrity_failure(
+    exc: BaseException, *, payload_complete: Callable[[], bool]
+) -> bool:
+    """Whether ``exc`` can be caused by a wrong key that passed the cheap check.
+
+    A wrong key decrypts to garbage, which the codec rejects or the CRC check at EOF
+    catches (``CorruptionError``). A decoder that runs out of garbage before the
+    declared size says ``TruncatedError`` too, so that counts when the member's whole
+    payload is in the file (``payload_complete()``, asked only then: it costs a seek);
+    otherwise the file really is short.
+    The local header is not encrypted, so a damaged one is never the key's doing: it
+    raises before decryption starts.
+    """
+    if isinstance(exc, TruncatedError):
+        return payload_complete()
+    return isinstance(exc, CorruptionError)
 
 
 #: A lone ZipCrypto password passed the one-byte check, and the data then failed its
@@ -365,35 +381,44 @@ def _is_unverified_data_error(error: BaseException) -> bool:
 class _UnconfirmedZipCryptoStream(DelegatingStream):
     """A ZipCrypto member opened with one password that only its check byte vouched for.
 
-    A wrong password shows up here as a CRC mismatch at the end of a stored member, or a
-    decompressor error part way into a compressed one. Both would otherwise read as a
+    A wrong password shows up here as a CRC mismatch at the end of the member, or a
+    decoder error part way into a compressed one. Both would otherwise read as a
     damaged archive, so they are reported the way the multi-password path reports the
-    same ambiguity: as an ``EncryptionError`` that names both causes.
+    same ambiguity: as an ``EncryptionError`` that names both causes. The inner stream
+    is the decoded member with its CRC verifier, so both arrive as ``ArchiveyError``
+    (see :func:`_is_candidate_integrity_failure`).
     """
+
+    def __init__(
+        self, inner: BinaryIO, *, payload_complete: Callable[[], bool]
+    ) -> None:
+        self._payload_complete = payload_complete
+        super().__init__(inner)
 
     def read(self, n: int = -1, /) -> bytes:
         try:
             return super().read(n)
-        except _ZIP_MEMBER_READ_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001 - classified, then re-raised
             self._reraise(exc)
 
     def readinto(self, b: WriteableBuffer, /) -> int:
         # Overridden too, so the zero-copy passthrough stays on and still translates.
         try:
             return super().readinto(b)
-        except _ZIP_MEMBER_READ_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001 - classified, then re-raised
             self._reraise(exc)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        # A forward seek on a ZipExtFile decrypts and decompresses what it skips.
+        # A forward seek decrypts and decodes what it skips.
         try:
             return super().seek(offset, whence)
-        except _ZIP_MEMBER_READ_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001 - classified, then re-raised
             self._reraise(exc)
 
-    @staticmethod
-    def _reraise(exc: Exception) -> NoReturn:
-        if _is_candidate_integrity_failure(exc):
+    def _reraise(self, exc: Exception) -> NoReturn:
+        if _is_candidate_integrity_failure(
+            exc, payload_complete=self._payload_complete
+        ):
             raise _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE) from exc
         raise exc
 
@@ -626,11 +651,11 @@ class ZipReader(BaseArchiveReader):
             streaming=streaming,
             seekable=MemberStreams.SEEKABLE in member_streams,
         )
-        # Free-threaded ZIP: stdlib zipfile races on _fileRefCnt across concurrent
-        # ZipFile.open / ZipExtFile.close / ZipFile.close. Serialize those under
-        # CONCURRENT; leave reads to zipfile's own _SharedFile lock so independent
-        # members can still decompress in parallel. The unencrypted codec path uses
-        # the same ZipFile._lock via SharedView.
+        # Under CONCURRENT, closing the ZipFile takes this lock (_close_archive).
+        # Member data never goes through ZipFile.open / ZipExtFile, whose _fileRefCnt
+        # raced under free-threading: every member reads through a SharedView under
+        # zipfile's own ZipFile._lock, one read at a time, so independent members
+        # still decode in parallel.
         self._handle_lock: threading.Lock | None = (
             threading.Lock() if MemberStreams.CONCURRENT in member_streams else None
         )
@@ -1108,119 +1133,6 @@ class ZipReader(BaseArchiveReader):
             finally:
                 fp.seek(saved)
 
-    def _open_aes_member(
-        self,
-        info: zipfile.ZipInfo,
-        member: ArchiveMember | None,
-        *,
-        member_name: str,
-    ) -> ArchiveStream:
-        """Decrypt a WinZip AE (method 99) member and decode via the codec layer."""
-        aes = parse_winzip_aes_extra(info.extra)
-        if aes is None:
-            raise UnsupportedFeatureError(
-                "ZIP compression method 99 without a valid WinZip AES (0x9901) extra field",
-                archive_name=self._archive_name,
-                member_name=member_name,
-                source_format=ArchiveFormat.ZIP,
-            )
-        codec = _ZIP_METHOD_CODECS.get(aes.actual_method)
-        if codec is None:
-            raise UnsupportedFeatureError(
-                f"Unsupported ZIP compression method {aes.actual_method} under WinZip AES",
-                archive_name=self._archive_name,
-                member_name=member_name,
-                source_format=ArchiveFormat.ZIP,
-            )
-
-        def decrypt(password: bytes) -> BinaryIO:
-            raw = self._raw_member_stream(info)
-            decrypted = open_winzip_aes_member(
-                raw,
-                aes=aes,
-                password=password,
-                compress_size=info.compress_size,
-            )
-            params = CodecParams()
-            body: BinaryIO = decrypted
-            if aes.actual_method == 14:
-                params = self._zip_lzma_params(body)
-            elif aes.actual_method == 98:
-                params = self._zip_ppmd_params(body)
-            return open_codec_stream(
-                codec,
-                body,
-                config=replace(
-                    self._stream_config,
-                    expected_decompressed_size=(
-                        member.size if member is not None else info.file_size
-                    ),
-                ),
-                params=params,
-                seekable=self._stream_config.seekable,
-                collector=self._diagnostics_collector,
-            )
-
-        try:
-            decoded: BinaryIO = self._finish_password_attempt(
-                member, member_name, decrypt, ambiguous_holder=None
-            )
-        except PackageNotInstalledError:
-            raise
-        except _ZIP_MEMBER_READ_ERRORS as exc:
-            self._reraise_member_error(exc, member_name)
-        # Cheap key check rung: WinZip AES's two-byte ``pw_verify`` (2⁻¹⁶) accepted the
-        # password; the HMAC at EOF is the authoritative check.
-        decoded = self._watch_unverified(
-            decoded,
-            info,
-            member,
-            member_name,
-            check="weak_open_check",
-            seek_keeps_digest=False,
-        )
-
-        hashes: Mapping[HashAlgorithm, bytes] = (
-            member.hashes if member is not None else {}
-        )
-        size = member.size if member is not None else info.file_size
-        if hashes or size is not None:
-            return self._wrap_member_stream(
-                decoded,
-                member_name,
-                size=size,
-                expected_hashes=hashes,
-                expected_size=size,
-                verify_member=member,
-            )
-        return self._wrap_member_stream(decoded, member_name, size=size)
-
-    def _open_zip_entry(
-        self,
-        info: zipfile.ZipInfo,
-        member: ArchiveMember | None,
-        *,
-        member_name: str,
-    ) -> BinaryIO:
-        if info.compress_type == 99:
-            return self._open_aes_member(info, member, member_name=member_name)
-
-        encrypted = bool(info.flag_bits & _ZIP_MASK_ENCRYPTED)
-        if not encrypted:
-            # Unencrypted members decode through the shared codec layer (not ZipExtFile).
-            return self._open_codec_member(info, member, member_name=member_name)
-
-        # Cheap key check rung: ZipCrypto's one-byte open check admits ~1/256 of wrong
-        # passwords (2⁻⁸). With more than one possible candidate (or a provider),
-        # confirm before accepting.
-        # Confirmed winners are re-opened fresh — no plaintext retained.
-        if not self._passwords.is_ambiguous():
-            return self._open_encrypted_lazy(info, member, member_name=member_name)
-
-        if info.compress_type == zipfile.ZIP_STORED:
-            return self._open_stored_confirmed(info, member, member_name=member_name)
-        return self._open_compressed_confirmed(info, member, member_name=member_name)
-
     def _local_data_region(self, info: zipfile.ZipInfo) -> tuple[int, int]:
         """Return ``(data_start, compress_size)`` for ``info`` from its local file header.
 
@@ -1348,54 +1260,80 @@ class ZipReader(BaseArchiveReader):
             ppmd_restore_method=restore,
         )
 
-    def _open_codec_member(
-        self,
-        info: zipfile.ZipInfo,
-        member: ArchiveMember | None,
-        *,
-        member_name: str,
-    ) -> ArchiveStream:
-        """Decode an unencrypted ZIP member through the shared codec layer."""
-        codec = _ZIP_METHOD_CODECS.get(info.compress_type)
+    def _member_codec(
+        self, method: int, member_name: str, *, suffix: str = ""
+    ) -> Codec:
+        codec = _ZIP_METHOD_CODECS.get(method)
         if codec is None:
             raise UnsupportedFeatureError(
-                f"Unsupported ZIP compression method {info.compress_type}",
+                f"Unsupported ZIP compression method {method}{suffix}",
                 archive_name=self._archive_name,
                 member_name=member_name,
                 source_format=ArchiveFormat.ZIP,
             )
+        return codec
 
+    def _decode_body(
+        self,
+        info: zipfile.ZipInfo,
+        member: ArchiveMember | None,
+        body: BinaryIO,
+        *,
+        method: int,
+        codec: Codec,
+        member_name: str,
+        sequential_body: bool = False,
+    ) -> ArchiveStream:
+        """Decode a member body through the shared codec layer.
+
+        ``body`` is the member's data as the codec sees it: the raw payload of an
+        unencrypted member, or the plaintext out of a decrypt stage. Every member,
+        encrypted or not, decodes here. Failures raise as ``ArchiveyError``.
+
+        ``sequential_body`` marks a body that seeks only by re-reading from its start
+        (the ZipCrypto stage). ``AUTO`` accelerators then stay off: they read their
+        input at scattered offsets, and every step back would decrypt the member again.
+        """
+        size = member.size if member is not None else info.file_size
+        config = replace(self._stream_config, expected_decompressed_size=size)
+        if sequential_body:
+            config = replace(
+                config,
+                use_rapidgzip=_sequential_accelerator(config.use_rapidgzip),
+                use_indexed_bzip2=_sequential_accelerator(config.use_indexed_bzip2),
+            )
         try:
-            raw = self._raw_member_stream(info)
             params = CodecParams()
-            if info.compress_type == 14:  # ZIP LZMA
-                params = self._zip_lzma_params(raw)
-            elif info.compress_type == 98:  # ZIP PPMd8
-                params = self._zip_ppmd_params(raw)
+            if method == 14:  # ZIP LZMA
+                params = self._zip_lzma_params(body)
+            elif method == 98:  # ZIP PPMd8
+                params = self._zip_ppmd_params(body)
                 # Bound PPMd decode to the member size when known (defensive; PPMd8
                 # usually has an end mark, but max_length still matches py7zr practice).
-                size = member.size if member is not None else info.file_size
                 if size is not None and size >= 0:
                     params = replace(params, unpack_size=size)
-
-            decoded: BinaryIO = open_codec_stream(
+            return open_codec_stream(
                 codec,
-                raw,
-                config=replace(
-                    self._stream_config,
-                    expected_decompressed_size=(
-                        member.size if member is not None else info.file_size
-                    ),
-                ),
+                body,
+                config=config,
                 params=params,
                 seekable=self._stream_config.seekable,
                 collector=self._diagnostics_collector,
             )
-        except PackageNotInstalledError:
+        except BaseException as exc:
+            body.close()
+            if isinstance(exc, _ZIP_MEMBER_READ_ERRORS):
+                self._reraise_member_error(exc, member_name)
             raise
-        except _ZIP_MEMBER_READ_ERRORS as exc:
-            self._reraise_member_error(exc, member_name)
 
+    def _verified_member_stream(
+        self,
+        decoded: BinaryIO,
+        info: zipfile.ZipInfo,
+        member: ArchiveMember | None,
+        member_name: str,
+    ) -> ArchiveStream:
+        """The public member stream, with the stored CRC and size fused in."""
         hashes: Mapping[HashAlgorithm, bytes] = (
             member.hashes if member is not None else {}
         )
@@ -1411,21 +1349,373 @@ class ZipReader(BaseArchiveReader):
             )
         return self._wrap_member_stream(decoded, member_name, size=size)
 
-    def _open_zipfile_member(
+    def _open_codec_member(
         self,
         info: zipfile.ZipInfo,
+        member: ArchiveMember | None,
         *,
-        password: bytes | None,
         member_name: str,
-    ) -> BinaryIO:
-        """Open via ``zipfile`` and translate member-open failures."""
+    ) -> ArchiveStream:
+        """Decode an unencrypted ZIP member through the shared codec layer."""
+        codec = self._member_codec(info.compress_type, member_name)
+        decoded = self._decode_body(
+            info,
+            member,
+            self._open_raw_payload(info, member_name),
+            method=info.compress_type,
+            codec=codec,
+            member_name=member_name,
+        )
+        return self._verified_member_stream(decoded, info, member, member_name)
+
+    def _payload_is_complete(self, info: zipfile.ZipInfo, member_name: str) -> bool:
+        """Whether the file holds every byte of ``info``'s declared payload."""
         try:
-            raw = self._zip_open_raw(info, password=password, member_name=member_name)
-            if self._handle_lock is not None:
-                return CloseLockedStream(raw, self._handle_lock)
-            return raw
+            data_start, length = self._local_data_region(info)
         except _ZIP_MEMBER_READ_ERRORS as exc:
             self._reraise_member_error(exc, member_name)
+        with self._zipfile_lock():
+            fp = self._archive.fp
+            if fp is None:
+                raise _closed_archive_error()
+            saved = fp.tell()
+            try:
+                return data_start + length <= fp.seek(0, io.SEEK_END)
+            finally:
+                fp.seek(saved)
+
+    def _open_raw_payload(self, info: zipfile.ZipInfo, member_name: str) -> BinaryIO:
+        """:meth:`_raw_member_stream`, with a damaged local header raised translated."""
+        try:
+            return self._raw_member_stream(info)
+        except _ZIP_MEMBER_READ_ERRORS as exc:
+            self._reraise_member_error(exc, member_name)
+
+    def _zipcrypto_stage(
+        self, info: zipfile.ZipInfo, member_name: str
+    ) -> Callable[[bytes], BinaryIO]:
+        """Return ``stage(password)``: the member's plaintext under ZipCrypto.
+
+        ``stage`` checks the header's check byte (the cheap key check, 2⁻⁸) and raises
+        the wrong-password ``EncryptionError`` when it does not match.
+        """
+        check_byte = self._zipcrypto_check_byte(info)
+
+        def stage(password: bytes) -> BinaryIO:
+            raw = self._open_raw_payload(info, member_name)
+            try:
+                header = read_exact(raw, ZIPCRYPTO_HEADER_LEN)
+            except BaseException as exc:
+                raw.close()
+                if isinstance(exc, _ZIP_MEMBER_READ_ERRORS):
+                    self._reraise_member_error(exc, member_name)
+                raise
+            if len(header) != ZIPCRYPTO_HEADER_LEN:
+                raw.close()
+                truncated = TruncatedError(
+                    "Truncated ZipCrypto header",
+                    archive_name=self._archive_name,
+                    source_format=ArchiveFormat.ZIP,
+                )
+                self._stamp_error_context(truncated, member_name)
+                raise truncated
+            keys, check = keys_after_header(password, header)
+            if check != check_byte:
+                raw.close()
+                raise wrong_password_error("Wrong password for this ZIP member")
+            return ZipCryptoDecryptStream(
+                raw, keys, length=max(0, info.compress_size - ZIPCRYPTO_HEADER_LEN)
+            )
+
+        return stage
+
+    def _winzip_aes_stage(
+        self, info: zipfile.ZipInfo, aes: WinZipAesInfo, member_name: str
+    ) -> Callable[[bytes], BinaryIO]:
+        """Return ``stage(password)``: the member's plaintext under WinZip AES.
+
+        ``stage`` checks the two-byte ``pw_verify`` (the cheap key check, 2⁻¹⁶); the
+        HMAC runs when a read reaches the end of the ciphertext.
+        """
+
+        def stage(password: bytes) -> BinaryIO:
+            raw = self._open_raw_payload(info, member_name)
+            try:
+                return open_winzip_aes_member(
+                    raw,
+                    aes=aes,
+                    password=password,
+                    compress_size=info.compress_size,
+                )
+            except BaseException:
+                raw.close()
+                raise
+
+        return stage
+
+    def _open_encrypted_member(
+        self,
+        info: zipfile.ZipInfo,
+        member: ArchiveMember | None,
+        *,
+        member_name: str,
+    ) -> ArchiveStream:
+        """Open a ZipCrypto or WinZip AES member: decrypt stage, then the codec layer.
+
+        Both schemes share one password ladder (``password_confirm``). Their cheap key
+        checks (ZipCrypto's check byte, 2⁻⁸; WinZip AES's ``pw_verify``, 2⁻¹⁶) admit
+        some wrong passwords, so:
+
+        - **One possible password:** accept it on the cheap check. The CRC (or HMAC)
+          at EOF is the real test, and a stream abandoned before it reports
+          ``ENCRYPTED_MEMBER_UNVERIFIED``.
+        - **Several, STORED ZipCrypto:** nothing but the whole-member CRC can tell
+          them apart; one shared ciphertext pass decides (:meth:`_open_stored_confirmed`).
+        - **Several, otherwise:** each candidate runs a bounded confirm: the CRC when
+          it is in reach, codec rejection for a codec that rejects random input, and
+          for WinZip AES the HMAC, which covers the whole member.
+        """
+        crc_anchor: int | None = info.CRC
+        hmac_anchor = False
+        if info.compress_type == 99:
+            aes = parse_winzip_aes_extra(info.extra)
+            if aes is None:
+                raise UnsupportedFeatureError(
+                    "ZIP compression method 99 without a valid WinZip AES (0x9901) "
+                    "extra field",
+                    archive_name=self._archive_name,
+                    member_name=member_name,
+                    source_format=ArchiveFormat.ZIP,
+                )
+            method = aes.actual_method
+            codec = self._member_codec(method, member_name, suffix=" under WinZip AES")
+            stage = self._winzip_aes_stage(info, aes, member_name)
+            hmac_anchor = True
+            if aes.is_ae2:
+                # AE-2 stores no CRC (the field is zero); the HMAC is the only check.
+                crc_anchor = None
+        else:
+            method = info.compress_type
+            codec = self._member_codec(method, member_name)
+            stage = self._zipcrypto_stage(info, member_name)
+
+        def decode_body(body: BinaryIO) -> ArchiveStream:
+            return self._decode_body(
+                info,
+                member,
+                body,
+                method=method,
+                codec=codec,
+                member_name=member_name,
+                sequential_body=not hmac_anchor,
+            )
+
+        def payload_complete() -> bool:
+            return self._payload_is_complete(info, member_name)
+
+        if not self._passwords.is_ambiguous():
+            return self._open_encrypted_unconfirmed(
+                info,
+                member,
+                member_name,
+                stage,
+                decode_body,
+                zipcrypto=not hmac_anchor,
+                payload_complete=payload_complete,
+            )
+        if not hmac_anchor and method == zipfile.ZIP_STORED:
+            winner = self._open_stored_confirmed(info, member, member_name=member_name)
+            return self._verified_member_stream(
+                decode_body(stage(winner)), info, member, member_name
+            )
+        return self._open_encrypted_confirmed(
+            info,
+            member,
+            member_name,
+            stage,
+            decode_body,
+            payload_complete=payload_complete,
+            method=method,
+            crc_anchor=crc_anchor,
+            hmac_anchor=hmac_anchor,
+        )
+
+    def _open_encrypted_unconfirmed(
+        self,
+        info: zipfile.ZipInfo,
+        member: ArchiveMember | None,
+        member_name: str,
+        stage: Callable[[bytes], BinaryIO],
+        decode_body: Callable[[BinaryIO], ArchiveStream],
+        *,
+        zipcrypto: bool,
+        payload_complete: Callable[[], bool],
+    ) -> ArchiveStream:
+        """Open with the one possible password, accepted on its cheap key check."""
+        if not zipcrypto:
+            try:
+                decoded: BinaryIO = self._finish_password_attempt(
+                    member,
+                    member_name,
+                    lambda password: decode_body(stage(password)),
+                    ambiguous_holder=None,
+                )
+            except _ZIP_MEMBER_READ_ERRORS as exc:
+                self._reraise_member_error(exc, member_name)
+            decoded = self._watch_unverified(
+                decoded, info, member, member_name, check="weak_open_check"
+            )
+            return self._verified_member_stream(decoded, info, member, member_name)
+
+        size = member.size if member is not None else info.file_size
+        hashes: Mapping[HashAlgorithm, bytes] = (
+            member.hashes if member is not None else {}
+        )
+
+        def decrypt(password: bytes) -> BinaryIO:
+            body = stage(password)
+            try:
+                decoded = decode_body(body)
+            except ArchiveyError as exc:
+                # The LZMA or PPMd header decrypted to nonsense: the same ambiguity
+                # as a failure further in.
+                if not _is_candidate_integrity_failure(
+                    exc, payload_complete=payload_complete
+                ):
+                    raise
+                raise _unverified_data_error(_UNCONFIRMED_PASSWORD_FAILURE) from exc
+            # The verifier sits inside the translation, so a CRC mismatch is reported
+            # as the ambiguity it is rather than as plain corruption.
+            return _UnconfirmedZipCryptoStream(
+                VerifyingStream(
+                    decoded,
+                    hashes,
+                    expected_size=size,
+                    collector=self._diagnostics_collector,
+                    member=member,
+                    archive_name=self._archive_name,
+                ),
+                payload_complete=payload_complete,
+            )
+
+        stream = self._finish_password_attempt(
+            member, member_name, decrypt, ambiguous_holder=None
+        )
+        # Only the check byte vouched for this password; the CRC at EOF is the check.
+        stream = self._watch_unverified(
+            stream, info, member, member_name, check="weak_open_check"
+        )
+        return self._wrap_member_stream(stream, member_name, size=size)
+
+    def _open_encrypted_confirmed(
+        self,
+        info: zipfile.ZipInfo,
+        member: ArchiveMember | None,
+        member_name: str,
+        stage: Callable[[bytes], BinaryIO],
+        decode_body: Callable[[BinaryIO], ArchiveStream],
+        *,
+        payload_complete: Callable[[], bool],
+        method: int,
+        crc_anchor: int | None,
+        hmac_anchor: bool,
+    ) -> ArchiveStream:
+        """Pick among several possible passwords with a bounded confirm per candidate."""
+        # The central directory's size, which the plan trusts as zipfile always did;
+        # the fused verifier on the caller's stream checks it at EOF.
+        size = info.file_size
+        codec_rejects = method in _ZIP_REJECTING_METHODS
+        # One substream, the member itself: its CRC is the anchor when the member fits
+        # the prefix, and codec rejection decides a larger one.
+        plan = plan_password_confirm(
+            [(size, crc_anchor)],
+            None,
+            budget=PASSWORD_CONFIRM_PREFIX_BYTES,
+            codec_rejects=codec_rejects,
+        )
+        # WinZip AES authenticates the whole ciphertext, so reading a member to its end
+        # confirms the password (an 80-bit HMAC) whether or not it has a CRC. Take that
+        # walk wherever a CRC walk would be taken: the member fits the budget, or its
+        # codec cannot reject a wrong key on its own.
+        reads_to_hmac = (
+            hmac_anchor
+            and not plan.confirms
+            and (size <= PASSWORD_CONFIRM_PREFIX_BYTES or not codec_rejects)
+        )
+        if reads_to_hmac:
+            plan = PasswordConfirmPlan(
+                ((size, crc_anchor),),
+                None,
+                confirms=True,
+                bounded=size <= PASSWORD_CONFIRM_PREFIX_BYTES,
+            )
+        ambiguous_holder: list[EncryptionError] = []
+
+        def candidate_failed(cause: Exception | None) -> EncryptionError:
+            failure = EncryptionError(
+                "Password candidate failed integrity validation for this ZIP member"
+            )
+            if not ambiguous_holder:
+                ambiguous_holder.append(failure)
+            if cause is not None:
+                failure.__cause__ = cause
+            return failure
+
+        def decrypt(password: bytes) -> tuple[ArchiveStream, PasswordConfirmVerdict]:
+            # A damaged local header, a short encryption header and a failed cheap
+            # check all raise from the stage, before anything below can mistake them
+            # for a wrong key's garbage.
+            body = stage(password)
+            probe: ArchiveStream | None = None
+            try:
+                probe = decode_body(body)
+                verdict = run_password_confirm_plan(probe, plan)
+                if verdict is not PasswordConfirmVerdict.REJECTED and reads_to_hmac:
+                    # The read that finds the end is the one that checks the HMAC.
+                    if probe.read(1):
+                        verdict = PasswordConfirmVerdict.REJECTED
+            except (
+                UnsupportedFeatureError,
+                PackageNotInstalledError,
+                ResourceLimitError,
+            ):
+                raise
+            except ArchiveyError as exc:
+                if not _is_candidate_integrity_failure(
+                    exc, payload_complete=payload_complete
+                ):
+                    raise
+                raise candidate_failed(exc) from exc
+            finally:
+                if probe is not None:
+                    probe.close()
+            if verdict is PasswordConfirmVerdict.REJECTED:
+                raise candidate_failed(None)
+            # Fresh stream for the caller: nothing decoded here is handed out.
+            return decode_body(stage(password)), verdict
+
+        def promote_candidate_password(
+            accepted: tuple[ArchiveStream, PasswordConfirmVerdict],
+        ) -> bool:
+            # Decides whether the accepted candidate password joins known-good. This
+            # path runs only for an ambiguous candidate set, so a survivor with no
+            # confirming anchor stays out.
+            _, verdict = accepted
+            return verdict is PasswordConfirmVerdict.CONFIRMED
+
+        decoded, verdict = self._finish_password_attempt(
+            member,
+            member_name,
+            decrypt,
+            ambiguous_holder=ambiguous_holder,
+            promote=promote_candidate_password,
+        )
+        stream: BinaryIO = decoded
+        if verdict is not PasswordConfirmVerdict.CONFIRMED:
+            stream = self._watch_unverified(
+                decoded, info, member, member_name, check="confirm_budget_exhausted"
+            )
+        return self._verified_member_stream(stream, info, member, member_name)
 
     def _reraise_member_error(self, exc: Exception, member_name: str) -> NoReturn:
         """Translate a raw member-read error, stamp it with member context, and raise.
@@ -1443,150 +1733,13 @@ class ZipReader(BaseArchiveReader):
             raise _closed_archive_error() from exc
         self._raise_translated(exc, member_name, stamp_encryption=False)
 
-    def _zip_open_raw(
-        self,
-        info: zipfile.ZipInfo,
-        *,
-        password: bytes | None,
-        member_name: str,
-    ) -> BinaryIO:
-        """``ZipFile.open`` under the CONCURRENT handle lock when present."""
-        try:
-            with self._handle_guard():
-                # typeshed types ZipFile.open's result as IO[bytes]; in read mode it
-                # is a ZipExtFile, a BufferedIOBase.
-                return cast("BinaryIO", self._archive.open(info, pwd=password))
-        except IndexError as exc:
-            # ZipExtFile._init_decrypter does ``self._decrypter(header)[11]``
-            # after read(12). A short read — file pointer at physical EOF, not a
-            # compress_size smaller than 12 (zipfile's _SharedFile is not bounded
-            # by it) — is IndexError, not EOFError. Caught here, the only
-            # ZipFile.open call, so an IndexError from codec/AES/read stays raw.
-            # try is outside _handle_guard so stamping never runs while the
-            # shared-handle lock is held (base_reader._translated_errors).
-            if password is None:
-                raise
-            translated = TruncatedError(f"Truncated ZipCrypto header: {exc!r}")
-            self._stamp_error_context(translated, member_name)
-            raise translated from exc
-
-    def _zip_close_raw(self, stream: BinaryIO) -> None:
-        """Close a raw zip member stream under the CONCURRENT handle lock when present."""
-        with self._handle_guard():
-            stream.close()
-
-    def _open_encrypted_lazy(
-        self,
-        info: zipfile.ZipInfo,
-        member: ArchiveMember | None,
-        *,
-        member_name: str,
-    ) -> BinaryIO:
-        def decrypt(password: bytes) -> BinaryIO:
-            return _UnconfirmedZipCryptoStream(
-                self._open_zipfile_member(
-                    info, password=password, member_name=member_name
-                )
-            )
-
-        stream = self._finish_password_attempt(
-            member, member_name, decrypt, ambiguous_holder=None
-        )
-        # Only the check byte vouched for this password; the CRC at EOF is the check.
-        return self._watch_unverified(
-            stream,
-            info,
-            member,
-            member_name,
-            check="weak_open_check",
-            seek_keeps_digest=True,
-        )
-
-    def _open_compressed_confirmed(
-        self,
-        info: zipfile.ZipInfo,
-        member: ArchiveMember | None,
-        *,
-        member_name: str,
-    ) -> BinaryIO:
-        ambiguous_holder: list[EncryptionError] = []
-        # One substream, the member itself: its CRC is the anchor when the member fits
-        # the prefix, and codec rejection decides a larger one.
-        plan = plan_password_confirm(
-            [(info.file_size, info.CRC)],
-            None,
-            budget=PASSWORD_CONFIRM_PREFIX_BYTES,
-            codec_rejects=info.compress_type in _ZIP_REJECTING_METHODS,
-        )
-
-        def candidate_failed(cause: Exception | None) -> EncryptionError:
-            failure = EncryptionError(
-                "Password candidate failed integrity validation for this ZIP member"
-            )
-            if not ambiguous_holder:
-                ambiguous_holder.append(failure)
-            if cause is not None:
-                failure.__cause__ = cause
-            return failure
-
-        def decrypt(password: bytes) -> tuple[BinaryIO, PasswordConfirmVerdict]:
-            stream: BinaryIO | None = None
-            try:
-                stream = self._zip_open_raw(
-                    info, password=password, member_name=member_name
-                )
-                verdict = run_password_confirm_plan(stream, plan)
-                if verdict is PasswordConfirmVerdict.REJECTED:
-                    raise candidate_failed(None)
-                self._zip_close_raw(stream)
-                stream = None
-                # Fresh stream for the caller; zipfile re-checks CRC at EOF.
-                fresh = self._open_zipfile_member(
-                    info, password=password, member_name=member_name
-                )
-                return fresh, verdict
-            except _ZIP_MEMBER_READ_ERRORS as exc:
-                if _is_candidate_integrity_failure(exc):
-                    raise candidate_failed(exc) from exc
-                self._reraise_member_error(exc, member_name)
-            finally:
-                if stream is not None:
-                    self._zip_close_raw(stream)
-
-        def promote_candidate_password(
-            accepted: tuple[BinaryIO, PasswordConfirmVerdict],
-        ) -> bool:
-            # Decides whether the accepted candidate password joins known-good. This
-            # path runs only for an ambiguous candidate set, so a survivor with no CRC
-            # match stays out.
-            _, verdict = accepted
-            return verdict is PasswordConfirmVerdict.CONFIRMED
-
-        stream, verdict = self._finish_password_attempt(
-            member,
-            member_name,
-            decrypt,
-            ambiguous_holder=ambiguous_holder,
-            promote=promote_candidate_password,
-        )
-        if verdict is PasswordConfirmVerdict.CONFIRMED:
-            return stream
-        return self._watch_unverified(
-            stream,
-            info,
-            member,
-            member_name,
-            check="confirm_budget_exhausted",
-            seek_keeps_digest=True,
-        )
-
     def _open_stored_confirmed(
         self,
         info: zipfile.ZipInfo,
         member: ArchiveMember | None,
         *,
         member_name: str,
-    ) -> BinaryIO:
+    ) -> bytes:
         """Resolve the password for a STORED ZipCrypto member, in four phases.
 
         A STORED member has no decompressor to reject a wrong key, and ZipCrypto's 1-byte
@@ -1599,8 +1752,9 @@ class ZipReader(BaseArchiveReader):
            CRC-32 in constant memory; the first CRC match wins.
         3. **Provider fallback** — if no static candidate won, ask the provider one password
            at a time (cheap check, then a per-candidate CRC pass), until one wins or it stops.
-        4. **Resolve outcome** — a winner is re-opened fresh; otherwise raise the most
-           specific error (integrity-ambiguous / password-required / wrong-password).
+        4. **Resolve outcome** — return the winner, which the caller opens fresh;
+           otherwise raise the most specific error (integrity-ambiguous /
+           password-required / wrong-password).
         """
         ambiguous_failure: EncryptionError | None = None
         check_byte = self._zipcrypto_check_byte(info)
@@ -1660,9 +1814,7 @@ class ZipReader(BaseArchiveReader):
         # Phase 4 — resolve the outcome (winner, else the most specific error).
         if winner is not None:
             self._passwords.record_success(winner)
-            return self._open_zipfile_member(
-                info, password=winner, member_name=member_name
-            )
+            return winner
 
         if ambiguous_failure is not None:
             ambiguous = _unverified_data_error(
@@ -1691,7 +1843,6 @@ class ZipReader(BaseArchiveReader):
         member_name: str,
         *,
         check: Literal["weak_open_check", "confirm_budget_exhausted"],
-        seek_keeps_digest: bool,
     ) -> BinaryIO:
         """Report ``ENCRYPTED_MEMBER_UNVERIFIED`` if ``stream`` is abandoned before EOF.
 
@@ -1724,7 +1875,6 @@ class ZipReader(BaseArchiveReader):
             stream,
             size=info.file_size,
             on_unverified=report,
-            seek_keeps_digest=seek_keeps_digest,
         )
 
     def _finish_password_attempt(
@@ -1851,13 +2001,10 @@ class ZipReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.ZIP,
             )
-        if info.compress_type == 99:
-            return self._open_aes_member(info, member, member_name=member.name)
-        if bool(info.flag_bits & _ZIP_MASK_ENCRYPTED):
-            # Traditional ZipCrypto stays on the stdlib zipfile decryption path.
-            raw = self._open_zip_entry(info, member, member_name=member.name)
-            return self._wrap_member_stream(raw, member.name, size=member.size)
-        # Unencrypted: codec layer + fused verify in _open_codec_member.
+        # Every member reads as raw payload -> decrypt stage (if encrypted) -> codec
+        # layer -> fused CRC/size verify. Bit 0 is set on WinZip AES members too.
+        if info.compress_type == 99 or info.flag_bits & _ZIP_MASK_ENCRYPTED:
+            return self._open_encrypted_member(info, member, member_name=member.name)
         return self._open_codec_member(info, member, member_name=member.name)
 
     def _get_archive_info(self) -> ArchiveInfo:
@@ -1986,6 +2133,11 @@ def _central_directory_looks_encrypted(fp: IO[bytes]) -> bool:
         return fp.read(4) == _ZIP_ARCHIVE_EXTRA_DATA_SIG
     finally:
         fp.seek(pos)
+
+
+def _sequential_accelerator(mode: AcceleratorMode) -> AcceleratorMode:
+    """``AUTO`` off, for a codec input that is expensive to read out of order."""
+    return AcceleratorMode.OFF if mode is AcceleratorMode.AUTO else mode
 
 
 def _disk_field_is_split(value: int) -> bool:

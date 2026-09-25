@@ -1059,8 +1059,6 @@ class SevenZipReader(BaseArchiveReader):
             stream,
             size=_member_stream_size(member),
             on_unverified=report,
-            # The fused verifier forfeits the checksum on a seek off the read frontier.
-            seek_keeps_digest=False,
         )
 
     def _member_prefix(self, member: ArchiveMember) -> int:

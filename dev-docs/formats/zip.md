@@ -324,21 +324,27 @@ body raises `CorruptionError` and a cut-short one raises `TruncatedError` throug
 code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
 since `use_rapidgzip` covers raw deflate.
 
-Encryption is the one place the split is uneven:
+Encrypted members take the same route with a decrypt stage between the slice and the codec
+layer, so they decode every method an unencrypted member does, and their CRC runs through
+the same fused verifier:
 
-| | Path | Notes |
+| | Decrypt stage | Notes |
 | --- | --- | --- |
-| Traditional ZipCrypto | stdlib `zipfile`'s decryptor | One-byte verifier, so ~1 in 256 wrong passwords passes it. When the 12-byte ZipCrypto header cannot be read (file pointer at EOF), both password dispatch paths report `TruncatedError`: `ZipFile.open` via stdlib `IndexError` from `_init_decrypter` (caught in `_zip_open_raw`, the only `ZipFile.open` call — a read-path `IndexError` stays a raw crash), and the STORED multi-candidate confirm path via `_read_zipcrypto_header`. A truncated ZipCrypto *body* is `EOFError` → `TruncatedError` |
-| WinZip AES (method 99, extra `0x9901`) | archivey, natively | PBKDF2-HMAC-SHA1 · AES-CTR · HMAC-SHA1 truncated to 10 bytes; then the codec layer for the real method |
+| Traditional ZipCrypto | archivey (`zipcrypto.py`, `ZipCryptoDecryptStream`) | One-byte verifier, so ~1 in 256 wrong passwords passes it. Pure Python, byte by byte, at the speed of stdlib's own decrypter (~1.6 MiB/s here). The cipher state depends on every earlier byte, so a backward seek restarts from the saved post-header state and a forward seek decrypts what it skips; `AUTO` accelerators stay off over it, because they read out of order. A 12-byte header the file cuts short is `TruncatedError` on every password path |
+| WinZip AES (method 99, extra `0x9901`) | archivey (`zip_aes.py`) | PBKDF2-HMAC-SHA1 · AES-CTR · HMAC-SHA1 truncated to 10 bytes |
 | PKWARE Strong Encryption (APPNOTE §7: bit 6, or extra `0x0017`) | refused | Listed as encrypted; opening it raises `UnsupportedFeatureError` naming Strong Encryption, with or without a password. A symlink of this kind lists with `link_target` unset (`target_data_encrypted`). When the central directory itself is encrypted (bit 13), stdlib cannot list the archive; an archive extra data record (`PK\x06\x08`) where the directory should start turns that into the same refusal instead of `CorruptionError`. Best-effort: without that record the archive reads as corrupt |
 
-ZipCrypto's weak verifier is why multiple password candidates need confirmation before one
-is accepted. For a compressed member the decompressor rejects a wrong key within a few
-bytes on structural grounds, so a bounded prefix decode confirms cheaply. A **STORED**
-member has no decompressor to do that, so the only discriminator is the whole-stream CRC —
-all surviving candidates are resolved in one shared ciphertext pass computing each
-candidate's CRC in constant memory, earliest match winning. That cost is irreducible for
-the format; see `open-issues.md` §Irreducible.
+Both cheap key checks admit some wrong passwords (ZipCrypto 2⁻⁸, WinZip AES 2⁻¹⁶), so
+both schemes share one confirmation ladder (`password_confirm.py`). With **one** possible
+password it is accepted on the cheap check, and the CRC or HMAC at EOF is the real test.
+With **several**, each surviving candidate runs a bounded confirm before one is accepted:
+for a compressed member the decompressor rejects a wrong key within a few bytes, so a
+bounded prefix decode is enough. A WinZip AES member whose CRC is out of reach (AE-2 has
+none) is read to its end instead when it fits the budget or has no rejecting codec: the
+HMAC covers the whole member. A **STORED** ZipCrypto member has no decompressor, so the
+only discriminator is the whole-stream CRC — all surviving candidates are resolved in one
+shared ciphertext pass computing each candidate's CRC in constant memory, earliest match
+winning. That cost is irreducible for the format; see `open-issues.md` §Irreducible.
 
 For AES, a wrong password fails fast on the 2-byte verification value with no bytes
 returned; a tampered ciphertext fails on the HMAC at the terminal read. A partial
@@ -505,7 +511,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted, and a damaged ZipCrypto member reads as a password error | **format** | One-byte verifier. With several candidates, confirmation narrows it; nothing eliminates it. Data that then fails its CRC or decompressor raises `EncryptionError` naming both causes, because a damaged member read with the right password fails the same way |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
-| `seekable_members=True` still raises on a WinZip AES member | **archivey** | The AES decrypt wrapper does not seek. ZipCrypto and plaintext members do. Pinned as a strict xfail, not an exception to the SEEKABLE guarantee |
+| `seekable_members=True` still raises on a WinZip AES member | **archivey** | The AES decrypt stage does not seek. ZipCrypto and plaintext members do. Pinned as a strict xfail, not an exception to the SEEKABLE guarantee |
 
 ## 6. Decisions
 
@@ -520,7 +526,9 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
 | Refuse PKWARE Strong Encryption at member open, not implement it | Without these checks, a member marked only by extra `0x0017` (no bit 6) was decrypted as ZipCrypto: a wrong-password or corruption error, or with the right password bytes handed back as plaintext. A bit-6 member already reached stdlib's own `NotImplementedError`, translated to `UnsupportedFeatureError`; checking bit 6 here gives it a message archivey owns and refuses a symlink's target before its data is read. Implementing it is out: patent-encumbered and rare outside PKZIP. No real archive of this kind is in the corpora, so the tests use re-flagged ZipCrypto members | Leaving the misleading error; implementing SES |
 | Create-only writing, if and when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append (`history/ARCHITECTURE.md` §5.4) |
-| Short ZipCrypto header is `TruncatedError` on both password paths | Physical EOF, same condition as the stdlib `IndexError`; callers matching `TruncatedError` vs `CorruptionError` would otherwise see a dispatch-dependent split | Mapping the confirm path's `BadZipFile` through the generic ZIP translator (`CorruptionError`); leaving the split |
+| Short ZipCrypto header is `TruncatedError` on both password paths | Physical EOF; callers matching `TruncatedError` vs `CorruptionError` would otherwise see a dispatch-dependent split | Mapping the confirm path's `BadZipFile` through the generic ZIP translator (`CorruptionError`); leaving the split |
+| ZipCrypto decrypts in archivey, ahead of the codec layer, not in stdlib's `ZipExtFile` | One pipeline for every member: ZipCrypto members gain the three methods stdlib cannot decode, the fused verifier and the codec layer's seek, and share WinZip AES's password ladder. Stdlib's decrypter is pure Python too, so nothing is slower | Keeping `ZipExtFile` for ZipCrypto, which left it the one exception to the shared stream layer |
+| Several WinZip AES candidates are confirmed like ZipCrypto ones | The first candidate to pass the 2-byte `pw_verify` used to win outright, so a colliding wrong password ahead of the right one failed the read on the HMAC. A confirm walk costs one extra read of a small or uncompressed member, only when there is more than one candidate | Accepting on `pw_verify` (2⁻¹⁶ per wrong candidate) |
 | WinZip AES HMAC from the completing read, not `close()` | ADR 0014: `close()` is teardown. STORED members used to drain the MAC on close and raise `CorruptionError` there; compressed members already skipped it because the decompressor borrows the decrypt stream (S1-F1). Removing the drain makes both match CRC members | Wiring compressed members to authenticate on close too (the S1-F1 "fix" that would add a behaviour the ADR already ruled out) |
 
 ## 7. Open questions
@@ -562,9 +570,10 @@ move.
 | AES decrypt stream `close()` still releases the source after a partial read; a source `OSError` still marks the wrapper closed | `::test_aes_decrypt_stream_close_releases_source`, `::test_aes_decrypt_stream_close_marks_wrapper_closed_when_source_raises` |
 | Our AE-1 fixtures cross-checked against an independent implementation | `tests/test_zip_aes.py::test_handbuilt_ae1_is_accepted_by_7z` |
 | A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
-| ZipCrypto candidate confirmation, STORED CRC pass | `tests/test_zip_multipassword.py` |
+| ZipCrypto candidate confirmation, STORED CRC pass; ZipCrypto over Zstd; ZipCrypto seeks; stage output equals stdlib's | `tests/test_zip_multipassword.py` |
+| WinZip AES candidates confirmed, not taken on `pw_verify` | `tests/test_zip_aes.py::test_aes_candidate_passing_pw_verify_does_not_shadow_the_right_one` |
 | PKWARE Strong Encryption refused at open, a symlink of it listed with the target unset; unrelated extra records still read; an encrypted central directory recognized where stdlib reads it, a damaged one (and a record at a stale declared offset) still `CorruptionError` | `tests/test_zip.py::test_strong_encryption_member_is_unsupported`, `::test_strong_encryption_symlink_lists_with_target_unset`, `::test_zipcrypto_member_with_unrelated_extra_still_reads`, `::test_encrypted_central_directory_is_unsupported`, `::test_damaged_central_directory_stays_corruption`, `::test_record_at_the_stale_declared_offset_is_not_read_as_encryption` |
-| Truncated ZipCrypto header is `TruncatedError` on both password dispatch paths (`IndexError` cause on `ZipFile.open`); codec-path and member-read `IndexError` stay raw; CONCURRENT stamp releases the handle lock | `tests/test_zip.py::test_truncated_zipcrypto_header_is_typed_error` (`single` / `multi`), `::test_unencrypted_codec_indexerror_is_not_truncated`, `::test_unencrypted_member_read_indexerror_is_not_truncated`, `::test_truncated_zipcrypto_stamp_releases_handle_lock` |
+| Truncated ZipCrypto header is `TruncatedError` on both password dispatch paths; codec-path and member-read `IndexError` stay raw; CONCURRENT stamp releases the handle lock | `tests/test_zip.py::test_truncated_zipcrypto_header_is_typed_error` (`single` / `multi`), `::test_unencrypted_codec_indexerror_is_not_truncated`, `::test_unencrypted_member_read_indexerror_is_not_truncated`, `::test_truncated_zipcrypto_stamp_releases_handle_lock` |
 | Cross-format member equivalence, per-method decode, AE-2 CRC absence | `tests/test_corpus_sweep.py` (13 ZIP corpus entries) |
 
 **Building fixtures.** Stdlib `zipfile` cannot write encryption, so encrypted fixtures shell

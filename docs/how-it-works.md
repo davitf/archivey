@@ -62,9 +62,8 @@ from `[recommended]`. 7z and RAR headers are parsed by Archivey itself. Every he
 parser is written in Python, so a crafted header can make a parser wrong, but cannot make
 it corrupt memory. Whatever parses the headers, Archivey turns each format's names and
 metadata into one member model by the same rules, and member data goes through the stream
-layer above wherever it can. Two exceptions: ZipCrypto members, which `zipfile` decrypts
-and decodes itself, and compressed RAR data, which needs RARLAB's `unrar` or `rar`
-because the RAR compression format is proprietary.
+layer above wherever it can. The one exception is compressed RAR data, which needs
+RARLAB's `unrar` or `rar` because the RAR compression format is proprietary.
 
 For 7z and RAR, Archivey has internal parsers instead of using the popular `py7zr` and
 `rarfile` packages, for two reasons. The first is consistent metadata: `py7zr` and

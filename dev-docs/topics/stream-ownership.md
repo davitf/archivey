@@ -73,7 +73,6 @@ both common stream shapes, and measurement on and off.
 | Class | Close must reach |
 | --- | --- |
 | `LockedStream` | tar `extractfile` / the `_PyCdlibStream` underneath |
-| `CloseLockedStream` | `ZipExtFile` |
 | `_PyCdlibStream` | `PyCdlibIO.__exit__` via `inner.close()` |
 | `_GzipTruncationCheckStream` | the rapidgzip accelerator |
 | `OutputCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |

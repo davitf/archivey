@@ -360,6 +360,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.tar_reader as tar_reader
     import archivey.internal.backends.zip_aes as zip_aes
     import archivey.internal.backends.zip_reader as zip_reader
+    import archivey.internal.backends.zipcrypto as zipcrypto
     import archivey.internal.detection as detection
     import archivey.internal.password_confirm as password_confirm
     import archivey.internal.source as source_mod
@@ -393,7 +394,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     }
     remaps_or_not_on_chain = {
         locked.LockedStream,
-        locked.CloseLockedStream,
         counting.CountingReader,
         counting.SeekCountingStream,
         rar_reader._UnrarOwnedStream,
@@ -404,7 +404,11 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # table is above it.
         source_mod.ArchiveSource,
         zip_aes.WinZipAesDecryptStream,
-        # Wraps a stdlib ZipExtFile, which keeps no seek-point table.
+        # A decrypt stage below the codec: compressed-side offsets, no table.
+        zipcrypto.ZipCryptoDecryptStream,
+        # Translates errors between the reader's unverified-read watch and the
+        # member's verifier; like the watch, nothing above it asks it for a resume
+        # offset.
         zip_reader._UnconfirmedZipCryptoStream,
         # Wraps an encrypted member's decoded stream to watch for an abandoned read;
         # nothing above it asks it for a resume offset.
@@ -540,7 +544,6 @@ def test_delegating_stream_close_inventory() -> None:
 
     owns_via_base = {
         locked.LockedStream,
-        locked.CloseLockedStream,
         counting.CountingReader,
         counting.OutputCountingStream,
         counting.SeekCountingStream,

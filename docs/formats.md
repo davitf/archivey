@@ -105,8 +105,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   opening one raises `UnsupportedFeatureError`. An archive whose central directory is
   itself encrypted this way cannot be listed; Archivey raises `UnsupportedFeatureError`
   when it recognizes the layout, and `CorruptionError` otherwise.
+- Encrypted members decode every compression method an unencrypted one does. ZipCrypto
+  decryption is pure Python and slow (a few MiB/s); a ZipCrypto member seeks, but a
+  backward seek decrypts it again from the start.
 - ZipCrypto's check byte and WinZip AES's two-byte password check both admit some wrong
-  passwords, so the member's CRC or HMAC at EOF is the real test. Closing a member stream
+  passwords, so the member's CRC or HMAC at EOF is the real test. With several
+  candidate passwords, each one that passes is checked further before it is used. Closing a member stream
   before EOF emits `ENCRYPTED_MEMBER_UNVERIFIED` when only one of those short checks
   accepted the password.
 

@@ -82,6 +82,7 @@ def build_zipcrypto_zip(
     unix_mode: int | None = None,
     extra_flags: int = 0,
     extra: bytes = b"",
+    compressed: bytes | None = None,
 ) -> bytes:
     """A single-entry ZIP whose one member is ZipCrypto-encrypted with ``password``.
 
@@ -90,12 +91,18 @@ def build_zipcrypto_zip(
     ``unix_mode`` marks the entry as made on Unix with that mode (``0o120777`` for a
     symlink, whose data is then its target). ``extra_flags`` is OR-ed into the
     general-purpose flags and ``extra`` is written as the extra field of both headers.
+    ``compressed`` supplies the member body already compressed with ``compression``,
+    for a method this builder cannot compress itself (its ZIP header included, if the
+    method has one).
     """
     made_by = 20 if unix_mode is None else (3 << 8) | 20
     external_attr = 0 if unix_mode is None else unix_mode << 16
     crc = zlib.crc32(data) & 0xFFFFFFFF
     flags = 0x1 | extra_flags  # bit 0: encrypted; no data descriptor
-    if compression == zipfile.ZIP_STORED:
+    if compressed is not None:
+        stored = compressed
+        version_needed = 63
+    elif compression == zipfile.ZIP_STORED:
         stored = data
         version_needed = 20
     elif compression == zipfile.ZIP_DEFLATED:

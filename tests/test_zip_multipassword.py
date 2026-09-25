@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import tempfile
 import zipfile
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, cast
 
 import pytest
@@ -19,11 +20,17 @@ from archivey import (
     SymlinkTargetContext,
     open_archive,
 )
-from archivey.exceptions import CorruptionError, EncryptionError
+from archivey.exceptions import (
+    ArchiveyUsageError,
+    CorruptionError,
+    EncryptionError,
+    TruncatedError,
+)
 from archivey.internal import password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
+from tests.conftest import requires_zstd, zstd_backend
 from tests.zipcrypto import (
     build_zipcrypto_zip,
     corrupt_zipcrypto_payload,
@@ -45,6 +52,21 @@ COMPRESSION_METHODS = [
     pytest.param(zipfile.ZIP_BZIP2, id="bzip2"),
     pytest.param(zipfile.ZIP_LZMA, id="lzma"),
 ]
+
+
+@contextlib.contextmanager
+def _open_decoding_header(ar: Any, compression: int) -> Iterator[Any]:
+    """``ar.open(NAME)``; for LZMA, the open is where a wrong key first shows.
+
+    The ZIP LZMA header is peeled off the plaintext when the member opens, so garbage
+    fails there rather than at the first read. Every other method opens cleanly.
+    """
+    if compression == zipfile.ZIP_LZMA:
+        # Raises; the caller's ``pytest.raises`` sees it.
+        ar.open(NAME)
+        pytest.fail("a wrong key's LZMA header should not open")
+    with ar.open(NAME) as stream:
+        yield stream
 
 
 def _read_member(blob: bytes, password: PasswordArg) -> bytes:
@@ -101,9 +123,9 @@ def test_single_distinct_candidate_is_not_eagerly_read(
     )
 
     with open_archive(io.BytesIO(blob), password=passwords) as ar:
-        stream = ar.open(NAME)
-        with stream, pytest.raises(EncryptionError, match=UNCONFIRMED):
-            stream.read()
+        with pytest.raises(EncryptionError, match=UNCONFIRMED):
+            with _open_decoding_header(ar, compression) as stream:
+                stream.read()
 
 
 @pytest.mark.parametrize("compression", COMPRESSION_METHODS)
@@ -122,16 +144,37 @@ def test_single_colliding_password_is_reported_as_a_password_failure(
     assert _read_member(blob, RIGHT) == DATA
 
 
-@pytest.mark.parametrize("compression", COMPRESSION_METHODS)
+@pytest.mark.parametrize(
+    "compression", [p for p in COMPRESSION_METHODS if p.id != "stored"]
+)
 def test_single_colliding_password_fails_a_forward_seek(compression: int) -> None:
-    """A forward seek decrypts what it skips, so the seek itself names both causes."""
+    """A forward seek decodes what it skips, so the seek itself names both causes."""
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=compression)
     collider = find_check_byte_collision(blob, NAME, RIGHT)
 
     with open_archive(io.BytesIO(blob), password=collider, seekable_members=True) as ar:
-        with ar.open(NAME) as stream:
-            with pytest.raises(EncryptionError, match=UNCONFIRMED):
+        with pytest.raises(EncryptionError, match=UNCONFIRMED):
+            with _open_decoding_header(ar, compression) as stream:
                 stream.seek(len(DATA))
+
+
+def test_single_colliding_password_stored_seek_reports_unverified() -> None:
+    """A STORED member has no decoder to object, and a seek forfeits the CRC.
+
+    So the seek succeeds, and closing the stream reports that the bytes were never
+    checked (ADR 0014: a seek off the read frontier gives up the checksum).
+    """
+    blob = build_zipcrypto_zip(
+        RIGHT, NAME.encode(), DATA, compression=zipfile.ZIP_STORED
+    )
+    collider = find_check_byte_collision(blob, NAME, RIGHT)
+
+    with open_archive(io.BytesIO(blob), password=collider, seekable_members=True) as ar:
+        with ar.open(NAME) as stream:
+            stream.seek(len(DATA) - 4)
+            assert len(stream.read()) == 4
+        codes = [d.code for d in ar.diagnostics.retained]
+    assert DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED in codes
 
 
 @pytest.mark.parametrize("compression", COMPRESSION_METHODS)
@@ -141,10 +184,11 @@ def test_single_colliding_password_fails_readinto(compression: int) -> None:
     collider = find_check_byte_collision(blob, NAME, RIGHT)
 
     with open_archive(io.BytesIO(blob), password=collider) as ar:
-        with ar.open(NAME) as stream, pytest.raises(EncryptionError, match=UNCONFIRMED):
-            buf = bytearray(len(DATA) + 1)
-            while stream.readinto(buf):
-                pass
+        with pytest.raises(EncryptionError, match=UNCONFIRMED):
+            with _open_decoding_header(ar, compression) as stream:
+                buf = bytearray(len(DATA) + 1)
+                while stream.readinto(buf):
+                    pass
 
 
 class _FailingInner(io.RawIOBase):
@@ -179,19 +223,21 @@ def _call(stream: Any, call: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "error",
+    ("error", "payload_complete"),
     [
-        pytest.param(zipfile.BadZipFile("Bad CRC-32 for file 'x'"), id="crc"),
-        pytest.param(zlib.error("invalid block type"), id="zlib"),
-        pytest.param(OSError("Invalid data stream"), id="bzip2"),
+        pytest.param(CorruptionError("Digest mismatch for 'crc32'"), True, id="crc"),
+        pytest.param(CorruptionError("invalid block type"), False, id="codec"),
+        pytest.param(TruncatedError("File is truncated"), True, id="decoder-short"),
     ],
 )
 @pytest.mark.parametrize("call", ["read", "readinto", "seek"])
 def test_unconfirmed_stream_translates_integrity_failures(
-    error: Exception, call: str
+    error: Exception, payload_complete: bool, call: str
 ) -> None:
     """Each entry point, ``readinto``'s zero-copy path included, names both causes."""
-    stream = zip_reader._UnconfirmedZipCryptoStream(cast(Any, _FailingInner(error)))
+    stream = zip_reader._UnconfirmedZipCryptoStream(
+        cast(Any, _FailingInner(error)), payload_complete=lambda: payload_complete
+    )
     with pytest.raises(EncryptionError, match=UNCONFIRMED) as caught:
         _call(stream, call)
     assert caught.value.__cause__ is error
@@ -200,14 +246,9 @@ def test_unconfirmed_stream_translates_integrity_failures(
 @pytest.mark.parametrize(
     "error",
     [
-        pytest.param(EOFError(), id="truncated-body"),
-        pytest.param(
-            zipfile.BadZipFile("Bad magic number for file header"), id="structural"
-        ),
-        pytest.param(
-            OSError("Invalid data stream (not bzip2)"), id="unrelated-oserror"
-        ),
-        pytest.param(RuntimeError("File is closed"), id="runtime"),
+        pytest.param(TruncatedError("File is truncated"), id="truncated-file"),
+        pytest.param(OSError("source storage unavailable"), id="oserror"),
+        pytest.param(ArchiveyUsageError("already closed"), id="lifecycle"),
     ],
 )
 @pytest.mark.parametrize("call", ["read", "readinto", "seek"])
@@ -216,10 +257,12 @@ def test_unconfirmed_stream_passes_other_failures_through(
 ) -> None:
     """Only a failure a wrong password can cause becomes the ambiguous error.
 
-    A truncated body, a damaged header or an unrelated ``OSError`` stays itself, so the
-    ordinary translator still reports it as corruption or truncation.
+    A payload the file cuts short, an I/O failure or a lifecycle fault stays itself,
+    so the ordinary translator still reports it.
     """
-    stream = zip_reader._UnconfirmedZipCryptoStream(cast(Any, _FailingInner(error)))
+    stream = zip_reader._UnconfirmedZipCryptoStream(
+        cast(Any, _FailingInner(error)), payload_complete=lambda: False
+    )
     with pytest.raises(type(error)) as caught:
         _call(stream, call)
     assert caught.value is error
@@ -294,22 +337,18 @@ def test_confirmed_winner_is_reopened_fresh(monkeypatch: pytest.MonkeyPatch) -> 
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA)
     collider = find_check_byte_collision(blob, NAME, RIGHT)
 
+    original = zip_reader.keys_after_header
+    tried: list[bytes] = []
+
+    def tracking_keys(
+        password: bytes, header: bytes
+    ) -> tuple[zipcrypto.ZipCryptoKeys, int]:
+        # One call per decrypt stage the reader opens.
+        tried.append(password)
+        return original(password, header)
+
+    monkeypatch.setattr(zip_reader, "keys_after_header", tracking_keys)
     with open_archive(io.BytesIO(blob), password=[collider, RIGHT]) as ar:
-        archive = cast(Any, ar)._archive  # focused ZIP backend test
-        original_open = archive.open
-        tried: list[bytes | None] = []
-
-        def tracking_open(
-            name: str | zipfile.ZipInfo,
-            mode: str = "r",
-            pwd: bytes | None = None,
-            *,
-            force_zip64: bool = False,
-        ) -> zipfile.ZipExtFile:
-            tried.append(pwd)
-            return original_open(name, mode=mode, pwd=pwd, force_zip64=force_zip64)
-
-        monkeypatch.setattr(archive, "open", tracking_open)
         assert ar.read(NAME) == DATA
 
     assert tried == [collider, RIGHT, RIGHT]
@@ -343,8 +382,8 @@ def test_unrelated_oserror_propagates_and_failed_stream_closes(
     failed_stream = FailingStream()
 
     with open_archive(io.BytesIO(blob), password=[b"one", b"two"]) as ar:
-        archive = cast(Any, ar)._archive  # focused ZIP backend test
-        monkeypatch.setattr(archive, "open", lambda *_args, **_kwargs: failed_stream)
+        # Focused ZIP backend test: the member's raw payload is the failing stream.
+        monkeypatch.setattr(ar, "_raw_member_stream", lambda _info: failed_stream)
         with pytest.raises(OSError, match="source storage unavailable"):
             ar.open(NAME)
 
@@ -354,7 +393,7 @@ def test_unrelated_oserror_propagates_and_failed_stream_closes(
 def test_source_close_failure_after_prefix_confirm_propagates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A close failure on the confirmation stream must not be swallowed."""
+    """A close failure on a candidate's payload stream must not be swallowed."""
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA)
 
     class CloseFailingStream(io.BytesIO):
@@ -374,8 +413,7 @@ def test_source_close_failure_after_prefix_confirm_propagates(
     failed_source = CloseFailingStream()
 
     with open_archive(io.BytesIO(blob), password=[b"one", b"two"]) as ar:
-        archive = cast(Any, ar)._archive
-        monkeypatch.setattr(archive, "open", lambda *_args, **_kwargs: failed_source)
+        monkeypatch.setattr(ar, "_raw_member_stream", lambda _info: failed_source)
         with pytest.raises(OSError, match="source close failed"):
             ar.open(NAME)
 
@@ -524,7 +562,11 @@ def test_stored_caller_stream_is_crc_checked() -> None:
 def test_corruption_beyond_prefix_fails_caller_read_as_corruption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Prefix confirmation accepts; trailing corruption fails the caller's CRC."""
+    """Prefix confirmation accepts; trailing corruption fails the caller's read.
+
+    Damage this late is the codec's to report, as for an unencrypted member: here
+    the deflate stream ends short of the declared size.
+    """
     import struct
 
     plaintext = b"prefix-ok-then-corrupt\n" * 8000
@@ -548,5 +590,49 @@ def test_corruption_beyond_prefix_fails_caller_read_as_corruption(
 
     with open_archive(io.BytesIO(bytes(blob)), password=[RIGHT, b"also-wrong"]) as ar:
         stream = ar.open(NAME)
-        with stream, pytest.raises(CorruptionError):
+        with stream, pytest.raises((CorruptionError, TruncatedError)):
             stream.read()
+
+
+# ZipCrypto members decode through the shared codec layer.
+
+
+@requires_zstd()
+def test_zipcrypto_member_decodes_a_method_stdlib_cannot() -> None:
+    """ZipCrypto over Zstd (method 93): stdlib ``zipfile`` never decoded this."""
+    payload = DATA * 50
+    compressed = zstd_backend().compress(payload)
+    blob = build_zipcrypto_zip(
+        RIGHT, NAME.encode(), payload, compression=93, compressed=compressed
+    )
+    assert _read_member(blob, RIGHT) == payload
+    assert _read_member(blob, [b"wrong", RIGHT]) == payload
+
+
+@pytest.mark.parametrize("compression", COMPRESSION_METHODS)
+@pytest.mark.parametrize("passwords", [RIGHT, [b"wrong", RIGHT]], ids=["one", "two"])
+def test_zipcrypto_member_seeks(compression: int, passwords: PasswordArg) -> None:
+    """Back and forth: the stage restarts from its header for a backward seek."""
+    payload = bytes(range(256)) * 300
+    blob = build_zipcrypto_zip(RIGHT, NAME.encode(), payload, compression=compression)
+
+    with open_archive(
+        io.BytesIO(blob), password=passwords, seekable_members=True
+    ) as ar:
+        with ar.open(NAME) as stream:
+            stream.seek(40_000)
+            assert stream.read(100) == payload[40_000:40_100]
+            stream.seek(123)
+            assert stream.read(10) == payload[123:133]
+            stream.seek(-5, io.SEEK_END)
+            assert stream.read() == payload[-5:]
+
+
+def test_zipcrypto_stage_matches_stdlib() -> None:
+    """The decrypt stage produces what stdlib's decrypter does, byte for byte."""
+    blob = build_zipcrypto_zip(
+        RIGHT, NAME.encode(), DATA * 20, compression=zipfile.ZIP_DEFLATED
+    )
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        expected = zf.read(NAME, pwd=RIGHT)
+    assert _read_member(blob, RIGHT) == expected
