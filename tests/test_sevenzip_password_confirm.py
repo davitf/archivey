@@ -207,6 +207,25 @@ def test_lzma2_late_crc_full_read_is_not_reported(tmp_path: Path) -> None:
         )
 
 
+def test_lzma2_late_crc_full_read_after_a_refused_seek_is_not_reported(
+    tmp_path: Path,
+) -> None:
+    # A caught seek(-1) moves nothing, so the full read after it still reaches the
+    # CRC; reporting it would raise under pedantic() on a well-formed archive.
+    big = _payload(_BIG, 3)
+    archive = _build(tmp_path, "lzma2", {"big.bin": big}, method="LZMA2", solid=True)
+    with open_archive(archive, password=_PASSWORD, seekable_members=True) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with reader.open(member) as stream:
+            first = stream.read(1)
+            with pytest.raises(ValueError):
+                stream.seek(-1)
+            assert first + stream.read() == big
+        assert (
+            DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED not in reader.diagnostics.counts
+        )
+
+
 def test_copy_late_crc_is_walked_and_confirms(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

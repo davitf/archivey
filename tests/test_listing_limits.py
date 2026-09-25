@@ -133,6 +133,28 @@ def test_tar_extract_all_enforces_listing_limits(tmp_path: Path) -> None:
             reader.extract_all(dest)
 
 
+def test_tar_listing_stops_reading_headers_at_max_members(tmp_path: Path) -> None:
+    """The cap bounds what tarfile parses, not only what archivey keeps.
+
+    A random-access listing used to call ``getmembers()``, which parses and keeps every
+    header in the file before the first member reaches the cap, so a header bomb cost
+    memory in proportion to its size and ``max_members`` only decided whether to refuse
+    it afterwards.
+    """
+    import tarfile
+
+    tar_path = tmp_path / "many.tar"
+    with tarfile.open(tar_path, "w", format=tarfile.USTAR_FORMAT) as tf:
+        for i in range(200):
+            tf.addfile(tarfile.TarInfo(name=f"f{i:03d}"))
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
+    with open_archive(tar_path, config=cfg) as reader:
+        with pytest.raises(ResourceLimitError, match="max_members"):
+            reader.members()
+        tar = reader._tar  # type: ignore[attr-defined]
+        assert len(tar.members) <= 6
+
+
 def test_streaming_scan_members_enforces_listing_limits(tmp_path: Path) -> None:
     """scan_members on a streaming reader must enforce caps and not publish a cache."""
     import tarfile
@@ -201,3 +223,91 @@ def test_metadata_accounting_never_undercounts_utf8() -> None:
     weight = member_metadata_bytes(member)
     assert weight == 4 * len(name)
     assert weight >= len(name.encode("utf-8"))
+
+
+def test_tar_listing_stops_reading_headers_at_max_metadata_bytes(
+    tmp_path: Path,
+) -> None:
+    """The byte cap bounds what tarfile parses too, not only the member count.
+
+    A batch sized from ``max_members`` alone parsed up to 1 024 headers before the base
+    weighed the first against ``max_metadata_bytes``, so long names retained many times
+    the byte budget before the refusal.
+    """
+    import tarfile
+
+    tar_path = tmp_path / "long-names.tar"
+    with tarfile.open(tar_path, "w", format=tarfile.GNU_FORMAT) as tf:
+        for i in range(200):
+            tf.addfile(tarfile.TarInfo(name=f"{i:03d}" + "n" * 9_997))
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=50_000))
+    with open_archive(tar_path, config=cfg) as reader:
+        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+            reader.members()
+        tar = reader._tar  # type: ignore[attr-defined]
+        # Each name is 10 000 characters. The walk counts names only, so its count
+        # passes 50 000 on the sixth header and it parses no further. The base also
+        # weighs raw_name, so it has already refused on the third.
+        assert len(tar.members) <= 6
+
+
+def test_tar_drops_the_link_name_of_a_member_that_is_not_a_link(tmp_path: Path) -> None:
+    """A long link name on a regular file is text no listing limit weighs.
+
+    GNU tar stores a long link name in a LONGLINK block ahead of the header, and
+    tarfile applies it to whatever header follows. On a regular file it means nothing,
+    but the TarInfo each member keeps held it, so a small gzipped tar could retain
+    hundreds of megabytes under a 1 MiB ``max_metadata_bytes``.
+    """
+    import tarfile
+
+    tar_path = tmp_path / "longlink.tar"
+    with tarfile.open(tar_path, "w", format=tarfile.GNU_FORMAT) as tf:
+        for i in range(20):
+            info = tarfile.TarInfo(name=f"f{i}")
+            info.linkname = "l" * 100_000
+            tf.addfile(info)
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=100_000))
+    with open_archive(tar_path, config=cfg) as reader:
+        # Headers are parsed a batch at a time, before any member is built, so the
+        # link names must already be gone when the first member is built, not only
+        # after the walk.
+        held_while_walking: list[int] = []
+        build = reader._to_member  # type: ignore[attr-defined]
+
+        def spy(info: tarfile.TarInfo, index: int) -> object:
+            held_while_walking.append(
+                sum(len(t.linkname) for t in reader._tar.members)  # type: ignore[attr-defined]
+            )
+            return build(info, index)
+
+        reader._to_member = spy  # type: ignore[attr-defined]
+        members = reader.members()
+        assert held_while_walking and max(held_while_walking) == 0
+        assert len(members) == 20
+        assert all(m.link_target is None for m in members)
+        tar = reader._tar  # type: ignore[attr-defined]
+        assert sum(len(t.linkname) for t in tar.members) == 0
+
+
+def test_tar_header_batch_returns_to_full_size_past_max_members(tmp_path: Path) -> None:
+    """Past the cap the batch goes back to full size instead of one header.
+
+    ``stream_members()`` on a random-access reader walks the whole archive without
+    enforcing the cap, and a batch clamped to one header there is the slow
+    one-header-per-lock walk batching replaced.
+    """
+    import tarfile
+
+    from archivey.internal.backends.tar_reader import _HEADER_BATCH
+
+    tar_path = tmp_path / "one.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        tf.addfile(tarfile.TarInfo(name="a"))
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=100))
+    with open_archive(tar_path, config=cfg) as reader:
+        size = reader._header_batch_size  # type: ignore[attr-defined]
+        assert size(0) == 101
+        assert size(100) == 1
+        assert size(101) == _HEADER_BATCH
+        assert size(5_000) == _HEADER_BATCH

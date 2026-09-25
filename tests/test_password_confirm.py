@@ -440,6 +440,116 @@ def test_watch_is_silent_after_a_read_error() -> None:
     assert calls.count == 0
 
 
+@pytest.mark.parametrize("seek_keeps_digest", [False, True])
+def test_watch_still_reports_after_a_seek_error(seek_keeps_digest: bool) -> None:
+    # A failed seek leaves the handle usable (here BytesIO refuses a negative
+    # position before moving), so it must not disarm the report on the bytes read.
+    watch, calls = _watch(b"0123456789", seek_keeps_digest=seek_keeps_digest)
+    watch.read(3)
+    with pytest.raises(ValueError, match="negative"):
+        watch.seek(-1)
+    watch.close()
+    assert calls.count == 1
+
+
+def test_a_refused_seek_leaves_the_digest_reachable() -> None:
+    # BytesIO refuses a negative position before moving, so a full read after it
+    # still reaches the digest, and the watch stays silent.
+    watch, calls = _watch(b"0123456789")
+    watch.read(3)
+    with pytest.raises(ValueError, match="negative"):
+        watch.seek(-1)
+    assert watch.read() == b"3456789"
+    watch.close()
+    assert calls.count == 0
+
+
+class _MovesThenRaises(io.BytesIO):
+    """A seek that finishes moving and then raises, as ``DecompressorStream`` does
+    when it escalates a rewind report."""
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        super().seek(offset, whence)
+        raise RuntimeError("rewind report")
+
+
+class _TellFails(io.BytesIO):
+    """A seek that moves and then raises, after which the position cannot be read."""
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        super().seek(offset, whence)
+        raise RuntimeError("seek failed")
+
+    def tell(self) -> int:
+        raise RuntimeError("tell failed")
+
+
+@pytest.mark.parametrize("inner_type", [_MovesThenRaises, _TellFails])
+def test_a_seek_error_that_moved_forfeits_the_digest(
+    inner_type: type[io.BytesIO],
+) -> None:
+    # A failed seek that moved the stream (or left its position unknown) forfeits the
+    # digest the inner drops on a seek, so reading on to the end still reports.
+    calls = _Calls()
+    watch = UnverifiedPasswordReadWatch(
+        inner_type(b"0123456789"),
+        size=10,
+        on_unverified=calls,
+        seek_keeps_digest=False,
+    )
+    watch.read(3)
+    with pytest.raises(RuntimeError):
+        watch.seek(1)
+    watch.read()
+    watch.close()
+    assert calls.count == 1
+
+
+@pytest.mark.parametrize(
+    ("n", "expected"), [(2, 1), (-1, 0)], ids=["partial", "to_eof"]
+)
+def test_an_unreadable_position_with_a_kept_digest_waits_for_eof(
+    n: int, expected: int
+) -> None:
+    # The tracked position is stale after the failure, so reads that would add up to
+    # the size from it do not count; an EOF read still does.
+    calls = _Calls()
+    watch = UnverifiedPasswordReadWatch(
+        _TellFails(b"0123456789"),
+        size=10,
+        on_unverified=calls,
+        seek_keeps_digest=True,
+    )
+    watch.read(8)
+    with pytest.raises(RuntimeError):
+        watch.seek(1)
+    if n < 0:
+        while watch.read(4096):  # the empty read is the EOF signal
+            pass
+    else:
+        watch.read(n)
+    watch.close()
+    assert calls.count == expected
+
+
+def test_a_seek_error_that_moved_updates_the_position() -> None:
+    # Where the digest survives a seek, reads after one that moved count from the new
+    # position: reading on from 1 does not reach the size early.
+    calls = _Calls()
+    watch = UnverifiedPasswordReadWatch(
+        _MovesThenRaises(b"0123456789"),
+        size=10,
+        on_unverified=calls,
+        seek_keeps_digest=True,
+    )
+    watch.read(8)
+    with pytest.raises(RuntimeError):
+        watch.seek(1)
+    assert watch.read(2) == b"12"
+    watch.close()
+    assert calls.count == 1
+
+
 def test_watch_readinto_counts_as_a_read() -> None:
     watch, calls = _watch(b"0123456789")
     buffer = bytearray(4)
