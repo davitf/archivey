@@ -827,20 +827,25 @@ def _load_windowstime(
 
 def _normalize_password_utf8(password: str | bytes) -> bytes:
     """RAR password normalization: UTF-16LE truncate → UTF-8."""
-    if isinstance(password, bytes):
-        pwd = password.decode("utf8")
-    else:
-        pwd = password
-    wstr = pwd.encode("utf-16le")[: _RAR_MAX_PASSWORD * 2]
+    wstr = _normalize_password_utf16le(password)
     return wstr.decode("utf-16le").encode("utf8")
 
 
 def _normalize_password_utf16le(password: str | bytes) -> bytes:
-    if isinstance(password, bytes):
-        pwd = password.decode("utf8")
-    else:
-        pwd = password
-    return pwd.encode("utf-16le")[: _RAR_MAX_PASSWORD * 2]
+    """The password as RAR hashes it: UTF-16LE, truncated to the format's maximum.
+
+    A candidate with no UTF-16 form (``bytes`` that are not UTF-8, or a ``str`` with a
+    lone surrogate) cannot be any RAR password, so it is a wrong password: the
+    candidate loop moves on to the next one, as the member path already does.
+    """
+    try:
+        pwd = password.decode("utf8") if isinstance(password, bytes) else password
+        wstr = pwd.encode("utf-16le")
+    except UnicodeError:
+        raise wrong_password_error(
+            "Wrong password: it has no Unicode form, so it cannot be a RAR password"
+        ) from None
+    return wstr[: _RAR_MAX_PASSWORD * 2]
 
 
 def _decode_name(raw: bytes) -> str:

@@ -153,7 +153,8 @@ _RAPIDGZIP_REQUIREMENT = MissingComponent(
 
 class _AcceleratorStream(DelegatingStream):
     """Wrap a threaded accelerator (``rapidgzip``) so its underlying object is always *closed*
-    before it is freed (read/seek/etc. are inherited delegation; this adds only the guard).
+    before it is freed, and so a fault the :class:`_TrappingSource` parked is re-raised after
+    each read / readinto / seek (other methods are inherited delegation).
 
     The accelerators spawn C++ ``std::thread``s (invisible to Python's ``threading`` module).
     A worker thread still running when the interpreter finalizes aborts the process with
@@ -201,7 +202,9 @@ class _AcceleratorStream(DelegatingStream):
         # raised: the shim's EOF-shaped answer often makes the accelerator raise its own
         # error ("Unexpected end of file"), and the parked fault is the real one. A fault
         # parked while the accelerator opens is re-raised by _open_accelerator, so none
-        # reaches the caller as data.
+        # reaches the caller as data. The parked fault wins only over an ``Exception``:
+        # an interrupt raised during the call propagates as itself, and the fault stays
+        # parked for the next boundary, so neither is lost.
         #
         # close() deliberately does not drain it. Past the open, a fault is parked only by
         # a source read that no caller call waits on: a background worker's prefetch. That
@@ -238,7 +241,7 @@ class _AcceleratorStream(DelegatingStream):
     def read(self, n: int = -1, /) -> bytes:
         try:
             data = super().read(n)
-        except BaseException:
+        except Exception:
             self._reraise_trapped()
             raise
         self._reraise_trapped()
@@ -247,7 +250,7 @@ class _AcceleratorStream(DelegatingStream):
     def readinto(self, b: "WriteableBuffer", /) -> int:
         try:
             n = super().readinto(b)
-        except BaseException:
+        except Exception:
             self._reraise_trapped()
             raise
         self._reraise_trapped()
@@ -256,7 +259,7 @@ class _AcceleratorStream(DelegatingStream):
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         try:
             result = super().seek(offset, whence)
-        except BaseException:
+        except Exception:
             self._reraise_trapped()
             raise
         self._reraise_trapped()
@@ -615,7 +618,9 @@ def _open_accelerator(
     trap = _TrappingSource(source)
     try:
         raw = open_fn(trap, parallelization=0)
-    except BaseException:
+    except Exception:
+        # As in _AcceleratorStream.read: the parked fault is the real cause of an
+        # ordinary error, but never replaces an interrupt.
         _raise_parked(trap)
         raise
     stream = _AcceleratorStream(raw, trap=trap)

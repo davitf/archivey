@@ -20,7 +20,7 @@ Baseline: `[all]` leg 5174 passed, 39 skipped, 5 xfailed; `./scripts/check.sh` g
 |---|---|---|---|---|
 | F1 | high | `codecs.py` bzip2 accelerator open | `open_stream(fileobj, seekable=True)` on a `.bz2` with rapidgzip installed: an `OSError` from the caller's stream crossed into rapidgzip's C++ callback and **aborted the process** (`std::invalid_argument`). The gzip/zlib/deflate path had the `_TrappingSource` shim; the bzip2 path never did | Fixed: every rapidgzip decoder opens through `_open_accelerator`, which traps a caller-owned source |
 | F2 | medium | `verify.py` `MemberVerifier._read_sized_all` | A corrupt deflate member read with `read()` raised `TruncatedError`; the same member read with `read(n)` raised `CorruptionError`. The handler relabelled every raw decoder error as truncation (only `OSError` / `MemoryError` escaped) | Fixed: the raw error propagates to the `ArchiveStream` translator, as on the bounded path |
-| F3 | medium | `rar_parser.py` RAR3 and RAR5 encrypted-header walks | A header-encrypted RAR cut inside a header's salt (RAR3) or IV (RAR5) raised `EncryptionError` "Failed to decrypt … headers", even with the right password, after the reader tried every candidate. Also any `OSError` or bug in that span | Fixed: the handlers are gone; nothing in that span depends on the password, so its errors propagate as they are (`CorruptionError` for the short read) |
+| F3 | medium | `rar_parser.py` RAR3 and RAR5 encrypted-header walks | A header-encrypted RAR cut inside a header's salt (RAR3) or IV (RAR5) raised `EncryptionError` "Failed to decrypt … headers", even with the right password, after the reader tried every candidate. Also any `OSError` or bug in that span | Fixed: the handlers are gone; nothing in that span depends on the password, so its errors propagate as they are (`CorruptionError` for the short read). The one password-dependent step in front, normalizing a `bytes` candidate, now raises a wrong-password `EncryptionError` for bytes with no Unicode form, so the candidate loop moves on (on the RAR5 walk that also fixes a raw `UnicodeDecodeError` the base already let out) |
 | F4 | low | `verify.py` over-run probe (two sites, now `_probe_past_declared`) | An `OSError` or `MemoryError` on the read one byte past a member's declared size was taken as "no trailing data" | Tightened: those propagate; an opaque decoder error there still reads as end of data, with the reason written down |
 | F5 | low | `codecs.py` `_AcceleratorStream` read / readinto / seek, and accelerator open | When the trap's EOF-shaped answer made rapidgzip raise its own error, that error propagated and the real source fault stayed parked. A fault parked while the decoder opened waited for the first read | Fixed: the parked fault wins (the accelerator's error is its `__context__`), and an open-time fault raises at open |
 | F6 | low | `base_reader.py` `_maybe_teardown` | A `KeyboardInterrupt` in the backend's close left the lifecycle at `TEARDOWN_RUNNING`, against the docstring's "marked complete even when `_close_archive` fails". Nothing reads the state today | Fixed: `complete_teardown` runs in a `finally` |
@@ -36,7 +36,8 @@ F5, F6) or `tests/test_rar_parser.py` (F3).
   (`CorruptionError`) now applies on this path too; that platform wrinkle is already
   documented at `_translate_rapidgzip`, and the tests accept either type there.
 - F3: `CorruptionError` instead of `EncryptionError` for a header-encrypted RAR cut inside
-  a salt or IV.
+  a salt or IV. A non-UTF-8 `bytes` password on a header-encrypted RAR5 raises
+  `EncryptionError` where it raised `UnicodeDecodeError`.
 - F1, F4, F5: the caller's own `OSError` / `MemoryError` / interrupt, where they got a
   process abort, silence, or a translated accelerator error.
 
@@ -103,8 +104,12 @@ Locations are by function, because line numbers drift.
 | `streams/verify.py` | `VerifyingStream.__init__` | Base | cleanup and re-raise | keep |
 | `streams/verify.py` | `VerifyingStream.__init__` (inner close) | Exc | primary error wins | keep |
 
-The fixes add six handlers, all of the cleanup-and-re-raise shape: `_AcceleratorStream`
-read / readinto / seek, and two in `_open_accelerator`.
+The fixes add five handlers, all re-raising: `_AcceleratorStream` read / readinto / seek
+and the decoder open in `_open_accelerator` catch `Exception` and raise the parked fault in
+its place (an interrupt passes through untouched), and `_open_accelerator` closes the new
+stream on `BaseException` before re-raising. `_read_sized_all`'s handler widened from a
+converting `except Exception` to `except BaseException: abandon; raise`, the same shape as
+`_verify_reaches_declared`.
 
 ## Answers to the brief's questions
 

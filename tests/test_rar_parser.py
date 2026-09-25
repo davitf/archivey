@@ -119,6 +119,25 @@ def test_short_header_salt_or_iv_is_corruption_not_a_wrong_password(
 
 @requires("cryptography")
 @pytest.mark.parametrize(
+    "name", ["encrypted_header__.rar", "encrypted_header__rar4.rar"]
+)
+def test_a_password_with_no_unicode_form_is_a_wrong_candidate(name: str) -> None:
+    """``bytes`` that are not UTF-8 cannot be any RAR password. On the header walk that
+    is a wrong candidate, so the loop reaches the right one; alone it is
+    ``EncryptionError``, never a raw ``UnicodeDecodeError``."""
+    import archivey
+
+    data = _fixture(name).read_bytes()
+    with archivey.open_archive(
+        io.BytesIO(data), password=[b"\xff\xfe", "header_password"]
+    ) as reader:
+        assert reader.members()
+    with pytest.raises(EncryptionError):
+        archivey.open_archive(io.BytesIO(data), password=b"\xff\xfe")
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
     "name",
     ["encrypted_header__.rar", "encrypted_header__rar4.rar"],
 )

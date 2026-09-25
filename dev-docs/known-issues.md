@@ -413,10 +413,14 @@ gets a chance to run.
 single-file reader's `_close_archive` deliberately does **not** close the (non-owning)
 `SharedSource` behind stream-source member streams, so `reader.close()` with a member stream
 still open cannot trigger the abort (and member streams stay readable after reader close, as
-with every other backend). The remaining exposure — the **caller** closes their own source
-stream while an accelerator-backed member stream is still in use — predates the SharedSource
-retrofit (the accelerator used to sit directly on the caller's stream) and can only be fixed
-upstream. Path sources are unaffected (rapidgzip owns an independent handle) for the
+with every other backend). The remaining trigger — the **caller**'s own stream fails or is
+closed while an accelerator-backed stream still reads it — is contained in Python rather than
+fixed: every rapidgzip decoder (gzip / zlib / deflate, and bzip2 since the 2026-09-25
+catch-all review; before that the bzip2 path aborted) reads a caller-owned stream through
+`_TrappingSource` in `codecs.py`, which parks the callback's exception and returns an
+EOF-shaped value, and `_AcceleratorStream` re-raises it as an ordinary Python exception
+after the call. See `dev-docs/topics/exception-handlers.md` §C-boundary trap. Only an
+upstream fix removes the need for the shim. Path sources are unaffected (rapidgzip owns an independent handle) for the
 *Python-source-raises* trigger. Separately, some **path**-source truncations / CRC
 mismatches can still `std::terminate` during worker finalization after a Python
 exception — see `dev-docs/investigations/rapidgzip-upstream-report.md` §2. The stdlib codec

@@ -12,14 +12,19 @@ import subprocess
 import sys
 import textwrap
 import zipfile
+from typing import TYPE_CHECKING, NoReturn
 
 import pytest
 
 import archivey
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.reader_state import LifecycleState
+from archivey.internal.streams.codecs import _AcceleratorStream, _TrappingSource
 from archivey.internal.streams.verify import VerifyingStream
 from tests.conftest import requires
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
 
 
 def _zip_with_corrupt_deflate_body() -> bytes:
@@ -123,27 +128,65 @@ def test_bzip2_accelerator_traps_a_failing_caller_source() -> None:
     assert "raised disk gone" in proc.stdout
 
 
-class _Trap:
-    def __init__(self) -> None:
-        self.trapped: BaseException | None = None
+class _FailingSource(io.BytesIO):
+    """A caller's stream whose ``read`` fails; the shim parks the failure."""
+
+    def read(self, n: int | None = -1) -> bytes:
+        raise OSError("disk gone")
 
 
-def test_parked_source_fault_wins_over_the_accelerator_error() -> None:
-    """codecs.py ``_AcceleratorStream``: when the accelerator raises its own error on
-    the shim's EOF-shaped answer, the parked source fault is what propagates."""
-    from archivey.internal.streams.codecs import _AcceleratorStream
-
-    trap = _Trap()
+def _accelerator_over_failing_source(
+    raised: BaseException,
+) -> tuple[_AcceleratorStream, _TrappingSource]:
+    """An ``_AcceleratorStream`` whose decoder reads the real shim, gets its EOF-shaped
+    answer, then raises ``raised`` from every read / readinto / seek."""
+    trap = _TrappingSource(_FailingSource())
 
     class _Accel(io.BytesIO):
-        def read(self, n: int | None = -1) -> bytes:
-            trap.trapped = OSError("disk gone")
-            raise RuntimeError("Unexpected end of file")
+        def _fail(self) -> NoReturn:
+            assert trap.read(16) == b""  # the shim parks the OSError
+            raise raised
 
-    stream = _AcceleratorStream(_Accel(), trap=trap)  # type: ignore[arg-type]
-    with pytest.raises(OSError, match="disk gone") as info:
+        def read(self, n: int | None = -1) -> bytes:
+            self._fail()
+
+        def readinto(self, b: WriteableBuffer, /) -> int:
+            self._fail()
+
+        def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+            self._fail()
+
+    return _AcceleratorStream(_Accel(), trap=trap), trap
+
+
+def _call(stream: _AcceleratorStream, how: str) -> None:
+    if how == "read":
         stream.read(10)
+    elif how == "readinto":
+        stream.readinto(bytearray(10))
+    else:
+        stream.seek(5)
+
+
+@pytest.mark.parametrize("how", ["read", "readinto", "seek"])
+def test_parked_source_fault_wins_over_the_accelerator_error(how: str) -> None:
+    """codecs.py ``_AcceleratorStream``: when the accelerator raises its own error on
+    the shim's EOF-shaped answer, the parked source fault is what propagates."""
+    stream, _ = _accelerator_over_failing_source(RuntimeError("Unexpected end of file"))
+    with pytest.raises(OSError, match="disk gone") as info:
+        _call(stream, how)
     assert isinstance(info.value.__context__, RuntimeError)
+    stream.close()
+
+
+@pytest.mark.parametrize("how", ["read", "readinto", "seek"])
+def test_an_interrupt_is_not_replaced_by_a_parked_fault(how: str) -> None:
+    """The parked fault wins only over an ``Exception``: an interrupt propagates as
+    itself, and the fault stays parked for the next boundary."""
+    stream, trap = _accelerator_over_failing_source(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        _call(stream, how)
+    assert isinstance(trap.trapped, OSError)
     stream.close()
 
 
@@ -181,10 +224,16 @@ def test_interrupted_teardown_still_marks_the_lifecycle_complete(
         zf.writestr("a.txt", b"a")
     reader = archivey.open_archive(io.BytesIO(buf.getvalue()))
 
+    calls = 0
+
     def _interrupted() -> None:
+        nonlocal calls
+        calls += 1
         raise KeyboardInterrupt
 
     monkeypatch.setattr(reader, "_close_archive", _interrupted)
     with pytest.raises(KeyboardInterrupt):
         reader.close()
+    reader.close()  # a retry does not run the backend's close again
+    assert calls == 1
     assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE

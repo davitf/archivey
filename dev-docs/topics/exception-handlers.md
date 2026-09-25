@@ -78,8 +78,9 @@ rapidgzip's decoders (gzip / zlib / deflate *and* bzip2) call back into a caller
 Python stream from C++, and a Python exception unwinding through those frames aborts the
 process. `_TrappingSource` catches `BaseException` in every callback, parks it, and
 returns an EOF-shaped value; `_AcceleratorStream` re-raises it after each read / readinto
-/ seek, in preference to the accelerator's own error, and `_open_accelerator` re-raises
-one parked during the open. Any new accelerator that reads a caller-owned stream opens
+/ seek, in preference to the accelerator's own `Exception` (never in place of an interrupt,
+which propagates while the fault stays parked), and `_open_accelerator` re-raises one
+parked during the open. Any new accelerator that reads a caller-owned stream opens
 through `_open_accelerator`.
 
 ### Diagnostic probe

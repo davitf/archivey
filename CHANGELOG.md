@@ -79,7 +79,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   already did for gzip. A corrupt member read with `read()` raised `TruncatedError`
   where `read(n)` raised `CorruptionError`; both now raise `CorruptionError`. A RAR with
   encrypted headers cut inside a header's salt or IV raised `EncryptionError` even with
-  the right password; it now raises `CorruptionError`. An `OSError` or `MemoryError` on
+  the right password; it now raises `CorruptionError`, and a `bytes` password that is not
+  UTF-8 counts as a wrong candidate there instead of escaping as `UnicodeDecodeError`. An `OSError` or `MemoryError` on
   the check for data past a member's declared size was taken as "no more data"; it now
   propagates.
 - **A reader builds each member once, and every listing method hands out the same
