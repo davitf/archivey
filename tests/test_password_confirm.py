@@ -16,10 +16,10 @@ import pytest
 
 from archivey.exceptions import ArchiveyError
 from archivey.internal import detection
-from archivey.internal.backends.sevenzip_reader import _REJECTING_CODECS
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_CHUNK_BYTES,
     PASSWORD_CONFIRM_MAX_INPUT_BYTES,
+    REJECTING_CODECS,
     PasswordConfirmPlan,
     PasswordConfirmVerdict,
     UnverifiedPasswordReadWatch,
@@ -317,12 +317,13 @@ def _survivors(codec: Codec, seed: int) -> int:
     return survived
 
 
-@pytest.mark.parametrize("codec", sorted(_REJECTING_CODECS, key=lambda c: c.value))
+@pytest.mark.parametrize("codec", sorted(REJECTING_CODECS, key=lambda c: c.value))
 def test_rejecting_codecs_reject_random_input(codec: Codec) -> None:
     """Every codec in the rejecting set dies on random input inside the prefix.
 
-    This is the evidence the 7z ladder's rung 3 rests on: a folder whose chain holds
-    one of these stops at ``PASSWORD_CONFIRM_PREFIX_BYTES`` instead of walking to a late CRC.
+    This is the evidence the codec rung rests on, in the 7z and ZIP readers: a unit whose
+    chain holds one of these stops at ``PASSWORD_CONFIRM_PREFIX_BYTES`` instead of
+    walking to a late CRC.
     If a dependency change lets random bytes decode a full prefix, the codec must
     leave the set. Mutation check: adding ``Codec.BROTLI`` to the set fails here.
     """
@@ -340,8 +341,8 @@ def test_brotli_does_not_reject_random_input() -> None:
     """
     if not is_codec_available(Codec.BROTLI):
         pytest.skip("brotli backend not installed")
-    assert Codec.BROTLI not in _REJECTING_CODECS
-    assert Codec.PPMD not in _REJECTING_CODECS
+    assert Codec.BROTLI not in REJECTING_CODECS
+    assert Codec.PPMD not in REJECTING_CODECS
     assert _survivors(Codec.BROTLI, seed=0x5EED) > 0
 
 
@@ -360,7 +361,7 @@ def test_filters_never_reject_random_input(lzma_filter: dict[str, int]) -> None:
     Why ``MethodKind.LZMA_FAMILY`` (which holds them) is the wrong predicate for rung 3.
     """
     for codec in (Codec.DELTA, Codec.BCJ_X86, Codec.BCJ_ARM):
-        assert codec not in _REJECTING_CODECS
+        assert codec not in REJECTING_CODECS
     data = random.Random(7).randbytes(BUDGET)
     stream = FilterStream(io.BytesIO(data), lzma_filter=lzma_filter, unpack_size=BUDGET)
     try:

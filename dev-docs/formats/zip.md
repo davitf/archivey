@@ -339,13 +339,14 @@ both schemes share one confirmation ladder (`password_confirm.py`). With **one**
 password it is accepted on the cheap check, and the CRC or HMAC at EOF is the real test.
 With **several**, each surviving candidate runs a bounded confirm before one is accepted:
 for a DEFLATE, Deflate64, bzip2, LZMA or Zstandard member the decompressor rejects a wrong
-key within a few bytes, so a bounded prefix decode is enough. PPMd is not a measured
-rejecter, so a PPMd member walks to its CRC per candidate, like a large STORED one. A WinZip AES member whose CRC is out of reach (AE-2 has none) is read to its end
-instead when it fits the budget or has no rejecting codec: the HMAC covers the whole
-member. A **STORED** ZipCrypto member has no decompressor, so the
-only discriminator is the whole-stream CRC — all surviving candidates are resolved in one
-shared ciphertext pass computing each candidate's CRC in constant memory, earliest match
-winning. That cost is irreducible for the format; see `open-issues.md` §Irreducible.
+key within a few bytes, so a bounded prefix decode is enough (`REJECTING_CODECS` in
+`password_confirm.py`, re-measured by the tests). PPMd is not a measured rejecter, so a
+PPMd member is decoded to its CRC once per surviving candidate. A WinZip AES member whose
+CRC is out of reach (AE-2 has none) is read to its end instead when it fits the budget or
+has no rejecting codec: the HMAC covers the whole member. A **STORED** ZipCrypto member
+has no decompressor, so the only discriminator is the whole-stream CRC — all surviving
+candidates are resolved in one shared ciphertext pass computing each candidate's CRC in
+constant memory, earliest match winning. That cost is irreducible for the format; see `open-issues.md` §Irreducible.
 
 For AES, a wrong password fails fast on the 2-byte verification value with no bytes
 returned; a tampered ciphertext fails on the HMAC at the terminal read. A partial

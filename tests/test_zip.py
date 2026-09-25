@@ -216,10 +216,11 @@ def test_symlink_member(tmp_path: Path) -> None:
 
 
 def test_truncated_symlink_target_is_typed_error(tmp_path: Path) -> None:
-    """stdlib zipfile raises EOFError on truncated symlink data; must be ArchiveyError.
+    """Listing a ZIP truncated inside a symlink's payload raises an ArchiveyError.
 
-    Found by the Atheris zip_tar target: listing a corrupt ZIP with a symlink whose
-    local payload is truncated escaped as a raw ``EOFError``.
+    Found by the Atheris zip_tar target, when stdlib zipfile read symlink targets and
+    this escaped as a raw ``EOFError``. With this fixture the central directory is
+    already unreadable, so it now fails at open.
     """
     import stat as stat_module
 
@@ -267,21 +268,49 @@ def test_truncated_zipcrypto_header_is_typed_error(
 
 
 def test_archive_close_waits_for_an_in_flight_member_read() -> None:
-    """Closing takes zipfile's own lock, the one every member read holds."""
+    """Closing waits for a member stream's read that is inside the archive's source.
+
+    The reader lifecycle waits for in-flight reader calls, not for a read on a stream
+    the caller already holds; zipfile's lock, taken by every member read and by
+    ``_close_archive``, is what keeps the handle open under that read.
+    """
     import threading
+
+    in_read = threading.Event()
+    release = threading.Event()
+
+    class _BlockingSource(io.BytesIO):
+        armed = False
+
+        def read(self, size: int | None = -1, /) -> bytes:
+            if self.armed:
+                self.armed = False
+                in_read.set()
+                release.wait(5)
+            return super().read(size)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("a.txt", b"data")
-    ar = open_archive(io.BytesIO(buf.getvalue()), concurrent_members=True)
+    source = _BlockingSource(buf.getvalue())
+    ar = open_archive(source, concurrent_members=True)
+    stream = ar.open("a.txt")
+    got: list[bytes] = []
+    source.armed = True
+    reader = threading.Thread(target=lambda: got.append(stream.read()))
+    reader.start()
+    assert in_read.wait(5)
     closed = threading.Event()
-    lock = ar._archive._lock  # type: ignore[attr-defined]
-    with lock:  # stands in for a member read in progress
-        closer = threading.Thread(target=lambda: (ar.close(), closed.set()))
-        closer.start()
+    closer = threading.Thread(target=lambda: (ar.close(), closed.set()))
+    closer.start()
+    try:
         assert not closed.wait(0.2)
+    finally:
+        release.set()
     assert closed.wait(5)
-    closer.join()
+    reader.join(5)
+    closer.join(5)
+    assert got == [b"data"]
 
 
 def test_unencrypted_codec_indexerror_is_not_truncated(

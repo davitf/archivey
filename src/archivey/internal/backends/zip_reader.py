@@ -106,6 +106,7 @@ from archivey.internal.password import (
 )
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_PREFIX_BYTES,
+    REJECTING_CODECS,
     PasswordConfirmPlan,
     PasswordConfirmVerdict,
     UnverifiedPasswordReadWatch,
@@ -312,16 +313,13 @@ _T = TypeVar("_T")
 
 # Methods whose decoder rejects random input (the confirm ladder's codec rung, for
 # ZipCrypto and WinZip AES alike): a wrong key dies inside the plaintext prefix, so
-# confirmation stops there rather than walk a large member to its CRC or HMAC.
-# Deflate64 and Zstandard rejected 300 of 300 random 1 MiB inputs before 64 KiB of
-# output. STORED has nothing to reject with, and PPMd is not a measured rejecter (on
-# random input pyppmd 1.3.1 can crash the process rather than raise), so both walk to
-# the CRC or HMAC. The compressed-input half of the budget
-# needs no cap of its own here: DEFLATE, Deflate64, LZMA and Zstandard are stream
-# codecs, and bzip2 produces output after one block, whose compressed size its format
-# bounds.
+# confirmation stops there rather than walk a large member to its CRC or HMAC. Derived
+# from REJECTING_CODECS, which the tests re-measure; STORED and PPMd are not in it and
+# walk to the CRC or HMAC. The compressed-input half of the budget needs no cap of its
+# own here: DEFLATE, Deflate64, LZMA and Zstandard are stream codecs, and bzip2
+# produces output after one block, whose compressed size its format bounds.
 _ZIP_REJECTING_METHODS = frozenset(
-    {zipfile.ZIP_DEFLATED, 9, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA, 93}
+    method for method, codec in _ZIP_METHOD_CODECS.items() if codec in REJECTING_CODECS
 )
 
 
@@ -812,7 +810,10 @@ class ZipReader(BaseArchiveReader):
             # raises this. It is a bad-archive signal, not a caller/runtime error.
             return CorruptionError(f"Corrupt ZIP entry name in local header: {exc!r}")
         if isinstance(exc, EOFError):
-            # Truncated member body (stdlib zipfile._ZipDecrypter / ZipExtFile._read2).
+            # Short input, from any decoder a member read reaches. The codec layer maps
+            # its own EOFError and no ZIP path is known to raise a bare one now; this
+            # translator sees every exception a member stream raises, so a new source
+            # still reads as truncation rather than escaping untyped.
             return TruncatedError(f"Truncated ZIP member data: {exc!r}")
         return None
 

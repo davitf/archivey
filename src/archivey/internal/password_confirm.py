@@ -30,10 +30,29 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import BinaryIO, TypeVar
 
+from archivey.internal.streams.codecs import Codec
 from archivey.internal.streams.streamtools.base import DelegatingStream
 
-# Decompressed plaintext budget for confirmation. Empirically LZMA1/LZMA2/BZip2/DEFLATE
-# reject wrong-key garbage within a few bytes (the archived bounded-password-confirmation
+# Codecs measured to fail on random input, which is what a wrong key decrypts to
+# (``tests/test_password_confirm.py`` re-measures every one). A unit whose decoder chain
+# holds one settles a wrong key inside the confirm prefix: this is ``codec_rejects`` for
+# both the 7z and the ZIP reader. Measured as non-rejecting and left out: Brotli (about
+# one random input in twenty decodes a full prefix) and PPMd (pyppmd can crash on random
+# input rather than raise). Filters never reject. A codec not listed is non-rejecting.
+REJECTING_CODECS = frozenset(
+    {
+        Codec.LZMA,
+        Codec.LZMA2,
+        Codec.BZIP2,
+        Codec.DEFLATE,
+        Codec.DEFLATE64,
+        Codec.ZSTD,
+        Codec.LZ4,
+    }
+)
+
+# Decompressed plaintext budget for confirmation. The codecs in REJECTING_CODECS reject
+# wrong-key garbage within a few bytes (the archived bounded-password-confirmation
 # design, §2); 64 KiB leaves a wide margin, so a decoder change of a few bytes does not
 # flip a verdict, and covers typical members exactly (EOF → CRC).
 PASSWORD_CONFIRM_PREFIX_BYTES = 64 * 1024
