@@ -17,6 +17,7 @@ import pytest
 from archivey.internal.backends.rar_parser import RAR5_ID, RAR_ID
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
 from archivey.internal.sfx import (
+    MAX_VALIDATED_CANDIDATES,
     ExecutableCue,
     HitOutcome,
     ScanNeedle,
@@ -161,6 +162,23 @@ def test_validated_scan_prefers_a_later_valid_hit_over_a_short_one() -> None:
     no_valid = payload[: origins[2]]
     scan = scan_for_magic(io.BytesIO(no_valid), [MAGIC_7Z], validator=validator)
     assert scan.hit is not None and scan.hit.candidate_origin == origins[1]
+
+
+def test_rejection_cap_keeps_a_short_hit() -> None:
+    """A ``VALID_SHORT`` hit is not a rejection, so the cap does not discard it."""
+    short_at = 2 + 40
+    payload = b"MZ" + b"\x00" * 40 + MAGIC_7Z + b"S" * 40
+    payload += MAX_VALIDATED_CANDIDATES * (MAGIC_7Z + b"D" * 40)
+    grades = {ord("D"): HitOutcome.DAMAGED, ord("S"): HitOutcome.VALID_SHORT}
+
+    def validator(
+        peek_more: Callable[[int], bytes], remaining: int | None
+    ) -> HitOutcome:
+        return grades[peek_more(len(MAGIC_7Z) + 1)[-1]]
+
+    scan = scan_for_magic(io.BytesIO(payload), [MAGIC_7Z], validator=validator)
+    assert scan.hit is not None and scan.hit.candidate_origin == short_at
+    assert scan.rejected_count == MAX_VALIDATED_CANDIDATES
 
 
 def _fat_macho64(endian: str, align: int) -> bytes:

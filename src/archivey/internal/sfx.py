@@ -205,12 +205,13 @@ class ScanMiss(Enum):
     """Why :func:`scan_for_magic` returned no :class:`MagicHit`.
 
     ``NO_MATCH`` — no needle in the window.
-    ``CAPPED`` — :data:`MAX_VALIDATED_CANDIDATES` rejections, none ``VALID``.
-    ``CAPPED`` discards the fallback on purpose: 256 rejections is evidence that
-    none of them is the payload, so the scan returns no origin rather than the
-    first decoy. An uncapped window of rejected candidates is not a miss: those
-    become the fallback origin (earliest identified), so the parser can name
-    the damage.
+    ``CAPPED`` — :data:`MAX_VALIDATED_CANDIDATES` rejections, none ``VALID`` or
+    ``VALID_SHORT``. ``CAPPED`` discards the damaged fallback on purpose: 256
+    rejections is evidence that none of them is the payload, so the scan returns no
+    origin rather than the first decoy. A ``VALID_SHORT`` hit is not a rejection
+    (its header checked out), so the cap returns it rather than a miss. An uncapped
+    window of rejected candidates is not a miss: those become the fallback origin
+    (earliest identified), so the parser can name the damage.
     """
 
     NO_MATCH = "no_match"
@@ -220,9 +221,10 @@ class ScanMiss(Enum):
 class MagicScan(NamedTuple):
     """Outcome of :func:`scan_for_magic`.
 
-    ``hit`` is the earliest ``VALID`` candidate, or — when none validate — the
-    earliest identified (non-``VALID``) one. ``None`` only when there was nothing
-    to fall back to: no needle, or the rejected-candidate cap fired.
+    ``hit`` is, in order of preference: the earliest ``VALID`` candidate; the
+    earliest ``VALID_SHORT`` one; the earliest identified but rejected one. ``None``
+    only when there was nothing to fall back to: no needle, or the
+    rejected-candidate cap fired with no ``VALID_SHORT`` hit in hand.
 
     ``miss`` is set iff ``hit`` is ``None``.
     """
@@ -506,7 +508,9 @@ def scan_for_magic(
     Non-``VALID`` candidates are skipped while a later ``VALID`` hit is sought; if none
     validate, the first ``VALID_SHORT`` candidate is returned, else the first skipped
     one, so a damaged payload still reaches the parser. With no validator the first
-    structural match wins.
+    structural match wins. Each caller passes the needles of one format (the 7z and
+    RAR parsers), so a later ``VALID`` hit displacing a short one is always a
+    same-format tie-break, as it is in detection's SFX scan.
 
     ``peek_more`` is served from the scan window and may pull extra bytes *forward*
     if the header extends past what has been read. It does not seek back. The source
@@ -516,8 +520,10 @@ def scan_for_magic(
     once at scan start when both ``tell()`` and the total size are known, otherwise
     ``None``.
 
-    After :data:`MAX_VALIDATED_CANDIDATES` rejections the scan stops with
-    :attr:`ScanMiss.CAPPED` (no fallback). The cap does not apply when no validator
+    After :data:`MAX_VALIDATED_CANDIDATES` rejections the scan stops. It returns the
+    first ``VALID_SHORT`` candidate if there was one (that candidate is not a
+    rejection and does not count), else :attr:`ScanMiss.CAPPED` with no damaged
+    fallback. The cap does not apply when no validator
     is passed. A window with no needle is :attr:`ScanMiss.NO_MATCH`.
 
     ``source`` is left wherever the scan stopped reading — callers reposition it from
@@ -582,10 +588,12 @@ def scan_for_magic(
         return view
 
     def finish(*, capped: bool = False) -> MagicScan:
-        if capped:
-            return MagicScan(None, ScanMiss.CAPPED, rejected)
+        # A VALID_SHORT hit is structurally valid, not a rejection, so the cap
+        # does not discard it: it is still the answer when nothing later validates.
         if short_fallback is not None:
             return MagicScan(short_fallback, None, rejected)
+        if capped:
+            return MagicScan(None, ScanMiss.CAPPED, rejected)
         if fallback is not None:
             return MagicScan(fallback, None, rejected)
         return MagicScan(None, ScanMiss.NO_MATCH, rejected)
@@ -631,7 +639,10 @@ def scan_for_magic(
             if outcome is HitOutcome.VALID:
                 return MagicScan(found, None, rejected)
             if outcome is HitOutcome.VALID_SHORT and short_fallback is None:
+                # Kept, and not counted toward the cap. Later short hits are.
                 short_fallback = found
+                search_from = index + 1
+                continue
             if fallback is None:
                 fallback = found
             rejected += 1

@@ -42,7 +42,7 @@ from archivey.cli.choices import cli_choices, from_cli_choice
 from archivey.cli.errors import CliError
 from archivey.cli.main import build_parser
 from archivey.config import AcceleratorMode, ArchiveyConfig
-from archivey.detection_cost import DetectionBudgetPreset, DetectionBudgetPresetStr
+from archivey.detection_cost import DetectionBudgetPreset
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.enum_args import (
     coerce_enum,
@@ -337,7 +337,6 @@ LITERAL_ALIASES: tuple[tuple[type[Enum], object], ...] = (
     (OverwritePolicy, OverwritePolicyStr),
     (OnError, OnErrorStr),
     (AbortOn, AbortOnStr),
-    (DetectionBudgetPreset, DetectionBudgetPresetStr),
 )
 
 
@@ -355,6 +354,12 @@ ALIASES_NOT_WANTED = {
         "ArchiveFormat's container field, for the same reason as AcceleratorMode: "
         "__post_init__ converts a hand-built string pair, so the field always holds a "
         "member, and the code that reads it tests it with `is`."
+    ),
+    "DetectionBudgetPreset": (
+        "ArchiveyConfig.detection_budget stays annotated DetectionBudget, for the same "
+        "reason as AcceleratorMode: __post_init__ converts a preset member or its name, "
+        "so the field always holds a budget, and every consumer reads it as one. Its "
+        "only other consumer, detect_format(budget=), was removed."
     ),
     "StreamFormat": (
         "ArchiveFormat's stream field; see ContainerFormat. format= arguments take "

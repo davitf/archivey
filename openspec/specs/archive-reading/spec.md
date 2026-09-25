@@ -974,8 +974,11 @@ candidate iteration. Per-call `limits`
 still beat `config.extraction_limits`, then reader/library default. Other
 per-call operational args stay outside `ArchiveyConfig`.
 `detection_budget` SHALL bound what format detection spends, for `detect_format` and for
-the detection `open_archive` and `open_stream` run (see `detection-cost`); it accepts a
-`DetectionBudgetPreset` or its string spelling, and has no effect under `format=`.
+every detection `open_archive` and `open_stream` run (see `detection-cost`): the
+auto-detection itself, and under `format=` the stub-volume check and the rescan that
+confirms an empty listing. It is annotated as a `DetectionBudget`, like the accelerator
+fields beside it: a preset member or its name is converted at construction, so the field
+always holds a budget.
 `read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
 the format stores as member data (see "Link targets stored as member data are read only
 when configured"); like `listing_limits`, it holds for the reader's lifetime.

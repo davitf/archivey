@@ -117,7 +117,9 @@ def coerce_enum(
     A member of the class passes through untouched. A string is matched against the
     spellings described in the module docstring. Anything else — including a member of a
     *different* enum, which is the mistake a type checker would have caught — is
-    refused. No caller passes ``None``, so there is no ``allow_none`` arm to maintain.
+    refused. ``None`` does arrive, from ``ArchiveyConfig(detection_budget=None)``, and
+    is refused with the wrong-type message on purpose: no parameter this helper serves
+    means "default" by ``None``, so there is no ``allow_none`` arm.
 
     ``also_accepts`` names a further type the *caller's* parameter takes but this helper
     does not handle, so the wrong-type message stays true to the signature the caller

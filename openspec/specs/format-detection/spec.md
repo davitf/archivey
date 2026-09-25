@@ -97,8 +97,9 @@ and attempting one never prevents a later one from running.
 step the earlier entry in registry order wins. This is the documented rule, not an
 accident of iteration: `confidence` is a provisional grade and `detected_by` an open set,
 so a later release may grade evidence more finely without breaking a caller that treats
-unknown values as possible. An empty source SHALL raise `FormatDetectionError` saying the
-source is empty.
+unknown values as possible. A source with no bytes left at its current position (empty,
+or already read to its end) SHALL raise `FormatDetectionError` saying there are no bytes
+to read, not that nothing matched.
 
 #### Scenario: unrecognised bytes, no path
 

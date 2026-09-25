@@ -1331,6 +1331,35 @@ def test_reader_keeps_the_detection_it_opened_by(tmp_path: Path) -> None:
         assert reader.format_info.cost_receipt == detect_format(tree).cost_receipt
 
 
+def test_format_argument_paths_detect_under_the_config_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Detection still runs under ``format=`` (the empty-listing rescan, the stub
+    check), and it runs under the caller's budget, not the library default."""
+    from dataclasses import replace
+
+    from archivey import open_archive
+    from archivey.detection_cost import BALANCED_BUDGET
+    from archivey.internal import detection as detection_module
+
+    seen: list[object] = []
+    real = detection_module.detect_format
+
+    def recording(*args: object, **kwargs: object) -> FormatInfo:
+        seen.append(kwargs.get("config"))
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(detection_module, "detect_format", recording)
+    config = ArchiveyConfig(
+        detection_budget=replace(BALANCED_BUDGET, max_scan_bytes=64 * 1024)
+    )
+    path = tmp_path / "zeros.tar"
+    path.write_bytes(b"\x00" * (32 * 1024))
+    with open_archive(path, format=ArchiveFormat.TAR, config=config) as reader:
+        assert list(reader) == []
+    assert seen and all(c is config for c in seen)
+
+
 def test_open_archive_detects_under_the_config_budget(tmp_path: Path) -> None:
     """``ArchiveyConfig.detection_budget`` reaches the detection ``open_archive`` runs."""
     from dataclasses import replace
@@ -1352,9 +1381,18 @@ def test_open_archive_detects_under_the_config_budget(tmp_path: Path) -> None:
         detect_format(path, config=narrow)
 
 
-def test_empty_source_says_it_is_empty() -> None:
+def test_empty_source_says_it_is_empty(tmp_path: Path) -> None:
     for source in (io.BytesIO(b""), NonSeekableBytesIO(b"")):
-        with pytest.raises(FormatDetectionError, match="the source is empty"):
+        with pytest.raises(FormatDetectionError, match="no bytes to read"):
             detect_format(source)
+    # Detection reads from the current position, so a non-empty file whose handle is
+    # at its end has nothing to read either; the message must not call it empty.
+    path = tmp_path / "a.bin"
+    path.write_bytes(b"hello world, not an archive at all")
+    with path.open("rb") as f:
+        f.seek(0, io.SEEK_END)
+        with pytest.raises(FormatDetectionError) as caught:
+            detect_format(f)
+    assert "positioned at its end" in str(caught.value)
     with pytest.raises(FormatDetectionError, match="no magic bytes"):
         detect_format(io.BytesIO(b"plain text, not an archive"))

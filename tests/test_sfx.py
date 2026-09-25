@@ -1489,6 +1489,49 @@ def test_inexact_7z_decoy_loses_to_a_later_exact_payload(tmp_path: Path) -> None
         assert any(m.is_file for m in archive.members())
 
 
+def test_short_7z_hit_is_not_displaced_by_a_later_zip(tmp_path: Path) -> None:
+    """The exact-end preference is a tie-break among 7z hits, not across formats.
+
+    The 7z is short only because a ZIP follows it; the earliest validated candidate,
+    the 7z the stub would extract, stays the answer.
+    """
+    real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("hello.txt", "hi there")
+    stub = b"MZ" + b"\x00" * 510
+    path = tmp_path / "7z-then-zip.exe"
+    path.write_bytes(stub + real + buf.getvalue())
+    detected = detect_format(path)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.payload_offset == len(stub)
+
+
+def test_short_7z_hit_scan_cost_is_bounded_by_the_window(tmp_path: Path) -> None:
+    """Pins what a short hit costs: the whole scan window, never more.
+
+    With the archive ending at EOF the scan stops at the hit. With data after it
+    (an Authenticode signature, say) the scan keeps looking for a later 7z that ends
+    at EOF, up to the budget's scan window: a decoy in a stub ends before the real
+    payload starts, so the short hit cannot bound where that payload is.
+    """
+    real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
+    stub = b"MZ" + b"\x00" * 510
+    exact = tmp_path / "exact.exe"
+    exact.write_bytes(stub + real)
+    exact_cost = detect_format(exact).cost_receipt
+    assert exact_cost is not None
+    assert exact_cost.scanned_bytes <= len(stub) + len(real)
+
+    trailing = tmp_path / "trailing.exe"
+    trailing.write_bytes(stub + real + b"\x00" * (3 << 20))
+    detected = detect_format(trailing)
+    assert detected.format == ArchiveFormat.SEVEN_Z
+    assert detected.payload_offset == len(stub)
+    assert detected.cost_receipt is not None
+    assert detected.cost_receipt.scanned_bytes <= BALANCED_BUDGET.max_scan_bytes
+
+
 def test_short_7z_hit_is_kept_when_nothing_ends_at_eof(tmp_path: Path) -> None:
     """With no exact candidate, the first short one is still the answer."""
     real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()

@@ -502,9 +502,15 @@ def _scan_for_sfx_payload(
     the raw needle position. A hit whose format-owned validator returns anything other
     than :attr:`HitOutcome.VALID` is skipped and the scan continues — earliest
     *valid* match, not earliest needle. The first :attr:`HitOutcome.VALID_SHORT` hit
-    (a 7z that declares its end before the source ends) is the answer only when no
-    ``VALID`` hit follows it: a CRC-valid decoy in the stub must not beat the real
-    payload appended after it. ``PROBABLE`` rather than ``CERTAIN``: an exact
+    (a 7z that declares its end before the source ends) is the answer unless a later
+    ``VALID`` hit **of the same format** follows it: a CRC-valid decoy in the stub
+    must not beat the real payload appended after it. A ``VALID`` hit of another
+    format ends the scan with the short hit, so the tie-break never reorders formats.
+    Holding a short hit, the scan keeps reading to ``scan_limit``: a decoy in the
+    stub ends before the real payload starts, so nothing about the short hit bounds
+    where that payload can be. That is the cost of a short hit with data after it
+    (an Authenticode signature, say): up to the whole window, as a miss already
+    pays. ``PROBABLE`` rather than ``CERTAIN``: an exact
     magic found at a *searched-for* offset is a weaker claim than one found at the
     offset the format specifies.
 
@@ -544,6 +550,13 @@ def _scan_for_sfx_payload(
                 )
             if outcome is not HitOutcome.VALID:
                 continue
+        if short is not None and entry.format != short.format:
+            # The preference for a hit that ends at the end of the source is a
+            # tie-break among candidates of one format. A later hit of another
+            # format does not displace the short one: the earliest validated
+            # candidate stands, as it does everywhere else in this scan.
+            result = short
+            break
         result = FormatInfo(
             entry.format,
             DetectionConfidence.PROBABLE,
@@ -855,8 +868,11 @@ def _detect_format_body(
         if length == 0:
             # Every step "declined" an empty source, but there was nothing to match;
             # saying no magic matched would send the caller looking for a wrong byte.
+            # ``length`` counts from the current position, so a handle already read
+            # to its end lands here too; the message covers both.
             raise FormatDetectionError(
-                "Could not detect archive format: the source is empty.",
+                "Could not detect archive format: there are no bytes to read (the "
+                "source is empty, or already positioned at its end).",
                 archive_name=name,
             )
         raise FormatDetectionError(

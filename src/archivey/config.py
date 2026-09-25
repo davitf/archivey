@@ -512,9 +512,8 @@ class ArchiveyConfig:
     Used by :func:`~archivey.open_archive` and :func:`~archivey.detect_format` alike.
     The default, ``BALANCED``, covers every format archivey reads at the offset it
     specifies, a self-extracting archive within 2 MiB of the start, and the content
-    probes. A :class:`~archivey.detection_cost.DetectionBudgetPreset` or its name
-    (``"balanced"``, ``"fast"``, ``"thorough"``) is accepted and converted to that
-    preset's budget; to change a single limit, ``dataclasses.replace`` one.
+    probes. ``FAST_BUDGET`` and ``THOROUGH_BUDGET`` in ``archivey.detection_cost``
+    are the other presets; to change a single limit, ``dataclasses.replace`` one.
     """
 
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
@@ -590,8 +589,12 @@ class ArchiveyConfig:
             allow_none=False,
         )
         if not isinstance(self.detection_budget, DetectionBudget):
-            # A preset, or its name, is the spelling a caller reaches for; converted
-            # here so the field always holds the budget detection reads.
+            # A preset member, or its name, is converted here so the field always
+            # holds the budget detection reads. The annotation stays the budget alone,
+            # as it does for ``use_rapidgzip`` below: it is read by every consumer of
+            # the attribute, not only by the constructor's callers, and after
+            # construction it always holds a ``DetectionBudget``.
+            # ``tests/test_enum_arguments.py`` records the exemption.
             preset = coerce_enum(
                 self.detection_budget,
                 DetectionBudgetPreset,

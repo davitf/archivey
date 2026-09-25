@@ -214,10 +214,13 @@ def _refuse_unjoined_volume_names(
 
 
 def _refuse_if_stub_format_conflict(
-    stub: Path, first_volume: Path, requested: ArchiveFormat
+    stub: Path,
+    first_volume: Path,
+    requested: ArchiveFormat,
+    config: ArchiveyConfig | None,
 ) -> None:
     try:
-        info = detect_format(first_volume, follow_stub_volumes=False)
+        info = detect_format(first_volume, config=config, follow_stub_volumes=False)
     except FormatDetectionError:
         return
     if info.format.container == requested.container:
@@ -230,13 +233,13 @@ def _refuse_if_stub_format_conflict(
 
 
 def _follow_stub_volume(
-    stub: Path, format: ArchiveFormat | None
+    stub: Path, format: ArchiveFormat | None, config: ArchiveyConfig | None
 ) -> ResolvedSource | None:
     alt = first_volume_for_stub(stub)
     if alt is None:
         return None
     if format is not None:
-        _refuse_if_stub_format_conflict(stub, alt, format)
+        _refuse_if_stub_format_conflict(stub, alt, format, config)
     resolved = resolve_source(alt)
     _refuse_unjoined_volume_names(resolved, format, resolved.archive_name)
     return resolved
@@ -469,7 +472,9 @@ def _open_resolved(
             )
         except FormatDetectionError:
             stub = archive_source.path
-            followed = _follow_stub_volume(stub, format) if stub is not None else None
+            followed = (
+                _follow_stub_volume(stub, format, config) if stub is not None else None
+            )
             if followed is None:
                 raise
             resolved = followed
@@ -484,9 +489,9 @@ def _open_resolved(
         # bytes as ZIP/7z while auto-detect joined the split set.
         stub = archive_source.path
         try:
-            detect_format(stub, follow_stub_volumes=False)
+            detect_format(stub, config=config, follow_stub_volumes=False)
         except FormatDetectionError:
-            followed = _follow_stub_volume(stub, resolved_format)
+            followed = _follow_stub_volume(stub, resolved_format, config)
             if followed is not None:
                 resolved = followed
                 archive_source = slot.replace(resolved.source)

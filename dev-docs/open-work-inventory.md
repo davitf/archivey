@@ -50,7 +50,7 @@ names.
 | --- | --- | --- |
 | Open PRs | **0 live**, 1 hub | Everything merged by 2026-09-24 14:15Z: twenty-seven since the previous revision, #406 to #432. Before that, everything merged by 2026-09-23 14:17Z. Seventeen merged after the previous revision (#388, 2026-09-21 12:45Z): #386, #387, #389, #391, #392, #393, #394, #395, #396, #397, #398, #399, #400, #401, #402, #403, #404. See [Open PRs](#open-prs) |
 | [#315](https://github.com/davitf/archivey/pull/315) review threads | 209 total, **164 resolved, 45 open** | No blocking finding is open. 36 of the 45 can be fixed now; 9 wait on davi. See [#315](#315--the-209-threads) |
-| `openspec/changes/` (15 active) | 14 unimplemented, 1 half-done | `prefixed-archive-detection` is 32/68; the rest are 0/N (bar one task on `archive-origin-reporting`). **435 tasks outstanding**, counted 2026-09-23. #402 and #404 added two proposals, `single-archive-source` (0/31) and `one-member-listing-per-reader` (0/38) |
+| `openspec/changes/` (15 active) | 14 unimplemented, 1 half-done | `prefixed-archive-detection` is 33/69 (15 of the open tasks struck 2026-09-25); the rest are 0/N (bar one task on `archive-origin-reporting`). **435 tasks outstanding**, counted 2026-09-23. #402 and #404 added two proposals, `single-archive-source` (0/31) and `one-member-listing-per-reader` (0/38) |
 | [`open-issues.md`](open-issues.md) | 13 product candidates, 1 deliberate docs gap | P15/P16 are specced; P2/P3/P4/P5 are unowned; **P18 is new** since the first snapshot |
 | [`formats/rar.md`](formats/rar.md) `§10` | **gone** — the section is deleted | It said to delete it once empty, and it is: 19 of 21 shipped, #19 and #21 last. The two that had not shipped moved to homes that outlive it — the stream-copy bound to §7, the `unrar` mask port to [`IDEAS.md`](IDEAS.md) — and both are tracked internally |
 | [`formats/rar.md`](formats/rar.md) `§7` | 5 open questions | Healthy; the duplicated entry was merged in #323 |
@@ -890,7 +890,7 @@ inventory.
 
 | Change | Tasks | State |
 | --- | --- | --- |
-| `prefixed-archive-detection` | **32/68** | The only one in flight. Finish or explicitly park it before opening another detection change |
+| `prefixed-archive-detection` | **33/69** | Cut 2026-09-25: Block 2 and `prefix_kind` struck (15 tasks, left unticked with a strike note), the exhaustive scan deferred unless asked. Only makeself (Block 4) is left with user value, after 0.2.0 |
 | `single-archive-source` | 31/31 | **Archived 2026-09-25** after #419 implemented it. One `ArchiveSource` replaces the stack of source wrappers (borrow, full-count, the ISO bound) and absorbs the detection replay buffer (davi, 2026-09-22). Builds on #400 |
 | `one-member-listing-per-reader` | 0/38 | Merged 2026-09-23 via #404, proposal only. The base reader owns one member list, filled by one backend walk. Fixes the unset `member_id` on streamed 7z and solid RAR members, and adds `ArchiveyConfig.read_link_targets` (default `True`, davi 2026-09-23) |
 | `detection-evidence-ledger` | 0/70 | **Decided against and archived 2026-09-25.** Small fixes on the existing detector shipped instead |

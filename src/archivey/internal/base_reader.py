@@ -991,7 +991,7 @@ class BaseArchiveReader(ArchiveReader):
         from archivey.internal.detection import detect_format
 
         try:
-            detected = detect_format(provenance.source).format
+            detected = detect_format(provenance.source, config=self._config).format
         except (_ArchiveyError, OSError, ValueError):
             # Detection refuses these bytes outright — or cannot read them at all.
             #

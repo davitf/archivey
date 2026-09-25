@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Literal
 
 
 class DetectionBudgetPreset(Enum):
@@ -25,14 +24,6 @@ class DetectionBudgetPreset(Enum):
     BALANCED = "balanced"
     FAST = "fast"
     THOROUGH = "thorough"
-
-
-# The string spellings of ``DetectionBudgetPreset``, so a type checker flags a bad one at the
-# call rather than leaving it to the runtime. Deliberately narrower than what
-# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
-# case, and a literal can express neither, so this is the canonical spelling.
-# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
-DetectionBudgetPresetStr = Literal["balanced", "fast", "thorough"]
 
 
 class DetectionCapability(Enum):
