@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import io
 import lzma
+import random
 import shutil
 import struct
 import subprocess
@@ -313,6 +315,23 @@ def lzma2_raw_filters() -> list[dict]:
 
 def compress_lzma2_raw(data: bytes) -> bytes:
     return lzma.compress(data, format=lzma.FORMAT_RAW, filters=lzma2_raw_filters())
+
+
+@functools.cache
+def _hex_text_brotli() -> bytes:
+    import brotli
+
+    return brotli.compress(random.Random(0).randbytes(200_000).hex().encode())
+
+
+def truncated_brotli(size: int) -> bytes:
+    """A real compressed-first Brotli stream (about 200 KB) cut to ``size`` bytes.
+
+    Compressed once per process: the compression takes about a quarter of a second.
+    """
+    compressed = _hex_text_brotli()
+    assert len(compressed) > size
+    return compressed[:size]
 
 
 def brotli_compressed_metablock_header(*, first: bool = False) -> bytes:

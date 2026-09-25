@@ -417,12 +417,18 @@ Brotli has no magic number, so `detect_format` recognizes it by a content probe.
 the framing gate that accepted **~8.2%** of random data and **~3.5%** of a real `/usr`
 tree. `open_archive` listed one fabricated `<name>.uncompressed` member.
 
-**Mitigation shipped (framing + completeness + chain walk):** when the source length is
-known, a first meta-block that declares more bytes than the source holds is rejected; a
-fully visible source that does not decode to completion is rejected; and a bounded
-self-describing block-chain walk rejects later overruns / trailing bytes. Residual after
-`probe-completeness-gate` on a re-measured tree (150 623 files): **29 fabricated claims
-(0.019%)**, down from 128 (0.193%) after the first-block gate alone. Probe-only confidence
+**Mitigation shipped (framing + completeness + chain walk + 4 KiB sample + whole-source
+completion):** when the source length is known, a first meta-block that declares more
+bytes than the source holds is rejected; a fully visible source that does not decode to
+completion is rejected; and a bounded self-describing block-chain walk rejects later
+overruns / trailing bytes. The probe decodes the whole 4 KiB detection window rather than
+256 bytes, and a hit on a source no larger than `completion_window_bytes` (64 KiB under
+`BALANCED`, off under `FAST`) is re-checked against the whole source. The larger sample
+closed a text-file class: 7 of 800 `/usr/share/perl` modules detected as Brotli with a
+256-byte sample, none with 4 096. Residual measured with the **256-byte sample**, after
+`probe-completeness-gate`, on a re-measured tree (150 623 files): **29 fabricated claims
+(0.019%)**, down from 128 (0.193%) after the first-block gate alone; not re-measured since,
+and kept as the baseline the next census compares against. Probe-only confidence
 is `GUESS` for the uncompressed/metadata-first class; a decode failure there sets
 `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. Structured residual
 families named in the investigation (OLE/CFB, COFF) are usually claimed end-to-end by the
@@ -461,11 +467,15 @@ needle's next position forward, and the same prefix scans in about 0.2 s. What r
 open here is the per-candidate work the detector does after the search.
 
 `detection-prefix-workspace` ships the `DetectionBudget` / `DetectionCostReceipt` and a
-fuzz assertion that aggregate detection cost stays inside the declared budget. The bound
-itself — and whether limits are per-detection aggregates or per-candidate — belongs to
-`detection-evidence-ledger`, which owns the scan tiers where candidates multiply. Until
-that lands, a hostile prefix can still force unbounded decode work under the
-default budget's scan path once those tiers are enabled.
+fuzz assertion that aggregate detection cost stays inside the declared budget. The
+decode input limit is now a per-call aggregate, not per-candidate: `max_decode_input` is
+one allowance that every decoding tier draws on (the content probes, their whole-source
+completion check, the inner-TAR probe), and a tier the remaining allowance cannot cover
+does not run (`detection-cost` spec). Output is bounded per probe by the codec's drain.
+No tier decodes scan candidates today, so the amplification above is not reachable yet;
+a tier that does (makeself compressor needles under `#!`, planned after 0.2.0) must draw
+on the same allowance, which is what keeps this open until it lands and is measured. The
+`detection-evidence-ledger` change that was to own this bound was decided against.
 
 ### O12. 7z password confirmation decoded the whole folder into RAM — memory mitigated
 

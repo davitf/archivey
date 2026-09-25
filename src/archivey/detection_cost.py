@@ -89,13 +89,20 @@ class DetectionBudget:
     signature (ISO ``CD001`` at 32 769) needs a ~32 KiB window that a 4 KiB near budget
     would otherwise forbid.
 
+    ``max_decode_input`` is one allowance for the whole call, shared by the content
+    probes, their completion check and the inner-TAR probe. ``max_decode_output`` bounds
+    the inner-TAR probe only; a content probe's output is bounded by the codec's own
+    drain (4 KiB, or 64 KiB with the whole source in hand) and is not charged.
+    ``completion_window_bytes`` is the largest source a content-probe hit is re-checked
+    against in full (see ``format-detection``); ``0`` turns the check off.
+
     Fields marked reserved in ``openspec/specs/detection-cost/spec.md``
-    (``completion_window_bytes``, ``max_index_bytes``, ``collect_nonmaximal_candidates``,
-    and the ZIP-tail pair ``max_tail_bytes`` / ``max_seeks`` on every shipping preset)
-    are carried so follow-on changes can wire them without a second public shape break.
+    (``max_index_bytes``, ``collect_nonmaximal_candidates``, and the ZIP-tail pair
+    ``max_tail_bytes`` / ``max_seeks`` on every shipping preset) are carried so
+    follow-on changes can wire them without a second public shape break.
     ``max_probe_links`` is live for :meth:`DetectionCostReceipt.within_budget` (seek-based
-    content-probe allowance); the Brotli walk still uses its own ``CHAIN_MAX_LINKS`` until
-    ``detection-evidence-ledger`` threads the budget through.
+    content-probe allowance); the Brotli walk follows its own ``CHAIN_MAX_LINKS`` (8),
+    and no planned change threads the budget through.
     """
 
     max_prefix_bytes: int
@@ -273,8 +280,10 @@ THOROUGH_BUDGET = DetectionBudget(
     max_scan_bytes=_SFX_SCAN_BYTES,
     max_decode_input=_INNER_TAR_DECODE,
     max_decode_output=_INNER_TAR_DECODE,
+    # Whole-source completion as far as the decode allowance reaches; the allowance
+    # (``max_decode_input``) is the real bound, so this is the same 1 MiB.
+    completion_window_bytes=_INNER_TAR_DECODE,
     # Reserved numeric defaults for detection-evidence-ledger — not honoured yet.
-    completion_window_bytes=1 << 62,  # effectively unbounded when wired
     max_index_bytes=1 << 20,
     max_probe_links=32,
     spool_non_seekable_up_to=0,  # still opt-in via replace()

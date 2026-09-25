@@ -670,6 +670,19 @@ the rule), it rejects **91 of 128** fabricated probe claims (71%) — 67 of them
 The check SHALL be skipped when the source length is unknown, exactly as the framing gate
 is; detection then behaves as before.
 
+A probe SHALL be handed the whole detection window (`DETECTION_LIMIT`, 4 096 bytes), not a
+shorter sample of it. Text can decode as a Brotli meta-block for a few hundred bytes and
+turn invalid only further in: with a 256-byte sample, 7 of the first 800 Perl modules under
+`/usr/share/perl` detected as Brotli; with the whole window, none did.
+
+When a probe accepts the window and the source is longer than the window but no longer
+than the budget's `completion_window_bytes` (64 KiB under `BALANCED`), detection SHALL
+peek the whole source and run the probe again on it, so the completeness check above
+applies to it too. A source larger than that window, a budget with no completion window
+(`FAST`), or a source of unknown length keeps the window's answer. The whole-source decode
+is charged to the detection decode allowance; when the allowance cannot cover it, the
+window's answer stands and `probe_completion` is recorded as *budget exhausted*.
+
 #### Scenario: completeness matrix
 
 | Case | Expected |
@@ -682,7 +695,10 @@ is; detection then behaves as before.
 | Real Brotli file exactly the size of the prefix, decodes to completion | Accepted |
 | Source length unknown (non-seekable stream longer than the peek) | Rule skipped; today's behaviour |
 | LZMA Alone: 51-byte low-entropy file, fully visible, does not terminate | **Rejected** — same rule, not a Brotli special case |
-| Any source larger than the prefix | Rule does not apply; other rules decide |
+| Source larger than the prefix, within the completion window, stream truncated past the window | **Rejected** — the whole source is peeked and the probe re-run on it |
+| Same source under `FAST` (no completion window) | Accepted on the window |
+| Source larger than the completion window | Rule does not apply; other rules decide |
+| Text whose first 256 bytes decode as a Brotli meta-block (Perl module opening) | **Rejected** — the probe decodes the whole 4 KiB window |
 
 ### Requirement: A content probe SHALL follow a format's self-describing block chain
 
