@@ -164,7 +164,7 @@ What is ISO-specific in turning a record into a member:
   hundredths of a second) are read; MagicISO's out-of-range hundredths become 0. A date
   that is all zeros or invalid is `None` rather than an error. `created` is set only from
   a `TF` creation time, which few writers record; the `TF` attribute-change time (POSIX
-  `st_ctime`) goes to `extra["iso.ctime"]` and never to `created`. That is the rule after
+  `st_ctime`) goes to `ctime` and never to `created`. That is the rule after
   PR #470; before it, `created` fell back to the attribute-change time.
 - **POSIX fields.** `mode` (permission bits only), `uid` and `gid` come from `PX`, and
   are `None` outside Rock Ridge. `link_target` is the `SL` path.
@@ -336,7 +336,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | List the boot catalog as an ordinary file, read from its extent | It is a file in the tree, and 7-Zip lists it the same way; its bytes are on disc | Hiding it; synthesising 7-Zip's `[BOOT]` entries |
 | `format_version` is `None` | ISO 9660 stores no level; `pycdlib`'s inference read 3 on nearly every image | Passing the inference through |
 | Patch `pycdlib`'s `collections` once, at import | A crafted image otherwise hangs `open_fp` forever, and the patch is confined to `pycdlib`'s namespace and inert on valid trees | A per-open swap, which races between threads; a watchdog timeout |
-| `created` holds only a `TF` creation time | `created` never holds `st_ctime`; the attribute-change time goes to `extra["iso.ctime"]` | Falling back to the attribute-change time, as before PR #470 |
+| `created` holds only a `TF` creation time | `created` never holds `st_ctime`; the attribute-change time goes to `ctime` | Falling back to the attribute-change time, as before PR #470 |
 | A clamped file lists its declared length, read back from the directory record, and fails its read at the cut | A partial download keeps every file before the cut readable, and the listing says what the file should hold; the lookup runs only for records ending exactly at the image end | `size=None` for clamped files; refusing at open when the volume space size exceeds the source, which also refuses the files that survived |
 
 ## 7. Open questions
