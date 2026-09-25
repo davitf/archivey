@@ -3381,7 +3381,9 @@ def test_rar5_header_size_vint_is_bounded() -> None:
     assert time.perf_counter() - start < 1.0
 
 
-@pytest.mark.timeout(5)
+# Generous on purpose: a quadratic regression blows any budget, and the body takes
+# ~2.7 s under coverage, so a tight mark only fails loaded CI runners at random.
+@pytest.mark.timeout(30)
 def test_rar5_qo_non_file_records_parse_in_linear_time() -> None:
     """Non-FILE QO records (2 MiB of SERVICE copies) parse under the timeout."""
     from archivey.internal.backends import rar_parser
