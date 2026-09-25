@@ -894,3 +894,115 @@ def test_rock_ridge_tf_modification_time_wins_over_record_date() -> None:
     with open_archive(io.BytesIO(image.getvalue())) as archive:
         (member,) = [m for m in archive.members() if m.name == "a.txt"]
     assert member.modified == datetime(2001, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+
+# --- data the directory record's own inode does not cover -----------------------------
+
+
+def test_the_el_torito_boot_catalog_reads_and_extracts(tmp_path: Path) -> None:
+    """pycdlib keeps the boot catalog in memory and gives its record no inode, so
+    opening it used to raise ``CorruptionError`` and stop ``extract_all`` on every
+    bootable image. Its bytes are read from its extent, as a mounted image shows."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    iso.add_fp(io.BytesIO(b"\0" * 2048), 2048, "/BOOT.IMG;1")
+    iso.add_eltorito("/BOOT.IMG;1", "/BOOT.CAT;1")
+    iso.add_fp(io.BytesIO(b"hi"), 2, "/A.TXT;1")
+    image = io.BytesIO()
+    iso.write_fp(image)
+    iso.close()
+
+    with open_archive(io.BytesIO(image.getvalue())) as ar:
+        catalog = ar.read("BOOT.CAT")
+        ar.extract_all(tmp_path)
+    # The El Torito validation entry: header id 1, key bytes 0x55 0xAA at 30-31.
+    assert len(catalog) == 2048
+    assert catalog[0] == 1 and catalog[30:32] == b"\x55\xaa"
+    assert (tmp_path / "BOOT.CAT").read_bytes() == catalog
+    assert (tmp_path / "A.TXT").read_bytes() == b"hi"
+
+
+def _split_into_two_extents(image: bytes, identifier: bytes, *, gap: int = 0) -> bytes:
+    """Rewrite a root file's directory record as two, the way a 4 GiB file is stored.
+
+    The first record keeps the first block and is flagged multi-extent; the second
+    has the same name and covers the rest, starting ``gap`` blocks after the first
+    ends. Both fit in the root directory's sector, whose padding absorbs the new
+    record.
+    """
+    buf = bytearray(image)
+    root = struct.unpack_from("<I", buf, 16 * 2048 + 156 + 2)[0] * 2048
+    offset = root
+    while (
+        buf[offset]
+        and bytes(buf[offset + 33 : offset + 33 + buf[offset + 32]]) != identifier
+    ):
+        offset += buf[offset]
+    length = buf[offset]
+    assert length, "record not found"
+    record = bytes(buf[offset : offset + length])
+    extent = struct.unpack_from("<I", record, 2)[0]
+    size = struct.unpack_from("<I", record, 10)[0]
+
+    def both_endian(target: bytearray, at: int, value: int) -> None:
+        struct.pack_into("<I", target, at, value)
+        struct.pack_into(">I", target, at + 4, value)
+
+    first, second = bytearray(record), bytearray(record)
+    both_endian(first, 10, 2048)
+    first[25] |= 0x80
+    both_endian(second, 2, extent + 1 + gap)
+    both_endian(second, 10, size - 2048)
+    sector_end = root + 2048
+    rest = bytes(buf[offset + length : sector_end])
+    assert rest.endswith(b"\0" * length), "no room for the second record"
+    buf[offset:sector_end] = (bytes(first) + bytes(second) + rest)[
+        : sector_end - offset
+    ]
+    return bytes(buf)
+
+
+def _image_with_two_block_file() -> bytes:
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    iso.add_fp(io.BytesIO(b"a" * 2048 + b"b" * 1000), 3048, "/BIG.BIN;1")
+    iso.add_fp(io.BytesIO(b"hi"), 2, "/Z.TXT;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+def test_a_multi_extent_file_lists_and_reads_every_extent() -> None:
+    """A file of 4 GiB or more is several records with one name. Only the first
+    reached the reader, so the member listed and read one extent's worth and dropped
+    the rest without an error (measured: a 4 400 MiB xorriso file read as 4 GiB)."""
+    image = _split_into_two_extents(_image_with_two_block_file(), b"BIG.BIN;1")
+    with open_archive(io.BytesIO(image)) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert set(by_name) == {"BIG.BIN", "Z.TXT"}
+        assert by_name["BIG.BIN"].size == 3048
+        assert ar.read("BIG.BIN") == b"a" * 2048 + b"b" * 1000
+        assert ar.read("Z.TXT") == b"hi"
+
+
+def test_a_multi_extent_file_with_a_gap_is_refused() -> None:
+    """Extents that are not back to back are refused rather than read as one run."""
+    from archivey.exceptions import UnsupportedFeatureError
+
+    image = _split_into_two_extents(_image_with_two_block_file(), b"BIG.BIN;1", gap=1)
+    with open_archive(io.BytesIO(image)) as ar:
+        assert ar.get("BIG.BIN").size == 3048
+        with pytest.raises(UnsupportedFeatureError, match="not contiguous"):
+            ar.read("BIG.BIN")
+
+
+def test_format_version_is_not_pycdlibs_guess(rock_ridge_iso: Path) -> None:
+    """ISO 9660 stores no interchange level; pycdlib's inferred one read 3 on nearly
+    every image, a level-1 genisoimage default included."""
+    with open_archive(rock_ridge_iso) as ar:
+        assert ar.info.format_version is None

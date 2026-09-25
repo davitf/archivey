@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, BinaryIO, Iterator, Mapping, TypeGuard, cast
 if TYPE_CHECKING:
     from pycdlib.dates import DirectoryRecordDate, VolumeDescriptorDate
     from pycdlib.dr import DirectoryRecord
+    from pycdlib.inode import Inode
     from pycdlib.pycdlibio import PyCdlibIO
     from pycdlib.rockridge import RockRidge
 
@@ -116,6 +117,7 @@ _pycdlib_core = _optional("pycdlib.pycdlib")
 _pycdlib_io = _optional("pycdlib.pycdlibio")
 _pycdlib_dr = _optional("pycdlib.dr")
 _pycdlib_dates = _optional("pycdlib.dates")
+_pycdlib_inode = _optional("pycdlib.inode")
 _PYCDLIB_CYCLE_GUARD_INSTALLED = False
 
 
@@ -290,6 +292,19 @@ def _is_directory_record(obj: object) -> TypeGuard[DirectoryRecord]:
     return _pycdlib_dr is not None and isinstance(obj, _pycdlib_dr.DirectoryRecord)
 
 
+def _extent_chain(record: DirectoryRecord) -> list[DirectoryRecord]:
+    """A file's directory records, one per extent, in order.
+
+    A file of 4 GiB or more is stored as several records with one name, each flagged
+    multi-extent but the last. ``_yield_children`` yields only the first, and pycdlib
+    links the rest to it through ``data_continuation``.
+    """
+    chain = [record]
+    while chain[-1].data_continuation is not None:
+        chain.append(chain[-1].data_continuation)
+    return chain
+
+
 def _yield_children(
     record: DirectoryRecord, rock_ridge: bool
 ) -> Iterator[DirectoryRecord | None]:
@@ -380,7 +395,10 @@ class IsoReader(BaseArchiveReader):
                     # directory record and ``_translate_exception`` makes a
                     # ``CorruptionError``. pycdlib never closes a file object it was
                     # handed (``_managing_fp`` is set only by ``open()``).
-                    self._iso.open_fp(self._track_source_seeks(source))
+                    # Kept for ``_data_inode``, which reads extents pycdlib has no
+                    # inode for through the same handle pycdlib reads from.
+                    self._iso_fp = self._track_source_seeks(source)
+                    self._iso.open_fp(self._iso_fp)
                     self._iso_opened = True
 
                     # Auto-select the richest namespace: Rock Ridge > Joliet > plain
@@ -630,7 +648,11 @@ class IsoReader(BaseArchiveReader):
         mode, uid, gid = self._posix_metadata(rr)
         link_target = self._symlink_target(member_type, rr)
 
-        size = record.data_length if member_type == MemberType.FILE else None
+        size = (
+            sum(chunk.data_length for chunk in _extent_chain(record))
+            if member_type == MemberType.FILE
+            else None
+        )
         compression = (
             (CompressionMethod(algo=CompressionAlgorithm.STORED),)
             if member_type == MemberType.FILE
@@ -770,9 +792,48 @@ class IsoReader(BaseArchiveReader):
         assert _pycdlib_exc is not None and _pycdlib_io is not None
         if not record.is_file():
             raise _pycdlib_exc.PyCdlibInvalidInput("Path to open must be a file")
-        if record.inode is None:
-            raise _pycdlib_exc.PyCdlibInvalidInput("File has no data")
-        return _pycdlib_io.PyCdlibIO(record.inode, self._iso.logical_block_size)
+        return _pycdlib_io.PyCdlibIO(
+            self._data_inode(record), self._iso.logical_block_size
+        )
+
+    def _data_inode(self, record: DirectoryRecord) -> Inode:
+        """The inode to read a file's data through, spanning every extent it has.
+
+        pycdlib's own inode is used when it covers the whole file. Two records need
+        one built here, over the extents read straight from the image: a file of
+        4 GiB or more, whose inode covers only its first extent, and the El Torito
+        boot catalog, which pycdlib keeps in memory and gives no inode at all. The
+        catalog's extent still holds its bytes on disc, which is what a mounted
+        image shows. A multi-extent file whose extents are not back to back is
+        refused rather than read as one run.
+        """
+        assert _pycdlib_inode is not None
+        chain = _extent_chain(record)
+        if len(chain) == 1 and record.inode is not None:
+            return record.inode
+        block_size = self._iso.logical_block_size
+        start = chain[0].extent_location()
+        expected = start
+        for index, chunk in enumerate(chain):
+            last = index == len(chain) - 1
+            if chunk.extent_location() != expected or (
+                not last and chunk.data_length % block_size
+            ):
+                raise UnsupportedFeatureError(
+                    "ISO file stored in extents that are not contiguous; reading "
+                    "it is not supported",
+                    source_format=self._format,
+                    archive_name=self._archive_name,
+                )
+            expected += chunk.data_length // block_size
+        inode = _pycdlib_inode.Inode()
+        inode.parse(
+            start,
+            sum(chunk.data_length for chunk in chain),
+            self._iso_fp,
+            block_size,
+        )
+        return inode
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         record = member._raw
@@ -804,11 +865,13 @@ class IsoReader(BaseArchiveReader):
         )
         pvd = self._iso.pvd
         volume_id = pvd.volume_identifier.decode("ascii", errors="replace").rstrip()
-        interchange_level = getattr(self._iso, "interchange_level", None)
         info_extra = ArchiveInfoExtra({"iso.namespace": self._namespace})
         return ArchiveInfo(
             format=self._format,
-            format_version=str(interchange_level) if interchange_level else None,
+            # ISO 9660 stores no interchange level. pycdlib infers one from the
+            # names it walks and reports 3 for nearly every image, so it is not
+            # passed on as if it were read from the image.
+            format_version=None,
             is_solid=False,
             member_count=None,  # counting requires walking the tree
             comment=volume_id or None,
