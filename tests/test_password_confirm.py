@@ -440,6 +440,30 @@ def test_watch_is_silent_after_a_read_error() -> None:
     assert calls.count == 0
 
 
+@pytest.mark.parametrize("seek_keeps_digest", [False, True])
+def test_watch_still_reports_after_a_seek_error(seek_keeps_digest: bool) -> None:
+    # A failed seek leaves the handle usable (here BytesIO refuses a negative
+    # position before moving), so it must not disarm the report on the bytes read.
+    watch, calls = _watch(b"0123456789", seek_keeps_digest=seek_keeps_digest)
+    watch.read(3)
+    with pytest.raises(ValueError, match="negative"):
+        watch.seek(-1)
+    watch.close()
+    assert calls.count == 1
+
+
+def test_a_seek_error_forfeits_the_digest_when_the_inner_drops_it() -> None:
+    # The position after a failed seek is unknown, so reading on to the end cannot
+    # count as having reached a digest that a seek would have dropped.
+    watch, calls = _watch(b"0123456789")
+    watch.read(3)
+    with pytest.raises(ValueError, match="negative"):
+        watch.seek(-1)
+    assert watch.read() == b"3456789"
+    watch.close()
+    assert calls.count == 1
+
+
 def test_watch_readinto_counts_as_a_read() -> None:
     watch, calls = _watch(b"0123456789")
     buffer = bytearray(4)

@@ -5,14 +5,14 @@ record land in one pull request.
 
 ## Headline
 
-The population is in the shape the brief predicted: of 67 blind handlers, 61 were right
-as written or needed only a better comment. Six were wrong, and the brief's instinct
+The population is in the shape the brief predicted: of 69 blind handlers, 62 were right
+as written or needed only a better comment. Seven were wrong, and the brief's instinct
 about where to look first was correct twice. Two unmarked handlers "re-raised" in the
 sense ruff checks (a `raise` in the handler) while converting every exception to one
 `ArchiveyError` type, which is the catch-all the error contract forbids. One C-boundary
-trap was missing entirely from a backend, and that one aborted the interpreter. The four
-reviewed after the password-confirmation PR merged (two deferred, two it added) were right
-too.
+trap was missing entirely from a backend, and that one aborted the interpreter. The last
+four were judged on `c599fc5`, after the password-confirmation PR merged (two deferred
+here, two it added); one of them is F7.
 
 Baseline: `[all]` leg 5174 passed, 39 skipped, 5 xfailed; `./scripts/check.sh` green.
 
@@ -26,9 +26,10 @@ Baseline: `[all]` leg 5174 passed, 39 skipped, 5 xfailed; `./scripts/check.sh` g
 | F4 | low | `verify.py` over-run probe (two sites, now `_probe_past_declared`) | An `OSError` or `MemoryError` on the read one byte past a member's declared size was taken as "no trailing data" | Tightened: those propagate; an opaque decoder error there still reads as end of data, with the reason written down |
 | F5 | low | `codecs.py` `_AcceleratorStream` read / readinto / seek, and accelerator open | When the trap's EOF-shaped answer made rapidgzip raise its own error, that error propagated and the real source fault stayed parked. A fault parked while the decoder opened waited for the first read | Fixed: the parked fault wins (the accelerator's error is its `__context__`), and an open-time fault raises at open |
 | F6 | low | `base_reader.py` `_maybe_teardown` | A `KeyboardInterrupt` in the backend's close left the lifecycle at `TEARDOWN_RUNNING`, against the docstring's "marked complete even when `_close_archive` fails". Nothing reads the state today | Fixed: `complete_teardown` runs in a `finally` |
+| F7 | low | `password_confirm.py` `UnverifiedPasswordReadWatch.seek` | Any seek error disarmed `ENCRYPTED_MEMBER_UNVERIFIED` for the rest of the member, though a failed seek leaves the handle usable: after `seek(-1)` was caught, a partial read of an unconfirmed 7z member closed with no report | Fixed: the report stays armed, and where the inner stream drops its digest on a seek the unknown position forfeits it |
 
 Each fix has a red-then-green test in `tests/test_exception_handlers.py` (F1, F2, F4,
-F5, F6) or `tests/test_rar_parser.py` (F3).
+F5, F6), `tests/test_rar_parser.py` (F3) or `tests/test_password_confirm.py` (F7).
 
 ### What callers now see differently
 
@@ -40,6 +41,7 @@ F5, F6) or `tests/test_rar_parser.py` (F3).
 - F3: `CorruptionError` instead of `EncryptionError` for a header-encrypted RAR cut inside
   a salt or IV. A non-UTF-8 `bytes` password on a header-encrypted RAR5 raises
   `EncryptionError` where it raised `UnicodeDecodeError`.
+- F7: `ENCRYPTED_MEMBER_UNVERIFIED` where a caught seek error silenced it.
 - F1, F4, F5: the caller's own `OSError` / `MemoryError` / interrupt, where they got a
   process abort, silence, or a translated accelerator error.
 
@@ -53,7 +55,8 @@ difference is code that landed since): 37 catch `BaseException`, 30 catch `Excep
 carry `# noqa: BLE001`. Five sat in files two open pull requests were changing. The three
 in `extraction.py` were reviewed once the streaming-extraction PR merged, and the two in
 `sevenzip_reader.py` once the password-confirmation PR merged (`c599fc5`). That PR also
-added two handlers in `password_confirm.py`, reviewed with them, which makes 69. Pattern
+added two handlers in `password_confirm.py`, reviewed with them on `c599fc5`, which makes
+69; the type breakdown above is as of `5bbbfdc`. Pattern
 names are the ones in
 [`dev-docs/topics/exception-handlers.md`](../../dev-docs/topics/exception-handlers.md).
 
@@ -86,7 +89,8 @@ Locations are by function, because line numbers drift.
 | `backends/iso_reader.py` | `IsoReader.__init__` | Base | cleanup and re-raise | keep (reason already in code) |
 | `backends/tar_reader.py` | `TarReader.__init__` | Base | cleanup and re-raise | keep |
 | `backends/sevenzip_reader.py` | `_open_member` ×2 | Base | cleanup and re-raise | keep (reviewed after the password-confirmation PR merged): the slice and the password watch own what they wrap, and the watch stays silent when closed before any read |
-| `password_confirm.py` | `UnverifiedPasswordReadWatch.read`, `.seek` | Base | cleanup and re-raise | keep (added by the password-confirmation PR): drops the close-time report, since a failed read or seek already told the caller; the original propagates |
+| `password_confirm.py` | `UnverifiedPasswordReadWatch.read` | Base | cleanup and re-raise | keep (added by the password-confirmation PR): drops the close-time report, since the failed read ends the member stream and already told the caller |
+| `password_confirm.py` | `UnverifiedPasswordReadWatch.seek` | Base | cleanup and re-raise | fixed (F7): no longer drops the report, since a failed seek leaves the handle usable |
 | `extraction.py` | `_write_file_atomic`, `_place_link` | Base | cleanup and re-raise | keep (reviewed after the streaming-extraction PR merged) |
 | `extraction.py` | `_close` | Exc | teardown hygiene | keep; reason sharpened: both callers close after the member's result is recorded |
 | `streams/archive_stream.py` | `_attach_finalizer._finalize` ×2 | Exc | teardown hygiene | keep |

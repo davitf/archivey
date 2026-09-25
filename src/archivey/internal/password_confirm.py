@@ -251,7 +251,8 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
     but before the reads reach ``size``, ``on_unverified`` runs once: those bytes may
     have decrypted under a wrong key, and nothing checked them. A stream closed before
     any read delivered nothing to distrust, and a read that raised has already told the
-    caller something is wrong; neither reports.
+    caller something is wrong; neither reports. A seek that raised has not: the caller
+    can catch it and keep reading, so the report stays armed.
 
     ``seek_keeps_digest`` says whether the inner stream still checks its digest after a
     seek. When it does not (a fused verifier forfeits the checksum on a seek off the
@@ -314,7 +315,13 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         try:
             position = super().seek(offset, whence)
         except BaseException:
-            self._on_unverified = None
+            # Unlike a failed read, a failed seek need not end the stream: the caller
+            # can catch it and read on, possibly from a moved position
+            # (``ArchiveStream._note_raised_seek``). So the report stays armed, and
+            # where the inner stream drops its digest on a seek, the unknown position
+            # forfeits it.
+            if not self._seek_keeps_digest:
+                self._forfeited = True
             raise
         if position != self._watch_pos and not self._seek_keeps_digest:
             self._forfeited = True
