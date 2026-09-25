@@ -216,6 +216,15 @@ behaviour. The complete list is on the two classes.
 - A Rock Ridge device node, FIFO or socket lists as `MemberType.OTHER`, so extraction
   skips it. The `rr_moved` directory that holds relocated deep subtrees is not listed;
   those subtrees appear at their logical place.
+- A bootable image lists its El Torito boot catalog (`boot.catalog`, `BOOT.CAT`) as an
+  ordinary file, with the catalog's bytes as its data, as a mounted image shows it.
+- A file of 4 GiB or more, stored in several extents, lists and reads as one member.
+  Extents that are not back to back are refused with `UnsupportedFeatureError`.
+- `ArchiveInfo.format_version` is `None`: ISO 9660 records no interchange level.
+- A truncated image opens as long as its directories survive, and lists the sizes its
+  records declare. A file the cut reaches reads the bytes that survive and then raises
+  `TruncatedError`; files before the cut read normally. A file whose declared length
+  cannot be recovered lists with `size` set to `None`.
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).
