@@ -312,8 +312,18 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   was wrong, not what was tried — the message ends up in a caller's log.
 - **The public / `internal/` boundary is a contract, not a layout.** Code outside
   `internal/` is frozen surface; `__all__` is grown deliberately, one export at a time,
-  with the reason in the PR. The CLI reaching into `internal/` is a signal that the public
-  API has a gap — fix the gap rather than widening the reach.
+  with the reason in the PR. A public class is *defined* in a public module
+  (`archivey/types.py`, `archivey/detection.py`, …), not under `internal/` and
+  re-exported: its `__module__` is what `pickle` records. `tests/test_public_api.py`
+  enforces this; `ArchiveStream` is the one listed exception.
+- **The CLI uses only public API.** Nothing under `src/archivey/cli/` imports from
+  `archivey.internal`; `tests/test_cli_uses_public_api.py` fails on one that does. The
+  CLI needing something internal means the public API has a gap. Close the gap through
+  the ordinary `__all__` decision above, or in a public module that is not re-exported
+  (`archivey.terminal` holds the display helpers any front end needs), or do without:
+  the library's enum-spelling helpers are internal, so the CLI derives its option
+  choices from the enums and maps a parsed choice back to its member itself
+  (`src/archivey/cli/choices.py`).
 - **Cost signals stay honest, and nothing silently re-decompresses.** `ListingCost` and
   `AccessCost` are promises a caller plans against, so a change that makes a path more
   expensive updates them. Reading two members out of one solid block must not decode the

@@ -4,12 +4,16 @@ Public surface layout (this package root only — not ``internal`` / ``cli``):
 
 - :mod:`archivey.core` — ``open_archive`` / ``open_stream`` / ``extract`` / detection
 - :mod:`archivey.reader` — ``ArchiveReader`` ABC
-- :mod:`archivey.types` — formats, members, compression
+- :mod:`archivey.types` — formats, members, compression, extraction policies/results,
+  format availability
+- :mod:`archivey.detection` — ``FormatInfo`` / ``DetectionConfidence``
 - :mod:`archivey.config` — ``ArchiveyConfig``, limits, passwords, accelerators
 - :mod:`archivey.cost` — listing/access cost receipt
 - :mod:`archivey.diagnostics` — advisory codes, summaries, extraction reports
 - :mod:`archivey.exceptions` — error hierarchy
 - :mod:`archivey.measurement` — optional I/O counters
+- :mod:`archivey.detection_cost` — detection budgets and receipts; public, not re-exported
+- :mod:`archivey.terminal` — terminal-safe display helpers; public, not re-exported
 
 Names in ``__all__`` are the documented API. A few advanced types are also imported
 here (so ``from archivey import …`` keeps working) but omitted from ``__all__`` so
@@ -33,11 +37,6 @@ from archivey.config import (
     PasswordRequest,
 )
 from archivey.core import (
-    DetectionConfidence,
-    FormatAvailability,
-    FormatInfo,
-    FormatSupport,
-    MissingComponent,
     detect_format,
     extract,
     format_availability,
@@ -52,6 +51,7 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
+from archivey.detection import DetectionConfidence, FormatInfo
 from archivey.diagnostics import (
     ARCHIVE_INTEGRITY_CODES,
     # Context payloads: importable for isinstance/match; omitted from __all__.
@@ -111,20 +111,11 @@ from archivey.exceptions import (
     UnsupportedOperationError,
     WriteError,  # noqa: F401 — write API not shipped yet; kept importable
 )
-from archivey.internal.extraction_types import (
-    AbortOn,
-    ExtractionPolicy,
-    ExtractionProgress,
-    ExtractionResult,
-    ExtractionStatus,
-    MemberFilter,
-    OnError,
-    OverwritePolicy,
-)
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.measurement import IoStats, enable_measurement
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
+    AbortOn,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -133,10 +124,20 @@ from archivey.types import (
     CompressionMethod,
     ContainerFormat,
     CreateSystem,
+    ExtractionPolicy,
+    ExtractionProgress,
+    ExtractionResult,
+    ExtractionStatus,
+    FormatAvailability,
+    FormatSupport,
     HashAlgorithm,
     MemberExtra,
+    MemberFilter,
     MemberStreams,
     MemberType,
+    MissingComponent,
+    OnError,
+    OverwritePolicy,
     StreamFormat,
     crc32_digest,
 )
@@ -242,14 +243,21 @@ import archivey.internal.backends  # noqa: E402,F401
 def _pin_public_module() -> None:
     """Report ``archivey`` as the module of every public name defined under ``internal``.
 
-    Seventeen names in ``__all__`` (the extraction types, detection, the registry
-    queries, ``ArchiveStream``, ``enable_measurement``) are defined under
-    ``archivey.internal``. ``pickle`` records a class's ``__module__``, so an
-    ``ExtractionResult`` or a policy enum persisted by a caller would otherwise name
-    ``archivey.internal.extraction_types`` — a path that could then never move without
-    breaking their data. Pinned here, it names ``archivey``, which is stable, and
-    ``repr()``, ``help()`` and ``inspect.getmodule`` say the same. The internal layout
-    stays free to change; ``internal`` imports still see the same objects.
+    Public data types are defined in public modules (:mod:`archivey.types`,
+    :mod:`archivey.detection`, …), so their ``__module__`` is already a stable path and
+    this leaves them alone. Six names in ``__all__`` are still defined under
+    ``archivey.internal``: ``ArchiveStream`` (an implementation class on the internal
+    stream base, never pickled) and five functions (``detect_format``, the three registry
+    queries, ``enable_measurement``). ``pickle`` records a class's or function's
+    ``__module__``, so a persisted reference to one would otherwise name an internal path
+    that could then never move without breaking the caller's data. Pinned here, it names
+    ``archivey``, which is stable, and ``repr()``, ``help()`` and ``inspect.getmodule``
+    say the same. The internal layout stays free to change; ``internal`` imports still
+    see the same objects.
+
+    The pin is the safety net, not the design: a new public class belongs in a public
+    module, and ``tests/test_public_api.py`` fails on one defined under ``internal``
+    other than ``ArchiveStream``.
 
     Computed over ``__all__`` rather than listed, so a name added later is covered too.
     Only classes and functions: an instance reports its class's module, and pinning it

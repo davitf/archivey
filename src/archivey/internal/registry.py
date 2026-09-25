@@ -3,7 +3,7 @@
 Registration is **unconditional**: every known backend — core and optional alike —
 registers when its module is imported. Availability is then derived centrally from the
 optional dependency's module-or-``None`` sentinel, so the registry can report a tri-state,
-compositional :class:`FormatSupport` (FULL / PARTIAL / NONE) and produce install-hint
+compositional :class:`~archivey.FormatSupport` (FULL / PARTIAL / NONE) and produce install-hint
 errors, rather than silently dropping a format whose dependency is absent (see
 ``backend-registry``).
 """
@@ -13,8 +13,6 @@ from __future__ import annotations
 import functools
 import importlib
 from collections.abc import Callable
-from dataclasses import dataclass
-from enum import Enum
 from types import ModuleType
 from typing import TYPE_CHECKING, Protocol
 
@@ -39,6 +37,8 @@ from archivey.internal.streams.codecs import (
 from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
+    FormatAvailability,
+    FormatSupport,
     MagicSignature,
     MissingComponent,
     StreamFormat,
@@ -68,8 +68,6 @@ class ContentProbe(Protocol):
 __all__ = [
     "BackendRegistry",
     "ContentProbe",
-    "FormatAvailability",
-    "FormatSupport",
     "MissingComponent",
     "format_availability",
     "get_registry",
@@ -78,37 +76,6 @@ __all__ = [
     "register_reader",
     "register_writer",
 ]
-
-
-class FormatSupport(Enum):
-    """Tri-state readability of a known format (see ``backend-registry``)."""
-
-    FULL = "full"  # backend usable AND every optional codec/tool it can use is present
-    PARTIAL = (
-        "partial"  # opens & lists; common members decode; some optional codec missing
-    )
-    NONE = "none"  # backend (or a single-codec format's sole codec) is unavailable
-
-
-@dataclass(frozen=True)
-class FormatAvailability:
-    """The support level of a format plus the components needed to raise it."""
-
-    format: ArchiveFormat
-    support: FormatSupport
-    missing: tuple[MissingComponent, ...] = ()  # empty when FULL
-    required_source: StreamCapability = StreamCapability.SEEKABLE
-    """The weakest source shape this format can be read from.
-
-    ``StreamCapability`` is ordered, so this is a *minimum*: a source is strong enough
-    when ``availability.required_source <= reader.cost.stream_capability``. It exists so
-    that "can I pipe this straight in, or must I buffer it to disk first?" is a query
-    rather than a `StreamNotSeekableError` to catch.
-
-    Independent of ``support`` — a format whose optional dependency is missing still
-    answers the question. The ``SEEKABLE`` default is the conservative answer, and is
-    what a format with no registered backend at all reports.
-    """
 
 
 # Optional member-codecs each container can use, beyond the always-present stdlib codecs.

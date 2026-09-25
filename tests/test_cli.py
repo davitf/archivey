@@ -557,8 +557,7 @@ def test_progress_callback_on_tty_updates_bar(monkeypatch: pytest.MonkeyPatch) -
     import types
 
     from archivey.cli import progress as progress_mod
-    from archivey.internal.extraction_types import ExtractionProgress
-    from archivey.types import ArchiveMember, MemberType
+    from archivey.types import ArchiveMember, ExtractionProgress, MemberType
 
     class _TTY(io.StringIO):
         def isatty(self) -> bool:

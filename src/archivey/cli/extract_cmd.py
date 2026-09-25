@@ -19,6 +19,7 @@ from archivey import (
     OnError,
     OverwritePolicy,
 )
+from archivey.cli.choices import from_cli_choice
 from archivey.cli.common import open_for_cli, reject_salvage
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_POLICY
 from archivey.cli.filters import (
@@ -33,7 +34,6 @@ from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
-from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat
 
@@ -531,32 +531,10 @@ def run_extract(
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
     pred = member_predicate(patterns, exclude)
-    # One shared vocabulary with the library: ``enum_args`` treats ``-`` and ``_`` as
-    # the same, so the hand-rolled ``.replace("-", "_")`` this used to carry is gone,
-    # and ``main.py`` derives its argparse ``choices=`` from these same enums. Converted
-    # here rather than passed through as strings so the CLI's own helpers below stay
-    # typed. These refusals are unreachable from the command line, where argparse has
-    # already checked the spelling; they are the guard for a direct caller of
-    # ``run_extract``.
-    policy_enum = coerce_enum(
-        policy,
-        ExtractionPolicy,
-        call="archivey extract",
-        param="--policy",
-    )
-    overwrite_enum = coerce_enum(
-        overwrite,
-        OverwritePolicy,
-        call="archivey extract",
-        param="--overwrite",
-    )
+    policy_enum = from_cli_choice(ExtractionPolicy, policy)
+    overwrite_enum = from_cli_choice(OverwritePolicy, overwrite)
     on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
-    abort_on_enum = coerce_enum_collection(
-        abort_on,
-        AbortOn,
-        call="archivey extract",
-        param="--abort-on",
-    )
+    abort_on_enum = frozenset(from_cli_choice(AbortOn, item) for item in abort_on or ())
     archive_path = Path(archive)
 
     with open_for_cli(archive_path, password=pwd, track_io=track_io, err=err) as reader:

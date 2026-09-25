@@ -131,12 +131,12 @@ def test_no_public_name_reports_an_internal_module() -> None:
     [
         c
         for c in (getattr(archivey, n) for n in archivey.__all__)
-        if isinstance(c, type) and c.__module__ == "archivey"
+        if isinstance(c, type)
     ],
     ids=lambda c: c.__name__,
 )
 def test_public_class_type_hints_resolve(cls: type) -> None:
-    """``get_type_hints`` works on every public class, pinned ones included.
+    """``get_type_hints`` works on every public class, pinned or not.
 
     A pinned class's string hints would otherwise be looked up in ``archivey``, where
     names such as ``Path`` are not defined; ``__init__`` resolves them before the pin.
@@ -152,7 +152,7 @@ def test_pinned_class_source_lookup_fails_loudly() -> None:
     raises ``OSError`` instead of returning unrelated lines.
     """
     with pytest.raises(OSError):
-        inspect.getsource(archivey.OverwritePolicy)
+        inspect.getsource(archivey.ArchiveStream)
 
 
 @pytest.mark.parametrize(
@@ -173,10 +173,40 @@ def test_pickles_name_the_public_module(value: object) -> None:
 
 
 def test_pinning_leaves_the_internal_objects_shared() -> None:
-    from archivey.internal import extraction_types
+    from archivey.internal.streams import archive_stream
 
-    assert extraction_types.OverwritePolicy is archivey.OverwritePolicy
-    assert archivey.ExtractionResult.__module__ == "archivey"
+    assert archive_stream.ArchiveStream is archivey.ArchiveStream
+    assert archivey.ArchiveStream.__module__ == "archivey"
+
+
+# ``ArchiveStream`` is an implementation class on the internal stream base; streams are
+# never pickled, so it stays where it is and the pin covers it.
+_PINNED_CLASSES = {"ArchiveStream"}
+
+
+def test_public_classes_are_defined_in_public_modules() -> None:
+    """A public class lives in a public module, so its ``__module__`` needs no pin.
+
+    The pin in ``__init__`` makes a class defined under ``internal`` report
+    ``archivey``, at the cost of ``inspect.getsource`` and a type-hint workaround. It is
+    the safety net; this test keeps new public classes from leaning on it.
+    """
+    pinned = {
+        name
+        for name in archivey.__all__
+        if isinstance(obj := getattr(archivey, name), type)
+        and obj.__module__ == "archivey"
+    }
+    assert pinned == _PINNED_CLASSES
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [archivey.OverwritePolicy, archivey.ExtractionResult, archivey.FormatInfo],
+    ids=lambda c: c.__name__,
+)
+def test_moved_classes_keep_their_source(cls: type) -> None:
+    assert inspect.getsource(cls).lstrip().startswith(("class ", "@dataclass"))
 
 
 def test_version_is_computed_on_first_access() -> None:

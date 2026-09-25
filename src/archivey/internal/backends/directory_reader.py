@@ -23,7 +23,6 @@ from archivey.cost import (
     StreamCapability,
 )
 from archivey.diagnostics import DiagnosticCode, ScanRaceContext
-from archivey.escaping import quoted
 from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
@@ -36,6 +35,7 @@ from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     EXTRA_IS_REPARSE_POINT,

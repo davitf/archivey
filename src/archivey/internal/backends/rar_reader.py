@@ -41,7 +41,6 @@ from archivey.diagnostics import (
     DigestContext,
     MemberHeaderRecordContext,
 )
-from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -108,6 +107,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.streams.verify import build_member_verifier
 from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
+from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     EXTRA_IS_REPARSE_POINT,

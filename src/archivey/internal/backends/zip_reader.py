@@ -49,7 +49,6 @@ from archivey.diagnostics import (
     NameEncodingContext,
     raw_name_to_base64,
 )
-from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -109,6 +108,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
+from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,

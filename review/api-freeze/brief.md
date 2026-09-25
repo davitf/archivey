@@ -70,9 +70,10 @@ The public package root and the modules it re-exports from:
 
 - `__init__.py` — `__all__` (89 names) plus the 17 `# noqa: F401` imports that are
   importable but undocumented. Both halves are the surface.
-- `detection_cost.py` and `escaping.py` — two top-level modules, **not** under
-  `internal/`, that the `__init__.py` docstring's "Public surface layout" list does not
-  mention. See §A.
+- `detection_cost.py` and `terminal.py` — two top-level modules, **not** under
+  `internal/` and not re-exported from `archivey`. See §A. (`terminal.py` replaced
+  `escaping.py` in #448, which also added `detection.py`, the new home of `FormatInfo` and
+  `DetectionConfidence`.)
 - `core.py` — `open_archive` / `open_stream` / `extract`, detection entry points.
 - `reader.py` — the `ArchiveReader` ABC, `MemberSelector` / `MemberFilter`.
 - `types.py` — `ArchiveMember`, `ArchiveInfo`, the format enums, `MemberType`,
@@ -144,17 +145,23 @@ states its real size.** Counted on `main` at `b0fe664`:
 | `archivey.detection_cost` — `DetectionBudget`, `DetectionCostReceipt`, `DetectionCapability`, `TierSkip`, `TierSkipReason`, `DetectionBudgetPreset`, `MutableDetectionCostReceipt`, the three budget presets, `default_detection_budget` | 11 | Not in the layout list |
 | `archivey.escaping` — `display_path`, `escape_control_chars`, `quoted` | 3 | Not in the layout list |
 
+*Updated for #448:* the `escaping` row is now `archivey.terminal`, the same three names,
+documented in `docs/api.md` and in the layout list, with a stability promise and a
+`packaging-and-extras` requirement. Recount
+before relying on the total below, which was taken at `b0fe664`.
+
 That is **120 importable names**, against a package docstring that describes eight modules
 and an `__all__` of 89. `detection_cost` is the one to settle first: a caller reaching for
 `FAST_BUDGET` or reading a `DetectionCostReceipt` is using API, and at `0.2.0` that
 becomes a promise whether or not anyone decided to make it. Either fold it into the
 documented surface or move it under `internal/` — but not after the tag.
 
-`escaping` carries the smaller version of the same question, with history: the July
-review's O7 residual parked "a public un-escape helper" as addable later. `display_path`
-and `quoted` are already here and already public. Decide whether that is the helper.
+`escaping` carried the smaller version of the same question, with history: the July
+review's O7 residual parked "a public un-escape helper" as addable later. #448 settled it
+(ruling on hub thread S25-K8 and on #448): the three helpers are the public
+`archivey.terminal`, and the enum-spelling helpers stay internal.
 
-Also in `escaping`: `os` is importable as `archivey.escaping.os`. Trivial, and the kind of
+Also in `terminal`: `os` is importable as `archivey.terminal.os`. Trivial, and the kind of
 thing worth one line in "what is actually fine" if you judge it harmless.
 
 ### B. Do `diagnostics` and `cost` mean one thing?

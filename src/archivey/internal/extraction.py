@@ -32,7 +32,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Collection
 
 from archivey.config import ExtractionLimits
-from archivey.escaping import display_path, quoted
 from archivey.exceptions import (
     ArchiveyError,
     DiagnosticRaisedError,
@@ -43,17 +42,6 @@ from archivey.exceptions import (
     NameRewrittenError,
     ResourceLimitError,
     SymlinkEscapeError,
-)
-from archivey.internal.extraction_types import (
-    AbortOn,
-    ExtractionPolicy,
-    ExtractionProgress,
-    ExtractionResult,
-    ExtractionStatus,
-    MemberFilter,
-    MemberSelectorArg,
-    OnError,
-    OverwritePolicy,
 )
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
@@ -66,7 +54,20 @@ from archivey.internal.selection import (
     CollectionSelector,
     normalize_member_selector,
 )
-from archivey.types import ArchiveMember, MemberType
+from archivey.terminal import display_path, quoted
+from archivey.types import (
+    AbortOn,
+    ArchiveMember,
+    ExtractionPolicy,
+    ExtractionProgress,
+    ExtractionResult,
+    ExtractionStatus,
+    MemberFilter,
+    MemberSelectorArg,
+    MemberType,
+    OnError,
+    OverwritePolicy,
+)
 
 if TYPE_CHECKING:
     from archivey.internal.base_reader import BaseArchiveReader

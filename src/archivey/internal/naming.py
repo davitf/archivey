@@ -22,8 +22,8 @@ from archivey.diagnostics import (
     NameNormalizationContext,
     raw_name_to_base64,
 )
-from archivey.escaping import quoted
 from archivey.internal.logs import normalization as logger
+from archivey.terminal import quoted
 from archivey.types import MemberType
 
 if TYPE_CHECKING:

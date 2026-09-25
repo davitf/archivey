@@ -6,9 +6,9 @@ from collections.abc import Callable, Collection, Iterable
 from typing import TYPE_CHECKING
 
 from archivey.diagnostics import DiagnosticCode, SelectorUnmatchedContext
-from archivey.escaping import quoted
 from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.arg_checks import describe_value
+from archivey.terminal import quoted
 from archivey.types import ArchiveMember
 
 if TYPE_CHECKING:

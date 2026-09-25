@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, TypeGuard
 
-from archivey.escaping import display_path
 from archivey.exceptions import (
     ArchiveyUsageError,
     OpenError,
@@ -30,6 +29,7 @@ from archivey.internal.streams.streamtools import (
     reject_source,
     source_name,
 )
+from archivey.terminal import display_path
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer

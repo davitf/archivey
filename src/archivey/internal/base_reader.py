@@ -40,7 +40,6 @@ from archivey.diagnostics import (
     SymlinkTargetContext,
     UnconfirmedFormatContext,
 )
-from archivey.escaping import escape_control_chars, quoted
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -63,23 +62,7 @@ from archivey.internal.diagnostics_collector import (
     EmitLog,
     collector_from_config,
 )
-from archivey.internal.enum_args import (
-    coerce_enum,
-    coerce_enum_collection,
-)
-from archivey.internal.extraction_types import (
-    AbortOn,
-    AbortOnStr,
-    ExtractionPolicy,
-    ExtractionPolicyStr,
-    ExtractionProgress,
-    MemberFilter,
-    MemberSelectorArg,
-    OnError,
-    OnErrorStr,
-    OverwritePolicy,
-    OverwritePolicyStr,
-)
+from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
 from archivey.internal.logs import backends as logger
@@ -119,15 +102,27 @@ from archivey.internal.windows_reparse import (
     reparse_payload_length,
 )
 from archivey.reader import ArchiveReader, MemberSelector
+from archivey.terminal import escape_control_chars, quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
+    AbortOn,
+    AbortOnStr,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    ExtractionPolicy,
+    ExtractionPolicyStr,
+    ExtractionProgress,
     HashAlgorithm,
     MagicSignature,
+    MemberFilter,
+    MemberSelectorArg,
     MemberStreams,
     MemberType,
+    OnError,
+    OnErrorStr,
+    OverwritePolicy,
+    OverwritePolicyStr,
 )
 
 MAX_LINK_TARGET_BYTES = 4096

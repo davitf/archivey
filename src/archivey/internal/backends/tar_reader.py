@@ -49,7 +49,6 @@ from archivey.diagnostics import (
     DiagnosticCode,
     MemberTimestampContext,
 )
-from archivey.escaping import quoted
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -83,6 +82,7 @@ from archivey.internal.streams.streamtools import (
     ensure_bufferedio,
     read_within_reach,
 )
+from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
