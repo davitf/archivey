@@ -36,7 +36,8 @@ caps can only bind the header walk: the random-access walk parses headers in bat
 that stop one header past `max_members` or `max_metadata_bytes`, so an over-limit tar
 costs the cap rather than the archive, for the text the cap weighs: PAX keywords in
 `extra` are not weighed ([`known-issues.md`](known-issues.md)). `None`
-(`ListingLimits.UNLIMITED`) disables that bound. `max_metadata_bytes` remains a materialization guard on every format,
+(`ListingLimits.UNLIMITED`) disables that bound. `max_metadata_bytes` remains a
+materialization guard on every format,
 including 7z and RAR. RAR also checks it at `open_archive` against the summed
 declared sizes of compressed RAR 1.5/2.x comments, before decoding any, since
 those expand after the parse; that bounds comment bytes, not the one `unrar`
