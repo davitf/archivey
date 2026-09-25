@@ -80,6 +80,11 @@ promise with that line; treat `0.2.0` as the first release of this library.
   several extents, and only the first was listed and read, with no error. `size` and the
   data now cover every extent; extents that are not contiguous are refused with
   `UnsupportedFeatureError`.
+- **ISO: a truncated image lists the sizes its records declare, and a cut file raises
+  `TruncatedError`.** pycdlib clamps a file running past the end of the image, so a cut
+  image listed smaller or negative sizes and read short with no error. The declared
+  length is read back from the directory record; a file the cut reaches reads the bytes
+  that survive and then raises `TruncatedError`, and files before the cut read normally.
 - **ISO: `ArchiveInfo.format_version` is `None`.** It reported pycdlib's guess at the
   interchange level, which reads 3 on nearly every image; ISO 9660 does not store one.
 - **Text files are no longer detected as Brotli.** Brotli has no magic, so detection

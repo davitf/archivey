@@ -823,10 +823,10 @@ def test_the_record_walk_descends_each_directory_extent_once() -> None:
 
 
 def test_listing_reads_nothing_from_the_image() -> None:
-    """On an image with no repeated identifier, materialization only touches catalog
-    records pycdlib parsed at open: the audit the handle-lock requirement relies on.
-    A repeated identifier makes listing re-read one directory extent, under the
-    handle guard (``IsoReader._flagged_in_image``)."""
+    """On an image with no repeated identifier and no file ending at the end of the
+    image, materialization only touches catalog records pycdlib parsed at open: the
+    audit the handle-lock requirement relies on. Either of those makes listing re-read
+    one directory extent, under the handle guard (``IsoReader._raw_directory``)."""
 
     class Counting(io.BytesIO):
         calls = 0
@@ -1019,12 +1019,13 @@ def test_a_repeated_identifier_without_the_flag_is_not_one_file() -> None:
         assert ar.read("BIG.BIN") == b"a" * 2048
 
 
-def test_a_boot_catalog_declared_past_the_image_end_is_refused() -> None:
+def test_a_boot_catalog_declared_past_the_image_end_reads_short() -> None:
     """pycdlib clamps a record running past the image only when it gives it an
-    inode, and the boot catalog gets none; the inode built for it is checked."""
+    inode, and the boot catalog gets none; the inode built for it stops at the end
+    of the image, and the read fails there."""
     import pycdlib
 
-    from archivey.exceptions import CorruptionError
+    from archivey.exceptions import TruncatedError
 
     iso = pycdlib.PyCdlib()
     iso.new()
@@ -1040,8 +1041,82 @@ def test_a_boot_catalog_declared_past_the_image_end_is_refused() -> None:
 
     with open_archive(io.BytesIO(bytes(data))) as ar:
         assert ar.get("BOOT.CAT").size == 0x40000000
-        with pytest.raises(CorruptionError, match="runs past the end"):
+        with pytest.raises(TruncatedError, match="of 1073741824 expected bytes"):
             ar.read("BOOT.CAT")
+
+
+def _truncated_image(*, joliet: bool) -> bytes:
+    """Three files, cut in the middle of the second: A.TXT survives whole, B.BIN
+    keeps 3 000 of its 5 000 bytes, and C.BIN starts past the cut."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(joliet=3 if joliet else None)
+    for name, fill, size in (("A.TXT", b"a", 100), ("B.BIN", b"b", 5000)):
+        iso.add_fp(
+            io.BytesIO(fill * size),
+            size,
+            f"/{name};1",
+            joliet_path=f"/{name.lower()}" if joliet else None,
+        )
+    iso.add_fp(
+        io.BytesIO(b"c" * 3000),
+        3000,
+        "/C.BIN;1",
+        joliet_path="/c.bin" if joliet else None,
+    )
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    data = out.getvalue()
+    return data[: data.index(b"b" * 5000) + 3000]
+
+
+@pytest.mark.parametrize("joliet", [False, True], ids=["iso9660", "joliet"])
+def test_a_truncated_image_lists_declared_sizes_and_reads_to_the_cut(
+    joliet: bool,
+) -> None:
+    """pycdlib clamps a file running past the end of the image to end there and
+    overwrites its declared length, negative for a file starting past the end. The
+    listing reported those clamped sizes, and reading returned short with no error.
+    The declared lengths are still in the directory records on disc."""
+    from archivey.exceptions import TruncatedError
+
+    image = _truncated_image(joliet=joliet)
+    with open_archive(io.BytesIO(image)) as ar:
+        by_name = {m.name.upper(): m for m in ar.members()}
+        sizes = {name: m.size for name, m in by_name.items()}
+        assert sizes == {"A.TXT": 100, "B.BIN": 5000, "C.BIN": 3000}
+        assert ar.read(by_name["A.TXT"]) == b"a" * 100
+        for name, available in (("B.BIN", 3000), ("C.BIN", 0)):
+            with ar.open(by_name[name]) as stream:
+                assert len(stream.read(available)) == available
+                with pytest.raises(TruncatedError, match="expected bytes"):
+                    stream.read()
+
+
+def test_the_raw_directory_walk_crosses_sector_padding() -> None:
+    """A zero length byte pads to the end of the sector, and records continue in
+    the next one: a flag or a length there is still found."""
+    from archivey.internal.backends.iso_reader import _parse_raw_directory
+
+    def record(extent: int, length: int, ident: bytes, flags: int = 0) -> bytes:
+        body = bytearray(33 + len(ident) + (1 - len(ident) % 2))
+        body[0] = len(body)
+        struct.pack_into("<I", body, 2, extent)
+        struct.pack_into("<I", body, 10, length)
+        body[25] = flags
+        body[32] = len(ident)
+        body[33 : 33 + len(ident)] = ident
+        return bytes(body)
+
+    first = record(100, 2048, b"BIG;1", flags=0x80) + record(101, 10, b"BIG;1")
+    second = record(200, 2048, b"HUGE;1", flags=0x80) + record(201, 9000, b"HUGE;1")
+    data = first.ljust(2048, b"\0") + second.ljust(2048, b"\0")
+
+    raw = _parse_raw_directory(data, 2048, image_length=201 * 2048 + 5000)
+    assert raw.flagged == {100, 200}
+    assert raw.lengths_to_end == {(201, b"HUGE;1"): 9000}
 
 
 def test_format_version_is_not_pycdlibs_guess(rock_ridge_iso: Path) -> None:

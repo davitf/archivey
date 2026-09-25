@@ -221,6 +221,9 @@ behaviour. The complete list is on the two classes.
 - A file of 4 GiB or more, stored in several extents, lists and reads as one member.
   Extents that are not back to back are refused with `UnsupportedFeatureError`.
 - `ArchiveInfo.format_version` is `None`: ISO 9660 records no interchange level.
+- A truncated image opens as long as its directories survive, and lists the sizes its
+  records declare. A file the cut reaches reads the bytes that survive and then raises
+  `TruncatedError`; files before the cut read normally.
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert
   one to a plain `.iso` first (for example with `bchunk` or `bin2iso`).

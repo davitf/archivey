@@ -39,7 +39,15 @@ import threading
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from types import ModuleType
-from typing import TYPE_CHECKING, BinaryIO, Iterator, Mapping, TypeGuard, cast
+from typing import (
+    TYPE_CHECKING,
+    BinaryIO,
+    Iterator,
+    Mapping,
+    NamedTuple,
+    TypeGuard,
+    cast,
+)
 
 if TYPE_CHECKING:
     from pycdlib.dates import DirectoryRecordDate, VolumeDescriptorDate
@@ -297,7 +305,7 @@ def _continuation_chain(record: DirectoryRecord) -> list[DirectoryRecord]:
 
     pycdlib links *any* record whose identifier repeats the previous one in its
     directory, and sets the multi-extent flag on the earlier record as it does, so
-    this chain is only a candidate: ``IsoReader._extent_chain`` confirms it against
+    this chain is only a candidate: ``IsoReader._layout`` confirms it against
     the flags as written in the image.
     """
     chain = [record]
@@ -306,26 +314,55 @@ def _continuation_chain(record: DirectoryRecord) -> list[DirectoryRecord]:
     return chain
 
 
-def _multi_extent_flagged(directory_data: bytes, block_size: int) -> set[int]:
-    """Extents of the records in a directory's data whose multi-extent flag is set.
+class _RawDirectory(NamedTuple):
+    """What a directory's records say on disc that pycdlib does not keep as written."""
+
+    # Extents of the records whose multi-extent flag is set.
+    flagged: frozenset[int]
+    # Declared data length of each record whose data reaches the end of the image,
+    # keyed by (extent, identifier): the records pycdlib may have clamped.
+    lengths_to_end: Mapping[tuple[int, bytes], int]
+
+
+def _parse_raw_directory(
+    directory_data: bytes, block_size: int, image_length: int
+) -> _RawDirectory:
+    """The multi-extent flags and clamped lengths in a directory's data.
 
     Walks the raw records as ECMA-119 §9.1 lays them out: byte 0 is the record length,
-    bytes 2-5 the extent (little-endian), byte 25 the file flags, bit 7 multi-extent.
-    A zero length byte pads to the end of the sector.
+    bytes 2-5 the extent and bytes 10-13 the data length (little-endian), byte 25 the
+    file flags (bit 7 multi-extent), byte 32 the identifier length and the identifier
+    from byte 33. A zero length byte pads to the end of the sector. Only the lengths
+    that reach ``image_length`` are kept, so the result grows with the records pycdlib
+    may have changed rather than with the directory.
     """
     flagged: set[int] = set()
+    lengths: dict[tuple[int, bytes], int] = {}
     offset = 0
-    while offset + 26 <= len(directory_data):
+    while offset + 33 <= len(directory_data):
         length = directory_data[offset]
         if length == 0:
             offset += block_size - offset % block_size
             continue
+        extent = int.from_bytes(directory_data[offset + 2 : offset + 6], "little")
         if directory_data[offset + 25] & 0x80:
-            flagged.add(
-                int.from_bytes(directory_data[offset + 2 : offset + 6], "little")
-            )
+            flagged.add(extent)
+        data_length = int.from_bytes(
+            directory_data[offset + 10 : offset + 14], "little"
+        )
+        if data_length and extent * block_size + data_length >= image_length:
+            ident_length = directory_data[offset + 32]
+            ident = bytes(directory_data[offset + 33 : offset + 33 + ident_length])
+            lengths[(extent, ident)] = data_length
         offset += length
-    return flagged
+    return _RawDirectory(frozenset(flagged), lengths)
+
+
+class _Extent(NamedTuple):
+    """One extent of a file: its first sector and its length as declared on disc."""
+
+    sector: int
+    length: int
 
 
 def _yield_children(
@@ -403,12 +440,14 @@ class IsoReader(BaseArchiveReader):
 
         self._iso = pycdlib.PyCdlib()
         self._iso_opened = False
-        # Each listed file's extent records, keyed by ``id`` of its first record: the
-        # chain is confirmed against the image while listing, under the handle guard,
-        # and ``_data_inode`` runs where that guard may already be held.
-        self._chains: dict[int, list[DirectoryRecord]] = {}
-        # Extents flagged multi-extent in the image, per directory extent read.
-        self._flagged_by_directory: dict[int, set[int]] = {}
+        # The extents of each listed file that pycdlib's inode does not describe as
+        # written, keyed by ``id`` of its record; ``None`` when a clamped length could
+        # not be found on disc. Worked out while listing, where the image may be read
+        # under the handle guard, because ``_data_inode`` runs where that guard may
+        # already be held. Every other file reads through pycdlib's inode as it is.
+        self._layouts: dict[int, tuple[_Extent, ...] | None] = {}
+        # What each directory's records say on disc, per directory extent read.
+        self._raw_directories: dict[int, _RawDirectory] = {}
         # Boundary outside the guard; an exception the translator does not recognize
         # (a genuine OSError from the handle) propagates unchanged.
         try:
@@ -624,9 +663,9 @@ class IsoReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         # Pinned-pycdlib audit (tar-concurrent-open 2.7 / concurrent-member-streams 5.4):
         # the record walk traverses in-memory parsed catalog records and reads nothing
-        # from the image. ``_make_member`` can: for a repeated identifier,
-        # ``_flagged_in_image`` re-reads the directory's extent through ``_cdfp`` and
-        # takes the handle guard itself. Any other image read added to listing needs
+        # from the image. ``_make_member`` can: for a repeated identifier or a file
+        # whose data ends at the end of the image, ``_raw_directory`` re-reads the
+        # directory's extent through ``_cdfp`` and takes the handle guard itself. Any other image read added to listing needs
         # the same guard. If a future pycdlib version gains handle access in the walk,
         # lock the complete call.
         with self._translated_errors():
@@ -682,11 +721,7 @@ class IsoReader(BaseArchiveReader):
         mode, uid, gid = self._posix_metadata(rr)
         link_target = self._symlink_target(member_type, rr)
 
-        size = (
-            sum(chunk.data_length for chunk in self._extent_chain(record))
-            if member_type == MemberType.FILE
-            else None
-        )
+        size = self._file_size(record) if member_type == MemberType.FILE else None
         compression = (
             (CompressionMethod(algo=CompressionAlgorithm.STORED),)
             if member_type == MemberType.FILE
@@ -830,8 +865,42 @@ class IsoReader(BaseArchiveReader):
             self._data_inode(record), self._iso.logical_block_size
         )
 
-    def _extent_chain(self, record: DirectoryRecord) -> list[DirectoryRecord]:
-        """A file's directory records, one per extent, in order.
+    def _file_size(self, record: DirectoryRecord) -> int | None:
+        """A file's size as its records declare it; ``None`` if that is lost.
+
+        Records that pycdlib's inode describes as written are the common case and cost
+        nothing. The rest get a layout, kept for ``_data_inode``.
+        """
+        if self._as_written(record):
+            return record.data_length
+        layout = self._layout(record)
+        self._layouts[id(record)] = layout
+        return None if layout is None else sum(extent.length for extent in layout)
+
+    def _as_written(self, record: DirectoryRecord) -> bool:
+        """Whether pycdlib's inode for ``record`` is the file's whole data, unchanged.
+
+        Not so for a record with no inode (the El Torito boot catalog), a record
+        pycdlib linked to another with the same identifier (possibly a multi-extent
+        file), or one whose data ends exactly at the end of the image. pycdlib clamps a
+        file running past the end of the image to end there, and overwrites the
+        declared length with the clamped one, negative when the extent itself is past
+        the end.
+        """
+        return (
+            record.inode is not None
+            and record.data_continuation is None
+            and not self._reaches_image_end(record)
+        )
+
+    def _reaches_image_end(self, record: DirectoryRecord) -> bool:
+        end = record.extent_location() * self._iso.logical_block_size
+        return record.data_length != 0 and end + record.data_length == (
+            self._image_length
+        )
+
+    def _layout(self, record: DirectoryRecord) -> tuple[_Extent, ...] | None:
+        """A file's extents with their lengths as declared on disc.
 
         A file of 4 GiB or more is stored as several records with one name, each
         flagged multi-extent but the last. ``_yield_children`` yields only the first,
@@ -840,90 +909,114 @@ class IsoReader(BaseArchiveReader):
         in memory, so the chain is kept only when every record but the last carries
         the flag in the image itself. Otherwise the file is its own record alone, as
         it was before multi-extent files were read.
+
+        A length pycdlib clamped is read back from the directory's records on disc;
+        ``None`` if it is not there.
         """
-        cached = self._chains.get(id(record))
-        if cached is not None:
-            return cached
         chain = _continuation_chain(record)
+        parent = record.parent
+        assert parent is not None, "a listed file record has a parent directory"
         if len(chain) > 1:
-            parent = record.parent
-            assert parent is not None, "a listed file record has a parent directory"
-            flagged = self._flagged_in_image(parent)
+            flagged = self._raw_directory(parent).flagged
             if not all(chunk.extent_location() in flagged for chunk in chain[:-1]):
                 chain = [record]
-        self._chains[id(record)] = chain
-        return chain
+        layout: list[_Extent] = []
+        for chunk in chain:
+            length = chunk.data_length
+            if chunk.inode is not None and self._reaches_image_end(chunk):
+                declared = self._raw_directory(parent).lengths_to_end.get(
+                    (chunk.extent_location(), chunk.file_ident)
+                )
+                if declared is None:
+                    return None
+                length = declared
+            layout.append(_Extent(chunk.extent_location(), length))
+        return tuple(layout)
 
-    def _flagged_in_image(self, directory: DirectoryRecord) -> set[int]:
-        """The multi-extent flags of ``directory``'s records, as written in the image.
+    def _raw_directory(self, directory: DirectoryRecord) -> _RawDirectory:
+        """What ``directory``'s records say on disc.
 
         Reads the directory's extent again. pycdlib read the same bytes, the same
-        length, inside ``open_fp``; it keeps no copy of the flags it then changed.
+        length, inside ``open_fp``; it keeps no copy of the flags and lengths it then
+        changed.
         """
         key = directory.extent_location()
-        flagged = self._flagged_by_directory.get(key)
-        if flagged is None:
+        raw = self._raw_directories.get(key)
+        if raw is None:
             block_size = self._iso.logical_block_size
             with self._handle_guard():
                 self._iso_fp.seek(key * block_size)
                 data = self._iso_fp.read(directory.get_data_length())
-            flagged = _multi_extent_flagged(data, block_size)
-            self._flagged_by_directory[key] = flagged
-        return flagged
+            raw = _parse_raw_directory(data, block_size, self._image_length)
+            self._raw_directories[key] = raw
+        return raw
 
     def _data_inode(self, record: DirectoryRecord) -> Inode:
         """The inode to read a file's data through, spanning every extent it has.
 
-        pycdlib's own inode is used when it covers the whole file. Two records need
-        one built here, over the extents read straight from the image: a file of
-        4 GiB or more, whose inode covers only its first extent, and the El Torito
-        boot catalog, which pycdlib keeps in memory and gives no inode at all. The
-        catalog's extent still holds its bytes on disc, which is what a mounted
-        image shows.
+        pycdlib's own inode is used when it describes the file as written. The layout
+        worked out while listing is used otherwise, never worked out again here:
+        reading the directory takes the handle guard, which the caller may already
+        hold. Three cases need an inode built from it: a file of 4 GiB or more, whose
+        inode covers only its first extent; the El Torito boot catalog, which pycdlib
+        keeps in memory and gives no inode at all, though its extent still holds its
+        bytes on disc, which is what a mounted image shows; and a file pycdlib
+        clamped at the end of the image.
 
         A multi-extent file whose extents are not back to back is refused rather than
         read as one run: every writer seen (xorriso, libarchive's fixture) lays them
         out contiguously, and reading a gap would need a chained stream over
-        per-extent inodes that no image has needed yet. An inode built here that runs
-        past the end of the image is refused too. pycdlib clamps that only for records
-        it gives an inode, and the boot catalog is not one of them.
+        per-extent inodes that no image has needed yet. An inode built here stops at
+        the end of the image; ``_open_member`` makes a read that stops there short a
+        ``TruncatedError``.
         """
         assert _pycdlib_inode is not None
-        chain = self._chains.get(id(record)) or [record]
-        if len(chain) == 1 and record.inode is not None:
+        if id(record) not in self._layouts or self._layouts[id(record)] is None:
+            # Described as written, or the declared length is lost and pycdlib's
+            # clamped inode is what there is to read.
+            assert id(record) in self._layouts or self._as_written(record), (
+                "the layout is worked out while listing"
+            )
+            assert record.inode is not None
             return record.inode
+        layout = self._layouts[id(record)]
+        assert layout is not None
         block_size = self._iso.logical_block_size
-        start = chain[0].extent_location()
+        start = layout[0].sector
         expected = start
-        for index, chunk in enumerate(chain):
-            last = index == len(chain) - 1
-            if chunk.extent_location() != expected or (
-                not last and chunk.data_length % block_size
-            ):
+        for index, extent in enumerate(layout):
+            last = index == len(layout) - 1
+            if extent.sector != expected or (not last and extent.length % block_size):
                 raise UnsupportedFeatureError(
                     "ISO file stored in extents that are not contiguous; reading "
                     "it is not supported",
                     source_format=self._format,
                     archive_name=self._archive_name,
                 )
-            expected += chunk.data_length // block_size
-        length = sum(chunk.data_length for chunk in chain)
-        if start * block_size + length > self._image_length:
-            raise CorruptionError(
-                f"ISO file data declared at sector {start}, {length} bytes, runs past "
-                f"the end of the {self._image_length}-byte image",
-                source_format=self._format,
-                archive_name=self._archive_name,
-            )
+            expected += extent.length // block_size
+        length = sum(extent.length for extent in layout)
+        available = max(0, self._image_length - start * block_size)
         inode = _pycdlib_inode.Inode()
-        inode.parse(start, length, self._iso_fp, block_size)
+        inode.parse(start, min(length, available), self._iso_fp, block_size)
         return inode
+
+    def _runs_past_image_end(self, record: DirectoryRecord) -> bool:
+        """Whether a file's declared data runs past the end of the image."""
+        layout = self._layouts.get(id(record))
+        if not layout:
+            return False
+        start = layout[0].sector * self._iso.logical_block_size
+        return start + sum(extent.length for extent in layout) > self._image_length
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         record = member._raw
         assert _is_directory_record(record), (
             "ISO member is missing its directory record"
         )
+        # A file whose declared data runs past the end of the image reads what is
+        # there, then fails at the cut: the length check is enabled for it alone.
+        # Every other file keeps the bare ``size``, which enables no check.
+        cut = self._runs_past_image_end(record)
         # Boundary outside the lock; _PyCdlibStream construction stays inside it so any
         # enter-time pycdlib seek/error is covered by both.
         with self._translated_errors(member.name):
@@ -931,14 +1024,20 @@ class IsoReader(BaseArchiveReader):
                 with self._handle_lock:
                     raw = self._open_record(record)
                     # Construct under the lock so enter-time pycdlib seek is covered.
-                    locked: BinaryIO = LockedStream(
+                    stream: BinaryIO = LockedStream(
                         _PyCdlibStream(raw), self._handle_lock
                     )
-                return self._wrap_member_stream(locked, member.name, size=member.size)
-            raw = self._open_record(record)
-            # _PyCdlibStream enters the PyCdlibIO context in its __init__.
-            stream = _PyCdlibStream(raw)
-        return self._wrap_member_stream(stream, member.name, size=member.size)
+            else:
+                raw = self._open_record(record)
+                # _PyCdlibStream enters the PyCdlibIO context in its __init__.
+                stream = _PyCdlibStream(raw)
+        return self._wrap_member_stream(
+            stream,
+            member.name,
+            size=member.size,
+            expected_size=member.size if cut else None,
+            verify_member=member if cut else None,
+        )
 
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(
