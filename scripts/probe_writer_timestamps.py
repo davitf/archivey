@@ -339,7 +339,7 @@ def main() -> int:
     root = Path(tempfile.mkdtemp(prefix="archivey-ts-probe-"))
     source = make_source(root)
     payload = root / "payload"
-    out_dir = args.out or root / "out"
+    out_dir = (args.out or root / "out").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     host = f"{platform.system()} {platform.release()} ({platform.machine()})"
