@@ -59,14 +59,13 @@ UNRESOLVED_OK = {
     # NOT a decision: these are in `archivey.__all__` but have no `::: archivey.<Name>`
     # block in docs/api.md, which contradicts the documentation spec's scenario that the
     # API reference documents the public symbols in `__all__`
-    # (openspec/specs/documentation/spec.md, first requirement). 31 of the 90 names in
+    # (openspec/specs/documentation/spec.md, first requirement). 29 of the 90 names in
     # `__all__` are missing from docs/api.md, 21 of them exception classes; these are the
-    # five a docstring role points at. Each entry leaves once its name is documented.
+    # four a docstring role points at. Each entry leaves once its name is documented.
     "archivey.ARCHIVE_INTEGRITY_CODES",
     "archivey.DEFAULT_ARCHIVEY_CONFIG",
     "archivey.ExtractionError",
     "archivey.FormatDetectionError",
-    "archivey.FormatInfo",
     # Members the page shows in a table or not at all, so they get no heading anchor.
     "archivey.ArchiveFormat.DIRECTORY",
     "archivey.ArchiveyError.__str__",
