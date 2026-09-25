@@ -554,15 +554,13 @@ every format in the declarative corpus, the committed RAR / ZIP / 7z fixtures, a
 seekable mode is a distinct path.
 
 Non-seekable coverage SHALL exercise each streaming-capable format **both with and
-without an explicit `format=`**, because the two entry points differ. In `open_archive`,
-detection wraps a non-seekable source in `PeekableStream` — which is itself full-count —
-inside the `format is None` branch only, so an explicit `format=` skips that wrap and the
-boundary is the only thing left. In `open_stream` the wrap is unconditional, so
-`PeekableStream` is present either way and is today the *only* coalescing layer on that
-path. A suite that tests only the detected `open_archive` path therefore leaves the
-boundary's own guarantee unverified. Coverage SHALL NOT be satisfied by a backend whose third-party reader happens to
-coalesce internally (stdlib `tarfile._Stream` does): at least one case SHALL assert the
-boundary directly, on the stream `ensure_full_count_reads` returns.
+without an explicit `format=`**. Detection replays its prefix from the `ArchiveSource`
+only when it runs, so an explicit `format=` reaches the backend without a replay prefix
+ever having been read; a suite that tests only the detected `open_archive` path would
+not show that the full-count guarantee holds without one. Coverage SHALL NOT be
+satisfied by a backend whose third-party reader happens to coalesce internally (stdlib
+`tarfile._Stream` does): at least one case SHALL assert the boundary directly, on the
+`ArchiveSource` itself.
 
 Assertions SHALL be **parity against a full-count open of the same bytes**, not
 hardcoded expectations, so a format that cannot be built or read in a given environment
@@ -583,8 +581,8 @@ and views that no boundary buffer sits in front of.
 | `open_stream`, each raw-stream format × `seekable=False` and `True` | Decoded bytes match the full-count open |
 | `parse_rar_archive` driven directly from a short-returning source | `header_offset` / `header_size` / `data_offset` / `compress_size` identical — a coalescing layer must report the logical position, not a buffer position |
 | Healthy archive, short-returning source | Never `CorruptionError` / `TruncatedError` |
-| Each streaming-capable format, `ShortReadNonSeekable(max_chunk=1)`, detected and with explicit `format=` | Both match the full-count open; the explicit-`format=` case does not depend on `PeekableStream` being in the chain |
-| `ensure_full_count_reads(non_seekable_short_source).read(n)` | Returns exactly `n` bytes short of EOF, and consumes exactly `n` bytes from the source |
-| The returned boundary stream over a non-seekable raw source | `seekable()` is `False`; no read-ahead is buffered |
-| `ensure_full_count_reads` on an already-buffered non-seekable source (`io.BufferedReader`) | Returns that buffer unchanged |
-| `read(-1)` / `readall()` on the boundary stream over a non-seekable short-returning source | Returns every remaining byte, and keeps doing so when the inner also returns short on `read(-1)` — the drain must not depend on the inner's `readall()` |
+| Each streaming-capable format, `ShortReadNonSeekable(max_chunk=1)`, detected and with explicit `format=` | Both match the full-count open; the explicit-`format=` case does not depend on a replay prefix having been read |
+| `ArchiveSource` over a non-seekable short-returning source, constructed directly (no detection prefix), `read(n)` | Returns exactly `n` bytes short of EOF, and consumes exactly `n` bytes from the source |
+| `ArchiveSource` over a non-seekable raw source, constructed directly | `seekable()` is `False`; no read-ahead is buffered |
+| `ArchiveSource` over an already-buffered non-seekable source (`io.BufferedReader`) | Reads through that buffer with no second buffer in front of it |
+| `read(-1)` / `readall()` on the `ArchiveSource` over a non-seekable short-returning source | Returns every remaining byte, and keeps doing so when the inner also returns short on `read(-1)` — the drain must not depend on the inner's `readall()` |

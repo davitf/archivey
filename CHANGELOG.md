@@ -237,6 +237,11 @@ promise with that line; treat `0.2.0` as the first release of this library.
   than it holds, and a wrong password on an AES-encrypted PPMd folder, where the
   `MemoryError` also stopped password iteration before the correct candidate was tried.
   Reading a PPMd member larger than 2 GiB no longer raises `OverflowError` either.
+- **A WinZip AES member cut short raises `TruncatedError`.** A payload that ends inside
+  the salt, the password verifier, the ciphertext or the HMAC used to raise
+  `CorruptionError`. A declared size too small to hold the AES envelope at all still raises
+  `CorruptionError`: that header is impossible, not truncated. Both are `ReadError`
+  subclasses, so code that catches `ReadError` is unaffected.
 - **Extraction under `TRUSTED` keeps what the archive stored.** As root, a setuid or
   setgid file now keeps those bits: the mode used to be applied before the ownership,
   and Linux `chown` clears both. A file whose archive stores no mode, such as a ZIP

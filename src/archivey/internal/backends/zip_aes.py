@@ -21,6 +21,7 @@ from typing import BinaryIO
 from archivey.exceptions import (
     CorruptionError,
     PackageNotInstalledError,
+    TruncatedError,
 )
 from archivey.internal.password import wrong_password_error
 from archivey.internal.streams.crypto import (
@@ -141,7 +142,7 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         if self._cipher_remaining > 0:
             chunk = self._source.read(min(65536, self._cipher_remaining))
             if not chunk:
-                raise CorruptionError("Truncated WinZip AES ciphertext before HMAC")
+                raise TruncatedError("Truncated WinZip AES ciphertext before HMAC")
             self._cipher_remaining -= len(chunk)
             self._hmac.update(chunk)
             self._buf.extend(self._ctr.process(chunk))
@@ -149,7 +150,7 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         if self._mac_needed > 0:
             mac = read_exact(self._source, self._mac_needed)
             if len(mac) != self._mac_needed:
-                raise CorruptionError("Truncated WinZip AES HMAC")
+                raise TruncatedError("Truncated WinZip AES HMAC")
             self._mac += mac
             self._mac_needed = 0
             expected = self._hmac.digest()[:_HMAC_LEN]
@@ -207,16 +208,18 @@ def open_winzip_aes_member(
         )
     salt_len = aes.salt_len
     overhead = salt_len + 2 + _HMAC_LEN
+    # A declared size too small for the envelope is an impossible header, not a short
+    # read, so it stays CorruptionError; the four short reads below are TruncatedError.
     if compress_size < overhead:
         raise CorruptionError(
             f"WinZip AES member too short for salt/verify/HMAC ({compress_size} < {overhead})"
         )
     salt = read_exact(raw, salt_len)
     if len(salt) != salt_len:
-        raise CorruptionError("Truncated WinZip AES salt")
+        raise TruncatedError("Truncated WinZip AES salt")
     stored_verify = read_exact(raw, 2)
     if len(stored_verify) != 2:
-        raise CorruptionError("Truncated WinZip AES password-verification value")
+        raise TruncatedError("Truncated WinZip AES password-verification value")
 
     enc_key, auth_key, pw_verify = derive_winzip_aes_keys(
         password, salt=salt, key_len=aes.key_len

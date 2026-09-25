@@ -31,7 +31,9 @@ table is illustrative: a logger missing from it is not a contract violation.
 | `archivey.normalization` | Path normalization changes, including warnings when `name` differs from `raw_name` |
 | `archivey.extraction` | Extraction events and filter decisions |
 | `archivey.diagnostics` | Default logger for a diagnostic's WARNING projection. An emit site that names a subsystem logger (`archivey.streams`, `archivey.integrity`, …) logs the WARNING there instead, and most do |
-| `archivey.backends.*` | Backend-specific debug messages |
+| `archivey.streams` | Stream-layer events: decompressor and member-stream diagnostics, and how a source's seekability was judged |
+| `archivey.integrity` | Digest verification, including an expected digest that cannot be checked |
+| `archivey.backends` | Backend-specific debug messages. There is one logger for all backends, not one per backend |
 
 #### Scenario: logger-hierarchy matrix
 

@@ -94,7 +94,7 @@ conflicts there drops its own entry.
 | [#407](https://github.com/davitf/archivey/pull/407), [#408](https://github.com/davitf/archivey/pull/408), [#410](https://github.com/davitf/archivey/pull/410), [#412](https://github.com/davitf/archivey/pull/412), [#415](https://github.com/davitf/archivey/pull/415) | xz/lzip seeks, CLI escaping, per-thread password guard, symlink target cap, the four ruled surface changes | Closed the last eight **blocking** hub findings |
 | [#409](https://github.com/davitf/archivey/pull/409), [#411](https://github.com/davitf/archivey/pull/411), [#413](https://github.com/davitf/archivey/pull/413), [#414](https://github.com/davitf/archivey/pull/414), [#416](https://github.com/davitf/archivey/pull/416), [#417](https://github.com/davitf/archivey/pull/417), [#420](https://github.com/davitf/archivey/pull/420), [#421](https://github.com/davitf/archivey/pull/421) | Volume-name error bound, 7z coder order, LZMA dictionary cap, PPMd truncation, extraction batch, refused-constructor finalizer, stream-decoder batch and seek-table cap, a `Final` | Important hub findings; the LZMA cap is the second user of `DecoderLimits` |
 | [#418](https://github.com/davitf/archivey/pull/418), [#422](https://github.com/davitf/archivey/pull/422) | RAR keys derived once per open; the 7z KDF, AES properties and key cache moved into `backends/sevenzip_aes.py` | Cache and dedupe of R2-K8. Its derivation budget still needs a default from davi |
-| [#419](https://github.com/davitf/archivey/pull/419) | One `ArchiveSource` replaces the source wrappers | OpenSpec `single-archive-source` implemented; archiving it (task 7.3) still waits, with `bounded-source-spooling` |
+| [#419](https://github.com/davitf/archivey/pull/419) | One `ArchiveSource` replaces the source wrappers | OpenSpec `single-archive-source` implemented, and **archived 2026-09-25** ahead of `bounded-source-spooling`, which re-derives from it |
 | [#423](https://github.com/davitf/archivey/pull/423) | One base-owned member walk per reader, `read_link_targets`, the walk replay log | OpenSpec `one-member-listing-per-reader` implemented and archived. Unblocked S21-K7, S25-K3, S18-K2 and the ISO findings |
 | [#424](https://github.com/davitf/archivey/pull/424) | 7z parser refuses malformed folder structures; Delta-only folders and BCJ start offsets | S2-F3 to F8 and F12. S2-F9 to F11 (nits) remain |
 | [#425](https://github.com/davitf/archivey/pull/425) | CLI `--`, the argparse required message, symlink-safe wrap dir, `test` exit code | S24-K2, K3, K5, K6 |
@@ -210,7 +210,8 @@ the previous revision listed as waiting on a maintainer answer, including both d
 
 **Three PRs were closed on 2026-09-11** — #101 (superseded by `formats/rar.md` §9), #243
 (the thinner of the two catalogues) and #187 (native stress harnesses). That clears Wave 0
-items 3 and 4. #187's closure does **not** answer the question underneath it; see
+items 3 and 4. The question underneath #187 was answered on 2026-09-17 (a harness follows an observed
+upstream defect); see
 [Native codec stress coverage](#native-codec-stress-coverage-its-own-evaluation).
 
 Both former dormant drafts (#244, #185) merged on 2026-09-19. For the record, their shared
@@ -889,7 +890,7 @@ inventory.
 | Change | Tasks | State |
 | --- | --- | --- |
 | `prefixed-archive-detection` | **32/68** | The only one in flight. Finish or explicitly park it before opening another detection change |
-| `single-archive-source` | 0/31 | Merged 2026-09-23 via #402, proposal only. One `ArchiveSource` replaces the stack of source wrappers (borrow, full-count, the ISO bound) and absorbs the detection replay buffer (davi, 2026-09-22). Builds on #400 |
+| `single-archive-source` | 31/31 | **Archived 2026-09-25** after #419 implemented it. One `ArchiveSource` replaces the stack of source wrappers (borrow, full-count, the ISO bound) and absorbs the detection replay buffer (davi, 2026-09-22). Builds on #400 |
 | `one-member-listing-per-reader` | 0/38 | Merged 2026-09-23 via #404, proposal only. The base reader owns one member list, filled by one backend walk. Fixes the unset `member_id` on streamed 7z and solid RAR members, and adds `ArchiveyConfig.read_link_targets` (default `True`, davi 2026-09-23) |
 | `detection-evidence-ledger` | 0/70 | The big one. Rebuilds detection on graded evidence |
 | `detection-result-surface` | 0/44 | **Blocked by the ledger** — it exposes what the ledger produces. Its own proposal says so |
@@ -984,6 +985,11 @@ ready for whoever picks it up next.
 wants work that blocks on no decision.
 
 ## Native codec stress coverage (its own evaluation)
+
+> **Decided 2026-09-17 (davi):** *a native stress harness is built when an upstream defect
+> is observed, not before.* The `pyppmd` harness stays; #187's closure stands on that
+> criterion. Recorded in [`IDEAS.md`](IDEAS.md) §Testing. The analysis below is what led
+> there.
 
 **#187 was closed on 2026-09-11, and the question it was standing in for is still open.**
 The PR added native stress harnesses for rapidgzip and inflate64. This page argued it was not

@@ -38,8 +38,13 @@ def _fixture(name: str) -> Path:
 
 
 def _norm_ts(dt: datetime) -> datetime:
-    """Truncate to microseconds (we drop RAR5 ns); keep naive vs aware."""
-    dt = dt.replace(microsecond=dt.microsecond)
+    """Truncate to microseconds (we drop RAR5 ns); keep naive vs aware.
+
+    rarfile hands back its ``nsdatetime`` subclass when a RAR5 time has a
+    sub-microsecond part, and its ``__eq__`` compares the nanoseconds too.
+    ``datetime.combine`` rebuilds a plain ``datetime``, which drops them.
+    """
+    dt = datetime.combine(dt.date(), dt.timetz())
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).replace(tzinfo=timezone.utc)
     return dt

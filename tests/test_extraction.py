@@ -16,6 +16,7 @@ import unicodedata
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -3490,3 +3491,38 @@ def test_collided_with_joins_to_the_blocking_member_by_path_equality(
     )
     assert blocker.member.name == "README"
     assert blocker.status is ExtractionStatus.OVERWRITTEN
+
+
+@pytest.mark.parametrize("atomic", [False, True])
+def test_unknown_overwrite_policy_raises_instead_of_unlinking(
+    tmp_path: Path, atomic: bool
+) -> None:
+    """A policy the chain does not name must not fall through to the REPLACE arm.
+
+    Stands in for an ``OverwritePolicy`` member added without updating the chain: the
+    existing entry survives and the gap surfaces as an internal error.
+    """
+    existing = tmp_path / "keep.txt"
+    existing.write_bytes(b"keep me")
+    future = cast(OverwritePolicy, SimpleNamespace(name="FUTURE"))
+    coordinator = ExtractionCoordinator(overwrite=future)
+    member = ArchiveMember(type=MemberType.FILE, name="keep.txt")
+
+    with pytest.raises(AssertionError, match="unreachable"):
+        coordinator._prepare_destination(member, existing, atomic=atomic)
+    assert existing.read_bytes() == b"keep me"
+
+
+@pytest.mark.parametrize("on_error", list(OnError))
+def test_stops_on_failure_names_every_on_error_member(on_error: OnError) -> None:
+    """Every declared ``OnError`` member has an explicit answer."""
+    coordinator = ExtractionCoordinator(on_error=on_error)
+    assert coordinator._stops_on_failure() is (on_error is OnError.STOP)
+
+
+def test_unknown_on_error_raises_instead_of_continuing() -> None:
+    """An ``OnError`` member the chain does not name is not treated as CONTINUE."""
+    future = cast(OnError, SimpleNamespace(name="FUTURE"))
+    coordinator = ExtractionCoordinator(on_error=future)
+    with pytest.raises(AssertionError, match="unreachable"):
+        coordinator._stops_on_failure()

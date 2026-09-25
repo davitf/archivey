@@ -902,28 +902,24 @@
   `tests/fixtures/rar/README.md`. Linux `setup-dev-env.sh` still apt-installs
   `rar`, so these are not dark on a provisioned Linux laptop — only on CI /
   macOS.
-- **Decide what native-codec stress coverage is for. Undecided, and now unattached to any
-  PR.** One of the eight native dependencies (`pyppmd`, `inflate64`, `rapidgzip` + bundled
-  `indexed_bzip2`, `brotli`, `lz4`, `cryptography`, `pycdlib`) has a stress harness, and it
-  exists because of a *specific observed* upstream abort (`known-issues.md` §Intermittent
-  `pyppmd` native aborts). Fuzzing is separate and broader: `tests/atheris_fuzz/targets.py`
-  registers 7 required stream codecs plus 4 optional ones, `deflate64` included. So the open
-  question is not "which codec is missing a harness" but **what earns one**: a response to
-  observed evidence, or a standard every native dependency is held to.
+- **Native-codec stress harnesses: decided 2026-09-17 (davi).** *A native stress harness
+  is built when an upstream defect is observed, not before.* Of the eight native
+  dependencies (`pyppmd`, `inflate64`, `rapidgzip` + bundled `indexed_bzip2`, `brotli`,
+  `lz4`, `cryptography`, `pycdlib`), only `pyppmd` meets that bar, and its harness stays:
+  the abort it guards (`known-issues.md` §Intermittent `pyppmd` native aborts) is unfixed
+  upstream and only avoided here by bounding every PPMd decode (`max_length` from
+  `unpack_size`). The harness is what catches a later change that loosens that bound.
+  The criterion also records why
+  [PR #187](https://github.com/davitf/archivey/pull/187) (rapidgzip + inflate64 harnesses)
+  was closed on 2026-09-11: no defect had been observed in either library. A proposed
+  harness for another library is measured against it.
 
-  **[PR #187](https://github.com/davitf/archivey/pull/187) (rapidgzip + inflate64 harnesses)
-  was closed on 2026-09-11 without this being answered**, so the decision now has no PR
-  attached to it and nothing forcing it. That is the reason this entry is worth keeping
-  rather than retiring with the PR: the code was declined, the judgement behind declining it
-  was not written down, and the next proposal for a `brotli` or `lz4` harness has nothing to
-  be measured against.
-
-  The candidate criterion is *a native stress harness is built when an upstream defect is
-  observed, not before*. Adopting it would retroactively make #187's closure correct **and
-  recorded**; rejecting it means five more libraries are owed the same treatment `pyppmd`
-  got. Either way the output is a short written evaluation with the criterion stated, because
-  the answer changes what CI runs on every PR. Adjacent to the archived Topic 4 (test-suite
-  strategy). Measured state of the eight libraries:
+  Fuzzing is separate and hunts a different failure: `tests/atheris_fuzz/targets.py`
+  mutates malformed input for 7 required stream codecs plus 4 optional ones, while the
+  PPMd harness repeats *valid* decodes across threads and interpreter teardown. PPMd is
+  not a stream codec, so the fuzzer reaches it only through 7z or ZIP members; adding a
+  PPMd 7z archive to the fuzz corpus is tracked internally and does not replace the
+  harness. Measured state of the eight libraries:
   [`open-work-inventory.md`](open-work-inventory.md) §Native codec stress coverage.
 - **Establish that the Windows UnRAR download is rarlab's.** The Windows CI leg
   `Invoke-WebRequest`s `https://www.rarlab.com/rar/unrarw64.exe` and runs the SFX; the

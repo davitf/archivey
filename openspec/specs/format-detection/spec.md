@@ -306,8 +306,8 @@ Compressed input is supplied via a **bounded, non-consuming view** (up to
 - Stream codecs pull incrementally (first few KiB usually enough).
 - Block-transform (bzip2) may pull a full first block before any output.
 
-Seekable: read + restore position. Path: open/close. Non-seekable: buffer in
-`PeekableStream` for replay. Use sequential decompression (not random-access
+Seekable: read + restore position. Path: open/close. Non-seekable: buffer in the
+`ArchiveSource`'s replay prefix. Use sequential decompression (not random-access
 accelerators that reject bounded non-seekable views). Missing decompressor → bare
 compressor format; open may refine. No TAR header within the bound → bare
 compressor.
@@ -320,7 +320,7 @@ compressor.
 | `.gz` → non-TAR content | `GZIP` |
 | `.tar.bz2` with large first block (> peek prefix) | Read up to max block; `TAR_BZ2` |
 | Large-block bare `.bz2`, no `ustar` | Bounded read; `BZ2` (no false promotion) |
-| Non-seekable `.tar.bz2` needing full block | Buffered in `PeekableStream`; `TAR_BZ2`; backend can still read all |
+| Non-seekable `.tar.bz2` needing full block | Buffered in the `ArchiveSource`'s replay prefix; `TAR_BZ2`; backend can still read all |
 | Alone `.tar.lzma` / Alone `.tlz` with `ustar`@257 | `ArchiveFormat(TAR, LZMA_ALONE)` |
 | Bare Alone `.lzma`, no `ustar` | `ArchiveFormat.LZMA_ALONE` |
 
@@ -474,15 +474,16 @@ non-seekable sources is the **opener's** job so one wrapper is shared:
 | Source | Behavior |
 | --- | --- |
 | Path / seekable stream | Peek/read then restore entry `tell()`. Archive begins where the caller positioned. `open_archive` may wrap a mid-file seekable stream in a zero-origin view (`SlicingStream`) so absolute-offset backends (e.g. ISO/`pycdlib`) see origin 0. |
-| Non-seekable | `open_archive` wraps in `PeekableStream` **before** detection and passes the **same** wrapper to detection and backend. Detection uses `peek(n)` only. |
+| Non-seekable | The `ArchiveSource` `open_archive` builds holds a replay prefix; detection and backend receive that **same** object. Detection uses `peek(n)` only, and the backend's reads drain the prefix before reaching the source. |
 
 Standalone `detect_format` is non-consuming for paths/seekable streams. For a raw
-non-seekable stream the caller must pass a `PeekableStream` (or equivalent) if it
-will keep reading — otherwise the peeked prefix is lost. `open_archive` wraps
-internally.
+non-seekable stream the peeked prefix is lost to the caller unless the caller buffers
+it; `open_archive` and `open_stream` keep it in the `ArchiveSource`.
 
-`PeekableStream`: buffers first `DETECTION_LIMIT` bytes (32774 when ISO triggered);
-`.peek(n)` without consume; `BinaryIO` to backend (drain buffer, then underlying).
+The replay prefix: buffers what detection peeks, `DETECTION_LIMIT` bytes by default (32774
+when ISO triggered, up to 1 MiB for the inner-TAR probe and chain walks, up to `SFX_MAX`
+for the self-extracting scan); `.peek(n)` without consume; reads drain the prefix, then
+the underlying source.
 
 Every tier that reads from the front SHALL do so through **one detection-owned prefix
 workspace** that grows monotonically: extending the window reads only the delta, and bytes
@@ -496,8 +497,8 @@ consume.
 | Case | Expected |
 | --- | --- |
 | Seekable `BinaryIO` at position N | After detect, position is N again; backend can read full archive |
-| `open_archive` on non-seekable | One `PeekableStream` for detect + backend; peeked bytes replay then fall through |
-| Standalone detect on raw non-seekable the caller will reread | Caller must supply `PeekableStream` |
+| `open_archive` on non-seekable | One `ArchiveSource` for detect + backend; peeked bytes replay then fall through |
+| Standalone detect on raw non-seekable the caller will reread | Caller must buffer the stream itself |
 
 #### Scenario: the workspace reads each byte once
 
