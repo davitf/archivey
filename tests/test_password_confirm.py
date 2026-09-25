@@ -474,7 +474,10 @@ class _MovesThenRaises(io.BytesIO):
 
 
 class _TellFails(io.BytesIO):
+    """A seek that moves and then raises, after which the position cannot be read."""
+
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        super().seek(offset, whence)
         raise RuntimeError("seek failed")
 
     def tell(self) -> int:
@@ -500,6 +503,33 @@ def test_a_seek_error_that_moved_forfeits_the_digest(
     watch.read()
     watch.close()
     assert calls.count == 1
+
+
+@pytest.mark.parametrize(
+    ("n", "expected"), [(2, 1), (-1, 0)], ids=["partial", "to_eof"]
+)
+def test_an_unreadable_position_with_a_kept_digest_waits_for_eof(
+    n: int, expected: int
+) -> None:
+    # The tracked position is stale after the failure, so reads that would add up to
+    # the size from it do not count; an EOF read still does.
+    calls = _Calls()
+    watch = UnverifiedPasswordReadWatch(
+        _TellFails(b"0123456789"),
+        size=10,
+        on_unverified=calls,
+        seek_keeps_digest=True,
+    )
+    watch.read(8)
+    with pytest.raises(RuntimeError):
+        watch.seek(1)
+    if n < 0:
+        while watch.read(4096):  # the empty read is the EOF signal
+            pass
+    else:
+        watch.read(n)
+    watch.close()
+    assert calls.count == expected
 
 
 def test_a_seek_error_that_moved_updates_the_position() -> None:

@@ -280,6 +280,9 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         self._delivered = False
         self._reached = size <= 0
         self._forfeited = False
+        # Set when a failed seek left the position unreadable: ``_watch_pos`` is then
+        # stale, and only an EOF read can show the digest ran.
+        self._pos_unknown = False
         super().__init__(inner)
 
     def _note_position(self) -> None:
@@ -289,7 +292,11 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         # over-run probe) on that read, and CPython's ``ZipExtFile`` checks its CRC as
         # soon as nothing is left. An inner stream that deferred the check to the next
         # read would silence this report; check a new wrap target against it.
-        if self._watch_pos >= self._watch_size and not self._forfeited:
+        if (
+            self._watch_pos >= self._watch_size
+            and not self._forfeited
+            and not self._pos_unknown
+        ):
             self._reached = True
 
     def read(self, n: int = -1, /) -> bytes:
@@ -322,6 +329,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         if position != self._watch_pos and not self._seek_keeps_digest:
             self._forfeited = True
         self._watch_pos = position
+        self._pos_unknown = False
         if self._seek_keeps_digest:
             self._note_position()
         return position
@@ -331,20 +339,25 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
 
         A refused seek (a negative position) moves nothing, and the digest is intact.
         A seek can also raise after it moved (``ArchiveStream._note_raised_seek``), and
-        then it counts as a seek. A position that cannot be read counts as moved.
+        then it counts as a seek. When the position cannot be read, the tracked one is
+        no longer trusted: a digest dropped on a seek is forfeited, and a kept one
+        counts as reached only on an EOF read.
         """
         try:
-            position: int | None = self.tell()
-        except Exception:  # noqa: BLE001 - diagnostic probe; the seek's own error propagates, and an unknown position counts as moved
-            position = None
+            position = self.tell()
+        except Exception:  # noqa: BLE001 - the seek's own error propagates instead
+            if not self._seek_keeps_digest:
+                self._forfeited = True
+            self._pos_unknown = True
+            return
         if position == self._watch_pos:
             return
         if not self._seek_keeps_digest:
             self._forfeited = True
-        if position is not None:
-            self._watch_pos = position
-            if self._seek_keeps_digest:
-                self._note_position()
+        self._watch_pos = position
+        self._pos_unknown = False
+        if self._seek_keeps_digest:
+            self._note_position()
 
     def close(self) -> None:
         if self.closed:
