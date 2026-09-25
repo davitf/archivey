@@ -14,6 +14,9 @@ Authoritative contracts: `openspec/specs/`.
 ::: archivey.FormatInfo
 ::: archivey.DetectionConfidence
 ::: archivey.format_availability
+::: archivey.FormatAvailability
+::: archivey.FormatSupport
+::: archivey.MissingComponent
 ::: archivey.list_supported_formats
 ::: archivey.list_known_formats
 
@@ -57,10 +60,12 @@ Structured advisories (formerly log-only warnings). See the `diagnostics` capabi
 spec for lifecycle, retention, and policy.
 
 ::: archivey.Diagnostic
+::: archivey.DiagnosticContext
 ::: archivey.DiagnosticCode
 ::: archivey.DiagnosticSeverity
 ::: archivey.DiagnosticDisposition
 ::: archivey.DiagnosticPolicy
+::: archivey.ARCHIVE_INTEGRITY_CODES
 ::: archivey.DiagnosticSummary
 ::: archivey.OnDiagnostic
 ::: archivey.ExtractionReport
@@ -69,6 +74,7 @@ spec for lifecycle, retention, and policy.
 ## Extraction
 
 ::: archivey.ExtractionResult
+::: archivey.ExtractionProgress
 ::: archivey.ExtractionStatus
 ::: archivey.ExtractionPolicy
 ::: archivey.OverwritePolicy
@@ -79,6 +85,7 @@ spec for lifecycle, retention, and policy.
 ## Configuration
 
 ::: archivey.ArchiveyConfig
+::: archivey.DEFAULT_ARCHIVEY_CONFIG
 ::: archivey.ExtractionLimits
 ::: archivey.ListingLimits
 ::: archivey.DecoderLimits
@@ -101,9 +108,41 @@ spec for lifecycle, retention, and policy.
 
 ## Errors
 
+archivey's exceptions have two roots. `ArchiveyError` covers problems with the archive
+or its environment. `ArchiveyUsageError` covers mistakes in the calling code and is
+deliberately outside that tree, so `except ArchiveyError` does not hide them. The
+entries below follow the class tree: each group starts with its base class.
+[Errors and diagnostics](errors-and-diagnostics.md) explains which one to catch.
+
 ::: archivey.ArchiveyError
+
+::: archivey.OpenError
+::: archivey.FormatDetectionError
+::: archivey.UnsupportedFormatError
+::: archivey.StreamNotSeekableError
+
+::: archivey.ReadError
+::: archivey.CorruptionError
+::: archivey.TruncatedError
+::: archivey.EncryptionError
+::: archivey.LinkTargetNotFoundError
+
+::: archivey.ExtractionError
+::: archivey.FilterRejectionError
+::: archivey.PathTraversalError
+::: archivey.SymlinkEscapeError
+::: archivey.SpecialFileError
+::: archivey.UnportableNameError
+::: archivey.DeceptiveNameError
+::: archivey.NameCollisionError
+::: archivey.NameRewrittenError
+
 ::: archivey.ResourceLimitError
+::: archivey.UnsupportedFeatureError
+::: archivey.PackageNotInstalledError
+::: archivey.UnsupportedOperationError
 ::: archivey.DiagnosticRaisedError
+
 ::: archivey.ArchiveyUsageError
 ::: archivey.ConcurrentAccessError
 

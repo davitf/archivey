@@ -93,7 +93,8 @@ and superseded historical prose — SHALL live under `dev-docs/`, outside the si
 rather than under `docs/` behind an exclusion list. The user narrative covers
 install, opening and listing, reading members, gotchas, extracting, access
 costs/pitfalls, formats/extras, errors and diagnostics, the command line, migration,
-platforms, philosophy, and the API reference. Each page SHALL do one job, stated in
+platforms, philosophy, how the library is built (`how-it-works.md`, after philosophy),
+and the API reference. Each page SHALL do one job, stated in
 its opening lines. Gotchas SHALL sit immediately after `reading-members.md` in
 primary navigation. A published page SHALL NOT link to a path outside `docs/`;
 where maintainer depth is worth preserving the link MUST be an absolute
@@ -106,7 +107,8 @@ where maintainer depth is worth preserving the link MUST be an absolute
 | User opens the docs home | Every nav entry is an end-user page; no internal, grab-bag, or decision-log section exists |
 | User finishes reading members | Next recommended page is Gotchas |
 | User wants to know what to install | `install.md` answers it, including formats needing an external binary |
-| Contributor looks up “why not py7zr” | Answer is in `dev-docs/decisions/` in the repository, not on the site |
+| Contributor looks up “why not py7zr” | The full record is in `dev-docs/decisions/` in the repository; the site carries only a one-line summary on `how-it-works.md` |
+| User wants to know how the library is built | `how-it-works.md` explains it and summarises the recorded decisions one line each, linking to the full record on GitHub |
 | Published page needs maintainer depth | Absolute `github.com/davitf/archivey/blob/main/dev-docs/…` URL, never a site-relative path into unpublished material |
 
 ### Requirement: Document complete-or-raise listing vs MemberListReport

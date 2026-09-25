@@ -199,6 +199,11 @@ behaviour. The complete list is on the two classes.
 ## ISO 9660
 
 - Needs `[recommended]` (`pycdlib`) and a seekable source.
+- `import archivey` patches pycdlib for the whole process: the `collections` name inside
+  `pycdlib.pycdlib` becomes one whose `deque` skips a directory extent it has already
+  queued. That stops pycdlib looping forever on a directory tree that points back at an
+  ancestor. Other code using pycdlib in the same process gets the patch too. A valid tree
+  never revisits an extent, so its results do not change.
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
 - Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty

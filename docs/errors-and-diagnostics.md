@@ -22,13 +22,13 @@ React to specific cases with the subtypes:
 
 | Exception | Raised when |
 | --- | --- |
-| `OpenError` | the source can't be opened — `FormatDetectionError` (unknown format), `UnsupportedFormatError`, `StreamNotSeekableError` (a pipe, where the format or the access mode needs seek) |
-| `EncryptionError` | a password is required, missing, or wrong; for a ZipCrypto member, also when its data fails its integrity check after the password passed the format's one-byte check, which a damaged member can cause too (see [Gotchas](gotchas.md)) |
-| `CorruptionError` / `TruncatedError` | the archive is malformed or cut short |
-| `PackageNotInstalledError` | an optional package or tool is absent, or RARLAB `unrar`/`rar` is older than 6.0 (see [Install](install.md#getting-rarlab-unrar-or-rar)) |
-| `FilterRejectionError` | extraction blocked an unsafe member — `PathTraversalError`, `SymlinkEscapeError`, `SpecialFileError` |
-| `NameCollisionError` / `NameRewrittenError` | raised only when you opted in with `abort_on` (see [Safe extraction](extracting.md)); without it, a collision or a portable-name rewrite is recorded in the result, not raised |
-| `ResourceLimitError` | a listing, extraction, or decoder safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and compressed RAR 1.5/2.x comment bytes at open), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, or the total password-hashing rounds an encrypted archive asks for, checked before each key is derived |
+| [`OpenError`][archivey.OpenError] | the source can't be opened — `FormatDetectionError` (unknown format), `UnsupportedFormatError`, `StreamNotSeekableError` (a pipe, where the format or the access mode needs seek) |
+| [`EncryptionError`][archivey.EncryptionError] | a password is required, missing, or wrong; for a ZipCrypto member, also when its data fails its integrity check after the password passed the format's one-byte check, which a damaged member can cause too (see [Gotchas](gotchas.md)) |
+| [`CorruptionError`][archivey.CorruptionError] / [`TruncatedError`][archivey.TruncatedError] | the archive is malformed or cut short |
+| [`PackageNotInstalledError`][archivey.PackageNotInstalledError] | an optional package or tool is absent, or RARLAB `unrar`/`rar` is older than 6.0 (see [Install](install.md#getting-rarlab-unrar-or-rar)) |
+| [`FilterRejectionError`][archivey.FilterRejectionError] | extraction blocked an unsafe member — `PathTraversalError`, `SymlinkEscapeError`, `SpecialFileError` |
+| [`NameCollisionError`][archivey.NameCollisionError] / [`NameRewrittenError`][archivey.NameRewrittenError] | raised only when you opted in with `abort_on` (see [Safe extraction](extracting.md)); without it, a collision or a portable-name rewrite is recorded in the result, not raised |
+| [`ResourceLimitError`][archivey.ResourceLimitError] | a listing, extraction, or decoder safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and compressed RAR 1.5/2.x comment bytes at open), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, or the total password-hashing rounds an encrypted archive asks for, checked before each key is derived |
 
 Mistakes in **your** code are deliberately kept out of that hierarchy: opening a second
 overlapping stream without `concurrent_members=True`, using a closed reader, and similar
@@ -42,6 +42,13 @@ Every archivey exception can be pickled and copied with its message and attribut
 intact, so one raised in a `ProcessPoolExecutor` or `multiprocessing` worker arrives in
 the parent as the same type. As with any Python exception, its `__cause__` and
 `__context__` do not travel with it.
+
+Messages are safe to print. Control characters in an exception's message or a
+`Diagnostic.message` are backslash-escaped when the object is built, so printing one, or
+an uncaught traceback, cannot move the cursor or rewrite a terminal line. The structured
+fields — `member_name`, `archive_name`, `link_target`, a diagnostic's `context` — stay
+raw, and so does `raw_message`: escape them with
+[`escape_control_chars()`][archivey.terminal.escape_control_chars] before you show them.
 
 The same applies to an argument that is the wrong type or an unusable value — a
 `config=` that is not an `ArchiveyConfig`, a `budget=` that is not a
@@ -59,6 +66,27 @@ That also covers the values that would quietly switch a guard off — `None` on
 `ratio_activation_threshold`, which is not optional, and a NaN or an infinity on
 `max_ratio`, neither of which any ratio ever exceeds. Pass `None` on a field that allows
 it to disable that guard on purpose.
+
+### What is translated, and what passes through
+
+The libraries archivey decodes with — `zipfile`, `tarfile`, `lzma`, `pycdlib`, `unrar`
+and the others — raise their own exceptions. Archivey translates the ones it recognises
+into the tree above and keeps the original as `__cause__`, so the traceback still shows
+what the library said. It never converts *every* exception, and that shapes your
+`except` clauses:
+
+- **`OSError`, `KeyboardInterrupt` and `MemoryError` pass through as themselves.** A
+  disk error, a permission error or a failing stream you passed in is not reported as
+  `CorruptionError` or `TruncatedError`, so handle `OSError` beside `ArchiveyError` if
+  your program cares about both. `seek()` on a stream that cannot seek raises
+  `io.UnsupportedOperation`, which is also an `OSError`.
+- **Under `OnError.CONTINUE`, a filesystem error while writing one member does not
+  propagate.** It is recorded as that member's failure, in `ExtractionResult.error`, and
+  extraction moves on. Under `OnError.STOP` it propagates as itself.
+- **Any other type raised from inside archivey is a bug.** An `IndexError` or
+  `struct.error` from a read means a library raised something archivey does not
+  recognise yet. It is let through unchanged instead of being given a guessed type.
+  [Report it](https://github.com/davitf/archivey/issues) rather than catching it.
 
 ## Diagnostics
 
