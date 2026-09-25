@@ -28,7 +28,7 @@ React to specific cases with the subtypes:
 | `PackageNotInstalledError` | an optional package or tool is absent, or RARLAB `unrar`/`rar` is older than 6.0 (see [Install](install.md#getting-rarlab-unrar-or-rar)) |
 | `FilterRejectionError` | extraction blocked an unsafe member — `PathTraversalError`, `SymlinkEscapeError`, `SpecialFileError` |
 | `NameCollisionError` / `NameRewrittenError` | raised only when you opted in with `abort_on` (see [Safe extraction](extracting.md)); without it, a collision or a portable-name rewrite is recorded in the result, not raised |
-| `ResourceLimitError` | a listing, extraction, or decoder safety limit was exceeded — member count and metadata bytes when a list is materialized, total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, or the total password-hashing rounds an encrypted archive asks for, checked before each key is derived |
+| `ResourceLimitError` | a listing, extraction, or decoder safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and compressed RAR 1.5/2.x comment bytes at open), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, or the total password-hashing rounds an encrypted archive asks for, checked before each key is derived |
 
 Mistakes in **your** code are deliberately kept out of that hierarchy: opening a second
 overlapping stream without `concurrent_members=True`, using a closed reader, and similar

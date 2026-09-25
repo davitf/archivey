@@ -128,8 +128,11 @@ RAR has no header-size analogue for member count (the walk is sequential), so
 `UNLIMITED` can walk until memory is exhausted. The parse bound is a member
 count, not a byte budget. Spine `ListingLimits.max_metadata_bytes`
 (`archive-reading`) still apply when members are registered into a
-materialized list (`members()`), the same as every other format — not at
-`open_archive`.
+materialized list (`members()`), the same as every other format. The one
+exception is RAR 1.5/2.x compressed old-style comments, which expand after
+the parse: the reader SHALL sum their declared unpacked sizes (member and
+archive comments) at `open_archive`, before decoding any, and raise
+`ResourceLimitError` naming `max_metadata_bytes` when the sum exceeds it.
 
 #### Scenario: RAR parser bound matrix
 
@@ -138,6 +141,7 @@ materialized list (`members()`), the same as every other format — not at
 | Hostile or honest archive over `listing_limits.max_members` | `ResourceLimitError` at parse (`open_archive`), including `stream_members()` / `streaming=True` |
 | `listing_limits.max_members is None` (`UNLIMITED`) | No member-count bound at parse; a large honest archive opens |
 | Default limits, typical archive | Open and listing succeed |
+| Compressed RAR 1.5/2.x comments whose declared unpacked sizes sum past `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive`, before any comment is decoded, including `stream_members()` / `streaming=True` |
 
 ### Requirement: Expose RAR file-version history members
 

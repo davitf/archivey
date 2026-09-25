@@ -132,9 +132,17 @@ class ListingLimitTracker:
             )
 
     def _check_metadata(self, nbytes: int) -> None:
-        max_meta = self._limits.max_metadata_bytes
-        if max_meta is not None and nbytes > max_meta:
-            raise ResourceLimitError(
-                f"Listing limit reached: max_metadata_bytes={max_meta} "
-                f"(retained {nbytes} bytes)"
-            )
+        check_metadata_budget(self._limits, nbytes, detail=f"retained {nbytes} bytes")
+
+
+def check_metadata_budget(limits: ListingLimits, nbytes: int, *, detail: str) -> None:
+    """Raise :class:`ResourceLimitError` if ``nbytes`` exceeds ``max_metadata_bytes``.
+
+    ``None`` disables the check. ``detail`` names what was weighed; it goes in the
+    parentheses after the limit, so every refusal of this limit reads the same way.
+    """
+    max_meta = limits.max_metadata_bytes
+    if max_meta is not None and nbytes > max_meta:
+        raise ResourceLimitError(
+            f"Listing limit reached: max_metadata_bytes={max_meta} ({detail})"
+        )
