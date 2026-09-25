@@ -118,6 +118,23 @@ _MAX_TRAILING_SCAN = 1 * 2**20
 # 100 000-member listing), small enough that a partial batch is cheap to hold.
 _HEADER_BATCH = 1024
 
+
+def _header_text_bytes(info: tarfile.TarInfo) -> int:
+    """Header text a member built from ``info`` retains, counted low.
+
+    The base weighs each yielded member against ``max_metadata_bytes`` with about
+    these characters or more (it adds ``raw_name`` and counts non-ASCII four to a
+    character), so once this sum passes the cap the base has refused, or is about to.
+    The walk uses it to stop parsing where the byte cap would, without the base's
+    running total. Only ``./`` prefixes the base strips make it count higher, and
+    counting high only cuts one batch short.
+    """
+    total = len(info.name) + len(info.linkname) + len(info.uname) + len(info.gname)
+    for value in info.pax_headers.values():
+        total += len(value)
+    return total
+
+
 # Every compressed-tar combination the codec layer can decode: TAR composed with each
 # standalone stream codec (gz/bz2/xz/zst/lz4/lzip/lzma-alone/zlib/brotli/unix-compress).
 # The common ones have named ArchiveFormat constants; the rest are equal-by-value
@@ -475,10 +492,11 @@ class TarReader(BaseArchiveReader):
             yield from self._iter_members_progressive()
             return
         # Headers are pulled in batches rather than through getmembers(): the base
-        # counts each yielded member against ``max_members``, and a batch never asks
-        # for more than the cap has left, so a header bomb stops at the cap plus one
-        # header instead of after tarfile has parsed and kept every header in the
-        # file. Batches rather than one header per lock hold, because alternating
+        # counts each yielded member against ``max_members`` and ``max_metadata_bytes``,
+        # and a batch never reaches past what either cap has left (see
+        # _header_batch_size and _header_text_bytes), so a header bomb stops at the
+        # cap plus one header instead of after tarfile has parsed and kept every
+        # header in the file. Batches rather than one header per lock hold, because alternating
         # header parsing with member construction measured about 1.3x slower on an
         # ordinary 100 000-member listing; at 1 024 the difference is within noise.
         # ``iter(self._tar)`` rather than bare next() calls, because it serves headers
@@ -492,10 +510,18 @@ class TarReader(BaseArchiveReader):
         tar_iter = iter(self._tar)
         index = 0
         ended = False
+        byte_cap = self._config.listing_limits.max_metadata_bytes
+        text_bytes = 0
         while not ended:
             want = self._header_batch_size(index)
+            # Only the batch that crosses the byte cap is cut short. Past it the base
+            # has refused already, or is not enforcing, and a batch of one would be
+            # the slow walk batching exists to avoid.
+            byte_stop = (
+                byte_cap if byte_cap is not None and text_bytes <= byte_cap else None
+            )
             batch: list[tarfile.TarInfo] = []
-            failure: ArchiveyError | None = None
+            failure: CorruptionError | TruncatedError | None = None
             # The error boundary sits OUTSIDE the handle guard, so translation and
             # stamping never run under the shared-fileobj lock. An exception the
             # translator does not recognize (a genuine OSError from the source)
@@ -507,17 +533,22 @@ class TarReader(BaseArchiveReader):
                     with self._handle_guard():
                         for info in tar_iter:
                             batch.append(info)
-                            if len(batch) == want:
+                            text_bytes += _header_text_bytes(info)
+                            if len(batch) == want or (
+                                byte_stop is not None and text_bytes > byte_stop
+                            ):
                                 break
                         else:
                             ended = True
                             # Snapshot the EOF probe now, while the last read is still
                             # the block tarfile stopped on.
                             self._capture_eof_probe(index + len(batch) > 0)
-            except ArchiveyError as exc:
+            except (CorruptionError, TruncatedError) as exc:
                 # Hand out the headers this batch already parsed first, so a
                 # members_report() keeps the same salvaged prefix it would have had
-                # one header at a time.
+                # one header at a time. These two are the only errors the base ends
+                # a walk on with its prefix kept; on any other it discards the
+                # listing, so there is nothing to hand out.
                 failure = exc
             for info in batch:
                 yield self._to_member(info, index)
@@ -528,11 +559,13 @@ class TarReader(BaseArchiveReader):
 
     def _header_batch_size(self, listed: int) -> int:
         """How many headers the random-access walk may parse next: a full batch, or
-        what ``max_members`` has left plus the one header that trips it."""
+        what ``max_members`` has left plus the one header that trips it. Once that
+        header is listed the cap is not being enforced (``stream_members()`` on a
+        random-access reader), so the walk goes back to full batches."""
         cap = self._config.listing_limits.max_members
-        if cap is None:
+        if cap is None or listed > cap:
             return _HEADER_BATCH
-        return max(1, min(_HEADER_BATCH, cap - listed + 1))
+        return min(_HEADER_BATCH, cap - listed + 1)
 
     def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
         """Forward-only member walk — never calls ``getmembers()``.

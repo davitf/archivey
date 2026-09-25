@@ -223,3 +223,51 @@ def test_metadata_accounting_never_undercounts_utf8() -> None:
     weight = member_metadata_bytes(member)
     assert weight == 4 * len(name)
     assert weight >= len(name.encode("utf-8"))
+
+
+def test_tar_listing_stops_reading_headers_at_max_metadata_bytes(
+    tmp_path: Path,
+) -> None:
+    """The byte cap bounds what tarfile parses too, not only the member count.
+
+    A batch sized from ``max_members`` alone parsed up to 1 024 headers before the base
+    weighed the first against ``max_metadata_bytes``, so long names retained many times
+    the byte budget before the refusal.
+    """
+    import tarfile
+
+    tar_path = tmp_path / "long-names.tar"
+    with tarfile.open(tar_path, "w", format=tarfile.GNU_FORMAT) as tf:
+        for i in range(200):
+            tf.addfile(tarfile.TarInfo(name=f"{i:03d}" + "n" * 10_000))
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=50_000))
+    with open_archive(tar_path, config=cfg) as reader:
+        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+            reader.members()
+        tar = reader._tar  # type: ignore[attr-defined]
+        # 50 000 bytes of names is five of these; the header that passes the cap is
+        # the sixth, and the walk parses no further.
+        assert len(tar.members) <= 6
+
+
+def test_tar_header_batch_returns_to_full_size_past_max_members(tmp_path: Path) -> None:
+    """Past the cap the batch goes back to full size instead of one header.
+
+    ``stream_members()`` on a random-access reader walks the whole archive without
+    enforcing the cap, and a batch clamped to one header there is the slow
+    one-header-per-lock walk batching replaced.
+    """
+    import tarfile
+
+    from archivey.internal.backends.tar_reader import _HEADER_BATCH
+
+    tar_path = tmp_path / "one.tar"
+    with tarfile.open(tar_path, "w") as tf:
+        tf.addfile(tarfile.TarInfo(name="a"))
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=100))
+    with open_archive(tar_path, config=cfg) as reader:
+        size = reader._header_batch_size  # type: ignore[attr-defined]
+        assert size(0) == 101
+        assert size(100) == 1
+        assert size(101) == _HEADER_BATCH
+        assert size(5_000) == _HEADER_BATCH
