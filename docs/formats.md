@@ -219,6 +219,7 @@ behaviour. The complete list is on the two classes.
 - A bootable image lists its El Torito boot catalog (`boot.catalog`, `BOOT.CAT`) as an
   ordinary file, with the catalog's bytes as its data, as a mounted image shows it.
 - A file of 4 GiB or more, stored in several extents, lists and reads as one member.
+  Extents that are not back to back are refused with `UnsupportedFeatureError`.
 - `ArchiveInfo.format_version` is `None`: ISO 9660 records no interchange level.
 - Raw CD sector images (the `.bin` of a `.bin`/`.cue` pair) are recognised and refused
   with `UnsupportedFeatureError` naming the sector layout; they are not read. Convert

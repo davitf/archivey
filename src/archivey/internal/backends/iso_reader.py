@@ -292,17 +292,40 @@ def _is_directory_record(obj: object) -> TypeGuard[DirectoryRecord]:
     return _pycdlib_dr is not None and isinstance(obj, _pycdlib_dr.DirectoryRecord)
 
 
-def _extent_chain(record: DirectoryRecord) -> list[DirectoryRecord]:
-    """A file's directory records, one per extent, in order.
+def _continuation_chain(record: DirectoryRecord) -> list[DirectoryRecord]:
+    """``record`` and every record pycdlib linked after it through ``data_continuation``.
 
-    A file of 4 GiB or more is stored as several records with one name, each flagged
-    multi-extent but the last. ``_yield_children`` yields only the first, and pycdlib
-    links the rest to it through ``data_continuation``.
+    pycdlib links *any* record whose identifier repeats the previous one in its
+    directory, and sets the multi-extent flag on the earlier record as it does, so
+    this chain is only a candidate: ``IsoReader._extent_chain`` confirms it against
+    the flags as written in the image.
     """
     chain = [record]
     while chain[-1].data_continuation is not None:
         chain.append(chain[-1].data_continuation)
     return chain
+
+
+def _multi_extent_flagged(directory_data: bytes, block_size: int) -> set[int]:
+    """Extents of the records in a directory's data whose multi-extent flag is set.
+
+    Walks the raw records as ECMA-119 §9.1 lays them out: byte 0 is the record length,
+    bytes 2-5 the extent (little-endian), byte 25 the file flags, bit 7 multi-extent.
+    A zero length byte pads to the end of the sector.
+    """
+    flagged: set[int] = set()
+    offset = 0
+    while offset + 26 <= len(directory_data):
+        length = directory_data[offset]
+        if length == 0:
+            offset += block_size - offset % block_size
+            continue
+        if directory_data[offset + 25] & 0x80:
+            flagged.add(
+                int.from_bytes(directory_data[offset + 2 : offset + 6], "little")
+            )
+        offset += length
+    return flagged
 
 
 def _yield_children(
@@ -380,6 +403,12 @@ class IsoReader(BaseArchiveReader):
 
         self._iso = pycdlib.PyCdlib()
         self._iso_opened = False
+        # Each listed file's extent records, keyed by ``id`` of its first record: the
+        # chain is confirmed against the image while listing, under the handle guard,
+        # and ``_data_inode`` runs where that guard may already be held.
+        self._chains: dict[int, list[DirectoryRecord]] = {}
+        # Extents flagged multi-extent in the image, per directory extent read.
+        self._flagged_by_directory: dict[int, set[int]] = {}
         # Boundary outside the guard; an exception the translator does not recognize
         # (a genuine OSError from the handle) propagates unchanged.
         try:
@@ -400,6 +429,8 @@ class IsoReader(BaseArchiveReader):
                     self._iso_fp = self._track_source_seeks(source)
                     self._iso.open_fp(self._iso_fp)
                     self._iso_opened = True
+                    # pycdlib measured the image the same way inside ``open_fp``.
+                    self._image_length = self._iso_fp.seek(0, 2)
 
                     # Auto-select the richest namespace: Rock Ridge > Joliet > plain
                     # ISO 9660. Inside the guard, not after it: these are pycdlib calls
@@ -649,7 +680,7 @@ class IsoReader(BaseArchiveReader):
         link_target = self._symlink_target(member_type, rr)
 
         size = (
-            sum(chunk.data_length for chunk in _extent_chain(record))
+            sum(chunk.data_length for chunk in self._extent_chain(record))
             if member_type == MemberType.FILE
             else None
         )
@@ -796,6 +827,47 @@ class IsoReader(BaseArchiveReader):
             self._data_inode(record), self._iso.logical_block_size
         )
 
+    def _extent_chain(self, record: DirectoryRecord) -> list[DirectoryRecord]:
+        """A file's directory records, one per extent, in order.
+
+        A file of 4 GiB or more is stored as several records with one name, each
+        flagged multi-extent but the last. ``_yield_children`` yields only the first,
+        and pycdlib links the rest to it. pycdlib links two unrelated files that share
+        an identifier the same way, and by then has set the flag on the first of them
+        in memory, so the chain is kept only when every record but the last carries
+        the flag in the image itself. Otherwise the file is its own record alone, as
+        it was before multi-extent files were read.
+        """
+        cached = self._chains.get(id(record))
+        if cached is not None:
+            return cached
+        chain = _continuation_chain(record)
+        if len(chain) > 1:
+            parent = record.parent
+            assert parent is not None, "a listed file record has a parent directory"
+            flagged = self._flagged_in_image(parent)
+            if not all(chunk.extent_location() in flagged for chunk in chain[:-1]):
+                chain = [record]
+        self._chains[id(record)] = chain
+        return chain
+
+    def _flagged_in_image(self, directory: DirectoryRecord) -> set[int]:
+        """The multi-extent flags of ``directory``'s records, as written in the image.
+
+        Reads the directory's extent again. pycdlib read the same bytes, the same
+        length, inside ``open_fp``; it keeps no copy of the flags it then changed.
+        """
+        key = directory.extent_location()
+        flagged = self._flagged_by_directory.get(key)
+        if flagged is None:
+            block_size = self._iso.logical_block_size
+            with self._handle_guard():
+                self._iso_fp.seek(key * block_size)
+                data = self._iso_fp.read(directory.get_data_length())
+            flagged = _multi_extent_flagged(data, block_size)
+            self._flagged_by_directory[key] = flagged
+        return flagged
+
     def _data_inode(self, record: DirectoryRecord) -> Inode:
         """The inode to read a file's data through, spanning every extent it has.
 
@@ -804,11 +876,17 @@ class IsoReader(BaseArchiveReader):
         4 GiB or more, whose inode covers only its first extent, and the El Torito
         boot catalog, which pycdlib keeps in memory and gives no inode at all. The
         catalog's extent still holds its bytes on disc, which is what a mounted
-        image shows. A multi-extent file whose extents are not back to back is
-        refused rather than read as one run.
+        image shows.
+
+        A multi-extent file whose extents are not back to back is refused rather than
+        read as one run: every writer seen (xorriso, libarchive's fixture) lays them
+        out contiguously, and reading a gap would need a chained stream over
+        per-extent inodes that no image has needed yet. An inode built here that runs
+        past the end of the image is refused too. pycdlib clamps that only for records
+        it gives an inode, and the boot catalog is not one of them.
         """
         assert _pycdlib_inode is not None
-        chain = _extent_chain(record)
+        chain = self._chains.get(id(record)) or [record]
         if len(chain) == 1 and record.inode is not None:
             return record.inode
         block_size = self._iso.logical_block_size
@@ -826,13 +904,16 @@ class IsoReader(BaseArchiveReader):
                     archive_name=self._archive_name,
                 )
             expected += chunk.data_length // block_size
+        length = sum(chunk.data_length for chunk in chain)
+        if start * block_size + length > self._image_length:
+            raise CorruptionError(
+                f"ISO file data declared at sector {start}, {length} bytes, runs past "
+                f"the end of the {self._image_length}-byte image",
+                source_format=self._format,
+                archive_name=self._archive_name,
+            )
         inode = _pycdlib_inode.Inode()
-        inode.parse(
-            start,
-            sum(chunk.data_length for chunk in chain),
-            self._iso_fp,
-            block_size,
-        )
+        inode.parse(start, length, self._iso_fp, block_size)
         return inode
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:

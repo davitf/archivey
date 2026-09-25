@@ -924,13 +924,16 @@ def test_the_el_torito_boot_catalog_reads_and_extracts(tmp_path: Path) -> None:
     assert (tmp_path / "A.TXT").read_bytes() == b"hi"
 
 
-def _split_into_two_extents(image: bytes, identifier: bytes, *, gap: int = 0) -> bytes:
+def _split_into_two_extents(
+    image: bytes, identifier: bytes, *, gap: int = 0, flag: bool = True
+) -> bytes:
     """Rewrite a root file's directory record as two, the way a 4 GiB file is stored.
 
     The first record keeps the first block and is flagged multi-extent; the second
     has the same name and covers the rest, starting ``gap`` blocks after the first
-    ends. Both fit in the root directory's sector, whose padding absorbs the new
-    record.
+    ends. With ``flag=False`` the first record is not flagged, so the two are
+    unrelated files that happen to share an identifier. Both fit in the root
+    directory's sector, whose padding absorbs the new record.
     """
     buf = bytearray(image)
     root = struct.unpack_from("<I", buf, 16 * 2048 + 156 + 2)[0] * 2048
@@ -952,7 +955,8 @@ def _split_into_two_extents(image: bytes, identifier: bytes, *, gap: int = 0) ->
 
     first, second = bytearray(record), bytearray(record)
     both_endian(first, 10, 2048)
-    first[25] |= 0x80
+    if flag:
+        first[25] |= 0x80
     both_endian(second, 2, extent + 1 + gap)
     both_endian(second, 10, size - 2048)
     sector_end = root + 2048
@@ -999,6 +1003,43 @@ def test_a_multi_extent_file_with_a_gap_is_refused() -> None:
         assert ar.get("BIG.BIN").size == 3048
         with pytest.raises(UnsupportedFeatureError, match="not contiguous"):
             ar.read("BIG.BIN")
+
+
+def test_a_repeated_identifier_without_the_flag_is_not_one_file() -> None:
+    """pycdlib links any record whose identifier repeats the previous one, and sets
+    the multi-extent flag on the first in memory. Only the flag as written in the
+    image makes a chain; without it the member is its own record, as before."""
+    image = _split_into_two_extents(
+        _image_with_two_block_file(), b"BIG.BIN;1", flag=False
+    )
+    with open_archive(io.BytesIO(image)) as ar:
+        assert ar.get("BIG.BIN").size == 2048
+        assert ar.read("BIG.BIN") == b"a" * 2048
+
+
+def test_a_boot_catalog_declared_past_the_image_end_is_refused() -> None:
+    """pycdlib clamps a record running past the image only when it gives it an
+    inode, and the boot catalog gets none; the inode built for it is checked."""
+    import pycdlib
+
+    from archivey.exceptions import CorruptionError
+
+    iso = pycdlib.PyCdlib()
+    iso.new()
+    iso.add_fp(io.BytesIO(b"\0" * 2048), 2048, "/BOOT.IMG;1")
+    iso.add_eltorito("/BOOT.IMG;1", "/BOOT.CAT;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    data = bytearray(out.getvalue())
+    record = data.index(b"BOOT.CAT;1") - 33
+    struct.pack_into("<I", data, record + 10, 0x40000000)
+    struct.pack_into(">I", data, record + 14, 0x40000000)
+
+    with open_archive(io.BytesIO(bytes(data))) as ar:
+        assert ar.get("BOOT.CAT").size == 0x40000000
+        with pytest.raises(CorruptionError, match="runs past the end"):
+            ar.read("BOOT.CAT")
 
 
 def test_format_version_is_not_pycdlibs_guess(rock_ridge_iso: Path) -> None:

@@ -13,7 +13,7 @@ the status — this page states the behaviour and links the row.
 | Read | Yes, through `pycdlib` |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
 | Source | Seekable only, in both access modes. `start_offset` is refused: nothing precedes an image |
-| Listing cost | `INDEXED`. The whole tree is parsed inside `open_archive()`, for every tree the image has; listing after that reads nothing (§2.2) |
+| Listing cost | `INDEXED`. The whole tree is parsed inside `open_archive()`, for every tree the image has; listing after that reads nothing, except to confirm a multi-extent file (§2.2) |
 | Access cost | `DIRECT` — every file is one extent (or one run of extents) at an absolute sector |
 | Stream capability | `SEEKABLE` |
 | Core dependencies | None can read it: ISO needs `pycdlib`, which is in `[recommended]` |
@@ -114,7 +114,9 @@ than `CD001`, and High Sierra has `CDROM` at 32 777, so neither is detected.
 tables agree, and walks every tree the image has: the PVD tree, the Joliet tree, and UDF
 descriptors when present. That is where the cost is. After it, listing touches only
 records already in memory (`test_listing_reads_nothing_from_the_image`), which is what
-lets the member walk run without the handle lock.
+lets the member walk run without the handle lock. The one exception is a directory
+holding a repeated identifier: its extent is read once more, under the handle lock, to
+check the multi-extent flags as written (§2.3).
 
 **The namespace is picked once for the image: Rock Ridge, then Joliet, then plain.**
 `ArchiveInfo.extra["iso.namespace"]` reports which. Rock Ridge counts as present when
@@ -189,8 +191,18 @@ here, over the extents read straight from the image (`_data_inode`):
   extents back to back — xorriso and libarchive's fixture both do — and the ISO 9660
   standard does not require it, so a chain with a gap is refused with
   `UnsupportedFeatureError` rather than read as one run.
+
+  `pycdlib` builds that chain for *any* record whose identifier repeats the previous one
+  in its directory, and sets the multi-extent flag on the earlier record in memory while
+  doing it. So the in-memory flags cannot tell a real multi-extent file from two
+  unrelated files that share a name. archivey re-reads the directory's extent, only when
+  a chain exists, and keeps the chain only if every record but the last carries the flag
+  as written (`_extent_chain`). Otherwise the member is its first record alone, and the
+  duplicate stays hidden, as it always was.
 - **The boot catalog.** `pycdlib` keeps it in memory and gives its record no inode. Its
-  extent still holds the bytes, which is what a mounted image shows.
+  extent still holds the bytes, which is what a mounted image shows. Because it has no
+  inode, `pycdlib` never clamped its length to the image either, so an inode built here
+  that runs past the end of the image is `CorruptionError`.
 
 `MemberStreams.CONCURRENT` puts one per-reader lock around everything that moves
 `pycdlib`'s shared image handle: `PyCdlibIO` construction and entry, every read and seek,
@@ -343,11 +355,13 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Record walk: `/` in a name, duplicate names, cycles, `rr_moved`, a record without Rock Ridge | `::test_a_rock_ridge_name_holding_a_slash_costs_no_sibling`, `::test_duplicate_rock_ridge_names_all_list`, `::test_the_record_walk_descends_each_directory_extent_once`, `::test_rock_ridge_relocation_directory_is_not_listed`, `::test_a_rock_ridge_record_without_entries_lists_under_its_iso_name` |
 | Device node is `OTHER`; plain versions keep the newest current | `::test_a_rock_ridge_device_node_is_other_not_file`, `::test_plain_iso_versions_keep_the_newest_current` |
 | `TF` long-form dates; `TF` wins over the record date | `::test_rock_ridge_long_form_tf_time_is_read`, `::test_rock_ridge_tf_modification_time_wins_over_record_date` |
-| Boot catalog reads and extracts; multi-extent size and data; a gap refused; no level guess | `::test_the_el_torito_boot_catalog_reads_and_extracts`, `::test_a_multi_extent_file_lists_and_reads_every_extent`, `::test_a_multi_extent_file_with_a_gap_is_refused`, `::test_format_version_is_not_pycdlibs_guess` |
+| Boot catalog reads and extracts, and one declared past the image end is refused | `::test_the_el_torito_boot_catalog_reads_and_extracts`, `::test_a_boot_catalog_declared_past_the_image_end_is_refused` |
+| Multi-extent size and data; a gap refused; a repeated identifier without the on-disc flag is not a chain | `::test_a_multi_extent_file_lists_and_reads_every_extent`, `::test_a_multi_extent_file_with_a_gap_is_refused`, `::test_a_repeated_identifier_without_the_flag_is_not_one_file` |
+| No interchange-level guess | `::test_format_version_is_not_pycdlibs_guess` |
 | Cycle guard in `pycdlib`'s own walk, in all three trees | `::test_pycdlib_directory_cycle_does_not_hang` |
 | Directory length bound; path sources go through the source; handles released on failure | `::test_directory_data_length_does_not_drive_the_allocation`, `::test_a_path_source_is_read_through_the_archive_source`, `::test_a_refused_path_source_does_not_hold_its_handle`, `::test_a_failure_after_open_fp_is_translated_and_releases` |
 | Corrupt input is `CorruptionError`; handle `OSError` is not | `::test_corrupt_iso_raises`, `::test_filesystem_oserror_propagates_unwrapped` |
-| Listing reads nothing after open | `::test_listing_reads_nothing_from_the_image` |
+| Listing reads nothing after open, on an image with no repeated identifier | `::test_listing_reads_nothing_from_the_image` |
 | Concurrent reads under the lock | `tests/test_concurrent_multithread.py::test_multithread_iso_open_read`, `tests/test_locked_stream.py::test_tar_iso_concurrent_open_uses_lock` |
 | Cross-format equivalence (`basic`, `encoding`, `symlinks`, Rock Ridge and Joliet-only) | `tests/test_corpus_sweep.py` |
 | A truncated image reads short | **Nothing pins it**, because nothing decides it yet (§7) |
