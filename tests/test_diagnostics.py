@@ -214,6 +214,41 @@ def test_callback_order_and_failure_propagates(
     assert collector.snapshot().total_count == 2
 
 
+def test_deferring_raises_holds_until_the_outermost_block_asks() -> None:
+    collector = DiagnosticCollector(policy=DiagnosticPolicy.strict())
+    with collector.deferring_raises() as outer:
+        with collector.deferring_raises() as inner:
+            _emit_norm(collector, message="first")
+            _emit_norm(collector, message="second")
+            assert inner() is None  # an inner block leaves the raise to its owner
+        held = outer()
+    assert isinstance(held, DiagnosticRaisedError)
+    assert str(held).startswith("first")
+    assert collector.snapshot().total_count == 2
+    # Outside any block the same emit raises at once again.
+    with pytest.raises(DiagnosticRaisedError):
+        _emit_norm(collector, message="third")
+
+
+def test_deferring_raises_holds_a_callback_exception_but_not_an_interrupt() -> None:
+    def boom(d: Diagnostic) -> None:
+        raise RuntimeError("callback boom")
+
+    collector = DiagnosticCollector(on_diagnostic=boom)
+    with collector.deferring_raises() as pending:
+        _emit_norm(collector, message="first")
+        assert isinstance(pending(), RuntimeError)
+
+    def interrupt(d: Diagnostic) -> None:
+        raise KeyboardInterrupt
+
+    collector = DiagnosticCollector(on_diagnostic=interrupt)
+    with collector.deferring_raises() as pending:
+        with pytest.raises(KeyboardInterrupt):
+            _emit_norm(collector, message="first")
+        assert pending() is None
+
+
 def test_callback_may_read_snapshot() -> None:
     collector = DiagnosticCollector()
 

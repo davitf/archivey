@@ -85,11 +85,10 @@ gate; it lists docs still naming what your branch removed or moved, fails on lin
 far wider than their file, and its `red-on-base` subcommand checks a "fails on `main`"
 claim (`.claude/skills/address-review-findings/SKILL.md` §5).
 
-`check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs — `ruff check`,
-`ruff format --check`, **`pyrefly`**, **`ty`**, `check_openspec_archived.py`,
-`check_openspec_self_reference.py`, `openspec validate --all`, `check_docs_nav.py`, and
-the strict docs build. It runs every
-gate even after one fails and lists what failed at the end, so a single run tells you
+`check.sh` mirrors CI's `lint`, `docs` and `openspec` jobs: ruff, **`pyrefly`**,
+**`ty`**, the OpenSpec checks, the docs-tree and link checks, the strict docs build and
+the check on what that build rendered. The script itself is the list. It runs every gate
+even after one fails and lists what failed at the end, so a single run tells you
 everything that is wrong. Without `--fix` it writes nothing and answers "will CI pass?".
 
 `test.sh` passes extra arguments through to pytest (`./scripts/test.sh tests/test_zip.py
@@ -253,6 +252,15 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   prose here, follows [`AGENTS.md`](AGENTS.md) §Writing English. It decides how you
   write a comment; the two rules above decide whether to write one and what it says,
   and they win where the two ever pull apart.
+- **Cross-references in docstrings use Sphinx roles**, such as
+  ``:class:`~archivey.ArchiveMember` ``. The roles accepted are `:class:`, `:meth:`,
+  `:func:`, `:attr:`, `:data:`, `:const:`, `:exc:`, `:mod:`, `:obj:` and `:any:`, each
+  with an optional `py:` domain. `SphinxRolesToAutorefs` in `scripts/griffe_extensions.py`
+  turns them into links on the API page, and `scripts/check_docs_rendered.py` fails the
+  docs build when one leaks as text, or when its target does not resolve and is not on
+  the check's list of targets known to have no anchor. Pages under `docs/` are Markdown
+  that nothing rewrites, so there use mkdocstrings syntax:
+  ``[`ArchiveMember`][archivey.ArchiveMember]``.
 - **Comments describe the code as it is, not how it got there.** A comment in `src/` is
   read by someone who never saw the change that produced it, so it must not depend on
   that change being remembered. Three things this rules out:

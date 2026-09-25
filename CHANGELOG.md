@@ -73,6 +73,28 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A Windows symlink to a network share keeps its `//server/share` target.** A ZIP or
+  7z reparse buffer that named its target only as `\??\UNC\server\share` listed
+  the link as pointing at the relative path `UNC/server/share`, and extraction created
+  that relative link. The target is absolute now, so safe extraction blocks the member
+  with `SymlinkEscapeError`, as it does any link that leaves the destination.
+- **A 7z AES coder whose properties are one byte, with no salt and no IV, opens.** 7-Zip
+  reads that as an empty salt and a zero IV; archivey refused it as corrupt.
+- **`FormatInfo` and `DetectionConfidence` are on the API page**, with each field
+  documented. Both were public and returned by `detect_format`, but undocumented.
+- **A usage error no longer suggests calling the wrong class.** Passing
+  `limits=ListingLimits` where an `ExtractionLimits` belongs said "did you mean
+  ListingLimits()?"; the hint now appears only when that call would be accepted.
+- **Errors keep their real cause in four places where a blind `except` changed it.**
+  Reading a bzip2 stream through the rapidgzip accelerator from a file object whose own
+  `read` failed aborted the Python process; the file object's error now propagates, as it
+  already did for gzip. A corrupt member read with `read()` raised `TruncatedError`
+  where `read(n)` raised `CorruptionError`; both now raise `CorruptionError`. A RAR with
+  encrypted headers cut inside a header's salt or IV raised `EncryptionError` even with
+  the right password; it now raises `CorruptionError`, and a `bytes` password that is not
+  UTF-8 counts as a wrong candidate there instead of escaping as `UnicodeDecodeError`.
+  An `OSError` or `MemoryError` on the check for data past a member's declared size was
+  taken as "no more data"; it now propagates.
 - **A reader builds each member once, and every listing method hands out the same
   objects.** `members_report_if_available()`, `members()`, `get()`, `stream_members()`
   and `extract_all()` now share one member list filled by one walk of the archive's
@@ -81,11 +103,16 @@ promise with that line; treat `0.2.0` as the first release of this library.
   stream pass yields, a link target is filled in on the member you already hold, and
   per-member diagnostics are counted once. Each typing-time diagnostic now carries the
   member's `member_id` on every backend.
-- **Streaming extraction of a ZIP, 7z or RAR handles a name stored twice** the way random
-  access does: the earlier entry is `SUPERSEDED` and the later one extracted, where it
-  used to raise `ExtractionError` on the second copy. It relies on the archive's index
-  listing every member before the pass starts. A streaming TAR has no index, so it
-  still writes the first copy and raises `ExtractionError` on the second.
+- **Streaming extraction handles a name stored twice** the way random access does: the
+  earlier entry is `SUPERSEDED` and the later one extracted, where it used to raise
+  `ExtractionError` on the second copy. A ZIP, 7z or RAR lists every member before the
+  pass starts, so the earlier copy is never written. A streaming TAR has no index, so it
+  writes the earlier copy and takes it back when the later one arrives: the later copy
+  replaces it, and it no longer counts toward `max_entries`, nor toward
+  `max_extracted_bytes` unless a hardlink written in between still holds its bytes.
+  The few cases where the result can still differ, all involving something that
+  depended on the earlier copy before the later one arrived, are listed in the
+  `safe-extraction` spec.
 - **Streaming extraction writes symlinks whose target is stored as member data.** A ZIP
   or 7z link reached by a streaming pass before its target had been read failed as
   having no target; the target is now read before the link is written.

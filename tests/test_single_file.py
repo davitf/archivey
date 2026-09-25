@@ -804,3 +804,140 @@ def test_xz_seek_across_blocks_through_open_archive(tmp_path: Path) -> None:
             assert f.read(300_000) == payload[300_000:600_000]
             f.seek(300_000)
             assert f.read() == payload[300_000:]
+
+
+# ---------------------------------------------------------------------------
+# Open-time validation: a source that is not decodable as the claimed codec raises
+# from open_archive, not from a later read (format-single-file-compressors).
+# ---------------------------------------------------------------------------
+
+
+def _zstd_compress(data: bytes) -> bytes:
+    return zstd_backend().compress(data)
+
+
+def _brotli_compress(data: bytes) -> bytes:
+    import brotli
+
+    return brotli.compress(data)
+
+
+def _lz4_compress(data: bytes) -> bytes:
+    import lz4.frame
+
+    return lz4.frame.compress(data)
+
+
+# suffix -> (compressor, skip marks). The ten single-file codecs.
+_SINGLE_FILE_CODECS = {
+    ".gz": (gzip.compress, ()),
+    ".bz2": (bz2.compress, ()),
+    ".xz": (lzma.compress, ()),
+    ".lzma": (lambda d: lzma.compress(d, format=lzma.FORMAT_ALONE), ()),
+    ".zz": (zlib.compress, ()),
+    ".lz": (make_lzip_member, ()),
+    ".zst": (_zstd_compress, (requires_zstd(),)),
+    ".br": (_brotli_compress, (requires("brotli"),)),
+    ".lz4": (_lz4_compress, (requires("lz4"),)),
+    ".Z": (make_unix_compress, (requires("ncompress"),)),
+}
+
+_NOT_A_STREAM = {"zeros": b"\x00" * 40_000, "zero-byte": b""}
+
+
+def test_open_validation_table_covers_every_single_file_codec() -> None:
+    # A new standalone codec gets open-time validation without a backend change; this
+    # makes it fail here until the tables below cover it too.
+    from archivey.internal.streams.codecs import SINGLE_FILE_CODECS
+
+    suffixes = {ext for codec in SINGLE_FILE_CODECS for ext in codec.extensions}
+    assert suffixes == set(_SINGLE_FILE_CODECS)
+
+
+def _codec_params(*, decode_only: bool = False) -> list:
+    """One param per codec, skipped where the test's needs are missing.
+
+    ``decode_only`` is for tests that never call the compressor: ``.Z`` decodes natively
+    and needs ``ncompress`` only to write fixtures, so it must run in the zero-dep leg.
+    """
+    return [
+        pytest.param(
+            suffix, id=suffix, marks=() if decode_only and suffix == ".Z" else marks
+        )
+        for suffix, (_compress, marks) in _SINGLE_FILE_CODECS.items()
+    ]
+
+
+@pytest.mark.parametrize("contents", sorted(_NOT_A_STREAM))
+@pytest.mark.parametrize("suffix", _codec_params(decode_only=True))
+@pytest.mark.parametrize("seekable_members", [False, True])
+def test_undecodable_source_raises_at_open(
+    tmp_path: Path, suffix: str, contents: str, seekable_members: bool
+) -> None:
+    path = tmp_path / f"backup{suffix}"
+    path.write_bytes(_NOT_A_STREAM[contents])
+    # The raise must come from open_archive itself, not from a read after it.
+    with pytest.raises((CorruptionError, TruncatedError)):
+        open_archive(path, seekable_members=seekable_members)
+
+
+@pytest.mark.parametrize("suffix", _codec_params())
+def test_undecodable_bytesio_raises_at_open(suffix: str) -> None:
+    # A seekable stream source takes the SharedSource branch rather than the path one.
+    compress, _marks = _SINGLE_FILE_CODECS[suffix]
+    with open_archive(io.BytesIO(compress(b"probe"))) as ar:
+        fmt = ar.format
+    with pytest.raises((CorruptionError, TruncatedError)):
+        open_archive(io.BytesIO(b"\x00" * 40_000), format=fmt)
+
+
+@pytest.mark.parametrize("suffix", _codec_params())
+@pytest.mark.parametrize("seekable_members", [False, True])
+def test_valid_empty_stream_still_opens_and_reads_empty(
+    tmp_path: Path, suffix: str, seekable_members: bool
+) -> None:
+    compress, _marks = _SINGLE_FILE_CODECS[suffix]
+    path = tmp_path / f"empty{suffix}"
+    path.write_bytes(compress(b""))
+    with open_archive(path, seekable_members=seekable_members) as ar:
+        assert ar.read(ar.members()[0]) == b""
+
+
+def test_open_time_failure_names_no_member(tmp_path: Path) -> None:
+    # Nobody asked for a member yet, so the error must not attribute the failure to one.
+    path = tmp_path / "backup.gz"
+    path.write_bytes(b"\x00" * 40_000)
+    with pytest.raises(CorruptionError) as info:
+        open_archive(path)
+    assert info.value.member_name is None
+    assert info.value.archive_name is not None
+
+
+def test_non_seekable_source_still_defers_validation_to_the_read() -> None:
+    # A probe read would consume a byte the one-shot member stream needs, so a
+    # non-seekable source keeps failing on the read, as documented.
+    with open_archive(
+        NonSeekableBytesIO(b"\x00" * 40_000), format=ArchiveFormat.GZ, streaming=True
+    ) as ar:
+        with pytest.raises(CorruptionError):
+            _read_single_streamed_member(ar)
+
+
+@pytest.mark.parametrize(
+    "mode", [AcceleratorMode.AUTO, AcceleratorMode.ON, AcceleratorMode.OFF]
+)
+@pytest.mark.parametrize("contents", sorted(_NOT_A_STREAM))
+def test_corrupt_bz2_raises_whatever_the_accelerator_mode(
+    tmp_path: Path, contents: str, mode: AcceleratorMode
+) -> None:
+    # A capability flag never turns a corrupt source into an empty successful read. Under
+    # seekable_members=True the bzip2 read goes through rapidgzip's bundled decoder, which
+    # used to return b"" for these inputs.
+    if mode is not AcceleratorMode.OFF:
+        pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    path = tmp_path / "garbage.bz2"
+    path.write_bytes(_NOT_A_STREAM[contents])
+    config = ArchiveyConfig(use_indexed_bzip2=mode)
+    with pytest.raises((CorruptionError, TruncatedError)):
+        with open_archive(path, seekable_members=True, config=config) as ar:
+            ar.read(ar.members()[0])

@@ -261,6 +261,18 @@ behaviour. The complete list is on the two classes.
   bits after the last complete code raise `TruncatedError` on the next `read()` after
   delivering available bytes; zero-leftover cuts remain silent. Forward decode works on
   non-seekable sources; CLEAR boundaries provide seek points when seekability is declared.
+- `open_archive` decodes the first byte of a seekable source, so a file that is not
+  the codec its name or detection claims (a `.gz` full of zeros, an empty `.bz2`) raises
+  `CorruptionError` or `TruncatedError` from `open_archive` rather than from the first
+  read. A valid empty stream still opens and reads as `b""`. The check goes one byte
+  deep: damage further in still fails on the read. It costs one decoded block, which is
+  noticeable only for `.bz2` (a block is up to 900 KB of output; about 30 ms on
+  incompressible data). A pipe is not checked at open, because the check would consume
+  bytes of its one pass; it fails on the first read as before.
+- The `[seekable]` accelerator's bzip2 decoder reads input that is not bzip2 as an empty
+  stream. When it yields nothing, Archivey decodes the source again with the standard
+  library, so a corrupt `.bz2` raises the same error whether or not
+  `seekable_members=True` engaged the accelerator.
 - `archivey.open_stream(...)` matches the archive rule: non-seekable unless
   `seekable=True`.
 
@@ -268,8 +280,8 @@ behaviour. The complete list is on the two classes.
 
 `member.hashes` holds digests the archive **already stores** (or, for multi-member
 lzip, derives via CRC combine from per-member stored CRCs), keyed by
-:class:`~archivey.HashAlgorithm` (values always ``bytes`` — CRC-32 is four
-big-endian bytes via :func:`~archivey.crc32_digest`). They are readable without
+[`HashAlgorithm`][archivey.HashAlgorithm] (values always ``bytes`` — CRC-32 is four
+big-endian bytes via [`crc32_digest()`][archivey.crc32_digest]). They are readable without
 decompressing when the backend documents them. They are **not** computed digests —
 a full `read()` still verifies through the normal path.
 

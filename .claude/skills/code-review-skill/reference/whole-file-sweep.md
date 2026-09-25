@@ -77,6 +77,17 @@ landed on. A pass that predates stable finding IDs writes `ids=untagged`, and on
 reviewing host is not recorded writes `reviewer=unknown`. Do not reach for any of the three
 when recording your own read.
 
+**A file that moved gets a re-anchor marker, not a re-read.** When a rename or a move
+orphans a marker (`sweep_coverage.py` reports the old path and stops counting it), post a
+new marker at the new path that copies the old one's fields unchanged — same `pass=`,
+`date=`, `lines=`, `findings=`, `ids=`, `reviewer=`, `head=` — and ends with
+`moved_from=<old path>`. Its prose names the PR that moved the file and says nobody re-read
+it. The counter then counts the file at its new path and stops reporting the old one. Do not
+re-anchor a file whose code was folded into another file: that code is read when the file it
+landed in is, and the old path stays in the orphan list as the record. First used
+2026-09-25 for the five modules moved under `internal/backends/` and `escaping.py` →
+`terminal.py`.
+
 **Why this exists.** Findings are evidence of a read; the absence of findings is not. The
 coverage figure on [`open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md)
 was overstated by twelve points in two consecutive snapshots because threads were counted as

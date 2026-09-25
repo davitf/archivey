@@ -96,6 +96,63 @@ def test_rar3_wrong_header_password_is_encryption_error() -> None:
 
 @requires("cryptography")
 @pytest.mark.parametrize(
+    ("name", "cut", "what"),
+    [
+        # Cut inside the first header's 16-byte IV (RAR5) / 8-byte salt (RAR3).
+        ("encrypted_header__.rar", 46, "RAR5 header IV"),
+        ("encrypted_header__rar4.rar", 20, "RAR3 header salt"),
+    ],
+)
+def test_short_header_salt_or_iv_is_corruption_not_a_wrong_password(
+    name: str, cut: int, what: str
+) -> None:
+    """The salt/IV read does not depend on the password, so running out of bytes there
+    is damage. It used to be re-wrapped as ``EncryptionError``, which sent the reader
+    through every password candidate and reported a truncated archive as a wrong
+    password, even with the right one.
+    """
+    data = _fixture(name).read_bytes()[:cut]
+    with pytest.raises(CorruptionError, match=what) as info:
+        parse_rar_archive(io.BytesIO(data), password="header_password")
+    assert not isinstance(info.value, EncryptionError)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    "name", ["encrypted_header__.rar", "encrypted_header__rar4.rar"]
+)
+def test_a_password_with_no_unicode_form_is_a_wrong_candidate(name: str) -> None:
+    """``bytes`` that are not UTF-8 cannot be any RAR password. On the header walk that
+    is a wrong candidate, so the loop reaches the right one; alone it is
+    ``EncryptionError``, never a raw ``UnicodeDecodeError``."""
+    import archivey
+
+    data = _fixture(name).read_bytes()
+    with archivey.open_archive(
+        io.BytesIO(data), password=[b"\xff\xfe", "header_password"]
+    ) as reader:
+        assert reader.members()
+    with pytest.raises(EncryptionError):
+        archivey.open_archive(io.BytesIO(data), password=b"\xff\xfe")
+
+
+@requires("cryptography")
+def test_a_rar5_password_cut_inside_a_surrogate_pair_is_a_wrong_candidate() -> None:
+    """RAR5 truncates the password to 127 UTF-16 units before its UTF-8 step, so an
+    astral character straddling the cut leaves half a pair with no UTF-8 form. That
+    candidate is rejected and the list moves on, instead of ``UnicodeDecodeError``."""
+    import archivey
+
+    data = _fixture("encrypted_header__.rar").read_bytes()
+    straddling = "a" * 126 + "\U0001f600"  # 128 UTF-16 units; the emoji spans 127/128
+    with archivey.open_archive(
+        io.BytesIO(data), password=[straddling, "header_password"]
+    ) as reader:
+        assert reader.members()
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
     "name",
     ["encrypted_header__.rar", "encrypted_header__rar4.rar"],
 )

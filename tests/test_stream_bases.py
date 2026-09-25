@@ -377,6 +377,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         archive_stream.ArchiveStream,
         codecs._AcceleratorStream,  # owns rapidgzip available_block_offsets
         codecs._GzipTruncationCheckStream,
+        codecs._Bzip2EmptyStreamCheck,
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -545,6 +546,7 @@ def test_delegating_stream_close_inventory() -> None:
         counting.SeekCountingStream,
         iso_reader._PyCdlibStream,
         codecs._GzipTruncationCheckStream,
+        codecs._Bzip2EmptyStreamCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedReadWatch,
     }
@@ -589,11 +591,11 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
     """A read override without a readinto override must disable passthrough.
 
     ``DelegatingStream.readinto`` zero-copies to ``inner.readinto`` by default,
-    which bypasses this class's ``read``. The two production cases that
+    which bypasses this class's ``read``. The three production cases that
     override ``read`` only (``_GzipTruncationCheckStream``,
-    ``_UnrarOwnedStream``) set ``readinto_passthrough = False`` on the class
-    and omit the constructor kwarg so the side effect still runs. Deleting
-    those two class flags leaves the rest of the suite green; this test is
+    ``_Bzip2EmptyStreamCheck``, ``_UnrarOwnedStream``) set
+    ``readinto_passthrough = False`` on the class and omit the constructor
+    kwarg so the side effect still runs. Deleting those three class flags leaves the rest of the suite green; this test is
     the gate that does not.
 
     The dangerous set is computed from ``cls.__dict__``, not a hand-maintained

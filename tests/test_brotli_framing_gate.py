@@ -10,11 +10,12 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
+    ArchiveyConfig,
     DetectionConfidence,
     detect_format,
     open_archive,
 )
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import Diagnostic, DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
@@ -232,14 +233,14 @@ def test_probable_br_decode_failure_does_not_set_unconfirmed(tmp_path: Path) -> 
     path = tmp_path / "x.br"
     full = brotli.compress(b"enough payload " * 200)
     path.write_bytes(full[: max(8, len(full) // 3)])
-    with open_archive(path) as reader:
-        member = next(iter(reader))
-        with pytest.raises((TruncatedError, CorruptionError)) as caught:
-            reader.open(member).read()
-        assert caught.value.format_unconfirmed is False
-        assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in {
-            d.code for d in reader.diagnostics.retained
-        }
+    diagnostics: list[Diagnostic] = []
+    config = ArchiveyConfig(on_diagnostic=diagnostics.append)
+    # The failure may come from open_archive's one-byte probe or from the read.
+    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        with open_archive(path, config=config) as reader:
+            reader.open(next(iter(reader))).read()
+    assert caught.value.format_unconfirmed is False
+    assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in {d.code for d in diagnostics}
 
 
 @requires("brotli")

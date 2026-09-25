@@ -762,3 +762,25 @@ def test_members_bytes_message_does_not_advise_wrapping(
         with pytest.raises(ArchiveyUsageError) as caught:
             reader.extract_all(dest, members=b"notes.txt")
     assert "Pass [" not in str(caught.value)
+
+
+def _as_any(value: object) -> Any:
+    """Hand a deliberately wrong-typed value to a typed parameter, as an untyped caller would."""
+    return value
+
+
+def test_class_passed_for_a_field_suggests_calling_it() -> None:
+    """``extraction_limits=ExtractionLimits`` (unparenthesised) is named back with the fix."""
+    with pytest.raises(
+        ArchiveyUsageError, match=r"did you mean ExtractionLimits\(\)\?"
+    ):
+        ArchiveyConfig(extraction_limits=_as_any(ExtractionLimits))
+
+
+def test_class_of_the_wrong_kind_gets_no_constructor_hint() -> None:
+    """Calling the wrong class would only trade one usage error for another."""
+    with pytest.raises(ArchiveyUsageError) as info:
+        ArchiveyConfig(extraction_limits=_as_any(ListingLimits))
+    message = str(info.value)
+    assert "the ListingLimits class itself" in message
+    assert "did you mean" not in message

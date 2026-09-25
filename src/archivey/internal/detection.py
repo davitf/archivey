@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, AcceleratorMode
-from archivey.detection import DetectionConfidence, FormatInfo
+from archivey.detection import DetectedBy, DetectionConfidence, FormatInfo
 from archivey.detection_cost import (
     DetectionBudget,
     DetectionBudgetPreset,
@@ -325,7 +325,7 @@ def _brotli_probe_confidence(
 def _resolve_single_file_or_tar(
     fmt: ArchiveFormat,
     base_confidence: DetectionConfidence,
-    base_detected_by: str,
+    base_detected_by: DetectedBy,
     peek_more: Callable[[int], bytes],
     *,
     ext_match: tuple[ArchiveFormat, str] | None = None,

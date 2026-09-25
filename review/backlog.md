@@ -37,18 +37,14 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
-- **#442 K1 — codec decompressor streams get no diagnostic collector.**
-  `open_codec_stream` (`internal/streams/codecs.py`) hands the collector to the outer
-  `ArchiveStream` only. `backend.open(source, params)` builds the codec's own stream
-  without one (`XzCodec.open` → `XzDecompressorStream(...)`), so the
-  `SEEK_INDEX_DEGRADED` emissions in `decompressor_stream.py` and `xz.py` run on
-  `resolve_collector`'s throwaway. Under `open_archive`, a `.xz` whose seek index is
-  unreadable therefore does not raise under `DiagnosticPolicy.strict()`, does not fire
-  `on_diagnostic`, and does not count in `reader.diagnostics`; only the WARNING line
-  survives. Repro: a valid `.xz` with 14 junk bytes appended, `open_archive` under
-  `strict()`, then `seek(500)` on the member stream. Fix: carry the collector on
-  `StreamConfig` into every `Codec.open`, then red-green with that repro. Parked
-  because an open PR was editing `StreamConfig` and `codecs.py` when #442 found it.
+- **#446 K5 — the review workflow's prompt still names the addendum.**
+  `.github/workflows/review-loop.yml` (~lines 180-190) tells each round to read
+  `archivey-review-addendum.md` first and calls the cap "the addendum's own round
+  budget". The redirect stub keeps both working. The prompt moves to `SKILL.md` §4/§6 in
+  a PR of its own, because the review action cannot review a change to its own workflow
+  file. It goes with the other workflow fixes from the 2026-09-24 loop retrospective:
+  skip an empty gate comment, and delete only the outcome labels that are present.
+
 - **#430 K4 — the ZIP reader's own provider loop still stops on the first repeat.**
   `_open_stored_confirmed` in `internal/backends/zip_reader.py` (phase 3, STORED
   ZipCrypto) asks the provider through `ask_provider` and `break`s when an answer is in
@@ -122,7 +118,11 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
   each comment's `unpacked_size` from the header, so this can be a pre-check over the sum
   and refuse a hostile archive before any `unrar` fork. Decoding every comment through a
   single synthetic RAR, rather than one subprocess each, is tracked separately and does
-  not block this. Handbook: [`formats/rar.md`](../dev-docs/formats/rar.md) §4, §6.
+  not block this. **Byte budget landed** (`RarReader._check_rar3_comment_budget`, #458).
+  **Still open: the fork count.** The budget weighs declared bytes, so a million comments
+  that each declare a few bytes pass it and still cost a million `unrar` spawns at open;
+  that closes with the single-synthetic-RAR decode above, not with this entry's budget.
+  Handbook: [`formats/rar.md`](../dev-docs/formats/rar.md) §4, §6.
 
 - **#333 follow-up — drop `read_exact` where the receiver is the source handle.**
   `ensure_full_count_reads` now makes every archive source full-count on both branches,

@@ -52,6 +52,10 @@ _SYMLINK_FLAGS_SIZE = 4
 # The NT object-manager prefix on a substitute name ("\??\C:\dir"). It is how the
 # kernel names the target and is meaningless as a path, so it is stripped.
 _NT_PREFIXES = ("\\??\\", "\\\\?\\")
+# What follows that prefix for a network target: "\??\UNC\server\share" names
+# "\\server\share". Stripping the prefix alone would leave "UNC\server\share", a
+# relative path to a directory called UNC.
+_NT_UNC_PREFIX = "UNC\\"
 
 
 @dataclass(frozen=True)
@@ -149,6 +153,8 @@ def parse_reparse_data(data: bytes) -> ReparsePoint | None:
         for prefix in _NT_PREFIXES:
             if target.startswith(prefix):
                 target = target[len(prefix) :]
+                if target[: len(_NT_UNC_PREFIX)].upper() == _NT_UNC_PREFIX:
+                    target = "\\\\" + target[len(_NT_UNC_PREFIX) :]
                 break
 
     return ReparsePoint(

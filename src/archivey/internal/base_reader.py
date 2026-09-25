@@ -605,9 +605,11 @@ class BaseArchiveReader(ArchiveReader):
                 if source is not None:
                     source.close()
         except Exception as exc:  # noqa: BLE001 - combine with pending stream-close failure
+            # Held, not swallowed: every path below raises it. Exception, not
+            # BaseException: an interrupt propagates alone, through the finally.
             teardown_exc = exc
-            self._state.complete_teardown()
-        else:
+        finally:
+            # Also on an interrupt: teardown is never retried, so it is complete either way.
             self._state.complete_teardown()
         if pending is not None and teardown_exc is not None:
             raise ExceptionGroup(
@@ -2706,6 +2708,15 @@ class BaseArchiveReader(ArchiveReader):
 
     def __exit__(self, *args: object) -> None:
         self.close()
+
+    def _validate_at_open(self) -> None:
+        """Check the source decodes, once ``open_archive`` has set format provenance.
+
+        A no-op by default. A backend that validates at open does it here rather than in
+        ``__init__``, so a failure is stamped by :meth:`_stamp_error_context` with the
+        provenance ``open_archive`` sets after construction (``format_unconfirmed`` and
+        its diagnostic). ``open_archive`` closes the reader if this raises.
+        """
 
     def _stamp_error_context(
         self, exc: ArchiveyError, member_name: str | None = None

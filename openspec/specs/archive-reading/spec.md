@@ -444,8 +444,9 @@ escape hatch there.
 | Default config, archive with ≤1_048_576 members and metadata under 64 MiB | `members()` / `scan_members()` succeed |
 | Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-7z`, `format-rar`); no full cache published |
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
+| RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z and RAR), which raise at `open_archive` |
+| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z and RAR), which raise at `open_archive`, and RAR's compressed-comment budget, which also raises there |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 
 ### Requirement: Listing metadata-byte accounting
@@ -472,6 +473,13 @@ target stored as member data (ZIP, 7z, RAR3/4), which is read only once every me
 registered: a target resolved while materializing `members()` / `scan_members()` SHALL
 count toward `max_metadata_bytes` before that list is published.
 
+A field that is expanded before any member is registered MAY be weighed by the size
+its header declares, before it is expanded, when expanding it is itself the cost to
+bound. The case that exists is RAR 1.5/2.x compressed old-style comments, each decoded
+by a separate `unrar` process: `format-rar` sums their declared unpacked sizes at
+`open_archive` and refuses the archive before decoding any. That check is separate
+from the running total above; the decoded comments are weighed again at registration.
+
 #### Scenario: metadata accounting matrix
 
 | Case | Expected |
@@ -482,6 +490,7 @@ count toward `max_metadata_bytes` before that list is published.
 | ASCII-only name | Weight equals `len(name)` (exact UTF-8) |
 | Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
 | Symlink target read from member data after registration | Weighed when read; over the cap → `ResourceLimitError` naming `max_metadata_bytes` |
+| RAR compressed old-style comments whose declared sizes sum past the cap | Refused at `open_archive` before any is decoded (`format-rar`) |
 
 ### Requirement: Name lookup and member identity
 
