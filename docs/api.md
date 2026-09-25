@@ -111,7 +111,9 @@ spec for lifecycle, retention, and policy.
 archivey's exceptions have two roots. `ArchiveyError` covers problems with the archive
 or its environment. `ArchiveyUsageError` covers mistakes in the calling code and is
 deliberately outside that tree, so `except ArchiveyError` does not hide them. The
-entries below follow the class tree: each group starts with its base class.
+entries below follow the class tree: each group starts with its base class, except the
+group from `ResourceLimitError` to `DiagnosticRaisedError`. Those five are direct
+subclasses of `ArchiveyError` and unrelated to each other.
 [Errors and diagnostics](errors-and-diagnostics.md) explains which one to catch.
 
 ::: archivey.ArchiveyError

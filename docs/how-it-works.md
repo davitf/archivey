@@ -112,8 +112,8 @@ What to install: [Install and extras](install.md). The detection order and its e
 
 - **ZIP: stdlib `zipfile`** reads the central directory. Member data is sliced from the
   file and decoded by the shared stream layer, except ZipCrypto members, which
-  `zipfile` decrypts. The stdlib keeps ZIP in the zero-dependency core; the alternatives
-  bring native dependencies.
+  `zipfile` decrypts and decodes itself. The stdlib keeps ZIP in the zero-dependency
+  core; the alternatives bring native dependencies.
 - **TAR: stdlib `tarfile`** parses the headers, reading decompressed bytes from the
   stream layer for `.tar.gz` and the other compressed forms. `tarfile` can stop at a
   corrupt header and return a short listing, so Archivey checks the end of the archive
@@ -134,9 +134,9 @@ Per-format behaviour: [Formats and extras](formats.md).
 
 The same promises hold for every format only if they are tested for every format.
 
-- **Reference oracles.** The native 7z and RAR readers are checked against `py7zr` and
-  the `7z` command, and against `rarfile` and `unrar`: member metadata and decompressed
-  bytes must match. The oracles are test dependencies only, never needed at run time.
+- **Reference oracles.** The native 7z reader is checked against `py7zr`, and the native
+  RAR reader against `rarfile` and `unrar`: member metadata and decompressed bytes must
+  match. The oracles are test dependencies only, never needed at run time.
   Opt-in runs compare against the test archives of `py7zr`, `rarfile` and libarchive.
 - **One corpus, every format.** Each corpus entry describes an archive once and is built
   in every format it declares. Every build must open, list the expected members, read
@@ -147,8 +147,10 @@ The same promises hold for every format only if they are tested for every format
   fuzzer runs nightly on the parsers, fixing up CRCs so it gets past the checksums.
   Property-based tests cover name normalization, the extraction safety checks and
   link resolution.
-- **Platforms.** CI runs Linux on Python 3.11 to 3.14, both with every extra and with
-  the zero-dependency core alone, plus macOS and Windows, and a leg pinned to the oldest
-  supported version of each dependency.
+- **Platforms.** CI runs Linux on Python 3.11 to 3.14 with every extra, and with the
+  zero-dependency core alone on the oldest and newest. macOS and Windows run on the
+  oldest and newest Python. One leg pins each dependency to its oldest supported
+  version, and one runs the free-threaded 3.13t build
+  ([Platforms and threading](support-matrix.md)).
 
 Depth: the [`testing-contract` spec](https://github.com/davitf/archivey/blob/main/openspec/specs/testing-contract/spec.md).
