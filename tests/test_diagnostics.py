@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import logging
@@ -768,13 +769,22 @@ def test_empty_archive_is_emitted_once_per_reader() -> None:
         assert reader.diagnostics.counts[DiagnosticCode.EMPTY_ARCHIVE] == 1
 
 
-def test_auto_detected_open_without_encoding_is_not_reported_unused() -> None:
-    """Only the *caller's* explicit encoding counts; an ordinary open passes none."""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("a.txt", b"hello")
+@pytest.mark.parametrize("kind", ["directory", "gzip"])
+def test_auto_detected_open_without_encoding_is_not_reported_unused(
+    kind: str, tmp_path: Path
+) -> None:
+    """Only the *caller's* explicit encoding counts; an ordinary open passes none.
 
-    with open_archive(io.BytesIO(buf.getvalue())) as reader:
+    Both backends ignore ``encoding=``, so the guard's ``encoding is not None`` clause
+    is the only thing keeping this open silent.
+    """
+    if kind == "directory":
+        (tmp_path / "a.txt").write_bytes(b"hello")
+        source: Path | io.BytesIO = tmp_path
+    else:
+        source = io.BytesIO(gzip.compress(b"hello"))
+
+    with open_archive(source) as reader:
         reader.members()
         assert DiagnosticCode.ENCODING_ARGUMENT_UNUSED not in reader.diagnostics.counts
 

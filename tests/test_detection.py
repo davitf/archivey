@@ -38,9 +38,7 @@ def _zip_bytes() -> bytes:
 
 def test_magic_match_is_certain() -> None:
     info = detect_format(io.BytesIO(_zip_bytes()))
-    assert info == FormatInfo(
-        ArchiveFormat.ZIP, DetectionConfidence.CERTAIN, "magic", 0
-    )
+    assert info == FormatInfo(ArchiveFormat.ZIP, DetectionConfidence.CERTAIN, "magic")
 
 
 def test_zip_empty_archive_magic() -> None:

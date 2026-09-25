@@ -532,6 +532,7 @@ def _open_resolved(
         )
 
     if encoding is not None and not backend_cls.USES_ENCODING:
+        # Only the caller's explicit encoding: an open that passed none asked for nothing.
         collector.emit(
             code=DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
             message=(

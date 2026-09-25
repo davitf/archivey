@@ -4,8 +4,7 @@
 
 Identify archive format of a path or binary stream without fully opening it.
 Returns frozen `FormatInfo` (format, confidence, optional SFX offset, detection
-diagnostics). Detection never discards bytes the opener still
-needs.
+diagnostics). Detection never discards bytes the opener still needs.
 
 ## Related specs
 

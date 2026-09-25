@@ -294,7 +294,8 @@ none of this — and the result object is not merely unexposed, it is **discarde
 
 `open_archive()` reads four things off the `FormatInfo` (`format`, `encoding_hint`,
 `payload_offset`, and `chosen_by`/`probe_only` via `_format_provenance`) and drops the
-object at `core.py:386`. Confidence, `detected_by` and corroboration are lost at open time.
+object at `core.py:386`. (`encoding_hint` was removed before 0.2.0, so the count is now
+three.) Confidence, `detected_by` and corroboration are lost at open time.
 
 Two consequences worth stating plainly, because both are evidence rather than opinion:
 
