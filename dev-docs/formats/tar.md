@@ -182,10 +182,11 @@ there both lists grow for the whole pass.
 | `size` | `TarInfo.size` for a file, which for a sparse member is its logical size. `None` for everything else. `compressed_size` is never set |
 | `modified` | `TarInfo.mtime`, where tarfile has already applied a PAX `mtime` with its fraction. A value `datetime` cannot hold is `None` plus `MEMBER_TIMESTAMP_INVALID` |
 | `accessed` | PAX `atime` only |
-| `created` | Always `None`: TAR records no birth time. PAX `ctime` is the inode-change time and goes to `extra["tar.ctime"]` |
+| `created` | Always `None`: TAR records no birth time |
+| `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created` |
 | `mode`, `uid`, `gid`, `uname`, `gname` | Straight from the header. `mode` keeps the permission and setuid/setgid/sticky bits only |
 | `is_sparse` | `TarInfo.issparse()`, which is true for the old GNU `S` typeflag and for all three PAX sparse encodings |
-| `extra` | `tar.type` always; `tar.pax_headers` when there are any; `tar.devmajor` / `tar.devminor` for device members; `tar.ctime` as above |
+| `extra` | `tar.type` always; `tar.pax_headers` when there are any; `tar.devmajor` / `tar.devminor` for device members |
 
 `encoding=` reaches `tarfile.open`, where `None` means tarfile's UTF-8 default. It
 changes how ustar and GNU names decode and never changes a PAX name, which is UTF-8 by
