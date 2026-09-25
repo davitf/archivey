@@ -73,6 +73,24 @@ all three NTFS times by default.
 | libarchive (`bsdtar --format 7zip`) | Linux, macOS | `0x81a08020` (Unix mode) | **ctime** | `ctime` |
 | libarchive (`tar.exe --format 7zip`) | Windows | **`0x81b68020` (Unix mode)** | birth | `ctime` |
 
+### TAR (PAX)
+
+Added in a later run,
+[36172269114](https://github.com/davitf/archivey/actions/runs/36172269114), with the
+same method. GNU tar is not on the Windows runner.
+
+| Writer | OS | PAX `ctime` | PAX `LIBARCHIVE.creationtime` | archivey |
+|---|---|---|---|---|
+| libarchive 3.7.2 (`bsdtar --format pax`) | Linux | ctime | — | `ctime` |
+| libarchive (`/usr/bin/tar --format pax`) | macOS | ctime | **birth** | `created` and `ctime` |
+| libarchive (`System32\tar.exe --format pax`) | Windows | **birth** | birth | `created`, and `ctime` holds the birth time too |
+| GNU tar (`--format=pax`) | Linux, macOS | ctime | — | `ctime` |
+
+libarchive writes `LIBARCHIVE.creationtime` wherever it can read a birth time: APFS and
+NTFS, but not ext4 on Linux, where libarchive 3.7.2 does not use `statx`. On Windows it
+also fills the PAX `ctime` with the birth time, because Windows has no inode change
+time.
+
 ## Conclusions
 
 1. **The field does not decide the meaning. The writer's OS does.** Every Linux and
@@ -103,11 +121,18 @@ all three NTFS times by default.
    `created` misses. Reading local headers during listing costs one seek per member.
    It is not done today.
 
+6. **`ctime` is what the archive stored, not a guarantee.** libarchive on Windows puts
+   the birth time in the PAX `ctime`, in the ZIP UT third time and in 7z `CTime`, so its
+   members can carry a birth time in `ctime`. `created` never carries `st_ctime`,
+   which is the promise the readers keep.
+
 ## What the readers do
 
 - **ZIP** (`zip_reader._zip_created`): a creation time from host FAT, OS/2, NTFS or
   VFAT is `created`. From any other host, unknown included, it goes to
   `ctime`. The UT third time wins over NTFS when both are present.
+- **TAR** (`tar_reader`): PAX `ctime` is `ctime`; libarchive's
+  `LIBARCHIVE.creationtime` is `created`.
 - **7z** (`sevenzip_reader._written_on_unix`): a Unix file type (`S_IFMT` bits) in
   the attributes' high word marks a Unix writer, so `CTime` goes to
   `ctime`. Otherwise `CTime` is `created`.
