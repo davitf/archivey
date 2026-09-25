@@ -16,14 +16,14 @@ if TYPE_CHECKING:
 
 
 def member_name_keys(name: str) -> tuple[str, ...]:
-    """The member names that a name written by a caller or a link refers to.
+    """The member names that a stored link target refers to.
 
-    A directory member's name carries a trailing ``/`` (``normalize_member_name``), and
-    neither a caller nor a stored link target is expected to write it. So a name without
-    the ``/`` also refers to the directory spelling. A name that ends in ``/`` refers
-    only to itself: the ``/`` says the writer meant a directory.
+    A directory member's name carries a trailing ``/`` (``normalize_member_name``), and a
+    link target is not expected to write it. So a target without the ``/`` also refers to
+    the directory spelling. A target that ends in ``/`` refers only to itself.
 
-    Link-target lookup and ``members=`` name selection both use this rule.
+    Link-target lookup only. Names a caller passes (``members=``, ``get()``, ``open()``)
+    match the stored name exactly.
     """
     if name.endswith("/"):
         return (name,)
@@ -54,8 +54,7 @@ class CollectionSelector:
         self._matched: set[int] = set()
         for index, entry in enumerate(entries):
             if isinstance(entry, str):
-                for key in member_name_keys(entry):
-                    self._names.setdefault(key, []).append(index)
+                self._names.setdefault(entry, []).append(index)
             # Match by (archive_id, member_id) identity. A member that carries no ids
             # (never registered by a reader, for example built by hand) cannot
             # correspond to any real member, so it matches nothing and is reported
@@ -137,9 +136,8 @@ def normalize_member_selector(
 ) -> Callable[[ArchiveMember], bool] | None:
     """Normalize a collection or predicate selector to a predicate.
 
-    A ``str`` entry matches every member with that name. An entry without a trailing
-    ``/`` also matches the directory spelling, so ``"dir"`` selects the member
-    ``"dir/"`` (:func:`member_name_keys`). An ``ArchiveMember`` entry matches by
+    A ``str`` entry matches every member with exactly that name, so a directory is
+    selected as ``"dir/"``, not ``"dir"``. An ``ArchiveMember`` entry matches by
     identity. The collection form returns a :class:`CollectionSelector`, which also
     records the entries that matched nothing.
 
