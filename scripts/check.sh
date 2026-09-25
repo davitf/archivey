@@ -86,6 +86,7 @@ fi
 run "docs nav"   uv run --group docs python scripts/check_docs_nav.py
 run "internal md links" uv run --no-sync python scripts/check_internal_md_links.py
 run "docs build" uv run --group docs mkdocs build --strict --quiet
+run "docs roles" python3 scripts/check_docs_rendered.py site
 
 # --- verdict -----------------------------------------------------------------------
 if [ ${#FAILED[@]} -eq 0 ]; then

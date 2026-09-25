@@ -80,6 +80,9 @@ jobs:
       - name: Build docs (strict)
         # --python overrides repo `.python-version` (3.11) so docs actually run on 3.12.
         run: uv run --python 3.12 --group docs mkdocs build --strict
+      - name: Check no Sphinx roles leaked into the site
+        # --strict cannot see these: to Markdown a Sphinx role is plain text.
+        run: python3 scripts/check_docs_rendered.py site
 
   # The specs under `openspec/specs/` are the authority, but a change only reaches them
   # when someone runs `openspec archive` — a step that was missed three times in a row
