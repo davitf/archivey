@@ -597,7 +597,8 @@ class ArchiveMember:
     Never Unix ``st_ctime`` (inode change), in any format. Where a writer stores
     ``st_ctime``, or may, that time is :attr:`ctime` instead: a creation slot filled
     on Unix (a RAR or 7z made there, a ZIP from any host but FAT, OS/2, NTFS or
-    VFAT, an unknown host too) and the Rock Ridge and PAX change times. Directory
+    VFAT, an unknown host too) and the Rock Ridge and PAX change times. A TAR gets
+    ``created`` only from libarchive's PAX ``LIBARCHIVE.creationtime``. Directory
     listing uses ``st_birthtime`` only.
     """
 
@@ -608,8 +609,8 @@ class ArchiveMember:
     record (TAR), or a creation slot whose writer fills it from ``st_ctime`` or
     cannot be shown not to (RAR, 7z, ZIP; see :attr:`created`). A format with a
     single creation slot (RAR, 7z, ZIP) fills at most one of ``created`` and
-    ``ctime``; Rock Ridge stores both times separately and so can fill both, as can a
-    directory listing. ``member.created or member.ctime`` prefers the birth time
+    ``ctime``. Rock Ridge and libarchive's PAX records store both times separately
+    and so can fill both, as can a directory listing. ``member.created or member.ctime`` prefers the birth time
     when there is one. A directory listing reports ``st_ctime`` on every OS but
     Windows, where Python's ``st_ctime`` was the creation time before 3.12.
 

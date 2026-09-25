@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Record which file time each archiver stores in its "creation time" slots.
 
-ZIP's NTFS extra field (0x000A) and 7z's CTime property are both documented as a
-creation (birth) time, but a Unix writer has no portable birth time and may store
+ZIP's NTFS extra field (0x000A), 7z's CTime property and libarchive's PAX
+``LIBARCHIVE.creationtime`` are documented as a creation (birth) time, but a Unix writer has no portable birth time and may store
 st_ctime (inode change time) there instead. archivey's ``Member.created`` must hold
 a birth time or nothing, so the readers need to know which writers do what. This
 script measures it on whatever OS it runs on; the CI workflow
@@ -146,10 +146,23 @@ def writers(payload: Path) -> list[tuple[str, str, list[str] | None, Path]]:
             Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "tar.exe"
         )
         bsdtar = str(system_tar) if system_tar.exists() else None
-    for fmt in ("zip", "7zip"):
-        kind = "7z" if fmt == "7zip" else "zip"
+    for fmt in ("zip", "7zip", "pax"):
+        kind = {"7zip": "7z", "pax": "tar"}.get(fmt, "zip")
         argv = [bsdtar, "--format", fmt, "-cf"] if bsdtar else None
         out.append((f"bsdtar/libarchive {fmt}", kind, argv, payload))
+
+    # GNU tar (Linux) writes PAX atime/ctime with --format=pax, never a birth time.
+    gnu_tar = _which("gtar") or (
+        _which("tar") if sys.platform.startswith("linux") else None
+    )
+    out.append(
+        (
+            "GNU tar --format=pax",
+            "tar",
+            [gnu_tar, "--format=pax", "-cf"] if gnu_tar else None,
+            payload,
+        )
+    )
 
     if sys.platform == "darwin":
         out.append(
@@ -279,6 +292,21 @@ def inspect_zip(path: Path) -> dict[str, object]:
 # --------------------------------------------------------------------------- 7z
 
 
+def inspect_tar(path: Path) -> dict[str, object]:
+    import tarfile
+
+    with tarfile.open(path) as tf:
+        info = next(m for m in tf.getmembers() if m.name.endswith("f.txt"))
+    fields: dict[str, object] = {"member": info.name, "mtime": float(info.mtime)}
+    for key, value in sorted(info.pax_headers.items()):
+        if "time" in key.lower():
+            try:
+                fields[f"pax {key}"] = float(value)
+            except ValueError:
+                fields[f"pax {key}"] = value
+    return fields
+
+
 def inspect_7z(path: Path) -> dict[str, object]:
     import archivey
 
@@ -370,7 +398,8 @@ def main() -> int:
             entry["version"] = next((v for v in version if "7-Zip" in v), "")
             print(f"version: {entry['version']}")
         try:
-            fields = inspect_zip(dest) if kind == "zip" else inspect_7z(dest)
+            inspect = {"zip": inspect_zip, "7z": inspect_7z, "tar": inspect_tar}[kind]
+            fields = inspect(dest)
         except Exception as exc:  # noqa: BLE001 - report, never abort the probe
             fields = {"parse error": f"{type(exc).__name__}: {exc}"}
         entry["fields"] = fields

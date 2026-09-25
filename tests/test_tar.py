@@ -385,6 +385,26 @@ def test_pax_atime_ctime(tmp_path: Path) -> None:
         assert abs(m.ctime.timestamp() - 1_600_000_200.25) < 1e-3
 
 
+def test_pax_libarchive_creationtime_is_created(tmp_path: Path) -> None:
+    # bsdtar stores the source's birth time as LIBARCHIVE.creationtime where the OS
+    # has one; it sits beside the PAX ctime, so a member can carry both.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        info = tarfile.TarInfo("p.txt")
+        info.size = 1
+        info.pax_headers["ctime"] = "1600000200.25"
+        info.pax_headers["LIBARCHIVE.creationtime"] = "1500000000.5"
+        t.addfile(info, io.BytesIO(b"x"))
+    path = tmp_path / "pax_birth.tar"
+    path.write_bytes(buf.getvalue())
+    with open_archive(path) as ar:
+        m = ar.get("p.txt")
+        assert m.created is not None
+        assert abs(m.created.timestamp() - 1_500_000_000.5) < 1e-3
+        assert m.ctime is not None
+        assert abs(m.ctime.timestamp() - 1_600_000_200.25) < 1e-3
+
+
 # ---------------------------------------------------------------------------
 # Compressed-tar combinations beyond gz/bz2/xz (codec-layer composition)
 # ---------------------------------------------------------------------------

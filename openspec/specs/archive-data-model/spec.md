@@ -236,8 +236,8 @@ class ArchiveMember:
 `st_ctime` (inode change). Where a writer stores `st_ctime`, in a creation slot or a
 field of its own, or may, the time SHALL go to `ctime` instead. A format with one
 creation slot (RAR, 7z, ZIP) SHALL fill at most one of `created` and `ctime`. Rock
-Ridge ISO stores a creation time and an attribute-change time separately and SHALL
-report each; a directory listing reports both where the OS has them (`ctime` from `st_ctime`, except on Windows). Each format spec says which
+Ridge ISO and libarchive's PAX TAR (`LIBARCHIVE.creationtime` beside `ctime`) store a
+creation time and a change time separately and SHALL report each; a directory listing reports both where the OS has them (`ctime` from `st_ctime`, except on Windows). Each format spec says which
 writers store which.
 
 `is_anti` SHALL be derived (`type == MemberType.ANTI`); there is no `is_anti` field.

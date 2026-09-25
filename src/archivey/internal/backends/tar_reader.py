@@ -203,7 +203,7 @@ _STORED_COMPRESSION: tuple[CompressionMethod, ...] = (
 
 
 def _pax_time(info: tarfile.TarInfo, key: str) -> datetime | None:
-    """Parse a PAX ``atime``/``ctime`` (float Unix seconds) into a tz-aware UTC datetime.
+    """Parse a PAX time record (float Unix seconds) into a tz-aware UTC datetime.
 
     ``tarfile`` folds the PAX ``mtime`` into ``TarInfo.mtime`` itself, but leaves the
     access and inode-change times only in ``pax_headers``; surface them here.
@@ -895,10 +895,15 @@ class TarReader(BaseArchiveReader):
         if accessed is not None:
             member.accessed = accessed
         # PAX ``ctime`` is st_ctime (inode change), never a birth time, so it is
-        # ``ctime`` and ``created`` stays None: TAR records no birth time.
+        # ``ctime``, never ``created``.
         ctime = _pax_time(info, "ctime")
         if ctime is not None:
             member.ctime = ctime
+        # libarchive writes the source's birth time, where the OS has one, as a PAX
+        # extension keyword. It is the only TAR writer known to store a birth time.
+        birth = _pax_time(info, "LIBARCHIVE.creationtime")
+        if birth is not None:
+            member.created = birth
         if info.uname:
             member.uname = info.uname
         if info.gname:
