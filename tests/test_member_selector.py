@@ -104,7 +104,7 @@ def test_stream_members_callable_collection_is_read_as_a_collection() -> None:
     assert selected == ["keep.txt"]
 
 
-# --- Directory spelling and unmatched entries (maintainer ruling on S25-K13) ---------
+# --- Exact name matching and unmatched entries (change member-selector-exact-names) ---
 
 
 def _tar(entries: list[tuple[str, bytes | None]]) -> bytes:
@@ -316,3 +316,39 @@ def test_a_repeated_member_entry_is_reported_once() -> None:
     with open_archive(io.BytesIO(data)) as ar:
         assert list(ar.stream_members(members=[foreign, foreign])) == []
         assert _unmatched(ar.diagnostics) == [("a.txt", "member")]
+
+
+def test_the_unmatched_report_names_the_directory_spelling() -> None:
+    """``"dir"`` against ``dir/`` is the one miss the strict rule creates, so its
+    message names the stored spelling. A plain typo gets no such hint."""
+    with open_archive(io.BytesIO(_tar(_DIR_TAR))) as ar:
+        list(ar.stream_members(members=["dir", "typo"]))
+        messages = {
+            d.context.entry: d.message
+            for d in ar.diagnostics.retained
+            if isinstance(d.context, SelectorUnmatchedContext)
+        }
+    assert "'dir/'" in messages["dir"]
+    assert "archive holds" not in messages["typo"]
+
+
+def test_a_symlink_target_without_the_slash_resolves_to_the_directory() -> None:
+    """Link targets are raw names, which carry no trailing ``/``; lookup tries both.
+
+    Mutant: make ``link_target_name_keys`` return only the name itself and
+    ``link_target_member`` becomes ``None``.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        directory = tarfile.TarInfo("subdir")
+        directory.type = tarfile.DIRTYPE
+        tar.addfile(directory)
+        link = tarfile.TarInfo("subdir_link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "subdir"
+        tar.addfile(link)
+    with open_archive(io.BytesIO(buf.getvalue())) as ar:
+        member = ar.get("subdir_link")
+        assert member is not None
+        assert member.link_target_member is not None
+        assert member.link_target_member.name == "subdir/"

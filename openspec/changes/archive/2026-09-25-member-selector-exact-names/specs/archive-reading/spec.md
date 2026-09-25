@@ -38,12 +38,10 @@ has been offered to the selector:
 | --- | --- |
 | `stream_members(members=["a.txt"])` with two `a.txt` | Both yielded, archive order |
 | Specific `ArchiveMember` among duplicates | Only that identity |
-| `members=["dir"]` on an archive holding `dir/` and `dir/f.txt` | Nothing selected; one `MEMBER_SELECTOR_UNMATCHED` for `dir` |
-| `members=["dir/"]` on the same archive | `dir/` selected, `dir/f.txt` not; no diagnostic |
+| `members=["dir"]` on an archive holding `dir/` | Nothing selected; `MEMBER_SELECTOR_UNMATCHED` for `dir`, naming `dir/` |
 | `members=["x/"]` on an archive holding only the file `x` | Nothing selected; one `MEMBER_SELECTOR_UNMATCHED` for `x/` |
 | `members=["a.txt", "typo.txt", "typo.txt"]`, pass to the end | `a.txt` selected; one `MEMBER_SELECTOR_UNMATCHED` for `typo.txt` |
 | Same selector, caller breaks after the first member | No `MEMBER_SELECTOR_UNMATCHED` |
 | `ArchiveMember` from another reader | Nothing selected; `MEMBER_SELECTOR_UNMATCHED` with `entry_kind="member"` |
 | `extract_all(members=["typo.txt"])` on ZIP with `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | `DiagnosticRaisedError` before any member is written |
 | `extract_all(members=["a.txt", "typo.txt"])` on TAR with the code set to `RAISE` | `a.txt` written, then `DiagnosticRaisedError`; no report |
-| `get("dir")` on an archive holding `dir/` | `None`: `get()` matches the stored name exactly |

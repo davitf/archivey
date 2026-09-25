@@ -15,21 +15,6 @@ if TYPE_CHECKING:
     from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 
-def member_name_keys(name: str) -> tuple[str, ...]:
-    """The member names that a stored link target refers to.
-
-    A directory member's name carries a trailing ``/`` (``normalize_member_name``), and a
-    link target is not expected to write it. So a target without the ``/`` also refers to
-    the directory spelling. A target that ends in ``/`` refers only to itself.
-
-    Link-target lookup only. Names a caller passes (``members=``, ``get()``, ``open()``)
-    match the stored name exactly.
-    """
-    if name.endswith("/"):
-        return (name,)
-    return (name, name + "/")
-
-
 class CollectionSelector:
     """The predicate that the collection form of ``members=`` normalizes to.
 
@@ -38,7 +23,14 @@ class CollectionSelector:
     iterable, so ``normalize_member_selector`` passes it through as a predicate.
     """
 
-    __slots__ = ("_entries", "_identities", "_matched", "_names", "_record")
+    __slots__ = (
+        "_directory_spellings",
+        "_entries",
+        "_identities",
+        "_matched",
+        "_names",
+        "_record",
+    )
 
     def __init__(
         self, entries: list[str | ArchiveMember], *, record: bool = True
@@ -52,6 +44,9 @@ class CollectionSelector:
         # (archive_id, member_id) -> indexes of the ArchiveMember entries with that id.
         self._identities: dict[tuple[str, int], list[int]] = {}
         self._matched: set[int] = set()
+        # Entries that name a directory without its trailing "/", seen on the way past
+        # ("dir" when the archive holds "dir/"), so the report can name the fix.
+        self._directory_spellings: set[str] = set()
         for index, entry in enumerate(entries):
             if isinstance(entry, str):
                 self._names.setdefault(entry, []).append(index)
@@ -64,7 +59,10 @@ class CollectionSelector:
                 self._identities.setdefault(identity, []).append(index)
 
     def __call__(self, member: ArchiveMember) -> bool:
-        by_name = self._names.get(member.name)
+        name = member.name
+        if self._record and name.endswith("/") and name[:-1] in self._names:
+            self._directory_spellings.add(name[:-1])
+        by_name = self._names.get(name)
         by_identity = None
         if member._archive_id is not None and member._member_id is not None:
             by_identity = self._identities.get((member._archive_id, member._member_id))
@@ -115,6 +113,12 @@ class CollectionSelector:
                     archive_name=archive_name, entry=entry, entry_kind="name"
                 )
                 message = f"members= entry {quoted(entry)} matched no member."
+                if entry in self._directory_spellings:
+                    message = (
+                        f"members= entry {quoted(entry)} matched no member; the "
+                        f"archive holds {quoted(entry + '/')} (a directory's name ends "
+                        f"in '/')."
+                    )
             else:
                 context = SelectorUnmatchedContext(
                     archive_name=archive_name, entry=entry.name, entry_kind="member"

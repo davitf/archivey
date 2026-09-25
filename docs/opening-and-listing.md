@@ -241,9 +241,9 @@ such skip and will hand you each version in turn. Pass the `ArchiveMember` itsel
 when you mean one specific entry — selectors match those by identity.
 
 Names match exactly, and a directory's name ends in `/`. Select the directory `docs/` as
-`members=["docs/"]`; `members=["docs"]` selects nothing. That selects the directory entry
-only, not the files inside it. `reader.get()` and `reader.open()` match names the same
-way.
+`members=["docs/"]`; `members=["docs"]` selects nothing, and its diagnostic names
+`docs/`. `members=["docs/"]` selects the directory entry only, not the files inside it.
+`reader.get()` and `reader.open()` also need the exact stored name.
 
 A name that matches nothing is not an error, but it is not silent either. Each such entry
 gets a `MEMBER_SELECTOR_UNMATCHED` diagnostic once every member has been offered to the
