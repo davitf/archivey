@@ -691,7 +691,6 @@ class DecompressorStream(ReadOnlyIOStream):
         # read never needs the partial-read buffer, and the extend + bytes(buffer) copy
         # was a measurable share of ZIP read-all overhead (perf review H2).
         chunks: list[bytes] = []
-        size_before = self._size
         with self._deferring_raises() as pending:
             if self._buffer:
                 chunks.append(bytes(self._buffer))
@@ -702,12 +701,12 @@ class DecompressorStream(ReadOnlyIOStream):
                     chunks.append(chunk)
             held = pending()
             if held is not None:
-                # Put back what was decoded, unconsumed. The EOF branch derived its
-                # size from the emptied buffer; when it published one, the decode was
-                # complete and everything from _pos on is in chunks.
+                # Put back what was decoded, unconsumed. When the decode finished
+                # clean, the EOF branch published a size from the emptied buffer; the
+                # true total is _pos plus everything in chunks.
                 joined = b"".join(chunks)
                 self._buffer[:0] = joined
-                if self._size is not size_before:
+                if self._decoder.pending_error is None and self._decoder.finished:
                     self._size = self._pos + len(joined)
                 raise held
         data = b"".join(chunks)

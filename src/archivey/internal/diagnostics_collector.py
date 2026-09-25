@@ -162,14 +162,16 @@ class DiagnosticCollector:
     def deferring_raises(self) -> Iterator[Callable[[], Exception | None]]:
         """Hold back this thread's emit raises until the caller can take them.
 
-        For code that emits from the middle of a state change it cannot unwind, such
-        as a decompressor stream whose decoder reports a degraded seek index halfway
+        For code that emits from the middle of a state change it cannot unwind, such as
+        a decompressor stream whose decoder reports a degraded seek index halfway
         through a read. Inside the block, an emit that would raise (a ``RAISE``
         disposition, ``escalate_as``, or an ``Exception`` out of ``on_diagnostic``)
-        still counts, retains, logs and calls back, but hands the exception to the
-        block instead of raising it. :meth:`escalate_only` hands its raise over the
-        same way. The block calls the yielded function once its
-        state is consistent and raises what it returns, the first exception held.
+        still counts, retains, logs and calls back, but hands the exception to the block
+        instead of raising it. :meth:`escalate_only` hands its raise over the same way.
+        The block calls the yielded function once its state is consistent and raises
+        what it returns, the first exception held. A block raises once: an exception
+        held after the first is dropped, the occurrence behind it having been evaluated
+        and, if recorded, delivered.
 
         Nested blocks on one thread share the outermost one's list: an inner block's
         function returns ``None``, so the raise waits for the outermost caller, the
@@ -421,6 +423,9 @@ class DiagnosticCollector:
         severity: DiagnosticSeverity = DiagnosticSeverity.WARNING,
     ) -> None:
         """Evaluate ``code``'s policy and raise on ``RAISE`` — recording nothing.
+
+        Inside a :meth:`deferring_raises` block the raise is handed to the block
+        instead, which raises at most once.
 
         For a diagnostic that is *recorded* at most once per stream but whose policy must
         be honoured on every occurrence. Deduplication keeps the report bounded and

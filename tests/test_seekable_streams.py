@@ -1207,8 +1207,13 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
         assert stream.read() == full[500:]
 
 
-def test_every_thinning_of_one_stream_escalates(small_seek_cap: int) -> None:
-    """Recorded once per stream, but strict() raises on each thinning."""
+@pytest.mark.parametrize("n", [-1, 700])
+def test_every_thinning_of_one_stream_escalates(small_seek_cap: int, n: int) -> None:
+    """Recorded once per stream, but strict() raises in every call that thins.
+
+    A call raises at most once, so two thinnings inside one whole-stream read give
+    one raise; in 700-byte reads each thinning lands in its own call.
+    """
     from archivey.diagnostics import DiagnosticCode
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.streams import decompressor_stream
@@ -1235,7 +1240,7 @@ def test_every_thinning_of_one_stream_escalates(small_seek_cap: int) -> None:
         ) as stream:
             while True:
                 try:
-                    chunk = stream.read(700)
+                    chunk = stream.read(n)
                 except DiagnosticRaisedError:
                     raises += 1
                     continue
@@ -1244,7 +1249,7 @@ def test_every_thinning_of_one_stream_escalates(small_seek_cap: int) -> None:
                 pieces.append(chunk)
     assert b"".join(pieces) == full
     assert thinnings >= 2
-    assert raises == thinnings
+    assert raises == (1 if n < 0 else thinnings)
     assert collector.snapshot().counts[DiagnosticCode.SEEK_INDEX_DEGRADED] == 1
 
 
