@@ -178,6 +178,19 @@ def test_members_have_modified_timestamp(simple_dir: Path) -> None:
             assert member.modified is not None
 
 
+def test_members_ctime_is_st_ctime_except_on_windows(simple_dir: Path) -> None:
+    # st_ctime is the inode change time on Unix, and the (deprecated) creation time on
+    # Windows, where `ctime` is left None rather than hold a birth time.
+    with archivey.open_archive(simple_dir) as archive:
+        for member in archive.members():
+            st = os.lstat(simple_dir / member.name)
+            if os.name == "nt":
+                assert member.ctime is None
+            else:
+                assert member.ctime is not None
+                assert abs(member.ctime.timestamp() - st.st_ctime) < 1e-3
+
+
 def test_members_have_mode(simple_dir: Path) -> None:
     with open_archive(simple_dir) as reader:
         for member in reader.members():

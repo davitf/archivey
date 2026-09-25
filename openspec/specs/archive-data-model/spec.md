@@ -190,6 +190,7 @@ class ArchiveMember:
     modified: datetime | None
     accessed: datetime | None
     created: datetime | None
+    ctime: datetime | None
     mode: int | None
     uid: int | None
     gid: int | None
@@ -230,6 +231,15 @@ class ArchiveMember:
     def modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None: ...
     def replace(self, **kwargs: object) -> "ArchiveMember": ...
 ```
+
+`created` SHALL be a birth time or `None`, in every format, and SHALL NOT hold Unix
+`st_ctime` (inode change). Where a writer stores `st_ctime`, in a creation slot or a
+field of its own, or may, the time SHALL go to `ctime` instead. A format with one
+creation slot (RAR, 7z, ZIP) SHALL fill at most one of `created` and `ctime`. Rock
+Ridge ISO and libarchive's PAX TAR (`LIBARCHIVE.creationtime` beside `ctime`) store a
+creation time and a change time separately and SHALL report each; a directory listing
+reports both where the OS has them (`ctime` from `st_ctime`, except on Windows). Each
+format spec says which writers store which.
 
 `is_anti` SHALL be derived (`type == MemberType.ANTI`); there is no `is_anti` field.
 `is_current` SHALL mean “live for default extract / path identity”: last-entry-wins

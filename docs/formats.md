@@ -1,7 +1,10 @@
 # Formats and extras
 
 What each format can do, what optional packages or tools it needs, and the quirks that
-most often surprise callers. Authoritative detail lives in `openspec/specs/format-*`.
+most often surprise callers. For more depth, the maintainer handbook has pages on
+[7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md),
+[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md) and
+[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md).
 
 ## Quick matrix
 
@@ -45,6 +48,18 @@ mutating the existing bag in place is unchanged.
 
 The format sections below mention a key only when it is part of that format's
 behaviour. The complete list is on the two classes.
+
+`ArchiveMember.created` is a birth time or `None`, never Unix `st_ctime` (inode
+change). Several writers store `st_ctime` where a reader might expect a creation
+time: a Rock Ridge ISO, a Unix RAR, a PAX TAR, a 7z written on Unix, and a ZIP
+written on Unix by 7-Zip or libarchive. That time is `ArchiveMember.ctime` instead.
+RAR, 7z and ZIP have one creation slot, so a member has at most one of the two. Rock
+Ridge, and a PAX TAR from libarchive (`LIBARCHIVE.creationtime`), store both times
+separately and can have both. For ZIP the writer's host decides: a creation
+time is `created` only from a FAT, OS/2, NTFS or VFAT host, and `ctime` from any
+other host, unknown included. 7-Zip and libarchive on macOS store `st_ctime` too. A
+writer that marks itself Unix while storing a birth time (libarchive on Windows) gets
+`ctime`, not `created`, rather than a risk of `st_ctime` in `created`.
 
 ## ZIP
 
@@ -206,6 +221,11 @@ behaviour. The complete list is on the two classes.
 ## ISO 9660
 
 - Needs `[recommended]` (`pycdlib`) and a seekable source.
+- `import archivey` patches pycdlib for the whole process: the `collections` name inside
+  `pycdlib.pycdlib` becomes one whose `deque` skips a directory extent it has already
+  queued. That stops pycdlib looping forever on a directory tree that points back at an
+  ancestor. Other code using pycdlib in the same process gets the patch too. A valid tree
+  never revisits an extent, so its results do not change.
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
 - Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty

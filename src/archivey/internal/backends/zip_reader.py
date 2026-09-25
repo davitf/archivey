@@ -230,6 +230,18 @@ _DOS_ATTRIBUTE_SYSTEMS: frozenset[CreateSystem] = frozenset(
         CreateSystem.VFAT,
     }
 )
+# Hosts whose stored creation time is a birth time. The same four as
+# _DOS_ATTRIBUTE_SYSTEMS today, kept apart on purpose: a host added there for its
+# attribute or separator rules is not a birth-time host until someone says so, since
+# its creation time would otherwise flow into ``created``.
+_ZIP_BIRTH_TIME_HOSTS: frozenset[CreateSystem] = frozenset(
+    {
+        CreateSystem.FAT,
+        CreateSystem.OS2_HPFS,
+        CreateSystem.WINDOWS_NTFS,
+        CreateSystem.VFAT,
+    }
+)
 _CREATE_SYSTEM_BY_VALUE: dict[int, CreateSystem] = {
     member.value: member for member in CreateSystem
 }
@@ -374,8 +386,14 @@ class _UnconfirmedZipCryptoStream(DelegatingStream):
 
 def _zip_timestamps(
     info: zipfile.ZipInfo,
-) -> tuple[datetime | None, datetime | None, datetime | None, list[TimestampIssue]]:
-    """Return ``(modified, accessed, created, issues)`` for a member.
+) -> tuple[
+    datetime | None,
+    datetime | None,
+    datetime | None,
+    datetime | None,
+    list[TimestampIssue],
+]:
+    """Return ``(modified, accessed, ntfs_ctime, ut_ctime, issues)`` for a member.
 
     Sources, lowest to highest precedence (each layer overrides only the times it
     actually carries):
@@ -386,9 +404,14 @@ def _zip_timestamps(
        creation) in 100 ns UTC ticks since 1601; zero means "not set". Written by
        Windows tools (e.g. 7-Zip).
     3. An Extended Timestamp extra field (0x5455): real Unix timestamps, its flags byte
-       signaling which of modification/access/creation follow (in that order), each a
+       signaling which of modification/access/"creation" follow (in that order), each a
        signed 32-bit Unix time interpreted as UTC. The central directory typically
        carries only the modification time even when the flags advertise more.
+
+    The two "creation" times come back raw, apart from each other: ``ntfs_ctime``
+    from the NTFS field and ``ut_ctime`` from the Extended Timestamp's third time.
+    Whether either is a birth time depends on the writer, not the field, so the caller
+    decides (``_zip_created``).
     """
     issues: list[TimestampIssue] = []
     if info.date_time == (1980, 0, 0, 0, 0, 0):
@@ -410,7 +433,8 @@ def _zip_timestamps(
             )
             modified = None
     accessed: datetime | None = None
-    created: datetime | None = None
+    ntfs_ctime: datetime | None = None
+    ut_ctime: datetime | None = None
 
     # One scan collecting both timestamp extra fields, applied afterwards in precedence
     # order (NTFS below Extended Timestamp) regardless of their order in the blob.
@@ -419,7 +443,7 @@ def _zip_timestamps(
     ut_field: bytes | None = None
     extra = info.extra or b""
     if not extra:
-        return modified, accessed, created, issues
+        return modified, accessed, ntfs_ctime, ut_ctime, issues
     pos = 0
     while pos + 4 <= len(extra):
         tag, length = struct.unpack("<HH", extra[pos : pos + 4])
@@ -460,7 +484,7 @@ def _zip_timestamps(
                     elif field_name == "atime":
                         accessed = dt
                     else:
-                        created = dt
+                        ntfs_ctime = dt
                 break
             cursor += attr_size
 
@@ -498,9 +522,37 @@ def _zip_timestamps(
                 elif bit == 0x02:
                     accessed = when
                 else:
-                    created = when
+                    ut_ctime = when
 
-    return modified, accessed, created, issues
+    return modified, accessed, ntfs_ctime, ut_ctime, issues
+
+
+def _zip_created(
+    create_system: CreateSystem,
+    ntfs_ctime: datetime | None,
+    ut_ctime: datetime | None,
+) -> tuple[datetime | None, datetime | None]:
+    """Split a member's stored creation time into ``(created, ctime)``.
+
+    The writer's host decides what the time means, not the field that carries it: on
+    Linux and macOS, 7-Zip and p7zip fill the NTFS creation FILETIME from st_ctime and
+    libarchive fills the Extended Timestamp's third time from it; on Windows the same
+    writers store the birth time. A FAT, OS/2, NTFS or VFAT host stores a birth time.
+    Any other host, unknown included, has its time reported as ``ctime``
+    and ``created`` left None, as RAR does for an unknown ``host_os``. Measured per writer
+    and OS in dev-docs/investigations/writer-timestamp-slots.md.
+
+    One measured writer loses a birth time this way: libarchive on Windows stamps host
+    3 but stores the birth time. It lands in ``ctime``, so ``created`` can
+    miss a birth time but never holds st_ctime.
+
+    The Extended Timestamp wins when both are present, the same precedence
+    ``_zip_timestamps`` gives it for the other times.
+    """
+    stored = ut_ctime if ut_ctime is not None else ntfs_ctime
+    if create_system in _ZIP_BIRTH_TIME_HOSTS:
+        return stored, None
+    return None, stored
 
 
 def _is_windows_reparse_point(
@@ -839,7 +891,8 @@ class ZipReader(BaseArchiveReader):
                 (CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),),
             )
 
-        modified, accessed, created, ts_issues = _zip_timestamps(info)
+        modified, accessed, ntfs_ctime, ut_ctime, ts_issues = _zip_timestamps(info)
+        created, ctime = _zip_created(create_system, ntfs_ctime, ut_ctime)
         # Surface the central-directory CRC-32 as a stored digest (archive-data-model:
         # HashAlgorithm.CRC32 → 4 big-endian bytes), so a dedupe pass can key on it
         # without decompressing (VISION "hashes without decompression"). Only for FILE and
@@ -877,6 +930,8 @@ class ZipReader(BaseArchiveReader):
             member.accessed = accessed
         if created is not None:
             member.created = created
+        if ctime is not None:
+            member.ctime = ctime
         if mode is not None:
             member.mode = mode
         if info.flag_bits & 0x1:

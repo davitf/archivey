@@ -365,8 +365,9 @@ def test_raw_name_preserved(tmp_path: Path) -> None:
 
 
 def test_pax_atime_ctime(tmp_path: Path) -> None:
-    # PAX access/creation times live only in pax_headers (tarfile does not fold them into
-    # TarInfo like mtime); the backend surfaces them as accessed/created.
+    # PAX access/inode-change times live only in pax_headers (tarfile does not fold them
+    # into TarInfo like mtime). atime is `accessed`; ctime is st_ctime, never a birth
+    # time, so it goes to `ctime` and `created` stays None.
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
         info = tarfile.TarInfo("p.txt")
@@ -380,8 +381,28 @@ def test_pax_atime_ctime(tmp_path: Path) -> None:
         m = ar.get("p.txt")
         assert m.accessed is not None
         assert abs(m.accessed.timestamp() - 1_600_000_100.5) < 1e-3
+        assert m.created is None
+        assert abs(m.ctime.timestamp() - 1_600_000_200.25) < 1e-3
+
+
+def test_pax_libarchive_creationtime_is_created(tmp_path: Path) -> None:
+    # bsdtar stores the source's birth time as LIBARCHIVE.creationtime where the OS
+    # has one; it sits beside the PAX ctime, so a member can carry both.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        info = tarfile.TarInfo("p.txt")
+        info.size = 1
+        info.pax_headers["ctime"] = "1600000200.25"
+        info.pax_headers["LIBARCHIVE.creationtime"] = "1500000000.5"
+        t.addfile(info, io.BytesIO(b"x"))
+    path = tmp_path / "pax_birth.tar"
+    path.write_bytes(buf.getvalue())
+    with open_archive(path) as ar:
+        m = ar.get("p.txt")
         assert m.created is not None
-        assert abs(m.created.timestamp() - 1_600_000_200.25) < 1e-3
+        assert abs(m.created.timestamp() - 1_500_000_000.5) < 1e-3
+        assert m.ctime is not None
+        assert abs(m.ctime.timestamp() - 1_600_000_200.25) < 1e-3
 
 
 # ---------------------------------------------------------------------------
