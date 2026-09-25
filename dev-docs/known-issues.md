@@ -420,8 +420,8 @@ catch-all review; before that the bzip2 path aborted) reads a caller-owned strea
 `_TrappingSource` in `codecs.py`, which parks the callback's exception and returns an
 EOF-shaped value, and `_AcceleratorStream` re-raises it as an ordinary Python exception
 after the call. See `dev-docs/topics/exception-handlers.md` §C-boundary trap. Only an
-upstream fix removes the need for the shim. Path sources are unaffected (rapidgzip owns an independent handle) for the
-*Python-source-raises* trigger. Separately, some **path**-source truncations / CRC
+upstream fix removes the need for the shim. Path sources are unaffected (rapidgzip owns an
+independent handle) for the *Python-source-raises* trigger. Separately, some **path**-source truncations / CRC
 mismatches can still `std::terminate` during worker finalization after a Python
 exception — see `dev-docs/investigations/rapidgzip-upstream-report.md` §2. The stdlib codec
 fallbacks raise a normal `ValueError`, which the reader boundary translates to

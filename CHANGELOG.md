@@ -80,9 +80,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   where `read(n)` raised `CorruptionError`; both now raise `CorruptionError`. A RAR with
   encrypted headers cut inside a header's salt or IV raised `EncryptionError` even with
   the right password; it now raises `CorruptionError`, and a `bytes` password that is not
-  UTF-8 counts as a wrong candidate there instead of escaping as `UnicodeDecodeError`. An `OSError` or `MemoryError` on
-  the check for data past a member's declared size was taken as "no more data"; it now
-  propagates.
+  UTF-8 counts as a wrong candidate there instead of escaping as `UnicodeDecodeError`.
+  An `OSError` or `MemoryError` on the check for data past a member's declared size was
+  taken as "no more data"; it now propagates.
 - **A reader builds each member once, and every listing method hands out the same
   objects.** `members_report_if_available()`, `members()`, `get()`, `stream_members()`
   and `extract_all()` now share one member list filled by one walk of the archive's

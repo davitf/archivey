@@ -2130,8 +2130,14 @@ class ExtractionCoordinator:
 
     @staticmethod
     def _close(stream: BinaryIO | None) -> None:
+        """Close a member stream once its result is recorded.
+
+        Best-effort: the member's result already stands, and every content verdict fired
+        from a read (ADR 0014), so a close failure has no result left to change. An
+        interrupt still propagates.
+        """
         if stream is not None:
             try:
                 stream.close()
-            except Exception:  # noqa: BLE001 - best-effort close; nothing left to do
+            except Exception:  # noqa: BLE001 - teardown hygiene; the result is recorded
                 pass

@@ -48,8 +48,9 @@ so none went to the maintainer as a decision.
 
 67 handlers on `5bbbfdc`, counted from the AST (the brief counted 55 on `8e88e4f`; the
 difference is code that landed since): 37 catch `BaseException`, 30 catch `Exception`,
-36 carry `# noqa: BLE001`. Five sit in files two open pull requests change and are **deferred** until
-those merge: `extraction.py` (3) and `sevenzip_reader.py` (2). Pattern names are the ones
+36 carry `# noqa: BLE001`. Five sat in files two open pull requests were changing. The three
+in `extraction.py` were reviewed once the streaming-extraction PR merged; the two in
+`sevenzip_reader.py` are **deferred** until the password-confirmation PR merges. Pattern names are the ones
 in [`dev-docs/topics/exception-handlers.md`](../../dev-docs/topics/exception-handlers.md).
 
 Locations are by function, because line numbers drift.
@@ -81,8 +82,8 @@ Locations are by function, because line numbers drift.
 | `backends/iso_reader.py` | `IsoReader.__init__` | Base | cleanup and re-raise | keep (reason already in code) |
 | `backends/tar_reader.py` | `TarReader.__init__` | Base | cleanup and re-raise | keep |
 | `backends/sevenzip_reader.py` | `_open_member` ×2 | Base | cleanup and re-raise | deferred |
-| `extraction.py` | `_write_file_atomic`, `_place_link` | Base | cleanup and re-raise | deferred |
-| `extraction.py` | `_close` | Exc | teardown hygiene | deferred |
+| `extraction.py` | `_write_file_atomic`, `_place_link` | Base | cleanup and re-raise | keep (reviewed after the streaming-extraction PR merged) |
+| `extraction.py` | `_close` | Exc | teardown hygiene | keep; reason sharpened: both callers close after the member's result is recorded |
 | `streams/archive_stream.py` | `_attach_finalizer._finalize` ×2 | Exc | teardown hygiene | keep |
 | `streams/archive_stream.py` | `_ensure_open` (open) | Exc | translator handoff | keep |
 | `streams/archive_stream.py` | `_ensure_open` (close raced) | Exc | primary error wins | keep |
