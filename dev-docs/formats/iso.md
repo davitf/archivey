@@ -13,7 +13,7 @@ the status — this page states the behaviour and links the row.
 | Read | Yes, through `pycdlib` |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
 | Source | Seekable only, in both access modes. `start_offset` is refused: nothing precedes an image |
-| Listing cost | `INDEXED`. The whole tree is parsed inside `open_archive()`, for every tree the image has; listing after that reads nothing, except to confirm a multi-extent file (§2.2) |
+| Listing cost | `INDEXED`. The whole tree is parsed inside `open_archive()`, for every tree the image has; listing after that reads nothing, except a directory's own extent to confirm a multi-extent file or recover the declared length of a file whose data ends at the end of the image (§2.3) |
 | Access cost | `DIRECT` — every file is one extent (or one run of extents) at an absolute sector |
 | Stream capability | `SEEKABLE` |
 | Core dependencies | None can read it: ISO needs `pycdlib`, which is in `[recommended]` |
@@ -24,13 +24,12 @@ the status — this page states the behaviour and links the row.
 anywhere in the format, so a damaged image reads damaged bytes without an error. A
 *truncated* one is caught only where the data runs out: sizes list as declared, and a
 file cut by the end of the image reads what is there, then raises `TruncatedError` (§4).
-UDF is
-never read: a DVD or Blu-ray image lists through its ISO 9660 tree when it has one, and a
-UDF-only image is not detected at all (§3). zisofs, the Rock Ridge transparent compression,
-is refused as `CorruptionError` rather than as an unsupported feature (§5). `encoding=`
-cannot fix a Rock Ridge name written in Latin-1, even when the Joliet tree beside it has
-the right one (§2.2). And the namespace archivey picks decides which *files* exist, not
-only how they are named, because the trees are independent (§1).
+UDF is never read: a DVD or Blu-ray image lists through its ISO 9660 tree when it has
+one, and a UDF-only image is not detected at all (§3). zisofs, the Rock Ridge transparent
+compression, is refused as `CorruptionError` rather than as an unsupported feature (§5).
+`encoding=` cannot fix a Rock Ridge name written in Latin-1, even when the Joliet tree
+beside it has the right one (§2.2). And the namespace archivey picks decides which
+*files* exist, not only how they are named, because the trees are independent (§1).
 
 ## 1. Shape
 
@@ -116,9 +115,10 @@ than `CD001`, and High Sierra has `CDROM` at 32 777, so neither is detected.
 tables agree, and walks every tree the image has: the PVD tree, the Joliet tree, and UDF
 descriptors when present. That is where the cost is. After it, listing touches only
 records already in memory (`test_listing_reads_nothing_from_the_image`), which is what
-lets the member walk run without the handle lock. The one exception is a directory
-holding a repeated identifier: its extent is read once more, under the handle lock, to
-check the multi-extent flags as written (§2.3).
+lets the member walk run without the handle lock. There are two exceptions, both read
+a directory's extent once more, under the handle lock (§2.3): a directory holding a
+repeated identifier, to check the multi-extent flags as written, and a directory holding
+a file whose data ends at the end of the image, to recover its declared length.
 
 **The namespace is picked once for the image: Rock Ridge, then Joliet, then plain.**
 `ArchiveInfo.extra["iso.namespace"]` reports which. Rock Ridge counts as present when
@@ -184,7 +184,7 @@ Reading a file is a `PyCdlibIO` over an inode, wrapped as `_PyCdlibStream` and e
 open. There is no decoding, no password and nothing to verify. Seeking is supported when
 `seekable_members=True`.
 
-The inode is `pycdlib`'s own when it covers the file. Two kinds of record need one built
+The inode is `pycdlib`'s own when it covers the file. Three kinds of record need one built
 here, over the extents read straight from the image (`_data_inode`):
 
 - **A multi-extent file.** In parse mode `pycdlib` gives each extent its own inode and
