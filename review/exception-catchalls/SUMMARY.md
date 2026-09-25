@@ -26,10 +26,11 @@ Baseline: `[all]` leg 5174 passed, 39 skipped, 5 xfailed; `./scripts/check.sh` g
 | F4 | low | `verify.py` over-run probe (two sites, now `_probe_past_declared`) | An `OSError` or `MemoryError` on the read one byte past a member's declared size was taken as "no trailing data" | Tightened: those propagate; an opaque decoder error there still reads as end of data, with the reason written down |
 | F5 | low | `codecs.py` `_AcceleratorStream` read / readinto / seek, and accelerator open | When the trap's EOF-shaped answer made rapidgzip raise its own error, that error propagated and the real source fault stayed parked. A fault parked while the decoder opened waited for the first read | Fixed: the parked fault wins (the accelerator's error is its `__context__`), and an open-time fault raises at open |
 | F6 | low | `base_reader.py` `_maybe_teardown` | A `KeyboardInterrupt` in the backend's close left the lifecycle at `TEARDOWN_RUNNING`, against the docstring's "marked complete even when `_close_archive` fails". Nothing reads the state today | Fixed: `complete_teardown` runs in a `finally` |
-| F7 | low | `password_confirm.py` `UnverifiedPasswordReadWatch.seek` | Any seek error disarmed `ENCRYPTED_MEMBER_UNVERIFIED` for the rest of the member, though a failed seek leaves the handle usable: after `seek(-1)` was caught, a partial read of an unconfirmed 7z member closed with no report | Fixed: the report stays armed, and where the inner stream drops its digest on a seek the unknown position forfeits it |
+| F7 | low | `password_confirm.py` `UnverifiedPasswordReadWatch.seek` | Any seek error disarmed `ENCRYPTED_MEMBER_UNVERIFIED` for the rest of the member, though a failed seek leaves the handle usable: after `seek(-1)` was caught, a partial read of an unconfirmed 7z member closed with no report | Fixed: the report stays armed; the watch reads the position back after the failure and treats it as a seek only if the stream moved (or the position cannot be read), so a refused seek followed by a full read stays silent |
 
 Each fix has a red-then-green test in `tests/test_exception_handlers.py` (F1, F2, F4,
-F5, F6), `tests/test_rar_parser.py` (F3) or `tests/test_password_confirm.py` (F7).
+F5, F6), `tests/test_rar_parser.py` (F3), or `tests/test_password_confirm.py` and
+`tests/test_sevenzip_password_confirm.py` (F7).
 
 ### What callers now see differently
 
@@ -56,8 +57,7 @@ carry `# noqa: BLE001`. Five sat in files two open pull requests were changing. 
 in `extraction.py` were reviewed once the streaming-extraction PR merged, and the two in
 `sevenzip_reader.py` once the password-confirmation PR merged (`c599fc5`). That PR also
 added two handlers in `password_confirm.py`, reviewed with them on `c599fc5`, which makes
-69; the type breakdown above is as of `5bbbfdc`. Pattern
-names are the ones in
+69; the type breakdown above is as of `5bbbfdc`. Pattern names are the ones in
 [`dev-docs/topics/exception-handlers.md`](../../dev-docs/topics/exception-handlers.md).
 
 Locations are by function, because line numbers drift.

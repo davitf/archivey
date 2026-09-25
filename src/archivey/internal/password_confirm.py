@@ -316,12 +316,8 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             position = super().seek(offset, whence)
         except BaseException:
             # Unlike a failed read, a failed seek need not end the stream: the caller
-            # can catch it and read on, possibly from a moved position
-            # (``ArchiveStream._note_raised_seek``). So the report stays armed, and
-            # where the inner stream drops its digest on a seek, the unknown position
-            # forfeits it.
-            if not self._seek_keeps_digest:
-                self._forfeited = True
+            # can catch it and read on, so the report stays armed.
+            self._note_failed_seek()
             raise
         if position != self._watch_pos and not self._seek_keeps_digest:
             self._forfeited = True
@@ -329,6 +325,26 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         if self._seek_keeps_digest:
             self._note_position()
         return position
+
+    def _note_failed_seek(self) -> None:
+        """Keep the position true to where a seek that raised left the stream.
+
+        A refused seek (a negative position) moves nothing, and the digest is intact.
+        A seek can also raise after it moved (``ArchiveStream._note_raised_seek``), and
+        then it counts as a seek. A position that cannot be read counts as moved.
+        """
+        try:
+            position: int | None = self.tell()
+        except Exception:  # noqa: BLE001 - diagnostic probe; the seek's own error propagates, and an unknown position counts as moved
+            position = None
+        if position == self._watch_pos:
+            return
+        if not self._seek_keeps_digest:
+            self._forfeited = True
+        if position is not None:
+            self._watch_pos = position
+            if self._seek_keeps_digest:
+                self._note_position()
 
     def close(self) -> None:
         if self.closed:
