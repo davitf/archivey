@@ -9,10 +9,10 @@ script measures it on whatever OS it runs on; the CI workflow
 ``.github/workflows/writer-timestamps.yml`` runs it on Linux, macOS and Windows.
 Results and conclusions: ``dev-docs/investigations/writer-timestamp-slots.md``.
 
-Method: create ``f.txt``, wait, set its mtime/atime to fixed 2001/2002 values, wait,
-chmod it, wait, read it once. On Unix that leaves four distinct source times: birth
-(creation), ctime (the chmod, seconds after birth), mtime (2001) and atime (the 2002
-value, or the read if the filesystem updates atime). Each writer that is
+Method: create ``f.txt``, wait, set its mtime/atime to fixed 2033/2034 values, wait,
+then chmod it. On Unix that leaves four distinct source times: birth (creation),
+ctime (the chmod, seconds after birth), mtime and atime. Windows has no inode
+change time, so only three. Each writer that is
 installed archives the file; the script then parses the raw time fields out of every
 archive and labels each stored time with the source time it matches.
 
@@ -39,8 +39,12 @@ import zipfile
 from pathlib import Path
 
 _GAP_SECONDS = 4
-_MTIME = dt.datetime(2001, 2, 3, 4, 5, 6, tzinfo=dt.UTC).timestamp()
-_ATIME = dt.datetime(2002, 3, 4, 5, 6, 7, tzinfo=dt.UTC).timestamp()
+# Both in the future, on purpose. APFS moves the birth time back to any earlier
+# mtime that utime sets, which would make birth and mtime indistinguishable. And
+# Linux relatime refreshes an atime that is not newer than mtime on every read, so
+# atime goes after mtime and stays where the probe put it.
+_MTIME = dt.datetime(2033, 2, 3, 4, 5, 6, tzinfo=dt.UTC).timestamp()
+_ATIME = dt.datetime(2034, 3, 4, 5, 6, 7, tzinfo=dt.UTC).timestamp()
 _FILETIME_EPOCH_OFFSET = 116444736000000000  # 100 ns ticks from 1601 to 1970
 
 
@@ -69,12 +73,6 @@ def make_source(root: Path) -> dict[str, float | None]:
     os.utime(target, (_ATIME, _MTIME))
     time.sleep(_GAP_SECONDS)
     os.chmod(target, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)
-    time.sleep(_GAP_SECONDS)
-    # Read once so the atime settles now. Under Linux relatime the first read after
-    # the 2002 utime moves atime to "now"; later reads leave it alone for 24 hours.
-    # Without this, the first archiver's read would land within a second of the
-    # chmod and atime would be indistinguishable from ctime.
-    target.read_bytes()
     time.sleep(_GAP_SECONDS)
     st = target.stat()
     times: dict[str, float | None] = {
