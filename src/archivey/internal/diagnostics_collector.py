@@ -16,7 +16,7 @@ import logging
 import threading
 import uuid
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -130,6 +130,8 @@ class DiagnosticCollector:
         # Per thread, the log a ``replaying()`` block records into or replays from. Per
         # thread, so another thread's stream on the same reader is never replayed.
         self._replays: dict[int, _Replay] = {}
+        # Per thread, the raises a ``deferring_raises()`` block is holding back.
+        self._deferred: dict[int, list[Exception]] = {}
 
     @contextmanager
     def replaying(self, log: EmitLog) -> Iterator[None]:
@@ -155,6 +157,51 @@ class DiagnosticCollector:
         finally:
             with self._lock:
                 self._replays.pop(thread_id, None)
+
+    @contextmanager
+    def deferring_raises(self) -> Iterator[Callable[[], Exception | None]]:
+        """Hold back this thread's emit raises until the caller can take them.
+
+        For code that emits from the middle of a state change it cannot unwind, such as
+        a decompressor stream whose decoder reports a degraded seek index halfway
+        through a read. Inside the block, an emit that would raise (a ``RAISE``
+        disposition, ``escalate_as``, or an ``Exception`` out of ``on_diagnostic``)
+        still counts, retains, logs and calls back, but hands the exception to the block
+        instead of raising it. :meth:`escalate_only` hands its raise over the same way.
+        The block calls the yielded function once its state is consistent and raises
+        what it returns, the first exception held. A block raises once: an exception
+        held after the first is dropped, the occurrence behind it having been evaluated
+        and, if recorded, delivered.
+
+        Nested blocks on one thread share the outermost one's list: an inner block's
+        function returns ``None``, so the raise waits for the outermost caller, the
+        one whose state change encloses the others. A ``BaseException`` that is not an
+        ``Exception`` (``KeyboardInterrupt``) is never held.
+        """
+        thread_id = threading.get_ident()
+        with self._lock:
+            nested = thread_id in self._deferred
+            held = self._deferred.setdefault(thread_id, [])
+        try:
+            if nested:
+                yield lambda: None
+            else:
+                yield lambda: held[0] if held else None
+        finally:
+            if not nested:
+                with self._lock:
+                    self._deferred.pop(thread_id, None)
+
+    def _hold(self, thread_id: int, exc: BaseException) -> bool:
+        """Hold ``exc`` for this thread's ``deferring_raises`` block, if one is open."""
+        if not isinstance(exc, Exception):
+            return False
+        with self._lock:
+            held = self._deferred.get(thread_id)
+            if held is None:
+                return False
+            held.append(exc)
+            return True
 
     @property
     def policy(self) -> DiagnosticPolicy:
@@ -281,7 +328,9 @@ class DiagnosticCollector:
                             context=context,
                         )
                     if emit_log.raised is not None and at in emit_log.raised:
-                        raise emit_log.raised[at]
+                        again = emit_log.raised[at]
+                        if not self._hold(thread_id, again):
+                            raise again
                     return replayed
                 emit_log._truncate(at)
             if thread_id in self._emitting_threads:
@@ -337,7 +386,11 @@ class DiagnosticCollector:
             if should_deliver:
                 log.warning("%s", diagnostic.message)
                 if self._on_diagnostic is not None:
-                    self._on_diagnostic(diagnostic)
+                    try:
+                        self._on_diagnostic(diagnostic)
+                    except Exception as exc:
+                        if not self._hold(thread_id, exc):
+                            raise
             # Only the raise this emit makes is part of what a replay repeats; one out of
             # the logger or the callback, a KeyboardInterrupt included, is not.
             raised: BaseException | None = None
@@ -353,7 +406,8 @@ class DiagnosticCollector:
                     if replay.log.raised is None:
                         replay.log.raised = {}
                     replay.log.raised[logged_at] = raised
-                raise raised
+                if not self._hold(thread_id, raised):
+                    raise raised
         finally:
             with self._lock:
                 self._emitting_threads.discard(thread_id)
@@ -369,6 +423,9 @@ class DiagnosticCollector:
         severity: DiagnosticSeverity = DiagnosticSeverity.WARNING,
     ) -> None:
         """Evaluate ``code``'s policy and raise on ``RAISE`` — recording nothing.
+
+        Inside a :meth:`deferring_raises` block the raise is handed to the block
+        instead, which raises at most once.
 
         For a diagnostic that is *recorded* at most once per stream but whose policy must
         be honoured on every occurrence. Deduplication keeps the report bounded and
@@ -388,7 +445,7 @@ class DiagnosticCollector:
         validate_code_context(code, context)
         if self._policy.resolve(code) is not DiagnosticDisposition.RAISE:
             return
-        raise DiagnosticRaisedError(
+        raised = DiagnosticRaisedError(
             message,
             diagnostic=Diagnostic(
                 occurrence_id=uuid.uuid4().hex,
@@ -398,6 +455,8 @@ class DiagnosticCollector:
                 context=context,
             ),
         )
+        if not self._hold(threading.get_ident(), raised):
+            raise raised
 
 
 def _attach_diagnostic(member: ArchiveMember, diagnostic: Diagnostic) -> None:
@@ -426,11 +485,11 @@ def resolve_collector(collector: DiagnosticCollector | None) -> DiagnosticCollec
     - never reaches ``reader.diagnostics`` or the caller's ``on_diagnostic`` callback.
       Only the WARNING log line survives.
 
-    This path is reached today: the codec layer builds its decompressor streams
-    without a collector, so the ``SEEK_INDEX_DEGRADED`` emissions in
-    ``decompressor_stream.py`` and ``xz.py`` land here even under ``open_archive``.
-    Threading the collector through ``StreamConfig`` is recorded in
-    ``review/backlog.md``. Prefer passing the shared collector wherever one exists.
+    Codec streams get the caller's collector through ``StreamConfig.collector``, which
+    :func:`~archivey.internal.streams.codecs.open_codec_stream` fills from its
+    ``collector`` argument. A caller that builds a codec stream without one (the
+    single-file reader's listing-time size probe, detection, direct stream tests) still
+    lands here. Prefer passing the shared collector wherever one exists.
 
     The fallback logs at DEBUG on ``archivey.diagnostics`` with the caller's
     ``file:line`` (``stacklevel=2``). An application or test that enables DEBUG on

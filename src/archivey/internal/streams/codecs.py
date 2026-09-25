@@ -1393,7 +1393,10 @@ class XzCodec(_SizedLzmaCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         return XzDecompressorStream(
-            source, seekable=config.seekable, decoder_limits=config.decoder_limits
+            source,
+            collector=config.collector,
+            seekable=config.seekable,
+            decoder_limits=config.decoder_limits,
         )
 
 
@@ -1406,7 +1409,10 @@ class LzipCodec(_SizedLzmaCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         return LzipDecompressorStream(
-            source, seekable=config.seekable, decoder_limits=config.decoder_limits
+            source,
+            collector=config.collector,
+            seekable=config.seekable,
+            decoder_limits=config.decoder_limits,
         )
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
@@ -1882,7 +1888,9 @@ class UnixCompressCodec(StreamCodec):
     ) -> BinaryIO:
         # Native LZW over DecompressorStream: forward decode works on non-seekable
         # sources; CLEAR boundaries become SeekPoints when config.seekable is true.
-        return UnixCompressDecompressorStream(source, seekable=config.seekable)
+        return UnixCompressDecompressorStream(
+            source, collector=config.collector, seekable=config.seekable
+        )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         # Native LZW raises CorruptionError / UnsupportedFeatureError / TruncatedError
@@ -2068,6 +2076,8 @@ class CodecBackend:
 
     Returned by :func:`resolve_codec` so callers can obtain (and reuse) the backend
     without opening a stream — the "backend dispatch is separable from opening" contract.
+    Reuse it only within the scope of ``config.collector``: a backend resolved with a
+    reader's collector reports every stream it opens into that reader.
     """
 
     codec: Codec
@@ -2135,7 +2145,13 @@ def open_codec_stream(
     ``on_close`` runs when the returned stream closes, after its inner: how a caller that
     built something for this stream alone (``open_stream``'s source) ties it to the
     stream's lifetime.
+
+    ``collector`` goes to the returned stream and, through ``config.collector``, to the
+    codec's own decompressor, which is where a degraded seek index is reported. A
+    ``config`` that already carries a collector keeps it when ``collector`` is omitted.
     """
+    if collector is not None:
+        config = replace(config, collector=collector)
     if not isinstance(source, (str, os.PathLike)):
         # A seekable stream positioned mid-file gets a clean tell()==0 origin (a
         # SlicingStream view), because codec backends address the source with absolute
@@ -2169,6 +2185,6 @@ def open_codec_stream(
         lazy=False,
         seekable=stream_seekable,
         rewind_warning=backend.rewind_warning if stream_seekable else None,
-        collector=collector,
+        collector=config.collector,
         on_close=on_close,
     )

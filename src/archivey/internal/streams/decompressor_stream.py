@@ -20,12 +20,14 @@ from __future__ import annotations
 import bisect
 import io
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import (
     Any,
     BinaryIO,
     Callable,
     Generic,
+    Iterator,
     Protocol,
     Sequence,
     TypeVar,
@@ -398,6 +400,13 @@ class DecompressorStream(ReadOnlyIOStream):
     that source — ``_owned_inner`` holds the object this stream is responsible
     for closing (the path we opened, or the stream we were handed with
     ``owns_inner=True``).
+
+    A report the collector's policy escalates (``SEEK_INDEX_DEGRADED`` under
+    ``strict()``) is raised when the operation that met it has left the stream
+    consistent, never from inside a decode or an index scan. ``read`` raises before it
+    consumes: the bytes it decoded stay buffered and the position is unchanged, so the
+    next read returns them. ``seek`` and a size query raise after they finish, with the
+    position where they left it. Either way the handle stays usable.
     """
 
     def __init__(
@@ -545,18 +554,27 @@ class DecompressorStream(ReadOnlyIOStream):
         self._seek_points[:] = spaced_subset(
             self._seek_points, lambda p: p.decompressed_offset, self._min_spacing
         )
+        message = (
+            f"{self._codec_name} seek table passed {MAX_SEEK_POINTS} entries; kept "
+            "a spaced subset, so seeks may decode further"
+        )
+        context = SeekIndexContext(
+            codec=self._codec_name, scan="seek_table", error_type=SEEK_TABLE_THINNED
+        )
+        collector = resolve_collector(self._diagnostics_collector)
         if self._table_thinned:
+            # Recorded once per stream; the policy still applies to every thinning.
+            collector.escalate_only(
+                code=DiagnosticCode.SEEK_INDEX_DEGRADED,
+                message=message,
+                context=context,
+            )
             return
         self._table_thinned = True
-        resolve_collector(self._diagnostics_collector).emit(
+        collector.emit(
             code=DiagnosticCode.SEEK_INDEX_DEGRADED,
-            message=(
-                f"{self._codec_name} seek table passed {MAX_SEEK_POINTS} entries; kept "
-                "a spaced subset, so seeks may decode further"
-            ),
-            context=SeekIndexContext(
-                codec=self._codec_name, scan="seek_table", error_type=SEEK_TABLE_THINNED
-            ),
+            message=message,
+            context=context,
             logger=logger,
         )
 
@@ -655,18 +673,43 @@ class DecompressorStream(ReadOnlyIOStream):
             return leftover
         return self._ingest_decode(self._decoder.feed(chunk, max_length))
 
+    @contextmanager
+    def _deferring_raises(self) -> Iterator[Callable[[], Exception | None]]:
+        """Hold escalated reports until this operation's state is consistent.
+
+        See the class docstring. Without a collector there is nothing to hold: the
+        throwaway :func:`resolve_collector` builds runs the library default policy.
+        """
+        collector = self._diagnostics_collector
+        if collector is None:
+            yield lambda: None
+            return
+        with collector.deferring_raises() as pending:
+            yield pending
+
     def readall(self) -> bytes:
         # Prefer join-of-chunks over staging through the shared bytearray: a whole-stream
         # read never needs the partial-read buffer, and the extend + bytes(buffer) copy
         # was a measurable share of ZIP read-all overhead (perf review H2).
         chunks: list[bytes] = []
-        if self._buffer:
-            chunks.append(bytes(self._buffer))
-            self._buffer.clear()
-        while not self._eof:
-            chunk = self._read_decompressed_chunk()
-            if chunk:
-                chunks.append(chunk)
+        with self._deferring_raises() as pending:
+            if self._buffer:
+                chunks.append(bytes(self._buffer))
+                self._buffer.clear()
+            while not self._eof:
+                chunk = self._read_decompressed_chunk()
+                if chunk:
+                    chunks.append(chunk)
+            held = pending()
+            if held is not None:
+                # Put back what was decoded, unconsumed. When the decode finished
+                # clean, the EOF branch published a size from the emptied buffer; the
+                # true total is _pos plus everything in chunks.
+                joined = b"".join(chunks)
+                self._buffer[:0] = joined
+                if self._decoder.pending_error is None and self._decoder.finished:
+                    self._size = self._pos + len(joined)
+                raise held
         data = b"".join(chunks)
         # A read(-1)/readall() caller expects the complete stream and will not call
         # again, so a deferred pending_error (e.g. truncated .Z) must raise here —
@@ -688,9 +731,13 @@ class DecompressorStream(ReadOnlyIOStream):
             return b""
         if n is None or n < 0:
             return self.readall()
-        while len(self._buffer) < n and not self._eof:
-            need = n - len(self._buffer)
-            self._buffer.extend(self._read_decompressed_chunk(need))
+        with self._deferring_raises() as pending:
+            while len(self._buffer) < n and not self._eof:
+                need = n - len(self._buffer)
+                self._buffer.extend(self._read_decompressed_chunk(need))
+            held = pending()
+            if held is not None:
+                raise held
         data = bytes(self._buffer[:n])
         del self._buffer[:n]
         self._pos += len(data)
@@ -743,10 +790,22 @@ class DecompressorStream(ReadOnlyIOStream):
             return self._size
         if not self._index_enabled or not self._inner.seekable():
             return None
-        self._ensure_index_built()
+        with self._deferring_raises() as pending:
+            self._ensure_index_built()
+            held = pending()
+            if held is not None:
+                raise held
         return self._size
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        with self._deferring_raises() as pending:
+            pos = self._seek(offset, whence)
+            held = pending()
+            if held is not None:
+                raise held
+        return pos
+
+    def _seek(self, offset: int, whence: int) -> int:
         if not self._inner.seekable():
             raise io.UnsupportedOperation("seek")
 

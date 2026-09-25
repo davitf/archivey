@@ -234,6 +234,15 @@ collector SHALL expose a way to evaluate a code's policy without recording an oc
 the deduplication bookkeeping itself lives with the emitter, which is what knows the scope
 ("this stream").
 
+**An operation that cannot unwind raises once, when it can.** A stream operation that
+emits from inside a decode or an index scan (a read, seek or size query on a
+decompressing stream) SHALL hold what an emit or an escalation-only evaluation would
+raise, a callback's exception included, and raise the first error it held once its own
+state is consistent. Each occurrence is still evaluated and delivered as above. The
+operation raises at most once: a later occurrence in the same operation that would also
+raise is evaluated, and delivered if it is recorded, but not raised. The next operation
+evaluates afresh.
+
 #### Scenario: policy / delivery matrix
 
 | Case | Expected |
@@ -250,6 +259,7 @@ the deduplication bookkeeping itself lives with the emitter, which is what knows
 | Once-per-stream code, second qualifying occurrence, policy `COLLECT` | No second count, retention, log or callback |
 | Once-per-stream code, second qualifying occurrence, policy `RAISE` | `DiagnosticRaisedError` raised again; still no second record |
 | Once-per-stream code, second qualifying occurrence, policy `IGNORE` | Nothing happens |
+| Two occurrences inside one deferring stream operation, policy `RAISE` | The operation raises once, with the first error held; the second is delivered if recorded, not raised |
 | Escalation-only evaluation | Never appears in `retained`, never changes `counts`, never logs or calls back. The raised `DiagnosticRaisedError` still carries a full `Diagnostic` describing *this* occurrence — the caller being stopped should see the event that stopped them, not the first one |
 
 ### Requirement: Complete initial warning taxonomy

@@ -421,16 +421,40 @@ class ArchiveStream(ReadOnlyIOStream):
         if not self._seekable_hint:
             raise io.UnsupportedOperation("seek")
         inner = self._ensure_open()  # outside the try, same as read()
+        before: int | None = None
         try:
             before = inner.tell()
             result = inner.seek(offset, whence)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
+            self._note_raised_seek(inner, before)
             self._fail(e)
         verifier = self._verifier
         if verifier is not None:
             verifier.note_seek(result)
         self._maybe_warn_rewind(before, result)
         return result
+
+    def _note_raised_seek(self, inner: BinaryIO, before: int | None) -> None:
+        """Keep the bookkeeping true to where a seek that raised left ``inner``.
+
+        A seek can raise after it moved: a decompressor stream raises an escalated
+        report once its own seek has finished (see ``DecompressorStream``), so a
+        caller that catches it reads on from the new position. The verifier must
+        know, or it keeps hashing as if the read were still linear and checks length
+        against a frontier the stream has left. The seek's own error is the one that
+        propagates, so a rewind report that would raise here is dropped.
+        """
+        try:
+            after = inner.tell()
+        except Exception:  # noqa: BLE001 - the seek's own error propagates instead
+            return
+        if self._verifier is not None:
+            self._verifier.note_seek(after)
+        if before is not None:
+            try:
+                self._maybe_warn_rewind(before, after)
+            except Exception:  # noqa: BLE001 - the seek's own error propagates instead
+                pass
 
     def nearest_resume_offset(self, target: int) -> int | None:
         """Delegate the cost question inward; ``ArchiveStream``s nest over each other."""

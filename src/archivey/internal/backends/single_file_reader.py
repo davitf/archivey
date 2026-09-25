@@ -310,6 +310,13 @@ class SingleFileReader(BaseArchiveReader):
         closes a stream the caller owns.
         """
 
+        # Deliberately no collector here: a degraded index reports into
+        # resolve_collector's throwaway (a WARNING line and nothing else). This asks a
+        # metadata question and answers size=None when the index is unreadable. The
+        # member stream reports the same index into the reader's collector when a
+        # caller seeks; reporting here too would count one file twice, and under
+        # strict() would refuse the open for a caller who never seeks. The cost is a
+        # second WARNING line for that file.
         def probe(f: BinaryIO) -> int | None:
             try:
                 backend = resolve_codec(self._codec, self._metadata_config)
@@ -349,6 +356,7 @@ class SingleFileReader(BaseArchiveReader):
                 counted,
                 config=self._codec_config,
                 stamp=lambda exc: self._stamp_error_context(exc, self._member.name),
+                collector=self._diagnostics_collector,
             )
         else:
             src = self._source
@@ -366,6 +374,7 @@ class SingleFileReader(BaseArchiveReader):
                 codec_source,
                 config=self._codec_config,
                 stamp=lambda exc: self._stamp_error_context(exc, self._member.name),
+                collector=self._diagnostics_collector,
             )
         # Wrap so the handle carries the reader's diagnostic collector/operation id.
         # (open_codec_stream already returns an ArchiveStream; nesting is fine.)
