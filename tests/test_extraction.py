@@ -1830,6 +1830,12 @@ _DUPLICATE_NAME_CASES: dict[str, list[tuple]] = {
         ("hard", "L.txt", "A.txt"),
         ("file", "A.txt", b"content2"),
     ],
+    "hardlink to a name held once": [
+        ("file", "B.txt", b"b"),
+        ("hard", "L.txt", "B.txt"),
+        ("file", "A.txt", b"one"),
+        ("file", "A.txt", b"two"),
+    ],
     "file then symlink": [
         ("file", "a", b"data"),
         ("file", "t.txt", b"target"),
@@ -1857,8 +1863,13 @@ _DUPLICATE_NAME_CASES: dict[str, list[tuple]] = {
 
 
 def _tree(root: Path) -> dict[str, object]:
-    """Everything under ``root``: file bytes, symlink targets, and bare directories."""
+    """Everything under ``root``: file bytes, symlink targets, and bare directories.
+
+    On POSIX, files that share an inode are also listed under ``"hardlinks"`` as groups
+    of paths, so a copy where the other mode made a link shows up.
+    """
     tree: dict[str, object] = {}
+    inodes: dict[int, list[str]] = {}
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root).as_posix()
         if path.is_symlink():
@@ -1867,6 +1878,9 @@ def _tree(root: Path) -> dict[str, object]:
             tree[rel] = "dir"
         else:
             tree[rel] = path.read_bytes()
+            inodes.setdefault(path.stat().st_ino, []).append(rel)
+    if os.name == "posix":
+        tree["hardlinks"] = sorted(g for g in inodes.values() if len(g) > 1)
     return tree
 
 

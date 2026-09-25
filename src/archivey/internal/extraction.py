@@ -359,6 +359,9 @@ class ExtractionCoordinator:
         # correct the tally with it (progress reports tallies of results, not of writes
         # attempted). Reset per ``run()``.
         self._members_extracted = 0
+        # The same for BLOCKED results, which a streaming pass's take-back of a
+        # superseded copy can revise.
+        self._members_blocked = 0
         # RENAME: the last ``N`` tried per collision key of the requested name, so the
         # next member colliding on that key resumes after it instead of rescanning from
         # ``(1)``. Reset per ``run()``, and cleared whenever a claim is released (a freed
@@ -525,7 +528,7 @@ class ExtractionCoordinator:
         discards it rather than returning it.
         """
         members_done = 0
-        members_blocked = 0
+        self._members_blocked = 0
         self._members_extracted = 0
         # Archive name -> result index of the latest member of that name that went on to
         # be written (or tried). Random access stamps last-entry-wins before the pass, so
@@ -546,9 +549,7 @@ class ExtractionCoordinator:
             self._collided_with = None
             self._retyped = False
             try:
-                # Inside the try: a removal the filesystem refuses fails this member
-                # under OnError, like any other write it makes.
-                earlier = current_by_name.pop(original.name, None)
+                earlier = current_by_name.get(original.name)
                 if earlier is not None:
                     self._supersede_written_copy(
                         earlier,
@@ -561,6 +562,7 @@ class ExtractionCoordinator:
                         orphans,
                         dest,
                     )
+                    del current_by_name[original.name]
                 # User filter sees every selected member (including non-current); the
                 # is_current skip is hardwired after the filter and does not force a write
                 # even if the filter returns the member.
@@ -612,7 +614,7 @@ class ExtractionCoordinator:
                             # members fully completed *before* this one.
                             done_so_far = members_done
                             extracted_so_far = self._members_extracted
-                            blocked_so_far = members_blocked
+                            blocked_so_far = self._members_blocked
                             current = original
 
                             def emit_progress() -> None:
@@ -721,7 +723,7 @@ class ExtractionCoordinator:
                 if status is ExtractionStatus.EXTRACTED:
                     self._members_extracted += 1
                 elif status is ExtractionStatus.BLOCKED:
-                    members_blocked += 1
+                    self._members_blocked += 1
             members_done += 1
             self._report_progress(
                 original,
@@ -731,7 +733,7 @@ class ExtractionCoordinator:
                 members_total,
                 member_bytes_written=(tracker.member_bytes if member_started else 0),
                 members_extracted=self._members_extracted,
-                members_blocked=members_blocked,
+                members_blocked=self._members_blocked,
             )
             if selected_total is not None and members_done >= selected_total:
                 break
@@ -773,6 +775,8 @@ class ExtractionCoordinator:
         stays. A directory is removed now if it is empty; one that other members were
         written into stays, as their parent, as it would in random access. An orphaned
         hardlink waiting on the second pass is dropped with the result it would fill.
+        An error recorded on the earlier result is dropped with it: random access never
+        tried that copy.
         """
         prior = results[index]
         path = prior.path
@@ -796,8 +800,12 @@ class ExtractionCoordinator:
                 self._stale_path = path
         if index in counted:
             tracker.refund(counted.pop(index))
+        # Progress tallies results, so they follow the revision (as in
+        # ``_mark_overwritten``).
         if prior.status is ExtractionStatus.EXTRACTED:
             self._members_extracted -= 1
+        elif prior.status is ExtractionStatus.BLOCKED:
+            self._members_blocked -= 1
         orphans[:] = [o for o in orphans if o.result_index != index]
         results[index] = ExtractionResult(
             prior.member,
