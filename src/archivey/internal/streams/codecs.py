@@ -153,7 +153,8 @@ _RAPIDGZIP_REQUIREMENT = MissingComponent(
 
 class _AcceleratorStream(DelegatingStream):
     """Wrap a threaded accelerator (``rapidgzip``) so its underlying object is always *closed*
-    before it is freed (read/seek/etc. are inherited delegation; this adds only the guard).
+    before it is freed, and so a fault the :class:`_TrappingSource` parked is re-raised after
+    each read / readinto / seek (other methods are inherited delegation).
 
     The accelerators spawn C++ ``std::thread``s (invisible to Python's ``threading`` module).
     A worker thread still running when the interpreter finalizes aborts the process with
@@ -197,15 +198,20 @@ class _AcceleratorStream(DelegatingStream):
 
     def _reraise_trapped(self) -> None:
         # Surface a fault the source shim parked, after the accelerator call that observed
-        # it. Only read/readinto/seek re-check here: a fault seen solely through the shim's
-        # tell()/seekable() (e.g. during rapidgzip.open) stays in ``trapped`` until the first
-        # read/seek re-raises it — which always precedes any data reaching the caller. close()
-        # deliberately does not drain it; teardown runs through the finalize guard, and a
-        # caller that closes without reading wants no error.
-        if self._trap is not None and self._trap.trapped is not None:
-            exc = self._trap.trapped
-            self._trap.trapped = None
-            raise exc
+        # it. read/readinto/seek re-check after every call, and also when the accelerator
+        # raised: the shim's EOF-shaped answer often makes the accelerator raise its own
+        # error ("Unexpected end of file"), and the parked fault is the real one. A fault
+        # parked while the accelerator opens is re-raised by _open_accelerator, so none
+        # reaches the caller as data. The parked fault wins only over an ``Exception``:
+        # an interrupt raised during the call propagates as itself, and the fault stays
+        # parked for the next boundary, so neither is lost.
+        #
+        # close() deliberately does not drain it. Past the open, a fault is parked only by
+        # a source read that no caller call waits on: a background worker's prefetch. That
+        # runs on a worker thread, so it is never a KeyboardInterrupt (Python delivers
+        # those to the main thread only), and a caller that closes without reading more
+        # wants no error from a prefetch it never asked for.
+        _raise_parked(self._trap)
 
     def nearest_resume_offset(self, target: int) -> int | None:
         """Decompressed offset the accelerator would restart from to reach ``target``.
@@ -233,17 +239,29 @@ class _AcceleratorStream(DelegatingStream):
         return max(preceding)
 
     def read(self, n: int = -1, /) -> bytes:
-        data = super().read(n)
+        try:
+            data = super().read(n)
+        except Exception:
+            self._reraise_trapped()
+            raise
         self._reraise_trapped()
         return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
-        n = super().readinto(b)
+        try:
+            n = super().readinto(b)
+        except Exception:
+            self._reraise_trapped()
+            raise
         self._reraise_trapped()
         return n
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        result = super().seek(offset, whence)
+        try:
+            result = super().seek(offset, whence)
+        except Exception:
+            self._reraise_trapped()
+            raise
         self._reraise_trapped()
         return result
 
@@ -322,6 +340,18 @@ class _TrappingSource(io.RawIOBase):
         except BaseException as exc:  # noqa: BLE001 - trap; re-raised by _AcceleratorStream
             self._store(exc)
             return 0
+
+
+def _raise_parked(trap: _TrappingSource | None) -> None:
+    """Raise the fault ``trap`` parked, if any, and clear it.
+
+    Called inside an ``except`` block, the parked fault carries the accelerator's own
+    error as its ``__context__``.
+    """
+    if trap is not None and trap.trapped is not None:
+        exc = trap.trapped
+        trap.trapped = None
+        raise exc
 
 
 CodecSource = str | os.PathLike[str] | BinaryIO
@@ -565,18 +595,41 @@ def _bound_rapidgzip_source(
 
 
 def _open_rapidgzip(source: CodecSource) -> BinaryIO:
-    """Open ``source`` through rapidgzip with the close-on-finalize guard and (for a
-    caller-owned source) the Bug-3 trap.
+    """Open ``source`` through rapidgzip; see :func:`_open_accelerator`."""
+    assert _rapidgzip is not None
+    return _open_accelerator(_rapidgzip.open, source)
+
+
+def _open_accelerator(
+    open_fn: Callable[..., object], source: CodecSource
+) -> _AcceleratorStream:
+    """Open ``source`` through a rapidgzip decoder with the close-on-finalize guard and
+    (for a caller-owned source) the Bug-3 trap.
 
     A **path** source lets rapidgzip open its own fd — immune to Bug 3 — so it is passed
     straight through. A caller-owned stream is wrapped in a :class:`_TrappingSource` so a
     source-side fault becomes a re-raisable Python exception instead of a process abort.
+    Every rapidgzip decoder needs this, the bzip2 one included: its Python-source
+    callbacks abort the same way. A fault parked while the decoder opens is raised here,
+    before the stream is returned.
     """
-    assert _rapidgzip is not None
     if isinstance(source, (str, os.PathLike)):
-        return _AcceleratorStream(_rapidgzip.open(source, parallelization=0))
+        return _AcceleratorStream(open_fn(source, parallelization=0))
     trap = _TrappingSource(source)
-    return _AcceleratorStream(_rapidgzip.open(trap, parallelization=0), trap=trap)
+    try:
+        raw = open_fn(trap, parallelization=0)
+    except Exception:
+        # As in _AcceleratorStream.read: the parked fault is the real cause of an
+        # ordinary error, but never replaces an interrupt.
+        _raise_parked(trap)
+        raise
+    stream = _AcceleratorStream(raw, trap=trap)
+    try:
+        _raise_parked(trap)
+    except BaseException:
+        stream.close()
+        raise
+    return stream
 
 
 def _accelerator_backstop_source(
@@ -1370,9 +1423,7 @@ class Bzip2Codec(StreamCodec):
             accel_source, reopen = _accelerator_backstop_source(
                 _bound_rapidgzip_source(source, params, config)
             )
-            stream = _AcceleratorStream(
-                _rapidgzip_bzip2(accel_source, parallelization=0)
-            )
+            stream = _open_accelerator(_rapidgzip_bzip2, accel_source)
             if reopen is None:
                 return stream  # non-seekable: rapidgzip needs a seekable source anyway
             # The decoder reads garbage as an empty stream; see _Bzip2EmptyStreamCheck.

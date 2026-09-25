@@ -268,8 +268,13 @@ def test_verifying_stream_close_after_inner_read_error_is_quiet() -> None:
     stream.close()
 
 
-def test_verifying_stream_close_maps_probe_error_to_truncated() -> None:
-    """Silent short-read + opaque probe exception → TruncatedError on read (not close)."""
+def test_verifying_stream_forwards_a_raw_error_on_the_draining_read() -> None:
+    """Silent short-read + opaque exception on ``read()``: the raw error is forwarded.
+
+    The verifier does not relabel it: the translator of the ``ArchiveStream`` above
+    classifies it (rapidgzip's opaque ``std::exception`` becomes ``CorruptionError``),
+    the same as on the bounded ``read(n)`` path. Close stays quiet either way.
+    """
     from archivey.internal.streams.verify import VerifyingStream
 
     class _ShortThenBoom(io.BytesIO):
@@ -284,7 +289,7 @@ def test_verifying_stream_close_maps_probe_error_to_truncated() -> None:
             return super().read(n)
 
     stream = VerifyingStream(_ShortThenBoom(), {}, expected_size=100)
-    with pytest.raises(TruncatedError, match="ended after 7 of 100"):
+    with pytest.raises(RuntimeError, match="std::exception"):
         stream.read()
     stream.close()  # content faults raise from read, never from close
 
