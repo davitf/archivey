@@ -56,25 +56,25 @@ for which library backs each codec, and why.
 
 ## Format parsers
 
-Format parsers come from the same three places. ZIP uses the standard library's
-`zipfile` for the central directory and TAR uses `tarfile` for its headers. ISO 9660 uses
-`pycdlib` from `[recommended]`. 7z and RAR headers are parsed by Archivey itself, in
-Python. Whatever parses the headers, Archivey turns each format's names and metadata
-into one member model by the same rules, and member data goes through the stream layer
-above wherever it can. Two exceptions: ZipCrypto members, which `zipfile` decrypts and
-decodes itself, and compressed RAR data, which needs RARLAB's `unrar` or `rar` because
-the RAR compression format is proprietary.
+Format parsers come from the same three places. ZIP uses the standard library's `zipfile`
+for the central directory and TAR uses `tarfile` for its headers. ISO 9660 uses `pycdlib`
+from `[recommended]`. 7z and RAR headers are parsed by Archivey itself. Every header
+parser is written in Python, so a crafted header can make a parser wrong, but cannot make
+it corrupt memory. Whatever parses the headers, Archivey turns each format's names and
+metadata into one member model by the same rules, and member data goes through the stream
+layer above wherever it can. Two exceptions: ZipCrypto members, which `zipfile` decrypts
+and decodes itself, and compressed RAR data, which needs RARLAB's `unrar` or `rar`
+because the RAR compression format is proprietary.
 
-7z and RAR get their own parsers for two reasons. The first is consistent metadata:
-`py7zr` and `rarfile` apply their own rules to names and fields, which Archivey would
-have had to copy, and sometimes undo. The second is streaming. `py7zr` writes
-decompressed data into objects you give it rather than returning a stream you read
-from, and turning that back into a stream took more code than parsing the headers.
-`rarfile` starts one `unrar` process per member, so reading every member of a solid
-archive decodes the solid block again for each one. Archivey's `stream_members()`
-reads a whole solid 7z folder, or a whole solid RAR, in one forward pass. Parsing
-headers in Python has a safety benefit too: a crafted header can make a parser wrong, but
-cannot make it corrupt memory.
+For 7z and RAR, Archivey has internal parsers instead of using the popular `py7zr` and
+`rarfile` packages, for two reasons. The first is consistent metadata: `py7zr` and
+`rarfile` apply their own rules to names and fields, which Archivey would have had to
+copy, and sometimes undo. The second is streaming. `py7zr` writes decompressed data into
+objects you give it rather than returning a stream you read from, and turning that back
+into a stream took more code than parsing the headers. `rarfile` starts one `unrar`
+process per member, so reading every member of a solid archive decodes the solid block
+again for each one. Archivey's `stream_members()` reads a whole solid 7z folder, or a
+whole solid RAR, in one forward pass.
 
 Depth: the [7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md),
 [RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md) and
