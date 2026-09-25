@@ -656,6 +656,8 @@ def open_unrar_p(
         # anyway — every archive-read failure surfaces as an ArchiveyError, and a raw
         # RuntimeError here would cross open_archive untranslated.
         raise ReadError("unrar produced no stdout pipe")
+    # typeshed types Popen[bytes].stdout as IO[bytes], not BinaryIO; the pipe is opened
+    # in binary mode above, so it is one at runtime.
     return proc, cast(BinaryIO, proc.stdout)
 
 

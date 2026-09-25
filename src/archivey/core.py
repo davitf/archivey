@@ -87,6 +87,7 @@ from archivey.internal.streams.codecs import codec_for_stream_format, open_codec
 from archivey.internal.streams.streamtools import (
     is_stream,
     raise_if_text_stream,
+    raise_if_write_only_stream,
 )
 from archivey.internal.volumes import (
     OpenSourceInput,
@@ -671,6 +672,7 @@ def open_stream(
     else:
         if not is_stream(source):
             raise_if_text_stream(source)
+            raise_if_write_only_stream(source)
             raise TypeError(
                 f"open_stream source must be a path or binary stream, got {type(source)!r}"
             )
