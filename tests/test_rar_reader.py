@@ -1651,6 +1651,84 @@ def _rar3_main_and_end() -> tuple[bytes, bytes]:
     return main_hdr, end_hdr
 
 
+def _rar3_commented_member(name: bytes, unpacked_size: int) -> bytes:
+    """One RAR3 FILE block carrying a *compressed* old-style COMMENT subblock.
+
+    The packed bytes are junk: the tests below never let ``unrar`` see them. Only the
+    declared ``unpacked_size`` matters, which is what the listing budget weighs.
+    """
+    from archivey.internal.backends import rar_parser as rp
+
+    packed = b"\x00" * 16
+    body = rp._S_COMMENT_HDR.pack(unpacked_size, 29, 0x33, 0) + packed
+    subblock = (
+        rp._S_BLK_HDR.pack(0, rp._RAR3_OLD_COMMENT, 0, rp._S_BLK_HDR.size + len(body))
+        + body
+    )
+    file_fields = (
+        struct.pack("<LLBLLBBHL", 0, 0, 3, 0, 0, 20, 0x30, len(name), 0o100644) + name
+    )
+    flags = rp._RAR3_LONG_BLOCK | rp._RAR3_FILE_COMMENT
+    header_size = 7 + len(file_fields) + len(subblock)
+    # Old COMMENT subblocks are inside header_size but outside the FILE CRC.
+    without_crc = struct.pack("<BHH", 0x74, flags, header_size) + file_fields
+    crc = rp._crc32(without_crc) & 0xFFFF
+    return struct.pack("<H", crc) + without_crc + subblock
+
+
+def _rar3_commented_archive(count: int, unpacked_size: int) -> bytes:
+    main_hdr, end_hdr = _rar3_main_and_end()
+    members = b"".join(
+        _rar3_commented_member(f"m{i}.txt".encode(), unpacked_size)
+        for i in range(count)
+    )
+    return RAR_ID + main_hdr + members + end_hdr
+
+
+def _count_comment_decodes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Replace the ``unrar`` comment decode with a counter that decodes nothing."""
+    calls: list[int] = []
+
+    def _fake_decode(**kwargs: object) -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(rar_reader, "decompress_rar3_blob", _fake_decode)
+    return calls
+
+
+def test_rar3_compressed_comments_over_metadata_budget_refused_before_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compressed RAR3 comments are weighed by their declared size before any decode.
+
+    Each one costs an ``unrar`` spawn and expands to up to 64 KiB, so a crafted
+    archive with a million commented members is a million forks and up to 64 GiB.
+    The declared sizes are summed up front, so the refusal spawns nothing.
+    """
+    calls = _count_comment_decodes(monkeypatch)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=100_000))
+    blob = _rar3_commented_archive(count=2, unpacked_size=60_000)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        open_archive(io.BytesIO(blob), config=config)
+    assert calls == []
+
+
+def test_rar3_compressed_comments_within_metadata_budget_are_decoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At or under the budget every comment is still decoded, and ``None`` lifts it."""
+    blob = _rar3_commented_archive(count=2, unpacked_size=50_000)
+    for limits in (
+        ListingLimits(max_metadata_bytes=100_000),
+        ListingLimits(max_metadata_bytes=None),
+    ):
+        calls = _count_comment_decodes(monkeypatch)
+        config = ArchiveyConfig(listing_limits=limits)
+        with open_archive(io.BytesIO(blob), config=config) as archive:
+            assert [m.name for m in archive.members()] == ["m0.txt", "m1.txt"]
+        assert len(calls) == 2
+
+
 def test_rar3_large_packed_member_skips_full_64bit_size() -> None:
     """F5: a RAR3 ``FILE_LARGE`` member's packed-data skip must use the full 64-bit
     size (HIGH_PACK_SIZE), not just the low 32 bits.

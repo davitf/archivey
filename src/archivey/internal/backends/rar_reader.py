@@ -46,6 +46,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
+    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -797,6 +798,7 @@ class RarReader(BaseArchiveReader):
         )
         if self._archive.is_volume or self._volume_count > 1:
             self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
+        self._check_rar3_comment_budget()
         self._archive.comment = self._resolve_rar3_comment(self._archive.comment)
         for info in self._archive.members:
             info.comment = self._resolve_rar3_comment(info.comment)
@@ -1202,6 +1204,30 @@ class RarReader(BaseArchiveReader):
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
+
+    def _check_rar3_comment_budget(self) -> None:
+        """Refuse compressed old-style comments whose declared sizes exceed the budget.
+
+        Each one is decoded by spawning ``unrar`` and expands to up to 64 KiB, so
+        ``max_members`` alone lets one archive cost a million forks. The header
+        declares every ``unpacked_size`` up front, so the total is checked before
+        anything is decoded: a refusal spawns no process at all.
+        """
+        max_meta = self._config.listing_limits.max_metadata_bytes
+        if max_meta is None:
+            return
+        comments = [self._archive.comment]
+        comments.extend(info.comment for info in self._archive.members)
+        total = sum(
+            comment.unpacked_size
+            for comment in comments
+            if isinstance(comment, _Rar3Comment)
+        )
+        if total > max_meta:
+            raise ResourceLimitError(
+                f"Listing limit reached: max_metadata_bytes={max_meta} "
+                f"(RAR3 compressed comments declare {total} bytes)"
+            )
 
     def _resolve_rar3_comment(self, comment: str | _Rar3Comment | None) -> str | None:
         """Return a parsed old-style comment, dropping unavailable/invalid payloads."""
