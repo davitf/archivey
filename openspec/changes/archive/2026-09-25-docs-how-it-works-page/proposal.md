@@ -3,8 +3,9 @@
 ## Why
 
 The docs plan (`review/docs/DECISIONS.md` D2) gives the guide one page on how
-Archivey is built and a short summary of the recorded decisions, so a reader deciding
-whether to trust the library does not have to read the raw decision log. The page
+Archivey is built, so a reader deciding whether to trust the library does not have to
+read the maintainer docs. The plan's one-line-per-ADR summary was dropped in review:
+the recorded ADRs are a small, uneven part of the decisions actually made. The page
 was never written. The `documentation` spec lists the narrative pages the guide
 covers, so adding one is a spec change.
 
@@ -12,8 +13,8 @@ covers, so adding one is a spec change.
 
 - `documentation`: the end-user narrative also covers how the library is built
   (`docs/how-it-works.md`), placed after Philosophy and before the API reference. The
-  page carries architecture rationale and a one-line-per-ADR decisions summary, and
-  links to maintainer depth only through absolute GitHub URLs.
+  page carries the design philosophy, architecture rationale and how the library is
+  tested, and links to maintainer depth only through absolute GitHub URLs.
 
 ## Impact
 

@@ -1,7 +1,10 @@
 # Formats and extras
 
 What each format can do, what optional packages or tools it needs, and the quirks that
-most often surprise callers. Authoritative detail lives in `openspec/specs/format-*`.
+most often surprise callers. For more depth, the maintainer handbook has pages on
+[7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md),
+[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md) and
+[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md).
 
 ## Quick matrix
 

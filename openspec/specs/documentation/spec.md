@@ -107,8 +107,8 @@ where maintainer depth is worth preserving the link MUST be an absolute
 | User opens the docs home | Every nav entry is an end-user page; no internal, grab-bag, or decision-log section exists |
 | User finishes reading members | Next recommended page is Gotchas |
 | User wants to know what to install | `install.md` answers it, including formats needing an external binary |
-| Contributor looks up “why not py7zr” | The full record is in `dev-docs/decisions/` in the repository; the site carries only a one-line summary on `how-it-works.md` |
-| User wants to know how the library is built | `how-it-works.md` explains it and summarises the recorded decisions one line each, linking to the full record on GitHub |
+| Contributor looks up “why not py7zr” | The full record is in `dev-docs/decisions/` in the repository; `how-it-works.md` gives the reasons in a paragraph and links the maintainer handbook |
+| User wants to know how the library is built | `how-it-works.md` explains the design philosophy, the architecture and how the library is tested, linking to maintainer depth on GitHub |
 | Published page needs maintainer depth | Absolute `github.com/davitf/archivey/blob/main/dev-docs/…` URL, never a site-relative path into unpublished material |
 
 ### Requirement: Document complete-or-raise listing vs MemberListReport
