@@ -113,7 +113,6 @@ from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     EXTRA_IS_REPARSE_POINT,
-    EXTRA_RAR_CTIME,
     EXTRA_RAR_EXTRACT_VERSION,
     ArchiveFormat,
     ArchiveInfo,
@@ -326,10 +325,6 @@ def _rar_member_extra_and_link(
             extra["rar.tweaked_crc32"] = info.crc32
         if info.blake2sp_hash is not None:
             extra["rar.tweaked_blake2sp"] = info.blake2sp_hash
-    # The raw creation-time slot, whatever the host; ``created`` gets it only from
-    # a birth-time host (``_rar_created``).
-    if info.ctime is not None:
-        extra[EXTRA_RAR_CTIME] = info.ctime
     return extra, link_target
 
 
@@ -343,6 +338,13 @@ def _rar_created(info: RarMemberInfo) -> datetime | None:
     if info.host_os in _RAR_BIRTH_TIME_HOSTS:
         return info.ctime
     return None
+
+
+def _rar_ctime(info: RarMemberInfo) -> datetime | None:
+    """The creation slot when it is not ``created``: a Unix or unknown ``host_os``."""
+    if info.host_os in _RAR_BIRTH_TIME_HOSTS:
+        return None
+    return info.ctime
 
 
 def _tweaked_hash_key(
@@ -1325,6 +1327,7 @@ class RarReader(BaseArchiveReader):
             modified=info.mtime,
             accessed=info.atime,
             created=_rar_created(info),
+            ctime=_rar_ctime(info),
             mode=mode,
             compression=_compression_for(info),
             # Fails closed: a member whose header stopped before the encryption

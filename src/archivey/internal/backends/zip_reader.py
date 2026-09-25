@@ -127,7 +127,6 @@ from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
-    EXTRA_ZIP_CTIME,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -533,19 +532,19 @@ def _zip_created(
     ntfs_ctime: datetime | None,
     ut_ctime: datetime | None,
 ) -> tuple[datetime | None, datetime | None]:
-    """Split a member's stored creation time into ``(created, zip_ctime)``.
+    """Split a member's stored creation time into ``(created, ctime)``.
 
     The writer's host decides what the time means, not the field that carries it: on
     Linux and macOS, 7-Zip and p7zip fill the NTFS creation FILETIME from st_ctime and
     libarchive fills the Extended Timestamp's third time from it; on Windows the same
     writers store the birth time. A FAT, OS/2, NTFS or VFAT host stores a birth time.
-    Any other host, unknown included, has its time reported as ``zip.ctime`` and
-    ``created`` left None, as RAR does for an unknown ``host_os``. Measured per writer
+    Any other host, unknown included, has its time reported as ``ctime``
+    and ``created`` left None, as RAR does for an unknown ``host_os``. Measured per writer
     and OS in dev-docs/investigations/writer-timestamp-slots.md.
 
     One measured writer loses a birth time this way: libarchive on Windows stamps host
-    3 but stores the birth time. It lands in ``zip.ctime``, so ``created`` can miss a
-    birth time but never holds st_ctime.
+    3 but stores the birth time. It lands in ``ctime``, so ``created`` can
+    miss a birth time but never holds st_ctime.
 
     The Extended Timestamp wins when both are present, the same precedence
     ``_zip_timestamps`` gives it for the other times.
@@ -893,7 +892,7 @@ class ZipReader(BaseArchiveReader):
             )
 
         modified, accessed, ntfs_ctime, ut_ctime, ts_issues = _zip_timestamps(info)
-        created, zip_ctime = _zip_created(create_system, ntfs_ctime, ut_ctime)
+        created, ctime = _zip_created(create_system, ntfs_ctime, ut_ctime)
         # Surface the central-directory CRC-32 as a stored digest (archive-data-model:
         # HashAlgorithm.CRC32 → 4 big-endian bytes), so a dedupe pass can key on it
         # without decompressing (VISION "hashes without decompression"). Only for FILE and
@@ -913,8 +912,6 @@ class ZipReader(BaseArchiveReader):
             extra["zip.aes_vendor_version"] = aes_info.vendor_version
             extra["zip.aes_strength"] = aes_info.strength
             extra["zip.aes_actual_method"] = aes_info.actual_method
-        if zip_ctime is not None:
-            extra[EXTRA_ZIP_CTIME] = zip_ctime
         # Skip defaulted None/False kwargs on the listing hot path (perf review L2).
         member = ArchiveMember(
             type=member_type,
@@ -933,6 +930,8 @@ class ZipReader(BaseArchiveReader):
             member.accessed = accessed
         if created is not None:
             member.created = created
+        if ctime is not None:
+            member.ctime = ctime
         if mode is not None:
             member.mode = mode
         if info.flag_bits & 0x1:

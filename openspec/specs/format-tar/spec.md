@@ -73,7 +73,7 @@ collected/logged and may attach to the member; under `RAISE`, listing halts with
 | --- | --- |
 | PAX `mtime` present | `member.modified` derives from PAX value, overriding `TarInfo.mtime` |
 | No PAX `mtime` | `member.modified` is timezone-aware UTC from `TarInfo.mtime` |
-| PAX `ctime` present | `extra["tar.ctime"]` is timezone-aware UTC; `created is None` (TAR stores no birth time) |
+| PAX `ctime` present | `ctime` is timezone-aware UTC; `created is None` (TAR stores no birth time) |
 | `LNKTYPE` entry | `member.type=MemberType.HARDLINK`; `member.link_target=linkname` |
 | PAX name `日本語.txt`, `encoding="latin-1"` | Lists; `raw_name` is the UTF-8 bytes the PAX record holds |
 | ustar name, `encoding="latin-1"` | `raw_name` is the latin-1 bytes |

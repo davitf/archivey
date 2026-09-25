@@ -119,7 +119,6 @@ from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_REPARSE_POINT,
-    EXTRA_SEVENZIP_CTIME,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -711,11 +710,11 @@ class SevenZipReader(BaseArchiveReader):
             if is_reparse_point
             else MemberExtra()
         )
+        ctime = None
         if created is not None and _written_on_unix(attrs):
-            # A Unix writer (7-Zip on Linux, p7zip) fills "Created" from st_ctime,
-            # which ``created`` never holds.
-            extra[EXTRA_SEVENZIP_CTIME] = created
-            created = None
+            # A Unix writer (7-Zip, p7zip, libarchive on Linux and macOS) fills
+            # "Created" from st_ctime, which ``created`` never holds.
+            created, ctime = None, created
         member = ArchiveMember(
             type=member_type,
             name=name,
@@ -725,6 +724,7 @@ class SevenZipReader(BaseArchiveReader):
             modified=modified,
             accessed=accessed,
             created=created,
+            ctime=ctime,
             mode=mode,
             compression=compression,
             is_encrypted=record.is_encrypted,

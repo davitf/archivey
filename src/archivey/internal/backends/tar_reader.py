@@ -84,7 +84,6 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.terminal import quoted
 from archivey.types import (
-    EXTRA_TAR_CTIME,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
@@ -792,11 +791,11 @@ class TarReader(BaseArchiveReader):
         accessed = _pax_time(info, "atime")
         if accessed is not None:
             member.accessed = accessed
-        # PAX ``ctime`` is st_ctime (inode change), never a birth time, so it goes to
-        # ``extra`` and ``created`` stays None: TAR records no birth time.
+        # PAX ``ctime`` is st_ctime (inode change), never a birth time, so it is
+        # ``ctime`` and ``created`` stays None: TAR records no birth time.
         ctime = _pax_time(info, "ctime")
         if ctime is not None:
-            extra[EXTRA_TAR_CTIME] = ctime
+            member.ctime = ctime
         if info.uname:
             member.uname = info.uname
         if info.gname:

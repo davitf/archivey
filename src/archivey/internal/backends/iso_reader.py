@@ -79,7 +79,6 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.terminal import quoted
 from archivey.types import (
-    EXTRA_ISO_CTIME,
     ArchiveFormat,
     ArchiveInfo,
     ArchiveInfoExtra,
@@ -628,8 +627,6 @@ class IsoReader(BaseArchiveReader):
         )
 
         modified, accessed, created, ctime = self._timestamps(record, rr)
-        if ctime is not None:
-            extra[EXTRA_ISO_CTIME] = ctime
         mode, uid, gid = self._posix_metadata(rr)
         link_target = self._symlink_target(member_type, rr)
 
@@ -649,6 +646,7 @@ class IsoReader(BaseArchiveReader):
             modified=modified,
             accessed=accessed,
             created=created,
+            ctime=ctime,
             mode=mode,
             uid=uid,
             gid=gid,

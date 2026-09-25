@@ -190,6 +190,7 @@ class ArchiveMember:
     modified: datetime | None
     accessed: datetime | None
     created: datetime | None
+    ctime: datetime | None
     mode: int | None
     uid: int | None
     gid: int | None
@@ -233,9 +234,10 @@ class ArchiveMember:
 
 `created` SHALL be a birth time or `None`, in every format, and SHALL NOT hold Unix
 `st_ctime` (inode change). Where a writer stores `st_ctime`, in a creation slot or a
-field of its own, the time SHALL go to that format's `extra` key instead: `iso.ctime`,
-`rar.ctime`, `tar.ctime`, `7z.ctime` or `zip.ctime`. Each format spec says which
-writers store it.
+field of its own, or may, the time SHALL go to `ctime` instead. An archive member
+SHALL NOT have both `created` and `ctime`; a directory listing reports both where the
+OS has them (`ctime` from `st_ctime`, except on Windows). Each format spec says which
+writers store which.
 
 `is_anti` SHALL be derived (`type == MemberType.ANTI`); there is no `is_anti` field.
 `is_current` SHALL mean “live for default extract / path identity”: last-entry-wins

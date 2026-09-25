@@ -49,7 +49,6 @@ from archivey.internal.backends.rar_parser import (
 )
 from archivey.terminal import display_path
 from archivey.types import (
-    EXTRA_RAR_CTIME,
     EXTRA_RAR_EXTRACT_VERSION,
     ArchiveMember,
     CompressionAlgorithm,
@@ -2047,21 +2046,21 @@ def test_parse_rar3_ext_time_slot_order_is_mtime_ctime_atime() -> None:
 
 
 def test_rar5_xtime_fixture_surfaces_accessed_and_ctime() -> None:
-    """Listing, no unrar: RAR5 ``-tsmca`` fills accessed and ``rar.ctime`` as aware UTC."""
+    """Listing, no unrar: RAR5 ``-tsmca`` fills accessed and ``ctime`` as aware UTC."""
     with open_archive(_fixture("xtime__.rar")) as archive:
         member = archive.get("file.txt")
         assert member.modified == datetime(2020, 1, 15, 12, 0, tzinfo=timezone.utc)
         assert member.accessed == datetime(2021, 6, 20, 18, 30, tzinfo=timezone.utc)
         # Unix-built fixture: the creation slot is st_ctime, so it is not ``created``.
         assert member.created is None
-        ctime = member.extra[EXTRA_RAR_CTIME]
+        ctime = member.ctime
         assert ctime.tzinfo is timezone.utc
         assert ctime != member.modified
         assert ctime != member.accessed
 
 
 def test_rar4_xtime_fixture_surfaces_accessed_and_ctime() -> None:
-    """Listing, no unrar: RAR4 EXTTIME fills accessed and ``rar.ctime`` as naive wall-clock."""
+    """Listing, no unrar: RAR4 EXTTIME fills accessed and ``ctime`` as naive wall-clock."""
     with open_archive(_fixture("xtime__rar4.rar")) as archive:
         member = archive.get("file.txt")
         assert member.modified == datetime(2020, 1, 15, 12, 0, 0)
@@ -2069,7 +2068,7 @@ def test_rar4_xtime_fixture_surfaces_accessed_and_ctime() -> None:
         assert member.modified.tzinfo is None
         assert member.accessed.tzinfo is None
         assert member.created is None  # Unix-built: the slot is st_ctime
-        ctime = member.extra[EXTRA_RAR_CTIME]
+        ctime = member.ctime
         assert ctime.tzinfo is None
         assert ctime != member.modified
         assert ctime != member.accessed
@@ -2091,7 +2090,7 @@ def test_xtime_absent_accessed_created_are_none(name: str) -> None:
             assert member.accessed is None
             assert member.created is None
             assert member.modified is not None
-            assert EXTRA_RAR_CTIME not in member.extra
+            assert member.ctime is None
 
 
 _CTIME = datetime(2019, 6, 1, 8, 0, tzinfo=timezone.utc)
@@ -2110,10 +2109,10 @@ _CTIME = datetime(2019, 6, 1, 8, 0, tzinfo=timezone.utc)
         (2, None, False),
     ],
 )
-def test_created_follows_host_os_and_rar_ctime_is_raw(
+def test_created_or_ctime_follows_host_os(
     host_os: int | None, ctime: datetime | None, birth_time: bool
 ) -> None:
-    """``created`` is the slot only from a birth-time host; ``rar.ctime`` always is."""
+    """The slot is ``created`` from a birth-time host and ``ctime`` from any other."""
     reader = object.__new__(rar_reader.RarReader)
     reader._diagnostics_collector = None
     reader._archive_name = "<test>"
@@ -2148,10 +2147,7 @@ def test_created_follows_host_os_and_rar_ctime_is_raw(
     )
     member = rar_reader.RarReader._to_member(reader, info, 0)
     assert member.created == (ctime if birth_time else None)
-    if ctime is None:
-        assert EXTRA_RAR_CTIME not in member.extra
-    else:
-        assert member.extra[EXTRA_RAR_CTIME] == ctime
+    assert member.ctime == (None if birth_time else ctime)
 
 
 def test_rar_reader_masks_hostile_unix_mode() -> None:

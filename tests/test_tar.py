@@ -367,7 +367,7 @@ def test_raw_name_preserved(tmp_path: Path) -> None:
 def test_pax_atime_ctime(tmp_path: Path) -> None:
     # PAX access/inode-change times live only in pax_headers (tarfile does not fold them
     # into TarInfo like mtime). atime is `accessed`; ctime is st_ctime, never a birth
-    # time, so it goes to extra["tar.ctime"] and `created` stays None.
+    # time, so it goes to `ctime` and `created` stays None.
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
         info = tarfile.TarInfo("p.txt")
@@ -382,7 +382,7 @@ def test_pax_atime_ctime(tmp_path: Path) -> None:
         assert m.accessed is not None
         assert abs(m.accessed.timestamp() - 1_600_000_100.5) < 1e-3
         assert m.created is None
-        assert abs(m.extra["tar.ctime"].timestamp() - 1_600_000_200.25) < 1e-3
+        assert abs(m.ctime.timestamp() - 1_600_000_200.25) < 1e-3
 
 
 # ---------------------------------------------------------------------------

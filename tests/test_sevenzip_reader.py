@@ -2654,7 +2654,7 @@ def _to_filetime_ticks(unix_seconds: int) -> int:
 def test_created_slot_follows_the_writer(
     attributes: int | None, unix_written: bool
 ) -> None:
-    """A Unix writer's "Created" is st_ctime: ``7z.ctime``, not ``created``."""
+    """A Unix writer's "Created" is st_ctime: ``ctime``, not ``created``."""
     from datetime import datetime, timezone
 
     with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
@@ -2663,10 +2663,10 @@ def test_created_slot_follows_the_writer(
     expected = datetime.fromtimestamp(1_600_000_200, tz=timezone.utc)
     if unix_written:
         assert member.created is None
-        assert member.extra["7z.ctime"] == expected
+        assert member.ctime == expected
     else:
         assert member.created == expected
-        assert "7z.ctime" not in member.extra
+        assert member.ctime is None
 
 
 @requires_binary("7z")
@@ -2691,7 +2691,7 @@ def test_real_7z_cli_created_slot_matches_its_host(tmp_path: Path) -> None:
         assert record.attributes is not None
         if record.attributes & 0x8000:
             assert member.created is None
-            assert member.extra["7z.ctime"].tzinfo is not None
+            assert member.ctime.tzinfo is not None
         else:
-            assert "7z.ctime" not in member.extra
+            assert member.ctime is None
             assert member.created is not None

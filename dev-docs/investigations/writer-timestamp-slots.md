@@ -44,15 +44,15 @@ option does not exist there.
 | Writer | OS | "version made by" host | NTFS creation | UT third time | archivey |
 |---|---|---|---|---|---|
 | 7-Zip 23.01 (`7z`, `7za`), default | Linux | 3 Unix | — | — | no time |
-| 7-Zip 23.01, `-mtc=on` | Linux | 3 Unix | **ctime** | — | `zip.ctime` |
+| 7-Zip 23.01, `-mtc=on` | Linux | 3 Unix | **ctime** | — | `ctime` |
 | 7-Zip 26.03 (`7zz`), default | macOS | 3 Unix | — | — | no time |
-| 7-Zip 26.03, `-mtc=on` | macOS | 3 Unix | **ctime** | — | `zip.ctime` |
-| p7zip 17.05 (`7z`, `7za`), default | macOS | 3 Unix | **ctime** | — | `zip.ctime` |
+| 7-Zip 26.03, `-mtc=on` | macOS | 3 Unix | **ctime** | — | `ctime` |
+| p7zip 17.05 (`7z`, `7za`), default | macOS | 3 Unix | **ctime** | — | `ctime` |
 | 7-Zip 26.03, default | Windows | 0 FAT | — | — | no time |
 | 7-Zip 26.03, `-mtc=on` | Windows | 0 FAT | birth | — | `created` |
 | Info-ZIP 3.0 | Linux, macOS | 3 Unix | — | — (flags `0x03`) | no time |
 | Info-ZIP 3.0 | Windows | 0 FAT | — | birth, local header only | no time (see below) |
-| libarchive 3.7.2 (`bsdtar`) | Linux | 3 Unix | — | **ctime**, central and local | `zip.ctime` |
+| libarchive 3.7.2 (`bsdtar`) | Linux | 3 Unix | — | **ctime**, central and local | `ctime` |
 | libarchive (`/usr/bin/tar`) | macOS | 3 Unix | — | **ctime**, local header only | no time |
 | libarchive (`System32\tar.exe`) | Windows | **3 Unix** | — | birth, local header only | no time |
 | `ditto -c -k` (Finder "Compress") | macOS | 3 Unix | — | — (`0x5855`: atime, mtime) | no time |
@@ -67,11 +67,11 @@ all three NTFS times by default.
 | Writer | OS | Attributes | `CTime` | archivey |
 |---|---|---|---|---|
 | 7-Zip 23.01 / 26.03, p7zip 17.05, default | Linux, macOS | `0x81a08020` (Unix mode) | — | no time |
-| 7-Zip 23.01 / 26.03, p7zip 17.05, `-mtc=on` | Linux, macOS | `0x81a08020` (Unix mode) | **ctime** | `7z.ctime` |
+| 7-Zip 23.01 / 26.03, p7zip 17.05, `-mtc=on` | Linux, macOS | `0x81a08020` (Unix mode) | **ctime** | `ctime` |
 | 7-Zip 26.03, default | Windows | `0x00000020` | — | no time |
 | 7-Zip 26.03, `-mtc=on` | Windows | `0x00000020` | birth | `created` |
-| libarchive (`bsdtar --format 7zip`) | Linux, macOS | `0x81a08020` (Unix mode) | **ctime** | `7z.ctime` |
-| libarchive (`tar.exe --format 7zip`) | Windows | **`0x81b68020` (Unix mode)** | birth | `7z.ctime` |
+| libarchive (`bsdtar --format 7zip`) | Linux, macOS | `0x81a08020` (Unix mode) | **ctime** | `ctime` |
+| libarchive (`tar.exe --format 7zip`) | Windows | **`0x81b68020` (Unix mode)** | birth | `ctime` |
 
 ## Conclusions
 
@@ -88,13 +88,13 @@ all three NTFS times by default.
    Info-ZIP stamp their real OS: host 3 and a Unix mode on Linux and macOS, FAT/`0x20`
    on Windows. libarchive on Windows stamps itself Unix in both formats (host 3 and
    mode `0x81b6`), yet stores the birth time. The reader rule sends it to
-   `zip.ctime` / `7z.ctime`. That loses a birth time but never reports `st_ctime` as
+   `ctime`. That loses a birth time but never reports `st_ctime` as
    `created`, which is the direction the rule is built to fail in.
 4. **Most creation times come from an opt-in.** Current 7-Zip stores no creation time
    in either format unless you pass `-mtc=on`. The Windows built-ins (`Compress-Archive`,
    Explorer) and `ditto` never store one. The one default writer that does is p7zip 17
-   (ZIP). A `created` from a ZIP or 7z member is rare in practice. `ctime` in `extra` is
-   more common.
+   (ZIP). A `created` from a ZIP or 7z member is rare in practice. `ctime` is more
+   common.
 5. **Some creation times live only in the local header.** Info-ZIP on Windows, and
    libarchive on macOS and Windows, write the UT flags `0x07` (or `0x01`) in the
    central directory but keep the third time only in the local header, as the
@@ -107,18 +107,20 @@ all three NTFS times by default.
 
 - **ZIP** (`zip_reader._zip_created`): a creation time from host FAT, OS/2, NTFS or
   VFAT is `created`. From any other host, unknown included, it goes to
-  `extra["zip.ctime"]`. The UT third time wins over NTFS when both are present.
+  `ctime`. The UT third time wins over NTFS when both are present.
 - **7z** (`sevenzip_reader._written_on_unix`): a Unix file type (`S_IFMT` bits) in
   the attributes' high word marks a Unix writer, so `CTime` goes to
-  `extra["7z.ctime"]`. Otherwise `CTime` is `created`.
+  `ctime`. Otherwise `CTime` is `created`.
 
 The two outcomes the rule accepts are listed above: libarchive-on-Windows birth times
-go to `extra`, and local-header-only UT times are not read. Neither outcome puts
+go to `ctime`, and local-header-only UT times are not read. Neither outcome puts
 `st_ctime` in `created`.
 
 ## Raw output
 
-The three reports from the run above, exactly as the script printed them.
+The three reports from the run above, exactly as the script printed them. That run
+predates `ArchiveMember.ctime`: the "archivey reads" lines show the per-format `extra`
+keys (`zip.ctime`, `7z.ctime`) that the field replaced.
 
 ### Linux
 

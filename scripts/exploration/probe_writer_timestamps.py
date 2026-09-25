@@ -311,10 +311,7 @@ def archivey_view(path: Path) -> dict[str, str]:
     try:
         with archivey.open_archive(path) as reader:
             member = next(m for m in reader.members() if m.name.endswith("f.txt"))
-            ctime_keys = {
-                k: str(v) for k, v in dict(member.extra).items() if k.endswith(".ctime")
-            }
-            return {"created": str(member.created), **ctime_keys}
+            return {"created": str(member.created), "ctime": str(member.ctime)}
     except Exception as exc:  # noqa: BLE001 - report, never abort the probe
         return {"error": f"{type(exc).__name__}: {exc}"}
 

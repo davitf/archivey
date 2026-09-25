@@ -484,7 +484,7 @@ def test_unknown_extra_field_before_timestamp(tmp_path: Path) -> None:
 def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
     # An Extended Timestamp (0x5455) with flags 0x07 carries modification, access and
     # "creation" times (in that order). libarchive on Unix fills the third from st_ctime,
-    # so from a Unix writer it goes to extra["zip.ctime"] and `created` stays None.
+    # so from a Unix writer it goes to `ctime` and `created` stays None.
     mtime, atime, ctime = 1_600_000_000, 1_600_000_100, 1_600_000_200
     extra = struct.pack("<HHB iii", 0x5455, 13, 0x07, mtime, atime, ctime)
     path = tmp_path / "ts3.zip"
@@ -498,9 +498,7 @@ def test_extended_timestamp_fills_mtime_atime_ctime(tmp_path: Path) -> None:
         assert member.modified == datetime.fromtimestamp(mtime, tz=timezone.utc)
         assert member.accessed == datetime.fromtimestamp(atime, tz=timezone.utc)
         assert member.created is None
-        assert member.extra["zip.ctime"] == datetime.fromtimestamp(
-            ctime, tz=timezone.utc
-        )
+        assert member.ctime == datetime.fromtimestamp(ctime, tz=timezone.utc)
 
 
 def test_duplicate_member_names_read_independently(tmp_path: Path) -> None:
@@ -1172,7 +1170,7 @@ def test_extended_timestamp_beats_ntfs(tmp_path: Path) -> None:
         assert member.modified == datetime.fromtimestamp(ut_mtime, tz=timezone.utc)
         assert member.accessed == datetime.fromtimestamp(nt_atime, tz=timezone.utc)
         assert member.created is None  # NTFS ctime was 0 = "not set"
-        assert "zip.ctime" not in member.extra
+        assert member.ctime is None
 
 
 _NT_CTIME, _UT_CTIME = 1_500_000_000, 1_600_000_200
@@ -1202,7 +1200,7 @@ def test_writer_host_decides_whether_creation_time_is_created(
 ) -> None:
     # The field that carries a "creation" time does not say what it is: 7-Zip on Unix
     # writes st_ctime into the NTFS FILETIME. The writer's host does. A DOS-attribute
-    # host's time is `created`; any other host's is extra["zip.ctime"].
+    # host's time is `created`; any other host's is `ctime`.
     extra = b""
     if fields in ("ntfs", "both"):
         extra += _ntfs_extra(
@@ -1223,10 +1221,10 @@ def test_writer_host_decides_whether_creation_time_is_created(
         member = ar.get("t.txt")
         if birth_time:
             assert member.created == expected
-            assert "zip.ctime" not in member.extra
+            assert member.ctime is None
         else:
             assert member.created is None
-            assert member.extra["zip.ctime"] == expected
+            assert member.ctime == expected
 
 
 @requires_binary("7z")
@@ -1249,7 +1247,7 @@ def test_unix_7zip_ntfs_creation_time_is_zip_ctime(tmp_path: Path) -> None:
         if member.create_system is not CreateSystem.UNIX:
             pytest.skip("7z on this host does not write Unix ZIP entries")
         assert member.created is None
-        assert member.extra["zip.ctime"].tzinfo is not None
+        assert member.ctime.tzinfo is not None
 
 
 def test_compressed_source_size(simple_zip: Path) -> None:
