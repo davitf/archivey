@@ -573,6 +573,24 @@ def _scan_for_sfx_payload(
     return result
 
 
+def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
+    """The library default config carrying only ``config``'s detection budget.
+
+    For a detection whose result is internal (a stub check, the rescan that words an
+    empty-listing advisory): it spends what the caller allowed, but its diagnostics
+    are judged by the default policy and never reach the caller's ``on_diagnostic``,
+    as with any collector-less emission. Passing the caller's config instead would
+    deliver a discarded probe's findings as the reader's, and a ``strict()`` policy
+    would raise inside the probe.
+    """
+    if (
+        config is None
+        or config.detection_budget is DEFAULT_ARCHIVEY_CONFIG.detection_budget
+    ):
+        return DEFAULT_ARCHIVEY_CONFIG
+    return replace(DEFAULT_ARCHIVEY_CONFIG, detection_budget=config.detection_budget)
+
+
 def directory_format_info() -> FormatInfo:
     """The fixed answer for a directory source, shared by ``detect_format`` and the
     reader ``open_archive`` builds over a directory.

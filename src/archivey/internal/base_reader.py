@@ -988,10 +988,13 @@ class BaseArchiveReader(ArchiveReader):
             return
 
         from archivey.exceptions import ArchiveyError as _ArchiveyError
-        from archivey.internal.detection import detect_format
+        from archivey.internal.detection import detect_format, probe_config
 
         try:
-            detected = detect_format(provenance.source, config=self._config).format
+            # The budget only: see probe_config for why not the caller's config.
+            detected = detect_format(
+                provenance.source, config=probe_config(self._config)
+            ).format
         except (_ArchiveyError, OSError, ValueError):
             # Detection refuses these bytes outright — or cannot read them at all.
             #

@@ -1331,33 +1331,103 @@ def test_reader_keeps_the_detection_it_opened_by(tmp_path: Path) -> None:
         assert reader.format_info.cost_receipt == detect_format(tree).cost_receipt
 
 
-def test_format_argument_paths_detect_under_the_config_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Detection still runs under ``format=`` (the empty-listing rescan, the stub
-    check), and it runs under the caller's budget, not the library default."""
+def _budget_config() -> ArchiveyConfig:
     from dataclasses import replace
 
-    from archivey import open_archive
     from archivey.detection_cost import BALANCED_BUDGET
-    from archivey.internal import detection as detection_module
 
     seen: list[object] = []
-    real = detection_module.detect_format
-
-    def recording(*args: object, **kwargs: object) -> FormatInfo:
-        seen.append(kwargs.get("config"))
-        return real(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(detection_module, "detect_format", recording)
-    config = ArchiveyConfig(
-        detection_budget=replace(BALANCED_BUDGET, max_scan_bytes=64 * 1024)
+    return ArchiveyConfig(
+        detection_budget=replace(BALANCED_BUDGET, max_scan_bytes=64 * 1024),
+        on_diagnostic=seen.append,
     )
+
+
+def _record_detect(
+    monkeypatch: pytest.MonkeyPatch, module: object, name: str
+) -> list[tuple[str, ArchiveyConfig | None]]:
+    """Record each call through ``module.detect_format`` as (source name, config)."""
+    calls: list[tuple[str, ArchiveyConfig | None]] = []
+    real = getattr(module, "detect_format")
+
+    def recording(source: object, *args: object, **kwargs: object) -> FormatInfo:
+        config = kwargs.get("config")
+        assert config is None or isinstance(config, ArchiveyConfig)
+        calls.append((Path(str(getattr(source, "path", None) or source)).name, config))
+        return real(source, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(module, name, recording)
+    return calls
+
+
+def test_format_argument_stub_checks_detect_under_the_config_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under ``format=``, the stub-only check and the stub/first-volume conflict check
+    both run detection. They spend the caller's budget, and nothing else of the
+    caller's config reaches them (a discarded probe's diagnostics are not the
+    reader's)."""
+    import archivey.core as core_module
+    from archivey import open_archive
+
+    stub = tmp_path / "vol.exe"
+    stub.write_bytes(b"MZ" + b"\x00" * 1022)
+    data = (Path(__file__).parent / "fixtures" / "sevenzip" / "lz4.7z").read_bytes()
+    half = len(data) // 2
+    (tmp_path / "vol.7z.001").write_bytes(data[:half])
+    (tmp_path / "vol.7z.002").write_bytes(data[half:])
+    config = _budget_config()
+    calls = _record_detect(monkeypatch, core_module, "detect_format")
+    with open_archive(stub, format=ArchiveFormat.SEVEN_Z, config=config) as reader:
+        assert any(m.is_file for m in reader)
+    by_source = dict(calls)
+    assert set(by_source) == {"vol.exe", "vol.7z.001"}
+    for probe in by_source.values():
+        assert probe is not None and probe is not config
+        assert probe.detection_budget is config.detection_budget
+        assert probe.on_diagnostic is None
+
+
+def test_empty_listing_rescan_detects_under_the_config_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rescan that words an empty-listing advisory under ``format=`` spends the
+    caller's budget, and only that."""
+    from archivey import open_archive
+    from archivey.internal import detection as detection_module
+
+    config = _budget_config()
+    calls = _record_detect(monkeypatch, detection_module, "detect_format")
     path = tmp_path / "zeros.tar"
     path.write_bytes(b"\x00" * (32 * 1024))
     with open_archive(path, format=ArchiveFormat.TAR, config=config) as reader:
         assert list(reader) == []
-    assert seen and all(c is config for c in seen)
+    assert [name for name, _ in calls] == ["zeros.tar"]
+    probe = calls[0][1]
+    assert probe is not None and probe is not config
+    assert probe.detection_budget is config.detection_budget
+    assert probe.on_diagnostic is None
+
+
+def test_empty_listing_rescan_stays_internal_under_strict(tmp_path: Path) -> None:
+    """Under ``strict()`` the rescan's own findings neither reach the caller nor raise
+    inside it: an empty ZIP named ``x.tar.gz`` opened with ``format=ZIP`` reports the
+    empty archive and nothing else, because detection does identify it as ZIP."""
+    from archivey import open_archive
+    from archivey.diagnostics import Diagnostic, DiagnosticCode, DiagnosticPolicy
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w"):
+        pass
+    path = tmp_path / "x.tar.gz"
+    path.write_bytes(buf.getvalue())
+    seen: list[Diagnostic] = []
+    config = ArchiveyConfig(
+        diagnostic_policy=DiagnosticPolicy.strict(), on_diagnostic=seen.append
+    )
+    with open_archive(path, format=ArchiveFormat.ZIP, config=config) as reader:
+        assert list(reader) == []
+    assert [d.code for d in seen] == [DiagnosticCode.EMPTY_ARCHIVE]
 
 
 def test_open_archive_detects_under_the_config_budget(tmp_path: Path) -> None:

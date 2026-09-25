@@ -48,7 +48,11 @@ from archivey.internal.backends.zip_detect import (
     is_zip_split_segment_name,
 )
 from archivey.internal.config import stream_config_from_archivey
-from archivey.internal.detection import detect_format, directory_format_info
+from archivey.internal.detection import (
+    detect_format,
+    directory_format_info,
+    probe_config,
+)
 from archivey.internal.diagnostics_collector import collector_from_config
 from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.format_args import (
@@ -220,7 +224,9 @@ def _refuse_if_stub_format_conflict(
     config: ArchiveyConfig | None,
 ) -> None:
     try:
-        info = detect_format(first_volume, config=config, follow_stub_volumes=False)
+        info = detect_format(
+            first_volume, config=probe_config(config), follow_stub_volumes=False
+        )
     except FormatDetectionError:
         return
     if info.format.container == requested.container:
@@ -489,7 +495,7 @@ def _open_resolved(
         # bytes as ZIP/7z while auto-detect joined the split set.
         stub = archive_source.path
         try:
-            detect_format(stub, config=config, follow_stub_volumes=False)
+            detect_format(stub, config=probe_config(config), follow_stub_volumes=False)
         except FormatDetectionError:
             followed = _follow_stub_volume(stub, resolved_format, config)
             if followed is not None:

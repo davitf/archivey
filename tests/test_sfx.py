@@ -1512,7 +1512,7 @@ def test_short_7z_hit_scan_cost_is_bounded_by_the_window(tmp_path: Path) -> None
 
     With the archive ending at EOF the scan stops at the hit. With data after it
     (an Authenticode signature, say) the scan keeps looking for a later 7z that ends
-    at EOF, up to the budget's scan window: a decoy in a stub ends before the real
+    at EOF, through the whole of the budget's scan window: a decoy in a stub ends before the real
     payload starts, so the short hit cannot bound where that payload is.
     """
     real = (_SEVENZIP_FIXTURES / "lz4.7z").read_bytes()
@@ -1529,7 +1529,9 @@ def test_short_7z_hit_scan_cost_is_bounded_by_the_window(tmp_path: Path) -> None
     assert detected.format == ArchiveFormat.SEVEN_Z
     assert detected.payload_offset == len(stub)
     assert detected.cost_receipt is not None
-    assert detected.cost_receipt.scanned_bytes <= BALANCED_BUDGET.max_scan_bytes
+    # The whole window, not a ceiling that every scan meets: if the bound changes,
+    # this is the line to edit.
+    assert detected.cost_receipt.scanned_bytes == BALANCED_BUDGET.max_scan_bytes
 
 
 def test_short_7z_hit_is_kept_when_nothing_ends_at_eof(tmp_path: Path) -> None:
