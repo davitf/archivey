@@ -58,7 +58,7 @@ names.
 | [`review/backlog.md`](../review/backlog.md) | 3 PR parks, 7 archived-review parks, Topics 6/7 | #320 F2 is the only one with a live question |
 | [`review/STATUS.md`](../review/STATUS.md) | Topics 8 + 10 in flight, docs IA in flight, +2 commissioned 2026-09-11, +1 (`api-freeze`) 2026-09-21 | **Its own header still says 2026-08-15.** The ranked list predates every OpenSpec change now in tree |
 | [`review/typing-escape-hatches/`](../review/typing-escape-hatches/brief.md) | 89 sites inventoried; the fixes are staged | **Started and mostly landed.** The inventory merged as #352; #376, #377, #378 and #384 landed four waves of it. The rest is held on file collisions only |
-| [`review/exception-catchalls/`](../review/exception-catchalls/brief.md) | 30 marked blind `except` sites | **Not started.** `brief.md` is the only file. A verification review; its own brief says a large "actually fine" section is the expected outcome |
+| [`review/exception-catchalls/`](../review/exception-catchalls/brief.md) | 67 blind `except` sites | **Done 2026-09-25.** Six fixed, 61 fine, five deferred behind two open PRs; see its `SUMMARY.md` |
 | [`threat-model.md`](threat-model.md) | `O*` register | O15 (tar extended header) and O16 (ISO directory record) were added and closed by #396. O12's memory half is mitigated; the rest closes with `sevenzip-aes-tail-key-check`. The PPMd window #398 capped has **no row yet** — #398 left it out because the file belonged to another open PR |
 | [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
 | **Linear** (`Archivey` team) | seeded 2026-09-17, added to continuously | **The state layer.** Labels: `sweep`, `decision`, `openspec`, `docs`, `review`, `pr-315`, `pr-open`. Not a replacement for any register below |
@@ -851,8 +851,8 @@ Both against `8e88e4f`, both `src/`-only, disjoint sources, designed to run in p
 **One has now started.** `typing-escape-hatches` ran on 2026-09-17 and its inventory is
 [#352](https://github.com/davitf/archivey/pull/352) — 89 sites, no new #324-class TypeGuard
 lie, five casts that delete with both checkers clean, and about half the `Any` sites
-tightening to `object`. `exception-catchalls` is still `brief.md` only and is not blocked by
-anything, which makes it the clearest candidate for the next hand-out.
+tightening to `object`. `exception-catchalls` ran on 2026-09-25: six of 67 handlers fixed,
+the rest recorded as fine, in its `SUMMARY.md`.
 
 | Review | Population | Character |
 | --- | --- | --- |

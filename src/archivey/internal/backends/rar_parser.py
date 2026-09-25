@@ -51,7 +51,6 @@ from archivey.config import ListingLimits
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
-    PackageNotInstalledError,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -1374,16 +1373,11 @@ def _parse_rar3(
                 raise EncryptionError(
                     "RAR archive has encrypted headers but no password was provided"
                 )
-            try:
-                header_fd = _rar3_decrypt_header(source, password, kdf_cache)
-            except (PackageNotInstalledError, ResourceLimitError):
-                # A spent key-derivation budget is not a wrong password: re-wrapped as
-                # EncryptionError it would send the reader on to the next candidate.
-                raise
-            except Exception as exc:
-                raise EncryptionError(
-                    f"Failed to decrypt RAR3 headers: {raw_message_of(exc)}"
-                ) from exc
+            # Nothing here depends on the password being right: the salt read and the
+            # key derivation fail the same way for every candidate, so their errors
+            # (a short salt, a spent derivation budget) propagate as they are. A wrong
+            # password shows up later, when the decrypted header does not parse.
+            header_fd = _rar3_decrypt_header(source, password, kdf_cache)
 
         try:
             header_offset = header_fd.tell()
@@ -2097,17 +2091,9 @@ def _parse_rar5(
                 raise EncryptionError(
                     "RAR archive has encrypted headers but no password was provided"
                 )
-            try:
-                header_fd = _rar5_decrypt_header(source, hdr_enc, password, kdf_cache)
-            except (PackageNotInstalledError, ResourceLimitError):
-                # See the RAR3 walk: a spent budget must not read as a wrong password.
-                raise
-            except EncryptionError:
-                raise
-            except Exception as exc:
-                raise EncryptionError(
-                    f"Failed to decrypt RAR5 headers: {raw_message_of(exc)}"
-                ) from exc
+            # See the RAR3 walk: the IV read and key derivation do not depend on the
+            # password, so their errors are not a wrong password.
+            header_fd = _rar5_decrypt_header(source, hdr_enc, password, kdf_cache)
 
         skipped = _emit_and_skip_qo_run(
             source,

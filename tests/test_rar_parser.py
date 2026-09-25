@@ -96,6 +96,29 @@ def test_rar3_wrong_header_password_is_encryption_error() -> None:
 
 @requires("cryptography")
 @pytest.mark.parametrize(
+    ("name", "cut", "what"),
+    [
+        # Cut inside the first header's 16-byte IV (RAR5) / 8-byte salt (RAR3).
+        ("encrypted_header__.rar", 46, "RAR5 header IV"),
+        ("encrypted_header__rar4.rar", 20, "RAR3 header salt"),
+    ],
+)
+def test_short_header_salt_or_iv_is_corruption_not_a_wrong_password(
+    name: str, cut: int, what: str
+) -> None:
+    """The salt/IV read does not depend on the password, so running out of bytes there
+    is damage. It used to be re-wrapped as ``EncryptionError``, which sent the reader
+    through every password candidate and reported a truncated archive as a wrong
+    password, even with the right one.
+    """
+    data = _fixture(name).read_bytes()[:cut]
+    with pytest.raises(CorruptionError, match=what) as info:
+        parse_rar_archive(io.BytesIO(data), password="header_password")
+    assert not isinstance(info.value, EncryptionError)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
     "name",
     ["encrypted_header__.rar", "encrypted_header__rar4.rar"],
 )
