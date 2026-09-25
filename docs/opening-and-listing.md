@@ -231,7 +231,9 @@ the last entry, which is the live one.
 `ExtractionStatus.SUPERSEDED` (distinct from `NOT_OVERWRITTEN`, which is about files
 already on disk, and from `OVERWRITTEN`, which is a member that *was* written this run
 and then had its destination taken by a later one), so what lands on disk matches a
-fresh write.
+fresh write. A streaming TAR has no index to say which entry is last. It writes the
+earlier entry, then takes it back when the later one arrives, so a progress callback
+sees it written and the report ends with it `SUPERSEDED`.
 
 **Selecting members by name is the one place to be careful.** A name in a selector —
 `extract_all(members=["notes.txt"])`, `stream_members(members=["notes.txt"])` —

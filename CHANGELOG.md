@@ -91,11 +91,16 @@ promise with that line; treat `0.2.0` as the first release of this library.
   stream pass yields, a link target is filled in on the member you already hold, and
   per-member diagnostics are counted once. Each typing-time diagnostic now carries the
   member's `member_id` on every backend.
-- **Streaming extraction of a ZIP, 7z or RAR handles a name stored twice** the way random
-  access does: the earlier entry is `SUPERSEDED` and the later one extracted, where it
-  used to raise `ExtractionError` on the second copy. It relies on the archive's index
-  listing every member before the pass starts. A streaming TAR has no index, so it
-  still writes the first copy and raises `ExtractionError` on the second.
+- **Streaming extraction handles a name stored twice** the way random access does: the
+  earlier entry is `SUPERSEDED` and the later one extracted, where it used to raise
+  `ExtractionError` on the second copy. A ZIP, 7z or RAR lists every member before the
+  pass starts, so the earlier copy is never written. A streaming TAR has no index, so it
+  writes the earlier copy and takes it back when the later one arrives: the later copy
+  replaces it, and it no longer counts toward `max_entries`, nor toward
+  `max_extracted_bytes` unless a hardlink written in between still holds its bytes.
+  The few cases where the result can still differ, all involving something that
+  depended on the earlier copy before the later one arrived, are listed in the
+  `safe-extraction` spec.
 - **Streaming extraction writes symlinks whose target is stored as member data.** A ZIP
   or 7z link reached by a streaming pass before its target had been read failed as
   having no target; the target is now read before the link is written.

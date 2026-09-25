@@ -1813,6 +1813,397 @@ def test_hardlink_duplicate_name_extraction_links_first_inode(tmp_path: Path) ->
         assert not os.path.samefile(dest / "A.txt", dest / "L.txt")
 
 
+# Streaming and random-access extraction of an archive holding one name more than once
+# must leave the same tree on disk and report the same statuses. Random access knows the
+# later copy exists before writing the earlier one, so it never writes it; a streaming
+# pass writes the earlier copy, then has to take it back when the later one arrives.
+_DUPLICATE_NAME_CASES: dict[str, list[tuple]] = {
+    "file twice": [("file", "a.txt", b"first"), ("file", "a.txt", b"last")],
+    "file three times": [
+        ("file", "a.txt", b"one"),
+        ("file", "b.txt", b"b"),
+        ("file", "a.txt", b"two"),
+        ("file", "a.txt", b"three"),
+    ],
+    "hardlink to the shadowed copy": [
+        ("file", "A.txt", b"content1"),
+        ("hard", "L.txt", "A.txt"),
+        ("file", "A.txt", b"content2"),
+    ],
+    "hardlink to a name held once": [
+        ("file", "B.txt", b"b"),
+        ("hard", "L.txt", "B.txt"),
+        ("file", "A.txt", b"one"),
+        ("file", "A.txt", b"two"),
+    ],
+    "file then symlink": [
+        ("file", "a", b"data"),
+        ("file", "t.txt", b"target"),
+        ("sym", "a", "t.txt"),
+    ],
+    "symlink then file": [
+        ("file", "t.txt", b"target"),
+        ("sym", "a", "t.txt"),
+        ("file", "a", b"data"),
+    ],
+    "directory twice": [
+        ("dir", "d", None),
+        ("file", "d/x.txt", b"x"),
+        ("dir", "d", None),
+    ],
+    "file then directory": [
+        ("file", "d", b"data"),
+        ("dir", "d", None),
+        ("file", "d/x.txt", b"x"),
+    ],
+}
+# Not in the table: a case variant between two copies (``A.txt``, ``a.txt``, ``A.txt``).
+# Random access writes ``a.txt`` against an empty key; a streaming pass collides it with
+# the first ``A.txt``, which it cannot yet know is shadowed. That needs the future.
+
+
+def _tree(root: Path) -> dict[object, object]:
+    """Everything under ``root``: file bytes, symlink targets, and bare directories.
+
+    On POSIX, files that share an inode are also listed under ``("hardlinks",)`` as groups
+    of paths, so a copy where the other mode made a link shows up.
+    """
+    tree: dict[object, object] = {}
+    inodes: dict[tuple[int, int], list[str]] = {}
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            tree[rel] = ("symlink", os.readlink(path))
+        elif path.is_dir():
+            tree[rel] = "dir"
+        else:
+            tree[rel] = path.read_bytes()
+            st = path.stat()
+            inodes.setdefault((st.st_dev, st.st_ino), []).append(rel)
+    if os.name == "posix":
+        # A tuple key, so no member path can land on it.
+        tree[("hardlinks",)] = sorted(g for g in inodes.values() if len(g) > 1)
+    return tree
+
+
+@pytest.mark.parametrize("prefilled", [False, True], ids=["fresh", "prefilled"])
+@pytest.mark.parametrize("case", sorted(_DUPLICATE_NAME_CASES))
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        OverwritePolicy.ERROR,
+        OverwritePolicy.SKIP,
+        OverwritePolicy.REPLACE,
+        OverwritePolicy.RENAME,
+    ],
+)
+def test_duplicate_names_extract_the_same_in_both_modes(
+    tmp_path: Path, case: str, overwrite: OverwritePolicy, prefilled: bool
+) -> None:
+    """``prefilled`` puts a file of the caller's at each repeated name beforehand."""
+    if prefilled and case in ("hardlink to the shadowed copy", "directory twice"):
+        # A member between the copies depends on what the earlier copy did to the
+        # caller's file: a known difference, see
+        # test_streaming_duplicate_name_known_differences.
+        pytest.skip("the earlier copy's effect on another member cannot be undone")
+    specs = _DUPLICATE_NAME_CASES[case]
+    names = [name.rstrip("/") for _kind, name, _payload in specs]
+    repeated = {name for name in names if names.count(name) > 1}
+    if os.name != "posix" and any(kind == "sym" for kind, *_ in specs):
+        pytest.skip("symlinks need privileges on Windows")
+    archive = _tar_bytes(specs)
+    outcomes = {}
+    for streaming in (False, True):
+        dest = tmp_path / f"out-{streaming}"
+        if prefilled:
+            dest.mkdir()
+            for name in repeated:
+                (dest / name).write_bytes(b"OLD")
+        with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+            results = reader.extract_all(
+                dest, overwrite=overwrite, on_error=OnError.CONTINUE
+            ).results
+        outcomes[streaming] = (
+            [
+                (r.member.name, r.status, r.path and r.path.relative_to(dest))
+                for r in results
+            ],
+            _tree(dest),
+        )
+    assert outcomes[True] == outcomes[False]
+
+
+def test_streaming_duplicate_name_supersedes_the_written_copy(tmp_path: Path) -> None:
+    """The default ERROR policy used to refuse the later copy of a streamed TAR member."""
+    archive = _tar_bytes([("file", "a.txt", b"first"), ("file", "a.txt", b"last")])
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive), streaming=True) as reader:
+        results = reader.extract_all(dest).results
+    assert [(r.status, r.path) for r in results] == [
+        (ExtractionStatus.SUPERSEDED, None),
+        (ExtractionStatus.EXTRACTED, dest / "a.txt"),
+    ]
+    assert (dest / "a.txt").read_bytes() == b"last"
+
+
+def test_streaming_duplicate_name_removes_the_copy_a_filter_drops(
+    tmp_path: Path,
+) -> None:
+    """The earlier copy is superseded by the later one's presence, not by its write."""
+    archive = _tar_bytes([("file", "a.txt", b"first"), ("file", "a.txt", b"last")])
+    for streaming in (False, True):
+        dest = tmp_path / f"out-{streaming}"
+        seen: list[str] = []
+
+        def drop_second(member: ArchiveMember) -> ArchiveMember | None:
+            seen.append(member.name)
+            return member if len(seen) == 1 else None
+
+        with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+            results = reader.extract_all(dest, filter=drop_second).results
+        assert [r.status for r in results] == [ExtractionStatus.SUPERSEDED]
+        assert not (dest / "a.txt").exists()
+
+
+def test_streaming_duplicate_name_removes_the_copy_when_the_later_one_fails(
+    tmp_path: Path,
+) -> None:
+    archive = _tar_bytes([("file", "a.txt", b"first"), ("file", "a.txt", b"last")])
+    for streaming in (False, True):
+        dest = tmp_path / f"out-{streaming}"
+        seen: list[str] = []
+
+        def fail_second(member: ArchiveMember) -> ArchiveMember | None:
+            seen.append(member.name)
+            if len(seen) == 2:
+                # A streaming pass keeps the earlier copy until the later one's outcome
+                # is known, so a later copy that lands replaces it atomically.
+                assert (dest / "a.txt").exists() is streaming
+                raise ExtractionError("refused", member_name=member.name)
+            return member
+
+        with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+            results = reader.extract_all(
+                dest, filter=fail_second, on_error=OnError.CONTINUE
+            ).results
+        assert [r.status for r in results] == [
+            ExtractionStatus.SUPERSEDED,
+            ExtractionStatus.FAILED,
+        ]
+        assert not (dest / "a.txt").exists()
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        ExtractionLimits(max_extracted_bytes=100_000),
+        ExtractionLimits(max_entries=2),
+    ],
+    ids=["bytes", "entries"],
+)
+def test_streaming_duplicate_name_is_not_counted_against_the_limits(
+    tmp_path: Path, limits: ExtractionLimits
+) -> None:
+    """A copy taken back stops counting, as random access never counted it."""
+    payload = bytes(range(256)) * 160  # 40 960 bytes, three copies exceed the cap
+    archive = _tar_bytes([("file", "a.txt", payload)] * 3)
+    for streaming in (False, True):
+        dest = tmp_path / f"out-{streaming}"
+        with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+            results = reader.extract_all(dest, limits=limits).results
+        assert [r.status for r in results] == [
+            ExtractionStatus.SUPERSEDED,
+            ExtractionStatus.SUPERSEDED,
+            ExtractionStatus.EXTRACTED,
+        ]
+        assert (dest / "a.txt").read_bytes() == payload
+
+
+def test_streaming_duplicate_name_holds_a_copy_it_could_not_remove(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused removal leaves the run's own entry, which the next copy replaces."""
+    archive = _tar_bytes(
+        [
+            ("file", "a.txt", b"one"),
+            ("file", "a.txt", b"two"),
+            ("file", "a.txt", b"three"),
+        ]
+    )
+    dest = tmp_path / "out"
+    real_unlink = os.unlink
+
+    def refusing_unlink(path: object, *args: object, **kwargs: object) -> None:
+        if Path(str(path)) == dest / "a.txt":
+            raise PermissionError(errno.EACCES, "refused", str(path))
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    seen: list[str] = []
+
+    def drop_second(member: ArchiveMember) -> ArchiveMember | None:
+        seen.append(member.name)
+        return None if len(seen) == 2 else member
+
+    monkeypatch.setattr(os, "unlink", refusing_unlink)
+    with open_archive(io.BytesIO(archive), streaming=True) as reader:
+        results = reader.extract_all(dest, filter=drop_second).results
+    assert [r.status for r in results] == [
+        ExtractionStatus.SUPERSEDED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert (dest / "a.txt").read_bytes() == b"three"
+
+
+def test_streaming_duplicate_name_holds_an_unremoved_copy_across_take_backs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A held copy survives a member that takes back another copy of the name."""
+    archive = _tar_bytes([("file", "a.txt", b"%d" % n) for n in range(1, 5)])
+    renames = {2: "b.txt", 3: "c.txt"}
+    dest = tmp_path / "out"
+    real_unlink = os.unlink
+
+    def refusing_unlink(path: object, *args: object, **kwargs: object) -> None:
+        if Path(str(path)) == dest / "a.txt":
+            raise PermissionError(errno.EACCES, "refused", str(path))
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    seen: list[str] = []
+
+    def rename_middle(member: ArchiveMember) -> ArchiveMember | None:
+        seen.append(member.name)
+        new_name = renames.get(len(seen))
+        return member.replace(name=new_name) if new_name else member
+
+    monkeypatch.setattr(os, "unlink", refusing_unlink)
+    with open_archive(io.BytesIO(archive), streaming=True) as reader:
+        results = reader.extract_all(dest, filter=rename_middle).results
+    assert [r.status for r in results] == [ExtractionStatus.SUPERSEDED] * 3 + [
+        ExtractionStatus.EXTRACTED
+    ]
+    tree = _tree(dest)
+    tree.pop(("hardlinks",), None)
+    assert tree == {"a.txt": b"4"}
+
+
+def test_streaming_duplicate_name_unremoved_copy_still_collides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A copy the filesystem would not remove keeps its collision claim."""
+    archive = _tar_bytes(
+        [
+            ("file", "a.txt", b"one"),
+            ("file", "a.txt", b"two"),
+            ("file", "A.TXT", b"upper"),
+        ]
+    )
+    dest = tmp_path / "out"
+    real_unlink = os.unlink
+
+    def refusing_unlink(path: object, *args: object, **kwargs: object) -> None:
+        if Path(str(path)) == dest / "a.txt":
+            raise PermissionError(errno.EACCES, "refused", str(path))
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    seen: list[str] = []
+
+    def drop_second(member: ArchiveMember) -> ArchiveMember | None:
+        seen.append(member.name)
+        return None if len(seen) == 2 else member
+
+    monkeypatch.setattr(os, "unlink", refusing_unlink)
+    with open_archive(io.BytesIO(archive), streaming=True) as reader:
+        results = reader.extract_all(
+            dest,
+            filter=drop_second,
+            policy=ExtractionPolicy.STANDARD,
+            on_error=OnError.CONTINUE,
+        ).results
+    assert [(r.status, r.collided_with) for r in results] == [
+        (ExtractionStatus.SUPERSEDED, None),
+        (ExtractionStatus.FAILED, dest / "a.txt"),
+    ]
+
+
+def test_streaming_duplicate_name_kept_by_a_hardlink_still_counts(
+    tmp_path: Path,
+) -> None:
+    """A taken-back copy that a hardlink still holds stays on disk, so it stays counted."""
+    payload = bytes(range(256)) * 160  # 40 960 bytes
+    specs: list[tuple] = []
+    for n in range(3):
+        specs += [("file", "A.txt", payload), ("hard", f"L{n}.txt", "A.txt")]
+    archive = _tar_bytes(specs)
+    for streaming in (False, True):
+        dest = tmp_path / f"out-{streaming}"
+        with (
+            open_archive(io.BytesIO(archive), streaming=streaming) as reader,
+            pytest.raises(ResourceLimitError, match="max_extracted_bytes"),
+        ):
+            reader.extract_all(
+                dest,
+                on_error=OnError.CONTINUE,
+                limits=ExtractionLimits(max_extracted_bytes=100_000),
+            )
+
+
+def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:
+    """The two cases ``safe-extraction`` records as differing, pinned so a change shows.
+
+    Both need the future: a streaming pass never sees a later copy the selector
+    excludes, and the caller's own file was replaced by the earlier copy before the
+    later copy was known.
+    """
+    archive = _tar_bytes([("file", "a.txt", b"first"), ("file", "a.txt", b"last")])
+
+    def outcome(streaming: bool, dest: Path, **kwargs: object) -> tuple:
+        with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+            results = reader.extract_all(dest, **kwargs).results  # type: ignore[arg-type]
+        target = dest / "a.txt"
+        return (
+            [r.status for r in results],
+            target.read_bytes() if target.exists() else None,
+        )
+
+    # A selection that takes the earlier copy only.
+    for streaming, expected in (
+        (False, ([ExtractionStatus.SUPERSEDED], None)),
+        (True, ([ExtractionStatus.EXTRACTED], b"first")),
+    ):
+        picked: list[str] = []
+
+        def first_only(member: ArchiveMember) -> bool:
+            picked.append(member.name)
+            return len(picked) == 1
+
+        dest = tmp_path / f"select-{streaming}"
+        assert outcome(streaming, dest, members=first_only) == expected
+
+    # A file of the caller's under REPLACE, and a later copy that does not land.
+    for streaming, expected in (
+        (False, ([ExtractionStatus.SUPERSEDED], b"OLD")),
+        (True, ([ExtractionStatus.SUPERSEDED], None)),
+    ):
+        seen: list[str] = []
+
+        def drop_second(member: ArchiveMember) -> ArchiveMember | None:
+            seen.append(member.name)
+            return member if len(seen) == 1 else None
+
+        dest = tmp_path / f"replace-{streaming}"
+        dest.mkdir()
+        (dest / "a.txt").write_bytes(b"OLD")
+        assert (
+            outcome(
+                streaming,
+                dest,
+                filter=drop_second,
+                overwrite=OverwritePolicy.REPLACE,
+            )
+            == expected
+        )
+
+
 def test_hardlink_before_source_shares_inode_and_counts_once(tmp_path: Path) -> None:
     # Regression: a hardlink PRECEDING its source in archive order (legal in crafted /
     # non-GNU-ordered archives) was re-read in the second pass and written as an
