@@ -271,8 +271,11 @@ def _probe_inner_tar(
             return False
         # What is left, not the budget's face value: a content probe and its completion
         # check may already have drawn on the same allowance.
+        # Output is checked against the budget's face value: this is the one tier that
+        # charges output (the content probes' output is bounded per probe by the
+        # codec's drain), so nothing has drawn on it yet.
         if (
-            workspace.decode_output_left < _INNER_TAR_PROBE_BYTES
+            budget.max_decode_output < _INNER_TAR_PROBE_BYTES
             or workspace.decode_input_left <= 0
         ):
             workspace.record_skip("inner_tar", TierSkipReason.BUDGET_EXHAUSTED)
@@ -315,7 +318,9 @@ def _decode_allowance_covers(
     """Whether ``input_bytes`` of decoding still fits the call's decode allowance.
 
     Records ``tier`` as not enabled when the budget allows no decoding at all, and as
-    cut short when an earlier tier spent what it allowed.
+    cut short when an earlier tier spent what it allowed. For ``probe_completion`` only
+    the second is reachable: a zero allowance stops the content probes before any hit
+    asks for completion.
     """
     if workspace.budget.max_decode_input <= 0:
         workspace.record_skip(tier, TierSkipReason.NOT_ENABLED_BY_POLICY)
@@ -344,15 +349,21 @@ def _probe_completes(
 
     Runs only when the source length is known, longer than the window the probe already
     saw, and within the budget's ``completion_window_bytes`` (64 KiB under ``BALANCED``;
-    ``FAST`` does not complete). A source the decode allowance can no longer cover is
-    accepted on the window alone and ``probe_completion`` is recorded as cut short.
+    ``FAST`` does not complete, and records ``probe_completion`` as not enabled). A
+    source the decode allowance can no longer cover is accepted on the window alone and
+    ``probe_completion`` is recorded as cut short.
     """
     if length is None or length <= len(data):
         # Unknown length: nothing to complete against. At or under the window: the
         # probe already had the whole source and ran its completeness check.
         return True
     budget = workspace.budget
+    if budget.completion_window_bytes <= 0:
+        # Off by policy (``FAST``): say so, since the hit stands on the window alone.
+        workspace.record_skip("probe_completion", TierSkipReason.NOT_ENABLED_BY_POLICY)
+        return True
     if length > min(budget.completion_window_bytes, workspace.read_ceiling):
+        # A size bound, not a disabled tier: nothing is recorded.
         return True
     if not _decode_allowance_covers(workspace, length, "probe_completion"):
         return True
@@ -820,7 +831,8 @@ def _detect_format_body(
                     break
                 # Charged at the sample the probe was handed, whether it decodes all of
                 # it or a header check turns it away first: the ceiling of its input.
-                # Its output is bounded per probe by the codec's own drain.
+                # Its output is not charged: the codec's drain bounds it per probe
+                # (4 KiB, or 64 KiB with the whole source in hand).
                 workspace.charge_decode(input_bytes=len(data))
                 if probe(
                     data, source_length=length, read_at=read_at

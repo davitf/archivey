@@ -281,11 +281,16 @@ nor `DIRECTORY`. Original write-up below.
   `.uncompressed` member; a full read raised `TruncatedError` naming a format the file
   never was — and a prefix of fabricated bytes (65 536 measured) may already have been
   produced.
-- **Now (framing + completeness + chain walk):** when the source length is known, a first
-  meta-block that declares more bytes than the source holds is rejected; a fully visible
-  source that does not decode to completion is rejected; and a bounded self-describing
-  block-chain walk rejects later overruns / trailing bytes. Re-measured after
-  `probe-completeness-gate` with the 64 KiB completeness drain
+- **Now (framing + completeness + chain walk + 4 KiB sample + whole-source completion):**
+  when the source length is known, a first meta-block that declares more bytes than the
+  source holds is rejected; a fully visible source that does not decode to completion is
+  rejected; and a bounded self-describing block-chain walk rejects later overruns /
+  trailing bytes. The probe now decodes the whole 4 KiB detection window, and a hit on a
+  source no larger than `completion_window_bytes` (64 KiB under `BALANCED`, off under
+  `FAST`) is re-checked whole. The larger sample closed a text-file class: 7 of 800
+  `/usr/share/perl` modules detected as Brotli at 256 bytes, none at 4 096. Measured with
+  the **256-byte sample**, after `probe-completeness-gate` with the 64 KiB completeness
+  drain
   (`scripts/exploration/probe_residual_census.py`, 150 623 files under `/usr`):
   **29 fabricated claims (0.019%)**, down from 128 (0.193%) after the
   first-block gate alone. Residual families (OLE/CFB, COFF, lucky compressed-first fits

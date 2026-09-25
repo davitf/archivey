@@ -985,8 +985,10 @@ _ALONE_HEADER_SIZE = 13
 # Alone header marks unknown uncompressed size with all-ones uint64.
 _ALONE_UNKNOWN_SIZE = (1 << 64) - 1
 
-# Bytes fed to a content probe: the whole detection window, which is what detection has
-# already peeked. A shorter sample let text through: 256 bytes of a Perl module starting
+# Bytes a content probe decodes. The probe clamps its sample to this whatever the caller
+# peeked, because the false-positive measurement is for 4096 specifically; it equals
+# ``DETECTION_LIMIT`` and, on every shipping budget, ``max_prefix_bytes``. A shorter
+# sample let text through: 256 bytes of a Perl module starting
 # ``package`` decode as a Brotli meta-block that only turns invalid further in (measured:
 # 7 of 800 ``/usr/share/perl`` modules detected as Brotli at 256, none at 4096).
 _PROBE_PREFIX = DETECTION_LIMIT

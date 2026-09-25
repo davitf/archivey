@@ -89,8 +89,10 @@ class DetectionBudget:
     signature (ISO ``CD001`` at 32 769) needs a ~32 KiB window that a 4 KiB near budget
     would otherwise forbid.
 
-    ``max_decode_input`` / ``max_decode_output`` are one allowance for the whole call,
-    shared by the content probes, their completion check and the inner-TAR probe.
+    ``max_decode_input`` is one allowance for the whole call, shared by the content
+    probes, their completion check and the inner-TAR probe. ``max_decode_output`` bounds
+    the inner-TAR probe only; a content probe's output is bounded by the codec's own
+    drain (4 KiB, or 64 KiB with the whole source in hand) and is not charged.
     ``completion_window_bytes`` is the largest source a content-probe hit is re-checked
     against in full (see ``format-detection``); ``0`` turns the check off.
 
@@ -99,8 +101,8 @@ class DetectionBudget:
     ``max_tail_bytes`` / ``max_seeks`` on every shipping preset) are carried so
     follow-on changes can wire them without a second public shape break.
     ``max_probe_links`` is live for :meth:`DetectionCostReceipt.within_budget` (seek-based
-    content-probe allowance); the Brotli walk still uses its own ``CHAIN_MAX_LINKS`` until
-    ``detection-evidence-ledger`` threads the budget through.
+    content-probe allowance); the Brotli walk follows its own ``CHAIN_MAX_LINKS`` (8),
+    and no planned change threads the budget through.
     """
 
     max_prefix_bytes: int

@@ -26,7 +26,11 @@ from archivey.internal.streams.brotli_framing import (
 )
 from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec, ZlibCodec
 from tests.conftest import requires
-from tests.streams_util import NonSeekableBytesIO, brotli_compressed_metablock_header
+from tests.streams_util import (
+    NonSeekableBytesIO,
+    brotli_compressed_metablock_header,
+    truncated_brotli,
+)
 
 
 def _compressed_second_header() -> bytes:
@@ -349,6 +353,10 @@ _PERL_LIKE_TEXT = b"package Bar;\n\nuse warnings handler source" + (
 @requires("brotli")
 def test_text_that_decodes_for_256_bytes_is_not_brotli() -> None:
     assert len(_PERL_LIKE_TEXT) > DETECTION_LIMIT
+    # Positive control: a 256-byte sample of this text is a Brotli meta-block.
+    assert BrotliCodec().content_probe(
+        _PERL_LIKE_TEXT[:256], source_length=len(_PERL_LIKE_TEXT)
+    )
     # Both the known-length and the unknown-length paths: a pipe gets no completion
     # check, so the larger probe sample alone has to turn this away.
     for source in (io.BytesIO(_PERL_LIKE_TEXT), NonSeekableBytesIO(_PERL_LIKE_TEXT)):
@@ -356,32 +364,26 @@ def test_text_that_decodes_for_256_bytes_is_not_brotli() -> None:
             detect_format(source)
 
 
-def _truncated_brotli(size: int) -> bytes:
-    """A real compressed-first Brotli stream cut to ``size`` bytes."""
-    import random
-
-    import brotli
-
-    text = random.Random(0).randbytes(200_000).hex().encode()
-    compressed = brotli.compress(text)
-    assert len(compressed) > size
-    return compressed[:size]
-
-
 @requires("brotli")
 def test_probe_hit_under_the_completion_window_is_checked_whole() -> None:
-    from archivey.detection_cost import BALANCED_BUDGET, FAST_BUDGET
+    from archivey.detection_cost import BALANCED_BUDGET, FAST_BUDGET, TierSkipReason
 
-    blob = _truncated_brotli(20_000)
+    blob = truncated_brotli(20_000)
     assert DETECTION_LIMIT < len(blob) <= BALANCED_BUDGET.completion_window_bytes
     # The window alone says Brotli; the whole source says the stream never ends.
     assert BrotliCodec().content_probe(blob[:DETECTION_LIMIT], source_length=len(blob))
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(blob))
 
-    # ``FAST`` has no completion window, so the window's answer stands.
+    # ``FAST`` has no completion window, so the window's answer stands, and the
+    # receipt says the check was off.
     fast = detect_format(io.BytesIO(blob), budget=FAST_BUDGET)
     assert fast.format == ArchiveFormat.BROTLI
+    assert any(
+        s.tier == "probe_completion"
+        and s.reason is TierSkipReason.NOT_ENABLED_BY_POLICY
+        for s in fast.unavailable_tiers
+    ), fast.unavailable_tiers
     assert fast.cost_receipt is not None
     assert fast.cost_receipt.within_budget(FAST_BUDGET)
 
@@ -408,7 +410,7 @@ def test_complete_stream_under_the_completion_window_still_detects() -> None:
 def test_probe_hit_above_the_completion_window_is_accepted_on_the_window() -> None:
     from archivey.detection_cost import BALANCED_BUDGET
 
-    blob = _truncated_brotli(BALANCED_BUDGET.completion_window_bytes + 1)
+    blob = truncated_brotli(BALANCED_BUDGET.completion_window_bytes + 1)
     info = detect_format(io.BytesIO(blob))
     assert info.format == ArchiveFormat.BROTLI
     assert not any(s.tier == "probe_completion" for s in info.unavailable_tiers)
@@ -420,7 +422,7 @@ def test_completion_the_decode_allowance_cannot_cover_is_recorded() -> None:
 
     from archivey.detection_cost import BALANCED_BUDGET, TierSkipReason
 
-    blob = _truncated_brotli(20_000)
+    blob = truncated_brotli(20_000)
     # Enough for the probes' windows, not for the whole source on top.
     budget = replace(BALANCED_BUDGET, max_decode_input=4 * DETECTION_LIMIT)
     info = detect_format(io.BytesIO(blob), budget=budget)

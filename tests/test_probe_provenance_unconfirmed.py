@@ -34,6 +34,7 @@ from archivey.internal.detection import _extension_corroborates
 from archivey.internal.streams.brotli_framing import BrotliBlock, parse_metablock
 from archivey.types import ContainerFormat, StreamFormat
 from tests.conftest import requires
+from tests.streams_util import truncated_brotli
 
 TAR_BROTLI = ArchiveFormat(ContainerFormat.TAR, StreamFormat.BROTLI)
 
@@ -66,15 +67,7 @@ def _probable_brotli_probe_only_residual() -> bytes:
     merely decodes for a while no longer serves: the 4 KiB probe sample and the
     completion check both reject it.
     """
-    import random
-
-    import brotli
-
-    text = random.Random(0).randbytes(200_000).hex().encode()
-    compressed = brotli.compress(text)
-    target = BALANCED_BUDGET.completion_window_bytes + 4096
-    assert len(compressed) > target
-    blob = compressed[:target]
+    blob = truncated_brotli(BALANCED_BUDGET.completion_window_bytes + 4096)
     assert parse_metablock(blob).outcome is BrotliBlock.COMPRESSED
     return blob
 
