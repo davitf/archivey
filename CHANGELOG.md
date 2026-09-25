@@ -393,7 +393,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   only the CRC at EOF notices. Closing an encrypted member's stream before EOF, when the
   password was accepted on a check weaker than the member's checksum, now emits this
   code (ZipCrypto, WinZip AES, and 7z folders confirmed without reaching a CRC). It is
-  outside `ARCHIVE_INTEGRITY_CODES`, so `strict()` collects it; `pedantic()` raises.
+  outside `ARCHIVE_INTEGRITY_CODES`, so `strict()` collects it; `pedantic()` raises. A
+  read that raises silences it; a seek that raises does not, since the stream stays
+  usable.
 
 - **`repr()` of a 7z reader's key cache no longer prints passwords or keys.** The cache
   is a dataclass whose generated `repr` showed every candidate password tried and every

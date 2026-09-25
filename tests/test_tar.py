@@ -590,6 +590,28 @@ def test_members_report_recovers_prefix_on_corrupt_header() -> None:
         assert ar.open(first).read() == b"aaa"
 
 
+def test_members_report_keeps_the_prefix_when_the_walk_raises_mid_batch() -> None:
+    # The random-access walk parses headers in batches. A header whose data runs past
+    # the end of the file raises while a batch is being filled; the members parsed
+    # before it in that batch must still reach the report, not vanish with the batch.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for name, payload in (
+            ("a.txt", b"aaa"),
+            ("b.txt", b"bbb"),
+            ("c.bin", bytes(4096)),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            t.addfile(info, io.BytesIO(payload))
+    # Keep a.txt and b.txt whole, c.bin's header, and 100 bytes of its data.
+    data = buf.getvalue()[: 4 * tarfile.BLOCKSIZE + tarfile.BLOCKSIZE + 100]
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        report = ar.members_report()
+        assert isinstance(report.error, TruncatedError)
+        assert [m.name for m in report.members][:2] == ["a.txt", "b.txt"]
+
+
 def test_members_report_streaming_corrupt_header_yield_then_raise() -> None:
     data = _tar_corrupt_mid_header()
     with open_archive(
@@ -765,6 +787,101 @@ def test_sparse_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> N
     assert members
     assert members[0].is_sparse
     assert _eof_warnings(caplog) == []
+
+
+def _tar_sparse_pax_1_0() -> bytes:
+    """A PAX 1.0 sparse member, the encoding GNU tar writes under ``--format=pax``.
+
+    Unlike the old GNU form its typeflag is a plain ``0``: only the ``GNU.sparse.*``
+    records and the map at the head of the data say it is sparse. One 5-byte region at
+    offset 100 of a 1 000-byte file.
+    """
+    sparse_map = b"1\n100\n5\n".ljust(512, b"\0")
+    stored = sparse_map + b"hello"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        info = tarfile.TarInfo("GNUSparseFile.0/holes.bin")
+        info.size = len(stored)
+        info.pax_headers = {
+            "GNU.sparse.major": "1",
+            "GNU.sparse.minor": "0",
+            "GNU.sparse.name": "holes.bin",
+            "GNU.sparse.realsize": "1000",
+        }
+        t.addfile(info, io.BytesIO(stored))
+    return buf.getvalue()
+
+
+def _pax_record(key: str, value: str) -> bytes:
+    """One PAX ``length key=value\n`` record, where the length counts itself."""
+    body = f" {key}={value}\n".encode()
+    length = len(body) + 1
+    while len(str(length)) + len(body) != length:
+        length += 1
+    return str(length).encode() + body
+
+
+def _tar_sparse_pax_0_x(minor: int) -> bytes:
+    """A PAX 0.0 or 0.1 sparse member: the same one region as the 1.0 fixture.
+
+    Neither can be written through ``tarfile``'s ``pax_headers`` dict. 0.0 repeats the
+    ``GNU.sparse.offset`` / ``GNU.sparse.numbytes`` keys once per region, which a dict
+    cannot hold, and tarfile reads them by scanning the raw extended header; 0.1 puts
+    the whole map in one ``GNU.sparse.map`` record. So the extended header is built by
+    hand here. In both the stored data is the packed regions only, with no map in it.
+    """
+    records = [_pax_record("GNU.sparse.size", "1000")]
+    if minor == 0:
+        records += [
+            _pax_record("GNU.sparse.numblocks", "1"),
+            _pax_record("GNU.sparse.offset", "100"),
+            _pax_record("GNU.sparse.numbytes", "5"),
+        ]
+    else:
+        records += [
+            _pax_record("GNU.sparse.numblocks", "1"),
+            _pax_record("GNU.sparse.map", "100,5"),
+        ]
+    payload = b"".join(records)
+
+    def block(data: bytes) -> bytes:
+        return data + bytes(-len(data) % tarfile.BLOCKSIZE)
+
+    xhdr = tarfile.TarInfo("./PaxHeaders/holes.bin")
+    xhdr.type = tarfile.XHDTYPE
+    xhdr.size = len(payload)
+    member = tarfile.TarInfo("holes.bin")
+    member.size = 5
+    return b"".join(
+        [
+            xhdr.tobuf(format=tarfile.USTAR_FORMAT),
+            block(payload),
+            member.tobuf(format=tarfile.USTAR_FORMAT),
+            block(b"hello"),
+            bytes(2 * tarfile.BLOCKSIZE),
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: _tar_sparse_pax_0_x(0),
+        lambda: _tar_sparse_pax_0_x(1),
+        _tar_sparse_pax_1_0,
+    ],
+    ids=["pax-0.0", "pax-0.1", "pax-1.0"],
+)
+def test_pax_sparse_member_is_reported_sparse(build: Any) -> None:
+    # tarfile dispatches the three PAX sparse encodings to three different parsers,
+    # and none of them sets the old GNU ``S`` typeflag, so each gets its own fixture.
+    with open_archive(io.BytesIO(build()), format=ArchiveFormat.TAR) as ar:
+        (member,) = ar.members()
+        assert member.name == "holes.bin"
+        assert member.extra["tar.type"] == tarfile.REGTYPE
+        assert member.is_sparse
+        assert member.size == 1000
+        assert ar.read(member) == bytes(100) + b"hello" + bytes(895)
 
 
 def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:

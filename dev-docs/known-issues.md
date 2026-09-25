@@ -273,6 +273,38 @@ would validate each header at its offset and close the streaming gap. Documented
 in `docs/formats.md` and `docs/gotchas.md`.
 Handbook: [`formats/tar.md`](formats/tar.md) §2.2, §7.
 
+## TAR sparse members are extracted dense, and their holes count against `max_ratio` (open)
+
+A sparse member (old GNU `S` typeflag, or the PAX 0.0 / 0.1 / 1.0 encodings) is written
+through the ordinary file path, so every hole becomes zero bytes on disk and in the
+extraction ratio count. Measured: GNU `tar --sparse` of a 10 MiB file holding one byte of
+data is a 10 240-byte archive, and `extract_all()` under the default `ExtractionLimits`
+raises `ResourceLimitError` at 1024:1. With the guard relaxed the output is dense, where
+`tar -x` recreates the holes. tarfile already knows the map (`TarInfo.sparse`), so
+seeking over holes is possible; whether holes should then still count against the ratio
+is an open question.
+
+## `max_metadata_bytes` weighs the values in `extra`, not the keys (open)
+
+`member_metadata_bytes` sums the string values of `extra`, one level of nested dicts
+included, and never counts a key. TAR keeps every PAX record as
+`extra["tar.pax_headers"]`, and a PAX keyword is a string of any length, so its bytes are
+retained unweighed. Measured: one member whose PAX record has a 100 000-byte keyword and a
+one-byte value weighs 4 bytes. 3 000 such members gzip to about 514 KiB and list under a
+1 MiB cap with about 300 MB of keywords held; only `max_members` ends that walk. Counting
+keys is a change to shared listing accounting, which moves the effective cap for every
+format that puts strings in `extra`.
+
+## Pre-1970 Unix timestamps list as invalid on Windows only (open)
+
+Unix-seconds fields are converted with `datetime.fromtimestamp(ts, tz=timezone.utc)` in
+the TAR, ZIP (UT extra field), RAR and gzip paths. On Windows that goes through
+`gmtime()`, which rejects negative values, so a member dated 1969 lists with
+`modified=None` plus `MEMBER_TIMESTAMP_INVALID` there and with the right date on Linux
+and macOS. The fix is one helper, `epoch + timedelta(seconds=ts)`, used at every site.
+Not reproduced on Windows here; the behaviour is the one the ZIP reader's UT-field
+comment already records.
+
 ## WinRAR 3.x SHA-1 KDF mutates its input buffer (emulated)
 
 **Status: emulated, not an archivey bug.** WinRAR's RAR3 string-to-key runs SHA-1's
