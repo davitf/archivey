@@ -99,6 +99,18 @@ promise with that line; treat `0.2.0` as the first release of this library.
   library; `ON` there, or a spawn the OS refuses, raises `ResourceLimitError`. bzip2
   stays in-process. `use_rapidgzip=OFF` avoids the child entirely.
 
+- **A truncated stream that raised once no longer reads as an empty, clean stream
+  afterwards.** This affected every codec archivey decodes in its own decompressing
+  stream: gzip, zlib, raw deflate, deflate64, xz, lzip, brotli, PPMd and `.Z`. After a
+  read of a truncated stream raised `TruncatedError`, the next read returned `b""` with
+  no error. When the failed read was a whole-stream `read()` (not a chunked `read(n)`),
+  this happened after `seek(0)` too. A second `read()` also made the truncated prefix the
+  stream's size. Every later read now raises the same error, a seek decodes from the
+  start again, and no size is published. With the `[seekable]` extra, gzip, zlib and
+  raw deflate can read through the rapidgzip accelerator instead. That is a separate
+  stream, and this fix does not change it; when its decoder process aborts on a
+  truncation (see the entry above), every later read there raises the same error too.
+
 - **Pre-1970 Unix timestamps list their date on Windows too.** TAR, the ZIP extended
   timestamp field, RAR, gzip and the directory backend converted Unix seconds with
   `datetime.fromtimestamp`, which goes through `gmtime()` on Windows and rejects a
