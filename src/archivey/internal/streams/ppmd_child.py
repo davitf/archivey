@@ -265,7 +265,8 @@ class PpmdChildDecoder:
             )
         proc = self._proc
         if proc is None:
-            raise PpmdChildError("PPMd decoder process is not running")
+            # Closed without a child death: not a verdict on the data either.
+            raise ArchiveyUsageError("PPMd decoder is closed")
         assert proc.stdin is not None
         try:
             for part in parts:
@@ -305,9 +306,8 @@ class PpmdChildDecoder:
             self._send(_REQUEST.pack(length, len(data)), bytes(data))
             return self._receive()
         except PpmdChildError as exc:
-            if exc.returncode is None or is_crash(exc.returncode):
-                # A crash, left for ``PpmdCodec.translate`` to call corruption; or
-                # a decode after ``close``, which never started a child death.
+            if is_crash(exc.returncode):
+                # A crash, left for ``PpmdCodec.translate`` to call corruption.
                 raise
             # Not a crash on the data: something outside the decoder ended the child.
             if _SIGKILL is not None and exc.returncode == -_SIGKILL:

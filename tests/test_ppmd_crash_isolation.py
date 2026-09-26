@@ -327,8 +327,17 @@ def test_child_decoder_round_trip_and_errors() -> None:
             bad.decode(b"\x00\x01", 10)  # under the 5 bytes pyppmd needs to start
     finally:
         bad.close()
-    with pytest.raises(PpmdChildError):
+    with pytest.raises(ArchiveyUsageError, match="closed"):
         bad.decode(b"\x00" * 16, 10)
+
+
+def test_a_decode_after_close_is_not_a_corruption_verdict() -> None:
+    """A closed decoder raises a usage error, which ``translate`` leaves alone."""
+    child = PpmdChildDecoder(variant=7, order=_ORDER, mem_size=_MEM)
+    child.close()
+    with pytest.raises(ArchiveyUsageError) as caught:
+        child.decode(b"\x00" * 16, 10)
+    assert PpmdCodec().translate(caught.value) is None
 
 
 def test_child_error_of_unknown_type_propagates(
