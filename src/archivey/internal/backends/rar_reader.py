@@ -81,7 +81,6 @@ from archivey.internal.backends.rar_unrar import (
     _unrar_mask_match,
     decompress_rar3_blob,
     open_unrar_p,
-    terminate_unrar,
 )
 from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
@@ -136,32 +135,52 @@ from archivey.types import (
     crc32_digest,
 )
 
-_STREAM_SINGLE_DISK_COPY_NOTE = (
-    "Reading a compressed member will copy the whole archive to disk so "
-    "RARLAB unrar or rar can read it."
-)
-_STREAM_VOLUMES_DISK_COPY_NOTE = (
-    "Reading a compressed member will copy every volume to a temp directory "
-    "so RARLAB unrar or rar can read them."
-)
+
+def _single_disk_copy_note(program: str) -> str:
+    return (
+        "Reading a compressed member will copy the whole archive to disk so "
+        f"{program} can read it."
+    )
 
 
-def _rar_stream_copy_cost_notes(source: ArchiveSource) -> tuple[str, ...]:
-    """Open-time caveat when member data needs a filesystem path for ``unrar``.
+def _stream_volumes_disk_copy_note(program: str) -> str:
+    return (
+        "Reading a compressed member will copy every volume to a temp directory "
+        f"so {program} can read them."
+    )
 
-    A file source, or a joined set of files, gets no note. Both stream shapes get the
-    same predictive caveat: the copy happens on the first read ``unrar`` has to serve,
-    not at open. Keyed from the source's facts so a mixed set, whose file parts
+
+def _stream_volume_name(stem: str, index: int, *, old_style: bool) -> str:
+    """File name of volume ``index`` (1-based) when a stream set is written to disk.
+
+    Old-style names run ``.rar``, ``.r00`` … ``.r99``, ``.s00`` …, as RAR writes them.
+    """
+    if not old_style:
+        return f"{stem}.part{index}.rar"
+    if index == 1:
+        return f"{stem}.rar"
+    number = index - 2
+    return f"{stem}.{chr(ord('r') + number // 100)}{number % 100:02d}"
+
+
+def _rar_stream_copy_cost_notes(source: ArchiveSource, program: str) -> tuple[str, ...]:
+    """Open-time caveat when member data needs a filesystem path for the decompressor.
+
+    A file source, or a joined set of files, gets no note here; the one file source that
+    is copied, a prefixed file read with ``unar``, is known only after the parse and is
+    noted then (see ``RarReader.__init__``). Both stream shapes get the same predictive
+    caveat: the copy happens on the first read the decompressor has to serve, not at
+    open. Keyed from the source's facts so a mixed set, whose file parts
     ``_materialize_stream_volumes`` copies alongside the streams, is labelled as the
-    streams it contains.
+    streams it contains. ``program`` names the decompressor in the note.
     """
     if source.path is not None:
         return ()
     if source.joined is not None:
         if source.volume_paths:
             return ()
-        return (_STREAM_VOLUMES_DISK_COPY_NOTE,)
-    return (_STREAM_SINGLE_DISK_COPY_NOTE,)
+        return (_stream_volumes_disk_copy_note(program),)
+    return (_single_disk_copy_note(program),)
 
 
 # rarfile / RAR host_os values (parser maps RAR5 Windows→2, Unix→3).
@@ -508,13 +527,13 @@ class _UnrarOwnedStream(DelegatingStream):
         except BaseException as exc:  # noqa: BLE001 - close must reap unrar even on KeyboardInterrupt
             close_error = exc
         if self._proc.poll() is None:
-            terminate_unrar(self._proc)
+            terminate_process(self._proc)
         else:
             # Drain wait status if the process already exited on EOF.
             try:
                 self._proc.wait(timeout=1)
             except subprocess.TimeoutExpired:
-                terminate_unrar(self._proc)
+                terminate_process(self._proc)
         # Mark closed without DelegatingStream closing inner a second time.
         super().close()
         # Early-stop close: map now if the completing-read path never did.
@@ -530,8 +549,8 @@ class _UnrarOwnedStream(DelegatingStream):
             raise close_error
 
 
-class _UnrarRespawnStream(ReadOnlyIOStream):
-    """Seekable view of a named ``unrar p`` pipe.
+class _RespawnStream(ReadOnlyIOStream):
+    """Seekable view of a one-member decompressor pipe (``unrar p`` or ``unar``).
 
     The inner handle is a pipe, so a backward seek cannot reposition it. Close it
     and spawn a fresh process on the next ``read()`` that needs bytes; skip to the
@@ -550,8 +569,8 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
     ``_verify_reaches_declared``). Respawn is keyed on the pipe, so
     ``seek(0, SEEK_END); seek(0)`` before any read costs nothing.
 
-    ``spawn`` must return a stream that owns the process (typically
-    ``_UnrarOwnedStream``, or ``_bounded_member_pipe`` wrapping one), so
+    ``spawn`` must return a stream that owns the process (``_UnrarOwnedStream``,
+    ``_bounded_member_pipe`` wrapping one, or a ``UnarOutputStream``), so
     close/respawn reaps it.
 
     Same restart-on-rewind shape as ``DecompressorStream`` /
@@ -785,7 +804,12 @@ class RarReader(BaseArchiveReader):
         self._volume0_parse_origin = 0  # set after sibling discovery when origin > 0
         # Open-time caveat from source shape, not from later materialization
         # (CostReceipt is a static snapshot; see access-mode-and-cost).
-        self._cost_notes = _rar_stream_copy_cost_notes(source)
+        self._cost_notes = _rar_stream_copy_cost_notes(
+            source,
+            "unar"
+            if self._config.rar_decompressor is RarDecompressor.UNAR
+            else "RARLAB unrar or rar",
+        )
 
         if not source.seekable():
             raise StreamNotSeekableError(
@@ -835,6 +859,14 @@ class RarReader(BaseArchiveReader):
             if self._config.rar_decompressor is RarDecompressor.UNAR
             else None
         )
+        if (
+            self._unar_policy is not None
+            and source.path is not None
+            and self._volume_set_size() <= 1
+            and self._origin + self._archive.sfx_offset > 0
+        ):
+            # ``_unar_archive_path`` copies a prefixed file from where the RAR starts.
+            self._cost_notes = (*self._cost_notes, _single_disk_copy_note("unar"))
         self._check_rar3_comment_budget()
         self._archive.comment = self._resolve_rar3_comment(self._archive.comment)
         for info in self._archive.members:
@@ -893,7 +925,12 @@ class RarReader(BaseArchiveReader):
         return max(len(self._volume_paths), len(self._stream_volume_items))
 
     def _materialize_stream_volumes(self) -> None:
-        """Write ordered volumes into a temp dir with ``name.partN.rar`` names.
+        """Write ordered volumes into a temp dir under the names the set's own scheme uses.
+
+        ``name.partN.rar``, or ``name.rar``, ``name.r00``, ``name.r01`` … for a RAR
+        1.5-2.x set without the new-numbering flag. ``unrar`` finds the next volume
+        under either scheme; ``unar`` looks only under the one the header names, and
+        reads an old-style set written as ``partN`` as volume 1 alone.
 
         Called from :meth:`_ensure_archive_path`, on the first read ``unrar``
         has to serve — not from ``__init__``. Listing a stream-volume set never
@@ -918,7 +955,9 @@ class RarReader(BaseArchiveReader):
         paths: list[Path] = []
         try:
             for index, item in enumerate(items, start=1):
-                dest = temp_dir / f"{stem}.part{index}.rar"
+                dest = temp_dir / _stream_volume_name(
+                    stem, index, old_style=self._archive.old_volume_naming
+                )
                 if isinstance(item, Path):
                     shutil.copy2(item, dest)
                 else:
@@ -1226,10 +1265,10 @@ class RarReader(BaseArchiveReader):
         path = Path(name)
         try:
             with os.fdopen(fd, "wb") as out:
-                # From the origin, so the temp holds the payload alone. A path source
-                # keeps its own path for `unrar`, which handles the stub natively;
-                # a stream becomes a plain RAR, which is both smaller and one less
-                # thing to rely on.
+                # From ``start``, so the temp holds the RAR alone and a program that
+                # does not look past a prefix sees a plain RAR at byte 0. ``unrar``
+                # skips a stub itself, so its path source is passed as is and only
+                # a stream comes here; ``unar`` also sends a prefixed path source.
                 view = self._shared.view(start)
                 try:
                     # Keep the 1 MiB chunk: each SharedView read takes the lock
@@ -1311,6 +1350,11 @@ class RarReader(BaseArchiveReader):
         """Return a parsed old-style comment, dropping unavailable/invalid payloads."""
         if not isinstance(comment, _Rar3Comment):
             return comment
+        # The selected program decodes the comment, ``unar`` included, without the
+        # member refusals of ``UnarRarPolicy``: the CRC16 check below catches any wrong
+        # or missing output, and a comment that fails it is dropped either way.
+        # ``unar`` 1.10.1 decodes the RAR 1.5 comments of ``rar15-comment.rar``
+        # correctly, though it returns nothing for that archive's first member.
         try:
             unpacked = decompress_rar3_blob(
                 open_pipe=None if self._unar_policy is None else _open_unar_blob_pipe,
@@ -1502,7 +1546,7 @@ class RarReader(BaseArchiveReader):
                         stdout, proc, has_verifiable_hash=True
                     )
                 except BaseException:
-                    terminate_unrar(proc)
+                    terminate_process(proc)
                     raise
                 try:
                     # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
@@ -2024,13 +2068,13 @@ class RarReader(BaseArchiveReader):
             "glob target missing from the payload walk; skip uses member identity"
         )
 
-    def _unrar_solid_prefix(self, target: ArchiveMember) -> int:
+    def _solid_prefix(self, target: ArchiveMember) -> int:
         """Unpacked bytes of earlier payload members in a solid archive.
 
-        Named ``unrar p`` of a solid member re-decodes this prefix even though
-        the pipe only emits the requested member. Zero when the archive is not
-        solid — then ``-n`` starts at this member and the member-stream
-        ``tell()`` is the whole re-decode cost.
+        A named ``unrar p`` or an ``unar -i`` run for a solid member re-decodes this
+        prefix even though the pipe only emits the requested member. Zero when the
+        archive is not solid — then the run starts at this member and the
+        member-stream ``tell()`` is the whole re-decode cost.
 
         History rows are counted even without ``-ver``. That is not an oversight
         relative to :meth:`_unrar_glob_prefix`, which skips them unless
@@ -2182,7 +2226,7 @@ class RarReader(BaseArchiveReader):
                     encrypted=raw.is_encrypted,
                 )
             except BaseException:
-                terminate_unrar(proc)
+                terminate_process(proc)
                 raise
             try:
                 tracked = self._track_decompressed(owned)
@@ -2219,13 +2263,11 @@ class RarReader(BaseArchiveReader):
         try:
             rewind: RewindWarning | None = None
             if self._seek_declared():
-                inner = _UnrarRespawnStream(
-                    spawn, inner, size=_member_stream_size(member)
-                )
+                inner = _RespawnStream(spawn, inner, size=_member_stream_size(member))
                 rewind = RewindWarning(
                     codec_name="rar",
                     suggest_install=False,
-                    min_redecode_bytes=self._unrar_solid_prefix(member),
+                    min_redecode_bytes=self._solid_prefix(member),
                 )
             # Folder/pipe output already counted; avoid double-counting at the member wrap.
             # Fused verify in _wrap_payload_stream bounds/checks declared size + digests.
@@ -2312,7 +2354,9 @@ class RarReader(BaseArchiveReader):
                 )
                 try:
                     # Every member read from this pipe is checked against its declared
-                    # size and stored digest, so unar's exit status adds nothing.
+                    # size, and against its stored CRC32 or BLAKE2sp when it has one.
+                    # unar's failures are short or missing output, which the size
+                    # check catches, so its exit status adds nothing.
                     owned: BinaryIO = UnarOutputStream(
                         stdout, proc, has_verifiable_digest=True
                     )

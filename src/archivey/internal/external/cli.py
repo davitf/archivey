@@ -5,9 +5,11 @@ each candidate runs once with an identification argv, and its banner decides. Th
 answer is cached by absolute path and stat identity, so later reads do not spawn the
 probe again, and a binary replaced on disk is probed afresh.
 
-This is the same policy :func:`archivey.internal.backends.rar_unrar.find_rarlab_unrar`
-applies to RARLAB ``unrar``, written once for any program. The ``unrar`` finder keeps
-its own copy: its banner rules and its two candidate names are pinned by tests.
+This is the policy :func:`archivey.internal.backends.rar_unrar.find_rarlab_unrar`
+applies to RARLAB ``unrar``, written once for any program. That finder shares
+:func:`stat_identity` and :func:`terminate_process` with this module but still runs its
+own loop and cache; moving it onto :class:`CliToolFinder` is recorded in
+``dev-docs/IDEAS.md``.
 """
 
 from __future__ import annotations
@@ -42,7 +44,8 @@ class _Probe:
     timed_out: bool
 
 
-def _stat_identity(path: str) -> tuple[int, int, int, int]:
+def stat_identity(path: str) -> tuple[int, int, int, int]:
+    """``(st_dev, st_ino, st_mtime_ns, st_size)``: the identity a replaced binary cannot keep."""
     st = os.stat(path)
     return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
 
@@ -130,7 +133,7 @@ class CliToolFinder:
                 continue
             candidate = os.path.abspath(candidate)
             try:
-                identity = _stat_identity(candidate)
+                identity = stat_identity(candidate)
             except OSError as exc:
                 cause = exc
                 continue

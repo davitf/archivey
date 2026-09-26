@@ -82,8 +82,10 @@ class AcceleratorMode(Enum):
 class RarDecompressor(Enum):
     """Which external program decompresses RAR member data.
 
-    The native parser lists a RAR archive without either program. One of them is needed
-    only to read a compressed or encrypted member; stored members are read directly.
+    The native parser lists a RAR archive without either program, except for a
+    compressed RAR 1.5/2.x comment, which the selected program decodes (without it the
+    comment is ``None``). Otherwise one of them is needed only to read a compressed or
+    encrypted member; stored members are read directly.
 
     - ``UNRAR`` — RARLAB ``unrar`` 6.0 or later (or the RARLAB ``rar`` writer). It
       reads every RAR archive, including encrypted ones. This is the default.
@@ -508,7 +510,8 @@ class ArchiveyConfig:
     """Which external program decompresses RAR member data. See :class:`RarDecompressor`.
 
     Accepts the member or its name (``"unrar"``, ``"unar"``). The listing does not
-    depend on it.
+    depend on it, except that the selected program decodes compressed RAR 1.5/2.x
+    comments.
     """
 
     read_link_targets: bool = True

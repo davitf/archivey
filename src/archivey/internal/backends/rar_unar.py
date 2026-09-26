@@ -51,10 +51,14 @@ REFUSE_RAR5_SOLID_AFTER_EMPTY = (
 )
 
 
-# The most entries one solid pass names on the ``unar`` command line. Windows limits a
-# command line to 32 767 characters; 4000 indexes of up to six digits plus a space
-# stay under that with room for the fixed argv and a long archive path. Only a pass
-# with a refused member names entries at all.
+# The most entries one solid pass names on the ``unar`` command line. The bound that
+# applies is ``ARG_MAX``, which covers argv and the environment together: 256 KiB on
+# older macOS, 1 MiB on current macOS, 2 MiB on Linux. 4000 indexes of up to six
+# digits cost under 60 KB, counting each string's terminator and its argv pointer,
+# which leaves most of the smallest of those for the environment, the fixed argv and
+# a long archive path. ``unar`` is not packaged for Windows, so its 32 767-character
+# command line is not the constraint. Only a pass with a refused member names entries
+# at all; the cap is in the ``format-rar`` spec and in ``docs/formats.md``.
 MAX_SELECTED_ENTRIES = 4000
 
 REFUSE_TOO_MANY_SELECTED = (

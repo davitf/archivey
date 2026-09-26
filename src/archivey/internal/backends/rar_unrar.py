@@ -27,6 +27,7 @@ from archivey.exceptions import (
     ReadError,
     UnsupportedOperationError,
 )
+from archivey.internal.external.cli import stat_identity, terminate_process
 from archivey.terminal import display_path
 
 # Inclusive major.minor floor. ``-n`` glob demux and ``-ver`` were checked
@@ -202,10 +203,9 @@ def _stat_identity(path: str) -> tuple[int, int, int, int]:
     cannot keep.
     """
     try:
-        st = os.stat(path)
+        return stat_identity(path)
     except OSError as exc:
         raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from exc
-    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
 
 
 def _banner_meets_floor(banner: _UnrarBanner) -> bool:
@@ -578,7 +578,7 @@ def decompress_rar3_blob(
                 stdout.close()
             finally:
                 if proc.poll() is None:
-                    terminate_unrar(proc)
+                    terminate_process(proc)
     finally:
         path.unlink(missing_ok=True)
 
@@ -612,7 +612,7 @@ def open_unrar_p(
     archive can legitimately produce no bytes for a long time while ``unrar``
     decodes the members before the target, so an idle timeout would refuse valid
     work. The only timeouts in this module are the version probe and the teardown
-    in :func:`terminate_unrar`.
+    in :func:`~archivey.internal.external.cli.terminate_process`.
 
     Returns ``(proc, stdout)``. Caller must terminate/wait/close.
     """
@@ -656,7 +656,7 @@ def open_unrar_p(
             # unrar exited before consuming the password; surface via exit-code mapping.
             pass
     if proc.stdout is None:
-        terminate_unrar(proc)
+        terminate_process(proc)
         # Defensive: Popen was asked for stdout=PIPE, so this should be unreachable. Typed
         # anyway — every archive-read failure surfaces as an ArchiveyError, and a raw
         # RuntimeError here would cross open_archive untranslated.
@@ -664,17 +664,3 @@ def open_unrar_p(
     # typeshed types Popen[bytes].stdout as IO[bytes], not BinaryIO; the pipe is opened
     # in binary mode above, so it is one at runtime.
     return proc, cast(BinaryIO, proc.stdout)
-
-
-def terminate_unrar(proc: subprocess.Popen[bytes] | None) -> None:
-    """Terminate an ``unrar`` process if it is still running."""
-    if proc is None:
-        return
-    if proc.poll() is not None:
-        return
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()

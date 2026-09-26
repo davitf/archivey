@@ -136,6 +136,18 @@
   use, a way to hand `unar` one member's raw bytes (a synthetic one-member archive, as
   `decompress_rar3_blob` does for RAR3 comments). Not started; requested as a direction
   by the maintainer on 2026-09-26.
+- **Move the RARLAB `unrar` finder onto `CliToolFinder`** — `find_rarlab_unrar`
+  (`internal/backends/rar_unrar.py`) runs the same policy as
+  `internal/external/cli.py`'s `CliToolFinder`: `which` over two names, a banner probe
+  with a timeout, a version floor, a stat-keyed cache that remembers a hung probe. The
+  two already share `stat_identity` and `terminate_process`; the loop, the cache and
+  the refusal wording are still two copies, so a probe or cache fix has to land twice.
+  What stops a mechanical move: about sixty test sites in `test_rar_reader.py`,
+  `test_rar_unrar_argv.py` and `test_rar_header_record_leniency.py` monkeypatch
+  `_cached_unrar` and `_is_rarlab_unrar` or read the cache entries directly, and the
+  `unrar` refusal messages differ in wording from the generic ones. Do it as its own
+  change with those tests rewritten against the finder object. Raised in review of the
+  `unar` backend, 2026-09-26.
 - **Subprocess decompressor streams** — a single reusable `SubprocessDecompressorStream`
   that pipes compressed/uncompressed data through a system binary (`zstd`, `xz`,
   `brotli`, `lz4`, …) as an alternative to installing the Python codec libs. Same pattern

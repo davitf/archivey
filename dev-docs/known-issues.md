@@ -230,7 +230,7 @@ without a failing sample, on the same no-data-in-the-stream grounds). The solid 
 names only the readable members by index, so `unar` never reaches the crash and loses no
 buffered output. RAR4 is not gated; the size and digest check on each member is the net.
 
-**Two more `unar` 1.10.1 behaviours found on the committed fixtures**, both gated:
+**Three more `unar` 1.10.1 behaviours found on the committed fixtures**, all handled:
 
 - **RAR 1.5 compression** (`rar15-comment.rar`, `FILE1.TXT`, method 3 at version 15):
   `unar` writes nothing for the member and exits 0. Refused when a member's extract
@@ -238,6 +238,10 @@ buffered output. RAR4 is not gated; the size and digest check on each member is 
 - **A prefix before the RAR** (an SFX stub, or any leading bytes): `unar` reports an
   unknown format. A single prefixed archive is copied from where the RAR starts; a
   prefixed multi-volume set is refused.
+- **Volume names follow the header** (`tinyvol_rnn.rar` + `.r00` given as streams):
+  `unar` looks for volume 2 only under the scheme the main header names, and read an
+  old-style set written to disk as `partN` as volume 1 alone (a short member, caught by
+  the size check). Stream volumes are now written under the set's own scheme.
 
 Also different from `unrar p`, and handled in the pipe layout rather than refused: an
 all-entries run always includes file-version history rows, and a RAR3/4 symlink emits its

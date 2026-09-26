@@ -180,7 +180,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 
 ## RAR
 
-- Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`).
+- Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`). The one
+  exception is a compressed RAR 1.5 / 2.x comment, which the selected program
+  (`unrar` or `unar`) decodes; without it, or when the decoded text fails its CRC16,
+  `comment` is `None`.
 - Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
   or `7z`). `unrar` is preferred when both exist. `unar` is used only when you select it;
   see the next item. Passwords are passed as bare `-p` with the secret on stdin
@@ -197,6 +200,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   - a member compressed with the RAR 1.5 algorithm;
   - a multi-volume set with a prefix before the first volume (an SFX stub). A single
     prefixed file is copied to a temporary file first.
+  - in `stream_members()` over a solid archive that has one of the members above, any
+    readable member past the 4000th: that pass names each member it reads on the `unar`
+    command line, which has a size limit. Such a member still opens on its own.
 
   Stored members still need neither program. A member whose stored name contains `*` or
   `?` needs no `rar_allow_glob_member_concatenation`: `unar` selects members by index,

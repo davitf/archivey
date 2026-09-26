@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import itertools
 import os
 import subprocess
 import sys
@@ -31,7 +32,7 @@ from archivey.exceptions import (
     ReadError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends import rar_reader
+from archivey.internal.backends import rar_reader, rar_unar
 from archivey.internal.external import cli, unar
 from tests.conftest import requires_binary
 
@@ -90,12 +91,16 @@ def _read_members(path: Path, config: ArchiveyConfig, *, streamed: bool) -> dict
     results: dict[str, str] = {}
     try:
         with open_archive(path, config=config) as archive:
+            # Compressed old-style comments go through the selected program too.
+            results["<comment>"] = repr(archive.info.comment)
             if streamed:
                 for member, stream in archive.stream_members():
+                    results[f"<comment> {member.name}"] = repr(member.comment)
                     if stream is not None:
                         results[member.name] = _outcome(stream.read)
             else:
                 for member in archive.members():
+                    results[f"<comment> {member.name}"] = repr(member.comment)
                     if member.is_file:
                         results[member.name] = _outcome(
                             lambda m=member: archive.read(m)
@@ -177,6 +182,11 @@ def test_prefixed_archive_is_copied_for_unar(tmp_path: Path, name: str) -> None:
     prefixed = tmp_path / "prefixed.rar"
     prefixed.write_bytes(b"\x00" * 4096 + original)
     expected = _read_members(_CORPUS / name, _UNRAR, streamed=False)
+    with open_archive(prefixed, config=_UNRAR) as archive:
+        assert archive.cost.notes == ()
+    with open_archive(prefixed, config=_UNAR) as archive:
+        assert any("copy the whole archive" in n for n in archive.cost.notes)
+        assert any("so unar can read it" in n for n in archive.cost.notes)
     assert _read_members(prefixed, _UNAR, streamed=False) == expected
     assert _read_members(prefixed, _UNAR, streamed=True) == expected
     with open_archive(
@@ -187,7 +197,7 @@ def test_prefixed_archive_is_copied_for_unar(tmp_path: Path, name: str) -> None:
             for member in archive.members()
             if member.is_file
         }
-    assert got == expected
+    assert got == {k: v for k, v in expected.items() if not k.startswith("<comment>")}
 
 
 @requires_binary("unar")
@@ -419,3 +429,85 @@ def test_refusal_names_the_way_out() -> None:
         with pytest.raises(UnsupportedFeatureError) as info:
             archive.read("secret.txt")
     assert "rar_decompressor to 'unrar'" in str(info.value)
+
+
+@requires_binary("unar")
+def test_solid_pass_refuses_readable_members_past_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pass that names members stops at the cap; a member past it still opens alone.
+
+    The fixture has no member unar refuses, so the last payload member is marked
+    refused to make the pass name members, and the cap is lowered to one.
+    """
+
+    def refuse_last(archive: object) -> set[int]:
+        payload = [m for m in archive.members if m.is_payload_file()]  # type: ignore[attr-defined]
+        return {id(payload[-1])}
+
+    monkeypatch.setattr(rar_unar, "_rar5_solid_after_empty", refuse_last)
+    monkeypatch.setattr(rar_unar, "MAX_SELECTED_ENTRIES", 1)
+    path = _RAR / "basic_solid__rar4.rar"
+    outcomes: dict[str, str] = {}
+    with open_archive(path, config=_UNAR) as archive:
+        for member, stream in archive.stream_members():
+            if stream is not None:
+                outcomes[member.name] = _outcome(stream.read)
+        past_cap = [name for name, got in outcomes.items() if "at most" in got]
+        read = [name for name, got in outcomes.items() if "Error" not in got]
+        assert len(read) == 1, outcomes
+        assert past_cap, outcomes
+        assert len(archive.read(past_cap[0])) == archive.get(past_cap[0]).size
+
+
+@requires_binary("unar", "unrar")
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("tinyvol.part1.rar", "tinyvol.part2.rar"),
+        ("tinyvol_rnn.rar", "tinyvol_rnn.r00"),
+    ],
+    ids=["partN", "old-style"],
+)
+def test_stream_volume_set_reads_with_unar(names: tuple[str, ...]) -> None:
+    """Stream volumes are written under names archivey picks; both programs must find
+    them. unar looks for volume 2 only under the scheme the header names."""
+    expected = _read_members(_RAR / names[0], _UNRAR, streamed=False)
+
+    def streams() -> list[io.BytesIO]:
+        return [io.BytesIO((_RAR / name).read_bytes()) for name in names]
+
+    for config, streamed in itertools.product((_UNRAR, _UNAR), (False, True)):
+        with open_archive(streams(), config=config) as archive:
+            if streamed:
+                got = {
+                    member.name: _outcome(stream.read)
+                    for member, stream in archive.stream_members()
+                    if stream is not None
+                }
+            else:
+                got = {
+                    member.name: _outcome(lambda m=member: archive.read(m))
+                    for member in archive.members()
+                    if member.is_file
+                }
+        assert got == {
+            k: v for k, v in expected.items() if not k.startswith("<comment>")
+        }
+
+
+@pytest.mark.parametrize(
+    ("index", "old_style", "expected"),
+    [
+        (1, False, "a.part1.rar"),
+        (12, False, "a.part12.rar"),
+        (1, True, "a.rar"),
+        (2, True, "a.r00"),
+        (101, True, "a.r99"),
+        (102, True, "a.s00"),
+    ],
+)
+def test_stream_volume_names_follow_the_set_scheme(
+    index: int, old_style: bool, expected: str
+) -> None:
+    assert rar_reader._stream_volume_name("a", index, old_style=old_style) == expected

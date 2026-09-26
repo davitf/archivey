@@ -308,11 +308,15 @@ volume set the reader SHALL read each volume as its own bounded view over that
 source rather than reopening or copying it.
 
 When the copy does happen for a volume set it SHALL write the whole set, because
-`unrar` resolves sibling volumes by name.
+`unrar` resolves sibling volumes by name. The copies SHALL be named in the set's own
+scheme: `name.partN.rar`, or `name.rar`, `name.r00`, … for a RAR 1.5-2.x set whose
+main header lacks the new-numbering flag, because `unar` looks for the next volume
+only under that scheme.
 
 When the archive is opened from a
 non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
-caveat **at open** (path sources SHALL NOT): a single stream source SHALL warn
+caveat **at open** (path sources SHALL NOT, except the prefixed file that
+`Read RAR member data with unar only when selected` copies): a single stream source SHALL warn
 that reading a compressed member will copy the whole archive to disk; ordered
 stream volumes SHALL warn that reading a compressed member will copy every volume
 to a temp directory. The note is a
@@ -337,7 +341,7 @@ desynchronize sizes).
 | Solid `stream_members()` pass, no member read | Nothing is written, even from a stream source |
 | Ordered stream volumes, first compressed read | The whole set is written once; later reads reuse it; close removes it |
 | Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
-| Path source | `ar.cost.notes` has no disk-copy caveat |
+| Path source | `ar.cost.notes` has no disk-copy caveat (under `unrar`) |
 
 ### Requirement: Support benchmark-gated small-member optimization
 
@@ -837,10 +841,17 @@ system SHALL refuse with `UnsupportedFeatureError`, before spawning `unar`:
 - any member of a multi-volume set that has a prefix before the RAR.
 
 A solid pass that includes a refused member SHALL name only the readable payload
-members, so `unar` never decodes the refused one. A single archive with a prefix
-SHALL be copied from the RAR's start before `unar` reads it. Every member read
-through `unar` SHALL be checked against its declared size and stored digest,
-because `unar` exits 0 on some failures.
+members, so `unar` never decodes the refused one, and SHALL name at most 4000 of
+them to stay inside `ARG_MAX`. A readable member past the 4000th SHALL be refused in
+that pass with `UnsupportedFeatureError`; opening it on its own is not affected. A
+single archive with a prefix SHALL be copied from the RAR's start before `unar`
+reads it, and `ar.cost.notes` SHALL say so at open, for a path source too. Every member read through `unar` SHALL be checked against its declared
+size and stored digest, because `unar` exits 0 on some failures.
+
+A compressed RAR 1.5/2.x old-style comment SHALL be decoded by the selected
+program, so with `unar` selected `unar` decodes it. The decoded text SHALL be used
+only when its stored CRC16 matches; otherwise, or when the selected program is
+missing, the comment SHALL be `None`, as it is with `unrar`.
 
 #### Scenario: unar selection matrix
 
@@ -853,4 +864,6 @@ because `unar` exits 0 on some failures.
 | `unar` selected, RAR5 solid, empty file first | Members with data after it are refused; listing is not |
 | `unar` selected, member before the first empty entry in a RAR5 solid pass | Read correctly from a run that names only readable members |
 | `unar` selected, RAR 1.5 compressed member | `UnsupportedFeatureError` |
-| `unar` selected, single archive after a 4 KiB prefix | Read from a copy that starts at the RAR |
+| `unar` selected, single archive after a 4 KiB prefix | Read from a copy that starts at the RAR; `ar.cost.notes` warns of the copy at open |
+| `unar` selected, solid pass with a refused member and more than 4000 readable members | Members past the 4000th refused in the pass; each still opens on its own |
+| `unar` selected, compressed RAR 1.5 archive comment | Decoded by `unar` and checked against its CRC16 |

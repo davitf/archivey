@@ -398,7 +398,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         counting.CountingReader,
         counting.SeekCountingStream,
         rar_reader._UnrarOwnedStream,
-        rar_reader._UnrarRespawnStream,
+        rar_reader._RespawnStream,
         # Subprocess stdout, like the unrar pipe: nothing below it has a table.
         unar.UnarOutputStream,
         iso_reader._PyCdlibStream,
