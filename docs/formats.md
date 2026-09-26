@@ -24,8 +24,9 @@ most often surprise callers. For more depth, the maintainer handbook has pages o
 
 **RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`.** No pip extra
 can supply it — listing and metadata work without it, reading bytes does not.
-`rarfile` will use `unar` or `7z` if that is what is on `PATH`; archivey will not.
-How to get the binary: [Install and extras](install.md#getting-rarlab-unrar-or-rar).
+`rarfile` will use `unar` or `7z` if that is what is on `PATH`; archivey will not on its
+own. You can choose `unar` instead with `ArchiveyConfig(rar_decompressor="unar")`, with
+the limits listed under [RAR](#rar). How to get the binary: [Install and extras](install.md#getting-rarlab-unrar-or-rar).
 
 Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
 rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
@@ -187,11 +188,50 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 
 ## RAR
 
-- Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`).
-- Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`,
-  `unar`, or `7z` — `rarfile` accepts those last two; archivey does not). `unrar` is
-  preferred when both exist. Passwords are passed as bare `-p` with the secret on stdin
-  (not in argv). Install: [Getting RARLAB unrar or rar](install.md#getting-rarlab-unrar-or-rar).
+- Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`). The one
+  exception is a compressed RAR 1.5 / 2.x comment, which the selected program
+  (`unrar` or `unar`) decodes; without it, or when the decoded text fails its CRC16,
+  `comment` is `None`.
+- Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
+  or `7z`). `unrar` is preferred when both exist. `unar` is used only when you select it,
+  directly or through `"auto"`; see the next item. `unrar` gets passwords as bare `-p`
+  with the secret on stdin (not in argv). Install:
+  [Getting RARLAB unrar or rar](install.md#getting-rarlab-unrar-or-rar).
+- **`unar` instead of `unrar`:** `ArchiveyConfig(rar_decompressor="unar")` reads member
+  data with `unar` 1.10 or later (`brew install unar`, `apt install unar`). It is free
+  software and easy to install on macOS, but it reads less than `unrar`.
+  `rar_decompressor="auto"` uses `unrar` when a usable one is on `PATH` and `unar`
+  otherwise; the choice is made once, when the archive is opened, and a read `unar`
+  refuses is not retried with `unrar`. Archivey refuses these reads with
+  `UnsupportedFeatureError` before `unar` runs, because `unar` gets them wrong,
+  sometimes with a success exit:
+  - encrypted data in a RAR 2.x-4.x archive, and every member of a solid one that has
+    it (RAR5 encryption is read);
+  - a password that is not ASCII;
+  - a multi-volume RAR5 set with encrypted headers (Homebrew's `unar` 1.10.8 returns
+    nothing for it);
+  - in a RAR5 solid archive, a member that comes after an empty file, a directory or a
+    link;
+  - a member compressed with the RAR 1.5 algorithm;
+  - a multi-volume set with a prefix before the first volume (an SFX stub). A single
+    prefixed file is copied to a temporary file first.
+  - in `stream_members()` over a solid archive that has one of the members above, any
+    readable member past the 4000th: that pass names each member it reads on the `unar`
+    command line, which has a size limit. Such a member still opens on its own.
+
+  **The password is visible to other local users.** `unar` accepts a password only on
+  its command line (`-p <password>`), so while it runs, any user on the same machine can
+  read the password from the process list (`ps`, `/proc/<pid>/cmdline`). `unrar` reads
+  it from stdin instead. On a shared machine, use `unrar` for encrypted archives. A
+  wrong password makes `unar` write nothing and report success; archivey reports that
+  as `EncryptionError`, and a RAR5 password check usually rejects a wrong password
+  before `unar` runs at all.
+
+  Stored members still need neither program. A member whose stored name contains `*` or
+  `?` needs no `rar_allow_glob_member_concatenation`: `unar` selects members by index,
+  not by name. With `"unrar"` or `"unar"` selected, archivey never switches between the
+  two programs; with `unar` selected and missing, a read raises
+  `PackageNotInstalledError`.
 - `[recommended]`: header-encrypted RAR5. BLAKE2sp verification needs **no** package —
   it is implemented natively on stdlib `hashlib`. RAR5 members with the HASHMAC flag
   verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a password is available;

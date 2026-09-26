@@ -225,15 +225,22 @@ jobs:
       # platform-dependent assertion about a RAR member (mode/uid/mtime are asserted
       # only for tar, digest *values* never). Two assertion arms in the test were wrong.
       # See dev-docs/investigations/rar-corpus-sweep-diagnosis.md.
-      - name: Install unrar (Linux)
+      #
+      # unar (The Unarchiver's XADMaster) is the opt-in second RAR data program
+      # (ArchiveyConfig.rar_decompressor="unar"). tests/test_rar_unar.py compares it
+      # with unrar on every committed fixture and skips without it. Linux gets
+      # Ubuntu's 1.10.1; macOS gets the Homebrew bottle (XADMaster 1.10.8), which is
+      # the build macOS users install. Windows has no packaged unar.
+      - name: Install unrar and unar (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y unrar
+        run: sudo apt-get update && sudo apt-get install -y unrar unar
       # Homebrew disabled the `rar` cask on 2026-09-01 (official binaries fail
       # Gatekeeper notarization). Compile RARLAB UnRAR from a pinned git commit
       # of the pmachapman/unrar GitHub mirror (not rarlab, not GitHub's generated
       # archive tarball). The GHA cache stores the *built binary*; the commit pin
-      # is checked when the script actually builds, not on a cache hit. `unar` is
-      # not a substitute — archivey's finder requires the RARLAB banner.
+      # is checked when the script actually builds, not on a cache hit. `unar` does
+      # not satisfy the unrar finder, which requires the RARLAB banner; it is only
+      # used when a caller selects it.
       - name: Cache compiled RARLAB unrar (macOS)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
         uses: actions/cache@v4
@@ -249,6 +256,11 @@ jobs:
           echo "$DEST" >> "$GITHUB_PATH"
           test -x "$DEST/unrar"
           command -v rar && exit 1 || true
+      - name: Install unar (macOS)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'macOS'
+        run: |
+          brew install unar
+          unar -h | head -n 1
       # rarlab.com refused the connection often enough to redden Windows runs on
       # its own (run 34392160804: "connection attempt failed because the
       # connected party did not properly respond"). Same shape as the macOS leg:

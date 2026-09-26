@@ -3,8 +3,10 @@
 ## Purpose
 
 Archivey parses RAR metadata natively (RAR 1.5 / 2.x through RAR5) with no
-`rarfile` dependency. Listing uses the native parser only; reading compressed or
-encrypted member data delegates to the system RARLAB `unrar` binary. RAR is
+`rarfile` dependency. Listing uses the native parser only (except a compressed
+RAR 1.5/2.x comment, which the data program decodes); reading compressed or
+encrypted member data delegates to the system RARLAB `unrar` binary, or to `unar`
+when selected. RAR is
 read-only, and `rarfile` is only a test oracle.
 
 This native-metadata/system-decompressor split follows the `archivey-dev`
@@ -217,7 +219,9 @@ does not match inside `UNRAR`) whose parsed major.minor is 6.0 or later.
 If a decompressor is required and missing or incompatible, the system SHALL raise
 `PackageNotInstalledError` naming RARLAB `unrar` or `rar`. Archivey MUST NOT
 silently use `unrar-free`, `unar`, `bsdtar`, `7z`, or a degraded backend. The
-spawn SHALL be the `p` (print to stdout) command only.
+spawn SHALL be the `p` (print to stdout) command only. This requirement applies
+when `ArchiveyConfig.rar_decompressor` is `unrar` (the default), or `auto` with a
+usable RARLAB binary on `PATH`; `unar` is covered by `Read RAR member data with unar only when selected`.
 
 #### Scenario: unrar dependency matrix
 
@@ -230,6 +234,7 @@ spawn SHALL be the `p` (print to stdout) command only.
 | RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed/encrypted member data; spawn is `rar p` |
 | RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
 | Listing only, both missing | No data dependency is checked |
+| Listing only, both missing, archive has a compressed RAR 1.5/2.x comment | The comment is `None`; nothing else depends on a data program |
 
 ### Requirement: Constrain unrar argv by call site
 
@@ -306,11 +311,15 @@ volume set the reader SHALL read each volume as its own bounded view over that
 source rather than reopening or copying it.
 
 When the copy does happen for a volume set it SHALL write the whole set, because
-`unrar` resolves sibling volumes by name.
+`unrar` resolves sibling volumes by name. The copies SHALL be named in the set's own
+scheme: `name.partN.rar`, or `name.rar`, `name.r00`, … for a RAR 1.5-2.x set whose
+main header lacks the new-numbering flag, because `unar` looks for the next volume
+only under that scheme.
 
 When the archive is opened from a
 non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
-caveat **at open** (path sources SHALL NOT): a single stream source SHALL warn
+caveat **at open** (path sources SHALL NOT, except the prefixed file that
+`Read RAR member data with unar only when selected` copies): a single stream source SHALL warn
 that reading a compressed member will copy the whole archive to disk; ordered
 stream volumes SHALL warn that reading a compressed member will copy every volume
 to a temp directory. The note is a
@@ -335,7 +344,7 @@ desynchronize sizes).
 | Solid `stream_members()` pass, no member read | Nothing is written, even from a stream source |
 | Ordered stream volumes, first compressed read | The whole set is written once; later reads reuse it; close removes it |
 | Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
-| Path source | `ar.cost.notes` has no disk-copy caveat |
+| Path source | `ar.cost.notes` has no disk-copy caveat (under `unrar`) |
 
 ### Requirement: Support benchmark-gated small-member optimization
 
@@ -813,3 +822,73 @@ refused.
 | `only*.dat`, whose mask matches nothing else, default config | Reads normally; no refusal |
 | Solid `stream_members()` over glob-named members, default config | All members read; no mask is built |
 | A name with no `*` or `?` | Unaffected in either configuration |
+
+### Requirement: Read RAR member data with unar only when selected
+
+When `ArchiveyConfig.rar_decompressor` is `unar`, or `auto` with no usable RARLAB
+`unrar` or `rar` on `PATH`, the system SHALL read compressed
+member data by invoking `unar` 1.10 or later, identified on `PATH` by its `unar -h`
+banner with the same probe timeout and stat-keyed cache as RARLAB `unrar`. Stored,
+unencrypted, unsplit members SHALL still be read directly. The system MUST NOT use
+`unrar` in that mode, and MUST NOT use `unar` in any other mode; a missing or
+unidentified `unar` SHALL raise `PackageNotInstalledError` naming `unar`. `auto` SHALL
+choose once per reader, when the archive opens; a read `unar` refuses MUST NOT be
+retried with `unrar`, and with neither program present `auto` SHALL raise the
+`PackageNotInstalledError` that names RARLAB `unrar` or `rar`.
+
+The argv SHALL be
+`unar -o - -q -nr -k skip [-p <password>] [-i] -- <absolute path> [index …]`:
+members named by decimal entry index in parse order, never by stored name. The
+password is on the command line because `unar` takes it nowhere else, so other local
+users can read it in the process list; the documentation SHALL say so. The native
+RAR5 password check SHALL reject a wrong password before `unar` runs where the archive
+stores one; otherwise, when `unar` produces no data for a non-empty encrypted member,
+the read SHALL raise `EncryptionError`. The
+system SHALL refuse with `UnsupportedFeatureError`, before spawning `unar`:
+
+- an encrypted RAR 2.x-4.x member, and every member of a solid pass over such an
+  archive (`unar` 1.10 returns no data for it, and exits 0, even with the right
+  password);
+- a member or solid pass that needs a password that is not ASCII, or contains NUL
+  (`unar` 1.10 does not decrypt with it);
+- every member of a multi-volume RAR5 set with encrypted headers (XADMaster 1.10.8
+  returns no data for it, and exits 0);
+- in a RAR5 solid archive, a member with data that follows an empty file, a
+  directory or a link;
+- a compressed member whose extract version is below 20 (RAR 1.5 algorithm);
+- any member of a multi-volume set that has a prefix before the RAR.
+
+A solid pass that includes a refused member SHALL name only the readable payload
+members, so `unar` never decodes the refused one, and SHALL name at most 4000 of
+them to stay inside `ARG_MAX`. A readable member past the 4000th SHALL be refused in
+that pass with `UnsupportedFeatureError`; opening it on its own is not affected. A
+single archive with a prefix SHALL be copied from the RAR's start before `unar`
+reads it, and `ar.cost.notes` SHALL say so at open, for a path source too. Every member read through `unar` SHALL be checked against its declared
+size and stored digest, because `unar` exits 0 on some failures.
+
+A compressed RAR 1.5/2.x old-style comment SHALL be decoded by the selected
+program, so with `unar` selected `unar` decodes it. The decoded text SHALL be used
+only when its stored CRC16 matches; otherwise, or when the selected program is
+missing, the comment SHALL be `None`, as it is with `unrar`.
+
+#### Scenario: unar selection matrix
+
+| Case | Expected |
+| --- | --- |
+| Default config, compressed member | `unrar` is spawned; `unar` is not |
+| `rar_decompressor="unar"`, `unar` missing, `unrar` present | `PackageNotInstalledError` names `unar`; `unrar` is not used |
+| `rar_decompressor="auto"`, RARLAB `unrar` present | `unrar` is spawned; `unar` is not |
+| `rar_decompressor="auto"`, only `unar` present | `unar` is spawned |
+| `rar_decompressor="auto"`, neither present | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
+| `unar` selected, member name contains `*` | Read by index; no `rar_allow_glob_member_concatenation` needed |
+| `unar` selected, encrypted RAR5 member, right password | Read correctly; the password is passed with `-p` |
+| `unar` selected, encrypted RAR5 member, wrong password | `EncryptionError` |
+| `unar` selected, encrypted RAR 2.x-4.x member | `UnsupportedFeatureError` naming the RAR 2.x-4.x reason |
+| `unar` selected, non-ASCII password | `UnsupportedFeatureError` naming the password reason |
+| `unar` selected, RAR5 volume set with encrypted headers, right password | `UnsupportedFeatureError` |
+| `unar` selected, RAR5 solid, empty file first | Members with data after it are refused; listing is not |
+| `unar` selected, member before the first empty entry in a RAR5 solid pass | Read correctly from a run that names only readable members |
+| `unar` selected, RAR 1.5 compressed member | `UnsupportedFeatureError` |
+| `unar` selected, single archive after a 4 KiB prefix | Read from a copy that starts at the RAR; `ar.cost.notes` warns of the copy at open |
+| `unar` selected, solid pass with a refused member and more than 4000 readable members | Members past the 4000th refused in the pass; each still opens on its own |
+| `unar` selected, compressed RAR 1.5 archive comment | Decoded by `unar` and checked against its CRC16 |

@@ -38,7 +38,6 @@ from archivey.internal.backends.rar_reader import _crc_is_tweaked, _member_hashe
 from archivey.internal.backends.rar_unrar import (
     _password_arg,
     open_unrar_p,
-    terminate_unrar,
 )
 from archivey.internal.backends.sevenzip_parser import (
     SevenZipArchive,
@@ -48,6 +47,7 @@ from archivey.internal.backends.sevenzip_parser import (
 )
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.external.cli import terminate_process
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, crc32_digest
@@ -483,7 +483,7 @@ def test_f4_password_passed_via_stdin_not_argv(monkeypatch: pytest.MonkeyPatch) 
         assert stdout.read() == b"This is secret"
     finally:
         stdout.close()
-        terminate_unrar(proc)
+        terminate_process(proc)
 
 
 @requires_binary("unrar")
@@ -520,7 +520,7 @@ def test_f4_unencrypted_still_uses_p_dash(monkeypatch: pytest.MonkeyPatch) -> No
         assert stdout.read() == b"stored payload"
     finally:
         stdout.close()
-        terminate_unrar(proc)
+        terminate_process(proc)
 
 
 # --- F5: compare_digest for RAR5 password check ----------------------------------------

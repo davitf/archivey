@@ -123,6 +123,7 @@ _RAR3_ENDARC = 0x7B
 _RAR3_MAIN_VOLUME = 0x0001
 _RAR3_MAIN_COMMENT = 0x0002
 _RAR3_MAIN_SOLID = 0x0008
+_RAR3_MAIN_NEW_NUMBERING = 0x0010
 _RAR3_MAIN_PASSWORD = 0x0080
 _RAR3_MAIN_ENCRYPTVER = 0x0200
 
@@ -377,6 +378,10 @@ class RarArchive:
     sfx_offset: int
     is_volume: bool
     needs_next_volume: bool = False
+    #: A RAR 1.5-2.x volume set named ``name.rar``, ``name.r00``, ``name.r01`` …: the
+    #: RAR3 main header lacks the new-numbering flag. ``False`` for RAR5 and for
+    #: ``name.partN.rar`` sets. Taken from volume 1.
+    old_volume_naming: bool = False
     #: SERVICE headers (``CMT``, ``QO``) whose extra-area walk dropped a record or
     #: gave up, in file order, at most ``_MAX_DAMAGED_SERVICE_HEADERS`` of them.
     #: They are not members, so nothing lists them and the reader's per-member
@@ -1372,6 +1377,7 @@ def _parse_rar3(
 
     is_solid = False
     is_volume = False
+    old_volume_naming = False
     has_header_encryption = False
     comment: str | _Rar3Comment | None = None
     members: list[RarMemberInfo] = []
@@ -1439,6 +1445,7 @@ def _parse_rar3(
             crc_pos = rar3_main_crc_end(flags)
             is_solid = bool(flags & _RAR3_MAIN_SOLID)
             is_volume = bool(flags & _RAR3_MAIN_VOLUME)
+            old_volume_naming = is_volume and not flags & _RAR3_MAIN_NEW_NUMBERING
             if flags & _RAR3_MAIN_PASSWORD:
                 has_header_encryption = True
                 if password is None:
@@ -1551,6 +1558,7 @@ def _parse_rar3(
         sfx_offset=sfx_offset,
         is_volume=is_volume,
         needs_next_volume=needs_next_volume,
+        old_volume_naming=old_volume_naming,
     )
 
 

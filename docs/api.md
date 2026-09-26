@@ -90,6 +90,7 @@ spec for lifecycle, retention, and policy.
 ::: archivey.ListingLimits
 ::: archivey.DecoderLimits
 ::: archivey.AcceleratorMode
+::: archivey.RarDecompressor
 ::: archivey.PasswordInput
 ::: archivey.PasswordRequest
 ::: archivey.PasswordProvider

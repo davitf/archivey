@@ -262,7 +262,10 @@ _CLOSE_STATE_FIRST = {
         "assigns every field close() reads before DelegatingStream.__init__"
     ),
     "archivey.internal.backends.rar_reader._UnrarOwnedStream": "plain assignments only",
-    "archivey.internal.backends.rar_reader._UnrarRespawnStream": "plain assignments only",
+    "archivey.internal.backends.rar_reader._RespawnStream": "plain assignments only",
+    "archivey.internal.external.unar.UnarOutputStream": (
+        "assigns every field close() reads before DelegatingStream.__init__"
+    ),
     "archivey.internal.streams.streamtools.slice.SlicingStream": (
         "_init_from_source assigns _stream and _owns_inner before any check"
     ),

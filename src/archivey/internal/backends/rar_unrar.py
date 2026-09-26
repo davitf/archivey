@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, cast
@@ -26,6 +27,7 @@ from archivey.exceptions import (
     ReadError,
     UnsupportedOperationError,
 )
+from archivey.internal.external.cli import stat_identity, terminate_process
 from archivey.terminal import display_path
 
 # Inclusive major.minor floor. ``-n`` glob demux and ``-ver`` were checked
@@ -201,10 +203,9 @@ def _stat_identity(path: str) -> tuple[int, int, int, int]:
     cannot keep.
     """
     try:
-        st = os.stat(path)
+        return stat_identity(path)
     except OSError as exc:
         raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from exc
-    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
 
 
 def _banner_meets_floor(banner: _UnrarBanner) -> bool:
@@ -485,6 +486,7 @@ def _unrar_mask_match(name: str, mask: str) -> bool:
 
 def decompress_rar3_blob(
     *,
+    open_pipe: Callable[[Path], tuple[subprocess.Popen[bytes], BinaryIO]] | None = None,
     extract_version: int,
     compress_type: int,
     packed: bytes,
@@ -502,6 +504,9 @@ def decompress_rar3_blob(
     ``unrar`` can report a CRC error for the synthetic FILE because old comment
     blocks retain only a CRC16. The caller validates that CRC16 against the
     returned bytes, which is the integrity check the on-disk comment provides.
+
+    ``open_pipe`` spawns the decompressor on the synthetic archive and returns
+    ``(proc, stdout)`` for its only member; ``None`` means :func:`open_unrar_p`.
 
     An encrypted comment (the PASSWORD or SALT flag) returns ``None`` before any
     archive is built. The parser already drops one
@@ -559,7 +564,7 @@ def decompress_rar3_blob(
     try:
         with os.fdopen(fd, "wb") as archive:
             archive.write(_RAR3_ID + main_header + file_header + packed)
-        proc, stdout = open_unrar_p(path)
+        proc, stdout = (open_pipe or open_unrar_p)(path)
         try:
             # A comment's declared unpacked length is a uint16. Bound the
             # process output so a malformed blob cannot turn archive listing
@@ -573,7 +578,7 @@ def decompress_rar3_blob(
                 stdout.close()
             finally:
                 if proc.poll() is None:
-                    terminate_unrar(proc)
+                    terminate_process(proc)
     finally:
         path.unlink(missing_ok=True)
 
@@ -607,7 +612,7 @@ def open_unrar_p(
     archive can legitimately produce no bytes for a long time while ``unrar``
     decodes the members before the target, so an idle timeout would refuse valid
     work. The only timeouts in this module are the version probe and the teardown
-    in :func:`terminate_unrar`.
+    in :func:`~archivey.internal.external.cli.terminate_process`.
 
     Returns ``(proc, stdout)``. Caller must terminate/wait/close.
     """
@@ -651,7 +656,7 @@ def open_unrar_p(
             # unrar exited before consuming the password; surface via exit-code mapping.
             pass
     if proc.stdout is None:
-        terminate_unrar(proc)
+        terminate_process(proc)
         # Defensive: Popen was asked for stdout=PIPE, so this should be unreachable. Typed
         # anyway — every archive-read failure surfaces as an ArchiveyError, and a raw
         # RuntimeError here would cross open_archive untranslated.
@@ -659,17 +664,3 @@ def open_unrar_p(
     # typeshed types Popen[bytes].stdout as IO[bytes], not BinaryIO; the pipe is opened
     # in binary mode above, so it is one at runtime.
     return proc, cast(BinaryIO, proc.stdout)
-
-
-def terminate_unrar(proc: subprocess.Popen[bytes] | None) -> None:
-    """Terminate an ``unrar`` process if it is still running."""
-    if proc is None:
-        return
-    if proc.poll() is not None:
-        return
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
