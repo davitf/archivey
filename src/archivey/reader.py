@@ -188,7 +188,15 @@ class ArchiveReader(ABC):
         """Yield ``(member, stream)`` pairs in archive order with bounded memory.
         ``members`` is an optional selector (predicate, name/member collection, or
         ``None`` for all). The yielded stream is valid only until the iterator advances;
-        it is ``None`` for non-file members."""
+        it is ``None`` for non-file members.
+
+        The yielded stream is forward-only on every format, with or without
+        ``seekable_members=True``: ``seekable()`` is ``False``, ``seek()`` raises
+        ``io.UnsupportedOperation``, and ``tell()`` works. A nested archive read from
+        it is a non-seekable source: ``open_archive()`` accepts it only with
+        ``streaming=True`` and only for TAR and single-file compressors. For a member
+        you need to seek, nested archives included, use :meth:`open` under
+        ``seekable_members=True``."""
         ...
 
     @abstractmethod

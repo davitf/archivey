@@ -128,9 +128,10 @@ What changes:
 - **No external binary for 7z**, and no CLI output parsing. Archivey has a native 7z
   reader (common codecs in the core; PPMd/Deflate64 and AES via `[recommended]`).
 - **RAR still needs RARLAB `unrar` or `rar`** for member *data* — metadata and listing
-  are native. That is a licensing constraint, not an oversight: the RAR decompression
-  algorithm may not be reimplemented, so a RARLAB binary stays in the picture for data
-  while metadata does not need it.
+  are native. That is a licensing constraint, not an oversight: RARLAB publishes the
+  header layout but not the compression format, and the UnRAR source licence forbids
+  using that source to re-create the RAR compression algorithm. So a RARLAB binary
+  stays in the picture for data, while metadata does not need it.
 - **Errors are exceptions, not exit codes**, and hostile archives can't reach a shell:
   the whole point is not handing untrusted filenames to a subprocess.
 - Wrong passwords raise `EncryptionError` rather than prompting on a tty and hanging.

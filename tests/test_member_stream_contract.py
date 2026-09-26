@@ -19,11 +19,17 @@ import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Callable
+from typing import BinaryIO, Callable, Iterator
 
 import pytest
 
-from archivey import list_known_formats, open_archive
+from archivey import (
+    ArchiveStream,
+    StreamNotSeekableError,
+    list_known_formats,
+    open_archive,
+)
+from archivey.cost import StreamCapability
 from archivey.types import (
     ArchiveFormat,
     CompressionAlgorithm,
@@ -406,13 +412,16 @@ def _seek_member_params() -> list:
     return params
 
 
-def _open_enrolled(spec: _SeekSpec, tmp_path: Path, *, seekable_members: bool):
+def _open_enrolled(
+    spec: _SeekSpec, tmp_path: Path, *, seekable_members: bool, streaming: bool = False
+):
     entry = _BY_ID[spec.entry_id]
     skip_unless_runnable(entry, spec.key)
     source = corpus_archive_path(entry, spec.key, tmp_path)
     return open_archive(
         source,
         seekable_members=seekable_members,
+        streaming=streaming,
         password=list(entry.passwords) or None,
     )
 
@@ -504,6 +513,142 @@ def test_corpus_seek_underflow_matches_bytesio(
                     f.seek(-1, io.SEEK_CUR)
                 return
             _assert_seek_underflow_matches_bytesio(f)
+
+
+def _assert_forward_only(f) -> None:
+    assert f.seekable() is False
+    head = f.read(1)
+    assert f.tell() == len(head)
+    with pytest.raises(io.UnsupportedOperation):
+        f.seek(0)
+    # The refused seek did not move the stream.
+    assert f.tell() == len(head)
+
+
+# (seekable_members, streaming, API) -> does the handle seek. Only random open() under
+# seekable_members=True seeks: a stream_members() pass is single-pass on every format,
+# whatever the source or the declaration.
+_SEEKABILITY_CASES = (
+    pytest.param(False, False, "open", False, id="default-open"),
+    pytest.param(False, False, "stream_members", False, id="default-pass"),
+    pytest.param(True, False, "open", True, id="seekable-open"),
+    pytest.param(True, False, "stream_members", False, id="seekable-pass"),
+    pytest.param(True, True, "stream_members", False, id="seekable-streaming-pass"),
+)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [pytest.param(s, id=f"{s.entry_id}/{s.key}") for s in _SEEK_ARCHIVES],
+)
+@pytest.mark.parametrize(
+    ("seekable_members", "streaming", "api", "expect_seekable"), _SEEKABILITY_CASES
+)
+def test_member_stream_seekability_matrix(
+    spec: _SeekSpec,
+    seekable_members: bool,
+    streaming: bool,
+    api: str,
+    expect_seekable: bool,
+    tmp_path: Path,
+) -> None:
+    with _open_enrolled(
+        spec, tmp_path, seekable_members=seekable_members, streaming=streaming
+    ) as ar:
+        if api == "open":
+            for member in ar.members():
+                if not member.is_file:
+                    continue
+                _assert_packing(spec, member, name=member.name)
+                with ar.open(member) as f:
+                    if expect_seekable:
+                        assert f.seekable() is True
+                        f.read(1)
+                        assert f.seek(0) == 0
+                    else:
+                        _assert_forward_only(f)
+            return
+        seen = 0
+        for member, stream in ar.stream_members():
+            if stream is None:
+                continue
+            assert member.is_file
+            # Streaming readers cannot list before the pass; the member is known here.
+            _assert_packing(spec, member, name=member.name)
+            seen += 1
+            _assert_forward_only(stream)
+        assert seen, "archive yielded no file member streams"
+
+
+def _nested_params() -> list:
+    params = []
+    for entry_id in ("basic", "single-file"):
+        for key in _BY_ID[entry_id].formats:
+            if key == "dir":
+                continue
+            params.append(pytest.param(entry_id, key, id=f"{entry_id}/{key}"))
+    return params
+
+
+# Formats open_archive() reads from a non-seekable source (streaming=True only).
+_STREAMS_FROM_PIPE = frozenset(k for k in FORMAT_KEYS if k.startswith("tar")) | set(
+    _BY_ID["single-file"].formats
+)
+
+
+@pytest.mark.parametrize(("entry_id", "key"), _nested_params())
+def test_nested_archive_from_a_pass_handle_is_a_non_seekable_source(
+    entry_id: str, key: str, tmp_path: Path
+) -> None:
+    """A ``stream_members()`` handle handed to ``open_archive()`` is a pipe to it.
+
+    The pass handle never seeks, even under ``seekable_members=True``, so a nested
+    archive read from it gets no random access: the default open raises
+    ``StreamNotSeekableError``, ``streaming=True`` works only for formats that stream
+    from a non-seekable source, and the formats that need their index (ZIP, 7z, RAR,
+    ISO) refuse in either mode. ``open()`` on the same member still gives a seekable
+    source, which is the documented way to read a nested archive at random.
+    """
+    entry = _BY_ID[entry_id]
+    skip_unless_runnable(entry, key)
+    inner_path = corpus_archive_path(entry, key, tmp_path / "inner")
+    outer_path = tmp_path / "outer.tar"
+    inner_name = f"inner.{key}"
+    with tarfile.open(outer_path, "w") as tf:
+        tf.add(inner_path, inner_name)
+    file_count = sum(1 for m in entry.members if m.type is MemberType.FILE)
+
+    def pass_handle() -> Iterator[ArchiveStream]:
+        # A fresh outer pass per attempt: a refused open has already read the head.
+        with open_archive(outer_path, seekable_members=True) as outer:
+            handles = 0
+            for member, stream in outer.stream_members():
+                if stream is not None:
+                    handles += 1
+                    assert member.name == inner_name
+                    assert stream.seekable() is False
+                    yield stream
+            assert handles == 1
+
+    for stream in pass_handle():
+        with pytest.raises(StreamNotSeekableError):
+            open_archive(stream)
+    for stream in pass_handle():
+        if key in _STREAMS_FROM_PIPE:
+            with open_archive(stream, streaming=True) as inner:
+                assert inner.cost.stream_capability is StreamCapability.FORWARD_ONLY
+                streams = [s for _, s in inner.stream_members() if s is not None]
+                assert len(streams) == file_count
+        else:
+            with pytest.raises(StreamNotSeekableError):
+                open_archive(stream, streaming=True)
+
+    with open_archive(outer_path, seekable_members=True) as outer:
+        with outer.open(inner_name) as f:
+            assert f.seekable() is True
+            with open_archive(f) as inner:
+                assert inner.cost.stream_capability is StreamCapability.SEEKABLE
+                assert sum(1 for m in inner.members() if m.is_file) == file_count
 
 
 # Formats / mechanisms this contract should cover but cannot construct here.

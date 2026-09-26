@@ -923,6 +923,10 @@ Fatal logs list extension modules along the lines of:
 
 `backports.zstd`, `lz4`, `_brotli`, `pyppmd.c._ppmd`, **`rapidgzip`**, `bcj._bcj`, `_cffi_backend`
 
+`bcj._bcj` is in those logs because `pybcj` was a dependency when they were captured. It
+no longer is: BCJ filters decode through liblzma (see the BCJ section at the top of this
+page), so a current log does not list it.
+
 ### Where it does / does not show up
 
 | Environment | Observation |
@@ -974,11 +978,12 @@ pytest tests/ \
 # 2) Accelerator stream tests — one subprocess each (coverage off; breadcrumbs)
 python scripts/ci_run_native_modules.py
 
-# 3) PPMd raw streams — own subprocess (coverage off). Formerly soft-passed
-#    exit-after-green; that abort is mitigated (capped NUL flush + subprocess
-#    unfinished-decoder tests). Hard-fail like other native modules.
+# 3) PPMd raw streams — own subprocess (coverage off). Still soft-passes an
+#    exit-after-green abort of the parent: the decode-time overshoot is mitigated,
+#    the Ppmd7T_Free teardown race is not (see the pyppmd section above).
 python scripts/ci_run_native_modules.py \
-  --modules tests/test_ppmd_raw_streams.py
+  --modules tests/test_ppmd_raw_streams.py \
+  --allow-exit-after-green
 
 # 4) Hypothesis property-safety
 pytest tests/test_property_safety.py -q
