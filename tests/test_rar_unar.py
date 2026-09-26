@@ -254,12 +254,12 @@ def test_seekable_member_respawns_unar() -> None:
 
 
 @requires_binary("unrar")
-def test_default_never_runs_unar(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unrar_setting_never_runs_unar(monkeypatch: pytest.MonkeyPatch) -> None:
     def refuse(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("unar spawned without being selected")
+        raise AssertionError("unar spawned with unrar selected")
 
     monkeypatch.setattr(rar_reader, "open_unar_stdout", refuse)
-    with open_archive(_CORPUS / "compressed.rar") as archive:
+    with open_archive(_CORPUS / "compressed.rar", config=_UNRAR) as archive:
         for member, stream in archive.stream_members():
             if stream is not None:
                 stream.read()
@@ -282,7 +282,7 @@ def test_config_accepts_the_name() -> None:
     assert config.rar_decompressor is RarDecompressor.UNAR
     config = ArchiveyConfig(rar_decompressor="auto")  # pyright: ignore[reportArgumentType]
     assert config.rar_decompressor is RarDecompressor.AUTO
-    assert ArchiveyConfig().rar_decompressor is RarDecompressor.UNRAR
+    assert ArchiveyConfig().rar_decompressor is RarDecompressor.AUTO
 
 
 _AUTO = ArchiveyConfig(rar_decompressor=RarDecompressor.AUTO)

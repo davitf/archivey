@@ -35,5 +35,9 @@ before `0.2.0`). Keep `rarfile` as a test oracle only.
   (visible to local users; documented in `docs/formats.md`). Encrypted RAR 2.x-4.x data
   and non-ASCII passwords stay refused under `unar`, because `unar` 1.10 returns no data
   for them.
+- **Amended a third time 2026-09-26:** `"auto"` is the default (maintainer: "auto is
+  default"). A machine with `unar` and no RARLAB program now reads RAR member data with
+  `unar` instead of raising; `"unrar"` keeps the RARLAB-only behaviour. This supersedes
+  "the default stays `unrar`" above; `unrar-free` and `7z` are still never used.
 - The spec’s optional “extract-hack” (single-member temp RAR for tiny random opens) is
   **deferred** — allowed by `format-rar` but not implemented in the native reader change.

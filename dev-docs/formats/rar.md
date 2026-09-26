@@ -15,9 +15,9 @@ Registers keep the status — this page states the behaviour and links the row.
 | Listing cost | `INDEXED` — RAR5 with QO: read the copies, skip matching FILE headers on the walk (§1.1). Otherwise a header-to-header walk cached at open (§1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
 | Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
-| Core dependencies | None to list an unencrypted archive. Member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1), or `unar` 1.10+ when `rar_decompressor="unar"`, or `"auto"` finds no RARLAB binary (§3) |
+| Core dependencies | None to list an unencrypted archive. Member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1), or, by default, `unar` 1.10+ when no RARLAB binary is found (§3) |
 | Optional | `[recommended]` (`cryptography`): header decryption, RAR3/RAR4 and RAR5 alike. BLAKE2sp needs nothing — stdlib `hashlib` |
-| Refuses | Non-seekable sources · a non-RARLAB `unrar`/`rar` (no fallback to `unar` / `7z` / `bsdtar` / `unrar-free`; `unar` only when selected, or by `"auto"` when no RARLAB binary is found) · with `unar`: encrypted RAR 2.x-4.x data, a non-ASCII password, a header-encrypted RAR5 volume set, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · a glob-named member whose mask also matches **earlier** members, unless `rar_allow_glob_member_concatenation=True` · writing |
+| Refuses | Non-seekable sources · a non-RARLAB `unrar`/`rar` (no fallback to `7z` / `bsdtar` / `unrar-free`; `unar` when no RARLAB binary is found, unless `rar_decompressor="unrar"`) · with `unar`: encrypted RAR 2.x-4.x data, a non-ASCII password, a header-encrypted RAR5 volume set, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · a glob-named member whose mask also matches **earlier** members, unless `rar_allow_glob_member_concatenation=True` · writing |
 
 **Two things a reader might expect and will not find.** Nothing amortizes repeated
 random reads of a solid archive: there is no `unrar x` anywhere in `src/`, so every
@@ -547,7 +547,8 @@ RARLAB binary older than 6.0 (or whose banner version cannot be parsed) raises t
 exception at the banner probe, once, cached with the probe, naming the floor and the
 version found. Open, listing, and stored reads still succeed: a missing or too-old
 binary is caught when resolving compressed old-style comments, and those stay `None`
-(§2.2). There is no silent fallback to `unar` / `7z` / `unrar-free` (§3, threat-model C1).
+(§2.2). With the default `rar_decompressor="auto"`, `unar` is used instead when no
+RARLAB program is found; `7z` and `unrar-free` never are (§3, threat-model C1).
 
 ### 2.4 Extract
 
@@ -590,20 +591,21 @@ unmeasured. Measured across the other candidates
 
 | Candidate | Verdict |
 | --- | --- |
-| **`unar` / MacPaw XADMaster** | **Shipped as an opt-in (`rar_decompressor="unar"`), gated** — see the paragraph after this table. Before the gate: **silently wrong**. On a RAR5 **solid** archive containing any empty FILE, reading a *non-empty* member fails — Debian's 1.10.1 SIGSEGVs with 0 bytes, and the newer 1.10.7/1.10.8 lineage (what Homebrew ships) exits **0 with empty output**, on stdout *and* on extract-to-disk. The newer behaviour is the dangerous one, and skipping the empty members in the argv does not help; the solid decoder still walks that slot. It matches `unrar p` on everything else measured, which is why it is not closed — see below. [`known-issues.md`](../known-issues.md) |
+| **`unar` / MacPaw XADMaster** | **Shipped as the second program (default `"auto"` uses it when no RARLAB binary is found), gated** — see the paragraph after this table. Before the gate: **silently wrong**. On a RAR5 **solid** archive containing any empty FILE, reading a *non-empty* member fails — Debian's 1.10.1 SIGSEGVs with 0 bytes, and the newer 1.10.7/1.10.8 lineage (what Homebrew ships) exits **0 with empty output**, on stdout *and* on extract-to-disk. The newer behaviour is the dangerous one, and skipping the empty members in the argv does not help; the solid decoder still walks that slot. It matches `unrar p` on everything else measured, which is why it is not closed — see below. [`known-issues.md`](../known-issues.md) |
 | **`7z`** | A codec lottery, and short of what this backend needs even when it wins. Ubuntu's `7zip` advertises RAR under *Formats* while the *Codecs* list has no `Rar5` until `7zip-rar` is installed — so it lists and extracts stored members, then says `Unsupported Method` on anything solid or typically compressed. With the plugin the ALL-pipe matches `unrar p` on our fixtures, but it takes the password **on argv**, reports a **missing member as rc=0**, and cannot address **`path;n`** — the three things §2.3, §4 and file-version reads depend on. And it is still a RARLAB-derived non-free codec under another name. Homebrew's `7zz` compiles it out entirely |
 | **`bsdtar`** | No solid, no password — and on a stored non-solid fixture, `--to-stdout` wrote **~7 GB** before the probe harness capped it, from an archive of a few KiB |
 | **`unrar-free` 0.1.3** | Extract-to-disk only; no stdout at all |
 
-**Update 2026-09-26: `unar` shipped as an explicit opt-in**
+**Update 2026-09-26: `unar` shipped as the second program**
 (`ArchiveyConfig.rar_decompressor="unar"`), at the maintainer's request. The gate is
 wider than the one proposed below: RAR5 solid members after an empty file *or a
 directory*, RAR 1.5 compression, encrypted RAR 2.x-4.x data, non-ASCII passwords and
 header-encrypted RAR5 volume sets are refused before `unar` runs; a prefixed single file
 is copied first. Encrypted RAR5 data is read with the password on `unar`'s argv
 (visible to local users; the maintainer accepted that and asked for it to be
-documented), and `"auto"` picks RARLAB `unrar` when installed, `unar` otherwise, once
-per reader. Measurements and the reasons are in
+documented), and `"auto"`, the default since the maintainer chose it on 2026-09-26,
+picks RARLAB `unrar` when installed, `unar` otherwise, once per reader. So the "never a
+probe of `PATH`" line in the reasoning below no longer holds for `unar`. Measurements and the reasons are in
 [`known-issues.md`](../known-issues.md) §MacPaw `unar`; the process layer is
 `internal/external/`, the RAR policy `internal/backends/rar_unar.py`. CI's macOS leg now
 runs the fixture parity test against the Homebrew bottle. The upstream report is still

@@ -27,10 +27,10 @@ The per-format detail lives on [Formats and extras](formats.md); the short versi
 is that every format except RAR is a pip install away, and RAR **member data** needs
 RARLAB `unrar` or `rar` **6.0 or later** on `PATH` — not `unrar-free` or `7z`.
 Listing and metadata work without it, except a compressed comment in a RAR 1.5 / 2.x
-archive, which is then `None`. `unar` can stand in for `unrar` when you ask for it
-with `ArchiveyConfig(rar_decompressor="unar")`, or as a second choice with
-`rar_decompressor="auto"`, but it reads fewer RAR archives and takes the password on
-its command line, where other local users can see it; see
+archive, which is then `None`. When no RARLAB program is found, archivey uses `unar`
+1.10 or later instead if it is installed. `unar` reads fewer RAR archives and takes the
+password on its command line, where other local users can see it; set
+`ArchiveyConfig(rar_decompressor="unrar")` to never use it. See
 [Formats and extras](formats.md#rar).
 
 What each install line adds, by what you type. [Formats and extras](formats.md) stays
@@ -80,11 +80,10 @@ Listing a RAR works without either. Reading member bytes does not. Archivey look
 `UNRAR 6.02` / `UNRAR 7.00` plus `Alexander Roshal` or `RARLAB`, or the writer's
 `RAR 7.00 … Alexander Roshal` (often with `Trial version`). A `RAR` token is not taken
 from inside `UNRAR`. Run the binary with no arguments to check. An older RARLAB build
-is refused at identification, not per member. `unar`, `7z`, and `unrar-free` stay
-refused even if they sit on `PATH` under another name. To use `unar`, select it with
-`ArchiveyConfig(rar_decompressor="unar")`, or with `"auto"` to use it only when no
-RARLAB program is found, and install `unar` 1.10 or later (`brew install unar` on
-macOS, `sudo apt install unar` on Debian and Ubuntu).
+is refused at identification, not per member. `7z` and `unrar-free` are never used,
+even if they sit on `PATH` under another name. `unar` 1.10 or later (`brew install unar`
+on macOS, `sudo apt install unar` on Debian and Ubuntu) is used when no RARLAB program
+is found, or always with `ArchiveyConfig(rar_decompressor="unar")`.
 
 ### Linux
 

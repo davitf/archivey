@@ -780,18 +780,23 @@ machine" plus divergent solid/password behavior.
 *Decision (closed):* Archivey uses **RARLAB `unrar`** for RAR member data by default.
 Non-RARLAB binaries on `PATH` raise `PackageNotInstalledError` naming RARLAB `unrar`;
 there is no silent fallback to `unrar-free` / `unar` / `7z`. *Amended 2026-09-26:* a
-caller can select `unar` explicitly (`ArchiveyConfig.rar_decompressor="unar"`), or ask
-for `"auto"`, which takes RARLAB `unrar` when it is installed and `unar` otherwise. Both
-are choices, not fallbacks: they apply only when asked for, `"auto"` decides once when
-the archive opens, a read `unar` refuses is never retried with `unrar`, and a missing
-`unar` under `"unar"` raises.
+second program exists. `ArchiveyConfig.rar_decompressor` defaults to `"auto"`, which
+takes RARLAB `unrar` when it is installed and `unar` otherwise; the maintainer chose that
+default (2026-09-26, "auto is default"). So `unar` *is* now a fallback, but a bounded one:
+`"auto"` decides once when the archive opens, a read `unar` refuses is never retried
+with `unrar`, `unrar-free` / `7z` / `bsdtar` are still never used, and the reads `unar`
+gets wrong are refused before it runs rather than trusted. `"unrar"` restores the old
+behaviour (RARLAB or `PackageNotInstalledError`); `"unar"` with `unar` missing raises.
 The `unar` path keeps the `unrar` boundary's rules — a banner probe with a timeout and a
 stat-keyed cache, a fixed argv ending in `--` and an absolute archive path, members named
 by decimal entry index (no hostile name reaches argv, no include mask). One rule differs:
 `unar` takes a password only on its command line, so under `unar` the password is
 visible to other local users in `ps` and `/proc/<pid>/cmdline` for the life of the
 process. The maintainer accepted that (2026-09-26, "fine in most cases"); the user docs
-say so and point shared-machine users at `unrar`, which reads the password from stdin.
+say so and point shared-machine users at `unrar` (installed, or forced with
+`"unrar"`), which reads the password from stdin. Because `"auto"` is the default, a
+caller who never touched the setting can put a password on `unar`'s argv by not having
+RARLAB installed; that is the accepted cost of the default.
 The password is its own argv item after `-p`, before `--`, so a leading `-` cannot turn
 it into an option. Licensing remains a
 documented system dependency (archivey itself stays permissively licensed). See

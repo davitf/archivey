@@ -185,16 +185,16 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   (`unrar` or `unar`) decodes; without it, or when the decoded text fails its CRC16,
   `comment` is `None`.
 - Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
-  or `7z`). `unrar` is preferred when both exist. `unar` is used only when you select it,
-  directly or through `"auto"`; see the next item. `unrar` gets passwords as bare `-p`
-  with the secret on stdin (not in argv). Install:
+  or `7z`). `unrar` is preferred when both exist. By default, when neither is found,
+  archivey uses `unar` 1.10 or later if it is installed; see the next item. `unrar` gets
+  passwords as bare `-p` with the secret on stdin (not in argv). Install:
   [Getting RARLAB unrar or rar](install.md#getting-rarlab-unrar-or-rar).
-- **`unar` instead of `unrar`:** `ArchiveyConfig(rar_decompressor="unar")` reads member
-  data with `unar` 1.10 or later (`brew install unar`, `apt install unar`). It is free
-  software and easy to install on macOS, but it reads less than `unrar`.
-  `rar_decompressor="auto"` uses `unrar` when a usable one is on `PATH` and `unar`
+- **`unar` instead of `unrar`:** `ArchiveyConfig.rar_decompressor` chooses the program.
+  The default, `"auto"`, uses `unrar` when a usable one is on `PATH` and `unar`
   otherwise; the choice is made once, when the archive is opened, and a read `unar`
-  refuses is not retried with `unrar`. Archivey refuses these reads with
+  refuses is not retried with `unrar`. `"unrar"` and `"unar"` use only that program.
+  `unar` 1.10 or later (`brew install unar`, `apt install unar`) is free software and
+  easy to install on macOS, but it reads less than `unrar`. Archivey refuses these reads with
   `UnsupportedFeatureError` before `unar` runs, because `unar` gets them wrong,
   sometimes with a success exit:
   - encrypted data in a RAR 2.x-4.x archive, and every member of a solid one that has
@@ -214,7 +214,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   **The password is visible to other local users.** `unar` accepts a password only on
   its command line (`-p <password>`), so while it runs, any user on the same machine can
   read the password from the process list (`ps`, `/proc/<pid>/cmdline`). `unrar` reads
-  it from stdin instead. On a shared machine, use `unrar` for encrypted archives. A
+  it from stdin instead. On a shared machine, install `unrar`, or set
+  `rar_decompressor="unrar"` so that `unar` is never used. A
   wrong password makes `unar` write nothing and report success; archivey reports that
   as `EncryptionError`, and a RAR5 password check usually rejects a wrong password
   before `unar` runs at all.

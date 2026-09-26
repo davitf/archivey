@@ -78,10 +78,12 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `FAST_BUDGET` or `THOROUGH_BUDGET`). It governs `detect_format` and every detection
   `open_archive` and `open_stream` run, which before this always used the default.
 - `ArchiveyConfig.rar_decompressor` chooses the program that reads RAR member data:
-  `RarDecompressor.UNRAR` (RARLAB `unrar` or `rar`, the default, unchanged),
-  `RarDecompressor.UNAR` (`unar` 1.10 or later, which `brew install unar` provides on
-  macOS), or `RarDecompressor.AUTO` (RARLAB when it is installed, `unar` otherwise,
-  chosen once when the archive opens). `unar` reads less than `unrar`: encrypted RAR
+  `RarDecompressor.AUTO`, the default (RARLAB `unrar` or `rar` when it is installed,
+  `unar` otherwise, chosen once when the archive opens), `RarDecompressor.UNRAR` (RARLAB
+  only, the behaviour before this release) or `RarDecompressor.UNAR` (`unar` 1.10 or
+  later, which `brew install unar` provides on macOS). A machine with `unar` and no
+  RARLAB program now reads RAR member data instead of raising
+  `PackageNotInstalledError`. `unar` reads less than `unrar`: encrypted RAR
   2.x-4.x data, non-ASCII passwords, header-encrypted RAR5 volume sets, RAR 1.5
   compression, some RAR5 solid layouts and prefixed multi-volume sets are refused with
   `UnsupportedFeatureError` before it runs.

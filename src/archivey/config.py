@@ -88,7 +88,7 @@ class RarDecompressor(Enum):
     encrypted member; stored members are read directly.
 
     - ``UNRAR`` — RARLAB ``unrar`` 6.0 or later (or the RARLAB ``rar`` writer). It
-      reads every RAR archive, including encrypted ones. This is the default.
+      reads every RAR archive, including encrypted ones.
     - ``UNAR`` — ``unar`` 1.10 or later, from The Unarchiver's XADMaster library. It is
       free software and ``brew install unar`` installs it on macOS. It is **not** a full
       substitute: archivey refuses, before ``unar`` runs, every read that ``unar`` is
@@ -98,6 +98,8 @@ class RarDecompressor(Enum):
       choice is made once per opened archive, when it is opened, and holds for every
       read of it: a read that ``unar`` refuses is not retried with ``unrar``. With
       neither installed, a read raises ``PackageNotInstalledError`` naming ``unrar``.
+      This is the default. On a machine with ``unar`` and no RARLAB program, it means
+      a password is passed on ``unar``'s command line; select ``UNRAR`` to rule that out.
 
     With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
     Selecting ``UNAR`` when ``unar`` is not installed raises
@@ -512,7 +514,7 @@ class ArchiveyConfig:
     read it anyway. A glob name that matches no other member is unaffected either way.
     """
 
-    rar_decompressor: RarDecompressor = RarDecompressor.UNRAR
+    rar_decompressor: RarDecompressor = RarDecompressor.AUTO
     """Which external program decompresses RAR member data. See :class:`RarDecompressor`.
 
     Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``). The listing does not

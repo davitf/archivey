@@ -204,9 +204,10 @@ of 2^31 without building a fixture, since the size no longer reaches the filter.
 
 ## MacPaw `unar` / XADMaster: RAR5 solid after an empty entry is silent-wrong (open)
 
-**Status:** open upstream; worked around. `unar` is the opt-in RAR data program
-(`ArchiveyConfig.rar_decompressor="unar"`), and `internal/backends/rar_unar.py` refuses
-every read below before `unar` runs. Evidence:
+**Status:** open upstream; worked around. `unar` is the second RAR data program (used
+when no RARLAB program is found, or with `ArchiveyConfig.rar_decompressor="unar"`),
+and `internal/backends/rar_unar.py` refuses every read below before `unar` runs.
+Evidence:
 [`alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md).
 
 On a **RAR5 solid** archive, `unar` fails on a member with data that comes **after** an

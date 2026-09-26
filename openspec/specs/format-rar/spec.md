@@ -218,17 +218,17 @@ read by invoking a system RARLAB decompressor: `unrar` if a usable binary is on
 does not match inside `UNRAR`) whose parsed major.minor is 6.0 or later.
 If a decompressor is required and missing or incompatible, the system SHALL raise
 `PackageNotInstalledError` naming RARLAB `unrar` or `rar`. Archivey MUST NOT
-silently use `unrar-free`, `unar`, `bsdtar`, `7z`, or a degraded backend. The
+use `unrar-free`, `bsdtar`, `7z`, or a degraded backend. The
 spawn SHALL be the `p` (print to stdout) command only. This requirement applies
-when `ArchiveyConfig.rar_decompressor` is `unrar` (the default), or `auto` with a
-usable RARLAB binary on `PATH`; `unar` is covered by `Read RAR member data with unar only when selected`.
+when `ArchiveyConfig.rar_decompressor` is `unrar`, or `auto` (the default) with a
+usable RARLAB binary on `PATH`; `unar` is covered by `Read RAR member data with unar`.
 
 #### Scenario: unrar dependency matrix
 
 | Case | Expected |
 | --- | --- |
 | Stored member, `unrar`/`rar` missing | Raw bytes are returned without invoking either |
-| Compressed member, both missing | `PackageNotInstalledError` names `unrar` or `rar` |
+| Compressed member, both missing, and no `unar` (or `rar_decompressor="unrar"`) | `PackageNotInstalledError` names `unrar` or `rar` |
 | PATH `unrar` is not RARLAB `unrar`, and no usable `rar` | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
 | RARLAB `unrar` older than 6.0 and no usable `rar`, or a RARLAB banner with no parseable version | `PackageNotInstalledError` names the floor and the version found; refused at identification |
 | RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed/encrypted member data; spawn is `rar p` |
@@ -319,7 +319,7 @@ only under that scheme.
 When the archive is opened from a
 non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
 caveat **at open** (path sources SHALL NOT, except the prefixed file that
-`Read RAR member data with unar only when selected` copies): a single stream source SHALL warn
+`Read RAR member data with unar` copies): a single stream source SHALL warn
 that reading a compressed member will copy the whole archive to disk; ordered
 stream volumes SHALL warn that reading a compressed member will copy every volume
 to a temp directory. The note is a
@@ -823,7 +823,7 @@ refused.
 | Solid `stream_members()` over glob-named members, default config | All members read; no mask is built |
 | A name with no `*` or `?` | Unaffected in either configuration |
 
-### Requirement: Read RAR member data with unar only when selected
+### Requirement: Read RAR member data with unar
 
 When `ArchiveyConfig.rar_decompressor` is `unar`, or `auto` with no usable RARLAB
 `unrar` or `rar` on `PATH`, the system SHALL read compressed
@@ -875,7 +875,9 @@ missing, the comment SHALL be `None`, as it is with `unrar`.
 
 | Case | Expected |
 | --- | --- |
-| Default config, compressed member | `unrar` is spawned; `unar` is not |
+| Default config (`auto`), RARLAB `unrar` present, compressed member | `unrar` is spawned; `unar` is not |
+| Default config (`auto`), only `unar` present, compressed member | `unar` is spawned |
+| `rar_decompressor="unrar"`, only `unar` present | `PackageNotInstalledError` names RARLAB `unrar` or `rar`; `unar` is not used |
 | `rar_decompressor="unar"`, `unar` missing, `unrar` present | `PackageNotInstalledError` names `unar`; `unrar` is not used |
 | `rar_decompressor="auto"`, RARLAB `unrar` present | `unrar` is spawned; `unar` is not |
 | `rar_decompressor="auto"`, only `unar` present | `unar` is spawned |
