@@ -805,6 +805,10 @@ class IsoReader(BaseArchiveReader):
         # records, which ``self._iso`` holds for the reader's whole life.
         self._joliet_files: dict[int, list[DirectoryRecord]] | None = None
         self._joliet_named: dict[int, DirectoryRecord] = {}
+        # Each Rock Ridge directory's children by stored name, per directory extent,
+        # built the first time a link target is followed through it, so following
+        # many targets through one wide directory stays linear.
+        self._rock_ridge_children: dict[int, dict[bytes, DirectoryRecord]] = {}
         # Boundary outside the guard; an exception the translator does not recognize
         # (a genuine OSError from the handle) propagates unchanged.
         try:
@@ -1174,9 +1178,11 @@ class IsoReader(BaseArchiveReader):
         # directory's extent through ``_cdfp`` and takes the handle guard itself. The
         # Joliet name fallback reads nothing either: ``has_joliet()`` tests a parsed
         # descriptor, ``get_record(joliet_path="/")`` looks among parsed records, and
-        # ``_yield_children`` on the Joliet tree walks them. Any other image read added
-        # to listing needs the same guard. If a future pycdlib
-        # version gains handle access in the walk, lock the complete call.
+        # ``_yield_children`` on the Joliet tree walks them. Following a link target
+        # (``_rock_ridge_child``) is the walk's own ``_yield_children`` over Rock Ridge
+        # records already parsed. Any other image read added to listing needs the same
+        # guard. If a future pycdlib version gains handle access in the walk, lock the
+        # complete call.
         with self._translated_errors():
             # ``index`` is each member's position in the walk, the id registration
             # stamps, so a diagnostic raised while typing can name it.
@@ -1470,6 +1476,11 @@ class IsoReader(BaseArchiveReader):
             part = self._decode_known(component)
             here = self._rock_ridge_child(directory, component)
             if part is None and here is not None:
+                # Only a Rock Ridge image reaches here (``has_joliet()`` with a Rock
+                # Ridge symlink). ``_joliet_name`` registers ``here`` for the
+                # member's diagnostic, as the walk's own ``_record_name`` does with the
+                # same record and bytes, so which of the two runs first changes nothing.
+                assert self._namespace == "rock_ridge"
                 part = self._joliet_name(here, component)
             if part is None:
                 part = component.decode("utf-8", errors="surrogateescape")
@@ -1485,13 +1496,19 @@ class IsoReader(BaseArchiveReader):
             return directory
         if component == b"..":
             return directory.parent
-        for child in _yield_children(directory, True):
-            if child is None or child.is_dot() or child.is_dotdot():
-                continue
-            rr = child.rock_ridge
-            if rr is not None and bytes(rr.name()) == component:
-                return child
-        return None
+        extent = directory.extent_location()
+        children = self._rock_ridge_children.get(extent)
+        if children is None:
+            children = {}
+            for child in _yield_children(directory, True):
+                if child is None or child.is_dot() or child.is_dotdot():
+                    continue
+                rr = child.rock_ridge
+                if rr is not None:
+                    # The first of several records sharing a name, as a scan finds.
+                    children.setdefault(bytes(rr.name()), child)
+            self._rock_ridge_children[extent] = children
+        return children.get(component)
 
     # --- data ---------------------------------------------------------------------------
 
