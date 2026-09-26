@@ -38,7 +38,7 @@ from archivey.internal.backends.sevenzip_pipeline import (
 from archivey.internal.streams import bcj2 as bcj2_mod
 from archivey.internal.streams.bcj2 import Bcj2DecoderStream
 from archivey.types import CompressionAlgorithm
-from tests.conftest import requires_binary
+from tests.conftest import requires, requires_binary
 
 _BCJ2 = b"\x03\x03\x01\x1b"
 _COPY = b"\x00"
@@ -180,6 +180,7 @@ def test_cli_bcj2_folder_reads(
     _read_all_ways(archive, {n: inputs[n].read_bytes() for n in names})
 
 
+@requires("cryptography")
 @requires_binary("7z")
 @pytest.mark.parametrize(
     "switches",
@@ -603,6 +604,7 @@ def test_bcj2_folder_dictionaries_count_together_against_the_decoder_cap(
         assert reader.read(member) == inputs["code.bin"].read_bytes()
 
 
+@requires("cryptography")
 @requires_binary("7z")
 def test_wrong_password_on_an_encrypted_bcj2_folder_is_rejected(
     tmp_path: Path, inputs: dict[str, Path]
