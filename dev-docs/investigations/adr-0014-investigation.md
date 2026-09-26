@@ -261,6 +261,17 @@ comparison over a non-contiguous byte range (false-positive `CorruptionError`). 
 position an actual read reached** (a read high-water mark), **not** a seek-updated
 logical position alone.
 
+The warning is about hashing out of order, not about seeking as such. The WinZip AES
+stage (`zip_aes.WinZipAesDecryptStream`) keeps its HMAC across any seeks: it hashes
+only reads that extend its in-order hashed prefix, and the read that returns the last
+byte reads the rest of the ciphertext back from the source, in order, before comparing.
+That is affordable there because the HMAC covers the ciphertext, which re-reads without
+decoding. A plaintext CRC could keep the same in-order prefix (a read that starts
+behind it hashes only the part past it), but it cannot close a gap without decoding
+again, so it would reach a verdict only when the reads happened to cover the member in
+order. That generalization is not built; see `dev-docs/IDEAS.md`, "Keep a member's
+checksum across seeks with a hashed frontier".
+
 This cuts **both** ways, and the second edge is the one that bites. Inners like
 `BytesIO` (and many file objects) allow past-EOF seek:
 
@@ -578,7 +589,8 @@ does neither.
   the call returns or raises — the read that reaches the declared size finalizes the
   hash.
 - **Seek-state tracking.** Once a seek off the sequential frontier disables the
-  checksum verdict, it stays disabled for that handle. Length / over-run / truncation
+  checksum verdict, it stays disabled for that handle (the WinZip AES HMAC excepted,
+  above; the hashed-frontier generalization is in `dev-docs/IDEAS.md`). Length / over-run / truncation
   key off the **furthest position an actual read reached** (a read high-water mark),
   not seek-updated `tell` alone. When a seek jumps to/past the declared size without
   reading the gap, concluding reads that gap (bounded by the declared size) **and

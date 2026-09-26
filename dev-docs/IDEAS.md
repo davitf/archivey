@@ -543,6 +543,18 @@
 
 ## Performance & robustness
 
+- **Keep a member's checksum across seeks with a hashed frontier** — `MemberVerifier`
+  (`internal/streams/verify.py`, `note_seek`) drops the checksum for the rest of the
+  handle after the first seek that moves. Instead it could keep the length of the
+  prefix the hasher has taken in: a read that starts at or behind that frontier and
+  ends past it hashes only the bytes past it, a read that starts past it hashes
+  nothing, and a read reaching the declared end with the frontier at the size gets the
+  digest verdict. So seek, return, read on keeps the CRC. This touches every format's
+  digest and the ADR 0014 seek rule, and `UnverifiedPasswordReadWatch` would then
+  report `"seek"` only when the frontier fell short. The WinZip AES stage already does
+  this for its HMAC, plus a catch-up re-read that a plaintext CRC cannot afford.
+  Asked for by davitf, 2026-09-26.
+
 - **Say when a WinZip AES seek makes the last read re-read the ciphertext** — to keep
   the HMAC across seeks, the read that returns an AES member's last byte first reads,
   without decrypting, the ciphertext the seeks skipped. Measured 2026-09-26 on a 4 MiB
