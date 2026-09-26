@@ -278,26 +278,14 @@ A caller that expects sparse files raises `max_ratio`. Revisit if extraction eve
 preserves holes, since the disk would then hold only the data. Handbook:
 [`formats/tar.md`](formats/tar.md) §6.
 
-## `max_metadata_bytes` weighs the values in `extra`, not the keys (open)
+## A TAR member's seek past its end returns the member size, not the target (open)
 
-`member_metadata_bytes` sums the string values of `extra`, one level of nested dicts
-included, and never counts a key. TAR keeps every PAX record as
-`extra["tar.pax_headers"]`, and a PAX keyword is a string of any length, so its bytes are
-retained unweighed. Measured: one member whose PAX record has a 100 000-byte keyword and a
-one-byte value weighs 4 bytes. 3 000 such members gzip to about 514 KiB and list under a
-1 MiB cap with about 300 MB of keywords held; only `max_members` ends that walk. Counting
-keys is a change to shared listing accounting, which moves the effective cap for every
-format that puts strings in `extra`.
-
-## Pre-1970 Unix timestamps list as invalid on Windows only (open)
-
-Unix-seconds fields are converted with `datetime.fromtimestamp(ts, tz=timezone.utc)` in
-the TAR, ZIP (UT extra field), RAR and gzip paths. On Windows that goes through
-`gmtime()`, which rejects negative values, so a member dated 1969 lists with
-`modified=None` plus `MEMBER_TIMESTAMP_INVALID` there and with the right date on Linux
-and macOS. The fix is one helper, `epoch + timedelta(seconds=ts)`, used at every site.
-Not reproduced on Windows here; the behaviour is the one the ZIP reader's UT-field
-comment already records.
+With `seekable_members=True`, `seek(10)` on a 3-byte TAR member returns 3 and leaves
+`tell()` at 3, where `io.BytesIO` and a real file return 10. The stream is stdlib
+`tarfile`'s `ExFileObject`, which clamps the position to the member size. Reads agree
+either way (both return `b""`), so only the returned position differs. Found while
+running the seek-before-start test over the corpus, which starts from `seek(5)` and
+so could not use an empty TAR member. Handbook: [`formats/tar.md`](formats/tar.md) §5.
 
 ## WinRAR 3.x SHA-1 KDF mutates its input buffer (emulated)
 
@@ -561,10 +549,15 @@ nothing more is asked of it. `PpmdDecoder` holds compressed input until it has t
 whole member, or compressed EOF, or `DecoderLimits.max_ppmd_in_process_input` (default
 16 MiB). Past that, the member decodes in a child process
 (`internal/streams/ppmd_child.py`, running `ppmd_worker.py`), where the old chunked
-logic runs and a crash becomes `CorruptionError`. A password check reads at most 1 MiB,
-so it stays in-process. Where no child can be started (a frozen app, a spawn the OS
-refuses, or a child that cannot import pyppmd), a member past the limit raises
-`ResourceLimitError`; `None` holds any member in-process. Measured:
+logic runs and a crash (SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE, or the Windows
+NTSTATUS for the same faults) becomes `CorruptionError`, with the child's signal or exit
+status in the message. A child killed by SIGKILL (usually the OOM killer), or one that
+dies constructing the decoder (pyppmd aborts when a memory cap refuses `mem_size`), is
+`ResourceLimitError` instead; any other death (SIGTERM, SIGHUP, a plain exit status) is
+`ReadError`, not a verdict on the data. A password check reads at most 1 MiB, so it stays
+in-process. Where no child can be started (a frozen app, an empty `sys.executable`, a
+spawn the OS refuses, or a child that cannot import pyppmd), a member past the limit
+raises `ResourceLimitError`; `None` holds any member in-process. Measured:
 0 crashes in 1200 hostile members across both paths (was 10 of 10 runs); 111 valid
 7-Zip-written members byte-exact on both paths. Regression tests:
 `tests/test_ppmd_crash_isolation.py`. A draft report for pyppmd (a flag for "the model

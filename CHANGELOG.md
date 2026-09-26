@@ -22,6 +22,12 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Added
 
+- **`ArchiveyConfig.spool_limits`** (`SpoolLimits`, with a `SpoolLimits.UNLIMITED`
+  preset): bounds the temp copy a RAR opened from a stream needs so `unrar` can read it.
+  `SpoolLimits.max_bytes` defaults to 1 GiB, counted across a volume set. An archive over
+  it raises the new `SpoolLimitExceededError`, a `ResourceLimitError` subclass, before
+  anything is written; `None` removes the limit. Before this the copy had no bound. Path
+  sources are never copied.
 - **`ArchiveReader.format_info`**: the `FormatInfo` that `open_archive`'s own detection
   produced (confidence, `detected_by`, `payload_offset`), or `None` under `format=`.
   `archivey info` prints it instead of detecting the file a second time.
@@ -80,16 +86,56 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A truncated stream that raised once no longer reads as an empty, clean stream
+  afterwards.** This affected every codec archivey decodes in its own decompressing
+  stream: gzip, zlib, raw deflate, deflate64, xz, lzip, brotli, PPMd and `.Z`. After a
+  read of a truncated stream raised `TruncatedError`, the next read returned `b""` with
+  no error. When the failed read was a whole-stream `read()` (not a chunked `read(n)`),
+  this happened after `seek(0)` too. A second `read()` also made the truncated prefix the
+  stream's size. Every later read now raises the same error, a seek decodes from the
+  start again, and no size is published. With the `[seekable]` extra, gzip, zlib and
+  raw deflate can read through the rapidgzip accelerator instead. That is a separate
+  stream, and this fix does not change it: after it reports a truncation, a later read
+  there still returns `b""`.
+
+- **Pre-1970 Unix timestamps list their date on Windows too.** TAR, the ZIP extended
+  timestamp field, RAR, gzip and the directory backend converted Unix seconds with
+  `datetime.fromtimestamp`, which goes through `gmtime()` on Windows and rejects a
+  negative value, so a member dated 1969 listed as `modified=None` with
+  `MEMBER_TIMESTAMP_INVALID` there only. The conversion is now epoch plus `timedelta`
+  on every platform; a value outside `datetime`'s range still reports as before.
+
+- **A seek before the start of a member follows `io.BytesIO`.** `seek(-n, SEEK_CUR)` or
+  `seek(-n, SEEK_END)` past the start of a compressed member raised `ValueError`, which
+  the ZIP backend reported as `CorruptionError` on an undamaged archive; ISO did the same
+  for every member, and a RAR member read through `unrar` raised `ValueError`. They now
+  clamp to position 0, as stored members already did. A negative `SEEK_SET` offset, or
+  an unknown `whence`, raises `ValueError` on every format, directory members included,
+  instead of `CorruptionError` on ZIP and ISO. The one difference left is a relative
+  seek before the start of a directory member: that member is the file itself, so the
+  OS refuses the seek with `OSError`.
+
+- **`max_metadata_bytes` weighs PAX keywords, not only their values.** TAR keeps
+  every PAX record in `extra["tar.pax_headers"]`, and a PAX keyword can be as long as
+  its value. A member with a 100 000-byte keyword and a one-byte value weighed 4 bytes,
+  so a 514 KiB `.tar.gz` could list under a 1 MiB cap while holding about 300 MB of
+  keywords. The keys of a dict nested in `extra` now count, and the TAR header walk
+  stops at the cap on keywords as it does on values. Top-level `extra` keys are fixed
+  per format and still do not count, so no format's baseline weight moves.
+
 - **A corrupt or hostile PPMd member no longer crashes the Python process.** pyppmd
   segfaults when asked to keep decoding after a corrupt stream has ended early, and
   random bytes (a wrong password, or a crafted 7z or ZIP member) reach that state.
   archivey now hands pyppmd a member of up to 16 MiB of compressed data in one piece,
   so it never makes that call, and decodes larger members in a child process, where a
-  crash becomes `CorruptionError`. Output still streams. The new
-  `DecoderLimits.max_ppmd_in_process_input` sets the size; where no child process can
-  be started (a frozen app, a spawn the OS refuses, or a child that cannot import
-  pyppmd), a larger member raises `ResourceLimitError`, and `None` (as in
-  `DecoderLimits.UNLIMITED`) decodes every member in-process.
+  crash becomes `CorruptionError`; a child killed by SIGKILL (usually the out-of-memory
+  killer) or unable to allocate the member's model raises `ResourceLimitError`, and one
+  ended any other way (SIGTERM, a plain exit status) raises `ReadError`. Output
+  still streams. The new `DecoderLimits.max_ppmd_in_process_input` sets the size; where
+  no child process can be started (a frozen app, an interpreter that does not know its
+  own path, a spawn the OS refuses, or a child that cannot import pyppmd), a larger
+  member raises `ResourceLimitError`, and `None` (as in `DecoderLimits.UNLIMITED`)
+  decodes every member in-process.
 
 - **ISO: bootable images read and extract.** An El Torito boot catalog listed as a file
   but raised `CorruptionError` when read, so `extract_all()` stopped on every bootable
@@ -328,6 +374,18 @@ promise with that line; treat `0.2.0` as the first release of this library.
   the process filesystem encoding on POSIX, so the same archive listed differently under
   a non-UTF-8 locale. They now decode as UTF-8, with bytes that are not UTF-8 kept as
   surrogate escapes as before. Pass `encoding=` to read a legacy archive.
+- **A `stream_members()` handle never seeks, on any format.** It reports
+  `seekable()` as `False` and `seek()` raises `io.UnsupportedOperation`, with or
+  without `seekable_members=True` and with or without `streaming=True`; `tell()` still
+  works. Before, under `seekable_members=True` over a file source, the handles of ZIP,
+  TAR, compressed TAR, non-solid RAR, ISO, directory and single-file archives could
+  seek, and the handles of solid 7z could not. A nested archive opened from such a
+  handle now gets a non-seekable source, even without a `seek()` call: ZIP, 7z, RAR
+  and ISO raise `StreamNotSeekableError`, and TAR and single-file streams need
+  `streaming=True`. To seek, or to open a nested archive at random, open the member
+  with random `open()` under `seekable_members=True`. `tell()` on a RAR member decoded
+  by `unrar` no longer raises `OSError`.
+
 - **`created` is a birth time or nothing.** It never holds Unix `st_ctime` (inode
   change), in any format. Where a writer stores `st_ctime`, or may, the time moves to
   the new `ArchiveMember.ctime` field and `created` stays `None`: the Rock Ridge

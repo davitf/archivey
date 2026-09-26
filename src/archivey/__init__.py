@@ -35,6 +35,7 @@ from archivey.config import (
     PasswordInput,
     PasswordProvider,
     PasswordRequest,
+    SpoolLimits,
 )
 from archivey.core import (
     detect_format,
@@ -102,6 +103,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
     SpecialFileError,
+    SpoolLimitExceededError,
     StreamNotSeekableError,
     SymlinkEscapeError,
     TruncatedError,
@@ -150,6 +152,7 @@ __all__ = [
     "DecoderLimits",
     "ExtractionLimits",
     "ListingLimits",
+    "SpoolLimits",
     "AcceleratorMode",
     "PasswordInput",
     "PasswordRequest",
@@ -226,6 +229,7 @@ __all__ = [
     "NameCollisionError",
     "NameRewrittenError",
     "ResourceLimitError",
+    "SpoolLimitExceededError",
     "UnsupportedFeatureError",
     "PackageNotInstalledError",
     "UnsupportedOperationError",

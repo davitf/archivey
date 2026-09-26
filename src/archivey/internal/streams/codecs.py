@@ -32,7 +32,6 @@ import struct
 import weakref
 import zlib
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
 from enum import Enum
 from types import ModuleType
 from typing import TYPE_CHECKING, BinaryIO, Callable, ClassVar
@@ -93,6 +92,7 @@ from archivey.internal.streams.zstd_framing import (
 from archivey.internal.streams.zstd_framing import (
     regular_frame_behind_skippable_frames,
 )
+from archivey.internal.timestamps import unix32_to_datetime
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
@@ -1392,7 +1392,7 @@ class GzipCodec(StreamCodec):
         flg = header[3]
         mtime = int.from_bytes(header[4:8], "little")
         if mtime != 0:
-            member.modified = datetime.fromtimestamp(mtime, tz=timezone.utc)
+            member.modified = unix32_to_datetime(mtime)
 
         pos = 10
         if flg & 0x04:  # FEXTRA: 2-byte length + data
@@ -2131,10 +2131,14 @@ class PpmdCodec(StreamCodec):
         # A corrupt PPMd8 payload can surface as SystemError from the C extension.
         if isinstance(exc, SystemError):
             return CorruptionError(f"Error reading PPMd stream: {exc!r}")
-        # The child process decoding a large member died: pyppmd crashes only on data
-        # it cannot decode (see ``ppmd_child``).
+        # The child process decoding a large member crashed (a fault signal, or its
+        # Windows NTSTATUS), which is what pyppmd does on data it cannot decode. Any
+        # other death is reported as ``ResourceLimitError`` or ``ReadError`` by
+        # ``PpmdChildDecoder.decode`` and never reaches here (see ``ppmd_child``).
         if isinstance(exc, PpmdChildError):
-            return CorruptionError(f"PPMd decoder crashed on this data: {exc}")
+            return CorruptionError(
+                f"PPMd decoder process crashed while decoding this member: {exc}"
+            )
         return None
 
 

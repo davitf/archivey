@@ -43,7 +43,7 @@ import struct
 import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from hashlib import pbkdf2_hmac
 from typing import BinaryIO, Protocol
 
@@ -61,7 +61,7 @@ from archivey.internal.password import wrong_password_error
 from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
-from archivey.internal.timestamps import filetime_to_datetime
+from archivey.internal.timestamps import filetime_to_datetime, unix32_to_datetime
 from archivey.terminal import quoted
 
 
@@ -802,13 +802,9 @@ def _parse_dos_time(stamp: int) -> datetime:
 
 def _load_unixtime(
     buf: bytes | bytearray | memoryview, pos: int
-) -> tuple[datetime | None, int]:
+) -> tuple[datetime, int]:
     secs, pos = _load_le32(buf, pos)
-    try:
-        return datetime.fromtimestamp(secs, timezone.utc), pos
-    except (ValueError, OverflowError, OSError):
-        # Hostile / out-of-range timestamps must not abort listing.
-        return None, pos
+    return unix32_to_datetime(secs), pos
 
 
 def _load_windowstime(
@@ -820,7 +816,7 @@ def _load_windowstime(
     # Shared FILETIME helper. ticks=0 → None is that helper's ZIP unset
     # rule, accepted for RAR (do not revive 1601-01-01). Discard
     # TimestampIssue: listing still swallows out-of-range values rather
-    # than emitting a diagnostic (same as Unix time).
+    # than emitting a diagnostic.
     dt, _issue = filetime_to_datetime(ticks, "", field="mtime")
     return dt, pos
 

@@ -221,7 +221,8 @@ Archive order and identity matter more than “the” name.
 
 ## Limits
 
-Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` on `ArchiveyConfig`) cap:
+Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLimits` on
+`ArchiveyConfig`) cap:
 
 - **Extraction bombs** — total extracted bytes, compression ratio, and entry count
   (`ExtractionLimits`). Trips raise `ResourceLimitError`.
@@ -249,19 +250,30 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` on `Archive
   Keys the reader already derived are reused for free, so an ordinary encrypted
   archive spends one or two derivations; each wrong candidate password counts. Trips
   raise `ResourceLimitError` before the derivation starts.
+- **Temporary copies of a stream source** — RAR member data goes through `unrar`, which
+  reads only files, so a RAR opened from a stream is copied to a temp file first
+  (`SpoolLimits.max_bytes` on `ArchiveyConfig.spool_limits`, default 1 GiB across the
+  whole copy). Checked before anything is written. Trips raise `SpoolLimitExceededError`,
+  a `ResourceLimitError`.
+  A path source is never copied.
 - **PPMd members decoded in-process** — pyppmd, the PPMd decoder (7z and ZIP method
   98), can crash the whole process on corrupt input unless it is handed a member in one
   piece. archivey holds a member's compressed bytes up to
   `DecoderLimits.max_ppmd_in_process_input` (default 16 MiB) and decodes larger ones
-  in a child Python process, where a crash becomes `CorruptionError`. Output streams
-  either way. Where no child process can be started (a frozen application, a spawn the
-  operating system refuses, or a child that cannot import pyppmd), a larger member
-  raises `ResourceLimitError`; `None` decodes every member in-process, holding its
-  whole compressed size in memory.
+  in a child Python process, where a crash (a fault signal such as SIGSEGV) becomes
+  `CorruptionError`. Output streams either way. A child killed by SIGKILL (usually the
+  out-of-memory killer), or one that dies allocating the member's model under a memory
+  cap, raises `ResourceLimitError`. So does a larger member where no child process can
+  be started (a frozen application, an interpreter that does not know its own path, a
+  spawn the operating system refuses, or a child that cannot import pyppmd); `None`
+  decodes every member in-process, holding its whole compressed size in memory. A
+  child ended any other way (SIGTERM, a plain exit status) raises `ReadError`, which is
+  not a verdict on the data.
 
-Loosen per call with `limits=` (extraction only), raise `listing_limits` or
-`decoder_limits` at `open_archive(config=…)`, or use `ExtractionLimits.UNLIMITED` /
-`ListingLimits.UNLIMITED` / `DecoderLimits.UNLIMITED` for trusted inputs you control.
+Loosen per call with `limits=` (extraction only), raise `listing_limits`,
+`decoder_limits` or `spool_limits` at `open_archive(config=…)`, or use
+`ExtractionLimits.UNLIMITED` / `ListingLimits.UNLIMITED` / `DecoderLimits.UNLIMITED` /
+`SpoolLimits.UNLIMITED` for trusted inputs you control.
 An open reader keeps the config it was opened with: `extract_all()` takes no `config=`,
 and its `limits=` covers extraction limits only. To raise a listing or decoder ceiling,
 open the archive again with a new `ArchiveyConfig`.

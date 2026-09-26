@@ -851,10 +851,12 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   shapes agree with each other, and that one config flag means one thing. What would
   settle it is a decision on the general gap, not more measurement of this case.
 
-- **Can the stream-source copy be made small, rather than just moved?** Layer 1 of P11
-  shipped: a non-path stream gets an open-time `CostReceipt.notes` caveat. What remains
-  is bounding the copy to one compressed member via a synthetic single-member archive
-  rather than relocating the whole archive. The sibling cost — an
+- **Can the stream-source copy be made small, rather than just moved?** P11 is closed:
+  a non-path stream gets an open-time `CostReceipt.notes` caveat, and the copy is bounded
+  by `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, 1 GiB by default, across a
+  whole volume set; refused before writing). What remains is making the copy one
+  compressed member via a synthetic single-member archive rather than the whole
+  archive. The sibling cost — an
   out-of-order solid `open()` being a whole decode each time — is **already decided**:
   [`open-issues.md`](../open-issues.md) P9 says not a diagnostic, because `access_cost`
   already carries it, and only a once-per-reader `warnings.warn` is still parked.

@@ -99,7 +99,10 @@ Without `seekable_members=True`, member streams report `seekable() is False` and
 accelerators are not built until you ask.
 
 With `seekable_members=True`, every member stream from random `open()` reports
-`seekable() is True` and `seek()` works. How the backend does it varies:
+`seekable() is True` and `seek()` works. A stream from `stream_members()` never seeks,
+with or without the flag, on every format: the pass owns the position, and a seek would
+decode again behind it. To seek inside a member, open it with `open()`. How the backend
+does it varies:
 
 - XZ / lzip can seek via native indexes
 - gzip / zlib / raw deflate / bzip2 can use `[seekable]` (`rapidgzip`) when installed
@@ -114,17 +117,24 @@ the position gives up a CRC check, but not WinZip AES's HMAC: the HMAC covers th
 ciphertext, so the read that reaches the member's end first reads, without decrypting,
 whatever ciphertext your seeks skipped, and then checks it.
 
-Whether that gets a diagnostic is decided by **what the seek actually costs**, not by the
-codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the rewind discards more than
-about a megabyte of decoded progress — the bytes you would have to decode again to get
-back where you were. On a solid RAR that includes the prefix in front of this member,
-not just the bytes already read from this stream. That matters because a format that
-*can* carry an index does not always *have* a useful one. A single-block `.xz` (what
-`lzma.compress` and un-threaded `xz` produce) has exactly one seek point, at the origin,
-so rewinding it costs the same as rewinding a codec with no index at all — and an
-engaged `rapidgzip` can hold an index sparse enough for the same thing. Small rewinds
-stay quiet on every codec unless the carrier declares a higher floor (solid RAR's
-prefix).
+A seek that lands before the start of a member behaves like `io.BytesIO`: a relative
+seek (`SEEK_CUR` or `SEEK_END`) clamps to position 0, and a negative `SEEK_SET` offset
+or an unknown `whence` raises `ValueError`. A directory member is a real file, so a
+relative seek before its start reaches the OS and raises `OSError`. A seek past the end
+of a TAR member returns the member size rather than the position you asked for, where
+other formats return the target; reads from there return `b""` either way.
+
+Whether a seek that moves the position gets a diagnostic is decided by **what the seek
+actually costs**, not by the codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the
+rewind discards more than about a megabyte of decoded progress — the bytes you would
+have to decode again to get back where you were. On a solid RAR that includes the prefix
+in front of this member, not just the bytes already read from this stream. That matters
+because a format that *can* carry an index does not always *have* a useful one. A
+single-block `.xz` (what `lzma.compress` and un-threaded `xz` produce) has exactly one
+seek point, at the origin, so rewinding it costs the same as rewinding a codec with no
+index at all — and an engaged `rapidgzip` can hold an index sparse enough for the same
+thing. Small rewinds stay quiet on every codec unless the carrier declares a higher
+floor (solid RAR's prefix).
 
 If you set a `DiagnosticPolicy` to `RAISE` on that code as a guard against accidentally
 quadratic seek loops, note that it fires on **every** qualifying seek, not only the
@@ -178,7 +188,19 @@ and the fix is to buffer the source to a file or a `BytesIO` first.
 A seekable stream is not that pipe case. RAR still needs a filesystem path for compressed
 member data (RARLAB `unrar` or `rar`), so a `BytesIO` or file object may be copied to a
 temp file when a compressed member is read. `archive.cost.notes` states that caveat at
-open. Path sources do not copy.
+open, with the limit that bounds it; when the limit already rules the copy out, the note
+says such a read will be refused instead. Path sources do not copy.
+
+The copy is of the whole archive (every volume, for a volume set), it happens on the
+first member read that goes through `unrar` rather than at open, and it is removed when
+the reader closes. Listing never needs it. `ArchiveyConfig.spool_limits` bounds it:
+`SpoolLimits.max_bytes` defaults to 1 GiB, counted across a volume set. An archive over
+the limit raises `SpoolLimitExceededError`, a `ResourceLimitError`, before anything is
+written, and later reads on that reader are refused the same way. `None`
+(`SpoolLimits.UNLIMITED`) removes the limit, and `0` refuses every copy, which leaves only
+the members archivey reads without `unrar` (stored members of a non-solid archive). The
+copy goes to the platform temporary directory; where that is memory-backed (`tmpfs`), the
+limit bounds memory rather than disk.
 
 ## Streaming mode is one pass
 
