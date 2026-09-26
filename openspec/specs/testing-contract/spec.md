@@ -96,8 +96,9 @@ least one **directional mark** case proving it is *not* rejected:
 ### Requirement: Cross-validate native readers against reference oracles
 
 The system SHALL validate native 7z and RAR readers against reference
-implementations used only as test oracles: `py7zr` and the `7z` CLI for 7z,
-`rarfile` and `unrar` for RAR. For representative corpora, native member metadata
+implementations used only as test oracles: `py7zr` for 7z, `rarfile` and
+`unrar` for RAR. The `7z` CLI builds 7z fixtures but is not an oracle: its output is
+not compared. For representative corpora, native member metadata
 and decompressed bytes MUST match the oracle. Oracle libraries are dev-group
 dependencies only and SHALL NOT be required at runtime. Oracle-backed tests SHALL
 skip, not fail, when the oracle library or CLI is unavailable.
@@ -122,7 +123,7 @@ cross-check metadata and bytes against rarfile/`unrar`.
 
 | Case | Expected |
 | --- | --- |
-| 7z corpus entry read by native reader and `py7zr`/`7z` | Metadata and bytes match; skipped if oracle unavailable |
+| 7z corpus entry read by native reader and `py7zr` | Metadata and bytes match; skipped if oracle unavailable |
 | RAR corpus entry read by native reader and `rarfile`/`unrar` | Metadata and bytes match; skipped if oracle unavailable |
 | 7z entry uses BCJ2 or unknown method ID | Documented unsupported-codec error; no guessed output |
 | RAR solid+links / multi-volume / header-encrypted entry | Exercised once native RAR is registered; skip only if `unrar`/crypto/oracle absent |

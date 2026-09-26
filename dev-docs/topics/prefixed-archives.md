@@ -176,7 +176,7 @@ compressed stream is a real shape for script launchers and not for executable on
 | What you see | Where | More |
 | --- | --- | --- |
 | A prefixed ZIP behind bytes that fire no cue (a JPEG polyglot, a plain concatenation) is not detected, though `open_archive(..., format=ZIP)` reads it | **archivey** | The tail probe is the tier that would find it (§2) |
-| `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped. Renaming to `prefixed_scan` is cheap while the value is still changeable — [`open-issues.md`](../open-issues.md) P18 |
+| `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped. Resolved 2026-09-25: kept, not renamed; `detected_by` is documented as an open set and `sfx_scan` as covering every prefixed hit — [`open-issues.md`](../open-issues.md) P18 (Closed) |
 | A prefixed archive on a non-seekable source may be missed entirely | **format** | The tail probe needs a seek; the forward scan needs a cue in the first bytes |
 
 A defect worth remembering because it shows what the cue gate is really protecting: before

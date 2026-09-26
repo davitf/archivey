@@ -91,7 +91,8 @@
   makes the *whole archive* unlistable (`UnicodeDecodeError` → `CorruptionError`; the
   adversarial string corpus pins that behavior). A native parser can decode such names
   with the same cp437/`surrogateescape` fallback used for unflagged names and keep the
-  archive readable — likely with a diagnostic once warnings-as-data lands.
+  archive readable — likely with a diagnostic (warnings-as-data has landed, so the
+  diagnostic has a home).
 
 - **libarchive backend** — `python-libarchive-c` as an **alternative / additional**
   backend for several formats (zip/tar/7z/iso/cpio/…), in the `[all]`/alternative tier
@@ -894,11 +895,15 @@
   data. Document the recipe; consider a helper that returns "best available digest +
   provenance (stored vs computed)" so an indexer can choose cheap-but-weak vs
   costly-but-strong uniformly.
-- **Benchmarks as a CI gate** — suite tracking open/list/read/extract wall time vs
-  stdlib (`zipfile`/`tarfile`) and py7zr/libarchive where comparable, plus
-  **bytes-decompressed and seek counts** (the real bottlenecks — re-decompression and
-  seek storms — hide in wall time on small corpora). Budget per `VISION.md`: ≤1.3×
-  stdlib common paths, ~2× when justified. Stand up before any perf-sensitive claim.
+- ~~**Benchmarks as a CI gate**~~ — **Done**
+  (`openspec/changes/archive/2026-07-15-benchmark-gate/`): the structural gate (seek
+  counts, solid decode-once) is a required job in `ci.yml`, and `benchmark-wall.yml`
+  tracks wall-time ratios off the PR path. Original note: suite tracking
+  open/list/read/extract wall time vs stdlib (`zipfile`/`tarfile`) and py7zr/libarchive
+  where comparable, plus **bytes-decompressed and seek counts** (the real bottlenecks —
+  re-decompression and seek storms — hide in wall time on small corpora). Budget per
+  `VISION.md`: ≤1.3× stdlib common paths, ~2× when justified. Stand up before any
+  perf-sensitive claim.
 - **Public backend API** — stabilize/export the `ReadBackend` ABC + registry so rare
   formats (CAB, CPIO, SquashFS, WIM, XAR, DMG…) can be third-party plugins instead of
   a solo compatibility treadmill. Decide pre-1.0 (it constrains how freely the backend
@@ -907,16 +912,21 @@
   (`ArchiveFileSystem`); big adoption channel (pandas/dask/HF datasets ecosystems) and
   a good stress test of the reader contract. Also the natural place for
   `open_archive("https://…")` stories rather than teaching core about URLs.
-- **Migration guide** — `zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` →
-  archivey, gotcha-by-gotcha ("`tarfile.extractall` without `filter=` does X; here it
-  cannot happen"). Cheap, high-leverage for the "default library" goal.
-- **Warnings-as-data sweep** — audit every `logger.warning` in the library: each should
-  (also) be queryable as data (member/info field, `FormatInfo`, `CostReceipt`,
-  `ExtractionResult`), since most applications never surface logging. See
-  `dev-docs/threat-model.md` C2.
-- **Extraction collision handling + `OverwritePolicy.RENAME`** — deterministic
-  cross-platform handling of casefold/normalization collisions (threat-model O2), plus
-  an opt-in RENAME policy (`name (1)`) for archives with intentional duplicates.
+- ~~**Migration guide**~~ — **Done**: `docs/migrating.md`. Original note:
+  `zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` → archivey, gotcha-by-gotcha
+  ("`tarfile.extractall` without `filter=` does X; here it cannot happen"). Cheap,
+  high-leverage for the "default library" goal.
+- ~~**Warnings-as-data sweep**~~ — **Done** (`diagnostics-warnings-as-data`, archived
+  2026-07-11; threat-model C2 "addressed"): advisories are `Diagnostic` values on
+  `FormatInfo`, the reader, members and `ExtractionReport`. Original note: audit every
+  `logger.warning` in the library: each should (also) be queryable as data (member/info
+  field, `FormatInfo`, `CostReceipt`, `ExtractionResult`), since most applications never
+  surface logging. See `dev-docs/threat-model.md` C2.
+- ~~**Extraction collision handling + `OverwritePolicy.RENAME`**~~ — **Done**
+  (`cross-platform-name-safety`, archived 2026-07-16; threat-model O2 "implemented").
+  Original note: deterministic cross-platform handling of casefold/normalization
+  collisions (threat-model O2), plus an opt-in RENAME policy (`name (1)`) for archives
+  with intentional duplicates.
 - **Writing, done properly, later** — writing is deliberately post-reading (possibly
   post-1.0). When specced, design in from the start: **reproducible output**
   (`SOURCE_DATE_EPOCH`, stable member ordering, normalized metadata — the build-tool
