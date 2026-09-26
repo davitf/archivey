@@ -30,10 +30,29 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import BinaryIO, TypeVar
 
+from archivey.internal.streams.codecs import Codec
 from archivey.internal.streams.streamtools.base import DelegatingStream
 
-# Decompressed plaintext budget for confirmation. Empirically LZMA1/LZMA2/BZip2/DEFLATE
-# reject wrong-key garbage within a few bytes (the archived bounded-password-confirmation
+# Codecs measured to fail on random input, which is what a wrong key decrypts to
+# (``tests/test_password_confirm.py`` re-measures every one). A unit whose decoder chain
+# holds one settles a wrong key inside the confirm prefix: this is ``codec_rejects`` for
+# both the 7z and the ZIP reader. Measured as non-rejecting and left out: Brotli (about
+# one random input in twenty decodes a full prefix) and PPMd (pyppmd can crash on random
+# input rather than raise). Filters never reject. A codec not listed is non-rejecting.
+REJECTING_CODECS = frozenset(
+    {
+        Codec.LZMA,
+        Codec.LZMA2,
+        Codec.BZIP2,
+        Codec.DEFLATE,
+        Codec.DEFLATE64,
+        Codec.ZSTD,
+        Codec.LZ4,
+    }
+)
+
+# Decompressed plaintext budget for confirmation. The codecs in REJECTING_CODECS reject
+# wrong-key garbage within a few bytes (the archived bounded-password-confirmation
 # design, §2); 64 KiB leaves a wide margin, so a decoder change of a few bytes does not
 # flip a verdict, and covers typical members exactly (EOF → CRC).
 PASSWORD_CONFIRM_PREFIX_BYTES = 64 * 1024
@@ -254,11 +273,8 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
     caller something is wrong; neither reports. A seek that raised has not: the caller
     can catch it and keep reading, so the report stays armed.
 
-    ``seek_keeps_digest`` says whether the inner stream still checks its digest after a
-    seek. When it does not (a fused verifier forfeits the checksum on a seek off the
-    read frontier), any position-changing seek means the digest can no longer be
-    reached. When it does (zipfile's ``ZipExtFile`` reads through a forward seek and
-    restarts its CRC on a backward one), reaching ``size`` by any route counts.
+    The member's verifier forfeits the checksum on a seek off the read frontier (ADR
+    0014), so any position-changing seek means the digest can no longer be reached.
     """
 
     readinto_passthrough = False
@@ -269,34 +285,24 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         *,
         size: int,
         on_unverified: Callable[[], None],
-        seek_keeps_digest: bool,
     ) -> None:
         # Set before the base constructor, which ``close()`` must survive: IOBase's
         # finalizer calls ``close()`` on an instance whose ``__init__`` raised.
         self._watch_size = size
         self._on_unverified: Callable[[], None] | None = on_unverified
-        self._seek_keeps_digest = seek_keeps_digest
         self._watch_pos = 0
         self._delivered = False
         self._reached = size <= 0
         self._forfeited = False
-        # Set when a failed seek left the position unreadable: ``_watch_pos`` is then
-        # stale, and only an EOF read can show the digest ran.
-        self._pos_unknown = False
         super().__init__(inner)
 
     def _note_position(self) -> None:
         # "Reads reached ``size``" stands for "the digest ran". That holds only for an
         # inner stream that verifies on the read reaching its declared size, not on a
         # following empty read: ``MemberVerifier`` finishes (CRC, WinZip AES HMAC,
-        # over-run probe) on that read, and CPython's ``ZipExtFile`` checks its CRC as
-        # soon as nothing is left. An inner stream that deferred the check to the next
-        # read would silence this report; check a new wrap target against it.
-        if (
-            self._watch_pos >= self._watch_size
-            and not self._forfeited
-            and not self._pos_unknown
-        ):
+        # over-run probe) on that read. An inner stream that deferred the check to the
+        # next read would silence this report; check a new wrap target against it.
+        if self._watch_pos >= self._watch_size and not self._forfeited:
             self._reached = True
 
     def read(self, n: int = -1, /) -> bytes:
@@ -326,12 +332,9 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             # can catch it and read on, so the report stays armed.
             self._note_failed_seek()
             raise
-        if position != self._watch_pos and not self._seek_keeps_digest:
+        if position != self._watch_pos:
             self._forfeited = True
         self._watch_pos = position
-        self._pos_unknown = False
-        if self._seek_keeps_digest:
-            self._note_position()
         return position
 
     def _note_failed_seek(self) -> None:
@@ -339,25 +342,18 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
 
         A refused seek (a negative position) moves nothing, and the digest is intact.
         A seek can also raise after it moved (``ArchiveStream._note_raised_seek``), and
-        then it counts as a seek. When the position cannot be read, the tracked one is
-        no longer trusted: a digest dropped on a seek is forfeited, and a kept one
-        counts as reached only on an EOF read.
+        then it counts as a seek. When the position cannot be read, the stream may
+        have moved, so the digest counts as forfeited.
         """
         try:
             position = self.tell()
         except Exception:  # noqa: BLE001 - the seek's own error propagates instead
-            if not self._seek_keeps_digest:
-                self._forfeited = True
-            self._pos_unknown = True
+            self._forfeited = True
             return
         if position == self._watch_pos:
             return
-        if not self._seek_keeps_digest:
-            self._forfeited = True
+        self._forfeited = True
         self._watch_pos = position
-        self._pos_unknown = False
-        if self._seek_keeps_digest:
-            self._note_position()
 
     def close(self) -> None:
         if self.closed:

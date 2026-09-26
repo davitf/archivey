@@ -22,7 +22,7 @@ Module map:
   plus ``ask_resume_offset`` (duck-typed resume query; see the named exception above)
 - :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``
 - :mod:`.shared` — ``SharedSource`` (concurrent independent views over one handle)
-- :mod:`.locked` — ``LockedStream`` / ``CloseLockedStream`` (whole-op lock wrappers)
+- :mod:`.locked` — ``LockedStream`` (whole-op lock wrapper)
 - :mod:`.solid` — ``SolidBlockReader`` (forward-only solid demux)
 
 When to use which concurrency helper:
@@ -62,7 +62,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     source_name,
     source_size_fact,
 )
-from archivey.internal.streams.streamtools.locked import CloseLockedStream, LockedStream
+from archivey.internal.streams.streamtools.locked import LockedStream
 from archivey.internal.streams.streamtools.shared import SharedSource
 from archivey.internal.streams.streamtools.slice import (
     SharedView,
@@ -76,7 +76,6 @@ from archivey.internal.streams.streamtools.solid import (
 
 __all__ = [
     "BinaryIOWrapper",
-    "CloseLockedStream",
     "DelegatingStream",
     "LockedStream",
     "ReadOnlyIOStream",

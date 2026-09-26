@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from archivey.internal.streams.streamtools import CloseLockedStream, LockedStream
+from archivey.internal.streams.streamtools import LockedStream
 
 pytestmark = pytest.mark.concurrent_reader
 
@@ -131,16 +131,6 @@ def test_locked_stream_readinto_none_raises_blocking() -> None:
 def test_locked_stream_close_closes_inner_once() -> None:
     inner = _CloseCounter(b"data")
     s = LockedStream(inner, threading.Lock())
-    s.close()
-    assert inner.close_calls == 1
-    assert s.closed
-    s.close()
-    assert inner.close_calls == 1
-
-
-def test_close_locked_stream_close_closes_inner_once() -> None:
-    inner = _CloseCounter(b"data")
-    s = CloseLockedStream(inner, threading.Lock())
     s.close()
     assert inner.close_calls == 1
     assert s.closed

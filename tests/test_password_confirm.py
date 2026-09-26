@@ -16,10 +16,10 @@ import pytest
 
 from archivey.exceptions import ArchiveyError
 from archivey.internal import detection
-from archivey.internal.backends.sevenzip_reader import _REJECTING_CODECS
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_CHUNK_BYTES,
     PASSWORD_CONFIRM_MAX_INPUT_BYTES,
+    REJECTING_CODECS,
     PasswordConfirmPlan,
     PasswordConfirmVerdict,
     UnverifiedPasswordReadWatch,
@@ -317,12 +317,13 @@ def _survivors(codec: Codec, seed: int) -> int:
     return survived
 
 
-@pytest.mark.parametrize("codec", sorted(_REJECTING_CODECS, key=lambda c: c.value))
+@pytest.mark.parametrize("codec", sorted(REJECTING_CODECS, key=lambda c: c.value))
 def test_rejecting_codecs_reject_random_input(codec: Codec) -> None:
     """Every codec in the rejecting set dies on random input inside the prefix.
 
-    This is the evidence the 7z ladder's rung 3 rests on: a folder whose chain holds
-    one of these stops at ``PASSWORD_CONFIRM_PREFIX_BYTES`` instead of walking to a late CRC.
+    This is the evidence the codec rung rests on, in the 7z and ZIP readers: a unit whose
+    chain holds one of these stops at ``PASSWORD_CONFIRM_PREFIX_BYTES`` instead of
+    walking to a late CRC.
     If a dependency change lets random bytes decode a full prefix, the codec must
     leave the set. Mutation check: adding ``Codec.BROTLI`` to the set fails here.
     """
@@ -340,8 +341,8 @@ def test_brotli_does_not_reject_random_input() -> None:
     """
     if not is_codec_available(Codec.BROTLI):
         pytest.skip("brotli backend not installed")
-    assert Codec.BROTLI not in _REJECTING_CODECS
-    assert Codec.PPMD not in _REJECTING_CODECS
+    assert Codec.BROTLI not in REJECTING_CODECS
+    assert Codec.PPMD not in REJECTING_CODECS
     assert _survivors(Codec.BROTLI, seed=0x5EED) > 0
 
 
@@ -360,7 +361,7 @@ def test_filters_never_reject_random_input(lzma_filter: dict[str, int]) -> None:
     Why ``MethodKind.LZMA_FAMILY`` (which holds them) is the wrong predicate for rung 3.
     """
     for codec in (Codec.DELTA, Codec.BCJ_X86, Codec.BCJ_ARM):
-        assert codec not in _REJECTING_CODECS
+        assert codec not in REJECTING_CODECS
     data = random.Random(7).randbytes(BUDGET)
     stream = FilterStream(io.BytesIO(data), lzma_filter=lzma_filter, unpack_size=BUDGET)
     try:
@@ -380,15 +381,10 @@ class _Calls:
         self.count += 1
 
 
-def _watch(
-    data: bytes, *, seek_keeps_digest: bool = False
-) -> tuple[UnverifiedPasswordReadWatch, _Calls]:
+def _watch(data: bytes) -> tuple[UnverifiedPasswordReadWatch, _Calls]:
     calls = _Calls()
     watch = UnverifiedPasswordReadWatch(
-        io.BytesIO(data),
-        size=len(data),
-        on_unverified=calls,
-        seek_keeps_digest=seek_keeps_digest,
+        io.BytesIO(data), size=len(data), on_unverified=calls
     )
     return watch, calls
 
@@ -431,7 +427,7 @@ def test_watch_is_silent_after_a_read_error() -> None:
 
     calls = _Calls()
     watch = UnverifiedPasswordReadWatch(
-        _Failing(b"0123456789"), size=10, on_unverified=calls, seek_keeps_digest=False
+        _Failing(b"0123456789"), size=10, on_unverified=calls
     )
     watch.read(2)
     with pytest.raises(ValueError, match="boom"):
@@ -440,11 +436,10 @@ def test_watch_is_silent_after_a_read_error() -> None:
     assert calls.count == 0
 
 
-@pytest.mark.parametrize("seek_keeps_digest", [False, True])
-def test_watch_still_reports_after_a_seek_error(seek_keeps_digest: bool) -> None:
+def test_watch_still_reports_after_a_seek_error() -> None:
     # A failed seek leaves the handle usable (here BytesIO refuses a negative
     # position before moving), so it must not disarm the report on the bytes read.
-    watch, calls = _watch(b"0123456789", seek_keeps_digest=seek_keeps_digest)
+    watch, calls = _watch(b"0123456789")
     watch.read(3)
     with pytest.raises(ValueError, match="negative"):
         watch.seek(-1)
@@ -492,60 +487,12 @@ def test_a_seek_error_that_moved_forfeits_the_digest(
     # digest the inner drops on a seek, so reading on to the end still reports.
     calls = _Calls()
     watch = UnverifiedPasswordReadWatch(
-        inner_type(b"0123456789"),
-        size=10,
-        on_unverified=calls,
-        seek_keeps_digest=False,
+        inner_type(b"0123456789"), size=10, on_unverified=calls
     )
     watch.read(3)
     with pytest.raises(RuntimeError):
         watch.seek(1)
     watch.read()
-    watch.close()
-    assert calls.count == 1
-
-
-@pytest.mark.parametrize(
-    ("n", "expected"), [(2, 1), (-1, 0)], ids=["partial", "to_eof"]
-)
-def test_an_unreadable_position_with_a_kept_digest_waits_for_eof(
-    n: int, expected: int
-) -> None:
-    # The tracked position is stale after the failure, so reads that would add up to
-    # the size from it do not count; an EOF read still does.
-    calls = _Calls()
-    watch = UnverifiedPasswordReadWatch(
-        _TellFails(b"0123456789"),
-        size=10,
-        on_unverified=calls,
-        seek_keeps_digest=True,
-    )
-    watch.read(8)
-    with pytest.raises(RuntimeError):
-        watch.seek(1)
-    if n < 0:
-        while watch.read(4096):  # the empty read is the EOF signal
-            pass
-    else:
-        watch.read(n)
-    watch.close()
-    assert calls.count == expected
-
-
-def test_a_seek_error_that_moved_updates_the_position() -> None:
-    # Where the digest survives a seek, reads after one that moved count from the new
-    # position: reading on from 1 does not reach the size early.
-    calls = _Calls()
-    watch = UnverifiedPasswordReadWatch(
-        _MovesThenRaises(b"0123456789"),
-        size=10,
-        on_unverified=calls,
-        seek_keeps_digest=True,
-    )
-    watch.read(8)
-    with pytest.raises(RuntimeError):
-        watch.seek(1)
-    assert watch.read(2) == b"12"
     watch.close()
     assert calls.count == 1
 
@@ -567,16 +514,6 @@ def test_a_seek_forfeits_the_digest_when_the_inner_drops_it() -> None:
     assert watch.read() == b"56789"
     watch.close()
     assert calls.count == 1
-
-
-def test_a_seek_keeps_the_digest_when_the_inner_keeps_it() -> None:
-    # zipfile reads through a forward seek, so its CRC still runs.
-    watch, calls = _watch(b"0123456789", seek_keeps_digest=True)
-    watch.read(1)
-    watch.seek(5)
-    assert watch.read() == b"56789"
-    watch.close()
-    assert calls.count == 0
 
 
 def test_rejecting_codec_budget_cut_after_a_large_crc_less_item() -> None:

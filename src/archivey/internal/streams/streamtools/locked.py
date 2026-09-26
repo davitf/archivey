@@ -1,13 +1,8 @@
-"""Lock-wrapping streams for library-owned shared handles.
+"""Lock-wrapping stream for library-owned shared handles.
 
-Two wrappers (easy to mix up):
-
-- :class:`LockedStream` — hold ``lock`` across **every** read/seek/tell on
-  ``inner`` (TAR/ISO under ``MemberStreams.CONCURRENT``: seek-then-read must be
-  atomic). Archivey buffering/error wrappers sit *outside* this layer.
-- :class:`CloseLockedStream` — serializes only ``close()``; reads stay
-  unlocked. Use when concurrent readers share a handle for I/O but close
-  must not race.
+:class:`LockedStream` holds ``lock`` across **every** read/seek/tell on ``inner``
+(TAR/ISO under ``MemberStreams.CONCURRENT``: seek-then-read must be atomic). Archivey
+buffering/error wrappers sit *outside* this layer.
 
 For independent logical positions over one file, prefer
 :class:`~archivey.internal.streams.streamtools.shared.SharedSource` instead of
@@ -65,29 +60,6 @@ class LockedStream(DelegatingStream):
     def tell(self, /) -> int:
         with self._lock:
             return self._inner.tell()
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        with self._lock:
-            super().close()
-
-
-class CloseLockedStream(DelegatingStream):
-    """Serialize only ``close()``; leave read/seek unlocked on ``inner``.
-
-    Contrast :class:`LockedStream` (locks every op). ZIP under
-    ``MemberStreams.CONCURRENT``: stdlib ``zipfile`` already serializes shared-fp
-    seek/read via ``_SharedFile``, but ``_fileRefCnt`` on open/close races under
-    free-threaded CPython. This wrapper covers close; the ZIP backend also
-    serializes ``ZipFile.open`` under the same lock (``_handle_guard``) — open +
-    close together are enough; locking reads would needlessly serialize
-    independent decompressors.
-    """
-
-    def __init__(self, inner: BinaryIO, lock: threading.Lock | threading.RLock) -> None:
-        super().__init__(inner)
-        self._lock = lock
 
     def close(self) -> None:
         if self.closed:

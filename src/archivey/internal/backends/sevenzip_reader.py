@@ -96,6 +96,7 @@ from archivey.internal.password import (
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_MAX_INPUT_BYTES,
     PASSWORD_CONFIRM_PREFIX_BYTES,
+    REJECTING_CODECS,
     PasswordConfirmPlan,
     PasswordConfirmVerdict,
     UnverifiedPasswordReadWatch,
@@ -105,7 +106,6 @@ from archivey.internal.password_confirm import (
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.internal.streams.codecs import Codec
 from archivey.internal.streams.crypto import _AesCbcTruncatedError
 from archivey.internal.streams.streamtools import (
     ReadableStream,
@@ -167,30 +167,16 @@ def _is_windows_reparse_point(attrs: int | None) -> bool:
 
 
 _SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
-# Codecs measured to fail on random input, which is what a wrong AES key feeds them
-# (``tests/test_password_confirm.py`` re-measures every one). A folder whose chain
-# contains one settles a wrong key inside the confirm prefix. Measured as non-rejecting
-# and left out: Brotli (about one random input in twenty decodes a full prefix) and PPMd.
-# Filters never reject: ``MethodKind.LZMA_FAMILY`` also holds Delta and BCJ, which is
-# why this is a codec set and not a method kind. A codec not listed is non-rejecting.
-_REJECTING_CODECS = frozenset(
-    {
-        Codec.LZMA,
-        Codec.LZMA2,
-        Codec.BZIP2,
-        Codec.DEFLATE,
-        Codec.DEFLATE64,
-        Codec.ZSTD,
-        Codec.LZ4,
-    }
-)
+# The folder settles a wrong key inside the confirm prefix when its chain holds a
+# REJECTING_CODECS codec. Filters never reject: ``MethodKind.LZMA_FAMILY`` also holds
+# Delta and BCJ, which is why the check is by codec and not by method kind.
 
 
 def _folder_codec_rejects(folder: SevenZipFolder) -> bool:
     """Whether a decoder in ``folder`` rejects random input (confirm rung 3)."""
     for coder in folder.coders:
         method = lookup(coder.method)
-        if method is not None and method.codec in _REJECTING_CODECS:
+        if method is not None and method.codec in REJECTING_CODECS:
             return True
     return False
 
@@ -1059,8 +1045,6 @@ class SevenZipReader(BaseArchiveReader):
             stream,
             size=_member_stream_size(member),
             on_unverified=report,
-            # The fused verifier forfeits the checksum on a seek off the read frontier.
-            seek_keeps_digest=False,
         )
 
     def _member_prefix(self, member: ArchiveMember) -> int:

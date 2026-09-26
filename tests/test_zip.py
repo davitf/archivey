@@ -24,7 +24,6 @@ from archivey import (
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.exceptions import (
-    ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
     StreamNotSeekableError,
@@ -217,10 +216,11 @@ def test_symlink_member(tmp_path: Path) -> None:
 
 
 def test_truncated_symlink_target_is_typed_error(tmp_path: Path) -> None:
-    """stdlib zipfile raises EOFError on truncated symlink data; must be ArchiveyError.
+    """Listing a ZIP truncated inside a symlink's payload raises an ArchiveyError.
 
-    Found by the Atheris zip_tar target: listing a corrupt ZIP with a symlink whose
-    local payload is truncated escaped as a raw ``EOFError``.
+    Found by the Atheris zip_tar target, when stdlib zipfile read symlink targets and
+    this escaped as a raw ``EOFError``. With this fixture the central directory is
+    already unreadable, so it now fails at open.
     """
     import stat as stat_module
 
@@ -241,26 +241,19 @@ def test_truncated_symlink_target_is_typed_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("password", "expect_indexerror_cause"),
-    [
-        (b"secret", True),
-        ([b"secret", b"other"], False),
-    ],
-    ids=["single", "multi"],
+    "password", [b"secret", [b"secret", b"other"]], ids=["single", "multi"]
 )
 def test_truncated_zipcrypto_header_is_typed_error(
-    password: bytes | list[bytes], expect_indexerror_cause: bool
+    password: bytes | list[bytes],
 ) -> None:
     """A short ZipCrypto header is TruncatedError on both password dispatch paths.
 
-    Found by the Atheris zip target (nightly 2026-09-01, run 33505689273):
-    ``ZipExtFile._init_decrypter`` indexes ``[11]`` of whatever ``read(12)``
-    returned. Listing still succeeds; opening the encrypted member must raise
-    ``TruncatedError``, not a raw ``IndexError`` and not ``CorruptionError``.
-
-    A single static password goes through ``ZipFile.open(pwd=…)`` (IndexError
-    cause). Two-or-more candidates take the STORED confirm path through
-    ``_read_zipcrypto_header``.
+    Found by the Atheris zip target (nightly 2026-09-01, run 33505689273), when
+    stdlib's ``ZipExtFile`` still decrypted ZipCrypto and indexed ``[11]`` of
+    whatever ``read(12)`` returned. Listing still succeeds; opening the encrypted
+    member must raise ``TruncatedError``, not a raw ``IndexError`` and not
+    ``CorruptionError``. A single password reads the header in the decrypt stage;
+    two or more take the STORED confirm path through ``_read_zipcrypto_header``.
     """
     blob = zip_with_truncated_zipcrypto_header(b"secret", b"x.txt", b"hello")
     with open_archive(
@@ -270,50 +263,54 @@ def test_truncated_zipcrypto_header_is_typed_error(
         assert encrypted, (
             "fixture must list the ZipCrypto member so the crash is on open"
         )
-        with pytest.raises(TruncatedError) as excinfo:
+        with pytest.raises(TruncatedError, match="Truncated ZipCrypto header"):
             ar.open(encrypted[0])
-        if expect_indexerror_cause:
-            assert isinstance(excinfo.value.__cause__, IndexError)
-        else:
-            assert not isinstance(excinfo.value.__cause__, IndexError)
 
 
-def test_truncated_zipcrypto_stamp_releases_handle_lock(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """CONCURRENT handle lock is released before TruncatedError is stamped.
+def test_archive_close_waits_for_an_in_flight_member_read() -> None:
+    """Closing waits for a member stream's read that is inside the archive's source.
 
-    ``_translated_errors`` takes the boundary outside ``_handle_guard()`` so
-    stamping never runs while the shared-handle lock is held. A diagnostics
-    handler that re-enters the reader would otherwise deadlock.
+    The reader lifecycle waits for in-flight reader calls, not for a read on a stream
+    the caller already holds; zipfile's lock, taken by every member read and by
+    ``_close_archive``, is what keeps the handle open under that read.
     """
-    import archivey.internal.backends.zip_reader as zip_reader
+    import threading
 
-    held_during_stamp: list[bool] = []
-    orig = zip_reader.ZipReader._stamp_error_context
+    in_read = threading.Event()
+    release = threading.Event()
 
-    def _wrapped(
-        self: zip_reader.ZipReader,
-        exc: ArchiveyError,
-        member_name: str | None = None,
-    ) -> None:
-        lock = self._handle_lock
-        held_during_stamp.append(lock.locked() if lock is not None else False)
-        orig(self, exc, member_name)
+    class _BlockingSource(io.BytesIO):
+        armed = False
 
-    monkeypatch.setattr(zip_reader.ZipReader, "_stamp_error_context", _wrapped)
+        def read(self, size: int | None = -1, /) -> bytes:
+            if self.armed:
+                self.armed = False
+                in_read.set()
+                release.wait(5)
+            return super().read(size)
 
-    blob = zip_with_truncated_zipcrypto_header(b"secret", b"x.txt", b"hello")
-    with open_archive(
-        io.BytesIO(blob),
-        format=ArchiveFormat.ZIP,
-        password=b"secret",
-        concurrent_members=True,
-    ) as ar:
-        encrypted = [m for m in ar if m.is_encrypted]
-        with pytest.raises(TruncatedError):
-            ar.open(encrypted[0])
-    assert held_during_stamp == [False]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"data")
+    source = _BlockingSource(buf.getvalue())
+    ar = open_archive(source, concurrent_members=True)
+    stream = ar.open("a.txt")
+    got: list[bytes] = []
+    source.armed = True
+    reader = threading.Thread(target=lambda: got.append(stream.read()))
+    reader.start()
+    assert in_read.wait(5)
+    closed = threading.Event()
+    closer = threading.Thread(target=lambda: (ar.close(), closed.set()))
+    closer.start()
+    try:
+        assert not closed.wait(0.2)
+    finally:
+        release.set()
+    assert closed.wait(5)
+    reader.join(5)
+    closer.join(5)
+    assert got == [b"data"]
 
 
 def test_unencrypted_codec_indexerror_is_not_truncated(
@@ -321,9 +318,9 @@ def test_unencrypted_codec_indexerror_is_not_truncated(
 ) -> None:
     """IndexError on the codec path is an archivey bug, not archive damage.
 
-    IndexError is translated only around ``ZipFile.open(pwd=…)`` in
-    ``_zip_open_raw``, so a latent off-by-one in ``open_codec_stream`` still
-    fails the Atheris zip target rather than being swallowed as TruncatedError.
+    Nothing on the ZIP read path translates IndexError, so a latent off-by-one in
+    ``open_codec_stream`` still fails the Atheris zip target rather than being
+    swallowed as TruncatedError.
     """
     import archivey.internal.backends.zip_reader as zip_reader
 
@@ -349,7 +346,8 @@ def test_unencrypted_member_read_indexerror_is_not_truncated(
     there turns a codec/stream off-by-one into ``TruncatedError("Truncated ZipCrypto
     header")`` on an unencrypted DEFLATE member. A bounded ``read(n)`` is the path
     that reaches the translator; ``read()`` (n=-1) hits the fused size verifier's
-    opaque-accelerator catch first. The ZipCrypto mapping lives on ``_zip_open_raw``.
+    opaque-accelerator catch first. A short ZipCrypto header is checked by length in
+    the decrypt stage, so no IndexError mapping exists anywhere.
     """
     import archivey.internal.backends.zip_reader as zip_reader
 

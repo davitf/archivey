@@ -236,9 +236,6 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.streamtools.locked.LockedStream": (
         "DelegatingStream.__init__, then a plain _lock assignment"
     ),
-    "archivey.internal.streams.streamtools.locked.CloseLockedStream": (
-        "DelegatingStream.__init__, then a plain _lock assignment"
-    ),
     "archivey.internal.streams.counting.CountingReader": "plain assignments only",
     "archivey.internal.streams.counting.OutputCountingStream": "plain assignments only",
     "archivey.internal.streams.counting.SeekCountingStream": "plain assignments only",
@@ -256,7 +253,10 @@ _CLOSE_STATE_FIRST = {
         "raw.__enter__() runs after DelegatingStream.__init__ has set what close() reads"
     ),
     "archivey.internal.backends.zip_reader._UnconfirmedZipCryptoStream": (
-        "no __init__ of its own; DelegatingStream's"
+        "assigns _payload_complete, then DelegatingStream.__init__"
+    ),
+    "archivey.internal.backends.zipcrypto.ZipCryptoDecryptStream": (
+        "assigns _source before RawIOBase.__init__; nothing after it can raise"
     ),
     "archivey.internal.password_confirm.UnverifiedPasswordReadWatch": (
         "assigns every field close() reads before DelegatingStream.__init__"

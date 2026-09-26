@@ -476,3 +476,80 @@ def test_aes_stream_guard_runs_before_the_cryptography_import(
         WinZipAesDecryptStream(
             io.BytesIO(b""), enc_key=b"\0" * 32, auth_key=b"\0" * 32, cipher_len=0
         )
+
+
+# The password ladder: several candidates are confirmed, not taken on pw_verify.
+
+_COLLIDER = b"collides-on-pw-verify"
+
+
+def _collide_pw_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``_COLLIDER`` pass the 2-byte check while deriving its own (wrong) keys.
+
+    A real collision takes ~65 000 PBKDF2 runs to find, so the test forges one: the
+    reader's cheap check then admits a wrong password, as it does for 1 in 65 536.
+    """
+    import archivey.internal.backends.zip_aes as zip_aes
+
+    original = zip_aes.derive_winzip_aes_keys
+
+    def derive(password: bytes, *, salt: bytes, key_len: int) -> tuple[bytes, ...]:
+        keys = original(password, salt=salt, key_len=key_len)
+        if password != _COLLIDER:
+            return keys
+        right = original(_PASSWORD, salt=salt, key_len=key_len)
+        return keys[0], keys[1], right[2]
+
+    monkeypatch.setattr(zip_aes, "derive_winzip_aes_keys", derive)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("vendor_version", [1, 2], ids=["ae1", "ae2"])
+@pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
+def test_aes_candidate_passing_pw_verify_does_not_shadow_the_right_one(
+    monkeypatch: pytest.MonkeyPatch, vendor_version: int, method: int
+) -> None:
+    data = _build_aes_zip(
+        payload=_PAYLOAD,
+        password=_PASSWORD,
+        vendor_version=vendor_version,
+        strength=3,
+        method=method,
+    )
+    _collide_pw_verify(monkeypatch)
+    with open_archive(io.BytesIO(data), password=[_COLLIDER, _PASSWORD]) as ar:
+        assert ar.read(ar.members()[0]) == _PAYLOAD
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
+def test_aes_only_colliding_candidates_report_the_ambiguity(
+    monkeypatch: pytest.MonkeyPatch, method: int
+) -> None:
+    data = _build_aes_zip(
+        payload=_PAYLOAD,
+        password=_PASSWORD,
+        vendor_version=2,
+        strength=3,
+        method=method,
+    )
+    _collide_pw_verify(monkeypatch)
+    with open_archive(io.BytesIO(data), password=[_COLLIDER, b"plain-wrong"]) as ar:
+        with pytest.raises(
+            EncryptionError, match=r"password\(s\) may be wrong, or .* may be corrupt"
+        ):
+            ar.read(ar.members()[0])
+
+
+@requires("cryptography")
+def test_aes_lone_colliding_password_fails_on_the_hmac(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With one password there is nothing to choose between: the HMAC at EOF decides."""
+    data = _build_aes_zip(
+        payload=_PAYLOAD, password=_PASSWORD, vendor_version=2, strength=3, method=0
+    )
+    _collide_pw_verify(monkeypatch)
+    with open_archive(io.BytesIO(data), password=_COLLIDER) as ar:
+        with pytest.raises(CorruptionError, match="HMAC"):
+            ar.read(ar.members()[0])
