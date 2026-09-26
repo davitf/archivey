@@ -527,9 +527,10 @@ A BCJ2 member's `compression` SHALL list the BCJ2 coder, then the coders of its
 `main` branch, in the pack direction the `CompressionMethod` contract states. The
 coders of the `call`, `jump` and `rc` branches SHALL NOT be listed.
 
-The BCJ2 folder stream SHALL be forward-only. A random-access `open()` of a member
-decodes from the folder start, and a sequential `stream_members()` pass decodes each
-folder once.
+A BCJ2 folder keeps no seek points. A random-access `open()` of a member decodes from
+the folder start, and a sequential `stream_members()` pass decodes each folder once.
+With `seekable_members=True` a BCJ2 member stream SHALL seek like any other 7z member:
+a backward seek SHALL rewind all four inputs and decode again from the folder start.
 
 The decoder SHALL raise `TruncatedError` when any input ends before the declared
 output is produced, and `CorruptionError` when `main`, `call` or `jump` still holds
@@ -537,9 +538,10 @@ bytes after the last output byte. That check SHALL read at most one byte from ea
 input and SHALL NOT drain an input. It SHALL NOT allocate from a declared size: output
 is produced in bounded blocks, and each input is read in bounded blocks.
 
-The LZMA decoders of a BCJ2 folder's branches run at once, so the dictionary sizes they
-declare SHALL be checked together against `DecoderLimits.max_decoder_memory`, before any
-branch decoder is built, and exceeding it SHALL raise `ResourceLimitError`.
+The decoders of a BCJ2 folder's branches run at once, so the memory they declare (LZMA
+dictionary sizes and PPMd memory sizes) SHALL be checked together against
+`DecoderLimits.max_decoder_memory`, before any branch decoder is built, and exceeding it
+SHALL raise `ResourceLimitError`.
 
 #### Scenario: BCJ2 decode matrix
 
@@ -554,4 +556,5 @@ branch decoder is built, and exceeding it SHALL raise `ResourceLimitError`.
 | `call` stream cut short | `TruncatedError` naming the stream |
 | `main` longer than the output consumes | `CorruptionError`, after reading one byte past the end, not the rest of `main` |
 | `open()` of the second member of a BCJ2 folder | Bytes match; decoded from the folder start |
+| BCJ2 member opened with `seekable_members=True`, read, then seeked back | `seekable()` is True; the same bytes are read again |
 | BCJ2 folder whose branch dictionaries each fit `max_decoder_memory` but together do not | `ResourceLimitError`; no branch decoder is built |

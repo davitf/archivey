@@ -14,7 +14,8 @@ bit, and on a 1 takes a target from ``call`` or ``jump``, turns it back into a
 relative one (``target - (position + 4)``) and emits it little-endian. The bit's
 probability model has 258 contexts: one per preceding byte for ``E8``, one for ``E9``,
 one for ``Jcc``. The range coder is LZMA's (11-bit probabilities, 5 move bits, a
-5-byte start), normalised lazily so no ``rc`` byte is read before it is used. That is
+5-byte start). Its five start bytes are read with the first output byte, so an empty
+output reads no ``rc`` byte at all. That is
 7-Zip 9.20's ``Bcj2_Decode`` (``C/Bcj2.c``); later 7-Zip restructured the code, not the
 format.
 
@@ -38,13 +39,14 @@ on ``python3.11``) without changing what the decoder refuses.
 
 from __future__ import annotations
 
+import io
 import operator
 import struct
 from collections.abc import Sequence
 from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError
-from archivey.internal.streams.streamtools import ReadOnlyIOStream
+from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
 
 # Every input is read in blocks of this size. Output is produced a main block at a
 # time, so a read never holds more than one block's expansion (at most 5x, when every
@@ -137,11 +139,12 @@ class _Targets:
 
 
 class Bcj2DecoderStream(ReadOnlyIOStream):
-    """Forward-only BCJ2 decode of ``unpack_size`` bytes from four input streams.
+    """BCJ2 decode of ``unpack_size`` bytes from four input streams.
 
     Owns its inputs unless ``owns_inputs`` says otherwise: :meth:`close` closes the
-    owned ones. Not seekable, like every other 7z
-    folder stream decoded from its start.
+    owned ones. Seekable when all four inputs are: BCJ2 keeps no seek points, so a
+    backward seek rewinds every input to its start and decodes forward again, and a
+    forward seek decodes and discards.
 
     Refuses rather than guesses (design D5 of the change that added it): an input that
     ends before the declared output is complete raises :class:`TruncatedError` naming
@@ -168,26 +171,38 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
             for stream, owned in zip((main, call, jump, rc), owns_inputs, strict=True)
             if owned
         ]
+        self._inputs = (main, call, jump, rc)
+        self._seekable = all(is_seekable(stream) for stream in self._inputs)
+        self._size = unpack_size
         self._main_stream = main
+        self._start_decoding()
+
+    def _start_decoding(self) -> None:
+        """Set every piece of decode state to the start of the output."""
+        _, call, jump, rc = self._inputs
         self._main = b""
         self._mpos = 0
         self._call = _Targets(call, "call")
         self._jump = _Targets(jump, "jump")
         self._rc = _RangeCoderInput(rc)
         self._produced = 0
-        self._left = unpack_size
+        self._left = self._size
         self._pending = bytearray()
         self._probs = [_PROB_INIT] * 258
         self._prev = 0
         self._range = 0xFFFFFFFF
         self._code: int | None = None  # read lazily: an empty output needs no rc bytes
         self._checked_end = False
+        # A position at or past the end that seek() reached without decoding to it.
+        self._past_end: int | None = None
 
     def read(self, n: int = -1, /) -> bytes:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
         if n is None or n < 0:
             return self.readall()
+        if self._past_end is not None:
+            return b""
         while len(self._pending) < n and self._left:
             self._decode_block()
         if not self._left and not self._checked_end:
@@ -221,7 +236,10 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         next_e8 = find(b"\xe8", mpos)  # next E8 or E9 opcode
         if next_e8 < 0:
             next_e8 = end
-        next_jcc = find(b"\x0f\x80", mpos) + 1 or end  # next Jcc opcode (after its 0F)
+        # The next Jcc opcode, the byte after its 0F. A miss is find() == -1, which the
+        # + 1 turns into 0, a falsy value, so ``or`` substitutes ``end``; a 0F at the
+        # block start (find() == 0) becomes 1, which is truthy, so it still counts.
+        next_jcc = find(b"\x0f\x80", mpos) + 1 or end
         try:
             while True:
                 if prev == 0x0F and mpos < end and (main[mpos] & 0xF0) == 0x80:
@@ -243,7 +261,7 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
                         next_e8 = end
                 else:
                     pos = next_jcc
-                    next_jcc = find(b"\x0f\x80", pos + 1) + 1 or end
+                    next_jcc = find(b"\x0f\x80", pos + 1) + 1 or end  # as above
 
                 copied = pos + 1 - mpos
                 if copied >= left:
@@ -315,7 +333,49 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
                 )
 
     def seekable(self) -> bool:
-        return False
+        return self._seekable
+
+    def tell(self, /) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        if self._past_end is not None:
+            return self._past_end
+        return self._produced - len(self._pending)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        """Move to ``offset``. Backward re-decodes from the start; forward decodes on.
+
+        A position at or past the end is recorded without decoding up to it, as a
+        file would, and reads there return nothing.
+        """
+        here = self.tell()
+        if not self._seekable:
+            raise io.UnsupportedOperation("seek")
+        if whence == io.SEEK_SET:
+            target = offset
+        elif whence == io.SEEK_CUR:
+            target = here + offset
+        elif whence == io.SEEK_END:
+            target = self._size + offset
+        else:
+            raise ValueError(f"Invalid whence: {whence}")
+        if target < 0:
+            raise ValueError(f"Invalid offset: {offset}")
+        if target >= self._size:
+            self._past_end = target
+            return target
+        # A seek to the end decoded nothing, so the decoder is still where it was.
+        self._past_end = None
+        if target < self.tell():
+            for stream in self._inputs:
+                stream.seek(0)
+            self._start_decoding()
+        # Decode and discard up to ``target``, one main block at a time at most.
+        while (skip := target - self.tell()) > 0:
+            if not self._pending:
+                self._decode_block()
+            del self._pending[:skip]
+        return target
 
     def nearest_resume_offset(self, target: int) -> int:
         """Decoding can only start at offset 0: BCJ2 keeps no seek points."""

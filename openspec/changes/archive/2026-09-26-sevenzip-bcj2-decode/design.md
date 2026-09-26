@@ -366,6 +366,11 @@ is not checked. A check on the final `code` alone was not added.
 the folder unit applies: `open_folder_pipeline` sums a BCJ2 folder's declared LZMA1 and
 LZMA2 dictionaries and checks the total against the cap before building any branch.
 
+**D4 seek, reversed in review.** Forward-only broke the `seekable_members=True`
+guarantee in `archive-reading` for BCJ2 members only. So the decoder seeks as D4 said it
+could: with `seekable=True` every branch opens seekable, a backward seek rewinds the
+four inputs to their starts and decodes again, and a forward seek decodes on.
+
 **Linear folders in any list order.** The planner reads the graph, not the list order,
 so a linear chain whose coders are listed out of decode order now decodes instead of
 raising "non-linear wiring".

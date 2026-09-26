@@ -261,6 +261,28 @@ def test_stream_members_opens_each_folder_once(
     assert calls == [0]
 
 
+@requires_binary("7z")
+def test_seekable_members_seek_a_bcj2_member(
+    tmp_path: Path, inputs: dict[str, Path]
+) -> None:
+    """The archive-reading guarantee holds for BCJ2: seek works, backward included."""
+    names = ["code.bin", "code2.bin"]
+    archive = tmp_path / "seek.7z"
+    _seven_zip(archive, _FORCED, [inputs[n] for n in names])
+    expected = inputs["code2.bin"].read_bytes()
+    with open_archive(archive, seekable_members=True) as reader:
+        member = next(m for m in reader.members() if m.name == "code2.bin")
+        with reader.open(member) as stream:
+            assert stream.seekable()
+            assert stream.read(70_000) == expected[:70_000]
+            stream.seek(1000)
+            assert stream.read(5000) == expected[1000:6000]
+            stream.seek(-10, io.SEEK_END)
+            assert stream.read() == expected[-10:]
+            stream.seek(0)
+            assert stream.read() == expected
+
+
 # ---------------------------------------------------------------------------
 # The decoder stream on its own
 # ---------------------------------------------------------------------------
@@ -409,7 +431,6 @@ def test_close_closes_owned_inputs_only() -> None:
     )
     stream.close()
     assert [s.closed for s in inputs] == [True, True, True, False]
-    assert not stream.seekable()
 
 
 def test_hostile_all_candidates_main_decodes() -> None:
@@ -417,6 +438,94 @@ def test_hostile_all_candidates_main_decodes() -> None:
     main = b"\xe8" * 50_000 + b"\x0f\x80" * 25_000
     rc = b"\x00" * 100_000  # code 0 is below every bound: every bit decodes as 0
     assert _decode([main, b"", b"", rc], len(main)) == main
+
+
+# A range-coder stream whose first bit decodes as 1 (convert), with no encoder: the
+# first start byte is shifted out of the 32-bit code, so ``code`` is 0xFFFFFFFF, which
+# is above the first bound, ``(0xFFFFFFFF >> 11) * 1024``. The second bit is a 1 too.
+_RC_CONVERT = b"\x00" + b"\xff" * 4
+_T1, _T2 = 0x12345678, 0x0ABBCCDD
+
+
+def _le(target: int, position: int) -> bytes:
+    """A converted target as it is emitted: relative to the end of its 4 bytes."""
+    return ((target - (position + 4)) & 0xFFFFFFFF).to_bytes(4, "little")
+
+
+def _be(*targets: int) -> bytes:
+    return b"".join(t.to_bytes(4, "big") for t in targets)
+
+
+@pytest.mark.parametrize(
+    ("main", "call", "jump", "expected"),
+    [
+        pytest.param(b"\xe8", _be(_T1), b"", b"\xe8" + _le(_T1, 1), id="call"),
+        pytest.param(b"\xe9", b"", _be(_T1), b"\xe9" + _le(_T1, 1), id="jmp"),
+        pytest.param(b"\x0f\x85", b"", _be(_T1), b"\x0f\x85" + _le(_T1, 2), id="jcc"),
+        # The second E8's context is the top byte of the first converted target.
+        pytest.param(
+            b"\xe8\xe8",
+            _be(_T1, _T2),
+            b"",
+            b"\xe8" + _le(_T1, 1) + b"\xe8" + _le(_T2, 6),
+            id="call-after-converted-target",
+        ),
+    ],
+)
+def test_converted_target_without_the_cli(
+    main: bytes, call: bytes, jump: bytes, expected: bytes
+) -> None:
+    """The conversion arithmetic, pinned on a core install with no 7z oracle."""
+    assert _decode([main, call, jump, _RC_CONVERT], len(expected)) == expected
+
+
+@pytest.mark.parametrize("size", [2, 3, 4])
+def test_target_past_the_output_is_truncated(size: int) -> None:
+    """A converted target that runs past the declared size is cut, as 7-Zip does."""
+    expected = (b"\xe8" + _le(_T1, 1))[:size]
+    assert _decode([b"\xe8", _be(_T1), b"", _RC_CONVERT], size) == expected
+
+
+def test_call_stream_cut_short_without_the_cli() -> None:
+    with pytest.raises(TruncatedError, match="call"):
+        _decode([b"\xe8", b"\x12\x34", b"", _RC_CONVERT], 5)
+
+
+def test_decoder_seeks_backward_and_forward() -> None:
+    main, call = b"\xe8\xe8", _be(_T1, _T2)
+    expected = b"\xe8" + _le(_T1, 1) + b"\xe8" + _le(_T2, 6)
+    stream = Bcj2DecoderStream(
+        *map(io.BytesIO, [main, call, b"", _RC_CONVERT]), unpack_size=len(expected)
+    )
+    assert stream.seekable()
+    assert stream.read(7) == expected[:7]
+    assert stream.seek(2) == 2
+    assert stream.read(3) == expected[2:5]
+    assert stream.seek(3, io.SEEK_CUR) == 8
+    assert stream.tell() == 8
+    assert stream.read() == expected[8:]
+    assert stream.seek(-4, io.SEEK_END) == 6
+    assert stream.read() == expected[6:]
+    assert stream.seek(50) == 50
+    assert stream.read(1) == b""
+    assert stream.seek(0) == 0
+    assert stream.read() == expected
+    with pytest.raises(ValueError):
+        stream.seek(-1)
+
+
+def test_decoder_over_a_non_seekable_input_does_not_seek() -> None:
+    class _Forward(io.BytesIO):
+        def seekable(self) -> bool:
+            return False
+
+    stream = Bcj2DecoderStream(
+        _Forward(b"\xe8"), *map(io.BytesIO, [_be(_T1), b"", _RC_CONVERT]),
+        unpack_size=5,
+    )  # fmt: skip
+    assert not stream.seekable()
+    with pytest.raises(io.UnsupportedOperation):
+        stream.seek(0)
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +598,23 @@ def test_multi_input_coder_other_than_bcj2_is_unsupported() -> None:
         plan_folder(folder)
 
 
+@pytest.mark.parametrize(
+    ("coder", "message"),
+    [
+        pytest.param(SevenZipCoder(_COPY, 1, 0, None), "no out-stream", id="no-output"),
+        pytest.param(SevenZipCoder(_COPY, 0, 1, None), "no in-stream", id="no-input"),
+    ],
+)
+def test_coder_with_no_stream_is_corruption(coder: SevenZipCoder, message: str) -> None:
+    with pytest.raises(CorruptionError, match=message):
+        plan_folder(_graph([coder], [], [0]))
+
+
+def test_folder_with_no_coders_is_corruption() -> None:
+    with pytest.raises(CorruptionError, match="no coders"):
+        plan_folder(_graph([], [], []))
+
+
 def test_bcj2_with_one_input_is_unsupported() -> None:
     with pytest.raises(UnsupportedFeatureError, match="BCJ2"):
         plan_folder(_graph([_coder(_BCJ2)], [], [0]))
@@ -535,6 +661,21 @@ def test_bare_bcj2_folder_reads() -> None:
         (member,) = reader.members()
         assert tuple(m.algo for m in member.compression) == (CompressionAlgorithm.BCJ2,)
         assert reader.read(member) == payload
+
+
+def test_bare_bcj2_member_seeks_with_seekable_members() -> None:
+    """The seek guarantee without the 7z CLI: a hand-built BCJ2 folder."""
+    payload = b"plain bytes with no branch opcodes"
+    archive = io.BytesIO(_bare_bcj2_archive(payload))
+    with open_archive(archive, seekable_members=True) as reader:
+        (member,) = reader.members()
+        with reader.open(member) as stream:
+            assert stream.seekable()
+            assert stream.read() == payload
+            stream.seek(6)
+            assert stream.read(5) == payload[6:11]
+            stream.seek(0)
+            assert stream.read() == payload
 
 
 def test_encrypted_folder_with_a_cycle_is_corruption_not_a_password_error() -> None:
@@ -602,6 +743,32 @@ def test_bcj2_folder_dictionaries_count_together_against_the_decoder_cap(
     with open_archive(archive, config=roomy) as reader:
         (member,) = reader.members()
         assert reader.read(member) == inputs["code.bin"].read_bytes()
+
+
+def test_ppmd_branches_count_toward_the_folder_sum() -> None:
+    """D6 covers PPMd too: three branches that each fit, together over the cap."""
+    from archivey import DecoderLimits
+    from archivey.exceptions import ResourceLimitError
+    from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
+    from archivey.internal.backends.sevenzip_pipeline import open_folder_pipeline
+    from archivey.internal.config import StreamConfig
+
+    mib = 1 << 20
+    ppmd = SevenZipCoder(
+        b"\x03\x04\x01", 1, 1, bytes([6]) + (64 * mib).to_bytes(4, "little")
+    )
+    folder = _graph(
+        [ppmd, ppmd, ppmd, _coder(_BCJ2, 4)], [(5, 0), (4, 1), (3, 2)], [2, 6, 1, 0]
+    )
+    config = StreamConfig(decoder_limits=DecoderLimits(max_decoder_memory=128 * mib))
+    with pytest.raises(ResourceLimitError, match="BCJ2 folder"):
+        open_folder_pipeline(
+            [io.BytesIO() for _ in range(4)],
+            folder,
+            password=None,
+            key_cache=SevenZipKeyCache(),
+            stream_config=config,
+        )
 
 
 @requires("cryptography")

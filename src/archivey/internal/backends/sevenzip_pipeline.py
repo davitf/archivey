@@ -76,7 +76,12 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.bcj2 import Bcj2DecoderStream
-from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
+from archivey.internal.streams.codecs import (
+    Codec,
+    CodecParams,
+    open_codec_stream,
+    parse_ppmd_var_h_properties,
+)
 from archivey.internal.streams.crypto import open_aes_decrypt_stream
 from archivey.internal.streams.decompress import FilterStream
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
@@ -211,14 +216,25 @@ def plan_folder(folder: SevenZipFolder) -> _Chain:
     no bind pair consumes, and the plan is read from the root down (design D1 of the
     ``sevenzip-bcj2-decode`` change).
 
-    A graph that cannot be a valid folder (a cycle, an input that is neither packed nor
-    bound) is :class:`CorruptionError`. A valid shape this planner does not run (a
+    A graph that cannot be a valid folder (no coders, a coder with no input or no
+    output, a cycle, an input that is neither packed nor bound) is
+    :class:`CorruptionError`. A valid shape this planner does not run (a
     coder with several outputs, a multi-input coder other than BCJ2) is
     :class:`UnsupportedFeatureError`. A linear folder plans to one chain over pack
     stream 0, as it always has.
     """
     coders = folder.coders
+    if not coders:
+        raise CorruptionError("7z folder has no coders")
     for coder in coders:
+        if coder.num_out_streams == 0:
+            raise CorruptionError(
+                f"7z coder {_method_hex(coder.method)} has no out-stream"
+            )
+        if coder.num_in_streams == 0:
+            raise CorruptionError(
+                f"7z coder {_method_hex(coder.method)} has no in-stream"
+            )
         if coder.num_out_streams != 1:
             raise UnsupportedFeatureError(
                 "7z folders with multi-output coders are not supported"
@@ -271,6 +287,8 @@ def plan_folder(folder: SevenZipFolder) -> _Chain:
             if coder_index in visited:
                 raise CorruptionError("7z folder coder graph has a cycle")
             visited.add(coder_index)
+            # Four inputs means BCJ2: the check at the top refused every other coder
+            # with more than one input. Relaxing that check must change this test too.
             if coders[coder_index].num_in_streams == 4:
                 base = in_base[coder_index]
                 source: int | _Bcj2Stage = _Bcj2Stage(
@@ -592,8 +610,9 @@ def open_folder_pipeline(
     The AES stream borrows the pack view (``owns_inner`` default) and holds no OS
     handle. Wiring codec stages to close it is a follow-up; seek does not depend on it.
 
-    A BCJ2 folder decodes forward only: every stage is opened non-seekable, and the
-    :class:`Bcj2DecoderStream` owns and closes its four branch outputs.
+    In a BCJ2 folder, ``seekable`` also applies to every branch, because the
+    :class:`Bcj2DecoderStream` seeks backward by rewinding its four inputs. It owns and
+    closes the branch outputs.
     """
     config = stream_config if stream_config is not None else DEFAULT_STREAM_CONFIG
     plan = plan_folder(folder)
@@ -604,13 +623,14 @@ def open_folder_pipeline(
         )
 
     if plan.has_bcj2():
-        # Three LZMA decoders run at once in a BCJ2 folder (main, call, jump), each
-        # with a dictionary the archive declares. Each is checked on its own when it
-        # opens; the folder's total is checked here, before any of them is built.
+        # Every branch decoder of a BCJ2 folder runs at once (main, call, jump; rc
+        # too, when it is not a bare pack stream), each with memory the archive
+        # declares. Each is checked on its own when it opens; the folder's total is
+        # checked here, before any of them is built.
         check_decoder_memory(
-            _declared_lzma_dictionaries(plan),
+            _declared_decoder_memory(plan),
             limits=config.decoder_limits,
-            what="BCJ2 folder's LZMA dictionary sizes, summed",
+            what="BCJ2 folder's declared decoder memory (LZMA dictionaries and PPMd), summed",
         )
 
     def open_chain(chain: _Chain, *, seekable: bool) -> BinaryIO:
@@ -619,7 +639,7 @@ def open_folder_pipeline(
             branches: list[BinaryIO] = []
             try:
                 for branch in chain.source.branches:
-                    branch_stream = open_chain(branch, seekable=False)
+                    branch_stream = open_chain(branch, seekable=seekable)
                     if branch.unpack_size is not None:
                         # A branch ends at its declared size. 7-Zip's LZMA branches
                         # have no end marker, and BCJ2 reads its inputs in blocks,
@@ -664,14 +684,20 @@ def open_folder_pipeline(
             owns_input = True
         return stream
 
-    return open_chain(plan, seekable=seekable and not plan.has_bcj2())
+    return open_chain(plan, seekable=seekable)
 
 
-def _declared_lzma_dictionaries(chain: _Chain) -> int:
-    """The LZMA1/LZMA2 dictionary sizes a chain declares, over every BCJ2 branch."""
+def _declared_decoder_memory(chain: _Chain) -> int:
+    """The decoder memory a chain declares, over every BCJ2 branch.
+
+    Counts what ``check_decoder_memory`` bounds per decoder: LZMA1/LZMA2 dictionary
+    sizes and the PPMd memory size. Other codecs declare no working memory in their
+    properties. PPMd properties that do not parse count as 0 here; the PPMd stage
+    refuses them itself when it opens.
+    """
     total = 0
     if isinstance(chain.source, _Bcj2Stage):
-        total += sum(_declared_lzma_dictionaries(b) for b in chain.source.branches)
+        total += sum(_declared_decoder_memory(b) for b in chain.source.branches)
     for stage in chain.stages:
         if isinstance(stage, _LzmaChainStage):
             total += sum(
@@ -679,6 +705,11 @@ def _declared_lzma_dictionaries(chain: _Chain) -> int:
                 for spec in stage.filters
                 if spec.get("id") in (lzma.FILTER_LZMA1, lzma.FILTER_LZMA2)
             )
+        elif isinstance(stage, _CodecStage) and stage.codec is Codec.PPMD:
+            try:
+                total += parse_ppmd_var_h_properties(stage.properties)[1]
+            except ValueError:
+                pass
     return total
 
 

@@ -690,7 +690,8 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 - **7z AES has no password check value** — without CRC/folder digest, wrong password can
   yield garbage (we warn; 7-Zip does the same).
 - **RARLAB `unrar` only** for member data; listing works without it.
-- **BCJ2 is pure Python** — forward-only, about half the speed of BCJ through liblzma.
+- **BCJ2 is pure Python** — about half the speed of BCJ through liblzma, and a backward
+  seek decodes again from the folder start.
 - **Native optional wheels / accelerators** may crash or hang on hostile input; we
   mitigate, cannot promise 100%. Includes residual `pyppmd` native-abort risk despite
   bounds + capped extra-NUL flush (see `known-issues.md`); the former
