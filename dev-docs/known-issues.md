@@ -434,7 +434,8 @@ fixed: every rapidgzip decoder (gzip / zlib / deflate, and bzip2 since the 2026-
 review; before that the bzip2 path aborted) reads a caller-owned stream through
 `_TrappingSource` in `codecs.py`, which parks the callback's exception and returns an
 EOF-shaped value, and `_AcceleratorStream` re-raises it as an ordinary Python exception after
-the call. See `dev-docs/topics/exception-handlers.md` §C-boundary trap. Only an upstream fix
+the call. It is marked as the caller's, so the codec translators leave it as it is: an
+`EOFError` from a dropped network stream stays an `EOFError`, not `TruncatedError`. See `dev-docs/topics/exception-handlers.md` §C-boundary trap. Only an upstream fix
 removes the need for the shim. Path sources are unaffected (rapidgzip owns an independent
 handle) for the *Python-source-raises* trigger. The stdlib codec fallbacks raise a normal
 `ValueError`, which the reader boundary translates to `UnsupportedOperationError`.

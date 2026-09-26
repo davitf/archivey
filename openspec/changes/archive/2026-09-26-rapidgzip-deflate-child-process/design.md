@@ -73,13 +73,16 @@ Through archivey (`open_codec_stream(GZIP)`, `use_rapidgzip=ON`), in-process aga
   so there is nothing like `max_ppmd_in_process_input` to size. A caller that wants no child
   process sets `use_rapidgzip=OFF`.
 - **Where no child can run:** `AUTO` decodes with the stdlib backend, whether that is known
-  before the open (a frozen or embedded interpreter) or only at it (a spawn or temporary file
-  the operating system refuses, a child that cannot import rapidgzip). The stdlib backend is
-  correct and raises `TruncatedError` on a cut stream the same way, only slower, and `AUTO`
-  already uses it for every stream under the threshold. The PPMd child raises instead
-  because its alternative is decoding in-process, which is the hazard; here it is not. Each
-  of those failures comes before the child reads the source, so the stdlib decoder starts
-  where the source was. `ON` raises `ResourceLimitError`.
+  before the open (a frozen or embedded interpreter, a zip import with no worker script on
+  disk) or only at it (a spawn or temporary file the operating system refuses, a child that
+  cannot import rapidgzip). The stdlib backend is correct and raises `TruncatedError` on a
+  cut stream the same way, only slower, and `AUTO` already uses it for every stream under
+  the threshold. The PPMd child raises instead because its alternative is decoding
+  in-process, which is the hazard; here it is not. Each of those failures comes before the
+  child reads the source, so the stdlib decoder starts where the source was. `ON` raises
+  `ResourceLimitError`. Both name the reason, which `rapidgzip_child_unavailable_reason`
+  gives for the cases known before the open; the `AUTO` warning is logged by the codec's
+  `open`, not by the backend resolution, which opens nothing.
 - **bzip2 stays in-process.** It never aborted in 110 random cuts, and its seek index is the
   reason to use it at all.
 

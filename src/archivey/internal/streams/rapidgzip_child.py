@@ -117,16 +117,29 @@ class RapidgzipChildReportedError(Exception):
     """
 
 
-def rapidgzip_child_available() -> bool:
-    """Whether a Python child process can be started to run the worker script.
+def rapidgzip_child_unavailable_reason() -> str | None:
+    """Why no Python child process can be started to run the worker script, or ``None``
+    when one can.
 
     A frozen application (PyInstaller and the like) has no Python interpreter at
     ``sys.executable``, an embedded interpreter may not know its own path, and a
     zip-imported archivey has no worker file on disk.
     """
-    return (
-        not getattr(sys, "frozen", False) and bool(sys.executable) and _WORKER.is_file()
-    )
+    if getattr(sys, "frozen", False):
+        return (
+            "this is a frozen application, with no Python interpreter to run the "
+            "rapidgzip decoder process"
+        )
+    if not sys.executable:
+        return (
+            "sys.executable is not set, so the rapidgzip decoder process cannot start"
+        )
+    if not _WORKER.is_file():
+        return (
+            f"the rapidgzip worker script {_WORKER.name} is not a file on disk "
+            "(archivey imported from a zip archive?), so the decoder process cannot start"
+        )
+    return None
 
 
 _FROM_CHILD = "_archivey_reported_by_rapidgzip_child"
@@ -145,12 +158,21 @@ _FROM_SOURCE = "_archivey_raised_by_callers_source"
 
 
 def from_callers_source(exc: BaseException) -> bool:
-    """Whether ``exc`` came from the caller's own source, parked while serving the child.
+    """Whether ``exc`` came from the caller's own source, parked while a decoder read it
+    (the rapidgzip child's reads, or the in-process bzip2 decoder's).
 
     Such an exception is raised to the caller as itself, so a translator must leave it
     alone, including one whose types (``EOFError``) it would map for a decoder.
     """
     return getattr(exc, _FROM_SOURCE, False) is True
+
+
+def mark_callers_source(exc: BaseException) -> None:
+    """Mark ``exc`` as raised by the caller's own source (see :func:`from_callers_source`)."""
+    try:
+        setattr(exc, _FROM_SOURCE, True)
+    except AttributeError:  # an exception type that refuses new attributes
+        pass
 
 
 def _reported_error(payload: bytes) -> Exception:
@@ -360,35 +382,41 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         if source is None or self._parked is not None:
             self._write(SRC_FAIL)
             return
-        try:
-            if tag == SRC_READ:
-                data = source.read(arg)
-                if data is None:
-                    data = b""
-                if len(data) > arg:
-                    raise ValueError(
-                        f"source read({arg}) returned {len(data)} bytes; the excess is "
-                        "already consumed and cannot be delivered"
-                    )
-                reply: tuple[int, int, bytes] = (SRC_DATA, 0, bytes(data))
-            elif tag == SRC_SEEK:
-                whence = payload[0] if payload else io.SEEK_SET
-                reply = (SRC_VALUE, source.seek(arg, whence), b"")
-            elif tag == SRC_TELL:
-                reply = (SRC_VALUE, source.tell(), b"")
-            else:
-                raise ValueError(f"unknown request {tag} from the rapidgzip process")
-        except Exception as exc:  # noqa: BLE001 - parked, then raised to the caller
+        fault: Exception | None = None
+        data: bytes | None = b""
+        value = 0
+        if tag not in (SRC_READ, SRC_SEEK, SRC_TELL):
+            fault = ValueError(f"unknown request {tag} from the rapidgzip process")
+        else:
             try:
-                setattr(exc, _FROM_SOURCE, True)
-            except AttributeError:  # an exception type that refuses new attributes
-                pass
-            self._parked = exc
+                if tag == SRC_READ:
+                    data = source.read(arg)
+                elif tag == SRC_SEEK:
+                    value = source.seek(arg, payload[0] if payload else io.SEEK_SET)
+                else:
+                    value = source.tell()
+            except Exception as exc:  # noqa: BLE001 - parked, then raised to the caller
+                # Only what the source itself raised is marked as the caller's.
+                mark_callers_source(exc)
+                fault = exc
+        if fault is None and tag == SRC_READ:
+            if data is None:
+                data = b""
+            if len(data) > arg:
+                fault = ValueError(
+                    f"source read({arg}) returned {len(data)} bytes; the excess is "
+                    "already consumed and cannot be delivered"
+                )
+        if fault is not None:
+            self._parked = fault
             if self._source_fault is None:
-                self._source_fault = exc
+                self._source_fault = fault
             self._write(SRC_FAIL)
             return
-        self._write(*reply)
+        if tag == SRC_READ:
+            self._write(SRC_DATA, 0, bytes(data or b""))
+        else:
+            self._write(SRC_VALUE, value)
 
     def _exchange(
         self, tag: int, arg: int, payload: bytes

@@ -79,7 +79,8 @@ from archivey.internal.streams.rapidgzip_child import (
     RapidgzipChildStartError,
     RapidgzipChildStream,
     from_callers_source,
-    rapidgzip_child_available,
+    mark_callers_source,
+    rapidgzip_child_unavailable_reason,
     reported_by_child,
 )
 from archivey.internal.streams.resume import ask_resume_offset
@@ -310,6 +311,8 @@ class _TrappingSource(io.RawIOBase):
 
     def _store(self, exc: BaseException) -> None:
         if self.trapped is None:
+            # The caller's own exception: re-raised as itself, never translated.
+            mark_callers_source(exc)
             self.trapped = exc
 
     def readable(self) -> bool:
@@ -468,19 +471,15 @@ def _warn_child_fallback(why: str) -> None:
     )
 
 
-def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
-    """Resolve ``use_rapidgzip`` including the DEFLATE-family AUTO size gate.
+def _rapidgzip_wanted(config: StreamConfig, *, available: bool) -> bool:
+    """Resolve ``use_rapidgzip`` including the DEFLATE-family AUTO size gate, before
+    asking whether a child process can run it.
 
     AUTO also requires truncation to be verifiable: a container-declared
     ``expected_decompressed_size``, or (gzip only) a readable ISIZE trailer flagged
     via ``gzip_isize_backstop``. Without one of those, AUTO falls back to the stdlib
     backend that raises ``TruncatedError``. ``ON`` ignores this — the caller asked for
     the accelerator explicitly.
-
-    AUTO also stays on the stdlib backend where no child process can run rapidgzip (a
-    frozen application), and falls back to it when a child cannot be started at open
-    (see :func:`_open_rapidgzip`); either logs one warning per process. ``ON`` fails at
-    open in both cases.
     """
     if (
         config.use_rapidgzip is AcceleratorMode.AUTO
@@ -488,23 +487,43 @@ def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
         and not config.gzip_isize_backstop
     ):
         return False
-    enabled = config.use_rapidgzip.enabled_for(
+    return config.use_rapidgzip.enabled_for(
         seekable=config.seekable,
         available=available,
         input_size=config.compressed_input_size,
         min_size=RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,
     )
-    if (
-        enabled
-        and config.use_rapidgzip is AcceleratorMode.AUTO
-        and not rapidgzip_child_available()
-    ):
-        _warn_child_fallback(
-            "the rapidgzip decoder process cannot be started from a frozen or "
-            "embedded interpreter"
-        )
+
+
+def _auto_without_child(config: StreamConfig, *, available: bool) -> str | None:
+    """Why an ``AUTO`` open that wants rapidgzip cannot have it here (no child process
+    can run it: :func:`rapidgzip_child_unavailable_reason`), or ``None``."""
+    if config.use_rapidgzip is not AcceleratorMode.AUTO:
+        return None
+    if not _rapidgzip_wanted(config, available=available):
+        return None
+    return rapidgzip_child_unavailable_reason()
+
+
+def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
+    """Whether a DEFLATE-family stream decodes through rapidgzip (:func:`_rapidgzip_wanted`).
+
+    AUTO stays on the stdlib backend where no child process can run rapidgzip, and
+    falls back to it when a child cannot be started at open (:func:`_open_rapidgzip`).
+    ``ON`` fails at open in both cases. This is a query: the warning for the first case
+    is logged by the codec's ``open`` (:func:`_warn_if_auto_without_child`).
+    """
+    if not _rapidgzip_wanted(config, available=available):
         return False
-    return enabled
+    return _auto_without_child(config, available=available) is None
+
+
+def _warn_if_auto_without_child(config: StreamConfig) -> None:
+    """At a DEFLATE-family open: warn (once per process) if ``AUTO`` wanted rapidgzip
+    and reads with the stdlib because no child process can run here."""
+    why = _auto_without_child(config, available=_rapidgzip is not None)
+    if why is not None:
+        _warn_child_fallback(why)
 
 
 def _rapidgzip_rewind_warning(
@@ -667,8 +686,9 @@ def _open_rapidgzip(
         f"here to decode this {label} stream. Set use_rapidgzip=AcceleratorMode.OFF to "
         "decode it with the standard library"
     )
-    if not rapidgzip_child_available():
-        raise ResourceLimitError(f"{reason} (a frozen or embedded interpreter).")
+    unavailable = rapidgzip_child_unavailable_reason()
+    if unavailable is not None:
+        raise ResourceLimitError(f"{reason} ({unavailable}).")
     try:
         return RapidgzipChildStream(source, label=label)
     except RapidgzipChildStartError as exc:
@@ -1419,6 +1439,7 @@ class GzipCodec(StreamCodec):
         # Prefer a container-declared size; otherwise note a readable ISIZE so AUTO can
         # still select rapidgzip with the dedicated ISIZE backstop (not VerifyingStream).
         config = _config_with_gzip_isize(source, config)
+        _warn_if_auto_without_child(config)
         if _rapidgzip_enabled(config, available=_rapidgzip is not None):
             if _rapidgzip is None:
                 raise PackageNotInstalledError(
@@ -1600,6 +1621,8 @@ class Bzip2Codec(StreamCodec):
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         """Translate the indexed_bzip2 accelerator's exceptions to the library's error types."""
+        if from_callers_source(exc):
+            return None  # the caller's source raised it, through _TrappingSource
         text = str(exc)
         if isinstance(exc, RuntimeError) and "Calculated CRC" in text:
             return CorruptionError(
@@ -1938,6 +1961,7 @@ class DeflateCodec(_ZlibErrorCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
+        _warn_if_auto_without_child(config)
         if _rapidgzip_enabled(config, available=_rapidgzip is not None):
             if _rapidgzip is None:
                 raise PackageNotInstalledError(
@@ -2005,6 +2029,7 @@ class ZlibCodec(_ZlibErrorCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
+        _warn_if_auto_without_child(config)
         if _rapidgzip_enabled(config, available=_rapidgzip is not None):
             if _rapidgzip is None:
                 raise PackageNotInstalledError(

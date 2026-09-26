@@ -13,6 +13,7 @@ from __future__ import annotations
 import bz2
 import gzip
 import io
+import random
 from pathlib import Path
 
 import pytest
@@ -483,3 +484,36 @@ def test_gzip_backstop_keeps_raising_after_its_own_truncation(read_all: bool) ->
     # A chunked re-read delivers the prefix again before the error; read() raises
     # without returning it, as it did the first time.
     assert bytes(got) == (b"" if read_all else prefix)
+
+
+class _SourceFailingMidway(io.BytesIO):
+    """The caller's own stream, failing on a read that starts past its first 64 KiB."""
+
+    def __init__(self, data: bytes, exc: Exception) -> None:
+        super().__init__(data)
+        self._exc = exc
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        if self.tell() > 64 * 1024:
+            raise self._exc
+        return super().read(size)
+
+
+@pytest.mark.parametrize("error", [OSError, EOFError])
+def test_bzip2_callers_source_exception_reaches_the_caller_unchanged(
+    error: type[Exception],
+) -> None:
+    """The in-process bzip2 decoder reads a caller's stream through a shim that parks
+    its exception and re-raises it after the call. That exception is the caller's, not
+    a verdict on the data: an ``EOFError`` (a dropped network file object) must not be
+    translated to ``TruncatedError`` as bzip2's own ``EOFError`` would be."""
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    payload = bytes(random.Random(1).randbytes(3_000_000))
+    failure = error("caller source failed")
+    source = _SourceFailingMidway(bz2.compress(payload), failure)
+    config = StreamConfig(use_indexed_bzip2=AcceleratorMode.ON, seekable=True)
+    with open_codec_stream(Codec.BZIP2, source, config=config) as stream:
+        with pytest.raises(error) as info:
+            while stream.read(1 << 16):
+                pass
+    assert info.value is failure

@@ -447,6 +447,29 @@ def test_an_exception_from_the_callers_source_reaches_the_caller_unchanged(
         assert not isinstance(later.value, (CorruptionError, TruncatedError))
 
 
+class _OverReadingSource(io.BytesIO):
+    """A caller's stream that breaks the read contract: it returns more than asked."""
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        data = super().read(size)
+        if size is not None and size > 0 and len(data) == size:
+            return data + b"!"
+        return data
+
+
+def test_a_fault_archivey_raises_about_the_source_is_not_marked_as_the_sources() -> (
+    None
+):
+    """Only what the caller's source itself raised is marked as the caller's (and so
+    left untranslated): archivey's own guard against an over-long read is not."""
+    source = _OverReadingSource(zlib.compress(_payload()))
+    with open_codec_stream(Codec.ZLIB, source, config=_ON) as stream:
+        with pytest.raises(ValueError, match="the excess is already consumed") as info:
+            while stream.read(1 << 16):
+                pass
+    assert not rapidgzip_child.from_callers_source(info.value)
+
+
 def test_an_interrupt_from_the_callers_source_leaves_the_stream_unusable() -> None:
     source = _FailingSource(_compress(Codec.ZLIB, _payload()), KeyboardInterrupt())
     with open_codec_stream(Codec.ZLIB, source, config=_ON) as stream:
@@ -635,7 +658,9 @@ def test_without_a_child_auto_uses_stdlib_and_on_refuses(
 ) -> None:
     """A frozen application has no interpreter to run the worker. AUTO decodes with the
     standard library; ON, which asked for rapidgzip, is refused rather than run in-process."""
-    monkeypatch.setattr(codecs_module, "rapidgzip_child_available", lambda: False)
+    monkeypatch.setattr(
+        codecs_module, "rapidgzip_child_unavailable_reason", lambda: "no child here"
+    )
     # Low enough that AUTO would otherwise pick rapidgzip for this input.
     monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
     payload = _payload()
@@ -643,7 +668,7 @@ def test_without_a_child_auto_uses_stdlib_and_on_refuses(
     auto = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.AUTO)
     with open_codec_stream(Codec.GZIP, str(path), config=auto) as stream:
         assert stream.read() == payload
-    with pytest.raises(ResourceLimitError, match="use_rapidgzip"):
+    with pytest.raises(ResourceLimitError, match=r"use_rapidgzip.*\(no child here\)"):
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
 
 
@@ -723,15 +748,33 @@ def test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto(
 
 
 def _fallback_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
-    return [
-        r.getMessage()
-        for r in caplog.records
-        if r.name == "archivey.streams"
-        and "use_rapidgzip=AcceleratorMode.OFF" in r.message
-    ]
+    messages = (r.getMessage() for r in caplog.records if r.name == "archivey.streams")
+    return [m for m in messages if "use_rapidgzip=AcceleratorMode.OFF" in m]
 
 
-@pytest.mark.parametrize("how", ["popen", "tempfile", "frozen"])
+# How each way of having no child is set up, and what the warning and the ON error say.
+_NO_CHILD_REASONS = {
+    "popen": "Resource temporarily unavailable",
+    "tempfile": "Resource temporarily unavailable",
+    "frozen": "frozen application",
+    "zip-import": "not a file on disk",
+}
+
+
+def _take_the_child_away(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, how: str
+) -> None:
+    if how == "frozen":
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+    elif how == "zip-import":
+        monkeypatch.setattr(
+            rapidgzip_child, "_WORKER", tmp_path / "rapidgzip_worker.py"
+        )
+    else:
+        _break_child_start(monkeypatch, tmp_path, how)
+
+
+@pytest.mark.parametrize("how", sorted(_NO_CHILD_REASONS))
 def test_an_auto_fallback_warns_once_per_process(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -755,11 +798,9 @@ def test_an_auto_fallback_warns_once_per_process(
         assert _has_child_stream(stream)
     assert _fallback_warnings(caplog) == []
 
-    if how == "frozen":
-        monkeypatch.setattr(sys, "frozen", True, raising=False)
-    else:
-        _break_child_start(monkeypatch, tmp_path, how)
-    with pytest.raises(ResourceLimitError):
+    why = _NO_CHILD_REASONS[how]
+    _take_the_child_away(monkeypatch, tmp_path, how)
+    with pytest.raises(ResourceLimitError, match=why):
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
     assert _fallback_warnings(caplog) == []
 
@@ -769,10 +810,36 @@ def test_an_auto_fallback_warns_once_per_process(
             assert stream.read() == payload
     (message,) = _fallback_warnings(caplog)
     assert "standard library decoder" in message
-    why = (
-        "frozen or embedded" if how == "frozen" else "Resource temporarily unavailable"
-    )
     assert why in message
+
+
+@pytest.mark.parametrize("how", ["frozen", "zip-import"])
+def test_resolving_a_codec_does_not_warn(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    how: str,
+) -> None:
+    """``resolve_codec`` is a query that opens nothing, so it logs nothing; the open
+    that then reads with the stdlib is what warns."""
+    monkeypatch.setattr(codecs_module, "_child_fallback_warned", False)
+    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    caplog.set_level(logging.WARNING, logger="archivey.streams")
+    payload = _payload()
+    data = zlib.compress(payload)
+    auto = StreamConfig(
+        seekable=True,
+        use_rapidgzip=AcceleratorMode.AUTO,
+        compressed_input_size=len(data),
+        expected_decompressed_size=len(payload),
+    )
+    _take_the_child_away(monkeypatch, tmp_path, how)
+    codecs_module.resolve_codec(Codec.ZLIB, auto)
+    assert _fallback_warnings(caplog) == []
+    with open_codec_stream(Codec.ZLIB, io.BytesIO(data), config=auto) as stream:
+        assert stream.read() == payload
+    (message,) = _fallback_warnings(caplog)
+    assert _NO_CHILD_REASONS[how] in message
 
 
 def test_no_fallback_warning_when_rapidgzip_is_not_installed(

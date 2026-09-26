@@ -95,8 +95,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `ResourceLimitError`; one ended any other way raises `ReadError`. Starting the child
   costs about 45 ms per accelerated stream, so `AUTO` now uses rapidgzip only from
   16 MiB of compressed input (was 1 MiB); smaller streams use the standard library.
-  Where no child can start (a frozen application, a spawn or temporary file the OS
-  refuses), `AUTO` uses the standard library and logs one warning per process on the
+  Where no child can start (a frozen application, archivey imported from a zip, a
+  spawn or temporary file the OS refuses), `AUTO` uses the standard library and logs one warning per process on the
   `archivey.streams` logger, naming the reason; `ON` raises `ResourceLimitError`. bzip2
   stays in-process. `use_rapidgzip=OFF` avoids the child entirely, and the warning.
 

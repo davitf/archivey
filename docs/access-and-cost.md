@@ -250,11 +250,12 @@ early, whatever the source. So archivey runs those three decoders in a **child p
 the abort ends the child, and your read raises `TruncatedError` (or `CorruptionError`
 where the abort does not say why). Starting the child costs about 45 ms per accelerated
 stream; under `AUTO` that is paid only for streams of 16 MiB compressed or more. Where no
-child can start (a frozen application, or a spawn or temporary file the OS refuses), `AUTO`
-reads these codecs with the standard library and `ON` raises `ResourceLimitError`. The
-`AUTO` fallback logs one warning per process on the `archivey.streams` logger, naming the
-reason: it is a fact about the environment, not about your archive. Set
-`use_rapidgzip=OFF` to never start a child, and to silence that warning.
+child can start (a frozen application, archivey imported from a zip, or a spawn or
+temporary file the OS refuses), `AUTO` reads these codecs with the standard library and
+`ON` raises `ResourceLimitError`. The `AUTO` fallback logs one warning per process on the
+`archivey.streams` logger, naming the reason: it is a fact about the environment, not
+about your archive. Set `use_rapidgzip=OFF` to never start a child, and to silence that
+warning.
 
 The abort costs the rest of the stream, and often more: rapidgzip decodes ahead in
 parallel, so it can reach the cut before your first read returns. On a cut gzip of 2 or

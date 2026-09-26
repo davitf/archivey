@@ -112,11 +112,13 @@ be ended and reaped when the stream closes or is collected. bzip2 through
 `rapidgzip.IndexedBzip2File` stays in-process.
 
 Where no child process can be started (a frozen application, an interpreter without
-`sys.executable`, a spawn or temporary file the operating system refuses, a child that cannot
-import rapidgzip), `AUTO` SHALL decode with the stdlib backend, as it does when rapidgzip is
-absent, and SHALL log one warning per process on the `archivey.streams` logger naming the
-reason and `use_rapidgzip=OFF` (none where rapidgzip is absent). `ON` in that case SHALL raise
-`ResourceLimitError` naming `use_rapidgzip=OFF`; it MUST NOT decode in-process.
+`sys.executable`, an archivey imported from a zip with no worker script on disk, a spawn or
+temporary file the operating system refuses, a child that cannot import rapidgzip), `AUTO`
+SHALL decode with the stdlib backend, as it does when rapidgzip is absent, and SHALL log one
+warning per process on the `archivey.streams` logger naming the reason and
+`use_rapidgzip=OFF` (none where rapidgzip is absent). `ON` in that case SHALL raise
+`ResourceLimitError` naming the reason and `use_rapidgzip=OFF`; it MUST NOT decode
+in-process.
 
 rapidgzip over-reads past a DEFLATE end-of-stream looking for a concatenated member, so the
 codec SHALL feed it an exactly-bounded input (e.g. the container's `SlicingStream` sized to
@@ -131,7 +133,7 @@ the member's compressed length); an unbounded or over-long stream MAY raise a sp
 | Declared-seekable zlib stream, accelerator enabled | rapidgzip auto-detects ZLIB and decodes; backward seek without re-decompress from start |
 | rapidgzip absent, `OFF`, or size < `AUTO` threshold | stdlib `zlib` (`-15` / `MAX_WBITS`); backward seek re-decompresses from start |
 | Accelerator fed an over-long/unbounded slice | May raise a spurious decode error on trailing bytes; callers MUST bound the input |
-| No child can be started (frozen interpreter, refused spawn or temporary file), `AUTO` | stdlib backend |
+| No child can be started (frozen interpreter, zip import, refused spawn or temporary file), `AUTO` | stdlib backend |
 | No child can be started, `ON` | `ResourceLimitError` at open |
 
 ### Requirement: Accelerator errors translate uniformly
