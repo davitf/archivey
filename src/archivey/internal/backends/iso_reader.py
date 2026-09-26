@@ -578,7 +578,8 @@ class _ZisofsStream(io.RawIOBase):
     """Seekable decoded view of one zisofs-compressed file.
 
     ``inner`` is the file's data as stored. Each read inflates the block it lands in,
-    capped at the block size, so a crafted block cannot inflate past it.
+    capped one byte past the block size, so a crafted block that inflates further is
+    detected as corruption rather than cut to fit.
     """
 
     def __init__(
@@ -891,10 +892,12 @@ class IsoReader(BaseArchiveReader):
         Nothing in the image says which charset these bytes are in: a Rock Ridge name
         is whatever the writer's locale was. UTF-8 is tried first; bytes that are not
         valid UTF-8 are decoded with ``encoding=`` when the caller gave one, as TAR
-        does for its names, and with UTF-8 and ``surrogateescape`` otherwise. Never
-        raises: a text codec ``open_archive`` accepted can still fail here (``utf-32``
-        on an odd length, or ``idna``, which has no ``surrogateescape``), and then the
-        name decodes as it would with no ``encoding=``.
+        does for its names, and with UTF-8 and ``surrogateescape`` otherwise.
+
+        Decoding always returns. A codec ``open_archive`` accepted can still fail on
+        these bytes (``utf-32`` on a length that is not a multiple of four, or
+        ``idna``, which has no ``surrogateescape``); the name then decodes as it would
+        with no ``encoding=``.
         """
         try:
             return raw.decode("utf-8")
