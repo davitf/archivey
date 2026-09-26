@@ -365,6 +365,8 @@ is not checked. A check on the final `code` alone was not added.
 **D6 memory.** `DecoderLimits.max_decoder_memory` now covers the LZMA dictionary, so
 the folder unit applies: `open_folder_pipeline` sums a BCJ2 folder's declared LZMA1 and
 LZMA2 dictionaries and checks the total against the cap before building any branch.
+Review widened the sum to PPMd branches too: each PPMd stage's declared memory size is
+added, since the cap bounds PPMd per decoder as it bounds an LZMA dictionary.
 
 **D4 seek, reversed in review.** Forward-only broke the `seekable_members=True`
 guarantee in `archive-reading` for BCJ2 members only. So the decoder seeks as D4 said it

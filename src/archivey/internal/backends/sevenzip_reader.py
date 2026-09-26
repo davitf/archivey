@@ -984,8 +984,8 @@ class SevenZipReader(BaseArchiveReader):
         ``_PasswordCandidates.attempt`` moves to the next candidate. A bounded plan
         reads at most ``PASSWORD_CONFIRM_MAX_INPUT_BYTES`` of each packed stream: a
         block-transform codec can otherwise consume far more input than the plaintext
-        prefix it produces. Running out of that capped input (a short read, or a decoder error,
-        once the cap is spent) is not evidence about the key, so it is
+        prefix it produces. Running out of that capped input (a short read, or a decoder
+        error, once the cap is spent) is not evidence about the key, so it is
         ``INCONCLUSIVE``. A mismatched anchor stays a rejection, however much input it
         took to produce.
         """

@@ -77,6 +77,7 @@ from archivey.internal.config import (
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.bcj2 import Bcj2DecoderStream
 from archivey.internal.streams.codecs import (
+    LZMA_DICTIONARY_FILTERS,
     Codec,
     CodecParams,
     open_codec_stream,
@@ -703,7 +704,7 @@ def _declared_decoder_memory(chain: _Chain) -> int:
             total += sum(
                 spec.get("dict_size", 0)
                 for spec in stage.filters
-                if spec.get("id") in (lzma.FILTER_LZMA1, lzma.FILTER_LZMA2)
+                if spec.get("id") in LZMA_DICTIONARY_FILTERS
             )
         elif isinstance(stage, _CodecStage) and stage.codec is Codec.PPMD:
             try:

@@ -779,11 +779,12 @@ so a small archive can declare a large, slow member. *Accepted:* `ExtractionLimi
 only the rate is lower. A "work per output byte" field on `DecoderLimits` was considered
 and not added: no other codec has one.
 
-**Memory.** Three decoders run at once in a BCJ2 folder (`main`, `call`, `jump`; 7-Zip
-writes LZMA for each), each with memory the archive declares. *Mitigated:* each is
-capped on its own by `DecoderLimits.max_decoder_memory`, and the folder's sum of LZMA
-dictionaries and PPMd memory sizes, the two kinds that cap bounds, is checked against
-the same cap before any of them is built
+**Memory.** Every branch decoder of a BCJ2 folder runs at once, each with memory the
+archive declares: three in what 7-Zip writes (`main`, `call`, `jump`, all LZMA), four
+when a crafted folder puts a coder on `rc` too. *Mitigated:* each is capped on its own
+by `DecoderLimits.max_decoder_memory`, and the folder's sum of what that cap bounds per
+decoder (LZMA dictionaries and PPMd memory sizes) is checked against the same cap before
+any of them is built
 (`sevenzip_pipeline.open_folder_pipeline`). Bytes decoded inside a branch never reach the
 folder stream that `ExtractionLimits` counts, so the decoder's end-of-output check reads
 at most one byte from each branch and never drains one.
