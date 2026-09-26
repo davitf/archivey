@@ -86,6 +86,31 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **Pre-1970 Unix timestamps list their date on Windows too.** TAR, the ZIP extended
+  timestamp field, RAR, gzip and the directory backend converted Unix seconds with
+  `datetime.fromtimestamp`, which goes through `gmtime()` on Windows and rejects a
+  negative value, so a member dated 1969 listed as `modified=None` with
+  `MEMBER_TIMESTAMP_INVALID` there only. The conversion is now epoch plus `timedelta`
+  on every platform; a value outside `datetime`'s range still reports as before.
+
+- **A seek before the start of a member follows `io.BytesIO`.** `seek(-n, SEEK_CUR)` or
+  `seek(-n, SEEK_END)` past the start of a compressed member raised `ValueError`, which
+  the ZIP backend reported as `CorruptionError` on an undamaged archive; ISO did the same
+  for every member, and a RAR member read through `unrar` raised `ValueError`. They now
+  clamp to position 0, as stored members already did. A negative `SEEK_SET` offset, or
+  an unknown `whence`, raises `ValueError` on every format, directory members included,
+  instead of `CorruptionError` on ZIP and ISO. The one difference left is a relative
+  seek before the start of a directory member: that member is the file itself, so the
+  OS refuses the seek with `OSError`.
+
+- **`max_metadata_bytes` weighs PAX keywords, not only their values.** TAR keeps
+  every PAX record in `extra["tar.pax_headers"]`, and a PAX keyword can be as long as
+  its value. A member with a 100 000-byte keyword and a one-byte value weighed 4 bytes,
+  so a 514 KiB `.tar.gz` could list under a 1 MiB cap while holding about 300 MB of
+  keywords. The keys of a dict nested in `extra` now count, and the TAR header walk
+  stops at the cap on keywords as it does on values. Top-level `extra` keys are fixed
+  per format and still do not count, so no format's baseline weight moves.
+
 - **A corrupt or hostile PPMd member no longer crashes the Python process.** pyppmd
   segfaults when asked to keep decoding after a corrupt stream has ended early, and
   random bytes (a wrong password, or a crafted 7z or ZIP member) reach that state.

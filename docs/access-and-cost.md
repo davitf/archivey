@@ -117,17 +117,24 @@ the position gives up a CRC check, but not WinZip AES's HMAC: the HMAC covers th
 ciphertext, so the read that reaches the member's end first reads, without decrypting,
 whatever ciphertext your seeks skipped, and then checks it.
 
-Whether that gets a diagnostic is decided by **what the seek actually costs**, not by the
-codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the rewind discards more than
-about a megabyte of decoded progress — the bytes you would have to decode again to get
-back where you were. On a solid RAR that includes the prefix in front of this member,
-not just the bytes already read from this stream. That matters because a format that
-*can* carry an index does not always *have* a useful one. A single-block `.xz` (what
-`lzma.compress` and un-threaded `xz` produce) has exactly one seek point, at the origin,
-so rewinding it costs the same as rewinding a codec with no index at all — and an
-engaged `rapidgzip` can hold an index sparse enough for the same thing. Small rewinds
-stay quiet on every codec unless the carrier declares a higher floor (solid RAR's
-prefix).
+A seek that lands before the start of a member behaves like `io.BytesIO`: a relative
+seek (`SEEK_CUR` or `SEEK_END`) clamps to position 0, and a negative `SEEK_SET` offset
+or an unknown `whence` raises `ValueError`. A directory member is a real file, so a
+relative seek before its start reaches the OS and raises `OSError`. A seek past the end
+of a TAR member returns the member size rather than the position you asked for, where
+other formats return the target; reads from there return `b""` either way.
+
+Whether a seek that moves the position gets a diagnostic is decided by **what the seek
+actually costs**, not by the codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the
+rewind discards more than about a megabyte of decoded progress — the bytes you would
+have to decode again to get back where you were. On a solid RAR that includes the prefix
+in front of this member, not just the bytes already read from this stream. That matters
+because a format that *can* carry an index does not always *have* a useful one. A
+single-block `.xz` (what `lzma.compress` and un-threaded `xz` produce) has exactly one
+seek point, at the origin, so rewinding it costs the same as rewinding a codec with no
+index at all — and an engaged `rapidgzip` can hold an index sparse enough for the same
+thing. Small rewinds stay quiet on every codec unless the carrier declares a higher
+floor (solid RAR's prefix).
 
 If you set a `DiagnosticPolicy` to `RAISE` on that code as a guard against accidentally
 quadratic seek loops, note that it fires on **every** qualifying seek, not only the

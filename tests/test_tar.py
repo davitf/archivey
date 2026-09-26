@@ -1754,3 +1754,76 @@ def test_gnu_long_name_under_a_global_pax_path_keeps_the_archive_codec() -> None
     with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
         (member,) = [m for m in ar.members() if m.name == long_name]
         assert member.raw_name == long_name.encode("latin-1")
+
+
+def _tar_with_mtime(path: Path, mtime: float, tar_format: int) -> Path:
+    with tarfile.open(path, "w", format=tar_format) as tf:
+        info = tarfile.TarInfo("old.txt")
+        info.mtime = mtime  # type: ignore[assignment]  # tarfile accepts a float
+        tf.addfile(info, io.BytesIO(b""))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("tar_format", "mtime", "expected"),
+    [
+        # PAX writes a negative mtime as a "mtime" record; GNU as a base-256 field.
+        pytest.param(
+            tarfile.PAX_FORMAT,
+            -86_400.5,
+            datetime(1969, 12, 30, 23, 59, 59, 500_000, tzinfo=timezone.utc),
+            id="pax",
+        ),
+        pytest.param(
+            tarfile.GNU_FORMAT,
+            -86_400,
+            datetime(1969, 12, 31, tzinfo=timezone.utc),
+            id="gnu-base256",
+        ),
+    ],
+)
+def test_pre_1970_mtime_lists_its_date(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tar_format: int,
+    mtime: float,
+    expected: datetime,
+) -> None:
+    """A negative mtime is a 1969 date on every platform.
+
+    ``datetime.fromtimestamp`` goes through ``gmtime()`` on Windows, which rejects a
+    negative value, so this member used to list as invalid there only. A
+    ``fromtimestamp`` that raises the way Windows' does must not matter any more.
+    """
+    from archivey.internal import timestamps as timestamps_module
+
+    class _WindowsLikeDatetime(datetime):
+        @classmethod
+        def fromtimestamp(cls, ts: float, tz: Any = None) -> datetime:
+            if ts < 0:
+                raise OSError(22, "Invalid argument (simulated Windows gmtime)")
+            return datetime.fromtimestamp(ts, tz)
+
+    monkeypatch.setattr(tar_reader_module, "datetime", _WindowsLikeDatetime)
+    monkeypatch.setattr(timestamps_module, "datetime", _WindowsLikeDatetime)
+
+    path = _tar_with_mtime(tmp_path / "old.tar", mtime, tar_format)
+    if tar_format == tarfile.PAX_FORMAT:
+        with tarfile.open(path) as tf:
+            assert "mtime" in tf.getmembers()[0].pax_headers
+    with open_archive(path) as ar:
+        member = ar.get("old.txt")
+        assert member.modified == expected
+        assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in ar.diagnostics.counts
+
+
+def test_pre_1970_pax_atime_lists_its_date(tmp_path: Path) -> None:
+    path = tmp_path / "atime.tar"
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("old.txt")
+        info.pax_headers = {"atime": "-1.5"}
+        tf.addfile(info, io.BytesIO(b""))
+    with open_archive(path) as ar:
+        assert ar.get("old.txt").accessed == datetime(
+            1969, 12, 31, 23, 59, 58, 500_000, tzinfo=timezone.utc
+        )

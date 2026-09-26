@@ -190,6 +190,9 @@ def test_metadata_accounting_counts_name_and_raw_name() -> None:
         + len("hi")
         + len("x")
         + len("v")
+        # A nested dict's keys are archive-derived text and count; top-level keys
+        # are format-defined literals and do not.
+        + len("k")
     )
     assert member_metadata_bytes(member) == expected
     # Upper bound must not under-count real UTF-8 size (Unicode name-bomb safety).
@@ -248,6 +251,67 @@ def test_tar_listing_stops_reading_headers_at_max_metadata_bytes(
         # Each name is 10 000 characters. The walk counts names only, so its count
         # passes 50 000 on the sixth header and it parses no further. The base also
         # weighs raw_name, so it has already refused on the third.
+        assert len(tar.members) <= 6
+
+
+def test_metadata_accounting_counts_long_nested_extra_keys() -> None:
+    """A PAX keyword inside ``extra["tar.pax_headers"]`` weighs its length.
+
+    The bomb-scale case: a 100 000-byte nested key. The exact arithmetic, and the
+    top-level keys that do not count, are
+    ``test_metadata_accounting_skips_top_level_keys_and_counts_nested_keys``.
+    """
+    member = ArchiveMember(
+        type=MemberType.FILE,
+        name="f",
+        extra={"tar.pax_headers": {"k" * 100_000: "v"}},
+    )
+    assert member_metadata_bytes(member) >= 100_000
+
+
+def test_metadata_accounting_skips_top_level_keys_and_counts_nested_keys() -> None:
+    """Only keys inside a nested dict weigh anything.
+
+    Every top-level ``extra`` key is a format-defined literal (``zip.compress_type``,
+    ``tar.type``), so charging it would tighten the cap per format for text no archive
+    controls. A nested key, such as a PAX keyword, is sized by the archive.
+    """
+    bare = ArchiveMember(type=MemberType.FILE, name="a.txt")
+    labelled = ArchiveMember(
+        type=MemberType.FILE, name="a.txt", extra={"zip.compress_type": 8}
+    )
+    assert member_metadata_bytes(labelled) == member_metadata_bytes(bare)
+
+    nested = ArchiveMember(
+        type=MemberType.FILE,
+        name="a.txt",
+        extra={"tar.pax_headers": {"keyword": ""}},
+    )
+    assert member_metadata_bytes(nested) == member_metadata_bytes(bare) + len("keyword")
+
+
+def test_tar_pax_keywords_count_toward_max_metadata_bytes(tmp_path: Path) -> None:
+    """A PAX record's keyword is weighed like its value.
+
+    TAR keeps every PAX record in ``extra["tar.pax_headers"]``. When only values were
+    weighed, a member with a 100 000-byte keyword and a one-byte value weighed 4 bytes,
+    so a small tar.gz held hundreds of megabytes of keywords under a 1 MiB cap.
+    """
+    import tarfile
+
+    tar_path = tmp_path / "pax-keywords.tar"
+    with tarfile.open(tar_path, "w", format=tarfile.PAX_FORMAT) as tf:
+        for i in range(50):
+            info = tarfile.TarInfo(name=f"f{i}")
+            info.pax_headers = {f"{i:02d}" + "k" * 99_998: "v"}
+            tf.addfile(info)
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=500_000))
+    with open_archive(tar_path, config=cfg) as reader:
+        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+            reader.members()
+        tar = reader._tar  # type: ignore[attr-defined]
+        # Each keyword is 100 000 characters, so the header walk passes the cap on
+        # the sixth header and parses no further.
         assert len(tar.members) <= 6
 
 

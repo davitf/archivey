@@ -262,8 +262,10 @@ class ListingLimits:
     """Most bytes of text a listing may retain across its members. 64 MiB.
 
     Counts member names (and raw names), comments, link targets, owner and group names
-    and the string or bytes values in ``extra``, plus the archive comment. Non-ASCII text counts four bytes per character,
-    so it is an upper bound rather than an exact size.
+    and the string or bytes values in ``extra``, plus the keys of a dict nested in it
+    (such as TAR's PAX keywords), plus the archive comment. The top-level ``extra``
+    keys are fixed per format and do not count. Non-ASCII text counts four bytes per
+    character, so it is an upper bound rather than an exact size.
     """
 
     UNLIMITED: ClassVar[ListingLimits]

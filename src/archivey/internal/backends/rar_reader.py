@@ -639,16 +639,18 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
+        # As io.BytesIO: a relative seek before the start clamps to 0, and only a
+        # negative SEEK_SET is the caller's error.
         if whence == io.SEEK_SET:
+            if offset < 0:
+                raise ValueError(f"Negative seek position {offset}")
             target = offset
         elif whence == io.SEEK_CUR:
-            target = self._pos + offset
+            target = max(0, self._pos + offset)
         elif whence == io.SEEK_END:
-            target = self._size + offset
+            target = max(0, self._size + offset)
         else:
             raise ValueError(f"invalid whence ({whence})")
-        if target < 0:
-            raise ValueError(f"negative seek position: {target}")
         needed = self._pipe_needed(target)
         if needed < self._pipe_pos:
             # Close first; set the logical cursor only if close succeeds, so a

@@ -33,7 +33,7 @@ from __future__ import annotations
 import stat
 import tarfile
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 from io import BytesIO
 from typing import BinaryIO, Iterator, Literal, Mapping, cast
 
@@ -82,6 +82,7 @@ from archivey.internal.streams.streamtools import (
     ensure_bufferedio,
     read_within_reach,
 )
+from archivey.internal.timestamps import unix_to_datetime
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -128,14 +129,14 @@ def _header_text_bytes(info: tarfile.TarInfo) -> int:
     walk uses it to stop parsing where the byte cap would, without the base's running
     total. ``linkname`` counts only on a link: on any other member
     ``_drop_unweighed_link_name`` has already cleared it, so it is not retained.
-    PAX keywords are not counted, because the base does not weigh them either
-    (``dev-docs/known-issues.md``).
+    PAX records count keyword and value, as the base weighs both in
+    ``extra["tar.pax_headers"]``.
     """
     total = len(info.name) + len(info.uname) + len(info.gname)
     if info.issym() or info.islnk():
         total += len(info.linkname)
-    for value in info.pax_headers.values():
-        total += len(value)
+    for keyword, value in info.pax_headers.items():
+        total += len(keyword) + len(value)
     return total
 
 
@@ -214,9 +215,10 @@ def _pax_time(info: tarfile.TarInfo, key: str) -> datetime | None:
     if raw is None:
         return None
     try:
-        return datetime.fromtimestamp(float(raw), tz=timezone.utc)
-    except (ValueError, OverflowError, OSError):
+        seconds = float(raw)
+    except ValueError:
         return None
+    return unix_to_datetime(seconds)
 
 
 class _EofProbeStream(ReadOnlyIOStream):
@@ -862,12 +864,8 @@ class TarReader(BaseArchiveReader):
         # one field honors both the standard ustar mtime and the PAX override. A hostile
         # out-of-range value (e.g. a crafted PAX mtime beyond datetime's range) must not
         # sink the whole listing, so it degrades to None like _pax_time does.
-        mtime_invalid = False
-        try:
-            modified = datetime.fromtimestamp(info.mtime, tz=timezone.utc)
-        except (ValueError, OverflowError, OSError):
-            mtime_invalid = True
-            modified = None
+        modified = unix_to_datetime(info.mtime)
+        mtime_invalid = modified is None
 
         compression = (
             _STORED_COMPRESSION
