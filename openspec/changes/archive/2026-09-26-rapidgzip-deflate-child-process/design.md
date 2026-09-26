@@ -72,11 +72,17 @@ Through archivey (`open_codec_stream(GZIP)`, `use_rapidgzip=ON`), in-process aga
 - **bzip2 stays in-process.** It never aborted in 110 random cuts, and its seek index is the
   reason to use it at all.
 
-## Open question for the maintainer
+## The `AUTO` threshold moves to 16 MiB
 
-The fixed start is not amortized at the `AUTO` threshold (1 MiB compressed, ~5 ms of
-decode). Each accelerated member now costs ~40–50 ms more to open. The realistic harness shows
-it: `targz_read_all_accel_on` 19 → 96 ms (one stream, 16 MiB unpacked), and
-`zip_read_all_accel_on`, which forces `ON` over 64 members of 256 KiB, 87 ms → 2.3 s. The
-nightly wall-drift check will flag both. Options: keep one idle child for reuse (a process that
-outlives the stream), raise the `AUTO` threshold, or accept the cost for the `ON` case.
+Each accelerated stream now costs about 45 ms more to start and open. A full read through
+the child saves about 3.4 ms per MB of compressed input over the stdlib (about 10.9 ms/MB
+stdlib against 7.5 ms/MB child, on the 44 MB benchmark file). So the child breaks even near
+13 MB compressed, and at the old 1 MiB threshold (~5 ms of decode) `AUTO` made a stream
+slower. `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` is now 16 MiB, past the break-even point.
+A caller that seeks backward often gains from rapidgzip's index sooner and can set `ON`.
+
+`ON` is explicit, so it pays the start whatever the size. The realistic harness shows it:
+`targz_read_all_accel_on` 19 → 96 ms (one stream, 16 MiB unpacked), and
+`zip_read_all_accel_on`, which forces `ON` over 64 members of 256 KiB, 87 ms → 2.3 s. Those
+cases stay as they are. Not done: keeping one idle child for reuse (a process that outlives
+the stream, which the leak oracle and users would see).

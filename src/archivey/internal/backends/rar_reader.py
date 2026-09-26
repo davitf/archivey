@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Literal
 
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, SpoolLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -97,6 +97,7 @@ from archivey.internal.password import (
 )
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
+from archivey.internal.spool import SpoolBudget
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
@@ -139,7 +140,16 @@ _STREAM_VOLUMES_DISK_COPY_NOTE = (
 )
 
 
-def _rar_stream_copy_cost_notes(source: ArchiveSource) -> tuple[str, ...]:
+_STREAM_COPY_REFUSED = (
+    "Reading a compressed member will be refused: RARLAB unrar or rar reads only "
+    "files, and {reason}. Members archivey reads without unrar, such as stored "
+    "members of a non-solid archive, can still be read."
+)
+
+
+def _rar_stream_copy_cost_notes(
+    source: ArchiveSource, limits: SpoolLimits, copy_size: int | None
+) -> tuple[str, ...]:
     """Open-time caveat when member data needs a filesystem path for ``unrar``.
 
     A file source, or a joined set of files, gets no note. Both stream shapes get the
@@ -147,14 +157,38 @@ def _rar_stream_copy_cost_notes(source: ArchiveSource) -> tuple[str, ...]:
     not at open. Keyed from the source's facts so a mixed set, whose file parts
     ``_materialize_stream_volumes`` copies alongside the streams, is labelled as the
     streams it contains.
+
+    The caveat names the spool limit, so the caller reads the worst case at open.
+    When the limit already decides the outcome — ``max_bytes=0``, or ``copy_size``
+    (the copy's size, when known at open) over the limit — it says the read will be
+    refused rather than promise a copy that cannot happen.
     """
     if source.path is not None:
         return ()
     if source.joined is not None:
         if source.volume_paths:
             return ()
-        return (_STREAM_VOLUMES_DISK_COPY_NOTE,)
-    return (_STREAM_SINGLE_DISK_COPY_NOTE,)
+        note = _STREAM_VOLUMES_DISK_COPY_NOTE
+        what = "every volume"
+    else:
+        note = _STREAM_SINGLE_DISK_COPY_NOTE
+        what = "the archive"
+    limit = limits.max_bytes
+    if limit is None:
+        return (f"{note} The copy has no size limit (SpoolLimits.max_bytes=None).",)
+    if limit == 0:
+        reason = "SpoolLimits.max_bytes=0 allows no copy of a stream source"
+        return (_STREAM_COPY_REFUSED.format(reason=reason),)
+    if copy_size is not None and copy_size > limit:
+        reason = (
+            f"a copy of {what} would be {copy_size} bytes, over "
+            f"SpoolLimits.max_bytes={limit}"
+        )
+        return (_STREAM_COPY_REFUSED.format(reason=reason),)
+    return (
+        f"{note} An archive over SpoolLimits.max_bytes={limit} is refused instead "
+        f"of copied.",
+    )
 
 
 # rarfile / RAR host_os values (parser maps RAR5 Windows→2, Unix→3).
@@ -605,16 +639,18 @@ class _UnrarRespawnStream(ReadOnlyIOStream):
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
+        # As io.BytesIO: a relative seek before the start clamps to 0, and only a
+        # negative SEEK_SET is the caller's error.
         if whence == io.SEEK_SET:
+            if offset < 0:
+                raise ValueError(f"Negative seek position {offset}")
             target = offset
         elif whence == io.SEEK_CUR:
-            target = self._pos + offset
+            target = max(0, self._pos + offset)
         elif whence == io.SEEK_END:
-            target = self._size + offset
+            target = max(0, self._size + offset)
         else:
             raise ValueError(f"invalid whence ({whence})")
-        if target < 0:
-            raise ValueError(f"negative seek position: {target}")
         needed = self._pipe_needed(target)
         if needed < self._pipe_pos:
             # Close first; set the logical cursor only if close succeeds, so a
@@ -772,13 +808,13 @@ class RarReader(BaseArchiveReader):
         # compressed opens used to both see ``None`` and both copy, and close
         # only removed the winner.
         self._materialize_lock = threading.Lock()
+        # The one spool allowance for this reader's copies, made on the first copy
+        # (``_spool_budget``) and kept, so a refused copy is not retried.
+        self._spool: SpoolBudget | None = None
         self._volume_paths: list[Path] = []
         # Stream volumes, kept unmaterialized until unrar actually needs files.
         self._stream_volume_items: list[Path | BinaryIO] = []
         self._volume0_parse_origin = 0  # set after sibling discovery when origin > 0
-        # Open-time caveat from source shape, not from later materialization
-        # (CostReceipt is a static snapshot; see access-mode-and-cost).
-        self._cost_notes = _rar_stream_copy_cost_notes(source)
 
         if not source.seekable():
             raise StreamNotSeekableError(
@@ -803,6 +839,11 @@ class RarReader(BaseArchiveReader):
         if self._origin and self._volume_set_size() > 1:
             self._volume0_parse_origin = self._origin
             self._origin = 0
+        # Open-time caveat from source shape, not from later materialization
+        # (CostReceipt is a static snapshot; see access-mode-and-cost).
+        self._cost_notes = _rar_stream_copy_cost_notes(
+            source, self._config.spool_limits, self._spool_copy_size()
+        )
         self._archive, self._unrar_password = self._parse_archive()
         # unrar only consults the password when something is actually encrypted, so
         # a spawn for a plain archive is not given one: nothing is decrypted with it,
@@ -896,6 +937,11 @@ class RarReader(BaseArchiveReader):
         """
         items = self._stream_volume_items
         ranges = self._stream_volume_ranges()
+        budget = self._spool_budget("every volume")
+        # The whole set is one copy, so the limit weighs the total. The joined source
+        # already knows every volume's size, so an oversized set is refused here,
+        # before the temp directory exists.
+        budget.check_total(self._spool_copy_size())
         temp_dir = Path(tempfile.mkdtemp(prefix="archivey-rar-vol-"))
         self._temp_dir = temp_dir
         stem = "archive"
@@ -905,14 +951,18 @@ class RarReader(BaseArchiveReader):
         try:
             for index, item in enumerate(items, start=1):
                 dest = temp_dir / f"{stem}.part{index}.rar"
+                # A file volume goes through the budget too, not ``shutil.copy2``:
+                # its size was read when the set was joined, and a file that grew
+                # since then must not carry the copy past the limit.
                 if isinstance(item, Path):
-                    shutil.copy2(item, dest)
+                    with item.open("rb") as src, dest.open("wb") as out:
+                        budget.copy(src, out)
                 else:
                     start, size = ranges[index - 1]
                     view = self._shared.view(start, size)
                     try:
                         with dest.open("wb") as out:
-                            shutil.copyfileobj(view, out, length=1 << 20)
+                            budget.copy(view, out)
                     finally:
                         view.close()
                 paths.append(dest)
@@ -922,6 +972,40 @@ class RarReader(BaseArchiveReader):
             raise
         self._volume_paths = paths
         self._archive_path = paths[0]
+
+    def _spool_budget(self, what: str) -> SpoolBudget:
+        """This reader's spool budget, made on first use and kept for its lifetime.
+
+        One budget per reader, not per attempt: a copy that was refused, or failed
+        part-way, is not given a fresh allowance by the next read. Called under
+        ``_materialize_lock``. A reader has one source shape, so ``what`` is the same
+        on every call.
+        """
+        if self._spool is None:
+            self._spool = SpoolBudget(
+                self._config.spool_limits,
+                what=(
+                    f"reading this member needs RARLAB unrar, which reads only files, "
+                    f"so {what} of the stream source must be copied to a temporary "
+                    f"location"
+                ),
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.RAR,
+            )
+        return self._spool
+
+    def _spool_copy_size(self) -> int | None:
+        """Bytes the copy for ``unrar`` would write, or ``None`` when not known.
+
+        Stream volumes copy every volume whole, and the joined source measured each
+        one. A single stream copies from the origin to the end of the source.
+        """
+        if self._stream_volume_items:
+            return sum(size for _, size in self._stream_volume_ranges())
+        source_size = self._shared.size
+        if source_size is None:
+            return None
+        return max(source_size - self._origin, 0)
 
     def _stream_volume_ranges(self) -> list[tuple[int, int]]:
         """``(start, size)`` per volume in the concatenated space this reader reads."""
@@ -1201,6 +1285,10 @@ class RarReader(BaseArchiveReader):
                 assert self._archive_path is not None
                 return self._archive_path
             # Single stream source: write one temp .rar for unrar.
+            budget = self._spool_budget("the whole archive")
+            # Checked before mkstemp, so a refused archive leaves no temp file. With
+            # no size known this still refuses a retry after an earlier refusal.
+            budget.check_total(self._spool_copy_size())
             fd, name = tempfile.mkstemp(suffix=".rar")
             path = Path(name)
             try:
@@ -1211,11 +1299,9 @@ class RarReader(BaseArchiveReader):
                     # plain RAR is both smaller and one less thing to rely on.
                     view = self._shared.view(self._origin)
                     try:
-                        # Keep the 1 MiB chunk: each SharedView read takes the lock
-                        # and seek+reads, so copyfileobj's 64 KiB default is ~16×
-                        # the acquisitions. This method already holds the mkstemp
-                        # fd, so copyfileobj writes to it rather than opening dest.
-                        shutil.copyfileobj(view, out, length=1 << 20)
+                        # The budget stops the copy at the limit when the size above
+                        # was not known, or was wrong.
+                        budget.copy(view, out)
                     finally:
                         view.close()
             except BaseException:

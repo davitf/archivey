@@ -68,7 +68,7 @@ _TRUNCATION_ERRORS = (
 
 def _payload() -> bytes:
     """About 2.2 MB of base64 text, which compresses to about 1.6 MB: over the 1 MiB
-    compressed size where AUTO starts to select rapidgzip."""
+    AUTO threshold the ``open_archive`` harness sets (the shipped one is 16 MiB)."""
     return base64.encodebytes(random.Random(0).randbytes(1_600_000))
 
 
@@ -206,6 +206,10 @@ _OPEN_ARCHIVE = (
     + """
 import sys
 import archivey
+from archivey.internal.streams import codecs
+
+# The shipped AUTO threshold is 16 MiB; lowered so AUTO takes these inputs to the child.
+codecs.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE = 1 << 20
 
 path, mode, pattern = sys.argv[1], sys.argv[2], PATTERNS[sys.argv[3]]
 source = path if mode == "path" else open(path, "rb")
@@ -232,7 +236,8 @@ def test_truncated_gzip_with_seekable_members_raises_truncated(
 ) -> None:
     """The reported case: ``seekable_members=True`` on a truncated ``.gz`` killed Python.
 
-    The accelerator is AUTO here, as in the report.
+    The accelerator is AUTO here, as in the report, with the AUTO threshold lowered to
+    the 1 MiB it had then, so these inputs still reach rapidgzip.
     """
     path = _write(tmp_path, "cut.gz", gzip.compress(_payload())[:-cut])
     proc = _run(_OPEN_ARCHIVE, str(path), mode, access)

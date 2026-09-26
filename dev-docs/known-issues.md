@@ -278,26 +278,14 @@ A caller that expects sparse files raises `max_ratio`. Revisit if extraction eve
 preserves holes, since the disk would then hold only the data. Handbook:
 [`formats/tar.md`](formats/tar.md) §6.
 
-## `max_metadata_bytes` weighs the values in `extra`, not the keys (open)
+## A TAR member's seek past its end returns the member size, not the target (open)
 
-`member_metadata_bytes` sums the string values of `extra`, one level of nested dicts
-included, and never counts a key. TAR keeps every PAX record as
-`extra["tar.pax_headers"]`, and a PAX keyword is a string of any length, so its bytes are
-retained unweighed. Measured: one member whose PAX record has a 100 000-byte keyword and a
-one-byte value weighs 4 bytes. 3 000 such members gzip to about 514 KiB and list under a
-1 MiB cap with about 300 MB of keywords held; only `max_members` ends that walk. Counting
-keys is a change to shared listing accounting, which moves the effective cap for every
-format that puts strings in `extra`.
-
-## Pre-1970 Unix timestamps list as invalid on Windows only (open)
-
-Unix-seconds fields are converted with `datetime.fromtimestamp(ts, tz=timezone.utc)` in
-the TAR, ZIP (UT extra field), RAR and gzip paths. On Windows that goes through
-`gmtime()`, which rejects negative values, so a member dated 1969 lists with
-`modified=None` plus `MEMBER_TIMESTAMP_INVALID` there and with the right date on Linux
-and macOS. The fix is one helper, `epoch + timedelta(seconds=ts)`, used at every site.
-Not reproduced on Windows here; the behaviour is the one the ZIP reader's UT-field
-comment already records.
+With `seekable_members=True`, `seek(10)` on a 3-byte TAR member returns 3 and leaves
+`tell()` at 3, where `io.BytesIO` and a real file return 10. The stream is stdlib
+`tarfile`'s `ExFileObject`, which clamps the position to the member size. Reads agree
+either way (both return `b""`), so only the returned position differs. Found while
+running the seek-before-start test over the corpus, which starts from `seek(5)` and
+so could not use an empty TAR member. Handbook: [`formats/tar.md`](formats/tar.md) §5.
 
 ## WinRAR 3.x SHA-1 KDF mutates its input buffer (emulated)
 
@@ -481,8 +469,10 @@ stream reports it by how it ended: an abort whose stderr names this truncation i
 `tests/test_accelerator_truncation_abort.py`, which also keeps a canary that raw rapidgzip still
 aborts on Linux. When that canary fails, rapidgzip may be safe in-process again.
 
-The cost is a fixed ~25 ms to start the child, plus ~70 µs per round trip (reduced by a
-read-ahead buffer in the parent); numbers in the OpenSpec change
+The cost is a fixed ~25 ms to start the child (~45 ms with the open), plus ~70 µs per round
+trip (reduced by a read-ahead buffer in the parent). So `AUTO` uses rapidgzip only from
+16 MiB compressed, past the ~13 MB where the child starts to beat the stdlib; numbers in the
+OpenSpec change
 `rapidgzip-deflate-child-process` design. `use_rapidgzip=OFF` avoids the child. A draft that
 decoded with the stdlib engine first and handed rapidgzip only input proved complete was
 rejected: the proof pass decoded the whole member at the first backward seek, which is the cost

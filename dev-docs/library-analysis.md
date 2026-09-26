@@ -318,8 +318,8 @@ Raw deflate (`-15`, ZIP/7z members) and zlib-wrapped deflate default to stdlib `
 **random access**, the same `[seekable]` `rapidgzip` accelerator used for gzip also decodes
 raw DEFLATE and zlib natively (auto-detected; no synthetic gzip wrapper) as of 0.16.0.
 Selection matches gzip (`use_rapidgzip` × declared seekability × availability), plus the
-`AUTO` minimum compressed-size gate (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`, 1 MiB) so tiny
-members do not pay accelerator setup. Without the accelerator, a rewind re-decodes from the
+`AUTO` minimum compressed-size gate (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`, 16 MiB: below
+about 13 MB the child process's start costs more than rapidgzip saves). Without the accelerator, a rewind re-decodes from the
 start (warning naming `[seekable]`). Standalone accelerated zlib/deflate has no Adler-32 /
 ISIZE-style truncation backstop (accepted limitation; container CRC covers ZIP/7z members).
 

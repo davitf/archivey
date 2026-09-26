@@ -19,6 +19,7 @@ import pytest
 from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
+from archivey.internal.streams import codecs
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.decompressor_stream import DecompressorStream
 from archivey.internal.streams.rapidgzip_child import RapidgzipChildStream
@@ -28,6 +29,10 @@ from archivey.internal.streams.verify import VerifyingStream
 # Large enough that compressed size exceeds the AUTO threshold for less-compressible
 # payloads; used when a test needs AUTO to select rapidgzip.
 _LARGE = os.urandom(2 * 1024 * 1024)
+# The AUTO threshold these tests run against. The shipped one (16 MiB) would need
+# inputs eight times larger; `_low_auto_threshold` lowers it for the tests that
+# exercise AUTO selecting rapidgzip.
+_TEST_THRESHOLD = 1024 * 1024
 _SMALL = b"the quick brown fox jumps over the lazy dog\n" * 50
 
 
@@ -78,7 +83,7 @@ def test_accelerated_deflate_zlib_decode_and_seek_match_stdlib(
     pytest.importorskip("rapidgzip")
     payload = _LARGE
     compressed = compress(payload)  # type: ignore[operator]
-    assert len(compressed) >= RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+    assert len(compressed) >= _TEST_THRESHOLD
     mid = len(payload) // 3
     on = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
     off = StreamConfig(use_rapidgzip=AcceleratorMode.OFF, seekable=True)
@@ -152,10 +157,36 @@ def test_on_forces_rapidgzip_below_threshold(codec: Codec) -> None:
         assert stream.read() == expected
 
 
+@pytest.fixture
+def _low_auto_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(codecs, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", _TEST_THRESHOLD)
+
+
+def test_the_auto_threshold_is_past_the_child_break_even() -> None:
+    """The child costs about 45 ms to start and saves about 3.4 ms per compressed MB,
+    so AUTO below about 13 MB would be slower than the stdlib."""
+    assert RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE >= 13 * 1000 * 1000
+
+
+def test_auto_uses_stdlib_below_the_shipped_threshold() -> None:
+    pytest.importorskip("rapidgzip")
+    compressed = zlib.compress(_LARGE)
+    assert _TEST_THRESHOLD <= len(compressed) < RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+    auto = StreamConfig(
+        use_rapidgzip=AcceleratorMode.AUTO,
+        seekable=True,
+        expected_decompressed_size=len(_LARGE),
+    )
+    with open_codec_stream(Codec.ZLIB, io.BytesIO(compressed), config=auto) as stream:
+        _assert_stdlib_zlib(stream)
+        assert stream.read() == _LARGE
+
+
+@pytest.mark.usefixtures("_low_auto_threshold")
 def test_auto_selects_rapidgzip_above_threshold() -> None:
     pytest.importorskip("rapidgzip")
     compressed = zlib.compress(_LARGE)
-    assert len(compressed) >= RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+    assert len(compressed) >= _TEST_THRESHOLD
     auto = StreamConfig(
         use_rapidgzip=AcceleratorMode.AUTO,
         seekable=True,
@@ -166,11 +197,12 @@ def test_auto_selects_rapidgzip_above_threshold() -> None:
         assert stream.read() == _LARGE
 
 
+@pytest.mark.usefixtures("_low_auto_threshold")
 def test_auto_without_decompressed_size_uses_stdlib_even_when_large() -> None:
     """AUTO must not select rapidgzip when truncation cannot be verified."""
     pytest.importorskip("rapidgzip")
     compressed = zlib.compress(_LARGE)
-    assert len(compressed) >= RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+    assert len(compressed) >= _TEST_THRESHOLD
     auto = StreamConfig(use_rapidgzip=AcceleratorMode.AUTO, seekable=True)
     with open_codec_stream(Codec.ZLIB, io.BytesIO(compressed), config=auto) as stream:
         _assert_stdlib_zlib(stream)

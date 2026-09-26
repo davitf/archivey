@@ -19,7 +19,7 @@ import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import BinaryIO, Callable, Iterator
 
 import pytest
 
@@ -233,6 +233,95 @@ def test_seek_to_start_rereads(member: tuple[Path, str]) -> None:
         assert f.read() == CONTENT
 
 
+def _assert_seek_underflow_matches_bytesio(stream: BinaryIO) -> None:
+    """A relative seek before the start clamps to 0; a negative SEEK_SET is ValueError.
+
+    That is what ``io.BytesIO`` does. A compressed member used to raise
+    ``ValueError("Invalid offset")`` on the relative case, which a backend translator
+    (ZIP) then reported as ``CorruptionError`` on an undamaged archive.
+    """
+    content = stream.read()
+    # Inside the member: a TAR member's seek past its end returns the member size
+    # (dev-docs/known-issues.md), which is not what this test is about.
+    start = min(5, len(content))
+    assert stream.seek(start) == start
+    assert stream.seek(-100, io.SEEK_CUR) == 0
+    assert stream.read() == content
+    assert stream.seek(-(len(content) + 100), io.SEEK_END) == 0
+    assert stream.tell() == 0
+    assert stream.read() == content
+    with pytest.raises(ValueError) as excinfo:
+        stream.seek(-1)
+    # The caller's own error, not a translated archive error.
+    assert type(excinfo.value) is ValueError
+    _assert_unknown_whence_is_value_error(stream)
+    # The refused seeks did not move the stream.
+    assert stream.tell() == len(content)
+
+
+def _assert_unknown_whence_is_value_error(stream: BinaryIO) -> None:
+    """An unknown ``whence`` is the caller's ``ValueError`` on every format.
+
+    Without the check in ``ArchiveStream.seek`` the ZIP translator reports it as
+    ``CorruptionError`` on an undamaged archive.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        stream.seek(0, 7)
+    assert type(excinfo.value) is ValueError
+
+
+def test_seek_underflow_matches_bytesio(member: tuple[Path, str]) -> None:
+    source, name = member
+    with open_archive(source, seekable_members=True) as ar, ar.open(name) as f:
+        if not f.seekable():
+            pytest.skip("member stream is not seekable")
+        if source.is_dir():
+            # A directory member is the file itself, opened with open(): a relative seek
+            # before its start raises OSError(EINVAL) as it does on any file.
+            with pytest.raises(OSError):
+                f.seek(-1, io.SEEK_CUR)
+            # A negative SEEK_SET is refused before the file handle, as on every
+            # other format.
+            with pytest.raises(ValueError) as excinfo:
+                f.seek(-1)
+            assert type(excinfo.value) is ValueError
+            _assert_unknown_whence_is_value_error(f)
+            return
+        _assert_seek_underflow_matches_bytesio(f)
+
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.mark.parametrize(
+    ("archive", "member_name"),
+    [
+        pytest.param(
+            "zipcrypto/check_byte_collision.zip", "deflated.txt", id="zipcrypto"
+        ),
+        pytest.param(
+            "zipcrypto/check_byte_collision.zip", "stored.txt", id="zipcrypto_stored"
+        ),
+        pytest.param(
+            "external/aes_ae1_pyzipper036.zip",
+            "secret.txt",
+            id="aes",
+            marks=requires("cryptography"),
+        ),
+    ],
+)
+def test_encrypted_zip_seek_underflow_matches_bytesio(
+    archive: str, member_name: str
+) -> None:
+    with (
+        open_archive(
+            _FIXTURES / archive, password="secret", seekable_members=True
+        ) as ar,
+        ar.open(member_name) as f,
+    ):
+        _assert_seek_underflow_matches_bytesio(f)
+
+
 # ---------------------------------------------------------------------------
 # Corpus enrollment: MemberStreams.SEEKABLE is a guarantee, not a request mask
 # ---------------------------------------------------------------------------
@@ -420,6 +509,28 @@ def test_corpus_seekable_members_seek_and_reread(
             f.seek(mid)
             assert f.read() == data[mid:]
             assert f.tell() == len(data)
+
+
+@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params())
+def test_corpus_seek_underflow_matches_bytesio(
+    spec: _SeekSpec, member_name: str, tmp_path: Path
+) -> None:
+    # The same seek-before-start contract as the hand-built fixture above, over every
+    # enrolled backend and codec path (RAR through unrar, 7z, encrypted ZIP, ...).
+    with _open_enrolled(spec, tmp_path, seekable_members=True) as ar:
+        member = _resolve_file_member(ar, member_name)
+        with ar.open(member) as f:
+            if spec.key == "dir":
+                # A directory member is a real file: relative underflow is its OSError.
+                # A negative SEEK_SET or unknown whence is refused before the file.
+                with pytest.raises(OSError):
+                    f.seek(-1, io.SEEK_CUR)
+                with pytest.raises(ValueError) as excinfo:
+                    f.seek(-1)
+                assert type(excinfo.value) is ValueError
+                _assert_unknown_whence_is_value_error(f)
+                return
+            _assert_seek_underflow_matches_bytesio(f)
 
 
 def _assert_forward_only(f) -> None:

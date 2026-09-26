@@ -105,7 +105,8 @@ these are bugs; all of them are stated so you can decide whether they matter to 
 - **The rapidgzip accelerator starts a child process for gzip, zlib and deflate.**
   rapidgzip aborts the process on a stream that ends early, so archivey decodes these
   codecs with it in a child Python process, one per open stream, and a cut file raises
-  `TruncatedError` instead. Each accelerated stream costs about 25 ms more to open. Set
+  `TruncatedError` instead. Each accelerated stream costs about 45 ms more to open, so
+  under `AUTO` only streams of 16 MiB compressed or more use it. Set
   `use_rapidgzip=OFF` to keep everything in your process.
   → [Accelerators and source lifetime](access-and-cost.md#accelerators-and-source-lifetime)
 - **Truncation detection on bare gzip/zlib through rapidgzip is best-effort.**

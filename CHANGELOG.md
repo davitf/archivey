@@ -22,6 +22,12 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Added
 
+- **`ArchiveyConfig.spool_limits`** (`SpoolLimits`, with a `SpoolLimits.UNLIMITED`
+  preset): bounds the temp copy a RAR opened from a stream needs so `unrar` can read it.
+  `SpoolLimits.max_bytes` defaults to 1 GiB, counted across a volume set. An archive over
+  it raises the new `SpoolLimitExceededError`, a `ResourceLimitError` subclass, before
+  anything is written; `None` removes the limit. Before this the copy had no bound. Path
+  sources are never copied.
 - **`ArchiveReader.format_info`**: the `FormatInfo` that `open_archive`'s own detection
   produced (confidence, `detected_by`, `payload_offset`), or `None` under `format=`.
   `archivey info` prints it instead of detecting the file a second time.
@@ -87,10 +93,36 @@ promise with that line; treat `0.2.0` as the first release of this library.
   rapidgzip for these codecs in a child process: the read raises `TruncatedError` (or
   `CorruptionError` where the abort does not say why). A child killed by SIGKILL raises
   `ResourceLimitError`; one ended any other way raises `ReadError`. Starting the child
-  costs about 25 ms per accelerated stream. Under `AUTO` a frozen application, which
-  cannot start one, uses the standard library; `ON` there, or a spawn the OS refuses,
-  raises `ResourceLimitError`. bzip2 stays in-process. `use_rapidgzip=OFF` avoids the
-  child entirely.
+  costs about 45 ms per accelerated stream, so `AUTO` now uses rapidgzip only from
+  16 MiB of compressed input (was 1 MiB); smaller streams use the standard library.
+  Under `AUTO` a frozen application, which cannot start a child, uses the standard
+  library; `ON` there, or a spawn the OS refuses, raises `ResourceLimitError`. bzip2
+  stays in-process. `use_rapidgzip=OFF` avoids the child entirely.
+
+- **Pre-1970 Unix timestamps list their date on Windows too.** TAR, the ZIP extended
+  timestamp field, RAR, gzip and the directory backend converted Unix seconds with
+  `datetime.fromtimestamp`, which goes through `gmtime()` on Windows and rejects a
+  negative value, so a member dated 1969 listed as `modified=None` with
+  `MEMBER_TIMESTAMP_INVALID` there only. The conversion is now epoch plus `timedelta`
+  on every platform; a value outside `datetime`'s range still reports as before.
+
+- **A seek before the start of a member follows `io.BytesIO`.** `seek(-n, SEEK_CUR)` or
+  `seek(-n, SEEK_END)` past the start of a compressed member raised `ValueError`, which
+  the ZIP backend reported as `CorruptionError` on an undamaged archive; ISO did the same
+  for every member, and a RAR member read through `unrar` raised `ValueError`. They now
+  clamp to position 0, as stored members already did. A negative `SEEK_SET` offset, or
+  an unknown `whence`, raises `ValueError` on every format, directory members included,
+  instead of `CorruptionError` on ZIP and ISO. The one difference left is a relative
+  seek before the start of a directory member: that member is the file itself, so the
+  OS refuses the seek with `OSError`.
+
+- **`max_metadata_bytes` weighs PAX keywords, not only their values.** TAR keeps
+  every PAX record in `extra["tar.pax_headers"]`, and a PAX keyword can be as long as
+  its value. A member with a 100 000-byte keyword and a one-byte value weighed 4 bytes,
+  so a 514 KiB `.tar.gz` could list under a 1 MiB cap while holding about 300 MB of
+  keywords. The keys of a dict nested in `extra` now count, and the TAR header walk
+  stops at the cap on keywords as it does on values. Top-level `extra` keys are fixed
+  per format and still do not count, so no format's baseline weight moves.
 
 - **A corrupt or hostile PPMd member no longer crashes the Python process.** pyppmd
   segfaults when asked to keep decoding after a corrupt stream has ended early, and
