@@ -13,7 +13,9 @@ import io
 import random
 import struct
 import subprocess
+import sys
 import textwrap
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -24,11 +26,18 @@ from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedEr
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams import decompress as decompress_module
 from archivey.internal.streams import ppmd_child as ppmd_child_module
-from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
+from archivey.internal.streams.codecs import (
+    Codec,
+    CodecParams,
+    PpmdCodec,
+    open_codec_stream,
+)
 from archivey.internal.streams.ppmd_child import (
     PpmdChildDecoder,
     PpmdChildError,
     PpmdChildReportedError,
+    PpmdChildStartError,
+    child_decoding_available,
 )
 from tests.conftest import requires
 from tests.test_ppmd_raw_streams import (
@@ -350,3 +359,195 @@ def test_child_crash_surfaces_as_corruption_error(
     ) as stream:
         with pytest.raises(CorruptionError, match="crashed"):
             stream.read()
+
+
+# A stand-in worker that answers the opening message like ``ppmd_worker.py`` and then
+# does what ``body`` says. ``reply()`` sends one empty success reply.
+_FAKE_WORKER_HEAD = """\
+import os, signal, struct, sys
+out = sys.stdout.buffer
+inp = sys.stdin.buffer
+def reply():
+    out.write(struct.pack("<BBBI", 0, 0, 1, 0))
+    out.flush()
+inp.read(7)
+"""
+
+
+def _read_child_member(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: str
+) -> None:
+    """Decode a member on the child path, with ``body`` as the worker after its header."""
+    worker = tmp_path / "worker.py"
+    worker.write_text(_FAKE_WORKER_HEAD + textwrap.dedent(body), encoding="utf-8")
+    monkeypatch.setattr(ppmd_child_module, "_WORKER", worker)
+    packed = _encode_ppmd7(_ZERO_RUN)
+    params = _params(7, len(packed), len(_ZERO_RUN))
+    with open_codec_stream(
+        Codec.PPMD, io.BytesIO(packed), params=params, config=_config("child")
+    ) as stream:
+        stream.read()
+
+
+def test_a_child_that_dies_allocating_its_model_is_not_sent_in_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A child that imports pyppmd and dies constructing the decoder is refused.
+
+    pyppmd aborts the process when the model's ``mem_size`` cannot be allocated. The
+    message names ``mem_size`` and does not suggest decoding in-process, where the
+    same allocation would abort the caller.
+    """
+    with pytest.raises(ResourceLimitError, match="mem_size=") as caught:
+        _read_child_member(monkeypatch, tmp_path, "reply()\nos.abort()\n")
+    assert "Raise DecoderLimits.max_ppmd_in_process_input" not in str(caught.value)
+    assert "no child process can be started" not in str(caught.value)
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="RLIMIT_AS is enforced on Linux"
+)
+def test_a_memory_cap_below_mem_size_is_a_resource_limit_on_the_child_path() -> None:
+    """The measured case: under ``RLIMIT_AS``, pyppmd's constructor aborts the child."""
+    _run_ppmd_child(
+        textwrap.dedent(
+            """\
+            import io, resource, struct
+            from archivey.config import DecoderLimits
+            from archivey.exceptions import ResourceLimitError
+            from archivey.internal.config import StreamConfig
+            from archivey.internal.streams.codecs import (
+                Codec, CodecParams, open_codec_stream,
+            )
+            from tests.test_ppmd_crash_isolation import _ZERO_RUN
+            from tests.test_ppmd_raw_streams import _ORDER, _encode_ppmd7
+
+            # Past one read, so the member goes to the child before it is whole; the
+            # declared 1 GiB model is what the child cannot allocate.
+            data = _ZERO_RUN
+            packed = _encode_ppmd7(data)
+            params = CodecParams(
+                properties=struct.pack("<BL", _ORDER, 1 << 30),
+                unpack_size=len(data),
+                pack_size=len(packed),
+            )
+            config = StreamConfig(
+                decoder_limits=DecoderLimits(max_ppmd_in_process_input=1024)
+            )
+            resource.setrlimit(resource.RLIMIT_AS, (700 << 20, 700 << 20))
+            try:
+                with open_codec_stream(
+                    Codec.PPMD, io.BytesIO(packed), params=params, config=config
+                ) as stream:
+                    stream.read(10)
+            except ResourceLimitError as exc:
+                assert "mem_size=1073741824" in str(exc), exc
+                assert "in-process would fail" in str(exc), exc
+                print("ok")
+            """
+        )
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.parametrize(
+    ("sig", "expected", "match"),
+    [
+        ("SIGSEGV", CorruptionError, "killed by SIGSEGV"),
+        ("SIGKILL", ResourceLimitError, "killed by SIGKILL.*out-of-memory"),
+    ],
+)
+def test_a_child_death_names_its_signal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    sig: str,
+    expected: type[Exception],
+    match: str,
+) -> None:
+    """A crash signal is corruption; SIGKILL comes from outside and is not."""
+    body = f"reply()\nreply()\ninp.read(8)\nos.kill(os.getpid(), signal.{sig})\n"
+    with pytest.raises(expected, match=match):
+        _read_child_member(monkeypatch, tmp_path, body)
+
+
+def test_a_child_death_names_its_exit_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    body = "reply()\nreply()\ninp.read(8)\nos._exit(7)\n"
+    with pytest.raises(CorruptionError, match="exit status 7"):
+        _read_child_member(monkeypatch, tmp_path, body)
+
+
+def test_without_sys_executable_a_large_member_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An embedded interpreter may not know its path: no child, a clean refusal."""
+    monkeypatch.setattr(sys, "executable", None)
+    assert not child_decoding_available()
+    with pytest.raises(PpmdChildStartError, match="sys.executable"):
+        PpmdChildDecoder(variant=7, order=_ORDER, mem_size=_MEM)
+    packed = _encode_ppmd7(_ZERO_RUN)
+    params = _params(7, len(packed), len(_ZERO_RUN))
+    with open_codec_stream(
+        Codec.PPMD, io.BytesIO(packed), params=params, config=_config("child")
+    ) as stream:
+        with pytest.raises(ResourceLimitError, match="max_ppmd_in_process_input"):
+            stream.read(10)
+
+
+def test_close_with_an_unread_reply_does_not_wait_for_the_timeout() -> None:
+    """A child blocked writing a reply nobody reads is ended at once by ``close``."""
+    data = b"hello child " * 200_000
+    packed = _encode_ppmd7(data)
+    child = PpmdChildDecoder(variant=7, order=_ORDER, mem_size=_MEM)
+    child._send(ppmd_child_module._REQUEST.pack(len(data), len(packed)), packed)
+    started = time.monotonic()
+    child.close()
+    assert time.monotonic() - started < 2.0
+
+
+def test_an_interrupted_reply_leaves_the_decoder_unusable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reply cut short by an interrupt is not followed by a read of stale bytes."""
+    data = b"hello child " * 50
+    packed = _encode_ppmd7(data)
+    child = PpmdChildDecoder(variant=7, order=_ORDER, mem_size=_MEM)
+    real_read_exact = ppmd_child_module._read_exact
+    calls: list[int] = []
+
+    def interrupt_payload(stream: io.BufferedReader, size: int) -> bytes:
+        calls.append(size)
+        if len(calls) == 2:  # the payload, after the reply header
+            raise KeyboardInterrupt
+        return real_read_exact(stream, size)
+
+    try:
+        monkeypatch.setattr(ppmd_child_module, "_read_exact", interrupt_payload)
+        with pytest.raises(KeyboardInterrupt):
+            child.decode(packed, len(data))
+        monkeypatch.setattr(ppmd_child_module, "_read_exact", real_read_exact)
+        with pytest.raises(RuntimeError, match="not running"):
+            child.decode(packed, len(data))
+    finally:
+        child.close()
+
+
+def test_every_error_the_child_reports_translates_as_it_would_in_process() -> None:
+    """``_KNOWN_ERRORS`` and ``PpmdCodec.translate`` agree on every reported type."""
+    import builtins
+
+    import pyppmd
+
+    codec = PpmdCodec()
+    for name, stand_in in ppmd_child_module._KNOWN_ERRORS.items():
+        in_process = (
+            pyppmd.PpmdError if name == "PpmdError" else getattr(builtins, name)
+        )
+        native = codec.translate(in_process("x"))
+        reported = codec.translate(stand_in("x"))
+        assert type(native) is type(reported), name
+        if native is None:
+            assert stand_in is in_process, name
+    # The cffi backend raises ``PpmdError`` from ``decode``: corruption, not unmapped.
+    assert "PpmdError" in ppmd_child_module._KNOWN_ERRORS

@@ -85,11 +85,13 @@ promise with that line; treat `0.2.0` as the first release of this library.
   random bytes (a wrong password, or a crafted 7z or ZIP member) reach that state.
   archivey now hands pyppmd a member of up to 16 MiB of compressed data in one piece,
   so it never makes that call, and decodes larger members in a child process, where a
-  crash becomes `CorruptionError`. Output still streams. The new
-  `DecoderLimits.max_ppmd_in_process_input` sets the size; where no child process can
-  be started (a frozen app, a spawn the OS refuses, or a child that cannot import
-  pyppmd), a larger member raises `ResourceLimitError`, and `None` (as in
-  `DecoderLimits.UNLIMITED`) decodes every member in-process.
+  crash becomes `CorruptionError`; a child killed by SIGKILL (usually the out-of-memory
+  killer) or unable to allocate the member's model raises `ResourceLimitError`. Output
+  still streams. The new `DecoderLimits.max_ppmd_in_process_input` sets the size; where
+  no child process can be started (a frozen app, an interpreter that does not know its
+  own path, a spawn the OS refuses, or a child that cannot import pyppmd), a larger
+  member raises `ResourceLimitError`, and `None` (as in `DecoderLimits.UNLIMITED`)
+  decodes every member in-process.
 
 - **ISO: bootable images read and extract.** An El Torito boot catalog listed as a file
   but raised `CorruptionError` when read, so `extract_all()` stopped on every bootable

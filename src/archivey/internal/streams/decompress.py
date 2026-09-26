@@ -25,6 +25,7 @@ from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
 )
 from archivey.internal.streams.ppmd_child import (
+    PpmdChildAllocationError,
     PpmdChildDecoder,
     PpmdChildStartError,
     child_decoding_available,
@@ -765,6 +766,10 @@ class PpmdDecoder(BaseDecoder):
             return self._release_held(in_child=True)
         except PpmdChildStartError as exc:
             self._refuse(f"{reason} ({exc})", exc)
+        except PpmdChildAllocationError as exc:
+            # The child started, so the advice above does not apply: in-process, the
+            # same allocation would abort this process.
+            self._refuse(f"Decoder limit reached: {exc}", exc)
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         self._check_refusal()

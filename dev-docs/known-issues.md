@@ -561,10 +561,13 @@ nothing more is asked of it. `PpmdDecoder` holds compressed input until it has t
 whole member, or compressed EOF, or `DecoderLimits.max_ppmd_in_process_input` (default
 16 MiB). Past that, the member decodes in a child process
 (`internal/streams/ppmd_child.py`, running `ppmd_worker.py`), where the old chunked
-logic runs and a crash becomes `CorruptionError`. A password check reads at most 1 MiB,
-so it stays in-process. Where no child can be started (a frozen app, a spawn the OS
-refuses, or a child that cannot import pyppmd), a member past the limit raises
-`ResourceLimitError`; `None` holds any member in-process. Measured:
+logic runs and a crash becomes `CorruptionError`, with the child's signal or exit
+status in the message. A child killed by SIGKILL (usually the OOM killer), or one that
+dies constructing the decoder (pyppmd aborts when a memory cap refuses `mem_size`), is
+`ResourceLimitError` instead. A password check reads at most 1 MiB, so it stays
+in-process. Where no child can be started (a frozen app, an empty `sys.executable`, a
+spawn the OS refuses, or a child that cannot import pyppmd), a member past the limit
+raises `ResourceLimitError`; `None` holds any member in-process. Measured:
 0 crashes in 1200 hostile members across both paths (was 10 of 10 runs); 111 valid
 7-Zip-written members byte-exact on both paths. Regression tests:
 `tests/test_ppmd_crash_isolation.py`. A draft report for pyppmd (a flag for "the model
