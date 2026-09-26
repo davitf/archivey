@@ -416,10 +416,11 @@ write are made by patching bytes: the multi-extent tests split one directory rec
 16-byte `ZF` and a 10-byte unknown entry, over data built by `_zisofs`. To check against
 real producers, `genisoimage` and `xorriso` install from the distribution (`apt-get
 install genisoimage xorriso`), and `mkzftree` comes with genisoimage for zisofs. A file
-over 4 GiB needs no disk: make it sparse with `truncate`, pipe `xorriso -as mkisofs -iso-level 3 -o -` into a writer that seeks over
-zero blocks, and the image is sparse too. libarchive's ISO fixtures live in
-`libarchive/test/*iso*.uu` (uuencoded, most also `.Z`-compressed);
-`tests/test_libarchive_corpus.py` reads them only as nested `.Z` streams, not as ISO.
+over 4 GiB needs no disk: make it sparse with `truncate`, pipe `xorriso -as mkisofs
+-iso-level 3 -o -` into a writer that seeks over zero blocks, and the image is sparse too.
+libarchive's ISO fixtures live in `libarchive/test/*iso*.uu` (uuencoded, most also
+`.Z`-compressed); `tests/test_libarchive_corpus.py` reads them only as nested `.Z`
+streams, not as ISO.
 
 ## 9. References
 
