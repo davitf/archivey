@@ -1,0 +1,82 @@
+# Design — rapidgzip DEFLATE family in a child process
+
+## Measurements (before the design)
+
+`scripts/bench_rapidgzip_child.py`, Linux, 4 CPUs, Python 3.11, rapidgzip 0.16.0. A 100 MB
+text-like payload, 44.4 MB as gzip. Best of 5, three runs; the range is across runs.
+
+| What | Time |
+| --- | --- |
+| Spawn `python -P`, no imports, to first reply | 11 ms |
+| Spawn `python -P` + `import rapidgzip`, to first reply | 25 ms |
+| Full read, stdlib `zlib` | 473–492 ms (~205 MB/s) |
+| Full read, archivey stdlib engine (`GzipDecompressorStream`) | 506–540 ms |
+| Full read, rapidgzip in-process, `parallelization=0` | 234–261 ms (~400 MB/s) |
+| Full read, child over a pipe, 64 KiB / 1 MiB / 4 MiB round trips | 302–325 / 302–343 / 353–369 ms |
+| Full read, child over shared memory, 4 MiB | 321–331 ms |
+| seek + `read(4096)`, in-process / child, index built | 2.5 µs / 66–79 µs |
+
+A minimal worker that only answers `read(n)` measured 282 ms against 262 ms in-process in a
+separate run; neither a 1 MiB pipe buffer (`F_SETPIPE_SZ`) nor decoding the next chunk ahead
+in the child changed that. Shared memory was no faster than the pipe, so the pipe it is.
+
+The child costs a fixed start (~25 ms spawn and import, plus the open) and ~70 µs per round
+trip. A full read stays about 1.5× faster than the stdlib engine.
+
+Through archivey (`open_codec_stream(GZIP)`, `use_rapidgzip=ON`), in-process against child:
+
+| What | In-process | Child |
+| --- | --- | --- |
+| Full read of the 100 MB payload | 246 ms | 332 ms |
+| Open + `read(1)` | 66 ms | 117 ms |
+| seek + `read(4096)` (a backward seek also asks the rewind probe) | 14 µs | 164–183 µs |
+
+## Decisions
+
+- **One child per stream, started at open.** It builds rapidgzip's index while the caller
+  reads, so the first backward seek is as cheap as in-process. Starting it lazily at the first
+  backward seek would save the start on streams read once, but that seek would then decode from
+  the start; that is the rejected stdlib-first design's cost without its proof pass.
+- **The parent serves a stream source.** The worker gives rapidgzip a file object whose
+  `read`/`seek`/`tell` send a request to the parent; the parent answers from the caller's
+  stream. An exception there is parked and raised to the caller as itself when the current
+  call ends, so the `_TrappingSource` contract (a caller-source exception reaches the caller
+  unchanged) holds, and the child only sees an end of input. An interrupt (`KeyboardInterrupt`)
+  propagates at once; the half-finished exchange cannot be resumed, so the child is killed and
+  the stream raises `ArchiveyUsageError` from then on.
+- **rapidgzip's threads read ahead.** Source requests can arrive before the reply to any
+  request, including while the parent is idle. A pump thread in the child sorts parent frames
+  into requests and source answers; the parent serves source requests whenever it waits for a
+  reply, so a background read blocks only until the next call.
+- **Death classification** follows the PPMd child (`is_crash`): SIGSEGV/SIGABRT/SIGBUS/SIGILL/
+  SIGFPE or the Windows NTSTATUS for them (and the MSVC `abort()` status 3, which the worker
+  never uses itself) is a crash, SIGKILL is the OOM killer, anything else came from outside.
+  stderr goes to a temporary file, not a pipe (no drain thread, no deadlock), and its tail is
+  read after a death: rapidgzip's abort message on an early end makes it `TruncatedError`.
+  The helper is in `child_exit.py`; the PPMd child can share it.
+- **Read-ahead in the parent.** Measured through a `.tar.gz`, whose reader reads in small
+  pieces, a round trip per piece was the cost. After the first read that follows a seek, a
+  read asks the child for at least 64 KiB, doubling to 1 MiB while reads stay sequential; a
+  seek inside what is buffered costs no round trip. The position is kept in the parent, so
+  `tell` needs none either.
+- **Child-reported errors are marked.** They come back as the same built-in type, so the
+  existing translator applies. Because they are marked, any `RuntimeError` rapidgzip raised
+  translates to `CorruptionError`, while a `RuntimeError` from the caller's own source stays
+  itself.
+- **No escape hatch in new config.** rapidgzip has no safe in-process mode for these codecs,
+  so there is nothing like `max_ppmd_in_process_input` to size. A caller that wants no child
+  process sets `use_rapidgzip=OFF`.
+- **Where no child can run:** a frozen or embedded interpreter is known before the open, so
+  `AUTO` quietly uses the stdlib backend. A spawn that fails at open raises
+  `ResourceLimitError` (as PPMd does); `ON` always does.
+- **bzip2 stays in-process.** It never aborted in 110 random cuts, and its seek index is the
+  reason to use it at all.
+
+## Open question for the maintainer
+
+The fixed start is not amortized at the `AUTO` threshold (1 MiB compressed, ~5 ms of
+decode). Each accelerated member now costs ~40–50 ms more to open. The realistic harness shows
+it: `targz_read_all_accel_on` 19 → 96 ms (one stream, 16 MiB unpacked), and
+`zip_read_all_accel_on`, which forces `ON` over 64 members of 256 KiB, 87 ms → 2.3 s. The
+nightly wall-drift check will flag both. Options: keep one idle child for reuse (a process that
+outlives the stream), raise the `AUTO` threshold, or accept the cost for the `ON` case.

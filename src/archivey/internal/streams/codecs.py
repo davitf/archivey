@@ -42,6 +42,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
+    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
 )
@@ -73,6 +74,12 @@ from archivey.internal.streams.decompress import (
 )
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.ppmd_child import PpmdChildError
+from archivey.internal.streams.rapidgzip_child import (
+    RapidgzipChildStartError,
+    RapidgzipChildStream,
+    rapidgzip_child_available,
+    reported_by_child,
+)
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
@@ -446,9 +453,14 @@ def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
     via ``gzip_isize_backstop``. Without one of those, AUTO falls back to the stdlib
     backend that raises ``TruncatedError``. ``ON`` ignores this — the caller asked for
     the accelerator explicitly.
+
+    AUTO also stays on the stdlib backend where no child process can run rapidgzip (a
+    frozen application; see :func:`_open_rapidgzip`). ``ON`` there fails at open.
     """
     if config.use_rapidgzip is AcceleratorMode.AUTO:
         if config.expected_decompressed_size is None and not config.gzip_isize_backstop:
+            return False
+        if not rapidgzip_child_available():
             return False
     return config.use_rapidgzip.enabled_for(
         seekable=config.seekable,
@@ -596,23 +608,41 @@ def _bound_rapidgzip_source(
     return SlicingStream(source, start=0, length=bound, owns_inner=False)
 
 
-def _open_rapidgzip(source: CodecSource) -> BinaryIO:
-    """Open ``source`` through rapidgzip; see :func:`_open_accelerator`."""
-    assert _rapidgzip is not None
-    return _open_accelerator(_rapidgzip.open, source)
+def _open_rapidgzip(source: CodecSource, label: str) -> BinaryIO:
+    """Open a DEFLATE-family ``source`` through rapidgzip, in a child process.
+
+    rapidgzip 0.16 aborts the process on a gzip, zlib or raw DEFLATE stream that ends
+    early, so it never decodes one in this process: see ``rapidgzip_child``. A path
+    source is opened by the child; a stream source is read for the child here, so the
+    caller's own exception from it still reaches the caller.
+
+    Where no child can be started this raises ``ResourceLimitError`` rather than
+    decode in-process. AUTO does not get here in that case (:func:`_rapidgzip_enabled`).
+    """
+    reason = (
+        f"the rapidgzip accelerator runs in a child process, and none can be started "
+        f"here to decode this {label} stream. Set use_rapidgzip=AcceleratorMode.OFF to "
+        "decode it with the standard library"
+    )
+    if not rapidgzip_child_available():
+        raise ResourceLimitError(f"{reason} (a frozen or embedded interpreter).")
+    try:
+        return RapidgzipChildStream(source, label=label)
+    except RapidgzipChildStartError as exc:
+        raise ResourceLimitError(f"{reason} ({exc}).") from exc
 
 
 def _open_accelerator(
     open_fn: Callable[..., object], source: CodecSource
 ) -> _AcceleratorStream:
-    """Open ``source`` through a rapidgzip decoder with the close-on-finalize guard and
-    (for a caller-owned source) the Bug-3 trap.
+    """Open ``source`` through an in-process rapidgzip decoder with the close-on-finalize
+    guard and (for a caller-owned source) the Bug-3 trap.
 
-    A **path** source lets rapidgzip open its own fd — immune to Bug 3 — so it is passed
-    straight through. A caller-owned stream is wrapped in a :class:`_TrappingSource` so a
-    source-side fault becomes a re-raisable Python exception instead of a process abort.
-    Every rapidgzip decoder needs this, the bzip2 one included: its Python-source
-    callbacks abort the same way. A fault parked while the decoder opens is raised here,
+    Only the bzip2 decoder runs in-process; gzip / zlib / deflate run in a child process
+    (:func:`_open_rapidgzip`). A **path** source lets rapidgzip open its own fd — immune to
+    Bug 3 — so it is passed straight through. A caller-owned stream is wrapped in a
+    :class:`_TrappingSource` so a source-side fault becomes a re-raisable Python exception
+    instead of a process abort. A fault parked while the decoder opens is raised here,
     before the stream is returned.
     """
     if isinstance(source, (str, os.PathLike)):
@@ -712,6 +742,13 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
         # and maps to TruncatedError above (or is caught by the ISIZE backstop). Recovering the
         # distinction would need the dropped stderr detail, so callers must treat gzip
         # truncation as either error type (the accelerator-corruption tests accept both).
+        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+    if isinstance(exc, RuntimeError) and reported_by_child(exc):
+        # Any other RuntimeError rapidgzip raised: it has no typed error for a fault in
+        # its data, and such messages ("Next block offset index is out of sync!", from
+        # its open-time probe of a truncated gzip) are not a stable list. The mark
+        # tells rapidgzip's errors from a RuntimeError of the caller's own source,
+        # which is raised as itself and must reach the caller unchanged.
         return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
     return None
 
@@ -1305,7 +1342,7 @@ class GzipCodec(StreamCodec):
                 )
             if config.expected_decompressed_size is not None:
                 # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
-                return _wrap_accelerated_length(_open_rapidgzip(source), config)
+                return _wrap_accelerated_length(_open_rapidgzip(source, "gzip"), config)
             # Truncation backstop for **any** seekable source (path or caller-owned stream):
             # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
             # independent view (multi-member keeps the conservative further-magic bailout; the
@@ -1313,7 +1350,7 @@ class GzipCodec(StreamCodec):
             # per-read reopen is needed and `size < 18` truncation is preserved.
             source_len, isize = _gzip_isize_and_length(source)
             accel_source, reopen = _accelerator_backstop_source(source)
-            stream = _open_rapidgzip(accel_source)
+            stream = _open_rapidgzip(accel_source, "gzip")
             if reopen is None:
                 return stream  # non-seekable: rapidgzip needs a seekable source anyway
             return _GzipTruncationCheckStream(
@@ -1821,7 +1858,9 @@ class DeflateCodec(_ZlibErrorCodec):
             # past EOS looking for a concatenated member (AES pad would look
             # like a second member).
             return _wrap_accelerated_length(
-                _open_rapidgzip(_bound_rapidgzip_source(source, params, config)),
+                _open_rapidgzip(
+                    _bound_rapidgzip_source(source, params, config), "deflate"
+                ),
                 config,
             )
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
@@ -1882,7 +1921,9 @@ class ZlibCodec(_ZlibErrorCodec):
                 )
             # rapidgzip auto-detects zlib-wrapped DEFLATE; no synthetic gzip wrapper.
             return _wrap_accelerated_length(
-                _open_rapidgzip(_bound_rapidgzip_source(source, params, config)),
+                _open_rapidgzip(
+                    _bound_rapidgzip_source(source, params, config), "zlib"
+                ),
                 config,
             )
         # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).

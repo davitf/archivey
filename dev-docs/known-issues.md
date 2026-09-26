@@ -448,10 +448,45 @@ review; before that the bzip2 path aborted) reads a caller-owned stream through
 EOF-shaped value, and `_AcceleratorStream` re-raises it as an ordinary Python exception after
 the call. See `dev-docs/topics/exception-handlers.md` §C-boundary trap. Only an upstream fix
 removes the need for the shim. Path sources are unaffected (rapidgzip owns an independent
-handle) for the *Python-source-raises* trigger. Separately, some **path**-source truncations /
-CRC mismatches can still `std::terminate` during worker finalization after a Python exception —
-see `dev-docs/investigations/rapidgzip-upstream-report.md` §2. The stdlib codec fallbacks raise
-a normal `ValueError`, which the reader boundary translates to `UnsupportedOperationError`.
+handle) for the *Python-source-raises* trigger. The stdlib codec fallbacks raise a normal
+`ValueError`, which the reader boundary translates to `UnsupportedOperationError`.
+
+Since the next section, gzip / zlib / deflate no longer run rapidgzip in-process at all: the
+child process's source object never raises (a failed read is an end of input), and this
+process serves its reads from the caller's stream and raises the caller's exception itself.
+`_TrappingSource` now guards the in-process bzip2 decoder only.
+
+### Bug 4 — rapidgzip aborts on a truncated DEFLATE stream (contained: child process)
+
+**Status: open upstream defect, contained** (rapidgzip 0.16.0). rapidgzip calls
+`std::terminate` (SIGABRT) when it decodes a gzip, zlib or raw DEFLATE stream that ends early:
+
+```
+terminate called after throwing an instance of 'std::logic_error'
+  what():  The bit buffer should not contain more data than have been read from the file!
+```
+
+The throw comes from a destructor (`GzipChunk::determineUsedWindowSymbolsForLastSubchunk` →
+`BitReader::tell()`), so it fires for a path, a real file object and a `BytesIO` alike, on
+files from about 380 KB up; on an 8 MB gzip, 27 of 30 random cuts aborted. The macOS build
+raises `Unexpected end of file when getting block ...` on the same inputs instead. bzip2
+(`IndexedBzip2File`) never aborted in 110 tries. With `seekable_members=True` (or a ZIP
+deflate member read with the accelerator on), a cut file of 1 MiB or more killed the caller.
+
+**Containment:** gzip, zlib and deflate decode through rapidgzip in a child process
+(`rapidgzip_child.py`, which runs `rapidgzip_worker.py`). The abort ends the child, and the
+stream reports it by how it ended: an abort whose stderr names this truncation is
+`TruncatedError`, another crash `CorruptionError`, SIGKILL `ResourceLimitError`, anything else
+`ReadError`; every later call raises it again. The crash cases run in a child interpreter in
+`tests/test_accelerator_truncation_abort.py`, which also keeps a canary that raw rapidgzip still
+aborts on Linux. When that canary fails, rapidgzip may be safe in-process again.
+
+The cost is a fixed ~25 ms to start the child, plus ~70 µs per round trip (reduced by a
+read-ahead buffer in the parent); numbers in the OpenSpec change
+`rapidgzip-deflate-child-process` design. `use_rapidgzip=OFF` avoids the child. A draft that
+decoded with the stdlib engine first and handed rapidgzip only input proved complete was
+rejected: the proof pass decoded the whole member at the first backward seek, which is the cost
+the accelerator exists to avoid.
 
 ### Soft EOF on truncated gzip (by design — not a bug)
 

@@ -74,14 +74,19 @@ propagates.
 
 ### C-boundary trap
 
-rapidgzip's decoders (gzip / zlib / deflate *and* bzip2) call back into a caller-owned
-Python stream from C++, and a Python exception unwinding through those frames aborts the
-process. `_TrappingSource` catches `BaseException` in every callback, parks it, and
-returns an EOF-shaped value; `_AcceleratorStream` re-raises it after each read / readinto
-/ seek, in preference to the accelerator's own `Exception` (never in place of an interrupt,
-which propagates while the fault stays parked), and `_open_accelerator` re-raises one
-parked during the open. Any new accelerator that reads a caller-owned stream opens
-through `_open_accelerator`.
+rapidgzip's decoders call back into a caller-owned Python stream from C++, and a Python
+exception unwinding through those frames aborts the process. Two places guard it:
+
+- The in-process bzip2 decoder: `_TrappingSource` catches `BaseException` in every
+  callback, parks it, and returns an EOF-shaped value; `_AcceleratorStream` re-raises it
+  after each read / readinto / seek, in preference to the accelerator's own `Exception`
+  (never in place of an interrupt, which propagates while the fault stays parked), and
+  `_open_accelerator` re-raises one parked during the open. Any new in-process accelerator
+  that reads a caller-owned stream opens through `_open_accelerator`.
+- gzip / zlib / deflate run rapidgzip in a child process. The worker's source object never
+  raises (a failed read is an end of input). `RapidgzipChildStream` serves its reads from
+  the caller's stream in this process, parks an `Exception` from it and raises it when the
+  call ends; an interrupt propagates at once, and the child, left mid-exchange, is killed.
 
 ### Diagnostic probe
 

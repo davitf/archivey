@@ -224,9 +224,14 @@ aborts while archivey's exits cleanly. So closing a source underneath a live str
 a clean failure, not a crash. Still don't do it: the stream is dead and the read
 fails.
 
-One residual is genuinely upstream and not contained: some **path**-source truncations
-and CRC mismatches can still `std::terminate` during worker finalization after a Python
-exception. Details:
+rapidgzip 0.16 also aborts the process on a gzip, zlib or raw deflate stream that ends
+early, whatever the source. So archivey runs those three decoders in a **child process**:
+the abort ends the child, and your read raises `TruncatedError` (or `CorruptionError`
+where the abort does not say why). Starting the child costs about 25 ms per accelerated
+stream; under `AUTO` that is paid only for streams of 1 MiB compressed or more. A frozen
+application, which has no Python interpreter to start, reads these codecs with the standard
+library under `AUTO`. Set `use_rapidgzip=OFF` to never start a child. bzip2 runs in your
+process. Details:
 [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
 
 ## Measuring what a read cost

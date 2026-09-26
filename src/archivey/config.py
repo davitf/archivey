@@ -487,6 +487,12 @@ class ArchiveyConfig:
     when the compressed input is known to be at least
     ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`` bytes and the decompressed size can be
     verified, so a truncated stream cannot be swallowed silently.
+
+    rapidgzip runs in a child Python process, one per open stream, because it aborts the
+    process on a stream that ends early; that costs about 25 ms per stream. ``AUTO``
+    does not use it where no child can be started (a frozen application). ``ON`` there,
+    or a spawn the operating system refuses, raises
+    :class:`~archivey.exceptions.ResourceLimitError`. ``OFF`` never starts a child.
     """
 
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO

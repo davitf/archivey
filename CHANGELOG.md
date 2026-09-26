@@ -80,6 +80,18 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A truncated gzip, zlib or deflate stream no longer kills the process through
+  rapidgzip.** rapidgzip 0.16 aborts (`std::terminate`) on such a stream, whatever the
+  source, so `seekable_members=True` on a cut `.gz` of 1 MiB or more, or a cut ZIP
+  deflate member read with the accelerator on, ended the interpreter. archivey now runs
+  rapidgzip for these codecs in a child process: the read raises `TruncatedError` (or
+  `CorruptionError` where the abort does not say why). A child killed by SIGKILL raises
+  `ResourceLimitError`; one ended any other way raises `ReadError`. Starting the child
+  costs about 25 ms per accelerated stream. Under `AUTO` a frozen application, which
+  cannot start one, uses the standard library; `ON` there, or a spawn the OS refuses,
+  raises `ResourceLimitError`. bzip2 stays in-process. `use_rapidgzip=OFF` avoids the
+  child entirely.
+
 - **A corrupt or hostile PPMd member no longer crashes the Python process.** pyppmd
   segfaults when asked to keep decoding after a corrupt stream has ended early, and
   random bytes (a wrong password, or a crafted 7z or ZIP member) reach that state.

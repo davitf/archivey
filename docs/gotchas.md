@@ -102,6 +102,12 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   source (a pipe or socket) the listing reads up to 1 MiB past the trailer, so a
   sender that keeps the connection open after the tar ends makes the listing wait for
   more bytes or EOF. Close the sending side when the tar is done.
+- **The rapidgzip accelerator starts a child process for gzip, zlib and deflate.**
+  rapidgzip aborts the process on a stream that ends early, so archivey decodes these
+  codecs with it in a child Python process, one per open stream, and a cut file raises
+  `TruncatedError` instead. Each accelerated stream costs about 25 ms more to open. Set
+  `use_rapidgzip=OFF` to keep everything in your process.
+  → [Accelerators and source lifetime](access-and-cost.md#accelerators-and-source-lifetime)
 - **Truncation detection on bare gzip/zlib through rapidgzip is best-effort.**
   Upstream soft-EOFs by design and Archivey backstops it, but a residual hole
   remains. Use `use_rapidgzip=OFF` when you need certainty. This is about **bare**

@@ -19,12 +19,9 @@ import pytest
 from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
-from archivey.internal.streams.codecs import (
-    Codec,
-    _AcceleratorStream,
-    open_codec_stream,
-)
+from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.decompressor_stream import DecompressorStream
+from archivey.internal.streams.rapidgzip_child import RapidgzipChildStream
 from archivey.internal.streams.streamtools import SlicingStream
 from archivey.internal.streams.verify import VerifyingStream
 
@@ -46,7 +43,7 @@ def _assert_accelerator(stream: object) -> None:
 
     while isinstance(inner, (VerifyingStream, _GzipTruncationCheckStream)):
         inner = getattr(inner, "_inner", None)
-    assert isinstance(inner, _AcceleratorStream)
+    assert isinstance(inner, RapidgzipChildStream)
 
 
 def _assert_stdlib_zlib(stream: object) -> None:
@@ -122,13 +119,13 @@ def test_off_and_below_auto_threshold_use_stdlib(codec: Codec) -> None:
 
     with open_codec_stream(codec, io.BytesIO(compressed), config=off) as stream:
         if codec is Codec.GZIP:
-            assert not isinstance(stream._inner, _AcceleratorStream)
+            assert not isinstance(stream._inner, RapidgzipChildStream)
         else:
             _assert_stdlib_zlib(stream)
         assert stream.read()  # non-empty
 
     with open_codec_stream(codec, io.BytesIO(compressed), config=auto) as stream:
-        assert not isinstance(stream._inner, _AcceleratorStream)
+        assert not isinstance(stream._inner, RapidgzipChildStream)
 
 
 @pytest.mark.parametrize("codec", [Codec.DEFLATE, Codec.ZLIB, Codec.GZIP])
