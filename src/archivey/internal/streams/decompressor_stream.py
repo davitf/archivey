@@ -152,6 +152,16 @@ class BaseDecoder:
     def needs_input(self) -> bool:
         return True
 
+    @property
+    def drains_after_flush(self) -> bool:
+        """True when ``flush`` returned output and more follows through ``feed(b"")``.
+
+        Only PPMd, which takes a truncated member's input whole at compressed EOF,
+        sets it; every other decoder hands back all its remaining output from
+        ``flush``.
+        """
+        return False
+
     def close(self) -> None:
         """No-op teardown hook (see :meth:`Decoder.close`); overridden by PPMd."""
 
@@ -660,8 +670,13 @@ class DecompressorStream(ReadOnlyIOStream):
             # compressed bytes — or EOF — so the caller cannot spin forever.
         chunk = self._inner.read(_compressed_feed_size(max_length))
         if not chunk:
-            self._eof = True
             leftover = self._ingest_decode(self._decoder.flush())
+            if leftover and getattr(self._decoder, "drains_after_flush", False):
+                # The decoder took its input whole at compressed EOF and has more
+                # output: keep pulling it through ``feed(b"")``. It reports False
+                # once drained, and the next empty read calls ``flush`` again.
+                return leftover
+            self._eof = True
             # Incomplete EOF: decoder owns TruncatedError via pending_error (set in
             # flush). Deliver leftover now; bounded read raises on the next empty
             # read. Only publish a clean complete size when truly finished and not

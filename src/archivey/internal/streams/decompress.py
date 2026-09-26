@@ -15,13 +15,18 @@ import zlib
 from collections.abc import Mapping
 from typing import BinaryIO, Protocol
 
-from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.config import DecoderLimits
+from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
     SeekPoint,
+)
+from archivey.internal.streams.ppmd_child import (
+    PpmdChildDecoder,
+    child_decoding_available,
 )
 
 _GZIP_MAGIC = b"\x1f\x8b"
@@ -410,6 +415,21 @@ _PPMD_QUIESCE_MAX_CALLS = 8
 # that overstates ``unpack_size`` past that.
 _PPMD_MAX_REQUEST = (1 << 31) - 1
 
+# How PPMd avoids pyppmd's crash on corrupt input: pyppmd segfaults when asked to
+# decode after a corrupt stream has ended early, and a caller feeding it in pieces
+# cannot tell that state from a valid stream waiting for input (see ``ppmd_child``).
+# Handed the whole member at once, any short return is the end, and nothing further
+# is asked of it. ``PpmdDecoder`` therefore holds compressed input until it has the
+# whole member, or compressed EOF, or ``DecoderLimits.max_ppmd_in_process_input``;
+# past that the member goes to a child process, where a crash costs the member only.
+
+_DEFAULT_IN_PROCESS_MAX_INPUT = DecoderLimits().max_ppmd_in_process_input
+
+# Output asked of pyppmd per call once a held member is handed over at compressed EOF
+# (a truncated member, or a password check's capped input): the stream drains the rest
+# through further calls rather than taking it all from ``flush``.
+_PPMD_FLUSH_DRAIN_CHUNK = 65536
+
 
 class _PpmdNativeDecoder(Protocol):
     """The ``pyppmd.Ppmd7Decoder`` / ``Ppmd8Decoder`` methods this adapter calls.
@@ -479,9 +499,8 @@ class PpmdDecoder(BaseDecoder):
         restore_method: int = 0,
         unpack_size: int | None = None,
         pack_size: int | None = None,
+        in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
     ) -> None:
-        import pyppmd
-
         if variant != 8 and unpack_size is None:
             raise ValueError(
                 "PPMd7 (7z var.H) requires unpack_size: the format has no end mark, "
@@ -517,21 +536,58 @@ class PpmdDecoder(BaseDecoder):
         # nothing on the decode path calls the native decoder. Teardown still does:
         # ``_quiesce_worker`` sends its bounded NUL in exactly this state.
         self._exhausted = False
-        # ``mem_size`` is bounded one layer up, by ``check_decoder_memory`` in
-        # ``codecs.py``, against ``DecoderLimits.max_decoder_memory`` — not here,
-        # because these two constructor calls are the allocation and there is no
-        # catching it once it has been made (pyppmd 1.3.1 aborts the process rather
-        # than raising when it is refused). Two paths reach this class without
-        # passing that guard: a direct ``PpmdDecompressorStream`` in the tests, and
-        # ``recreate()`` below rebuilding from a ``mem_size`` the guard already
-        # passed. Anything new that constructs a decoder from an archive-declared
-        # number calls the guard first.
-        if variant == 8:
-            self._decomp: _PpmdNativeDecoder = pyppmd.Ppmd8Decoder(
-                order, mem_size, restore_method
+        # ``DecoderLimits.max_ppmd_in_process_input``: past it, a child process, or
+        # ``ResourceLimitError`` where none can start. ``None``: always in-process.
+        self._in_process_max_input = in_process_max_input
+        # Compressed input held back from pyppmd until the whole member is here, or
+        # compressed EOF, or ``in_process_max_input`` is passed (then it goes to a
+        # child process). ``None`` once handed over: from then on ``_decomp`` exists
+        # and the rest of this class works as a plain chunked decoder.
+        self._held: bytearray | None = bytearray()
+        # Set by ``flush`` when it hands the held input over: the stream keeps pulling
+        # output through ``feed(b"")`` until this decoder has none left
+        # (``drains_after_flush``), then calls ``flush`` again.
+        self._draining = False
+        self._decomp: _PpmdNativeDecoder | None = None
+
+    def _open_native(self, *, in_child: bool) -> None:
+        """Create the decoder ``_decomp``, in this process or in a child one.
+
+        ``mem_size`` is bounded one layer up, by ``check_decoder_memory`` in
+        ``codecs.py``, against ``DecoderLimits.max_decoder_memory`` — not here,
+        because these constructor calls are the allocation and there is no catching
+        it once it has been made (pyppmd 1.3.1 aborts the process rather than raising
+        when it is refused). Two paths reach this class without passing that guard: a
+        direct ``PpmdDecompressorStream`` in the tests, and ``recreate()`` rebuilding
+        from a ``mem_size`` the guard already passed. Anything new that constructs a
+        decoder from an archive-declared number calls the guard first.
+        """
+        if self._decomp is not None:  # a test double installed before first use
+            return
+        if in_child:
+            self._decomp = PpmdChildDecoder(
+                variant=self._variant,
+                order=self._order,
+                mem_size=self._mem_size,
+                restore_method=self._restore_method,
+            )
+            return
+        import pyppmd
+
+        if self._variant == 8:
+            self._decomp = pyppmd.Ppmd8Decoder(
+                self._order, self._mem_size, self._restore_method
             )
         else:
-            self._decomp = pyppmd.Ppmd7Decoder(order, mem_size)
+            self._decomp = pyppmd.Ppmd7Decoder(self._order, self._mem_size)
+
+    def _release_held(self, *, in_child: bool) -> bytes:
+        """Hand the held input over: open ``_decomp`` and return the bytes to feed it."""
+        held = self._held
+        assert held is not None
+        self._held = None
+        self._open_native(in_child=in_child)
+        return bytes(held)
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> PpmdDecoder:
         del point, inner
@@ -542,7 +598,14 @@ class PpmdDecoder(BaseDecoder):
             restore_method=self._restore_method,
             unpack_size=self._unpack_size,
             pack_size=self._pack_size,
+            in_process_max_input=self._in_process_max_input,
         )
+
+    @property
+    def _native(self) -> _PpmdNativeDecoder:
+        """The decoder, once the held input has been handed over (never before)."""
+        assert self._decomp is not None
+        return self._decomp
 
     def _max_length(self) -> int:
         if self._unpack_size is None:
@@ -580,7 +643,7 @@ class PpmdDecoder(BaseDecoder):
         """
         if (
             len(out) < requested
-            and self._decomp.eof
+            and self._native.eof
             and (self._compressed_eof or self._pack_complete() is True)
         ):
             self._exhausted = True
@@ -588,19 +651,13 @@ class PpmdDecoder(BaseDecoder):
 
     def _decode_unsized(self, data: bytes) -> bytes:
         # Unsized PPMd8 only (PPMd7 without a size is rejected in __init__). Never
-        # hand pyppmd max_length=-1; request bounded chunks and drain the internally
-        # buffered input instead. Valid PPMd8 stops at its end mark before any
-        # over-decode; the bound avoids the -1 allocation path and caps the damage
-        # on corrupt data. Stop when the decoder needs more input (await the next
-        # feed), hits eof, or goes quiet.
-        parts: list[bytes] = []
-        chunk = self._decomp.decode(data, _PPMD_UNSIZED_DECODE_CHUNK)
-        while chunk:
-            parts.append(chunk)
-            if self._decomp.eof or getattr(self._decomp, "needs_input", False):
-                break
-            chunk = self._decomp.decode(b"", _PPMD_UNSIZED_DECODE_CHUNK)
-        return b"".join(parts)
+        # hand pyppmd max_length=-1; request one bounded chunk per call. Valid PPMd8
+        # stops at its end mark before any over-decode; the bound avoids the -1
+        # allocation path and caps the damage on corrupt data. One chunk, not a
+        # drain loop: a held member arrives whole, and draining it here would build
+        # its entire output in one call. The stream asks again while ``needs_input``
+        # is False.
+        return self._native.decode(data, _PPMD_UNSIZED_DECODE_CHUNK)
 
     def _nul_budget(self, max_length: int) -> int:
         budget = _PPMD_EXTRA_NUL_MAX_OUTPUT
@@ -610,13 +667,13 @@ class PpmdDecoder(BaseDecoder):
 
     def _inject_nul_once(self, max_length: int) -> bytes:
         """Documented single extra NUL (pyppmd / py7zr); never loop fabricated input."""
-        if self._exhausted or self._nul_injected or self._decomp.eof:
+        if self._exhausted or self._nul_injected or self._native.eof:
             return b""
-        if not getattr(self._decomp, "needs_input", False):
+        if not getattr(self._native, "needs_input", False):
             return b""
         self._nul_injected = True
         budget = self._nul_budget(max_length)
-        return self._note_decoded(self._decomp.decode(b"\0", budget), budget)
+        return self._note_decoded(self._native.decode(b"\0", budget), budget)
 
     def _drain_empty_chunked(self, max_length: int) -> bytes:
         """Pull remaining output in ``_PPMD_EXTRA_NUL_MAX_OUTPUT`` empty decodes.
@@ -641,10 +698,10 @@ class PpmdDecoder(BaseDecoder):
         for _ in range(remaining + 2):
             if remaining <= 0:
                 break
-            if getattr(self._decomp, "needs_input", False):
+            if getattr(self._native, "needs_input", False):
                 break
             budget = min(_PPMD_EXTRA_NUL_MAX_OUTPUT, remaining)
-            chunk = self._note_decoded(self._decomp.decode(b"", budget), budget)
+            chunk = self._note_decoded(self._native.decode(b"", budget), budget)
             parts.append(chunk)
             remaining -= len(chunk)
             if self._exhausted:
@@ -662,15 +719,15 @@ class PpmdDecoder(BaseDecoder):
             return b""
         # Decoding after native EOF is trailing garbage at best (and the crashy
         # runaway path on pyppmd 1.3.x when unbounded) — drop the input instead.
-        if self._decomp.eof and max_length < 0:
+        if self._native.eof and max_length < 0:
             return b""
         # Empty + needs_input after compressed EOF: at most one documented NUL.
         # Before compressed EOF, empty+needs_input means "read more pack bytes" —
         # do not fabricate input.
         if (
             not data
-            and getattr(self._decomp, "needs_input", False)
-            and not self._decomp.eof
+            and getattr(self._native, "needs_input", False)
+            and not self._native.eof
         ):
             if not self._compressed_eof:
                 return b""
@@ -678,11 +735,30 @@ class PpmdDecoder(BaseDecoder):
         if max_length < 0:
             return self._decode_unsized(data)
         max_length = min(max_length, _PPMD_MAX_REQUEST)
-        return self._note_decoded(self._decomp.decode(data, max_length), max_length)
+        return self._note_decoded(self._native.decode(data, max_length), max_length)
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         if chunk:
             self._fed_compressed += len(chunk)
+        if self._held is not None:
+            self._held += chunk
+            limit = self._in_process_max_input
+            if self._pack_complete() is True:
+                chunk = self._release_held(in_child=False)
+            elif limit is not None and len(self._held) > limit:
+                if not child_decoding_available():
+                    self._held = None
+                    raise ResourceLimitError(
+                        "Decoder limit reached: max_ppmd_in_process_input="
+                        f"{limit}. This PPMd member is larger, and no child process "
+                        "can be started to decode it (pyppmd can crash the process "
+                        "on corrupt input past this size). Raise "
+                        "DecoderLimits.max_ppmd_in_process_input to decode it "
+                        "in-process."
+                    )
+                chunk = self._release_held(in_child=True)
+            else:
+                return DecodeOut(b"")
         # Honour both the container unpack_size cap and the stream-layer read budget.
         unpack_cap = self._max_length()
         if max_length >= 0 and unpack_cap >= 0:
@@ -695,23 +771,55 @@ class PpmdDecoder(BaseDecoder):
         # fully delivered. Unknown or short pack: refuse (near-EOF MemoryError /
         # garbage fill). Callers must pass pack_size (or sized-view
         # compressed_input_size) for correct premature-eof completion.
-        if not chunk and self._pack_complete() is not True and self._decomp.eof:
+        if (
+            not chunk
+            and not (self._compressed_eof or self._pack_complete() is True)
+            and self._native.eof
+        ):
             return DecodeOut(b"")
         out = self._decode(chunk, limit)
         self._produced += len(out)
         return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
+        self._compressed_eof = True
+        if self._held is not None:
+            # Compressed EOF with input still held: a member shorter than its pack
+            # (truncated, or a password check's capped read), or one with no declared
+            # pack size. Everything that will ever arrive is here, so hand it over
+            # whole, in this process, and take the first chunk of output; the stream
+            # drains the rest through ``feed(b"")`` and then calls ``flush`` again.
+            data = self._release_held(in_child=False)
+            limit = self._max_length()
+            limit = (
+                _PPMD_FLUSH_DRAIN_CHUNK
+                if limit < 0
+                else min(limit, _PPMD_FLUSH_DRAIN_CHUNK)
+            )
+            out = self._decode(data, limit) if limit else b""
+            self._produced += len(out)
+            if out and not self.finished and not self._exhausted:
+                self._draining = True
+                return DecodeOut(out)
+            return DecodeOut(out + self._finish_input().data)
+        return self._finish_input()
+
+    @property
+    def drains_after_flush(self) -> bool:
+        """True while ``flush`` has handed input over and output may still follow."""
+        return self._draining and not self.finished and not self._exhausted
+
+    def _finish_input(self) -> DecodeOut:
         # Compressed EOF: optionally one documented extra NUL, then (only when the
         # pack is known-complete) chunked empty drains. Never inject fabricated
         # NULs in a loop. Unknown pack_size is treated like incomplete for drains:
         # single capped NUL only — do not chase unpack_size.
-        self._compressed_eof = True
+        self._draining = False
         max_length = self._max_length()
         if max_length == 0:
             return DecodeOut(b"")
         out = b""
-        if not self._decomp.eof and getattr(self._decomp, "needs_input", False):
+        if not self._native.eof and getattr(self._native, "needs_input", False):
             more = self._inject_nul_once(max_length)
             out += more
             self._produced += len(more)
@@ -723,7 +831,7 @@ class PpmdDecoder(BaseDecoder):
         # on compressible payloads). Corrupt-but-declared-complete sized packs can still
         # fill toward ``unpack_size`` here — container CRC is the backstop.
         if max_length > 0 and self._pack_complete() is True and not self._exhausted:
-            if not getattr(self._decomp, "needs_input", False):
+            if not getattr(self._native, "needs_input", False):
                 drained = self._drain_empty_chunked(max_length)
                 out += drained
                 self._produced += len(drained)
@@ -738,10 +846,12 @@ class PpmdDecoder(BaseDecoder):
         # no end mark, so native eof alone cannot do either.
         if self._unpack_size is not None:
             return self._produced >= self._unpack_size
-        return bool(self._decomp.eof)
+        return self._decomp is not None and bool(self._decomp.eof)
 
     @property
     def needs_input(self) -> bool:
+        if self._decomp is None:
+            return True
         return bool(getattr(self._decomp, "needs_input", True))
 
     def _quiesce_worker(self) -> None:
@@ -799,12 +909,15 @@ class PpmdDecoder(BaseDecoder):
 
     def close(self) -> None:
         self._quiesce_worker()
+        decomp = getattr(self, "_decomp", None)
+        if isinstance(decomp, PpmdChildDecoder):
+            decomp.close()
 
     def __del__(self) -> None:
         # GC safety net: quiesce even when the owning stream's close() did not run
         # (decoder used directly, or stream leaked). Runs before self._decomp is
         # dropped, so the native worker is finished before Ppmd7T_Free executes.
-        self._quiesce_worker()
+        self.close()
 
 
 # An LZMA2 uncompressed chunk carries at most 64 KiB of payload behind a 3-byte
@@ -1045,6 +1158,7 @@ def PpmdDecompressorStream(
     restore_method: int = 0,
     unpack_size: int | None = None,
     pack_size: int | None = None,
+    in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
 ) -> DecompressorStream:
     """Decode a PPMd stream (forward-only).
 
@@ -1064,6 +1178,7 @@ def PpmdDecompressorStream(
             restore_method=restore_method,
             unpack_size=unpack_size,
             pack_size=pack_size,
+            in_process_max_input=in_process_max_input,
         ),
         codec_name="ppmd",
     )

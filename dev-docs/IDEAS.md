@@ -581,6 +581,15 @@
   numbers are, and reads correctly beside `UNLIMITED`. It also happens to be the answer
   for a host whose headroom is below the default cap, which the `DecoderLimits` docstring
   currently covers in prose only.
+  **It may want to be a mode, not only numbers** (davitf, 2026-09-26, on the PPMd crash
+  fix): a safety-first setting that gives up some decodes (smaller thresholds, refusing a
+  decode that could take the process down) beside a permissive one. The first concrete
+  knob is PPMd's: `DecoderLimits.max_ppmd_in_process_input` (16 MiB held in-process,
+  larger members in a child process), and what to do when no child process can be
+  started. Today that case raises `ResourceLimitError` past the limit, and `None` holds
+  any member in-process (crash-safe, but memory grows with the member's compressed
+  size); a mode would pick between those without the caller naming the knob.
+  "Maybe for later", in his words.
 
 - **Threat-model row for archive-declared decoder memory** — a codec that sizes its
   working set from a number in the archive's own header (7z PPMd var.H's 32-bit window,

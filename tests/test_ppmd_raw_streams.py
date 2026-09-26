@@ -390,6 +390,7 @@ def _ppmd7_with_fake(fake: _FakeDecomp, *, produced: int) -> PpmdDecoder:
         order=_ORDER, mem_size=_MEM, variant=7, unpack_size=100, pack_size=50
     )
     dec._decomp = fake  # type: ignore[assignment]  # test double for the native decoder
+    dec._held = None  # fed straight through, as a member past the hold limit would be
     dec._produced = produced
     return dec
 
@@ -749,6 +750,8 @@ def test_ppmd_decoder_truncated_flush_caps_nul_max_length() -> None:
                 unpack_size=len(_CONTENT),
                 pack_size=len(packed),
             )
+            dec._open_native(in_child=False)
+            dec._held = None  # the chunked path, as a member past the hold limit
             spy = _MaxLengthSpy(dec._decomp)
             dec._decomp = spy
             _ = dec.feed(packed[: len(packed) // 2]).data
@@ -807,6 +810,7 @@ def test_ppmd_decoder_never_passes_unbounded_max_length(
         unpack_size=len(_CONTENT) if sized else None,
         pack_size=len(packed) if sized else None,
     )
+    dec._open_native(in_child=False)
     spy = _MaxLengthSpy(dec._decomp)
     dec._decomp = spy
     out = dec.feed(packed).data
@@ -913,6 +917,7 @@ def test_archivey_ppmd7_overstated_unpack_size_raises_truncated_error(
                 unpack_size=len(_K6_PAYLOAD) + {overstate},
                 pack_size=len(packed),
             )
+            stream._decoder._open_native(in_child=False)
             spy = _DecodeCallSpy(stream._decoder._decomp)
             stream._decoder._decomp = spy
             reads = {reads!r}
@@ -957,7 +962,13 @@ def test_ppmd7_close_quiesces_worker_after_payload_spent() -> None:
 
 
 def test_ppmd7_payload_spent_needs_complete_pack() -> None:
-    """A short return at ``eof`` mid-pack is not the end: more input may follow."""
+    """A short return at ``eof`` mid-pack is not the end: more input may follow.
+
+    This is the chunked path, which a member takes only past
+    ``DecoderLimits.max_ppmd_in_process_input``, inside a child process: ``eof`` also rises on a
+    valid stream whose compressed bytes end in zeros at a chunk boundary, so stopping
+    here would cut valid members short.
+    """
     fake = _FakeDecomp(needs_input=False, eof=True, returns=[b"ab"])
     dec = _ppmd7_with_fake(fake, produced=0)  # pack_size=50
     assert dec.feed(b"x" * 10, max_length=64).data == b"ab"

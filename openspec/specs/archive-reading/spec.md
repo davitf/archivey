@@ -934,6 +934,7 @@ class ListingLimits:
 class DecoderLimits:
     max_decoder_memory: int | None = 2 * 2**30
     max_key_derivation_rounds: int | None = 2**27
+    max_ppmd_in_process_input: int | None = 16 * 2**20
     UNLIMITED: ClassVar["DecoderLimits"]
 
 @dataclass(frozen=True)
@@ -970,7 +971,11 @@ actually run: a key the reader already derived for the same password, salt and
 cost SHALL cost nothing, and every candidate password tried SHALL count. The
 check SHALL run before the derivation that would cross the cap, and SHALL raise
 `ResourceLimitError`, which SHALL NOT be treated as a wrong password by
-candidate iteration. Per-call `limits`
+candidate iteration. `max_ppmd_in_process_input` SHALL bound the compressed bytes of
+one PPMd member the process holds to decode it in-process; a larger member SHALL decode
+in a child process, where a crash of the native decoder SHALL surface as
+`CorruptionError`, and where no child process can be started it SHALL raise
+`ResourceLimitError`. `None` SHALL decode every member in-process. Per-call `limits`
 still beat `config.extraction_limits`, then reader/library default. Other
 per-call operational args stay outside `ArchiveyConfig`.
 `detection_budget` SHALL bound what format detection spends, for `detect_format` and for
@@ -1000,6 +1005,7 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
 | Header-encrypted RAR5 set of four parts, one encryption record repeated, `max_key_derivation_rounds` one round short of key + PswCheck | `ResourceLimitError` at `open_archive`; at exactly key + PswCheck the set lists |
+| 7z PPMd member of 200 KB compressed, `max_ppmd_in_process_input=1024`, no child process possible | `ResourceLimitError` on the first read |
 | Password list `["wrong", right]`, budget covering only the right candidate's derivations | `ResourceLimitError`, not `EncryptionError`; the list does not continue |
 
 ### Requirement: Reader-lifetime cumulative diagnostic snapshots
