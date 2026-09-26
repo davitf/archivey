@@ -190,10 +190,8 @@ def test_metadata_accounting_counts_name_and_raw_name() -> None:
         + len("hi")
         + len("x")
         + len("v")
-        # Keys are retained text too, whatever their value's type.
-        + len("note")
-        + len("nested")
-        + len("opaque")
+        # A nested dict's keys are archive-derived text and count; top-level keys
+        # are format-defined literals and do not.
         + len("k")
     )
     assert member_metadata_bytes(member) == expected
@@ -264,6 +262,27 @@ def test_metadata_accounting_counts_extra_keys() -> None:
         extra={"tar.pax_headers": {"k" * 100_000: "v"}},
     )
     assert member_metadata_bytes(member) >= 100_000
+
+
+def test_metadata_accounting_skips_top_level_keys_and_counts_nested_keys() -> None:
+    """Only keys inside a nested dict weigh anything.
+
+    Every top-level ``extra`` key is a format-defined literal (``zip.compress_type``,
+    ``tar.type``), so charging it would tighten the cap per format for text no archive
+    controls. A nested key, such as a PAX keyword, is sized by the archive.
+    """
+    bare = ArchiveMember(type=MemberType.FILE, name="a.txt")
+    labelled = ArchiveMember(
+        type=MemberType.FILE, name="a.txt", extra={"zip.compress_type": 8}
+    )
+    assert member_metadata_bytes(labelled) == member_metadata_bytes(bare)
+
+    nested = ArchiveMember(
+        type=MemberType.FILE,
+        name="a.txt",
+        extra={"tar.pax_headers": {"keyword": ""}},
+    )
+    assert member_metadata_bytes(nested) == member_metadata_bytes(bare) + len("keyword")
 
 
 def test_tar_pax_keywords_count_toward_max_metadata_bytes(tmp_path: Path) -> None:

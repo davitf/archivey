@@ -33,13 +33,14 @@ def _retained_bytes(value: object) -> int:
 def _extra_bytes(extra: Mapping[str, object]) -> int:
     """Sum retained ``str``/``bytes`` lengths in ``extra`` (one-level nested dicts).
 
-    Keys count as well as values: a key is text the member holds for as long as the
-    value, and TAR copies every PAX record into ``extra["tar.pax_headers"]``, where the
-    keyword is as attacker-sized as the value.
+    Values count at both levels; keys count only inside a nested dict. A top-level
+    key is a format-defined literal (``zip.compress_type``, ``tar.type``) that no
+    archive sizes, so charging it would only tighten the cap by a per-format toll.
+    A nested key is archive text: TAR copies every PAX record into
+    ``extra["tar.pax_headers"]``, where the keyword is as attacker-sized as the value.
     """
     total = 0
-    for key, value in extra.items():
-        total += _retained_bytes(key)
+    for value in extra.values():
         if isinstance(value, dict):
             for nested_key, nested in value.items():
                 total += _retained_bytes(nested_key) + _retained_bytes(nested)

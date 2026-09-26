@@ -278,6 +278,15 @@ A caller that expects sparse files raises `max_ratio`. Revisit if extraction eve
 preserves holes, since the disk would then hold only the data. Handbook:
 [`formats/tar.md`](formats/tar.md) §6.
 
+## A TAR member's seek past its end returns the member size, not the target (open)
+
+With `seekable_members=True`, `seek(10)` on a 3-byte TAR member returns 3 and leaves
+`tell()` at 3, where `io.BytesIO` and a real file return 10. The stream is stdlib
+`tarfile`'s `ExFileObject`, which clamps the position to the member size. Reads agree
+either way (both return `b""`), so only the returned position differs. Found while
+running the seek-before-start test over the corpus, which starts from `seek(5)` and
+so could not use an empty TAR member.
+
 ## WinRAR 3.x SHA-1 KDF mutates its input buffer (emulated)
 
 **Status: emulated, not an archivey bug.** WinRAR's RAR3 string-to-key runs SHA-1's

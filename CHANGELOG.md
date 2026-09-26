@@ -90,17 +90,20 @@ promise with that line; treat `0.2.0` as the first release of this library.
 - **A seek before the start of a member follows `io.BytesIO`.** `seek(-n, SEEK_CUR)` or
   `seek(-n, SEEK_END)` past the start of a compressed member raised `ValueError`, which
   the ZIP backend reported as `CorruptionError` on an undamaged archive; ISO did the same
-  for every member. Both now clamp to position 0, as stored members already did. A
-  negative `SEEK_SET` offset, or an unknown `whence`, raises `ValueError` on every
-  format instead of `CorruptionError` on ZIP and ISO. A directory member is still the
-  file itself and raises `OSError` as any file does.
+  for every member, and a RAR member read through `unrar` raised `ValueError`. They now
+  clamp to position 0, as stored members already did. A negative `SEEK_SET` offset, or
+  an unknown `whence`, raises `ValueError` on every format, directory members included,
+  instead of `CorruptionError` on ZIP and ISO. The one difference left is a relative
+  seek before the start of a directory member: that member is the file itself, so the
+  OS refuses the seek with `OSError`.
 
-- **`max_metadata_bytes` weighs the keys in `extra`, not only the values.** TAR keeps
+- **`max_metadata_bytes` weighs PAX keywords, not only their values.** TAR keeps
   every PAX record in `extra["tar.pax_headers"]`, and a PAX keyword can be as long as
   its value. A member with a 100 000-byte keyword and a one-byte value weighed 4 bytes,
   so a 514 KiB `.tar.gz` could list under a 1 MiB cap while holding about 300 MB of
-  keywords. Keys now count on every format, and the TAR header walk stops at the cap
-  on keywords as it does on values.
+  keywords. The keys of a dict nested in `extra` now count, and the TAR header walk
+  stops at the cap on keywords as it does on values. Top-level `extra` keys are fixed
+  per format and still do not count, so no format's baseline weight moves.
 
 - **A corrupt or hostile PPMd member no longer crashes the Python process.** pyppmd
   segfaults when asked to keep decoding after a corrupt stream has ended early, and

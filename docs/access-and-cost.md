@@ -114,6 +114,11 @@ the position gives up a CRC check, but not WinZip AES's HMAC: the HMAC covers th
 ciphertext, so the read that reaches the member's end first reads, without decrypting,
 whatever ciphertext your seeks skipped, and then checks it.
 
+A seek that lands before the start of a member behaves like `io.BytesIO`: a relative
+seek (`SEEK_CUR` or `SEEK_END`) clamps to position 0, and a negative `SEEK_SET` offset
+or an unknown `whence` raises `ValueError`. A directory member is a real file, so a
+relative seek before its start reaches the OS and raises `OSError`.
+
 Whether that gets a diagnostic is decided by **what the seek actually costs**, not by the
 codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the rewind discards more than
 about a megabyte of decoded progress — the bytes you would have to decode again to get

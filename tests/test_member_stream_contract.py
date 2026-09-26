@@ -235,7 +235,10 @@ def _assert_seek_underflow_matches_bytesio(stream: BinaryIO) -> None:
     (ZIP) then reported as ``CorruptionError`` on an undamaged archive.
     """
     content = stream.read()
-    assert stream.seek(5) == 5
+    # Inside the member: a TAR member's seek past its end returns the member size
+    # (dev-docs/known-issues.md), which is not what this test is about.
+    start = min(5, len(content))
+    assert stream.seek(start) == start
     assert stream.seek(-100, io.SEEK_CUR) == 0
     assert stream.read() == content
     assert stream.seek(-(len(content) + 100), io.SEEK_END) == 0
@@ -259,6 +262,11 @@ def test_seek_underflow_matches_bytesio(member: tuple[Path, str]) -> None:
             # before its start raises OSError(EINVAL) as it does on any file.
             with pytest.raises(OSError):
                 f.seek(-1, io.SEEK_CUR)
+            # A negative SEEK_SET is refused before the file handle, as on every
+            # other format.
+            with pytest.raises(ValueError) as excinfo:
+                f.seek(-1)
+            assert type(excinfo.value) is ValueError
             return
         _assert_seek_underflow_matches_bytesio(f)
 
@@ -479,6 +487,23 @@ def test_corpus_seekable_members_seek_and_reread(
             f.seek(mid)
             assert f.read() == data[mid:]
             assert f.tell() == len(data)
+
+
+@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params())
+def test_corpus_seek_underflow_matches_bytesio(
+    spec: _SeekSpec, member_name: str, tmp_path: Path
+) -> None:
+    # The same seek-before-start contract as the hand-built fixture above, over every
+    # enrolled backend and codec path (RAR through unrar, 7z, encrypted ZIP, ...).
+    with _open_enrolled(spec, tmp_path, seekable_members=True) as ar:
+        member = _resolve_file_member(ar, member_name)
+        with ar.open(member) as f:
+            if spec.key == "dir":
+                # A directory member is a real file: relative underflow is its OSError.
+                with pytest.raises(OSError):
+                    f.seek(-1, io.SEEK_CUR)
+                return
+            _assert_seek_underflow_matches_bytesio(f)
 
 
 # Formats / mechanisms this contract should cover but cannot construct here.

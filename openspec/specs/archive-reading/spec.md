@@ -162,6 +162,7 @@ re-decode from block start) stays under `AccessCost` / `solid_block_count` /
 | Same member via random `open()` with `seekable_members=True` | `seekable()` true; backward seek rereads; loud-slow-rewind when there is no index/accelerator |
 | `extract_all()` with nothing declared | Completes; internal opens ungated |
 | `open_archive(p, member_streams=...)` | `TypeError` — the parameter no longer exists |
+| Seek before the start of a random `open()` stream with `seekable_members=True` | Relative (`SEEK_CUR` / `SEEK_END`) underflow clamps to 0, as `io.BytesIO`; negative `SEEK_SET` or unknown `whence` → `ValueError`, never a translated archive error. Directory member: relative underflow is the OS file's `OSError` |
 
 ### Requirement: Multi-volume and multi-source input
 
@@ -474,7 +475,8 @@ mirror an allocator — but the weight MUST NOT under-count UTF-8 size:
   than UTF-8 (plain `len(s)` on non-ASCII would under-count a Unicode name bomb).
 - `raw_name`: `len(raw_name)` when not `None` (stored archive bytes; already exact)
 - `extra`: lengths of `str` / `bytes` values under the same rules; for a one-level
-  `dict` value, nested `str` / `bytes` values only
+  `dict` value, its `str` / `bytes` keys and values (archive-sized text such as TAR's
+  PAX keywords). Top-level `extra` keys are format-defined literals and are not counted
 - Exclude: `_raw`, `hashes`, diagnostics, Python object overhead
 
 A field filled in after its member was registered SHALL be weighed when it is filled
@@ -496,7 +498,8 @@ from the running total above; the decoded comments are weighed again at registra
 | --- | --- |
 | Member with long `name` + `raw_name` | Both weights count |
 | Huge `ArchiveInfo.comment` alone | Counts toward the budget once |
-| `extra` holds opaque non-str/bytes object | Not counted |
+| `extra` holds opaque non-str/bytes object | Not counted, and neither is its top-level key |
+| `extra` holds a dict with a long key (PAX keyword) | The key counts, like its value |
 | ASCII-only name | Weight equals `len(name)` (exact UTF-8) |
 | Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
 | Symlink target read from member data after registration | Weighed when read; over the cap → `ResourceLimitError` naming `max_metadata_bytes` |
