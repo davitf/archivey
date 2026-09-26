@@ -203,6 +203,7 @@ def test_seekable_member_respawns_unar() -> None:
 # --- selection is explicit -----------------------------------------------------------
 
 
+@requires_binary("unrar")
 def test_default_never_runs_unar(monkeypatch: pytest.MonkeyPatch) -> None:
     def refuse(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("unar spawned without being selected")

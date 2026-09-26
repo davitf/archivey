@@ -168,11 +168,13 @@ class UnarOutputStream(DelegatingStream):
         *,
         has_verifiable_digest: bool,
     ) -> None:
-        super().__init__(stdout)
+        # Everything close() reads is assigned before DelegatingStream.__init__,
+        # which can raise, so a half-built instance still reaps the child.
         self._proc = proc
         self._has_verifiable_digest = has_verifiable_digest
         self._saw_eof = False
         self._exit_checked = False
+        super().__init__(stdout)
 
     def read(self, n: int = -1, /) -> bytes:
         data = super().read(n)
