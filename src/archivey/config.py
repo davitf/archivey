@@ -430,8 +430,8 @@ class DecoderLimits:
             larger than this field is decoded in a child Python process instead,
             where a crash becomes :class:`~archivey.exceptions.CorruptionError`;
             it still holds this much before handing over. Where no child process
-            can be started (a frozen application has no Python interpreter to run
-            one), such a member raises
+            can be started (a frozen application, a spawn the operating system
+            refuses, or a child that cannot import pyppmd), such a member raises
             :class:`~archivey.exceptions.ResourceLimitError` instead.
 
             16 MiB keeps the in-process peak near 32 MiB. At pyppmd's 2 to 8 MB/s

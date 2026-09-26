@@ -29,7 +29,8 @@ _REPLY = struct.Struct("<BBBI")
 _WORKER = Path(__file__).with_name("ppmd_worker.py")
 
 # Exception types the child may report that ``PpmdCodec.translate`` already maps; any
-# other name comes back as ``PpmdChildError``.
+# other name comes back as ``PpmdChildReportedError``, which is deliberately left
+# unmapped (not a corruption verdict) so that it propagates.
 _KNOWN_ERRORS: dict[str, type[Exception]] = {
     "ValueError": ValueError,
     "EOFError": EOFError,

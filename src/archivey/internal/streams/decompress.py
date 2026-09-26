@@ -787,9 +787,10 @@ class PpmdDecoder(BaseDecoder):
             limit = max_length
         else:
             limit = unpack_cap
-        if self._draining:
-            # After ``flush`` handed the held input over: the same bounded request as
-            # its first call, never the whole declared remainder.
+        if self._compressed_eof:
+            # After compressed EOF (``flush`` has handed the held input over): the same
+            # bounded request as its first call, never the whole declared remainder,
+            # whether or not the drain is still running.
             limit = (
                 _PPMD_FLUSH_DRAIN_CHUNK
                 if limit < 0
