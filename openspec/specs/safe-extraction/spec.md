@@ -414,7 +414,8 @@ non-bypassable safety checks.
 | Missing file/dir mode | File `0o644`, dir `0o755` | File `0o644`, dir `0o755` | Apply as stored |
 | Permission normalization | Files max `0o644`; dirs `0o755`; strip file execute | Preserve ordinary execute bits | Apply as stored |
 | setuid/setgid/sticky | Strip all | Strip all | Preserve |
-| uid/gid | Strip | Strip | Apply only when running as root; otherwise skip silently |
+| uid/gid/uname/gname on the transformed member (what a `filter` sees) | Cleared to `None` | Kept as stored | Kept as stored |
+| Ownership applied on disk (`chown`) | Never | Never | Only when running as root; otherwise skipped silently |
 
 #### Scenario: metadata policy matrix
 
@@ -423,6 +424,7 @@ non-bypassable safety checks.
 | FILE `mode=0o755` under `STRICT` | Written as `0o644` |
 | FILE `mode=0o755` under `STANDARD` | Execute bits preserved; setuid/setgid/sticky stripped |
 | FILE with uid/gid under `TRUSTED` as root | uid/gid applied |
+| FILE with uid/gid under `STANDARD` | A `filter` sees the stored uid/gid; nothing is chowned |
 | Any policy, unsafe path/link/special file | Universal safety rejection still applies |
 
 ### Requirement: Overwrite Policy

@@ -72,8 +72,9 @@ class FormatInfo:
     """What detection reported on its way to the answer."""
 
     corroborated: bool = field(default=False, compare=False, repr=False)
-    """Provisional, informational: whether a matching extension or an inner-TAR upgrade
-    corroborated a content-probe claim.
+    """Provisional and informational, not part of the :func:`~archivey.detect_format`
+    contract: whether a matching extension or an inner-TAR upgrade corroborated a
+    content-probe claim.
 
     Read it only together with ``detected_by == "content_probe"``. ``False`` also means
     "not a probe at all", so an exact magic hit reads ``False`` too. A later release may
