@@ -29,6 +29,7 @@ from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
 )
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams import codecs as codecs_module
 from archivey.internal.streams import crypto
 from archivey.internal.streams.codecs import (
@@ -559,7 +560,7 @@ _TRUNCATION_PAYLOAD = CONTENT * 200
 
 def _truncated(codec: Codec, cut: str) -> bytes:
     """``cut`` is "tail" (drop the last bytes: a prefix decodes) or "head" (keep only the
-    first bytes: nothing decodes)."""
+    header: nothing decodes, which the tests assert)."""
     import lzma
 
     payload = _TRUNCATION_PAYLOAD
@@ -571,7 +572,7 @@ def _truncated(codec: Codec, cut: str) -> bytes:
         head = 3
     elif codec is Codec.XZ:
         data = lzma.compress(payload)
-        head = 40
+        head = 12  # stream header only
     else:
         compressor = zlib.compressobj(wbits=-15)
         data = compressor.compress(payload) + compressor.flush()
@@ -588,6 +589,13 @@ def test_truncated_readall_then_rewind_raises_again(codec: Codec, cut: str) -> N
     """A rewind after a failed read-all decodes again and raises again, also when the
     failed read decoded nothing."""
     source = io.BytesIO(_truncated(codec, cut))
+    if cut == "head":
+        # The case this cut exists for: the failed read decoded nothing, so a rewind to
+        # 0 does not move the position.
+        with open_codec_stream(codec, source, config=_STDLIB_SEEKABLE) as stream:
+            with pytest.raises(TruncatedError):
+                stream.read(1)
+        source.seek(0)
     with open_codec_stream(codec, source, config=_STDLIB_SEEKABLE) as stream:
         with pytest.raises(TruncatedError):
             stream.read()
@@ -633,13 +641,15 @@ def test_a_read_after_the_truncation_error_raises_again(
 def test_a_truncated_stream_never_publishes_its_prefix_as_the_size(
     codec: Codec,
 ) -> None:
+    """Every later call reports the codec's own truncation error, the size path too."""
     source = io.BytesIO(_truncated(codec, "tail"))
     with open_codec_stream(codec, source, config=_STDLIB_SEEKABLE) as stream:
-        with pytest.raises(TruncatedError):
+        with pytest.raises(TruncatedError) as first:
             stream.read()
-        with pytest.raises(TruncatedError):
+        message = re.escape(str(first.value))
+        with pytest.raises(TruncatedError, match=message):
             stream.read()
-        with pytest.raises(TruncatedError):
+        with pytest.raises(TruncatedError, match=message):
             stream.seek(0, io.SEEK_END)
 
 
@@ -648,7 +658,9 @@ def test_the_rewind_after_a_failed_read_all_is_not_a_reported_rewind() -> None:
     recovery ``seek(0)`` discards no progress and emits no rewind diagnostic."""
     payload = CONTENT * 30_000  # decodes past the 1 MiB rewind-report threshold
     source = io.BytesIO(gzip.compress(payload)[:-20])
-    with open_codec_stream(Codec.GZIP, source, config=_STDLIB_SEEKABLE) as stream:
+    with open_codec_stream(
+        Codec.GZIP, source, config=_STDLIB_SEEKABLE, collector=DiagnosticCollector()
+    ) as stream:
         with pytest.raises(TruncatedError):
             stream.read()
         assert stream.tell() == 0
@@ -657,6 +669,52 @@ def test_the_rewind_after_a_failed_read_all_is_not_a_reported_rewind() -> None:
         assert counts.get(DiagnosticCode.STREAM_REWIND_REDECOMPRESSES, 0) == 0
         with pytest.raises(TruncatedError):
             stream.read()
+
+
+def test_a_failed_read_all_does_not_keep_the_dropped_prefix_alive() -> None:
+    """The recorded error must not hold the prefix the failed read-all dropped: a caller
+    that catches the error and keeps the handle keeps only the handle."""
+    import gc
+    import tracemalloc
+
+    prefix_size = 8 << 20
+    source = io.BytesIO(gzip.compress(b"A" * prefix_size)[:-20])
+    tracemalloc.start()
+    try:
+        stream = open_codec_stream(Codec.GZIP, source, config=_STDLIB_SEEKABLE)
+        with pytest.raises(TruncatedError):
+            stream.read()
+        stream.close()
+        gc.collect()
+        retained, _ = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert retained < prefix_size // 4, retained
+
+
+@pytest.mark.parametrize("chunked", [False, True], ids=["read-all", "read-n"])
+def test_repeated_reads_after_the_truncation_error_do_not_grow_its_traceback(
+    chunked: bool,
+) -> None:
+    source = io.BytesIO(_truncated(Codec.GZIP, "tail"))
+    size = 1000 if chunked else -1
+
+    def traceback_length() -> int:
+        with pytest.raises(TruncatedError) as caught:
+            stream.read(size)
+        tb, length = caught.value.__traceback__, 0
+        while tb is not None:
+            tb, length = tb.tb_next, length + 1
+        return length
+
+    with open_codec_stream(Codec.GZIP, source, config=_STDLIB_SEEKABLE) as stream:
+        with pytest.raises(TruncatedError):
+            while stream.read(size):
+                pass
+        second = traceback_length()
+        for _ in range(20):
+            traceback_length()
+        assert traceback_length() == second
 
 
 @requires("ncompress")
@@ -839,16 +897,32 @@ def test_unix_compress_valid_stream_has_zero_leftover_padding() -> None:
 @requires("ncompress")
 def test_unix_compress_clear_seek_points() -> None:
     """CLEAR boundaries become SeekPoints; random access resumes without rewind diagnostics."""
-    # Distinct words force dictionary growth until classic compress emits CLEAR.
-    payload = b"".join(i.to_bytes(4, "big") for i in range(50_000))
+    # Distinct words force dictionary growth until classic compress emits CLEAR. The
+    # payload is past the 1 MiB rewind-report threshold, so a rewind that restarted at
+    # the origin instead of a CLEAR point would be reported.
+    payload = b"".join(i.to_bytes(4, "big") for i in range(400_000))
     compressed = make_unix_compress(payload)
     config = StreamConfig(seekable=True)
     with open_codec_stream(
-        Codec.UNIX_COMPRESS, io.BytesIO(compressed), config=config
+        Codec.UNIX_COMPRESS,
+        io.BytesIO(compressed),
+        config=config,
+        collector=DiagnosticCollector(),
     ) as stream:
         assert stream.seekable()
         # Drive a full pass so CLEAR points accumulate, then seek via ArchiveStream.
         assert stream.read() == payload
+        # A short step back from the end resumes at the last CLEAR point, so it
+        # discards little and is not reported.
+        near_end = len(payload) - 1000
+        stream.seek(near_end)
+        assert stream.read(8) == payload[near_end : near_end + 8]
+        assert (
+            stream.diagnostics.counts.get(
+                DiagnosticCode.STREAM_REWIND_REDECOMPRESSES, 0
+            )
+            == 0
+        )
         stream.seek(0)
         assert stream.read(16) == payload[:16]
         mid = len(payload) // 2
@@ -856,13 +930,6 @@ def test_unix_compress_clear_seek_points() -> None:
         assert stream.read(8) == payload[mid : mid + 8]
         stream.seek(100)
         assert stream.read(4) == payload[100:104]
-        # Indexed CLEAR seeks must not emit the O(n) rewind diagnostic.
-        assert (
-            stream.diagnostics.counts.get(
-                DiagnosticCode.STREAM_REWIND_REDECOMPRESSES, 0
-            )
-            == 0
-        )
 
 
 def test_unix_compress_consecutive_clear_seek_points_no_assert() -> None:

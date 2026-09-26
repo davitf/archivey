@@ -709,7 +709,7 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def readall(self) -> bytes:
         if self._spent is not None:
-            raise self._spent
+            self._raise_spent()
         # Prefer join-of-chunks over staging through the shared bytearray: a whole-stream
         # read never needs the partial-read buffer, and the extend + bytes(buffer) copy
         # was a measurable share of ZIP read-all overhead (perf review H2).
@@ -732,16 +732,19 @@ class DecompressorStream(ReadOnlyIOStream):
                 if self._decoder.pending_error is None and self._decoder.finished:
                     self._size = self._pos + len(joined)
                 raise held
-        data = b"".join(chunks)
         # A read(-1)/readall() caller expects the complete stream and will not call
         # again, so a deferred pending_error (e.g. truncated .Z) must raise here —
         # unlike chunked read(n), which returns bytes now and raises on the next empty
         # read. Partial bytes from this call are dropped: the caller asked for the
-        # whole stream and it is incomplete. Gate _size *before* raising so a caller
-        # that catches TruncatedError cannot then read a clean prefix-as-complete size.
+        # whole stream and it is incomplete. They are released before the raise, since
+        # the recorded error's traceback keeps this frame, and its locals, alive. Gate
+        # _size *before* raising so a caller that catches TruncatedError cannot then
+        # read a clean prefix-as-complete size.
         err = self._decoder.pending_error
         if err is not None:
+            chunks.clear()
             self._raise_deferred(err)
+        data = b"".join(chunks)
         if self._size is None or self._pos <= self._size:
             self._pos += len(data)
             self._size = self._pos
@@ -753,7 +756,7 @@ class DecompressorStream(ReadOnlyIOStream):
         if n is None or n < 0:
             return self.readall()
         if self._spent is not None and not self._buffer:
-            raise self._spent
+            self._raise_spent()
         with self._deferring_raises() as pending:
             while len(self._buffer) < n and not self._eof:
                 need = n - len(self._buffer)
@@ -782,6 +785,15 @@ class DecompressorStream(ReadOnlyIOStream):
         self._decoder.clear_pending_error()
         self._spent = err
         raise err
+
+    def _raise_spent(self) -> NoReturn:
+        """Raise the recorded deferred error again, with this raise's traceback only.
+
+        Re-raising the stored instance as is would append each raise's frames to one
+        traceback, which grows with every retry and keeps every frame on it alive.
+        """
+        assert self._spent is not None
+        raise self._spent.with_traceback(None)
 
     def close(self) -> None:
         # Quiesce any decoder-owned native worker before dropping references, so a
@@ -861,6 +873,10 @@ class DecompressorStream(ReadOnlyIOStream):
 
         if whence == io.SEEK_END:
             if self._size is None:
+                if self._spent is not None:
+                    # This stream already raised its truncation: report the same error,
+                    # not the generic unknown-size one below.
+                    self._raise_spent()
                 # Building the index didn't reveal the size; scan to EOF to find it
                 # without buffering all remaining data in RAM.
                 self._pos += len(self._buffer)
@@ -887,7 +903,11 @@ class DecompressorStream(ReadOnlyIOStream):
         if self._spent is not None:
             # The decoder is at the end of a truncated input, so no position is
             # reachable from here: restart from the nearest seek point, and let the
-            # decode below reach new_pos, or the truncation again.
+            # decode below reach new_pos, or the truncation again. The size
+            # short-circuit below cannot turn this back into a clean end: a decode
+            # that raised a truncation never publishes a size (readall and SEEK_END
+            # raise first), so a size here came from an index scan, and a seek at or
+            # past the size the index claims is at the end.
             self._reset_to_seek_point(self._prepare_seek_point(new_pos))
 
         if self._size is not None and new_pos >= self._size:
