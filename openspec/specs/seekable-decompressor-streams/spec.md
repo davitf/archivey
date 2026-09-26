@@ -41,6 +41,12 @@ threshold value is fixed by benchmark and recorded in design. When the input siz
 in advance, `AUTO` SHALL behave as it did before this threshold existed (select the accelerator
 when otherwise eligible). `ON` ignores the threshold; `OFF` never selects rapidgzip.
 
+An encrypted ZIP member's decrypt stage SHALL override the setting for the codec that
+reads it. Over a ZipCrypto stage `AUTO` resolves to `OFF`, because every backward seek
+restarts decryption from the member's start. Over a WinZip AES stage `AUTO` and `ON`
+both resolve to `OFF`, because the accelerator's own seeks would give up the member's
+HMAC. There `ON` does not raise `PackageNotInstalledError`: the accelerator is not used.
+
 #### Scenario: demand matrix
 
 | Case | Expected |
@@ -49,6 +55,7 @@ when otherwise eligible). `ON` ignores the threshold; `OFF` never selects rapidg
 | Same stream opened with seekability, `AUTO`, accelerator installed, size ≥ threshold | Accelerator or native index provides random access |
 | Declared-seekable deflate/zlib/gzip under `AUTO`, known size < threshold | rapidgzip not selected; stdlib backend used |
 | Declared-seekable DEFLATE-family stream, `use_rapidgzip=ON`, size below threshold | rapidgzip still selected (threshold ignored) |
+| Declared-seekable WinZip AES DEFLATE member, `use_rapidgzip=ON` | rapidgzip not selected; no `PackageNotInstalledError` when it is missing |
 | Declared-seekable gzip without accelerator, caller seeks backward | Seek re-decompresses from start and warns/names `[seekable]` accelerator |
 
 ### Requirement: XZ and lzip use format-native indexes

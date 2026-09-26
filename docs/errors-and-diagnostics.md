@@ -153,11 +153,10 @@ list of names, to every call would otherwise raise on every archive they do not 
 `STREAM_REWIND_REDECOMPRESSES` (your access pattern, not the archive — most useful as a
 targeted tripwire), `ENCRYPTED_MEMBER_UNVERIFIED` (it fires when you close an encrypted
 member's stream before EOF, or after a seek, having read bytes that no checksum has
-checked yet; under
-`strict()` a peek at a ZipCrypto member would raise), and `PROBE_FORMAT_UNCONFIRMED` (it
-is emitted while the matching `TruncatedError` or `CorruptionError` is raised, and that
-error already carries `format_unconfirmed=True`). `ARCHIVE_INTEGRITY_CODES` is exported, so you can
-build your own policy from it.
+checked yet; under `strict()` a peek at a ZipCrypto member would raise), and
+`PROBE_FORMAT_UNCONFIRMED` (it is emitted while the matching `TruncatedError` or
+`CorruptionError` is raised, and that error already carries `format_unconfirmed=True`).
+`ARCHIVE_INTEGRITY_CODES` is exported, so you can build your own policy from it.
 
 **New codes may appear in minor releases.** A policy with `default=RAISE` is therefore
 not version-stable: an upgrade can start raising on events your working program never

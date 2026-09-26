@@ -270,10 +270,10 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
     but before the reads reach ``size``, ``on_unverified`` runs once: those bytes may
     have decrypted under a wrong key, and nothing checked them. It receives the reason
     the digest was not reached: ``"seek"`` when a seek forfeited it, else
-    ``"partial_read"``. A stream closed before
-    any read delivered nothing to distrust, and a read that raised has already told the
-    caller something is wrong; neither reports. A seek that raised has not: the caller
-    can catch it and keep reading, so the report stays armed.
+    ``"partial_read"``. A stream closed before any read delivered nothing to distrust,
+    and a read that raised has already told the caller something is wrong; neither
+    reports. A seek that raised has not: the caller can catch it and keep reading, so
+    the report stays armed.
 
     The member's verifier forfeits the checksum on a seek off the read frontier (ADR
     0014), so any position-changing seek means the digest can no longer be reached.

@@ -144,8 +144,9 @@ would give up the member's HMAC check, so that member decodes with the stdlib de
 The two settings differ when `rapidgzip` is not installed. `ON` is a request, so it
 raises `PackageNotInstalledError` naming `[seekable]` — even without
 `seekable_members=True`, at the first gzip, zlib or deflate stream it would handle.
-`AUTO` treats the accelerator as an enhancement and falls back to the stdlib decoder
-without raising. The stream is still seekable, but a backward seek may re-decode from
+A WinZip AES member is the exception: `ON` does not engage the accelerator there, so it
+does not raise either. `AUTO` treats the accelerator as an enhancement and falls back to
+the stdlib decoder without raising. The stream is still seekable, but a backward seek may re-decode from
 the start. `use_indexed_bzip2` behaves the same way for bzip2.
 
 Declare seek only when you need it (e.g. parquet-in-zip random reads).

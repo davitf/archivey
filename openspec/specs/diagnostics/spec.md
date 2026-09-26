@@ -98,9 +98,9 @@ and cross-run id stability are not promised.
 `ENCRYPTED_MEMBER_UNVERIFIED` SHALL be emitted when a member of an encrypted unit is
 closed before its declared digest was reached **and** the password behind those bytes was
 accepted on a check weaker than that digest. `check` names what accepted the password
-(`"weak_open_check"`, `"confirm_budget_exhausted"`); `reason` names
-why the digest was not reached (`"partial_read"`, or `"seek"` when a seek forfeited it). It SHALL NOT be emitted for a partial
-read whose password was confirmed against an integrity anchor — that restates what the
+(`"weak_open_check"`, `"confirm_budget_exhausted"`); `reason` names why the digest was
+not reached (`"partial_read"`, or `"seek"` when a seek forfeited it). It SHALL NOT be
+emitted for a partial read whose password was confirmed against an integrity anchor — that restates what the
 caller already knows, which the admission clause refuses. Nor SHALL it be emitted for a
 stream closed before any read returned bytes, since nothing unchecked was delivered.
 

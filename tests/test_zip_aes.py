@@ -686,3 +686,35 @@ def test_aes_stored_out_of_range_seeks_match_an_unencrypted_member() -> None:
                     out += [stream.seek(offset, whence), stream.tell(), stream.read(2)]
                 results.append(out)
     assert results[0] == results[1] == [0, 0, b"he", 0, 0, b"he", 1000, 1000, b""]
+
+
+@requires("cryptography")
+def test_aes_member_does_not_ask_for_a_missing_accelerator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ON`` names the accelerator for a stream it would handle; an AES member is not one.
+
+    A plain DEFLATE member under ``ON`` raises when rapidgzip is missing. The same
+    member under WinZip AES reads with the stdlib decoder: the accelerator stays off
+    there whatever the setting, so it is never requested.
+    """
+    from archivey.exceptions import PackageNotInstalledError
+    from archivey.internal.streams import codecs
+
+    monkeypatch.setattr(codecs, "_rapidgzip", None)
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
+    plain = io.BytesIO()
+    with zipfile.ZipFile(plain, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("x.txt", _PAYLOAD)
+    with open_archive(
+        io.BytesIO(plain.getvalue()), seekable_members=True, config=config
+    ) as ar:
+        with pytest.raises(PackageNotInstalledError):
+            ar.read(ar.members()[0])
+    data = _build_aes_zip(
+        payload=_PAYLOAD, password=_PASSWORD, vendor_version=2, strength=3, method=8
+    )
+    with open_archive(
+        io.BytesIO(data), password=_PASSWORD, seekable_members=True, config=config
+    ) as ar:
+        assert ar.read(ar.members()[0]) == _PAYLOAD
