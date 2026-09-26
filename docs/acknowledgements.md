@@ -37,6 +37,7 @@ These are not on the primary read path (except where noted).
 | [libarchive](https://github.com/libarchive/libarchive) (+ [libarchive-c](https://github.com/Changaco/python-libarchive-c)) | Optional **cross-format corpus** oracle (`ARCHIVEY_LIBARCHIVE_TEST_FILES` → libarchive’s `libarchive/test` uuencoded archives). Dev-only; not a runtime backend. |
 | [7-Zip](https://www.7-zip.org/) / `7z` CLI ([p7zip](https://github.com/p7zip-project/p7zip)) | Fixture builder and anti-item / encrypted-ZIP oracle in tests (when installed). |
 | [RARLAB](https://www.rarlab.com/) `unrar` / `rar` | Runtime decompressor for RAR **member data**; fixture generator for committed RAR samples. |
+| [The Unarchiver](https://theunarchiver.com/) `unar` (XADMaster) | Second runtime decompressor for RAR **member data**, used when no RARLAB program is found. |
 
 ## Seekable-stream design references
 
@@ -69,8 +70,8 @@ Bare `pip install archivey` has **no** third-party runtime deps. Named extras pu
 
 There is no extra per format: member codecs are shared across containers, so
 `[recommended]` is one broad bundle rather than a set of names a caller has to reason
-about. RAR member *data* additionally needs the RARLAB `unrar` binary, which no extra can
-supply. RAR5 BLAKE2sp verification needs no package at all — it is implemented natively on
+about. RAR member *data* additionally needs the RARLAB `unrar` binary, or `unar`, which
+no extra can supply. RAR5 BLAKE2sp verification needs no package at all — it is implemented natively on
 stdlib `hashlib`.
 
 **Stdlib** (always): [`zipfile`](https://docs.python.org/3/library/zipfile.html),

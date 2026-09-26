@@ -136,7 +136,8 @@ members, so `unar` never decodes the refused one, and SHALL name at most 4000 of
 them to stay inside `ARG_MAX`. A readable member past the 4000th SHALL be refused in
 that pass with `UnsupportedFeatureError`; opening it on its own is not affected. A
 single archive with a prefix SHALL be copied from the RAR's start before `unar`
-reads it, and `ar.cost.notes` SHALL say so at open, for a path source too. Every member read through `unar` SHALL be checked against its declared
+reads it, and `ar.cost.notes` SHALL say so at open, for a path source too. Every
+member read through `unar` SHALL be checked against its declared
 size and stored digest, because `unar` exits 0 on some failures.
 
 A compressed RAR 1.5/2.x old-style comment SHALL be decoded by the selected

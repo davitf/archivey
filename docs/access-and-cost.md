@@ -188,7 +188,7 @@ pipe. The error says so directly rather than proposing a retry that would be ref
 and the fix is to buffer the source to a file or a `BytesIO` first.
 
 A seekable stream is not that pipe case. RAR still needs a filesystem path for compressed
-member data (RARLAB `unrar` or `rar`), so a `BytesIO` or file object may be copied to a
+member data (RARLAB `unrar` or `rar`, or `unar`), so a `BytesIO` or file object may be copied to a
 temp file when a compressed member is read. `archive.cost.notes` states that caveat at
 open, with the limit that bounds it; when the limit already rules the copy out, the note
 says such a read will be refused instead. Path sources do not copy.

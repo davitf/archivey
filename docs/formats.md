@@ -22,11 +22,13 @@ most often surprise callers. For more depth, the maintainer handbook has pages o
 | `.lz4` / `.tar.lz4` | no | `[recommended]` | — | rewind seek | |
 | `.Z` / `.tar.Z` | yes | — | — | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
 
-**RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`.** No pip extra
-can supply it — listing and metadata work without it, reading bytes does not.
-`rarfile` will use `unar` or `7z` if that is what is on `PATH`; archivey will not on its
-own. You can choose `unar` instead with `ArchiveyConfig(rar_decompressor="unar")`, with
-the limits listed under [RAR](#rar). How to get the binary: [Install and extras](install.md#getting-rarlab-unrar-or-rar).
+**RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`, or `unar`.**
+No pip extra can supply either — listing and metadata work without them, reading bytes
+does not. When no usable RARLAB program is found, archivey uses `unar` 1.10 or later,
+with the limits listed under [RAR](#rar), including a password passed on its command
+line; set `ArchiveyConfig(rar_decompressor="unrar")` to never use it. `7z` is never
+used. How to get the binary:
+[Install and extras](install.md#getting-rarlab-unrar-or-rar).
 
 Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
 rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).

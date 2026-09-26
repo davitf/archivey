@@ -256,7 +256,8 @@ class UnarOutputStream(DelegatingStream):
         close_error: BaseException | None = None
         try:
             self._inner.close()
-        except BaseException as exc:  # noqa: BLE001 - close must reap unar even on KeyboardInterrupt
+        # BaseException: close must reap unar even on KeyboardInterrupt.
+        except BaseException as exc:  # noqa: BLE001
             close_error = exc
         if self._proc.poll() is None:
             terminate_process(self._proc)
@@ -268,7 +269,8 @@ class UnarOutputStream(DelegatingStream):
         super().close()
         try:
             self._check_exit(wait_timeout=None)
-        except BaseException as mapped:  # noqa: BLE001 - chain onto inner.close(), do not replace it
+        # BaseException: chain onto inner.close()'s error, do not replace it.
+        except BaseException as mapped:  # noqa: BLE001
             if close_error is not None:
                 raise close_error from mapped
             raise

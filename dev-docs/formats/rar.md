@@ -906,7 +906,8 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   the second answer for RAR and the first for TAR. This is not RAR's question to settle:
   it changes `tar_reader` and the enum's documented meaning, and `access-and-cost` is the
   published page that would have to say which.
-- ~~**Should `unar` become an opt-in second engine?**~~ Yes, shipped 2026-09-26 (§3). It was the one candidate the
+- ~~**Should `unar` become an opt-in second engine?**~~ Yes, shipped 2026-09-26 as the
+  fallback under the default `"auto"` (§3). It was the one candidate the
   decompressor matrix left open, and Homebrew dropping the `rar` cask is what keeps it open
   (§3). Blocked on three things nobody has done: the fixture matrix against a Homebrew
   bottle rather than apt and a local build, an upstream XADMaster report, and a judgement on
