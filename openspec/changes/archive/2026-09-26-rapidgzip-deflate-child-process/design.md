@@ -55,9 +55,11 @@ Through archivey (`open_codec_stream(GZIP)`, `use_rapidgzip=ON`), in-process aga
   death it is scanned from the start, a line at a time (capped at 64 MiB): rapidgzip's abort
   message on an early end makes it `TruncatedError`. Not a window at either end: with
   faulthandler on (`PYTHONFAULTHANDLER`, which the child inherits), Python 3.14 writes
-  ~6.5 KiB of thread and C stacks after the message, and a 4 KiB tail missed it on CI; output
-  written before the abort would push it out of a window at the start the same way. The helpers are in `child_exit.py`, shared with
-  the PPMd child.
+  ~6.5 KiB of thread and C stacks after the message, and a 4 KiB tail missed it on CI;
+  output written before the abort would push it out of a window at the start the same way.
+  A line over 64 KiB is read in pieces, each carrying the end of the one before, so the
+  message is found across a split. The helpers are in `child_exit.py`, shared with the PPMd
+  child.
 - **Read-ahead in the parent.** Measured through a `.tar.gz`, whose reader reads in small
   pieces, a round trip per piece was the cost. After the first read that follows a seek, a
   read asks the child for at least 64 KiB, doubling to 1 MiB while reads stay sequential; a

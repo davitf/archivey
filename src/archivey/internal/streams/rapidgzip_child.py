@@ -65,7 +65,7 @@ from archivey.internal.streams.rapidgzip_worker import (
     SRC_SEEK,
     SRC_TELL,
     SRC_VALUE,
-    read_exact,
+    read_exact_or_none,
 )
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
 
@@ -141,6 +141,18 @@ def reported_by_child(exc: BaseException) -> bool:
     return getattr(exc, _FROM_CHILD, False) is True
 
 
+_FROM_SOURCE = "_archivey_raised_by_callers_source"
+
+
+def from_callers_source(exc: BaseException) -> bool:
+    """Whether ``exc`` came from the caller's own source, parked while serving the child.
+
+    Such an exception is raised to the caller as itself, so a translator must leave it
+    alone, including one whose types (``EOFError``) it would map for a decoder.
+    """
+    return getattr(exc, _FROM_SOURCE, False) is True
+
+
 def _reported_error(payload: bytes) -> Exception:
     """Rebuild an exception the child reported (see ``_error_payload`` in the worker)."""
     name, _, rest = payload.decode("utf-8", "replace").partition("\n")
@@ -194,27 +206,36 @@ def _reap(
 # process adds more after it (with faulthandler on, ``PYTHONFAULTHANDLER`` or
 # ``-X faulthandler``, Python dumps every thread's stack, and from 3.14 the C stack
 # too). So the scan reads the file from the start, a line at a time, rather than a
-# window at either end; the cap only bounds the time a runaway writer can cost.
+# window at either end; the cap only bounds the time a runaway writer can cost. A line
+# longer than the line cap is read in pieces, so the scan carries the end of each piece
+# into the next, where the abort message could straddle the split.
 _STDERR_SCAN_LIMIT = 64 << 20
 _STDERR_LINE_LIMIT = 64 << 10
+_WHAT = b"what():"
 
 
 def _scan_stderr(stderr: IO[bytes]) -> tuple[bool, str]:
     """Whether the child's stderr holds rapidgzip's truncation abort, and the text of
-    its C++ ``what():`` line (``": <text>"``, or an empty string when there is none)."""
+    its C++ ``what():`` line (``": <text>"``, or an empty string when there is none).
+
+    The last ``what():`` is taken: ``std::terminate`` writes it as the child dies, and
+    output written earlier may hold the same text for another reason.
+    """
     truncated, reason = False, ""
+    carry = b""
     try:
         stderr.seek(0)
         scanned = 0
         while scanned < _STDERR_SCAN_LIMIT:
-            line = stderr.readline(_STDERR_LINE_LIMIT)
-            if not line:
+            piece = stderr.readline(_STDERR_LINE_LIMIT)
+            if not piece:
                 break
-            scanned += len(line)
-            truncated = truncated or _TRUNCATION_ABORT in line
-            stripped = line.strip()
-            if not reason and stripped.startswith(b"what():"):
-                text = stripped[len(b"what():") :].strip().decode("utf-8", "replace")
+            scanned += len(piece)
+            truncated = truncated or _TRUNCATION_ABORT in carry + piece
+            carry = piece[-(len(_TRUNCATION_ABORT) - 1) :]
+            at = piece.rfind(_WHAT)
+            if at >= 0:
+                text = piece[at + len(_WHAT) :].strip().decode("utf-8", "replace")
                 reason = f": {text[:200]}"
     except (OSError, ValueError):
         pass
@@ -317,11 +338,11 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         proc = self._proc
         assert proc is not None and proc.stdout is not None
         try:
-            header = read_exact(proc.stdout, FRAME.size)
+            header = read_exact_or_none(proc.stdout, FRAME.size)
             if header is None:
                 return None
             tag, arg, size = FRAME.unpack(header)
-            payload = read_exact(proc.stdout, size) if size else b""
+            payload = read_exact_or_none(proc.stdout, size) if size else b""
         except (OSError, ValueError):
             return None
         if payload is None:
@@ -358,6 +379,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             else:
                 raise ValueError(f"unknown request {tag} from the rapidgzip process")
         except Exception as exc:  # noqa: BLE001 - parked, then raised to the caller
+            try:
+                setattr(exc, _FROM_SOURCE, True)
+            except AttributeError:  # an exception type that refuses new attributes
+                pass
             self._parked = exc
             if self._source_fault is None:
                 self._source_fault = exc

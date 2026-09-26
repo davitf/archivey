@@ -420,22 +420,27 @@ class _FailingSource(io.BytesIO):
         return super().read(size)
 
 
+@pytest.mark.parametrize("error", [RuntimeError, EOFError])
 @pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
 def test_an_exception_from_the_callers_source_reaches_the_caller_unchanged(
-    codec: Codec,
+    codec: Codec, error: type[Exception]
 ) -> None:
     """The child's reads of a stream source are served here; the caller's own exception
-    from that source is raised as itself, not as a verdict on the data."""
-    failure = RuntimeError("caller source failed")
+    from that source is raised as itself, not as a verdict on the data.
+
+    ``EOFError`` is a type the codecs' stdlib translation maps to ``TruncatedError``
+    (and a type a network file object raises on a dropped connection), so it shows the
+    source's exception bypasses that translation too."""
+    failure = error("caller source failed")
     source = _FailingSource(_compress(codec, _payload()), failure)
     with open_codec_stream(codec, source, config=_ON) as stream:
-        with pytest.raises(RuntimeError) as info:
+        with pytest.raises(error) as info:
             while stream.read(1 << 16):
                 pass
         assert info.value is failure
         # The child was told its input ended where the source failed. Whatever it does
         # with that, it is not reported as a verdict on the data.
-        with pytest.raises((RuntimeError, ReadError)) as later:
+        with pytest.raises((error, ReadError)) as later:
             while stream.read(1 << 16):
                 pass
         assert not isinstance(later.value, (CorruptionError, TruncatedError))
@@ -514,6 +519,35 @@ def test_the_abort_message_is_found_among_other_output(
     assert reason.startswith(": The bit buffer")
 
 
+@pytest.mark.parametrize("inside", [1, 30, 62])
+def test_the_abort_message_is_found_across_a_split_long_line(
+    tmp_path: Path, inside: int
+) -> None:
+    """A line longer than the scan's line cap is read in pieces; the abort message that
+    straddles a split, with ``inside`` of its bytes in the first piece, is still found."""
+    marker = rapidgzip_child._TRUNCATION_ABORT
+    filler = b"x" * (rapidgzip_child._STDERR_LINE_LIMIT - inside)
+    with (tmp_path / "stderr").open("w+b") as stderr:
+        stderr.write(filler + marker + b" from the file!\n")
+        truncated, _ = rapidgzip_child._scan_stderr(stderr)
+    assert truncated
+
+
+def test_the_last_what_line_gives_the_reason(tmp_path: Path) -> None:
+    """Earlier output holding ``what():`` does not stand in for the abort's own line."""
+    content = (
+        b"  what():  an earlier message\n"
+        b"terminate called after throwing an instance of 'std::logic_error'\n"
+        b"  what():  The bit buffer should not contain more data than have been read "
+        b"from the file!\n"
+    )
+    with (tmp_path / "stderr").open("w+b") as stderr:
+        stderr.write(content)
+        truncated, reason = rapidgzip_child._scan_stderr(stderr)
+    assert truncated
+    assert reason.startswith(": The bit buffer")
+
+
 @pytest.mark.parametrize(
     "message",
     [
@@ -535,6 +569,18 @@ def test_any_runtime_error_rapidgzip_raised_is_translated(message: str) -> None:
         )
         assert isinstance(codec._translate_accelerator(reported), CorruptionError)
         assert codec._translate_accelerator(RuntimeError(message)) is None
+
+
+def test_an_eof_error_the_child_reported_is_still_translated() -> None:
+    """The mark that keeps the caller's source exception unchanged is on that exception
+    only: an ``EOFError`` rapidgzip raised in the child is still a truncation."""
+    for codec in (
+        codecs_module.GzipCodec(),
+        codecs_module.DeflateCodec(),
+        codecs_module.ZlibCodec(),
+    ):
+        reported = rapidgzip_child._reported_error(b"EOFError\n\nend of stream")
+        assert isinstance(codec._translate_accelerator(reported), TruncatedError)
 
 
 def test_an_unknown_exception_from_the_child_propagates_unmapped() -> None:

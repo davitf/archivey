@@ -76,6 +76,7 @@ from archivey.internal.streams.ppmd_child import PpmdChildError
 from archivey.internal.streams.rapidgzip_child import (
     RapidgzipChildStartError,
     RapidgzipChildStream,
+    from_callers_source,
     rapidgzip_child_available,
     reported_by_child,
 )
@@ -703,6 +704,21 @@ def _accelerator_backstop_source(
         shared = SharedSource(source)
         return shared.view(0), (lambda: shared.view(0))
     return source, None
+
+
+def _translate_child_or_stdlib(
+    exc: Exception, label: str, stdlib: Callable[[Exception], ArchiveyError | None]
+) -> ArchiveyError | None:
+    """The accelerator translator of a DEFLATE-family codec: rapidgzip's exceptions, then
+    ``stdlib`` for an ``AUTO`` open whose child could not start and so decodes with the
+    stdlib (:func:`_open_rapidgzip`) after this translator was chosen.
+
+    An exception from the caller's own source, which the child's reads were served from,
+    is neither: it reaches the caller unchanged.
+    """
+    if from_callers_source(exc):
+        return None
+    return _translate_rapidgzip(exc, label) or stdlib(exc)
 
 
 def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
@@ -1429,13 +1445,8 @@ class GzipCodec(StreamCodec):
         return _rapidgzip_rewind_warning("gzip", config)
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
-        """Translate the rapidgzip accelerator's exceptions to the library's error types.
-
-        Falls through to :meth:`translate`: an ``AUTO`` open whose child could not start
-        decodes with the stdlib (:func:`_open_rapidgzip`), after this translator was
-        chosen.
-        """
-        return _translate_rapidgzip(exc, "gzip") or self.translate(exc)
+        """Translate the rapidgzip accelerator's exceptions to the library's error types."""
+        return _translate_child_or_stdlib(exc, "gzip", self.translate)
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         """Surface gzip's stored filename (FNAME) and mtime.
@@ -1919,7 +1930,7 @@ class DeflateCodec(_ZlibErrorCodec):
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         # Falls through: an AUTO open whose child could not start decodes with the stdlib.
-        return _translate_rapidgzip(exc, "deflate") or self.translate(exc)
+        return _translate_child_or_stdlib(exc, "deflate", self.translate)
 
 
 def _zlib_header_plausible(prefix: bytes) -> bool:
@@ -1984,7 +1995,7 @@ class ZlibCodec(_ZlibErrorCodec):
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         # Falls through: an AUTO open whose child could not start decodes with the stdlib.
-        return _translate_rapidgzip(exc, "zlib") or self.translate(exc)
+        return _translate_child_or_stdlib(exc, "zlib", self.translate)
 
     def content_probe(
         self,
