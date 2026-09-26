@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from archivey import open_archive
+from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
@@ -230,6 +231,35 @@ def test_aes_tampered_hmac_raises_corruption(method: int) -> None:
     )
     with open_archive(io.BytesIO(data), password=_PASSWORD) as ar:
         with pytest.raises(CorruptionError, match="HMAC"):
+            ar.read(ar.members()[0])
+
+
+@pytest.mark.parametrize("mode", [AcceleratorMode.AUTO, AcceleratorMode.ON])
+@pytest.mark.parametrize("passwords", [[_PASSWORD], [b"other", _PASSWORD]])
+@requires("cryptography", "rapidgzip")
+def test_aes_hmac_survives_a_seekable_accelerator(
+    mode: AcceleratorMode, passwords: list[bytes]
+) -> None:
+    """An accelerator that seeks its input must not void the HMAC the caller relies on.
+
+    With ``seekable_members=True`` the decrypt stage is seekable, and rapidgzip reads
+    its source out of order. The HMAC is the only check on an AE-2 member and the
+    confirmation for several candidates, so a caller who reads straight through gets
+    its verdict whatever the codec layer does underneath.
+    """
+    data = _build_aes_zip(
+        payload=_PAYLOAD,
+        password=_PASSWORD,
+        vendor_version=2,
+        strength=3,
+        method=8,
+        tamper_hmac=True,
+    )
+    config = ArchiveyConfig(use_rapidgzip=mode)
+    with open_archive(
+        io.BytesIO(data), password=passwords, seekable_members=True, config=config
+    ) as ar:
+        with pytest.raises((CorruptionError, EncryptionError)):
             ar.read(ar.members()[0])
 
 

@@ -152,7 +152,8 @@ list of names, to every call would otherwise raise on every archive they do not 
 `EXPLICIT_FORMAT_LISTED_EMPTY` (an override that halts you is not an override),
 `STREAM_REWIND_REDECOMPRESSES` (your access pattern, not the archive — most useful as a
 targeted tripwire), `ENCRYPTED_MEMBER_UNVERIFIED` (it fires when you close an encrypted
-member's stream before EOF, having read bytes that no checksum has checked yet; under
+member's stream before EOF, or after a seek, having read bytes that no checksum has
+checked yet; under
 `strict()` a peek at a ZipCrypto member would raise), and `PROBE_FORMAT_UNCONFIRMED` (it
 is emitted while the matching `TruncatedError` or `CorruptionError` is raised, and that
 error already carries `format_unconfirmed=True`). `ARCHIVE_INTEGRITY_CODES` is exported, so you can

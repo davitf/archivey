@@ -138,6 +138,8 @@ seekability is declared **and** the known compressed input is at least
 `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (1 MiB). Smaller members stay on stdlib `zlib`/`gzip`
 so archives of many tiny entries do not pay per-stream accelerator setup. Set
 `use_rapidgzip=ON` to force the accelerator regardless of size, or `OFF` to disable it.
+Inside a WinZip AES member neither setting engages it: the accelerator's own seeks
+would give up the member's HMAC check, so that member decodes with the stdlib decoder.
 
 The two settings differ when `rapidgzip` is not installed. `ON` is a request, so it
 raises `PackageNotInstalledError` naming `[seekable]` — even without

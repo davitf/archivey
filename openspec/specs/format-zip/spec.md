@@ -74,7 +74,9 @@ decodes no member data. A ZipCrypto member SHALL seek under `seekable_members=Tr
 a backward seek restarts decryption from the member's start, a forward seek decrypts
 what it skips, and `AUTO` accelerators stay off over the decrypt stage. A WinZip AES
 member SHALL seek too: CTR restarts at the target's block (counter `1 + offset // 16`),
-and a seek that moves the position forfeits the HMAC as it forfeits the CRC.
+and a seek that moves the position forfeits the HMAC as it forfeits the CRC. Over the
+WinZip AES stage accelerators SHALL stay off under `AUTO` and `ON` alike, so that only
+the caller's own seek forfeits the HMAC.
 
 #### Scenario: ZIP codec-layer decoding
 

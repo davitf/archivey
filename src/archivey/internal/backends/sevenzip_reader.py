@@ -1022,20 +1022,25 @@ class SevenZipReader(BaseArchiveReader):
         if raw.folder_index not in self._folders_unconfirmed:
             return stream
 
-        def report() -> None:
+        def report(reason: str) -> None:
+            missed = (
+                "gave up its checksum by seeking"
+                if reason == "seek"
+                else "was closed before its checksum was reached"
+            )
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
                 message=(
-                    f"Encrypted 7z member {quoted(member.name)} was closed before its "
-                    f"checksum was reached, and no checksum confirmed the password: "
-                    f"the bytes read may have been decrypted with a wrong password."
+                    f"Encrypted 7z member {quoted(member.name)} {missed}, and no "
+                    f"checksum confirmed the password: the bytes read may have been "
+                    f"decrypted with a wrong password."
                 ),
                 context=EncryptedVerificationContext(
                     archive_name=self._archive_name,
                     member_name=member.name,
                     member_id=member._member_id,
                     check="confirm_budget_exhausted",
-                    reason="partial_read",
+                    reason=reason,
                 ),
                 member=member,
                 logger=integrity_logger,

@@ -376,9 +376,11 @@ def test_filters_never_reject_random_input(lzma_filter: dict[str, int]) -> None:
 class _Calls:
     def __init__(self) -> None:
         self.count = 0
+        self.reasons: list[str] = []
 
-    def __call__(self) -> None:
+    def __call__(self, reason: str) -> None:
         self.count += 1
+        self.reasons.append(reason)
 
 
 def _watch(data: bytes) -> tuple[UnverifiedPasswordReadWatch, _Calls]:
@@ -393,7 +395,7 @@ def test_watch_reports_a_partial_read() -> None:
     watch, calls = _watch(b"0123456789")
     assert watch.read(3) == b"012"
     watch.close()
-    assert calls.count == 1
+    assert calls.reasons == ["partial_read"]
     watch.close()
     assert calls.count == 1
 
@@ -513,7 +515,7 @@ def test_a_seek_forfeits_the_digest_when_the_inner_drops_it() -> None:
     watch.seek(5)
     assert watch.read() == b"56789"
     watch.close()
-    assert calls.count == 1
+    assert calls.reasons == ["seek"]
 
 
 def test_rejecting_codec_budget_cut_after_a_large_crc_less_item() -> None:

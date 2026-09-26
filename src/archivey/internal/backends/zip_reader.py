@@ -1276,6 +1276,7 @@ class ZipReader(BaseArchiveReader):
         codec: Codec,
         member_name: str,
         sequential_body: bool = False,
+        authenticated_body: bool = False,
     ) -> ArchiveStream:
         """Decode a member body through the shared codec layer.
 
@@ -1286,10 +1287,20 @@ class ZipReader(BaseArchiveReader):
         ``sequential_body`` marks a body that seeks only by re-reading from its start
         (the ZipCrypto stage). ``AUTO`` accelerators then stay off: they read their
         input at scattered offsets, and every step back would decrypt the member again.
+
+        ``authenticated_body`` marks a body whose own check a seek gives up (the WinZip
+        AES stage and its HMAC). Accelerators stay off there even under ``ON``: their
+        out-of-order reads would void the HMAC for a caller who reads straight through.
         """
         size = member.size if member is not None else info.file_size
         config = replace(self._stream_config, expected_decompressed_size=size)
-        if sequential_body:
+        if authenticated_body:
+            config = replace(
+                config,
+                use_rapidgzip=AcceleratorMode.OFF,
+                use_indexed_bzip2=AcceleratorMode.OFF,
+            )
+        elif sequential_body:
             config = replace(
                 config,
                 use_rapidgzip=_sequential_accelerator(config.use_rapidgzip),
@@ -1501,6 +1512,7 @@ class ZipReader(BaseArchiveReader):
                 codec=codec,
                 member_name=member_name,
                 sequential_body=not hmac_anchor,
+                authenticated_body=hmac_anchor,
             )
 
         def payload_complete() -> bool:
@@ -1838,21 +1850,25 @@ class ZipReader(BaseArchiveReader):
         and only the CRC at EOF notices.
         """
 
-        def report() -> None:
+        def report(reason: str) -> None:
+            missed = (
+                "gave up its integrity check by seeking"
+                if reason == "seek"
+                else "was closed before its integrity check was reached"
+            )
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
                 message=(
-                    f"Encrypted ZIP member {quoted(member_name)} was closed before its "
-                    f"integrity check was reached, and the password was accepted on a "
-                    f"weaker check: the bytes read may have been decrypted with a "
-                    f"wrong password."
+                    f"Encrypted ZIP member {quoted(member_name)} {missed}, and the "
+                    f"password was accepted on a weaker check: the bytes read may have "
+                    f"been decrypted with a wrong password."
                 ),
                 context=EncryptedVerificationContext(
                     archive_name=self._archive_name,
                     member_name=member_name,
                     member_id=member._member_id if member is not None else None,
                     check=check,
-                    reason="partial_read",
+                    reason=reason,
                 ),
                 member=member,
                 logger=integrity_logger,

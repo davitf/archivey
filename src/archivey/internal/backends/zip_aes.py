@@ -186,6 +186,9 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
                 )
 
     def read(self, size: int = -1) -> bytes:
+        # Past the end nothing is left to read. The loop below would also return b""
+        # there (the seek cleared the buffer and the HMAC); this keeps a past-end read
+        # from ever reaching the MAC bytes if those conditions change.
         if size == 0 or self._overshoot:
             return b""
         while size < 0 or len(self._buf) < size:
