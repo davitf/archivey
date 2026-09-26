@@ -63,6 +63,7 @@ UNRESOLVED_OK = {
     "archivey.Diagnostic.to_dict",
     "archivey.ExtractionLimits.UNLIMITED",
     "archivey.ListingLimits.UNLIMITED",
+    "archivey.SpoolLimits.UNLIMITED",
     # Standard library: the site has no inventory for Python's own docs.
     "OSError",
     "ValueError",

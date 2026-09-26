@@ -172,6 +172,7 @@ re-decode from block start) stays under `AccessCost` / `solid_block_count` /
 | `stream_members()` handle with `seekable_members=True`, `streaming=False` or `True`, file source, every format | `seekable()` false; `seek()` → `io.UnsupportedOperation`; `tell()` + forward reads OK |
 | `extract_all()` with nothing declared | Completes; internal opens ungated |
 | `open_archive(p, member_streams=...)` | `TypeError` — the parameter no longer exists |
+| Seek before the start of a random `open()` stream with `seekable_members=True` | Relative (`SEEK_CUR` / `SEEK_END`) underflow clamps to 0, as `io.BytesIO`; negative `SEEK_SET` or unknown `whence` → `ValueError`, never a translated archive error. Directory member: relative underflow is the OS file's `OSError` |
 
 ### Requirement: Multi-volume and multi-source input
 
@@ -484,7 +485,8 @@ mirror an allocator — but the weight MUST NOT under-count UTF-8 size:
   than UTF-8 (plain `len(s)` on non-ASCII would under-count a Unicode name bomb).
 - `raw_name`: `len(raw_name)` when not `None` (stored archive bytes; already exact)
 - `extra`: lengths of `str` / `bytes` values under the same rules; for a one-level
-  `dict` value, nested `str` / `bytes` values only
+  `dict` value, its `str` / `bytes` keys and values (archive-sized text such as TAR's
+  PAX keywords). Top-level `extra` keys are format-defined literals and are not counted
 - Exclude: `_raw`, `hashes`, diagnostics, Python object overhead
 
 A field filled in after its member was registered SHALL be weighed when it is filled
@@ -506,7 +508,8 @@ from the running total above; the decoded comments are weighed again at registra
 | --- | --- |
 | Member with long `name` + `raw_name` | Both weights count |
 | Huge `ArchiveInfo.comment` alone | Counts toward the budget once |
-| `extra` holds opaque non-str/bytes object | Not counted |
+| `extra` holds opaque non-str/bytes object | Not counted, and neither is its top-level key |
+| `extra` holds a dict with a long key (PAX keyword) | The key counts, like its value |
 | ASCII-only name | Weight equals `len(name)` (exact UTF-8) |
 | Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
 | Symlink target read from member data after registration | Weighed when read; over the cap → `ResourceLimitError` naming `max_metadata_bytes` |
@@ -912,8 +915,9 @@ size as an implicit side effect of open/read/validate/password-confirm. Silently
 spooling plaintext to a temp file is forbidden. A per-format strategy that
 inherently needs proportional temp storage (e.g. `format-rar`'s documented copy of
 a non-path archive source to disk, so `unrar` can seek it) is allowed only when
-declared in that format's capability spec. Caller's own buffering of a returned
-stream is unrestricted.
+declared in that format's capability spec, and a strategy that copies the archive
+source SHALL be bounded by `ArchiveyConfig.spool_limits`. Caller's own buffering of a
+returned stream is unrestricted.
 
 #### Scenario: bounded storage matrix
 
@@ -921,6 +925,7 @@ stream is unrestricted.
 | --- | --- |
 | Encrypted member, many candidates | Confirmation temp use bounded by a constant |
 | Backend can only serve via materialization | Strategy declared in format spec, not adopted silently |
+| Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `SpoolLimitExceededError` |
 
 ### Requirement: Explicit configuration object
 
@@ -949,6 +954,11 @@ class DecoderLimits:
     UNLIMITED: ClassVar["DecoderLimits"]
 
 @dataclass(frozen=True)
+class SpoolLimits:
+    max_bytes: int | None = 2**30
+    UNLIMITED: ClassVar["SpoolLimits"]
+
+@dataclass(frozen=True)
 class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
@@ -958,6 +968,7 @@ class ArchiveyConfig:
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
     decoder_limits: DecoderLimits = DecoderLimits()
+    spool_limits: SpoolLimits = SpoolLimits()
     detection_budget: DetectionBudget = BALANCED_BUDGET
     diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
     max_retained_diagnostic_references: int = 256
@@ -999,6 +1010,14 @@ auto-detection itself, and under `format=` the stub-volume check and the rescan 
 confirms an empty listing. It is annotated as a `DetectionBudget`, like the accelerator
 fields beside it: a preset member or its name is converted at construction, so the field
 always holds a budget.
+`spool_limits` SHALL bound the bytes one reader writes to temporary storage as a copy of
+its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
+volume set and across attempts: a copy refused once SHALL stay refused for that reader
+without writing again. `None` SHALL disable the guard; `SpoolLimits.UNLIMITED` sets it to
+`None`. A copy over the limit SHALL raise `SpoolLimitExceededError`, a subclass of
+`ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when the
+size is known, and otherwise before the written total passes the limit, with the partial
+copy removed. A path source is not copied and SHALL NOT be refused by it.
 `read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
 the format stores as member data (see "Link targets stored as member data are read only
 when configured"); like `listing_limits`, it holds for the reader's lifetime.
@@ -1015,7 +1034,7 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 
 | Case | Expected |
 | --- | --- |
-| `ArchiveyConfig()` | AUTO accelerators; documented extraction and listing defaults; COLLECT; budget 256; no callback |
+| `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB); COLLECT; budget 256; no callback |
 | `extract(..., extraction_limits=ExtractionLimits(max_ratio=100))` | 100:1 per-member ratio enforced (`safe-extraction`) |
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
