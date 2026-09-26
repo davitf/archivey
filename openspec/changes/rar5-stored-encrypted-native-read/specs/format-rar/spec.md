@@ -1,0 +1,218 @@
+# format-rar — stored encrypted RAR5 native read delta
+
+> Each MODIFIED block below is the full requirement as it will read after the change.
+> The added text is the RAR5-stored-encrypted carve-out; everything else is verbatim.
+
+## MODIFIED Requirements
+
+### Requirement: Declare RAR format properties
+
+The RAR backend SHALL expose these properties:
+
+| Property | Value |
+| --- | --- |
+| Read dependency (metadata) | None; native RAR 1.5–RAR5 header parser |
+| Read dependency (data) | RARLAB `unrar` or `rar` binary on `PATH` (`unrar` preferred), except stored members served natively — see "Use RARLAB unrar only for member data that needs it" |
+| Listing cost | O(1); headers parsed natively, no member-data decompression |
+| Access cost | `SOLID` for solid archives; `DIRECT` otherwise |
+| Supports write | No |
+| Requires seek | Yes |
+
+#### Scenario: format property matrix
+
+| Case | Expected |
+| --- | --- |
+| Open non-header-encrypted RAR without `unrar`/`rar` | Listing and metadata still work through the native parser |
+| Open from a non-seekable source | Open fails because RAR header parsing requires seek |
+| Attempt to create/write RAR | `UnsupportedOperationError` |
+
+### Requirement: Use RARLAB unrar only for member data that needs it
+
+The system SHALL read stored, uncompressed, unencrypted members directly as raw
+bytes through the shared pass-through backend. A stored **RAR5** member whose data is
+encrypted SHALL also be read directly, by decrypting that byte range in process with
+AES-256-CBC from the member's own FILE encryption record, and SHALL NOT invoke a
+RARLAB binary. That native path applies only when every one of the following holds;
+otherwise the member falls back to the RARLAB spawn below, unchanged:
+
+| Condition | Why |
+| --- | --- |
+| RAR5 (a parsed FILE encryption record with salt and IV) | RAR4's `LHD` salt is not parsed; RAR4 stays on `unrar` |
+| Stored (M0), not solid, not split, not volume-spanning | The existing direct-read guards |
+| A crypto backend is available | No `cryptography`, no in-process AES |
+| A password is available | Nothing to derive a key from |
+
+The plaintext length SHALL come from `file_size`, not from the encrypted byte range:
+RAR5 pads the ciphertext to the 16-byte CBC boundary and the padding is not member data.
+Where the FILE record carries a 12-byte PswCheck, a provably wrong password SHALL raise
+`EncryptionError` before any plaintext is produced, never truncated or garbage bytes.
+A natively decrypted member SHALL be digest-verified exactly as it is today — through the
+RAR5 tweaked-checksum path — so the direct read is not less verified than the spawn it
+replaces.
+
+All other member data SHALL be
+read by invoking a system RARLAB decompressor: `unrar` if a usable binary is on
+`PATH`, otherwise `rar`. A usable binary is identified by a RARLAB banner
+(`Alexander Roshal` or `RARLAB`, plus a standalone `UNRAR` or `RAR` token that
+does not match inside `UNRAR`) whose parsed major.minor is 6.0 or later.
+If a decompressor is required and missing or incompatible, the system SHALL raise
+`PackageNotInstalledError` naming RARLAB `unrar` or `rar`. Archivey MUST NOT
+silently use `unrar-free`, `unar`, `bsdtar`, `7z`, or a degraded backend. The
+spawn SHALL be the `p` (print to stdout) command only.
+
+#### Scenario: unrar dependency matrix
+
+| Case | Expected |
+| --- | --- |
+| Stored member, `unrar`/`rar` missing | Raw bytes are returned without invoking either |
+| Compressed member, both missing | `PackageNotInstalledError` names `unrar` or `rar` |
+| PATH `unrar` is not RARLAB `unrar`, and no usable `rar` | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
+| RARLAB `unrar` older than 6.0 and no usable `rar`, or a RARLAB banner with no parseable version | `PackageNotInstalledError` names the floor and the version found; refused at identification |
+| RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed/encrypted member data; spawn is `rar p` |
+| RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
+| Listing only, both missing | No data dependency is checked |
+
+#### Scenario: stored encrypted RAR5 matrix
+
+| Case | Expected |
+| --- | --- |
+| Stored encrypted RAR5 member, correct password, no `unrar`/`rar` on `PATH` | Plaintext returned natively; no spawn, no `PackageNotInstalledError` |
+| Same member, bytes compared against `unrar p` | Byte-for-byte equal, including payload lengths that are not multiples of 16 |
+| Same member, `seek()` mid-stream then read | Served from the CBC restart; no respawn, no whole-member replay |
+| Stored encrypted RAR5 member, wrong password, PswCheck present | `EncryptionError`; no plaintext handed to the caller |
+| Stored encrypted RAR5 member, no crypto backend installed | Falls back to the RARLAB spawn (behaviour unchanged from today) |
+| Stored encrypted **RAR4** member | RARLAB spawn, as today — the RAR4 salt is not parsed |
+| Compressed encrypted RAR5 member | RARLAB spawn, as today |
+| Stored encrypted member in a solid, split, or volume-spanning archive | RARLAB spawn, as today |
+| Stored encrypted RAR5 member with a tweaked CRC32/BLAKE2sp | Digest verified through the `ConvertHashToMAC` transform, as for the spawned read |
+
+### Requirement: Constrain unrar argv by call site
+
+The system SHALL invoke RARLAB `unrar` with member path arguments only as follows:
+
+| Call site | Member path args after the archive |
+| --- | --- |
+| Solid `stream_members()` / solid `_iter_with_data` | none (unnamed `unrar p -inul <archive>`) |
+| `_open_member` for a FILE member | exactly one archive-relative member path |
+| Stored M0 unencrypted member | `unrar` not invoked |
+| Stored M0 RAR5 member encrypted with a parsed FILE encryption record, crypto backend and password available | `unrar` not invoked |
+
+The system MUST NOT pass multiple member paths, globs, or `@listfile` filters in this
+capability’s initial implementation. Hardlink / file-copy members are never named on the
+`unrar` command line; the shared link-following layer opens the target FILE instead.
+
+#### Scenario: unrar argv matrix
+
+| Case | Expected |
+| --- | --- |
+| Solid full or filtered `stream_members()` | One `unrar p` with no member path args |
+| Nonsolid `open()` / lazy stream of a FILE | `unrar p … <archive> <member>` |
+| `open()` on hardlink / `FILE_COPY` | `unrar` receives the target FILE path only (after link follow), or equivalent target open |
+| Symlink member | No `unrar` data read for the link payload |
+| Nonsolid `open()` of a natively decrypted stored RAR5 member | No `unrar` invocation at all |
+
+### Requirement: Serve random access and extraction with bounded explicit temp use
+
+The system SHALL serve non-solid random reads by invoking `unrar` for the target
+member **with that member's path as the sole path argument**, doing
+O(member_size) data work. For solid random reads, the system SHALL decode from
+archive start to the target member (named `unrar p … <member>`). Each such read
+is its own decode: the reader SHALL NOT amortize repeated solid reads by
+extracting members into a temporary directory and serving later reads from disk.
+`extract_all()` SHALL be served by the same `stream_members()` pass as any other
+caller, plus a second `stream_members()` pass when a selected hardlink's source
+was excluded and has to be re-read; on a solid archive each pass is one unnamed
+`unrar p` addressed at the whole archive, decoding only as far as the last
+member it needs. Which members a pass names on the `unrar` command line — and
+which need no spawn at all — is governed by `Constrain unrar argv by call site`.
+Any temp materialization SHALL be a declared RAR strategy, not an implicit
+in-memory buffer; the only one the reader implements is copying a non-path
+archive *source* to disk so `unrar` can seek it, the deferred small-member
+optimization being the other strategy this capability declares.
+
+A non-path stream source SHALL NOT be copied to disk at open. Both stream shapes —
+a single stream and an ordered set of stream volumes — SHALL defer the copy to the
+first member read that `unrar` has to serve, and a caller that only lists SHALL
+write nothing. An `open()` the reader refuses before spawning `unrar` — a name it
+cannot address through an include mask, or one whose mask would pull in earlier
+members — is not such a read and SHALL write nothing either. Listing SHALL be served from the source the caller supplied; for a
+volume set the reader SHALL read each volume as its own bounded view over that
+source rather than reopening or copying it.
+
+When the copy does happen for a volume set it SHALL write the whole set, because
+`unrar` resolves sibling volumes by name.
+
+The copy SHALL be bounded by `ArchiveyConfig.spool_limits` (`archive-reading`), measured
+across the whole volume set, file volumes of a mixed set included. The archive size is
+known before the copy, so an archive over `SpoolLimits.max_bytes` SHALL raise
+`SpoolLimitExceededError` (a `ResourceLimitError`) before any byte is written and before
+`unrar` is spawned. Where the size is not known up front, the copy SHALL stop before its
+total passes the limit and SHALL remove what it wrote. The limit SHALL hold for the
+reader, not for each attempt: once a copy has been refused, a later read that needs it
+SHALL raise the same refusal without writing again. With `max_bytes=0` a member that
+cannot be read directly SHALL be refused, and a member that can SHALL still read.
+
+When the archive is opened from a
+non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
+caveat **at open** (path sources SHALL NOT): a single stream source SHALL warn
+that reading **a member that requires the RARLAB spawn** will copy the whole
+archive to disk; ordered stream volumes SHALL warn that reading such a member will
+copy every volume to a temp directory. The caveat SHALL name the spool limit in force
+(or say there is none), so the caller reads the worst case at open. When the limit
+already rules the copy out — `max_bytes=0`, or a copy whose size is known at open and is
+over the limit — the caveat SHALL say that such a read will be refused, in place of the
+copy warning. The note is a
+static open-time caveat, not an occurrence log:
+it SHALL be present even if only directly-read members are read, and SHALL NOT appear
+after materialization if it was absent at open. Mixed-password
+nonsolid archives MUST NOT demultiplex one unnamed `unrar p` ALL pipe against the
+full member list (wrong-password members are omitted from stdout and would
+desynchronize sizes).
+
+The caveat's wording SHALL track the set in "Use RARLAB unrar only for member data that
+needs it" rather than naming compression: a stored **encrypted** member triggers the copy
+too.
+
+#### Scenario: random/extract matrix
+
+| Case | Expected |
+| --- | --- |
+| Random `open()` in non-solid RAR | `unrar p … <archive> <member>`; work is O(member_size) |
+| Repeated random opens in solid RAR | Each open is its own `unrar p` decode from archive start; no tempdir cache, and the re-decode is reported as `RewindWarning.min_redecode_bytes` |
+| `extract_all()` | The same `stream_members()` pass as any other caller, plus a second pass when a selected hardlink's source was excluded and must be re-read; no `unrar x` |
+| Mixed-password nonsolid stream/open | Per-member named `unrar` (or equivalent); no ALL-pipe demux |
+| Single non-path stream, at open | `ar.cost.notes` warns a spawned read will copy to disk and names the spool limit; nothing is written yet |
+| Ordered stream volumes, at open | `ar.cost.notes` warns a spawned read will copy every volume and names the spool limit; nothing is written yet |
+| Stream source at open, `max_bytes=0` or a known size over the limit | `ar.cost.notes` says a spawned read will be refused and promises no copy |
+| Ordered stream volumes, listing only | No temp directory is created |
+| Solid `stream_members()` pass, no member read | Nothing is written, even from a stream source |
+| Ordered stream volumes, first spawned read | The whole set is written once; later reads reuse it; close removes it |
+| Stream source over `SpoolLimits.max_bytes` | `SpoolLimitExceededError` naming the field; no temp file or directory; no `unrar` spawn |
+| Volume set, each volume within the limit, total over it | `SpoolLimitExceededError`; the limit weighs the total |
+| Stream source of unknown size refused mid-copy, then another spawned read | The same refusal, with no second temp file |
+| Stream source, `max_bytes=0` | Stored members of a non-solid archive read; a member needing `unrar` is refused |
+| Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
+| Path source | `ar.cost.notes` has no disk-copy caveat; the spool limit never refuses it |
+| Non-path stream, RAR5 stored encrypted member read natively | No archive copy; the open-time caveat is still present (static, not an occurrence log) |
+| Non-path stream, RAR4 stored encrypted member | Spawns, so the copy happens — which is why the caveat cannot say "compressed" |
+
+### Requirement: Decrypt RAR5 header-encrypted archives natively
+
+The system SHALL decrypt RAR5 header-encrypted archives through the optional
+crypto backend when a valid password is supplied. The native parser derives the
+AES key and decrypts headers itself; `unrar` is not required for listing, and for
+member data it is required only where the direct-read path above does not apply.
+Header-encrypted listing without a
+password SHALL raise `EncryptionError`; with a password but no `cryptography`
+backend (`[recommended]`), it SHALL raise `PackageNotInstalledError`. Any encrypted RAR
+SHALL set `ArchiveInfo.is_encrypted` to `True`.
+
+#### Scenario: header encryption matrix
+
+| Case | Expected |
+| --- | --- |
+| Header-encrypted RAR5, no password | `EncryptionError` |
+| Header-encrypted RAR5, password but no crypto backend | `PackageNotInstalledError` |
+| Header-encrypted RAR5, valid password + crypto | Headers decrypt natively; members list; `is_encrypted` true |
+| Read a **compressed** member from that archive | `unrar` is still required |
+| Read a **stored** member from that archive, its FILE encryption record parsed | Served natively; no spawn |

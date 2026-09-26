@@ -1,0 +1,13 @@
+# docs-ia-split-user-guide — reshape the guide into pages that each do one job
+
+**Status:** Ready to implement. Depends on the maintainer-tree move that landed in pull request 221. Blocks the documentation content pass, Topic 8. Not breaking. Effort: medium, and almost all of it is moving text rather than writing it.
+
+**Why it matters:** the first half of this migration decided where maintainer material lives. What is left on the site is still shaped wrong. Basic usage is two hundred and seventy-four lines doing five different jobs — install, opening, reading, error handling and the command line all on one page. The command line has a two hundred and seventy line specification, its own archived product review, and no navigation entry at all. Gotchas restates four sections of the access costs page word for word, and the same accelerator caveat has already drifted across four copies. Meanwhile safe extraction, which carries the project's first vision claim and is backed by the largest specification in the tree, is the thinnest page on the site.
+
+**What it does:** splits basic usage five ways, renames the costs page, grows safe extraction roughly threefold by absorbing material that already exists in four other places, and shrinks Gotchas to a digest where every entry is one line and a link. It also splits the integrity decision record and the threat model, moves the deduplication recipe next to the stored digest table it depends on, and makes the agent guide canonical with the Claude file becoming a pointer.
+
+**Decided:** this change moves blocks and does not write prose. The outline identifies roughly four hundred and ninety-five lines that no merge can supply, and writing them here would turn a diff a reviewer can check by reading section headings into one they cannot — the same argument that split this phase in two. Pages that need new prose ship thin and Topic 8 fills them. Three narrow exceptions: each new page gets an orienting sentence, the Gotchas digest lines are the page so there is no move-only version, and four threat model residual one-liners are routed there by an earlier decision. The how-it-works page is not created at all, since it is entirely new prose, so navigation ends this change at fifteen entries rather than the outline's sixteen.
+
+**Your call later:** whether the how-it-works page earns its hundred and fifty lines, or whether the decisions summary belongs distributed across the pages that raise each question. That is a Topic 8 judgement once the rest of the guide is visible.
+
+**Bottom line:** the shape change the whole review was for, and it should land before the point-two-oh tag freezes the readme's links.

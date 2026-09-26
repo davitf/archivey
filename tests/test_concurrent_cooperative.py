@@ -1,0 +1,409 @@
+"""Cooperative concurrency / lifecycle / password tests for MemberStreams.CONCURRENT.
+
+Multi-thread / free-threaded stress lives in ``test_concurrent_multithread.py`` and the
+Linux ``3.13t`` ``free-threaded-concurrency`` CI job.
+"""
+
+from __future__ import annotations
+
+import contextvars
+import gzip
+import io
+import threading
+from pathlib import Path
+
+import pytest
+
+from archivey import (
+    ArchiveyError,
+    ArchiveyUsageError,
+    ConcurrentAccessError,
+    open_archive,
+)
+from archivey.internal.password import _PasswordCandidates
+from archivey.internal.streams.archive_stream import ArchiveStream
+
+pytestmark = pytest.mark.concurrent_reader
+
+
+def _dir_with_files(tmp_path: Path) -> Path:
+    (tmp_path / "a.txt").write_bytes(b"aaa")
+    (tmp_path / "b.txt").write_bytes(b"bbb")
+    return tmp_path
+
+
+# --- 7.3 cooperative state / overlap ----------------------------------------------------
+
+
+def test_open_during_stream_members_raises(tmp_path: Path) -> None:
+    root = _dir_with_files(tmp_path)
+    with open_archive(root) as reader:
+        it = reader.stream_members()
+        member, stream = next(it)
+        assert stream is not None
+        with pytest.raises(ArchiveyUsageError, match="already active"):
+            reader.open("b.txt")
+        assert stream.read() == b"aaa"
+        # Exhaust / close the pass so the reader can be closed cleanly.
+        list(it)
+
+
+def test_members_then_open_ok(tmp_path: Path) -> None:
+    root = _dir_with_files(tmp_path)
+    with open_archive(root, concurrent_members=True) as reader:
+        names = {m.name for m in reader.members()}
+        assert names == {"a.txt", "b.txt"}
+        s1 = reader.open("a.txt")
+        s2 = reader.open("b.txt")
+        assert s1.read() == b"aaa"
+        assert s2.read() == b"bbb"
+        s1.close()
+        s2.close()
+
+
+# --- iterate-then-open regression (random-mode __iter__ holds no pass across consumption) ---
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_iterate_and_open_inside_loop(tmp_path: Path, concurrent: bool) -> None:
+    """`for m in reader: reader.open(m)` must work on default and CONCURRENT readers.
+
+    Random-mode iteration only walks the published snapshot, so it must not hold a
+    reader-wide pass that would reject open()/get() in the loop body (D7 scope).
+    """
+    root = _dir_with_files(tmp_path)
+    got: dict[str, bytes] = {}
+    with open_archive(root, concurrent_members=concurrent) as reader:
+        for member in reader:
+            if member.is_file:
+                with reader.open(member) as stream:
+                    got[member.name] = stream.read()
+    assert got == {"a.txt": b"aaa", "b.txt": b"bbb"}
+
+
+def test_iterate_and_get_inside_loop(tmp_path: Path) -> None:
+    root = _dir_with_files(tmp_path)
+    with open_archive(root) as reader:
+        for member in reader:
+            assert reader.get(member.name) is not None
+
+
+def test_iterate_default_single_live_stream_gate_preserved(tmp_path: Path) -> None:
+    """The fix must not weaken the default single-live-stream gate during iteration."""
+    root = _dir_with_files(tmp_path)
+    with open_archive(root) as reader:
+        with pytest.raises(ConcurrentAccessError):
+            held = []
+            for member in reader:
+                if member.is_file:
+                    # Keep each stream open (never closed) → the second overlaps the first.
+                    held.append(reader.open(member))
+
+
+def test_iterate_rejected_during_active_pass(tmp_path: Path) -> None:
+    """Random-mode iteration still cannot start while another pass owns the reader."""
+    root = _dir_with_files(tmp_path)
+    with open_archive(root) as reader:
+        it = reader.stream_members()
+        next(it)
+        with pytest.raises(ArchiveyUsageError, match="already active"):
+            next(iter(reader))
+        list(it)
+
+
+def test_close_during_stream_members_raises(tmp_path: Path) -> None:
+    root = _dir_with_files(tmp_path)
+    reader = open_archive(root)
+    it = reader.stream_members()
+    next(it)
+    with pytest.raises(ArchiveyUsageError, match="is active"):
+        reader.close()
+    list(it)
+    reader.close()
+
+
+# --- 7.4 cooperative lifecycle ----------------------------------------------------------
+
+
+def test_reader_close_closes_member_streams(tmp_path: Path) -> None:
+    """A member stream does not outlive its reader (stdlib ZipFile/TarFile parity)."""
+    root = _dir_with_files(tmp_path)
+    reader = open_archive(root)
+    stream = reader.open("a.txt")
+    reader.close()
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        reader.open("b.txt")
+    assert stream.closed
+    with pytest.raises(ValueError, match="closed file"):
+        stream.read()
+    stream.close()  # idempotent
+
+
+def test_caller_owned_source_not_closed_by_reader() -> None:
+    buf = io.BytesIO(gzip.compress(b"payload"))
+    with open_archive(buf) as reader:
+        with reader.open(reader.members()[0]) as stream:
+            assert stream.read() == b"payload"
+    assert not buf.closed
+
+
+def test_usage_errors_escape_archivey_error(tmp_path: Path) -> None:
+    root = _dir_with_files(tmp_path)
+    with open_archive(root) as reader:
+        s = reader.open("a.txt")
+        try:
+            with pytest.raises(ConcurrentAccessError):
+                reader.open("b.txt")
+        finally:
+            s.close()
+    assert not issubclass(ConcurrentAccessError, ArchiveyError)
+
+
+# --- 7.5 password (simplified D10) ------------------------------------------------------
+
+
+def test_password_provider_reentry_raises() -> None:
+    box: dict[str, _PasswordCandidates] = {}
+
+    def provider(req):  # noqa: ANN001
+        # Same-reader reentry while the provider lock marks depth > 0.
+        with pytest.raises(ArchiveyUsageError, match="reentered"):
+            box["c"].ask_provider(None, 99)
+        return b"pw" if req.attempt == 1 else None
+
+    candidates = _PasswordCandidates.from_input(provider)
+    box["c"] = candidates
+    assert candidates.attempt(None, lambda _p: b"data") == b"data"
+
+
+def test_password_provider_second_thread_waits_instead_of_raising() -> None:
+    """Two workers needing the provider at once is a correct program, not reentry.
+
+    The guard used to count calls per reader, so while one thread's provider was
+    running, any other thread asking the same reader failed with the reentry error.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def provider(req):  # noqa: ANN001
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        entered.set()
+        release.wait(5)
+        with lock:
+            active -= 1
+        return b"pw"
+
+    candidates = _PasswordCandidates.from_input(provider)
+    results: dict[str, object] = {}
+
+    def ask(name: str) -> None:
+        try:
+            results[name] = candidates.ask_provider(None, 1)
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            results[name] = exc
+
+    first = threading.Thread(target=ask, args=("first",))
+    first.start()
+    assert entered.wait(5)
+    second = threading.Thread(target=ask, args=("second",))
+    second.start()
+    # The second call must be parked on the turn, not failed and finished.
+    second.join(0.2)
+    assert second.is_alive(), results.get("second")
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert results == {"first": b"pw", "second": b"pw"}
+    assert max_active == 1
+
+
+def test_password_provider_reentry_from_a_context_carrying_thread_raises() -> None:
+    """A provider that hands reader work to a helper thread is still reentry.
+
+    The helper is not the provider's thread, so a thread check alone would park it
+    behind the turn the provider holds while the provider waits on the helper.
+    ``contextvars.copy_context().run`` is what ``asyncio.to_thread`` does.
+    """
+    box: dict[str, object] = {}
+
+    def helper() -> None:
+        try:
+            box["result"] = candidates.ask_provider(None, 99)
+        except ArchiveyUsageError as exc:
+            box["result"] = exc
+
+    def provider(req):  # noqa: ANN001
+        context = contextvars.copy_context()
+        worker = threading.Thread(target=context.run, args=(helper,), daemon=True)
+        worker.start()
+        worker.join(5)
+        box["deadlocked"] = worker.is_alive()
+        return b"pw"
+
+    candidates = _PasswordCandidates.from_input(provider)
+    assert candidates.ask_provider(None, 1) == b"pw"
+    assert box["deadlocked"] is False
+    assert isinstance(box["result"], ArchiveyUsageError)
+    assert "reentered" in str(box["result"])
+
+
+def test_password_provider_turn_released_when_provider_raises() -> None:
+    calls = 0
+
+    def provider(req):  # noqa: ANN001
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("prompt cancelled")
+        return b"pw"
+
+    candidates = _PasswordCandidates.from_input(provider)
+    with pytest.raises(RuntimeError, match="prompt cancelled"):
+        candidates.ask_provider(None, 1)
+    worker: dict[str, object] = {}
+    thread = threading.Thread(
+        target=lambda: worker.update(pw=candidates.ask_provider(None, 1))
+    )
+    thread.start()
+    thread.join(5)
+    assert worker == {"pw": b"pw"}
+
+
+def test_password_known_good_promotion_converges() -> None:
+    state = _PasswordCandidates.from_input([b"wrong", b"right"])
+    calls: list[bytes] = []
+
+    def decrypt(password: bytes) -> bytes:
+        calls.append(password)
+        if password != b"right":
+            from archivey.exceptions import EncryptionError
+
+            raise EncryptionError("nope")
+        return b"ok"
+
+    assert state.attempt(None, decrypt) == b"ok"
+    assert calls == [b"wrong", b"right"]
+    # Second unit prefers known-good first.
+    calls.clear()
+    assert state.attempt(None, decrypt) == b"ok"
+    assert calls[0] == b"right"
+
+
+# --- 7.6 ArchiveStream open_fn without stream lock --------------------------------------
+
+
+def test_archive_stream_open_fn_runs_outside_stream_lock() -> None:
+    held = {"during_open": False}
+
+    def open_fn() -> io.BytesIO:
+        held["during_open"] = True
+        return io.BytesIO(b"xyz")
+
+    stream = ArchiveStream(
+        open_fn,
+        translate=lambda _e: None,
+        lazy=True,
+        seekable=False,
+    )
+    # open_fn must complete without needing the stream lock (a non-reentrant Lock would
+    # deadlock if _ensure_open held it across the call).
+    assert stream._open_lock.acquire(blocking=False)
+    stream._open_lock.release()
+    assert stream.read() == b"xyz"
+    assert held["during_open"]
+
+
+# --- 7.7 stream_members ownership -------------------------------------------------------
+
+
+def test_stream_members_advance_closes_prior(tmp_path: Path) -> None:
+    root = _dir_with_files(tmp_path)
+    with open_archive(root) as reader:
+        it = reader.stream_members()
+        _m1, s1 = next(it)
+        assert s1 is not None
+        _m2, s2 = next(it)
+        assert s2 is not None
+        assert s1.closed
+        assert s2.read() == b"bbb"
+        list(it)
+
+
+def test_stream_members_abandon_releases_pass(tmp_path: Path) -> None:
+    root = _dir_with_files(tmp_path)
+    with open_archive(root) as reader:
+        it = reader.stream_members()
+        next(it)
+        it.close()  # abandon
+        # Pass released: a new open is allowed.
+        with reader.open("a.txt") as s:
+            assert s.read() == b"aaa"
+
+
+# --- Same-thread re-entry from callbacks must raise, not deadlock (deep N4) -------------
+
+
+def _zip_with_bad_dos_date(tmp_path: Path) -> Path:
+    """A ZIP whose materialization emits MEMBER_TIMESTAMP_INVALID (invalid DOS day)."""
+    import zipfile
+
+    path = tmp_path / "bad-date.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        info = zipfile.ZipInfo("bad.txt", date_time=(2021, 2, 31, 0, 0, 0))
+        zf.writestr(info, b"x")
+    return path
+
+
+def test_reader_reentry_from_diagnostic_callback_raises_not_deadlocks(
+    tmp_path: Path,
+) -> None:
+    """A diagnostic callback calling back into the reader mid-materialization would
+    wait on the materialization condition for a notify only its own thread can send.
+    It must be rejected loudly instead (the pre-fix behavior was a permanent
+    single-thread hang; pytest-timeout would trip on a regression)."""
+    from archivey import ArchiveyConfig
+
+    path = _zip_with_bad_dos_date(tmp_path)
+    reader = None
+
+    def on_diagnostic(diagnostic: object) -> None:
+        assert reader is not None
+        reader.members()  # re-enter the reader that is mid-materialization
+
+    config = ArchiveyConfig(on_diagnostic=on_diagnostic)
+    with open_archive(path, concurrent_members=True, config=config) as opened:
+        reader = opened
+        with pytest.raises(ArchiveyUsageError, match="re-entered"):
+            reader.members()
+        # The failed election rolled back; the reader stays usable once the callback
+        # behaves (subsequent emit re-fires the callback, so swap it off first).
+        reader = None
+
+
+def test_close_from_diagnostic_callback_raises_not_deadlocks(tmp_path: Path) -> None:
+    """close() from inside one of the reader's own worker calls (via a callback) would
+    drain-wait forever for a worker that cannot return until close() does."""
+    from archivey import ArchiveyConfig
+
+    path = _zip_with_bad_dos_date(tmp_path)
+    reader = None
+
+    def on_diagnostic(diagnostic: object) -> None:
+        assert reader is not None
+        reader.close()
+
+    config = ArchiveyConfig(on_diagnostic=on_diagnostic)
+    reader_cm = open_archive(path, concurrent_members=True, config=config)
+    try:
+        reader = reader_cm
+        with pytest.raises(ArchiveyUsageError, match="from inside one of its own"):
+            reader.members()
+    finally:
+        reader = None
+        reader_cm.close()

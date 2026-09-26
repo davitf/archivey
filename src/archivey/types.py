@@ -1,0 +1,1126 @@
+"""Core data types for the Archivey public API."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone, tzinfo
+from enum import Enum, Flag, auto
+from pathlib import Path
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    ClassVar,
+    Collection,
+    Final,
+    Literal,
+    Mapping,
+    NamedTuple,
+    cast,
+    overload,
+)
+
+from archivey.cost import CostReceipt, StreamCapability
+from archivey.exceptions import ArchiveyError
+from archivey.internal.enum_args import coerce_enum
+
+if TYPE_CHECKING:
+    from archivey.diagnostics import Diagnostic
+
+
+class MemberStreams(Flag):
+    """The member-stream capabilities a reader was opened with.
+
+    Callers declare these as booleans —
+    ``open_archive(..., seekable_members=True, concurrent_members=True)`` — and never
+    construct a ``MemberStreams`` value. This flag set is the internal representation
+    those booleans map to at the entry point, and what every backend receives. It is
+    importable from :mod:`archivey.types` for backends and tests, not re-exported from
+    ``archivey`` and not on the API page. It is **not** carried on
+    :class:`~archivey.CostReceipt` or in diagnostics, and no public reader attribute
+    exposes it.
+
+    Default (no bits set — ``MemberStreams(0)``) is the cheap contract:
+
+    - at most one live member stream at a time
+    - streams are forward-only (``seek()`` raises)
+
+    ``CONCURRENT``
+        Multiple overlapping ``open()`` calls are allowed. First-touch member
+        materialization is coordinated (one build; waiters share the snapshot);
+        ``close()`` drains in-flight worker calls. Callers still synchronize any
+        *shared* stream objects they hand around. Reader-wide passes
+        (``__iter__`` / ``stream_members`` / ``extract_all``) remain single-owner.
+        Does **not** remove solid open-order cost — see :class:`~archivey.AccessCost`.
+
+    ``SEEKABLE``
+        Member streams from random ``open()`` support ``seek()``. Without this
+        flag, seek raises. A backward seek may re-decompress from the start
+        (loud-slow-rewind) when there is no index or accelerator. This is a
+        guarantee, not a request mask: a backend that can list a file member
+        must also seek it when the flag is set. ``stream_members()`` yields
+        never seek, with or without this flag: a pass is a single-pass
+        decode on every format.
+    """
+
+    CONCURRENT = auto()
+    SEEKABLE = auto()
+
+
+class ContainerFormat(str, Enum):
+    ZIP = "zip"
+    TAR = "tar"
+    RAR = "rar"
+    SEVEN_Z = "7z"
+    ISO = "iso"
+    DIRECTORY = "directory"
+    RAW_STREAM = "raw_stream"
+    UNKNOWN = "unknown"
+
+
+class StreamFormat(str, Enum):
+    UNCOMPRESSED = "uncompressed"
+    GZIP = "gz"
+    BZIP2 = "bz2"
+    XZ = "xz"
+    ZSTD = "zst"
+    LZ4 = "lz4"
+    LZIP = "lz"
+    LZMA_ALONE = "lzma"  # legacy LZMA Alone file format (not raw FORMAT_RAW)
+    ZLIB = "zz"
+    BROTLI = "br"
+    UNIX_COMPRESS = "Z"
+
+
+@dataclass(frozen=True)
+class ArchiveFormat:
+    """A ``(container, stream)`` pair identifying how an archive is packaged.
+
+    Prefer the named class attributes (``ArchiveFormat.ZIP``, ``ArchiveFormat.TAR_GZ``,
+    …) over constructing pairs by hand. Those names are assigned immediately below
+    the class body; the ``ClassVar`` declarations exist so type checkers see them
+    without per-use suppressions. ``_FORMAT_NAMES`` is built from the same
+    assignments so ``repr`` / ``display_name`` stay in sync automatically.
+
+    A pair built by hand from strings — ``ArchiveFormat("raw_stream", "gz")``, say,
+    from a format round-tripped through a config file — is converted to the enum
+    members at construction, with the same spellings the other enum arguments take,
+    and an unknown spelling raises :class:`~archivey.ArchiveyUsageError` there.
+    """
+
+    container: ContainerFormat
+    stream: StreamFormat
+
+    def __post_init__(self) -> None:
+        # Converted, not only checked: both enums mix in ``str``, so a string pair
+        # compares and hashes equal to the named format, while the code that decides
+        # behaviour tests ``container is ContainerFormat.RAW_STREAM`` and would take
+        # the other branch for it. Holding members makes the two agree. A member
+        # of another enum is refused as a container, but left as it is as a
+        # stream: the codec registry is keyed on these pairs, and a codec
+        # registered from outside (``tests/test_codec_descriptor.py`` does) brings
+        # its own stream enum.
+        if not isinstance(self.container, ContainerFormat):
+            object.__setattr__(
+                self,
+                "container",
+                coerce_enum(
+                    self.container,
+                    ContainerFormat,
+                    call="ArchiveFormat()",
+                    param="container=",
+                ),
+            )
+        if not isinstance(self.stream, Enum):
+            object.__setattr__(
+                self,
+                "stream",
+                coerce_enum(
+                    self.stream, StreamFormat, call="ArchiveFormat()", param="stream="
+                ),
+            )
+
+    ZIP: ClassVar[ArchiveFormat]
+    TAR: ClassVar[ArchiveFormat]
+    TAR_GZ: ClassVar[ArchiveFormat]
+    TAR_BZ2: ClassVar[ArchiveFormat]
+    TAR_XZ: ClassVar[ArchiveFormat]
+    TAR_ZST: ClassVar[ArchiveFormat]
+    TAR_LZ4: ClassVar[ArchiveFormat]
+    GZ: ClassVar[ArchiveFormat]
+    BZ2: ClassVar[ArchiveFormat]
+    XZ: ClassVar[ArchiveFormat]
+    ZST: ClassVar[ArchiveFormat]
+    LZ4: ClassVar[ArchiveFormat]
+    LZIP: ClassVar[ArchiveFormat]
+    LZMA_ALONE: ClassVar[ArchiveFormat]
+    ZLIB: ClassVar[ArchiveFormat]
+    BROTLI: ClassVar[ArchiveFormat]
+    Z: ClassVar[ArchiveFormat]
+    SEVEN_Z: ClassVar[ArchiveFormat]
+    RAR: ClassVar[ArchiveFormat]
+    ISO: ClassVar[ArchiveFormat]
+    DIRECTORY: ClassVar[ArchiveFormat]
+    UNKNOWN: ClassVar[ArchiveFormat]
+
+    def file_extension(self) -> str:
+        """The on-disk file extension for this format, without a leading dot.
+
+        Used for extension-based naming and detection — e.g. choosing the output
+        filename when converting between formats, or matching by extension in the
+        detector. Examples: ``ZIP`` -> ``"zip"``, ``TAR_GZ`` -> ``"tar.gz"``,
+        ``GZ`` -> ``"gz"``. Formats with no on-disk file representation
+        (``DIRECTORY``, ``UNKNOWN``) return ``""``.
+        """
+        if self.container in (ContainerFormat.DIRECTORY, ContainerFormat.UNKNOWN):
+            return ""
+        if self.container == ContainerFormat.RAW_STREAM:
+            # A bare single-file compressed stream (no container): the extension is
+            # just the codec's own — GZ -> "gz", not "raw_stream.gz".
+            return self.stream.value
+        if self.stream == StreamFormat.UNCOMPRESSED:
+            return self.container.value
+        return f"{self.container.value}.{self.stream.value}"
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable name for this format, e.g. ``"ZIP"``, ``"TAR_GZ"``.
+
+        Uses the predefined named-instance attribute name (``ZIP``, ``TAR_GZ``, …);
+        falls back to ``repr()`` for an ad-hoc combination not in the named set.
+        ``_FORMAT_NAMES`` is populated just after the class definition — safe at
+        runtime because this property is never called before the module is fully loaded.
+        """
+        name = _FORMAT_NAMES.get(self)
+        return name if name is not None else repr(self)
+
+    def __repr__(self) -> str:
+        name = _FORMAT_NAMES.get(self)
+        if name is not None:
+            return f"ArchiveFormat.{name}"
+        return f"ArchiveFormat({self.container!r}, {self.stream!r})"
+
+
+# Predefined named instances, assigned as class attributes.
+ArchiveFormat.ZIP = ArchiveFormat(ContainerFormat.ZIP, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.TAR = ArchiveFormat(ContainerFormat.TAR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.TAR_GZ = ArchiveFormat(ContainerFormat.TAR, StreamFormat.GZIP)
+ArchiveFormat.TAR_BZ2 = ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP2)
+ArchiveFormat.TAR_XZ = ArchiveFormat(ContainerFormat.TAR, StreamFormat.XZ)
+ArchiveFormat.TAR_ZST = ArchiveFormat(ContainerFormat.TAR, StreamFormat.ZSTD)
+ArchiveFormat.TAR_LZ4 = ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZ4)
+ArchiveFormat.GZ = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.GZIP)
+ArchiveFormat.BZ2 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP2)
+ArchiveFormat.XZ = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.XZ)
+ArchiveFormat.ZST = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZSTD)
+ArchiveFormat.LZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZ4)
+ArchiveFormat.LZIP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZIP)
+ArchiveFormat.LZMA_ALONE = ArchiveFormat(
+    ContainerFormat.RAW_STREAM, StreamFormat.LZMA_ALONE
+)
+ArchiveFormat.ZLIB = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZLIB)
+ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BROTLI)
+ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)
+ArchiveFormat.SEVEN_Z = ArchiveFormat(
+    ContainerFormat.SEVEN_Z, StreamFormat.UNCOMPRESSED
+)
+ArchiveFormat.RAR = ArchiveFormat(ContainerFormat.RAR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.ISO = ArchiveFormat(ContainerFormat.ISO, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.DIRECTORY = ArchiveFormat(
+    ContainerFormat.DIRECTORY, StreamFormat.UNCOMPRESSED
+)
+ArchiveFormat.UNKNOWN = ArchiveFormat(
+    ContainerFormat.UNKNOWN, StreamFormat.UNCOMPRESSED
+)
+
+# Reverse map (instance -> attribute name) for __repr__, derived by introspecting the
+# class attributes above so the names live in exactly one place.
+_FORMAT_NAMES: dict[ArchiveFormat, str] = {
+    value: name
+    for name, value in vars(ArchiveFormat).items()
+    if isinstance(value, ArchiveFormat)
+}
+
+
+@dataclass(frozen=True)
+class MissingComponent:
+    """A package, extra, or external tool required for a format (or a codec inside it).
+
+    Appears on :class:`~archivey.FormatAvailability` when something is absent, and as
+    the ``requirement`` on internal codec/backend descriptors. Defined in this leaf
+    module (not the registry) so codec descriptors can reference it without a
+    registry ↔ codecs import cycle.
+    """
+
+    name: str  # e.g. "pycdlib", "brotli", "unrar"
+    install_hint: str  # e.g. "pip install archivey[recommended]"
+    unlocks: tuple[
+        str, ...
+    ] = ()  # member-codecs/capabilities it enables, e.g. ("ppmd",)
+
+    def message(self, purpose: str, *, note: str = "") -> str:
+        """Text for the ``PackageNotInstalledError`` raised when this component is absent.
+
+        Every raise site builds its message here so the advice a caller gets when a
+        *read* fails cannot drift from the ``install_hint`` that listing and
+        :class:`~archivey.FormatAvailability` report. The two used to be independent
+        strings, and the extras consolidation updated the hints while every ``raise``
+        kept advertising extras that no longer exist.
+
+        ``note`` appends a sentence for cases where the bare hint would mislead (e.g.
+        a backport that is pointless on a Python version shipping the module).
+        """
+        text = f"The {self.name!r} package is required for {purpose} ({self.install_hint})."
+        return f"{text} {note}" if note else text
+
+
+class FormatSupport(Enum):
+    """Tri-state readability of a known format (see ``backend-registry``)."""
+
+    FULL = "full"  # backend usable AND every optional codec/tool it can use is present
+    PARTIAL = (
+        "partial"  # opens & lists; common members decode; some optional codec missing
+    )
+    NONE = "none"  # backend (or a single-codec format's sole codec) is unavailable
+
+
+@dataclass(frozen=True)
+class FormatAvailability:
+    """The support level of a format plus the components needed to raise it."""
+
+    format: ArchiveFormat
+    support: FormatSupport
+    missing: tuple[MissingComponent, ...] = ()  # empty when FULL
+    required_source: StreamCapability = StreamCapability.SEEKABLE
+    """The weakest source shape this format can be read from.
+
+    ``StreamCapability`` is ordered, so this is a *minimum*: a source is strong enough
+    when ``availability.required_source <= reader.cost.stream_capability``. It exists so
+    that "can I pipe this straight in, or must I buffer it to disk first?" is a query
+    rather than a `StreamNotSeekableError` to catch.
+
+    Independent of ``support`` — a format whose optional dependency is missing still
+    answers the question. The ``SEEKABLE`` default is the conservative answer, and is
+    what a format with no registered backend at all reports.
+    """
+
+
+class MagicSignature(NamedTuple):
+    """Exact magic-byte match declared by a backend/codec descriptor (not end-user API).
+
+    Detection accepts a match on the byte comparison alone. Formats too unspecific
+    for an exact magic (zlib's 2-byte CMF/FLG header) or with no signature (Brotli)
+    use a content probe instead — see codec ``content_probe`` and ``format-detection``.
+    """
+
+    offset: int
+    magic: bytes
+    format: "ArchiveFormat"
+
+
+class MemberType(Enum):
+    """Kind of archive entry.
+
+    ``ANTI`` is a deletion/tombstone (solid 7z incremental updates), not a payload
+    file — ``is_file`` is false and extraction skips it. ``OTHER`` covers device
+    nodes, FIFOs, sockets, etc., and is always rejected by safe extraction.
+    """
+
+    FILE = "file"
+    DIRECTORY = "directory"
+    SYMLINK = "symlink"
+    HARDLINK = "hardlink"
+    OTHER = "other"
+    ANTI = "anti"
+
+
+class HashAlgorithm(str, Enum):
+    """Digest algorithms that may appear as keys in :attr:`ArchiveMember.hashes`."""
+
+    CRC32 = "crc32"
+    BLAKE2SP = "blake2sp"
+    ADLER32 = "adler32"
+
+
+def crc32_digest(value: int) -> bytes:
+    """Encode a CRC-32 as four big-endian bytes for :attr:`ArchiveMember.hashes`."""
+    return (value & 0xFFFFFFFF).to_bytes(4, "big")
+
+
+class CompressionAlgorithm(Enum):
+    """A compression/filter codec. Extensible: codecs Archivey does not recognize
+    map to ``UNKNOWN`` rather than raising, so callers should treat the set as
+    open-ended. ``ContainerFormat.RAR`` and ``CompressionAlgorithm.RAR`` are
+    homonyms (container vs codec), not a new name like ``RAR_COMPRESSION``.
+    """
+
+    STORED = "stored"
+    DEFLATE = "deflate"
+    DEFLATE64 = "deflate64"
+    BZIP2 = "bzip2"
+    LZMA = "lzma"
+    LZMA2 = "lzma2"
+    ZSTD = "zstd"
+    LZ4 = "lz4"
+    BROTLI = "brotli"
+    PPMD = "ppmd"
+    BCJ = "bcj"  # x86 executable filter
+    BCJ2 = "bcj2"
+    DELTA = "delta"
+    RAR = "rar"
+    UNKNOWN = "unknown"  # unrecognized codec ID
+
+
+@dataclass(frozen=True)
+class CompressionMethod:
+    """One codec in a member's filter chain.
+
+    Members store ``tuple[CompressionMethod, ...]``. Order matches the compress /
+    pack direction: pre-filters first, packing codec last (closest to the stored
+    bytes). Example: 7z ``(BCJ2, LZMA2)`` — decompress by applying LZMA2, then BCJ2.
+    """
+
+    algo: CompressionAlgorithm
+    # RAR's M1-M5 method-byte offset (0 = stored, 5 = best). RAR is the only
+    # backend that fills this in; ZIP, 7z and TAR leave it None.
+    level: int | None = None
+    properties: bytes | None = None  # raw codec properties blob, if any
+
+
+class CreateSystem(Enum):
+    """OS that created the archive entry (mirrors ZIP create_system values)."""
+
+    FAT = 0
+    AMIGA = 1
+    OPENVMS = 2
+    UNIX = 3
+    VM_CMS = 4
+    ATARI_ST = 5
+    OS2_HPFS = 6
+    MACINTOSH = 7
+    Z_SYSTEM = 8
+    CPM = 9
+    WINDOWS_NTFS = 10
+    MVS = 11
+    VSE = 12
+    ACORN_RISC = 13
+    VFAT = 14
+    ALTERNATE_MVS = 15
+    BEOS = 16
+    TANDEM = 17
+    OS_400 = 18
+    OS_X_DARWIN = 19
+    UNKNOWN = 255
+
+
+# Key in ArchiveMember.extra marking a member as a Windows NTFS junction. The formats
+# ZIP, 7z and RAR can all describe a junction, so this key is deliberately NOT
+# namespaced under a single format like "zip.". Which readers actually set it is a
+# narrower list: see ArchiveMember.is_junction.
+# Final keeps an overloaded ``__getitem__`` subscript with this constant a literal
+# key; without it a checker that widens the assignment to ``str`` falls through
+# to the ``str → object`` fallback.
+EXTRA_IS_JUNCTION: Final = "is_junction"
+
+# Key in ArchiveMember.extra marking a member that the archive recorded as a Windows
+# reparse point — a Windows symlink or a junction, as opposed to a POSIX symlink. Set
+# whenever the archive says so: the FILE_ATTRIBUTE_REPARSE_POINT bit for ZIP and 7z,
+# the redirect type for RAR5, and the live entry for a directory scan on Windows. Not
+# namespaced, for the same reason as EXTRA_IS_JUNCTION.
+#
+# Every junction is a reparse point, but not every reparse point is a junction, and the
+# two keys answer different questions from different places: this one comes off metadata
+# the archive always carries, while EXTRA_IS_JUNCTION needs the reparse *tag*, which
+# lives in the member's data and which 7-Zip does not store for a directory reparse
+# point. So a junction written by 7-Zip carries this key and not that one.
+EXTRA_IS_REPARSE_POINT: Final = "is_reparse_point"
+
+# RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
+# because RAR5 records no per-file unpack version. Lives here, not on
+# CompressionMethod.level, which carries the method-byte offset instead.
+EXTRA_RAR_EXTRACT_VERSION: Final = "rar.extract_version"
+
+
+class MemberExtra(dict[str, object]):
+    """Per-member format-specific metadata on :class:`~archivey.ArchiveMember`.
+
+    A ``dict[str, object]`` whose known keys return their declared types from a
+    subscript (``extra["zip.compress_type"]`` is an ``int``). Unknown keys
+    (third-party or future) stay legal and read as ``object``. The ``EXTRA_*``
+    constants on this module still name the keys they cover.
+
+    Writes are not type-checked: a wrong-type assignment to a known key falls
+    through to the ``str → object`` fallback, same as an unknown key. ``.get()``
+    returns ``object`` for every key. Assign a ``MemberExtra({...})`` (or mutate
+    the existing bag); a bare dict is not assignable to the field.
+
+    Known keys:
+
+    * ``is_junction`` (``bool``) — ZIP, 7z, RAR, directory. A Windows NTFS
+      junction; ZIP and 7z set it only when the writer stored the junction's
+      reparse data, and 7-Zip does not. Implies ``is_reparse_point``.
+    * ``is_reparse_point`` (``bool``) — ZIP, 7z, RAR, directory. The weaker,
+      metadata-only sibling of ``is_junction``: a Windows symlink or junction
+      rather than a POSIX one.
+    * ``rar.extract_version`` (``int``)
+    * ``rar.file_version`` (``int``)
+    * ``rar.tweaked_crc32`` (``int``)
+    * ``rar.tweaked_blake2sp`` (``bytes``)
+    * ``zip.compress_type`` (``int``)
+    * ``zip.aes_vendor_version`` (``int``)
+    * ``zip.aes_strength`` (``int``)
+    * ``zip.aes_actual_method`` (``int``)
+    * ``tar.type`` (``bytes``)
+    * ``tar.pax_headers`` (``dict[str, str]``)
+    * ``tar.devmajor`` (``int``)
+    * ``tar.devminor`` (``int``)
+    * ``gzip.original_filename`` (``str``)
+    * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
+      stripped from the name. Versions of one name share it; the highest is
+      listed last and is the current one.
+    """
+
+    __slots__ = ()
+
+    # Overloaded ``__getitem__``, not a PEP 728 TypedDict: mypy rejects
+    # ``extra_items=`` and then treats the TypedDict as having no keys, so every
+    # read and write in a user's file errors. A ``total=False`` TypedDict also
+    # makes every subscript read an error under pyright. This shape was measured
+    # clean on pyright 1.1.414, mypy 1.19.1, pyrefly 1.1.1 and ty 0.0.60 with no
+    # suppressions. Writes are not overloaded: the ``str → object`` fallback
+    # unknown keys need also accepts a wrong-type write to a known key.
+    # ``.get()`` stays ``object`` because the four checkers disagree on
+    # ``dict.get``'s own signature.
+
+    @overload
+    def __getitem__(self, key: Literal["is_junction"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["is_reparse_point"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["rar.extract_version"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["rar.file_version"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["rar.tweaked_crc32"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["rar.tweaked_blake2sp"], /) -> bytes: ...
+    @overload
+    def __getitem__(self, key: Literal["zip.compress_type"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["zip.aes_vendor_version"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["zip.aes_strength"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["zip.aes_actual_method"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["tar.type"], /) -> bytes: ...
+    @overload
+    def __getitem__(self, key: Literal["tar.pax_headers"], /) -> dict[str, str]: ...
+    @overload
+    def __getitem__(self, key: Literal["tar.devmajor"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["tar.devminor"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["gzip.original_filename"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["iso.version"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: str, /) -> object: ...
+    def __getitem__(self, key: str, /) -> object:
+        return super().__getitem__(key)
+
+
+class ArchiveInfoExtra(dict[str, object]):
+    """Archive-level format-specific metadata on :class:`~archivey.ArchiveInfo`.
+
+    Same shape as :class:`~archivey.MemberExtra` over a separate key set — do not merge
+    the two bags.
+
+    Known keys:
+
+    * ``iso.namespace`` (``str``)
+    * ``zip.volume_count`` (``int``)
+    * ``rar.volume_count`` (``int``)
+    * ``7z.volume_count`` (``int``)
+    """
+
+    __slots__ = ()
+
+    @overload
+    def __getitem__(self, key: Literal["iso.namespace"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["zip.volume_count"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["rar.volume_count"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: Literal["7z.volume_count"], /) -> int: ...
+    @overload
+    def __getitem__(self, key: str, /) -> object: ...
+    def __getitem__(self, key: str, /) -> object:
+        return super().__getitem__(key)
+
+
+@dataclass(slots=True)
+class ArchiveMember:
+    """One archive entry.
+
+    Mutable on purpose: backends fill late-bound fields in place after the member
+    is first constructed (``link_target_member``, digests, attached diagnostics).
+    Callers must treat instances as read-only — use :meth:`replace` for edits.
+    """
+
+    type: MemberType
+    """What kind of entry this is (file, directory, symlink, …)."""
+
+    name: str
+    """Normalized member path, ``/``-separated, decoded for display and lookup."""
+
+    raw_name: bytes | None = None
+    """The member name exactly as stored in the archive, undecoded, or ``None`` when
+    the format stores no name or the bytes cannot be recovered from the decoded one."""
+
+    size: int | None = None
+    """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry)."""
+
+    compressed_size: int | None = None
+    """Compressed size in bytes, or ``None`` if unknown."""
+
+    modified: datetime | None = None
+    """Last-modified time, if recorded."""
+
+    accessed: datetime | None = None
+    """Last-access time, if recorded."""
+
+    created: datetime | None = None
+    """The birth (creation) time, if recorded (rare; most formats store only mtime).
+
+    Never Unix ``st_ctime`` (inode change), in any format. Where a writer stores
+    ``st_ctime``, or may, that time is :attr:`ctime` instead: a creation slot filled
+    on Unix (a RAR or 7z made there, a ZIP from any host but FAT, OS/2, NTFS or
+    VFAT, an unknown host too) and the Rock Ridge and PAX change times. A TAR gets
+    ``created`` only from libarchive's PAX ``LIBARCHIVE.creationtime``. Directory
+    listing uses ``st_birthtime`` only.
+    """
+
+    ctime: datetime | None = None
+    """The Unix inode change time (``st_ctime``), if recorded, or a time that may be it.
+
+    From an archive: the Rock Ridge attribute-change time (ISO), the PAX ``ctime``
+    record (TAR), or a creation slot whose writer fills it from ``st_ctime`` or
+    cannot be shown not to (RAR, 7z, ZIP; see :attr:`created`). It is what the
+    archive stored, so a Windows writer can put a birth time here: libarchive on
+    Windows fills the PAX ``ctime`` with it and stamps its ZIP and 7z members as
+    Unix. A format with a single creation slot (RAR, 7z, ZIP) fills at most one of
+    ``created`` and ``ctime``. Rock Ridge and libarchive's PAX records store both
+    times separately and so can fill both, as can a directory listing.
+    ``member.created or member.ctime`` prefers the birth time when there is one. A
+    directory listing reports ``st_ctime`` on every OS but Windows, where Python's
+    ``st_ctime`` was the creation time before 3.12.
+
+    Extraction cannot restore it: every OS sets a file's ``st_ctime`` itself.
+    """
+
+    mode: int | None = None
+    """Unix permission bits, or ``None`` if the format/entry carries no mode."""
+
+    uid: int | None = None
+    """Owner user id, if recorded."""
+
+    gid: int | None = None
+    """Owner group id, if recorded."""
+
+    uname: str | None = None
+    """Owner user name, if recorded."""
+
+    gname: str | None = None
+    """Owner group name, if recorded."""
+
+    link_target: str | None = None
+    """For a symlink/hardlink, the raw target path string as stored."""
+
+    # compare=False: identity is path/type/metadata, not the resolved peer object
+    # (resolution is late-bound and would make equality order-dependent).
+    link_target_member: "ArchiveMember | None" = field(default=None, compare=False)
+    """For a link, the resolved target member within this archive, if found."""
+
+    compression: tuple[CompressionMethod, ...] = field(default_factory=tuple)
+    """Codec chain in compress order — pre-filters first, packing codec last."""
+
+    is_encrypted: bool = False
+    """Whether this member's data is encrypted.
+
+    ``True`` also when the backend could not rule encryption out. A RAR5 member
+    whose header stopped part-way through its optional records is reported this
+    way, because answering "not encrypted" from a header nobody finished reading
+    would be a wrong answer rather than a missing one; the member then carries a
+    ``MEMBER_HEADER_RECORD_SKIPPED`` diagnostic saying the header was cut short.
+    A member with no such diagnostic is a definite answer.
+    """
+
+    is_current: bool = True
+    """Last-entry-wins: ``True`` for the live final state of this path.
+
+    Duplicate names keep earlier rows with ``is_current=False`` (history /
+    superseded). :meth:`~archivey.ArchiveReader.get` returns the current one.
+    """
+
+    is_sparse: bool = False
+    """Whether this member is stored as a sparse file."""
+
+    comment: str | None = None
+    """Per-member comment, if the format records one."""
+
+    create_system: CreateSystem | None = None
+    """The OS that created the entry (drives mode/attribute interpretation)."""
+
+    windows_attrs: int | None = None
+    """Raw Windows file-attribute bitmask, if recorded."""
+
+    # compare=False: digests may be filled after first construction; equality is
+    # about the entry identity, not verification state (see archive-data-model).
+    hashes: Mapping[HashAlgorithm, bytes] = field(default_factory=dict, compare=False)
+    """Stored content digests keyed by :class:`HashAlgorithm` (values always ``bytes``).
+
+    CRC-32 is four big-endian bytes (:func:`crc32_digest`). Excluded from equality.
+    """
+
+    # compare=False: format-specific bags must not affect logical identity.
+    extra: MemberExtra = field(default_factory=MemberExtra, compare=False)
+    """Format-specific extra fields (e.g. ``extra["is_junction"]``). Excluded from equality.
+
+    Known keys and their value types are :class:`~archivey.MemberExtra`. Unknown keys
+    (third-party or future) stay legal and read as ``object``. The ``EXTRA_*``
+    constants on this module remain the names for the keys they cover.
+    """
+
+    # Private internal fields (not part of the public contract)
+    _member_id: int | None = field(default=None, repr=False, compare=False)
+    _archive_id: str | None = field(default=None, repr=False, compare=False)
+    _raw: object = field(default=None, repr=False, compare=False)
+    """Opaque backend handle carried on the member (e.g. the stdlib ``ZipInfo`` /
+    ``TarInfo``), so a backend can open the member's data straight from the member without
+    a separate name/id lookup table. Not part of the public contract. Typed ``object``:
+    each backend narrows it with an ``isinstance`` check on its own handle type before
+    use."""
+    # Typed ``object`` rather than ``Diagnostic``: ``archivey.diagnostics`` imports this
+    # module, so the name cannot be imported here at runtime, and an unresolvable field
+    # annotation would make ``typing.get_type_hints(ArchiveMember)`` raise. The
+    # ``diagnostics`` property below restores the precise type.
+    _diagnostics: tuple[object, ...] = field(default=(), repr=False, compare=False)
+    """Library-retained diagnostic attachments (bounded by the collector budget)."""
+    _link_target_resolved: bool = field(default=False, repr=False, compare=False)
+    """Set once a backend has looked for this link's target, found or not.
+
+    ``link_target is None`` alone cannot say whether the target is missing or merely
+    not looked for yet, so without this the lookup repeats on every access — re-reading
+    the member's data and re-emitting its diagnostic. Not part of the public contract."""
+    _link_target_absent: bool = field(default=False, repr=False, compare=False)
+    """Set when the archive itself records no target for this link.
+
+    A lookup that came back empty has two causes that look identical from here. The
+    archive may carry no target at all — a writer that stored none, a reparse buffer
+    naming nothing — or it may carry one this reader could not reach, because the bytes
+    are compressed, split across volumes or encrypted. Only the first is the archive's
+    omission, and only the first is an extraction outcome rather than a failure, so the
+    backend that knows which it is says so here. Not part of the public contract."""
+
+    # Mutable members are intentionally unhashable. ``@dataclass`` (``eq=True``, not
+    # frozen) sets ``__hash__ = None``, which is what makes ``isinstance(m, Hashable)``
+    # False. Do not add a ``__hash__`` method that raises: it makes the class claim to
+    # be hashable while every hash fails.
+
+    @property
+    def diagnostics(self) -> tuple["Diagnostic", ...]:
+        """Read-only tuple of diagnostics attached to this member (may be empty)."""
+        return cast("tuple[Diagnostic, ...]", self._diagnostics)
+
+    @property
+    def member_id(self) -> int:
+        if self._member_id is None:
+            raise AttributeError("member_id not set; member not yet registered")
+        return self._member_id
+
+    @property
+    def archive_id(self) -> str:
+        if self._archive_id is None:
+            raise AttributeError("archive_id not set; member not yet registered")
+        return self._archive_id
+
+    def modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None:
+        """The modification time as a timezone-aware UTC ``datetime``, or ``None``.
+
+        ``modified`` itself is faithful to what the archive stores: **naive** when the
+        format records local wall-clock time (ZIP's DOS field, RAR4), **aware** when it
+        records UTC or an offset — so naive and aware values from one archive cannot be
+        compared or sorted directly. This helper makes that usable: an aware value is
+        converted to UTC; a naive one first gets ``tz_for_naive`` attached (the caller's
+        explicit assumption about where the archive was created), defaulting to the
+        local timezone when not given. Whether the stored value was wall-clock remains
+        visible on the field itself: ``member.modified.tzinfo is None``.
+        """
+        dt = self.modified
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            if tz_for_naive is not None:
+                dt = dt.replace(tzinfo=tz_for_naive)
+            else:
+                dt = dt.astimezone()  # naive -> assume local timezone
+        return dt.astimezone(timezone.utc)
+
+    @property
+    def is_file(self) -> bool:
+        return self.type == MemberType.FILE
+
+    @property
+    def is_dir(self) -> bool:
+        return self.type == MemberType.DIRECTORY
+
+    @property
+    def is_link(self) -> bool:
+        return self.type in (MemberType.SYMLINK, MemberType.HARDLINK)
+
+    @property
+    def is_other(self) -> bool:
+        return self.type == MemberType.OTHER
+
+    @property
+    def is_anti(self) -> bool:
+        return self.type == MemberType.ANTI
+
+    @property
+    def is_junction(self) -> bool:
+        """The archive recorded this symlink as a Windows NTFS junction.
+
+        ``False`` means no junction was detected, not that the entry is not one:
+
+        - RAR names the link kind in a header field, so a RAR junction is reported
+          while listing.
+        - A directory source asks the filesystem (``os.DirEntry.is_junction``), so a
+          scan on Windows reports junctions under Python 3.12 and later; under 3.11
+          a junction is listed as a symlink and reads ``False``.
+        - ZIP and 7z keep the junction's reparse *tag* in the member's data, so they
+          report one only when the writer stored that reparse buffer. 7-Zip stores
+          none for a directory reparse point, and a junction is always one, so a
+          junction in an archive 7-Zip wrote reads ``False`` here.
+        - TAR and ISO have no junction concept and always read ``False``.
+
+        :attr:`is_reparse_point` comes from metadata the archive always carries, and
+        is the check to use when a Windows link of either kind matters.
+        """
+        return self.type == MemberType.SYMLINK and bool(
+            self.extra.get(EXTRA_IS_JUNCTION)
+        )
+
+    @property
+    def is_reparse_point(self) -> bool:
+        """The archive recorded this entry as a Windows symlink or junction.
+
+        Deliberately not gated on :attr:`type` the way :attr:`is_junction` is: a member
+        the archive flags as a reparse point whose data turns out not to be a link
+        buffer is presented as an ordinary file or directory, and the flag still records
+        what the archive said about it.
+        """
+        return bool(self.extra.get(EXTRA_IS_REPARSE_POINT))
+
+    def replace(self, **kwargs: object) -> "ArchiveMember":
+        """Return a copy with the given fields changed; never mutates self.
+
+        ``object`` is not a check: neither the keyword names nor the value types are
+        verified statically, so a misspelled field or a wrongly typed value is still
+        a ``TypeError`` from ``dataclasses.replace`` at runtime. Typing the names
+        would need a per-field ``TypedDict``, which is deliberately deferred.
+        """
+        return replace(self, **kwargs)
+
+
+@dataclass(frozen=True)
+class ArchiveInfo:
+    """Archive-level metadata, available immediately after ``open_archive()`` without
+    a full member scan."""
+
+    format: ArchiveFormat
+    """The detected ``(container, stream)`` format of the archive."""
+
+    format_version: str | None
+    """Format version string, e.g. ``"4.5"`` for ZIP or ``"5"`` for RAR5; ``None`` if unknown."""
+
+    is_solid: bool
+    """Whether decompressing one member may require decompressing earlier ones."""
+
+    member_count: int | None
+    """Number of members, or ``None`` when a count would require scanning the whole archive."""
+
+    comment: str | None
+    """Archive-level comment, if the format records one."""
+
+    is_encrypted: bool
+    """Header-level encryption (7z, RAR5) — not per-member encryption (see ``ArchiveMember.is_encrypted``)."""
+
+    is_multivolume: bool
+    """Whether the archive spans multiple volumes."""
+
+    cost: "CostReceipt"
+    """Listing/access cost receipt for the archive (see the ``access-mode-and-cost`` capability)."""
+
+    extra: ArchiveInfoExtra = field(default_factory=ArchiveInfoExtra, compare=False)
+    """Format-specific archive-level metadata, keyed by namespaced strings (mirrors
+    ``ArchiveMember.extra``). For example the ISO backend records the auto-selected
+    namespace as ``extra["iso.namespace"]``. Excluded from ``__eq__``. Known keys
+    and their value types are :class:`~archivey.ArchiveInfoExtra`; unknown keys stay legal
+    and read as ``object``."""
+
+
+# ---------------------------------------------------------------------------------------
+# Extraction value types: the ``ExtractionPolicy`` / ``OverwritePolicy`` / ``OnError`` /
+# ``AbortOn`` / ``ExtractionStatus`` enums, the ``ExtractionProgress`` /
+# ``ExtractionResult`` dataclasses, and the ``members`` / ``filter`` type aliases. Pure
+# data, shared by the public ``reader.py`` / ``core.py`` signatures and the internal
+# ``ExtractionCoordinator``; the extraction logic lives in ``internal/extraction.py`` and
+# ``internal/filters.py``.
+# ---------------------------------------------------------------------------------------
+
+# Shared selector / filter aliases, used by both the public reader.py signature and the
+# internal coordinator.
+#
+# ``MemberSelectorArg`` — which members to extract: a collection of names / ArchiveMembers,
+# a predicate, or ``None`` (= all). The collection form is normalized to a predicate by the
+# shared ``normalize_member_selector`` helper (also used by ``stream_members``).
+MemberSelectorArg = (
+    Collection["str | ArchiveMember"] | Callable[[ArchiveMember], bool] | None
+)
+# ``MemberFilter`` — a per-member sanitize/rename hook run after the safety checks and
+# policy transform; returns a ``.replace()``d copy, or ``None`` to skip the member.
+MemberFilter = Callable[[ArchiveMember], "ArchiveMember | None"]
+
+
+class ExtractionPolicy(Enum):
+    """How much of an archive member to trust when writing it to the destination.
+
+    The universal path/symlink/special-file safety checks are enforced under **all**
+    policies (see ``safe-extraction``). Beyond those, the policy governs two dimensions:
+    the permission/ownership transform applied before a member is written, and the
+    cross-platform name safety keyed off it — collision determinism (O2), reserved/mangled
+    name rejection (O3/O4), portable-name normalization (O7), and rejection of
+    **deceptive** names (bidi overrides). ``STRICT`` is portable-by-default; ``TRUSTED``
+    defers to the local OS (faithful bytes, no name rejection or rewrite). See
+    ``dev-docs/decisions/0013-cross-platform-name-safety-policies.md``.
+
+    What ``TRUSTED`` does **not** relax: anything where the write itself is unsafe — a
+    name that escapes the destination, carries a NUL, or names a device node. Those are
+    universal. It *does* extract a name built to display as something else
+    (``evil<U+202E>gnp.exe``), which ``STRICT``/``STANDARD`` refuse with
+    ``DeceptiveNameError``: such a member lands inside the destination under exactly its
+    stored bytes, so the risk is to a human reading the directory afterwards, not to the
+    filesystem. Choosing ``TRUSTED`` accepts that, which is what makes faithful
+    round-tripping possible. See
+    ``dev-docs/decisions/0017-bidi-override-rejection-is-policy-keyed.md``.
+    """
+
+    STRICT = "strict"  # default; untrusted archives
+    STANDARD = "standard"  # moderate trust; e.g. your own older archives
+    TRUSTED = (
+        "trusted"  # apply stored mode (and uid/gid as root); path safety still enforced
+    )
+
+
+# The string spellings of ``ExtractionPolicy``, so a type checker flags a bad one at the
+# call rather than leaving it to the runtime. Deliberately narrower than what
+# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# case, and a literal can express neither, so this is the canonical spelling.
+# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
+ExtractionPolicyStr = Literal["strict", "standard", "trusted"]
+
+
+class OverwritePolicy(Enum):
+    """What to do when a destination entry already exists where a member would be written.
+
+    ``ERROR`` raises an ``ExtractionError`` for the member, which is then a per-member
+    failure governed by the ``OnError`` policy — ``OnError.STOP`` re-raises and halts,
+    ``OnError.CONTINUE`` records a ``FAILED`` ``ExtractionResult`` and proceeds. ``SKIP``
+    is not an error: it records a ``NOT_OVERWRITTEN`` result regardless of ``OnError``.
+    """
+
+    ERROR = "error"  # existing entry -> ExtractionError (then handled per OnError)
+    SKIP = "skip"  # silently skip existing entries (records NOT_OVERWRITTEN)
+    REPLACE = (
+        "replace"  # unlink the existing entry, then create fresh (never write-through)
+    )
+    RENAME = "rename"  # write a colliding entry under a derived "name (N)" spelling
+
+
+# The string spellings of ``OverwritePolicy``, so a type checker flags a bad one at the
+# call rather than leaving it to the runtime. Deliberately narrower than what
+# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# case, and a literal can express neither, so this is the canonical spelling.
+# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
+OverwritePolicyStr = Literal["error", "skip", "replace", "rename"]
+
+
+class OnError(Enum):
+    """What to do when an individual member cannot be extracted.
+
+    Governs per-member *failures* only (corrupt/truncated/undecodable data,
+    write ``OSError``, overwrite ``ERROR``, etc.). A policy ``BLOCKED`` outcome
+    (``FilterRejectionError`` from a universal path-safety check or a policy
+    filter) is always recorded and continued, under either value. Aborting the
+    whole extraction on the first unsafe member is ``AbortOn.BLOCKED_MEMBER``,
+    an independent opt-in that applies under either ``OnError`` value.
+    """
+
+    STOP = "stop"  # default: raise the first member failure and halt
+    CONTINUE = "continue"  # record the failure, clean up, proceed to the next member
+
+
+# The string spellings of ``OnError``, so a type checker flags a bad one at the
+# call rather than leaving it to the runtime. Deliberately narrower than what
+# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# case, and a literal can express neither, so this is the canonical spelling.
+# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
+OnErrorStr = Literal["stop", "continue"]
+
+
+class AbortOn(str, Enum):
+    """Events that abort the whole extraction the first time they occur.
+
+    Passed as ``abort_on=`` to ``extract()`` / ``extract_all()`` (a collection; empty by
+    default). Independent of :class:`OnError` and of ``DiagnosticPolicy``: an event named
+    here aborts whatever those are set to, and one not named here never aborts.
+
+    Abort is immediate — the triggering member's partial output is removed, no later
+    member is processed, and **no** ``ExtractionReport`` is returned. Output already
+    written for earlier members stays on disk, matching ``OnError.STOP``: an abort stops
+    the run, it does not roll it back.
+
+    There is deliberately no member for extraction *failures*: ``OnError.STOP`` already
+    means "raise on the first failure".
+    """
+
+    # A member blocked by a universal path-safety check or a policy filter. Re-raises the
+    # underlying FilterRejectionError, matching OnError.STOP's propagate-the-original.
+    BLOCKED_MEMBER = "blocked_member"
+    # A second member resolving to an already-written collision key (non-TRUSTED only).
+    # Fires on EVERY such collision, whatever OverwritePolicy resolution follows —
+    # replaced, skipped, errored or renamed. The trigger is the collision, not its
+    # outcome. Raises NameCollisionError.
+    NAME_COLLISION = "name_collision"
+    # A name rewritten to its portable spelling. A narrow escape hatch for callers who
+    # refuse any on-disk name differing from the archive's — mirroring tools, forensic
+    # extracts, byte-fidelity checks — and NOT part of ordinary strict extraction: no
+    # preset or policy level implies it. To *audit* rewrites read
+    # ``ExtractionResult.presented_name``; set this only to make them fatal. Raises
+    # NameRewrittenError.
+    NAME_SANITIZED = "name_sanitized"
+
+
+# The string spellings of ``AbortOn``, so a type checker flags a bad one at the
+# call rather than leaving it to the runtime. Deliberately narrower than what
+# ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
+# case, and a literal can express neither, so this is the canonical spelling,
+# plus the dash form of each underscored value, which is what the CLI's own
+# ``--help`` advertises and so the spelling most likely to be pasted into a script.
+# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
+AbortOnStr = Literal[
+    "blocked_member",
+    "blocked-member",
+    "name_collision",
+    "name-collision",
+    "name_sanitized",
+    "name-sanitized",
+]
+
+
+class ExtractionStatus(str, Enum):
+    """The outcome recorded for a single member in its :class:`ExtractionResult`."""
+
+    EXTRACTED = "extracted"
+    NOT_OVERWRITTEN = "not_overwritten"  # existing dest left under OverwritePolicy.SKIP
+    SUPERSEDED = "superseded"  # non-current entry (a later same-name entry overwrites)
+    # Written, then its destination was replaced by a LATER member under
+    # OverwritePolicy.REPLACE. Revised retroactively when the collision is detected, so
+    # a case-insensitive merge is visible in ``results`` instead of two members both
+    # reporting EXTRACTED at one path. Completes the family: NOT_OVERWRITTEN kept an
+    # existing destination and never wrote; SUPERSEDED never wrote; OVERWRITTEN wrote
+    # and lost the destination afterwards.
+    OVERWRITTEN = "overwritten"
+    BLOCKED = "blocked"  # blocked by a safety filter (universal or policy check)
+    FAILED = "failed"  # error while extracting (corrupt data, ratio bomb, write error)
+    # The archive describes a member it does not carry enough information to write: a
+    # symlink whose target it never recorded. Not an error, so — like NOT_OVERWRITTEN —
+    # it is recorded and the run continues regardless of OnError. The member is not a
+    # failure of this extraction: nothing went wrong here, the writer left something
+    # out, and that loss is reported through the diagnostics channel
+    # (SYMLINK_TARGET_UNAVAILABLE, an archive-integrity code, so a strict
+    # DiagnosticPolicy still refuses such an archive outright).
+    LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
+
+
+@dataclass
+class ExtractionProgress:
+    """Progress snapshot for the ``on_progress`` callback.
+
+    For FILE members the callback MAY fire multiple times as bytes are written
+    (about once per copy chunk); each member still gets a terminal report with
+    ``member_bytes_written`` equal to the member's size (or the final observed
+    byte count when size is unknown). Directories, symlinks, and hardlinks
+    produce a single report with ``member_bytes_written == 0``.
+    """
+
+    member: ArchiveMember
+    bytes_written: int  # cumulative bytes written across the whole call so far
+    total_bytes_estimated: int | None  # None if the archive carries no size info
+    members_done: int
+    members_total: int | None  # None when the count would require a full scan
+    member_bytes_written: int  # output bytes written for the current member so far
+    # Completed-outcome tallies so far (exclude the in-flight member on intra-member
+    # reports). ``members_done`` still counts every processed member; these split
+    # successful writes from policy blocks for stop-path reporting.
+    members_extracted: int
+    members_blocked: int
+
+
+@dataclass(frozen=True)
+class ExtractionResult:
+    """One entry per member processed, returned from ``extract()`` / ``extract_all()``.
+
+    Frozen outcome structure (``path`` / ``status`` / ``error`` cannot be replaced after
+    construction). ``member`` still refers to the live mutable :class:`ArchiveMember`
+    whose late-bound metadata may be filled in place.
+    """
+
+    member: ArchiveMember
+    path: Path | None  # the written path, or None if the member was not written
+    status: ExtractionStatus
+    # Populated for FAILED/BLOCKED when the run continues past that member (including
+    # STOP + policy block). An OSError when the failure is a filesystem read/write
+    # error on this member (not translated to an ArchiveyError).
+    error: ArchiveyError | OSError | None = None
+    # The destination the coordinator intended before overwrite/rename resolution. For an
+    # ordinary write it equals ``path``; under ``OverwritePolicy.RENAME`` a collided member
+    # is written to a derived name, so ``requested_path != path and status == EXTRACTED``
+    # marks the rename; a collision resolved by SKIP/ERROR sets ``requested_path`` with
+    # ``path=None``. ``None`` for members that never reached destination resolution.
+    # On an OVERWRITTEN result it retains the destination the member did write to, so a
+    # caller can join the pair to the replacing member's ``path``.
+    requested_path: Path | None = None
+    # The member's full relative name BEFORE the portable-name rewrite (O3 trailing
+    # dot/space strip, O7 percent-escape), or ``None`` when no rewrite occurred. Distinct
+    # from ``member.name`` (the archive's spelling) and from ``path`` (the final on-disk
+    # spelling): a caller ``filter`` rename followed by a portable rewrite produces three
+    # spellings, and only this field records the middle one.
+    presented_name: str | None = None
+    # Set together, and only when one failed hardlink source causes N FAILED link results:
+    # those N results share one group id and carry ``failure_group_size=N``. The id is
+    # opaque — compare for equality to join a group; do not rely on ordering, format, or
+    # cross-run stability.
+    failure_group_id: str | None = None
+    failure_group_size: int | None = None
+    # The already-written destination this member collided with, or ``None`` when nothing
+    # this run held the name. Set for every resolution — SKIP, ERROR, RENAME and a
+    # REPLACE merge alike — so "was this a collision, and with what?" is answered by the
+    # result itself rather than reconstructed by re-deriving collision keys across the
+    # report. Only a collision with a member of THIS run is recorded: an obstacle that was
+    # already on disk before extraction started leaves this ``None`` (the destination is
+    # still in ``requested_path``). Join to the blocking member by plain path equality
+    # against another result's ``path`` — or its ``requested_path`` when that member was
+    # itself later revised to ``OVERWRITTEN`` and no longer holds a live path.
+    collided_with: Path | None = None

@@ -1,0 +1,245 @@
+# Detection Cost
+
+## Purpose
+
+Detection declares what it may spend (`DetectionBudget`) and reports what it spent
+(`DetectionCostReceipt`), with capabilities derived from source and budget together.
+A sibling of `access-mode-and-cost`'s archive-open `CostReceipt` — detection's I/O
+happens before a reader exists.
+
+**Stability note.** The types live in `archivey.detection_cost` and a caller sets one
+through `ArchiveyConfig.detection_budget`, which `detect_format`, `open_archive` and
+`open_stream` all read; they are **not** re-exported from `archivey.__all__`.
+
+This spec describes **what ships today**. Knobs that the budget type *reserves* but that
+no code schedules yet are named explicitly as reserved; they MUST NOT be read as current
+behaviour. The only reserved knobs left are the ZIP-tail pair, which lands with
+`prefixed-archive-detection` if a caller ever needs it. A candidate ledger with its own
+budget fields was considered and decided against.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `format-detection` | Tiers that spend against the budget |
+| `access-mode-and-cost` | Shared vocabulary; detection receipt is not folded into `CostReceipt` |
+
+## Requirements
+
+### Requirement: Detection declares what it may spend, and reports what it spent
+
+The system SHALL expose a detection budget and a detection cost receipt in one shared
+vocabulary — the budget is an upper bound, the receipt is measured work:
+
+```python
+@dataclass(frozen=True)
+class DetectionBudget:
+    max_prefix_bytes: int
+    max_far_bytes: int
+    max_tail_bytes: int            # reserved: ZIP tail not scheduled yet (all presets 0)
+    max_seeks: int                 # reserved for the same reason (all presets 0)
+    max_scan_bytes: int
+    max_decode_input: int
+    max_decode_output: int
+    completion_window_bytes: int   # largest source a content-probe hit is re-checked whole
+    max_probe_links: int           # live for within_budget probe allowance; walk still uses CHAIN_MAX_LINKS
+    spool_non_seekable_up_to: int
+
+@dataclass(frozen=True)
+class DetectionCostReceipt:
+    prefix_bytes: int      # sum of range lengths requested from the workspace
+    unique_bytes_read: int # actually fetched from the source (each byte once)
+    far_bytes: int
+    tail_bytes: int        # always 0 until a tail tier exists
+    scanned_bytes: int
+    seeks: int             # ZIP-tail seeks only; probe read_at restores and exit restore are not charged
+    decode_input: int
+    decode_output: int
+    spooled_bytes: int
+    passes: int            # detection passes summed (2 after following a stub), each under the full budget
+```
+
+The budget SHALL be set through `ArchiveyConfig.detection_budget`, which takes a
+`DetectionBudget`, a `DetectionBudgetPreset` or its string spelling, and the same budget
+SHALL govern `detect_format` and the detection `open_archive` / `open_stream` run. The
+receipt SHALL be detection's own and SHALL NOT be merged into the archive-open
+`CostReceipt`: detection's I/O happens before a reader exists. The receipt SHALL cover the
+work of the whole `detect_format` call: when a stub-only executable is followed to its
+sibling split volume, the receipt and the skips SHALL be those of both passes together,
+with each repeated skip kept once. Each pass runs under the full budget, so the receipt
+SHALL say how many passes it sums (`passes`, 2 here) and `within_budget` SHALL judge it
+against that many budgets. `max_far_bytes` is separate from `max_prefix_bytes` because a
+far fixed-offset signature needs a ~32 KiB window that a 4 096-byte near budget would
+otherwise forbid.
+
+Live budget fields today: `max_prefix_bytes` (near peek clamp), `max_far_bytes`,
+`max_scan_bytes` (SFX window), `max_decode_input` / `max_decode_output`,
+`completion_window_bytes` (see `format-detection`: a content-probe hit on a source no
+larger than this is re-checked against the whole source), `spool_non_seekable_up_to`,
+`max_probe_links` (via `within_budget`'s probe-seek allowance of `max_probe_links × 24`
+bytes, aligned with the Brotli chain header read), and the skip-recording of
+`max_tail_bytes <= 0` as *not enabled by policy*.
+
+`max_decode_input` SHALL be one allowance for the whole `detect_format` pass, not a limit
+per tier or per candidate: every tier that decodes draws on what earlier tiers left, so
+adding tiers or candidates cannot multiply the compressed input a budget allows decoded.
+Today three tiers draw on it. `max_decode_output` bounds the inner-TAR probe only; a
+content probe's output is bounded by the codec's own drain (4 KiB, or 64 KiB when the
+whole source is in hand) and is not charged to `decode_output`. Each content probe is
+charged the sample it was handed, whether or not a header check turned it away before
+decoding; a probe the remaining allowance cannot cover does not run, and `content_probe`
+is recorded *budget exhausted* (or *not enabled by policy* when `max_decode_input` is 0).
+The completion check is charged the whole source it decodes and records `probe_completion`
+*budget exhausted* when the allowance cannot cover it (a zero allowance stops the probes
+before any hit asks for completion), and *not enabled by policy* when
+`completion_window_bytes` is 0. The inner-TAR probe caps its compressed input at the
+smaller of what is left and 1 MiB, is charged whether its decode succeeds or fails, and
+records `inner_tar` as *budget exhausted* when the cap cut it short or less than one
+512-byte TAR header of output is left. Content-probe `read_at` seeks on cheap
+random-access sources (path, full spool, non-`ArchiveStream` seekable streams) without
+growing the prefix through `[0, offset)`; non-seekable and expensive-seek sources grow
+under the smaller of 1 MiB and the budget's prefix/far/scan ceiling, and record
+`BUDGET_EXHAUSTED` past it. A far signature that ends past a positive `max_far_bytes`
+SHALL be recorded as `far_magic` *budget exhausted* rather than searched in a window too
+short to hold it, unless the source is provably too short to hold it anyway. An SFX scan
+that misses in a window the budget made shorter than the 2 MiB structural bound SHALL be
+recorded as `sfx_scan` *budget exhausted*, on the same carve-out.
+
+`within_budget` SHALL compare every bounded counter with its limit, `far_bytes` against
+`max_far_bytes` included; `prefix_bytes` is the one exception, because it bills
+overlapping requests in full and `unique_bytes_read` stands in for it. A receipt that
+fails `within_budget` SHALL carry a *budget exhausted* or *capability unavailable* skip
+naming the tier that was cut short, except where a budget field is not yet honoured by the
+tier spending against it: the Brotli walk follows its own `CHAIN_MAX_LINKS` (8), not
+`max_probe_links`. The ZIP-tail pair MAY appear on the type and in presets so a tail tier
+can wire it without a shape break; no tier SHALL claim to honour it until one does.
+
+#### Scenario: receipt reflects the source kind
+
+| Case | Expected |
+| --- | --- |
+| Path, near magic hit at offset 0 | `unique_bytes_read` is the single prefix read; `seeks` 0 |
+| Growing 4 KiB → 32 KiB → 2 MiB | `unique_bytes_read` counts each byte once; `prefix_bytes` counts requests |
+| A tier the preset does not enable (ZIP tail) | Recorded as *not enabled by policy* — a distinct reason, because it does not make the search incomplete |
+| SFX scan miss under `FAST` | `scanned_bytes` ≤ `max_scan_bytes`; `unique_bytes_read` ≤ scan ceiling + probe allowance; `sfx_scan` recorded *budget exhausted* when the source is longer than the window |
+| SFX miss then extension guess (`.zip`) | `within_budget` is True under `BALANCED` and `FAST` |
+| ISO under a `max_far_bytes` smaller than the `CD001` span | Extension `GUESS`; `far_magic` recorded *budget exhausted*; `far_bytes` 0 |
+| `.tar.bz2` whose first block exceeds `FAST`'s decode input | Bare `BZ2`; `decode_input` ≤ 64 KiB; `inner_tar` recorded *budget exhausted*; `within_budget(FAST)` True |
+| Expensive-seek source, content probe asks past the budget ceiling | `read_at` returns `None`; `content_probe_read_at` recorded *budget exhausted*; `within_budget` True |
+| Stub-only `vol.exe` beside `vol.7z.001` | `SEVEN_Z`; the receipt includes the stub pass's SFX scan; `passes` 2; `within_budget` True; `zip_tail` recorded once |
+| `max_decode_output` below one 512-byte TAR header | Inner-TAR probe not run; `inner_tar` recorded *budget exhausted*; nothing charged |
+| `max_decode_input` 0, zlib stream | No content probe runs; `content_probe` recorded *not enabled by policy*; `decode_input` 0; detection fails |
+| `max_decode_input` smaller than the samples the probes ahead of zlib were charged | Probing stops before zlib; `content_probe` recorded *budget exhausted*; `decode_input` within the budget |
+
+### Requirement: FormatInfo reports the receipt and the tiers that did not run
+
+`detect_format` SHALL return its receipt on `FormatInfo.cost_receipt` and the tiers it
+did not run on `FormatInfo.unavailable_tiers`. Both are public:
+
+```python
+class TierSkipReason(Enum):
+    NOT_ENABLED_BY_POLICY = "not_enabled_by_policy"
+    CAPABILITY_UNAVAILABLE = "capability_unavailable"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+
+@dataclass(frozen=True)
+class TierSkip:
+    tier: str
+    reason: TierSkipReason
+```
+
+`cost_receipt` SHALL be set on every `FormatInfo` that `detect_format` returns (the zero
+receipt for a directory) and SHALL be `None` only on a `FormatInfo` that other code built.
+`unavailable_tiers` SHALL list each skipped tier once, in the order it was first recorded,
+and SHALL be empty when every tier ran. `NOT_ENABLED_BY_POLICY` SHALL NOT mean that the
+search was incomplete; `CAPABILITY_UNAVAILABLE` and `BUDGET_EXHAUSTED` SHALL mean that it
+was. Neither field SHALL take part in `FormatInfo` equality or `repr`, so two results that
+found the same format at a different cost compare equal. `tier` names an open set: a later
+release MAY add a tier.
+
+#### Scenario: receipt and skips on FormatInfo
+
+| Case | Expected |
+| --- | --- |
+| `detect_format` on a file | `cost_receipt` is a `DetectionCostReceipt`, not `None` |
+| Directory path | `cost_receipt` is the zero receipt (`passes` 1); `unavailable_tiers` is empty |
+| ZIP under the default budget | `unavailable_tiers` holds `TierSkip("zip_tail", NOT_ENABLED_BY_POLICY)` |
+| Two results that differ only in receipt or skips | Compare equal |
+
+### Requirement: Detection capabilities are derived from source and budget together
+
+A detector SHALL declare the capabilities it needs, and the scheduler SHALL evaluate them
+against `source.capabilities(budget)` — not against the source alone:
+
+| capability | supplied when |
+| --- | --- |
+| `PREFIX` | always — a bounded head read through the prefix workspace |
+| `SIZE_KNOWN` | a cheap total size is available (path, seekable stream, or fully-spooled source) |
+| `REMAINING_KNOWN` | bytes from the caller's current position are provable, not estimated |
+| `TAIL` | the source can be read near its end **and** `max_tail_bytes > 0` and `max_seeks > 0` — seekable, or spooled by explicit policy |
+| `SEEK` | arbitrary range reads are allowed (`max_seeks > 0`) on a random-access source |
+| `REREAD` | the source can be consumed and still presented to a backend afterwards |
+
+An overestimated total size SHALL NOT be treated as proof that a later offset is reachable;
+a size gate may skip a detector only when the remaining source is *provably* too short.
+An abandoned spool (source exceeded `spool_non_seekable_up_to`) SHALL NOT report
+`REMAINING_KNOWN` from the truncated buffer length.
+
+#### Scenario: budget participates in the capability set
+
+| Case | Expected |
+| --- | --- |
+| Ordinary file, `max_seeks = 0` | `SEEK` and `TAIL` absent despite a seekable source |
+| Pipe, no spool policy | `TAIL` absent |
+| Pipe, explicit spool policy within budget and `max_seeks > 0` | `TAIL` present |
+| Pipe, spool abandoned past the bound | Prefix buffer retained; `REMAINING_KNOWN` absent |
+| Caller-positioned seekable stream | `REMAINING_KNOWN` measured from the entry position, not from offset 0 |
+
+### Requirement: Detection budget presets
+
+The system SHALL provide three presets, and `BALANCED` SHALL be the default. Preset
+behaviour below is what detection **runs today**; reserved knobs may differ in numeric
+value across presets so follow-on changes inherit a ready table.
+
+| preset | behaviour today |
+| --- | --- |
+| `BALANCED` | near prefix; far fixed-offset evidence; cued bounded SFX scan (`max_scan_bytes` = 2 MiB); bounded content probes; whole-source completion of a probe hit up to 64 KiB; inner TAR; **no** ZIP tail; no exhaustive scan; no implicit spool |
+| `FAST` | same tiers as `BALANCED` with a smaller SFX scan (`max_scan_bytes` = 256 KiB), smaller decode ceilings, and no whole-source completion (`probe_completion` recorded *not enabled by policy* when a probe hit could have used it) |
+| `THOROUGH` | same scheduled tiers as `BALANCED` today, with whole-source completion as far as the 1 MiB decode allowance reaches (the probes' samples are charged first, so a source just under 1 MiB may not complete); a larger `max_probe_links` widens only the `within_budget` allowance. ZIP tail stays off (`max_tail_bytes = 0`, `max_seeks = 0`) until `prefixed-archive-detection` schedules it |
+
+The ZIP tail tier SHALL remain outside every preset until its aggregate cost is measured on
+the founding backup workload, in seeks as well as bytes, **and** a caller exists. Format
+boundedness proves the search is complete for the tiers a policy enables, not that every
+reserved knob is live.
+
+#### Scenario: preset boundaries (shipping)
+
+| Case | `BALANCED` | `FAST` | `THOROUGH` (today) |
+| --- | --- | --- | --- |
+| Ordinary ZIP / gzip / ISO at a known offset | Found | Found | Found (same tiers) |
+| MZ stub + junk, no archive magic, `.zip` name | Extension `GUESS`; scan charged ≤ 2 MiB | Extension `GUESS`; scan charged ≤ 256 KiB | Same as `BALANCED` |
+| ZIP behind a non-cueing prefix (JPEG + appended ZIP) | Not found | Not found | Not found — tail tier not scheduled yet |
+| `zipapp` (`#!` prefix + ZIP) | Not found — shebang is not an executable cue today | Not found | Not found |
+| Exhaustive whole-source scan | Never | Never | Never (opt-in later, not by preset alone) |
+
+### Requirement: Non-seekable sources degrade explicitly, and spooling is opt-in
+
+Detection SHALL NOT implicitly buffer a whole pipe. Near and far prefix evidence and cued
+forward scans SHALL still work through replay buffering; tiers that would require `TAIL`
+or `SEEK` SHALL be recorded as unavailable or not-enabled-by-policy rather than attempted.
+
+An explicit spool policy SHALL write at most `spool_non_seekable_up_to` bytes to a seekable
+temporary file. When the source ends within the bound, the spool is the detection (and
+future backend-shared) object. When the source exceeds the bound, detection SHALL keep the
+already-spooled prefix plus the one-byte look-ahead that proved overflow, abandon further
+spooling, record the tier as budget-exhausted, and SHALL NOT treat the truncated length as
+a proven remaining size.
+
+#### Scenario: pipe behaviour
+
+| Case | Expected |
+| --- | --- |
+| Pipe, default budget | Prefix tiers run; ZIP tail recorded *not enabled by policy*; no unbounded buffering |
+| Pipe, spool policy, source ends within budget | Spooled; `SIZE_KNOWN`; `TAIL` only when `max_seeks > 0` and `max_tail_bytes > 0` |
+| Pipe, spool policy, source exceeds the budget | Spool abandoned within the bound; lookahead byte retained; `REMAINING_KNOWN` absent |
+| Detection finds a format whose backend cannot consume the source | `open_archive` raises the capability error rather than opening |

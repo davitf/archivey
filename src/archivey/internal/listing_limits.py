@@ -1,0 +1,159 @@
+"""Retained metadata-byte accounting for :class:`~archivey.config.ListingLimits`."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+
+from archivey.config import ListingLimits
+from archivey.exceptions import ResourceLimitError
+from archivey.types import ArchiveMember
+
+
+def _str_retained_bytes(value: str) -> int:
+    """Cheap upper bound on UTF-8 size for listing bomb accounting.
+
+    ``max_metadata_bytes`` is a safety cap, not a precise allocator — encoding
+    every field on the open+list hot path is wasted work. UTF-8 is at most 4
+    bytes per Unicode code point, so ``4 * len(s)`` never under-counts a
+    Unicode name bomb; ASCII uses ``len(s)`` (exact, the common case).
+    """
+    n = len(value)
+    return n if value.isascii() else n * 4
+
+
+def _retained_bytes(value: object) -> int:
+    """Retained size of a ``str``/``bytes`` value; anything else weighs nothing."""
+    if isinstance(value, str):
+        return _str_retained_bytes(value)
+    if isinstance(value, bytes):
+        return len(value)
+    return 0
+
+
+def _extra_bytes(extra: Mapping[str, object]) -> int:
+    """Sum retained ``str``/``bytes`` lengths in ``extra`` (one-level nested dicts).
+
+    Values count at both levels; keys count only inside a nested dict. A top-level
+    key is a format-defined literal (``zip.compress_type``, ``tar.type``) that no
+    archive sizes, so charging it would only tighten the cap by a per-format toll.
+    A nested key is archive text: TAR copies every PAX record into
+    ``extra["tar.pax_headers"]``, where the keyword is as attacker-sized as the value.
+    """
+    total = 0
+    for value in extra.values():
+        if isinstance(value, dict):
+            for nested_key, nested in value.items():
+                total += _retained_bytes(nested_key) + _retained_bytes(nested)
+        else:
+            total += _retained_bytes(value)
+    return total
+
+
+def member_metadata_bytes(member: ArchiveMember) -> int:
+    """Retained metadata weight for one member (listing bomb accounting)."""
+    # Hot path for ZIP/TAR listing: most optional string fields are None.
+    total = _str_retained_bytes(member.name)
+    if member.raw_name is not None:
+        total += len(member.raw_name)
+    comment = member.comment
+    if comment is not None:
+        total += _str_retained_bytes(comment)
+    link_target = member.link_target
+    if link_target is not None:
+        total += _str_retained_bytes(link_target)
+    uname = member.uname
+    if uname is not None:
+        total += _str_retained_bytes(uname)
+    gname = member.gname
+    if gname is not None:
+        total += _str_retained_bytes(gname)
+    if member.extra:
+        total += _extra_bytes(member.extra)
+    return total
+
+
+def archive_comment_bytes(comment: str | None) -> int:
+    if comment is None:
+        return 0
+    return _str_retained_bytes(comment)
+
+
+class ListingLimitTracker:
+    """Accumulate member count + retained metadata; optionally raise when caps are crossed."""
+
+    def __init__(self, limits: ListingLimits) -> None:
+        self._limits = limits
+        self.member_count = 0
+        self.metadata_bytes = 0
+        self._archive_comment_counted = False
+
+    def reset(self) -> None:
+        self.member_count = 0
+        self.metadata_bytes = 0
+        self._archive_comment_counted = False
+
+    def account_archive_comment(
+        self, comment: str | None, *, enforce: bool = True
+    ) -> None:
+        if self._archive_comment_counted:
+            return
+        self._archive_comment_counted = True
+        added = archive_comment_bytes(comment)
+        if added <= 0:
+            return
+        next_bytes = self.metadata_bytes + added
+        if enforce:
+            self._check_metadata(next_bytes)
+        self.metadata_bytes = next_bytes
+
+    def account_member(self, member: ArchiveMember, *, enforce: bool = True) -> None:
+        next_count = self.member_count + 1
+        added = member_metadata_bytes(member)
+        next_bytes = self.metadata_bytes + added
+        if enforce:
+            self._check_members(next_count)
+            self._check_metadata(next_bytes)
+        self.member_count = next_count
+        self.metadata_bytes = next_bytes
+
+    def account_link_target(self, target: str, *, enforce: bool = True) -> None:
+        """Add a link target that was resolved after its member was registered.
+
+        ZIP, 7z and RAR4 keep a symlink's target in the member's data, which is read
+        only once every member is registered, so :meth:`account_member` saw ``None``
+        for it. Weighing it here is what makes ``max_metadata_bytes`` hold for the
+        ``link_target`` field the spec names.
+        """
+        next_bytes = self.metadata_bytes + _str_retained_bytes(target)
+        if enforce:
+            self._check_metadata(next_bytes)
+        self.metadata_bytes = next_bytes
+
+    def assert_within_limits(self) -> None:
+        """Re-check accumulated totals (e.g. when returning a previously built cache)."""
+        self._check_members(self.member_count)
+        self._check_metadata(self.metadata_bytes)
+
+    def _check_members(self, count: int) -> None:
+        max_members = self._limits.max_members
+        if max_members is not None and count > max_members:
+            raise ResourceLimitError(
+                f"Listing limit reached: max_members={max_members} "
+                f"(registered {count} members)"
+            )
+
+    def _check_metadata(self, nbytes: int) -> None:
+        check_metadata_budget(self._limits, nbytes, detail=f"retained {nbytes} bytes")
+
+
+def check_metadata_budget(limits: ListingLimits, nbytes: int, *, detail: str) -> None:
+    """Raise :class:`ResourceLimitError` if ``nbytes`` exceeds ``max_metadata_bytes``.
+
+    ``None`` disables the check. ``detail`` names what was weighed; it goes in the
+    parentheses after the limit, so every refusal of this limit reads the same way.
+    """
+    max_meta = limits.max_metadata_bytes
+    if max_meta is not None and nbytes > max_meta:
+        raise ResourceLimitError(
+            f"Listing limit reached: max_metadata_bytes={max_meta} ({detail})"
+        )

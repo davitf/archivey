@@ -1,0 +1,834 @@
+# RAR Archive Support
+
+## Purpose
+
+Archivey parses RAR metadata natively (RAR 1.5 / 2.x through RAR5) with no
+`rarfile` dependency. Listing uses the native parser only; reading compressed or
+encrypted member data delegates to the system RARLAB `unrar` binary. RAR is
+read-only, and `rarfile` is only a test oracle.
+
+This native-metadata/system-decompressor split follows the `archivey-dev`
+`rar-native-metadata-reader` exploration. A full native RAR decompressor is out
+of scope because RAR compression is proprietary and `unrar` is the reference
+implementation.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `archive-reading` | Read API, multi-source input, passwords, link following, bounded storage |
+| `access-mode-and-cost` | Seek requirement, cost receipt, solid access semantics |
+| `compressed-streams` | Pass-through stored reads and checksum verification |
+| `packaging-and-extras` | RARLAB `unrar` binary and `[recommended]` availability |
+| `testing-contract` | Native parser coverage and `rarfile` oracle checks |
+
+## Requirements
+
+### Requirement: Declare RAR format properties
+
+The RAR backend SHALL expose these properties:
+
+| Property | Value |
+| --- | --- |
+| Read dependency (metadata) | None; native RAR 1.5–RAR5 header parser |
+| Read dependency (data) | RARLAB `unrar` or `rar` binary on `PATH` (`unrar` preferred) |
+| Listing cost | O(1); headers parsed natively, no member-data decompression |
+| Access cost | `SOLID` for solid archives; `DIRECT` otherwise |
+| Supports write | No |
+| Requires seek | Yes |
+
+#### Scenario: format property matrix
+
+| Case | Expected |
+| --- | --- |
+| Open non-header-encrypted RAR without `unrar`/`rar` | Listing and metadata still work through the native parser |
+| Open from a non-seekable source | Open fails because RAR header parsing requires seek |
+| Attempt to create/write RAR | `UnsupportedOperationError` |
+
+### Requirement: Parse RAR headers natively (RAR 1.5 through RAR5)
+
+The system SHALL parse RAR archive headers natively — including RAR 1.5 / 2.x
+archives that advertise extract version ≤ 20, RAR3/RAR4, and RAR5 — to produce
+the full member list and per-member metadata: names, packed/unpacked sizes,
+timestamps, mode, flags, solid state, RAR5 redirect (`file_redir`) records,
+encryption flags, and integrity hashes. Listing SHALL not import `rarfile` or
+invoke `unrar`. Extract version ≤ 20 MUST NOT by itself cause rejection: those
+archives share the same header block layout the parser already understands, and
+member data remains RARLAB `unrar`'s responsibility. When a RAR5 MAIN locator
+points at a stored, unencrypted `QO` SERVICE, the parser SHALL parse those
+FILE copies, seek back to after MAIN, and walk. FILE headers whose offsets
+appear in `QO` SHALL be emitted from the copies and skipped; FILE headers
+`QO` omitted SHALL still be parsed. `CMT` after MAIN SHALL be consumed as a
+normal SERVICE on that walk. Extract SHALL use the same table. Otherwise the
+parser SHALL walk FILE headers. A `QO` that is missing, packed, split,
+encrypted, CRC-invalid, or behind header encryption SHALL fall back to the
+walk.
+
+#### Scenario: native header matrix
+
+| Case | Expected |
+| --- | --- |
+| Open RAR 1.5 / 2.x archive (extract version ≤ 20) | Members and metadata come from native headers; data via `unrar`; no `UnsupportedFeatureError` for extract version alone |
+| Open RAR3/RAR4 archive whose members advertise extract version 20 | Listing and reads succeed (stored/small members often carry `unp_ver=20`) |
+| Open RAR4 archive | Members and metadata come from native headers |
+| Open RAR5 archive | Members, flags, hashes, and redirect metadata come from native headers |
+| Open RAR5 with a stored unencrypted `QO` reachable from MAIN's locator | FILE headers in `QO` are emitted from the copies and skipped on the walk; omitted FILE headers and `CMT` after MAIN are parsed |
+| Open RAR5 with no `QO`, locator offset 0, packed/encrypted/`QO` CRC failure, or header encryption | Member table is filled by the FILE-header walk |
+| `unrar` missing during listing | Listing succeeds unless header decryption needs unavailable crypto/password |
+| Extract version ≤ 20 alone | No `UnsupportedFeatureError` |
+
+### Requirement: Accept a non-zero archive start offset (SFX)
+
+The RAR reader SHALL accept an archive whose marker (`Rar!\x1a\x07\x00` for RAR4
+or `Rar!\x1a\x07\x01\x00` for RAR5) begins at a non-zero byte offset — whether
+supplied as an explicit start offset from detection (`payload_offset`) or
+discovered by a bounded forward scan when the marker is absent at the open
+position (forced `format=RAR` on an SFX stub).
+
+The forced-format scan bound SHALL be the shared `SFX_MAX` constant (same
+binding as the 7z parser and `detect_format`; today 2 MiB). The scan SHALL use
+the same hit validator the detector uses. It SHALL return the earliest VALID
+match, or if none validate the earliest identified candidate, so a damaged
+payload still reaches the parser. After `MAX_VALIDATED_CANDIDATES` (256)
+rejected candidates the scan SHALL stop and raise `CorruptionError` naming the
+cap. That bound is structural (a real SFX stub does not carry hundreds of
+format magics, and the parser has no `DetectionBudget`) and is not a
+`ListingLimits` knob. A miss with no candidate SHALL raise `CorruptionError`
+naming that there was no match.
+
+Scanning both markers rather than their shared `Rar!\x1a\x07` prefix SHALL
+resolve the version by which marker matched first.
+
+Member and header offsets SHALL be relative to the resolved origin. The system
+SHALL read in place and SHALL NOT copy the archive to a temporary file solely
+to strip a stub.
+
+#### Scenario: RAR SFX / start-offset matrix
+
+| Case | Expected |
+| --- | --- |
+| Marker at open origin (offset 0) | Unchanged success path; version from the marker read |
+| Forced `format=RAR`, marker at N within `SFX_MAX`, header validates | Scan finds N; members listed |
+| Forced `format=RAR`, marker at N, header does not validate, no later VALID hit | Scan falls back to N; the parser reports the damage |
+| Forced `format=RAR`, decoy magic then a VALID payload within `SFX_MAX` | Earliest VALID wins |
+| Forced `format=RAR`, no marker within `SFX_MAX` | `CorruptionError` naming that there was no match |
+| Forced `format=RAR`, `MAX_VALIDATED_CANDIDATES` (256) candidates rejected, none VALID | `CorruptionError` naming that the candidate cap was reached |
+
+### Requirement: Bound RAR parser member tables at open
+
+The native RAR header walk SHALL refuse to retain more members than
+`listing_limits.max_members` when that field is not `None`, and SHALL raise
+`ResourceLimitError` at parse (`open_archive`) when the ceiling is crossed.
+`None` (`ListingLimits.UNLIMITED`) disables the bound. The config value is the
+bound at parse because the table is built then; there is no separate
+parser-constant ceiling. `stream_members()` / `streaming=True` are not an
+escape hatch.
+
+RAR has no header-size analogue for member count (the walk is sequential), so
+`UNLIMITED` can walk until memory is exhausted. The parse bound is a member
+count, not a byte budget. Spine `ListingLimits.max_metadata_bytes`
+(`archive-reading`) still apply when members are registered into a
+materialized list (`members()`), the same as every other format. The one
+exception is RAR 1.5/2.x compressed old-style comments, which expand after
+the parse: the reader SHALL sum their declared unpacked sizes (member and
+archive comments) at `open_archive`, before decoding any, and raise
+`ResourceLimitError` naming `max_metadata_bytes` when the sum exceeds it.
+
+#### Scenario: RAR parser bound matrix
+
+| Case | Expected |
+| --- | --- |
+| Hostile or honest archive over `listing_limits.max_members` | `ResourceLimitError` at parse (`open_archive`), including `stream_members()` / `streaming=True` |
+| `listing_limits.max_members is None` (`UNLIMITED`) | No member-count bound at parse; a large honest archive opens |
+| Default limits, typical archive | Open and listing succeed |
+| Compressed RAR 1.5/2.x comments whose declared unpacked sizes sum past `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive`, before any comment is decoded, including `stream_members()` / `streaming=True` |
+
+### Requirement: Expose RAR file-version history members
+
+The system SHALL include RAR file-version history FILE blocks in the member list
+instead of omitting them. RAR5 extra type `0x04` (and RAR3 `FILE_VERSION` when
+present) identifies a prior revision. History members SHALL use the WinRAR /
+`unrar` presented name `path;n` (version `n != 0`), set
+`extra["rar.file_version"] = n`, and set `is_current=False`. The live revision of
+the same archive path (no version extra, or version 0) SHALL keep the plain path
+name and `is_current=True`.
+
+`open` / `read` of a history `FILE` SHALL return that revision’s bytes. For
+`unrar`-backed reads the backend SHALL request the exact presented member name
+(`path;n`). Solid ALL-pipe demux SHALL pass `unrar`’s `-ver` switch when the
+member list contains any versioned payload FILE so the pipe includes history
+bytes in archive order; otherwise solid demux MAY omit `-ver`.
+
+Default `extract` / `extract_all` SHALL skip history rows through the existing
+`is_current=False` coordinator behavior (`safe-extraction`), recording each as
+`ExtractionStatus.SUPERSEDED`. History rows have unique `path;n` presentation
+names, so the shared last-entry-wins pass leaves their backend `is_current=False`
+untouched. History rows SHALL count toward listing / parser member ceilings like
+any other FILE.
+
+#### Scenario: file-version matrix
+
+| Case | Expected |
+| --- | --- |
+| RAR5 `-ver` archive with revisions 1..k then live path | Members include `path;1`…`path;k` (`is_current=False`) and `path` (`is_current=True`) |
+| `read("path;1")` / `open` that member | Bytes of revision 1 |
+| `read("path")` | Bytes of the live revision |
+| `extract_all` default | Writes live `path` only; history rows `SUPERSEDED` |
+| Solid archive that includes versioned payload FILEs | ALL-pipe demux uses `-ver`; stream order stays aligned |
+| Nonsolid named `unrar p` of `path;n` | Exact member name; `-ver` not required |
+| Hostile archive with many version rows | Rows count toward member caps |
+
+### Requirement: Map RAR method bytes and unpack version
+
+The RAR backend SHALL map the FILE-header method byte as follows:
+
+| Method | `member.compression` |
+| --- | --- |
+| M0 (`0x30`) | `(CompressionMethod(algo=CompressionAlgorithm.STORED),)` |
+| M1–M5 (`0x31`–`0x35`) | `(CompressionMethod(algo=CompressionAlgorithm.RAR, level=<1-5>),)` with `level` = method − `0x30` |
+| Any other byte | `(CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),)` — `level` omitted |
+
+Ordinary RAR M1–M5 SHALL map to `CompressionAlgorithm.RAR`, not to any other
+algorithm name. An unrecognized method byte SHALL not abort listing.
+
+When the FILE header recorded an unpack version, every member — stored
+included — SHALL set `extra["rar.extract_version"]` to that value. RAR3
+copies the `UNP_VER` byte as stored, unvalidated. RAR5 members report `50`
+(RAR5 records no per-file unpack version).
+
+#### Scenario: RAR compression matrix
+
+| Case | Expected |
+| --- | --- |
+| Stored member (M0) | `STORED`; `extra["rar.extract_version"]` present |
+| Compressed member (M1–M5) | `RAR` with `level` 1–5; `extra["rar.extract_version"]` present |
+| Method byte outside M0–M5 | `UNKNOWN`; `level` is `None`; listing succeeds |
+| RAR3 FILE `UNP_VER` byte 200 | listing succeeds; `extra["rar.extract_version"]` is 200 |
+| RAR5 member | `extra["rar.extract_version"]` is 50 |
+
+### Requirement: Use RARLAB unrar only for member data that needs it
+
+The system SHALL read stored, uncompressed, unencrypted members directly as raw
+bytes through the shared pass-through backend. All other member data SHALL be
+read by invoking a system RARLAB decompressor: `unrar` if a usable binary is on
+`PATH`, otherwise `rar`. A usable binary is identified by a RARLAB banner
+(`Alexander Roshal` or `RARLAB`, plus a standalone `UNRAR` or `RAR` token that
+does not match inside `UNRAR`) whose parsed major.minor is 6.0 or later.
+If a decompressor is required and missing or incompatible, the system SHALL raise
+`PackageNotInstalledError` naming RARLAB `unrar` or `rar`. Archivey MUST NOT
+silently use `unrar-free`, `unar`, `bsdtar`, `7z`, or a degraded backend. The
+spawn SHALL be the `p` (print to stdout) command only.
+
+#### Scenario: unrar dependency matrix
+
+| Case | Expected |
+| --- | --- |
+| Stored member, `unrar`/`rar` missing | Raw bytes are returned without invoking either |
+| Compressed member, both missing | `PackageNotInstalledError` names `unrar` or `rar` |
+| PATH `unrar` is not RARLAB `unrar`, and no usable `rar` | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
+| RARLAB `unrar` older than 6.0 and no usable `rar`, or a RARLAB banner with no parseable version | `PackageNotInstalledError` names the floor and the version found; refused at identification |
+| RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed/encrypted member data; spawn is `rar p` |
+| RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
+| Listing only, both missing | No data dependency is checked |
+
+### Requirement: Constrain unrar argv by call site
+
+The system SHALL invoke RARLAB `unrar` with member path arguments only as follows:
+
+| Call site | Member path args after the archive |
+| --- | --- |
+| Solid `stream_members()` / solid `_iter_with_data` | none (unnamed `unrar p -inul <archive>`) |
+| `_open_member` for a FILE member | exactly one archive-relative member path |
+| Stored M0 unencrypted member | `unrar` not invoked |
+
+The system MUST NOT pass multiple member paths, globs, or `@listfile` filters in this
+capability’s initial implementation. Hardlink / file-copy members are never named on the
+`unrar` command line; the shared link-following layer opens the target FILE instead.
+
+#### Scenario: unrar argv matrix
+
+| Case | Expected |
+| --- | --- |
+| Solid full or filtered `stream_members()` | One `unrar p` with no member path args |
+| Nonsolid `open()` / lazy stream of a FILE | `unrar p … <archive> <member>` |
+| `open()` on hardlink / `FILE_COPY` | `unrar` receives the target FILE path only (after link follow), or equivalent target open |
+| Symlink member | No `unrar` data read for the link payload |
+
+### Requirement: Stream solid RAR archives through one unrar pipe
+
+For solid-archive `stream_members()`, the system SHALL run one
+`unrar p -inul <archive>` subprocess **with no member path arguments** and
+demultiplex stdout into per-member streams using the unpacked sizes of
+**payload FILE members only** (members whose content `unrar p` emits).
+Symlinks, hardlinks, file-copies, and directories MUST NOT consume pipe bytes
+even when native headers advertise a non-zero size. Demultiplexing SHALL use
+`SolidBlockReader` (or equivalent forward-only slicing). The system SHALL
+validate each payload member's CRC32 or Blake2sp hash incrementally via the
+shared verification stage. This path MUST process the archive once, not spawn
+one subprocess per member.
+
+#### Scenario: solid streaming matrix
+
+| Case | Expected |
+| --- | --- |
+| `stream_members()` on a solid RAR | Exactly one unnamed `unrar p` process |
+| Solid archive with symlinks / hardlinks | Pipe length equals Σ payload FILE sizes only; link members yield `stream is None` |
+| Member has CRC32/Blake2sp | Verification runs as bytes are read and raises on mismatch |
+| A later member is selected in the same pass | Earlier payload bytes are drained through the single pipe, not separate member subprocesses |
+| Filtered `stream_members(selector)` | Still one unnamed `unrar p`; unselected payload tails are skipped via the shared iterator close/`SolidBlockReader` lazy skip |
+
+### Requirement: Serve random access and extraction with bounded explicit temp use
+
+The system SHALL serve non-solid random reads by invoking `unrar` for the target
+member **with that member's path as the sole path argument**, doing
+O(member_size) data work. For solid random reads, the system SHALL decode from
+archive start to the target member (named `unrar p … <member>`). Each such read
+is its own decode: the reader SHALL NOT amortize repeated solid reads by
+extracting members into a temporary directory and serving later reads from disk.
+`extract_all()` SHALL be served by the same `stream_members()` pass as any other
+caller, plus a second `stream_members()` pass when a selected hardlink's source
+was excluded and has to be re-read; on a solid archive each pass is one unnamed
+`unrar p` addressed at the whole archive, decoding only as far as the last
+member it needs. Which members a pass names on the `unrar` command line — and
+which need no spawn at all — is governed by `Constrain unrar argv by call site`.
+Any temp materialization SHALL be a declared RAR strategy, not an implicit
+in-memory buffer; the only one the reader implements is copying a non-path
+archive *source* to disk so `unrar` can seek it, the deferred small-member
+optimization being the other strategy this capability declares.
+
+A non-path stream source SHALL NOT be copied to disk at open. Both stream shapes —
+a single stream and an ordered set of stream volumes — SHALL defer the copy to the
+first member read that `unrar` has to serve, and a caller that only lists SHALL
+write nothing. An `open()` the reader refuses before spawning `unrar` — a name it
+cannot address through an include mask, or one whose mask would pull in earlier
+members — is not such a read and SHALL write nothing either. Listing SHALL be served from the source the caller supplied; for a
+volume set the reader SHALL read each volume as its own bounded view over that
+source rather than reopening or copying it.
+
+When the copy does happen for a volume set it SHALL write the whole set, because
+`unrar` resolves sibling volumes by name.
+
+The copy SHALL be bounded by `ArchiveyConfig.spool_limits` (`archive-reading`), measured
+across the whole volume set, file volumes of a mixed set included. The archive size is
+known before the copy, so an archive over `SpoolLimits.max_bytes` SHALL raise
+`SpoolLimitExceededError` (a `ResourceLimitError`) before any byte is written and before
+`unrar` is spawned. Where the size is not known up front, the copy SHALL stop before its
+total passes the limit and SHALL remove what it wrote. The limit SHALL hold for the
+reader, not for each attempt: once a copy has been refused, a later read that needs it
+SHALL raise the same refusal without writing again. With `max_bytes=0` a member that
+cannot be read directly SHALL be refused, and a member that can SHALL still read.
+
+When the archive is opened from a
+non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
+caveat **at open** (path sources SHALL NOT): a single stream source SHALL warn
+that reading a compressed member will copy the whole archive to disk; ordered
+stream volumes SHALL warn that reading a compressed member will copy every volume
+to a temp directory. The caveat SHALL name the spool limit in force (or say there is
+none), so the caller reads the worst case at open. When the limit already rules the copy
+out — `max_bytes=0`, or a copy whose size is known at open and is over the limit — the
+caveat SHALL say that such a read will be refused, in place of the copy warning. The
+note is a
+static open-time caveat, not an occurrence log:
+it SHALL be present even if only stored members are read, and SHALL NOT appear
+after materialization if it was absent at open. Mixed-password
+nonsolid archives MUST NOT demultiplex one unnamed `unrar p` ALL pipe against the
+full member list (wrong-password members are omitted from stdout and would
+desynchronize sizes).
+
+#### Scenario: random/extract matrix
+
+| Case | Expected |
+| --- | --- |
+| Random `open()` in non-solid RAR | `unrar p … <archive> <member>`; work is O(member_size) |
+| Repeated random opens in solid RAR | Each open is its own `unrar p` decode from archive start; no tempdir cache, and the re-decode is reported as `RewindWarning.min_redecode_bytes` |
+| `extract_all()` | The same `stream_members()` pass as any other caller, plus a second pass when a selected hardlink's source was excluded and must be re-read; no `unrar x` |
+| Mixed-password nonsolid stream/open | Per-member named `unrar` (or equivalent); no ALL-pipe demux |
+| Single non-path stream, at open | `ar.cost.notes` warns a compressed read will copy to disk and names the spool limit; nothing is written yet |
+| Ordered stream volumes, at open | `ar.cost.notes` warns a compressed read will copy every volume and names the spool limit; nothing is written yet |
+| Stream source at open, `max_bytes=0` or a known size over the limit | `ar.cost.notes` says a compressed read will be refused and promises no copy |
+| Ordered stream volumes, listing only | No temp directory is created |
+| Solid `stream_members()` pass, no member read | Nothing is written, even from a stream source |
+| Ordered stream volumes, first compressed read | The whole set is written once; later reads reuse it; close removes it |
+| Stream source over `SpoolLimits.max_bytes` | `SpoolLimitExceededError` naming the field; no temp file or directory; no `unrar` spawn |
+| Volume set, each volume within the limit, total over it | `SpoolLimitExceededError`; the limit weighs the total |
+| Stream source of unknown size refused mid-copy, then another compressed read | The same refusal, with no second temp file |
+| Stream source, `max_bytes=0` | Stored members of a non-solid archive read; a member needing `unrar` is refused |
+| Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
+| Path source | `ar.cost.notes` has no disk-copy caveat; the spool limit never refuses it |
+
+### Requirement: Support benchmark-gated small-member optimization
+
+The reader SHALL allow an optional small-member optimization only when
+benchmarks justify it. The optimization MAY build a temporary single-file RAR
+containing the requested member and invoke `unrar` on that smaller archive when
+the member is below a benchmark-derived threshold. Output MUST be byte-identical
+to the direct `unrar` path. This optimization is **deferred**: the initial
+native RAR reader MUST NOT implement it.
+
+#### Scenario: small-member optimization matrix
+
+| Case | Expected |
+| --- | --- |
+| Initial native RAR reader | Extract-hack / temp single-file RAR path is not used |
+| Future enablement after benchmarks | Bytes match direct `unrar`; measured overhead is lower |
+| Benchmark does not justify the threshold | Optimization is not used |
+
+### Requirement: Report RAR cost and version-specific metadata
+
+The system SHALL treat RAR solidity as a binary archive-level property because
+RAR exposes no per-solid-block boundaries. `ArchiveInfo.is_solid` reflects the
+native solid flag and `CostReceipt.solid_block_count` SHALL be `None`. Timestamp
+mapping SHALL preserve RAR version semantics for `modified`, `accessed`, and
+`created`: RAR4 local wall-clock timestamps become naive `datetime` values, and
+RAR5 UTC/sub-second timestamps become timezone-aware UTC `datetime` values.
+`accessed` and `created` come from the RAR5 `0x03` time extra (`HAS_ATIME` /
+`HAS_CTIME`) or RAR3 EXTTIME; they SHALL be `None` when that extra or slot is
+absent. `created` SHALL carry the creation slot only when `host_os` names a
+birth-time host (Win32, or RAR3 MS-DOS / OS2 / Mac / BeOS); for a Unix host
+(`host_os == 3`) or an unknown one it SHALL be `None` and `ctime` SHALL carry the
+slot instead: a Unix RARLAB writer
+stores `st_ctime` (inode change) in the creation slot, and `created` never
+holds `st_ctime`. RAR5 Blake2sp-only members SHALL store the
+digest bytes at `member.hashes["blake2sp"]` and omit `"crc32"`.
+
+A **RAR5 redirect** member — symlink, hard link, or file copy — SHALL surface **no**
+stored digest. Such a member keeps its target in a header field and stores no data
+stream, so its CRC32 field covers zero bytes and RARLAB writes `crc32(b"") == 0`. That
+value is correct about nothing: it does not describe the member (`size` is the target's
+length while the digest covers no bytes) and is identical for every redirect member in
+every archive. Surfacing it would make `member.hashes` mean something different in RAR
+than in every other format, and the value it would carry is the one a de-duplicating
+caller reads.
+
+**RAR3/4 is the opposite and is unaffected**: it stores a symlink's target *as the
+member's data*, so the stored CRC32 is a genuine digest of the target string — the same
+thing ZIP and 7z record. The rule therefore keys on the RAR5 redirect, never on the
+member type.
+
+#### Scenario: metadata matrix
+
+| Case | Expected |
+| --- | --- |
+| Solid RAR | `ArchiveInfo.is_solid` true; `solid_block_count is None` |
+| RAR4 timestamp | `ArchiveMember.modified` is naive local wall-clock time |
+| RAR5 timestamp | `ArchiveMember.modified` is timezone-aware UTC |
+| RAR5 `-tsmca` archive | `modified` / `accessed` / `ctime` are timezone-aware UTC |
+| RAR4 `-tsmca` archive | `modified` / `accessed` / `ctime` are naive local wall-clock |
+| mtime-only archive (no atime/ctime extra) | `accessed` / `created` / `ctime` are `None`; `modified` populated |
+| Unix-written member with a creation slot | `created is None`; `ctime` holds the slot |
+| Win32-written member with a creation slot | `created` holds the slot; `ctime is None` |
+| Member with an unknown `host_os` | `created is None`; `ctime` holds the slot when present |
+| RAR5 member with Blake2sp only | `"blake2sp"` present as bytes; `"crc32"` absent |
+| RAR5 symlink / hard link / file copy | `member.hashes` empty — never `crc32 == 0` |
+| RAR4 symlink (target stored as data) | `"crc32"` present, equal to the target string's CRC32 |
+
+### Requirement: Handle RAR5 redirect link types natively
+
+The system SHALL read RAR5 link semantics from native `file_redir` metadata.
+Hardlinks and file-copies (`RAR5_XREDIR_HARD_LINK`, `RAR5_XREDIR_FILE_COPY`)
+SHALL be exposed as `MemberType.HARDLINK` with `link_target` set from the
+redirect, so `ArchiveReader` link following returns the target FILE's data.
+Unix symlinks and Windows symlinks/junctions (`RAR5_XREDIR_UNIX_SYMLINK`,
+`RAR5_XREDIR_WINDOWS_SYMLINK`, `RAR5_XREDIR_WINDOWS_JUNCTION`) SHALL be
+exposed as `MemberType.SYMLINK` with `link_target` from the redirect and
+resolved by the format-independent link-following layer. Redirect members MUST
+NOT appear in the solid `unrar p` demux size map.
+
+#### Scenario: redirect matrix
+
+| Case | Expected |
+| --- | --- |
+| RAR5 hardlink / `FILE_COPY` `open()` | Follows to target FILE data |
+| RAR5 Unix/Windows symlink `open()` | Link following resolves target; symlink itself has no `unrar p` payload |
+| Solid stream past a redirect member | Demux does not advance the pipe for that member |
+
+### Requirement: Resolve RAR link targets when possible at list time
+
+The system SHALL set `ArchiveMember.link_target` during member registration /
+`_ensure_link_target` whenever the target is available without interactive input:
+
+| Variant | Source of `link_target` |
+| --- | --- |
+| RAR5 symlink / Windows symlink / junction | native `file_redir` target string |
+| RAR5 hardlink / `FILE_COPY` | native `file_redir` target string (`MemberType.HARDLINK`) |
+| RAR4 Unix symlink | stored member bytes (direct read when M0 / readable without `unrar`), only while `read_link_targets` is `True` |
+
+Encrypted link targets without a usable password MAY leave `link_target` unset and emit
+the existing symlink-target diagnostic; listing MUST still succeed. With
+`read_link_targets=False`, listing reads no RAR4 member bytes for a link target and emits
+nothing for it; RAR5 `file_redir` targets are set as before (`archive-reading`, "Link
+targets stored as member data are read only when configured").
+
+#### Scenario: link-target resolution matrix
+
+| Case | Expected |
+| --- | --- |
+| RAR5 symlink | `type=SYMLINK`, `link_target` set from `file_redir` |
+| RAR5 hardlink or `FILE_COPY` | `type=HARDLINK`, `link_target` set; `open()` follows to target data |
+| RAR4 stored symlink | `link_target` equals stored target bytes decoded as text |
+| Encrypted RAR4 symlink, no password | `link_target` may be unset; no crash on list |
+| RAR4 stored symlink, `read_link_targets=False` | `link_target=None`; no member bytes read; RAR5 targets still set |
+
+### Requirement: Decrypt RAR5 header-encrypted archives natively
+
+The system SHALL decrypt RAR5 header-encrypted archives through the optional
+crypto backend when a valid password is supplied. The native parser derives the
+AES key and decrypts headers itself; `unrar` is not required for listing and
+remains required only for member data. Header-encrypted listing without a
+password SHALL raise `EncryptionError`; with a password but no `cryptography`
+backend (`[recommended]`), it SHALL raise `PackageNotInstalledError`. Any encrypted RAR
+SHALL set `ArchiveInfo.is_encrypted` to `True`.
+
+#### Scenario: header encryption matrix
+
+| Case | Expected |
+| --- | --- |
+| Header-encrypted RAR5, no password | `EncryptionError` |
+| Header-encrypted RAR5, password but no crypto backend | `PackageNotInstalledError` |
+| Header-encrypted RAR5, valid password + crypto | Headers decrypt natively; members list; `is_encrypted` true |
+| Read member data from that archive | `unrar` is still required |
+
+### Requirement: Reject unsupported RAR variants clearly
+
+Multi-volume RAR sets SHALL be supported by the volume contract, not rejected as
+an unsupported variant. Opening a later volume before the first volume of a set
+SHALL raise `UnsupportedFeatureError` (or a truncated/out-of-order error) rather
+than silently mis-joining members. Legacy RAR 1.5 / 2.x archives MUST NOT be
+rejected solely for extract version ≤ 20. Truly unreadable layouts (corrupt
+headers, unknown required crypto without the extra) continue to raise typed
+errors from their existing requirements.
+
+#### Scenario: unsupported variant matrix
+
+| Case | Expected |
+| --- | --- |
+| Multi-volume RAR4/RAR5 set is opened from volume 1 | Handled by the multi-volume requirement |
+| Multi-volume set opened from a later volume first | `UnsupportedFeatureError` or truncated/out-of-order error |
+| RAR 1.5 / 2.x archive is opened | Listing succeeds; not rejected for extract version |
+
+### Requirement: Support multi-volume RAR sets
+
+The system SHALL support multi-volume RAR archives named `name.partN.rar`
+(RAR5/newer RAR4), including an SFX first volume named `name.partN.sfx` or
+`name.partN.exe` beside later `.partN.rar` parts, or `name.rar` + `name.r00`,
+`name.r01`, ... (older RAR4), including an old-scheme SFX first volume named
+`name.exe` or `name.sfx` beside those `.rNN` parts (prefer `.rar` when more than
+one first-volume name exists). The native parser SHALL read volume headers in
+order and stitch members that span
+volume boundaries into one logical member using continuation flags.
+`open_archive()` SHALL accept either a path inside the set, with sibling
+discovery in order, or an explicit ordered source sequence. For path sources,
+data reads point `unrar` at the first volume so it can find later volumes. For
+stream sources, data reads SHALL materialize ordered volumes for `unrar` when
+needed. Missing or out-of-order volumes SHALL raise `UnsupportedFeatureError` or
+a truncated error instead of a partial result.
+
+#### Scenario: volume matrix
+
+| Case | Expected |
+| --- | --- |
+| Open `name.part1.rar` with complete siblings | Headers across all volumes parse as one archive |
+| Open `name.part1.sfx` with later `name.partN.rar` siblings | Same as partN: `.sfx` (or `.exe`) is volume 1; one logical archive |
+| Open `name.rar` with `name.r00` / `name.r01` siblings | Same as partN: one logical archive; member data spans volumes |
+| Open `name.exe` (or `name.sfx`) with `name.r00` siblings | Same as `.rar` + `.r00`: the SFX file is volume 1 |
+| Read a member spanning volumes | Returned stream reassembles the member across boundaries |
+| Open explicit ordered stream volumes | Metadata parses in order; data reads materialize volumes for `unrar` if needed |
+| Missing or out-of-order volume | Error instead of partial or garbled output |
+
+### Requirement: A malformed optional RAR5 extra record SHALL NOT refuse the archive
+
+The RAR5 extra area of a FILE header is a list of optional records. The reader already
+ignores a record whose type it does not recognise. A record whose type it *does*
+recognise but whose body it cannot parse SHALL be treated the same way: the record is
+dropped, the member is listed, and the walk continues with the next record.
+
+CRC-32 on the enclosing header is an integrity check, not an authenticity one. A
+well-formed extra still drops only the one malformed record; a crafted extra that
+CRC-matches can produce one skip per byte, which is why the walk is capped below.
+
+A dropped record SHALL leave the field it would have populated **absent, never wrong**.
+Each record's parse SHALL commit its value only once every byte it needs has been read,
+so a failure part-way through cannot leave a half-written timestamp, redirect or digest
+behind.
+
+Dropping a record SHALL NOT be silent: the reader SHALL emit
+`MEMBER_HEADER_RECORD_SKIPPED` (see `diagnostics`) naming the member, the record and the
+parse failure, attached to the member. Because that code is in `ARCHIVE_INTEGRITY_CODES`,
+a caller who wants the archive refused instead SHALL get that from
+`DiagnosticPolicy.strict()`.
+
+A crafted extra area SHALL NOT retain one skipped record per attacker byte, nor cost one
+parse per attacker byte. The number of dropped records retained per member is a structural
+cap (a handful of extras is every well-formed FILE; more cannot be useful diagnostics).
+After the cap the extra-area walk for that member stops, and stopping SHALL be reported: a
+caller SHALL be able to tell a member whose records were all read from one whose header
+was abandoned part-way, because how far to trust that member's metadata turns on it.
+
+The line SHALL fall between a record's *framing* and its *body*, because that is where the
+information is. A body the reader cannot parse costs one record and leaves the next
+record's offset known, so the walk continues. A size vint the reader cannot use costs every
+later record, so the walk stops and reports that it stopped. A size is unusable when it
+cannot be read at all, when it runs past the header, or when it is below the minimum a
+record can have: a record's body opens with its type vint, so **one byte is the smallest
+legal record** — a type with no payload, which is what an unimplemented record looks like —
+and a declared size of zero names nothing while still advancing the cursor, which is what
+made one attacker byte cost one retained record.
+
+`unrar` 7.00 does continue past a zero-size record, and is wrong for it: one such record in
+front of an encrypted member's records makes `unrar l` lose both the encryption record and
+the timestamp and list the member as plaintext. The oracle that justifies the leniency
+above SHALL NOT be read as justifying this.
+
+#### Scenario: A record whose size cannot be used stops the walk
+
+- **GIVEN** a RAR5 FILE extra area whose first record declares a size of zero, or a size
+  larger than what remains of the header, or whose size vint has no terminating byte, with
+  a valid enclosing header CRC
+- **WHEN** the archive is listed under the default diagnostic policy
+- **THEN** the walk SHALL stop at that record rather than trying to resynchronise
+- **AND** the member SHALL be reported as having had its header cut short, not listed as
+  though its extra area had been read to the end
+
+#### Scenario: A record whose body cannot name its type is dropped, not fatal
+
+- **GIVEN** a RAR5 FILE extra record declaring a one-byte body that holds only a vint
+  continuation byte, sitting in front of the member's `FHEXTRA_CRYPT` record
+- **WHEN** the archive is listed under the default diagnostic policy
+- **THEN** the member SHALL be listed with one `MEMBER_HEADER_RECORD_SKIPPED`
+- **AND** the member SHALL still be reported as encrypted, because the record's size is
+  usable and the walk goes on to reach the encryption record
+- **AND** nothing SHALL report the header as cut short
+
+#### Scenario: A one-byte-short checksum record lists the member without a digest
+
+- **GIVEN** a RAR5 archive whose BLAKE2sp extra record declares a size too small for the
+  32-byte digest it contains, with a valid enclosing header CRC
+- **WHEN** the archive is listed under the default diagnostic policy
+- **THEN** the member SHALL be listed
+- **AND** its BLAKE2sp hash SHALL be absent rather than a truncated or guessed value
+- **AND** exactly one `MEMBER_HEADER_RECORD_SKIPPED` SHALL be attached to that member,
+  with `record="hash"` and the record's numeric type
+- **AND** `unrar` lists the same archive, which is why refusing it was wrong
+
+#### Scenario: An unrecognised record type stays silent
+
+- **WHEN** the extra area carries a record whose type the reader does not implement
+- **THEN** the member SHALL be listed and **no** diagnostic SHALL be emitted
+- **AND** this leniency SHALL NOT turn the pre-existing tolerance for unknown records
+  into a diagnostic, or every archive written by a newer RAR would report one
+
+#### Scenario: A zero-filled extra area does not retain one skip per byte
+
+- **GIVEN** a RAR5 FILE extra area filled with zero bytes and a valid enclosing header CRC
+- **WHEN** the archive is listed under the default diagnostic policy
+- **THEN** the member SHALL be listed
+- **AND** the number of `MEMBER_HEADER_RECORD_SKIPPED` diagnostics attached to it SHALL
+  be at most the structural skip cap
+- **AND** this cap exists because `xsize == 0` is one attacker byte per skip, which
+  `max_members` cannot see
+- **AND** exactly one of those diagnostics SHALL report that the walk stopped with the
+  extra area unread, distinguishing it from a member whose records were all read
+
+### Requirement: A malformed RAR5 encryption record SHALL remain fatal
+
+The `FHEXTRA_CRYPT` record is the sole exception to the rule above. Dropping it would
+leave the member's encryption parameters unset, and a member with no encryption
+parameters is presented as plaintext. That is a *wrong* answer rather than a missing one,
+and this library treats silently wrong metadata as its worst failure class.
+
+A member whose encryption record cannot be parsed SHALL therefore raise, as it does
+today. It SHALL NOT be listed as unencrypted, and it SHALL NOT be listed as encrypted
+with absent parameters.
+
+A member whose extra-area walk stopped before the end of the area SHALL be reported as
+**encrypted**, whether or not an encryption record was read. The walk may have stopped in
+front of one, so reporting such a member as unencrypted is the same wrong answer reached
+by omission rather than by dropping anything, and the diagnostic saying the header was cut
+short does not change what the field says. This is the one place the sentence above gives
+way and the member carries no parameters.
+
+"Encrypted" and "we could not tell" SHALL nonetheless remain distinguishable inside the
+backend, because they are acted on differently. The cut-short answer SHALL apply to the
+member's own reported flag and SHALL NOT reach the archive-level one: `ArchiveInfo`
+reports header-level encryption and the aggregate of members *known* to be encrypted, so
+one damaged member SHALL NOT make a wholly plaintext archive report as encrypted, hand the
+caller's password to `unrar`, or relabel an empty read as a wrong password.
+
+The cost of failing closed falls on the member's direct read. A stored member is otherwise
+sliced straight from the source; one whose header was cut short SHALL NOT be handed back
+unchecked, because those bytes are ciphertext if the record the walk never reached was the
+encryption record.
+
+A checksum that survived the damage SHALL settle it. RAR5 keeps CRC32 in the fixed FILE
+header and BLAKE2sp in the extra area, so which digest a cut leaves behind is the writer's
+choice, not archivey's. Where one survives, the member's stored bytes SHALL be verified
+against it **before** any byte is returned, and the member SHALL be readable when they
+match — on any installation, with or without `unrar`. Where none survives, the member SHALL
+NOT be readable. The refusal SHALL name the cut-short header rather than the missing
+package: installing `unrar` is a way out, not the cause, and it is not a better-informed
+one — measured on unrar 7.00 it reads the same damaged header and reaches the same wrong
+conclusion, applying that same digest test and returning the bytes unverified when no
+digest survived.
+
+The check SHALL run before the first byte is returned rather than at end of stream, for the
+reason the ZIP ZipCrypto stored path gives: nothing in a stored member's framing can reject
+wrong bytes incrementally, so a caller that stops reading early would never reach an
+end-of-stream verdict. Its cost is one extra pass over an already-damaged member and none
+at all on an undamaged one.
+
+**Both paragraphs above are scoped to the member archivey reads by slicing the source** —
+stored, not solid, not split across volumes. Every other cut-short member is decoded by
+`unrar`, which is handed the whole member and cannot be asked to check a digest first;
+there any surviving digest is verified as it is for an undamaged member, at end of stream,
+and a member with none is read with nothing checking it. That is unchanged behaviour and
+not a guarantee this requirement makes. Such a member SHALL still be reported as encrypted
+and SHALL still carry the cut-short diagnostic, so a strict policy refuses it.
+
+The diagnostic reporting a cut-short header SHALL name the fault that ended the walk. Four
+different faults end it — the skip cap, a size that cannot be read, a size that overruns
+the area, and a size below the one-byte minimum — and they are not interchangeable: this
+message is the only thing that explains why a member may be reported encrypted when
+nothing else in its listing says so.
+
+#### Scenario: A cut-short header never reports an encrypted member as plaintext
+
+- **GIVEN** a RAR5 member whose `FHEXTRA_CRYPT` record is preceded by enough records to
+  stop the walk — past the skip cap, or one whose size cannot be used
+- **WHEN** the archive is listed under the default diagnostic policy
+- **THEN** the member SHALL be reported as encrypted
+- **AND** a member whose extra area *was* read to the end SHALL NOT be reported as
+  encrypted merely for having dropped a record, because that question was asked and
+  answered
+
+#### Scenario: One cut-short member does not report the archive as encrypted
+
+- **GIVEN** a RAR5 archive with nothing encrypted in it, one of whose members has a
+  cut-short extra area
+- **WHEN** the archive is listed
+- **THEN** that member SHALL be reported as encrypted
+- **AND** the archive SHALL NOT be reported as encrypted
+
+#### Scenario: A surviving checksum settles a cut-short stored member
+
+- **GIVEN** a stored, unencrypted RAR5 member whose extra-area walk stopped early, whose
+  CRC32 is in the fixed FILE header and so survived the damage
+- **WHEN** it is read on an installation with no RARLAB `unrar` or `rar` available
+- **THEN** the member SHALL be read and its content returned
+- **AND** the member SHALL still be reported as encrypted, its header having never settled
+  the question
+
+#### Scenario: A cut-short stored member whose bytes fail the surviving checksum
+
+- **GIVEN** a stored, *encrypted* RAR5 member whose extra-area walk stopped before its
+  `FHEXTRA_CRYPT` record, whose CRC32 survived the damage
+- **WHEN** it is read
+- **THEN** the read SHALL raise `CorruptionError` reporting that the stored bytes do not
+  match the surviving checksum
+- **AND** no ciphertext SHALL be returned as member content
+
+#### Scenario: A cut-short stored member names the header, not the missing package
+
+- **GIVEN** a stored RAR5 member whose extra-area walk stopped early and whose only digest
+  was BLAKE2sp, which the same cut destroyed
+- **WHEN** it is read on an installation with no RARLAB `unrar` or `rar` available
+- **THEN** the read SHALL raise `CorruptionError` naming the cut-short header and the
+  absence of a surviving checksum
+
+#### Scenario: An unparseable encryption record refuses the archive
+
+- **GIVEN** a RAR5 member whose `FHEXTRA_CRYPT` record is truncated
+- **WHEN** the archive is listed
+- **THEN** listing SHALL raise `CorruptionError`
+- **AND** the member SHALL NOT appear in any listing as an unencrypted member
+
+### Requirement: A cut-short SERVICE header SHALL be reported, and its payload SHALL NOT be sliced
+
+`CMT` and `QO` are SERVICE headers with the same extra area as a FILE header, so the same
+leniency applies to them. They are not members, so nothing lists them and no per-member
+diagnostic describes them.
+
+A SERVICE header whose extra-area walk dropped a record or gave up SHALL emit the same
+diagnostics a member's header does, in every volume of a multi-volume set. The argument for
+dropping a record rather than refusing the archive is that the diagnostic is emitted and a
+strict policy can still refuse; a header that reported nothing was outside that argument.
+
+Those diagnostics SHALL NOT describe the header as a member. It is in no listing, so naming
+it as one sends the caller looking for something that is not there; the message SHALL name
+the header and what the archive therefore does without — the comment, or the quick-open
+index — and SHALL carry no member name.
+
+How many such headers one archive retains SHALL be bounded, and the bound SHALL NOT depend
+on the archive. A SERVICE header is not a member, so the listing bound never counts one, and
+a small archive of nothing but damaged SERVICE headers would otherwise retain without limit.
+Past the bound the headers SHALL be counted and the count reported, so reaching it is not
+itself silent. Counting them against the listing bound instead is rejected: that refuses an
+archive `unrar` lists, over headers that are optional metadata.
+
+The gates that slice a SERVICE payload out of the archive — the stored-comment gate and the
+quick-open gate — SHALL refuse a header that stopped before it could rule encryption out,
+as they already refuse one known to be encrypted. The comment is decoded as text and the
+quick-open payload is parsed as a member table, so slicing unsettled bytes would put
+ciphertext in `ArchiveInfo.comment` or parse a member list out of it. Losing the comment, or
+falling back to the header walk, is a missing answer; the alternative is a wrong one.
+
+#### Scenario: A cut-short comment header is refused and reported
+
+- **GIVEN** a RAR5 archive whose `CMT` SERVICE header has an extra area whose walk stops
+- **WHEN** the archive is opened
+- **THEN** `ArchiveInfo.comment` SHALL NOT be taken from that header's payload
+- **AND** the walk's dropped record and its stop SHALL each emit
+  `MEMBER_HEADER_RECORD_SKIPPED`
+- **AND** a strict diagnostic policy SHALL refuse the archive
+- **AND** the diagnostics SHALL carry no member name and SHALL say the archive comment was
+  not used
+
+#### Scenario: An archive of damaged service headers is reported under a bound
+
+- **GIVEN** a RAR5 archive holding more damaged SERVICE headers than the bound retains
+- **WHEN** the archive is opened
+- **THEN** the number retained SHALL be the bound, whatever the archive holds
+- **AND** one further `MEMBER_HEADER_RECORD_SKIPPED` SHALL report how many were not
+  described individually
+
+### Requirement: Refuse a glob member name whose mask also matches earlier members
+
+A RAR member's stored name may contain `*` or `?`. Because `unrar` is addressed by an
+include mask, such a name can match other members, and `unrar` decompresses every match
+and emits them concatenated ahead of the target.
+
+When the mask built from a member's stored name also matches **earlier** payload
+members, the system SHALL raise `UnsupportedFeatureError` rather than read the member.
+The error SHALL name the configuration flag that allows the read. On a non-solid
+archive it SHALL also name the number of bytes of earlier matching members that
+`unrar` would decompress first. On a solid archive those members are already inside
+the solid prefix the read pays, so the error SHALL NOT describe that count as an
+avoidable extra decode.
+
+`ArchiveyConfig.rar_allow_glob_member_concatenation` SHALL default to `False`. When set
+to `True` the read SHALL proceed and return the member's own bytes, skipping the earlier
+matches as before. The flag SHALL govern only whether the read is attempted; it SHALL
+NOT change what a successful read returns.
+
+A glob name whose mask matches **no** other member SHALL be unaffected and SHALL read
+without the flag.
+
+A call site that builds no include mask SHALL be unaffected, whatever the member names
+are. In particular a solid `stream_members()` pass uses one unnamed `unrar p` pipe
+demultiplexed by size, so it SHALL read glob-named members without the flag.
+
+The refusal exists because names like this are almost always constructed. On a
+non-solid archive the extra decode is also unbounded and unreported: it is not
+covered by `ExtractionLimits`, which do not reach `open()` / `read()`. On a solid
+archive `AccessCost.SOLID` already advertises the prefix; the names are still
+refused.
+
+#### Scenario: glob member matrix
+
+| Case | Expected |
+| --- | --- |
+| `a*.txt` with an earlier `subdir/aY.txt` match, default config, non-solid | `UnsupportedFeatureError` naming the byte count and the flag |
+| The same member on a solid archive, default config | `UnsupportedFeatureError` naming the flag, not an avoidable extra decode |
+| The same read with `rar_allow_glob_member_concatenation=True` | The member's own bytes, earlier matches skipped |
+| `only*.dat`, whose mask matches nothing else, default config | Reads normally; no refusal |
+| Solid `stream_members()` over glob-named members, default config | All members read; no mask is built |
+| A name with no `*` or `?` | Unaffected in either configuration |

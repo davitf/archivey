@@ -1,0 +1,269 @@
+"""Detection budget, capability set, and cost receipt.
+
+Detection's I/O happens before a reader exists, so its measured work is a sibling of
+:class:`~archivey.cost.CostReceipt` rather than part of it. The two share vocabulary for
+kinds of work; they are never summed together. See the ``detection-cost`` and
+``access-mode-and-cost`` capability specs.
+
+**Public, not re-exported.** Callers reach :class:`DetectionBudget`, its presets and
+:class:`DetectionBudgetPreset` here, as ``archivey.detection_cost.…``, to set
+:attr:`ArchiveyConfig.detection_budget <archivey.ArchiveyConfig.detection_budget>`.
+The receipt, capability and skip types are what :attr:`FormatInfo.cost_receipt
+<archivey.FormatInfo.cost_receipt>` is made of. All of them are documented on the API
+page and stable under the same rule as ``archivey.terminal``; the mutable accumulator
+detectors write into lives under ``internal/``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from enum import Enum
+
+
+class DetectionBudgetPreset(Enum):
+    """Named detection budgets. ``BALANCED`` is the ``detect_format`` default."""
+
+    BALANCED = "balanced"
+    FAST = "fast"
+    THOROUGH = "thorough"
+
+
+class DetectionCapability(Enum):
+    """What a detector needs from the source — evaluated against source **and** budget.
+
+    Capability names align with the kinds of work :class:`~archivey.cost.CostReceipt`
+    describes, so a caller reading both receipts sees one cost model.
+    """
+
+    PREFIX = "prefix"
+    """A bounded head read through the prefix workspace."""
+
+    SIZE_KNOWN = "size_known"
+    """A cheap total size is available."""
+
+    REMAINING_KNOWN = "remaining_known"
+    """Bytes from the caller's current position are provable, not estimated."""
+
+    TAIL = "tail"
+    """The source can be read near its end — seekable, or spooled by explicit policy."""
+
+    SEEK = "seek"
+    """Arbitrary range reads."""
+
+    REREAD = "reread"
+    """The source can be consumed and still presented to a backend afterwards."""
+
+
+class TierSkipReason(Enum):
+    """Why a detection tier did not run.
+
+    Distinct reasons matter: ``NOT_ENABLED_BY_POLICY`` does not make the search incomplete,
+    while ``CAPABILITY_UNAVAILABLE`` and ``BUDGET_EXHAUSTED`` do.
+    """
+
+    NOT_ENABLED_BY_POLICY = "not_enabled_by_policy"
+    CAPABILITY_UNAVAILABLE = "capability_unavailable"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+
+
+@dataclass(frozen=True)
+class TierSkip:
+    """A tier that detection did not run, with the reason."""
+
+    tier: str
+    reason: TierSkipReason
+
+
+@dataclass(frozen=True)
+class DetectionBudget:
+    """Upper bounds on what detection may spend.
+
+    ``max_far_bytes`` is separate from ``max_prefix_bytes`` because a far fixed-offset
+    signature (ISO ``CD001`` at 32 769) needs a ~32 KiB window that a 4 KiB near budget
+    would otherwise forbid.
+
+    ``max_decode_input`` is one allowance for the whole call, shared by the content
+    probes, their completion check and the inner-TAR probe. ``max_decode_output`` bounds
+    the inner-TAR probe only; a content probe's output is bounded by the codec's own
+    drain (4 KiB, or 64 KiB with the whole source in hand) and is not charged.
+    ``completion_window_bytes`` is the largest source a content-probe hit is re-checked
+    against in full (see ``format-detection``); ``0`` turns the check off.
+
+    The ZIP-tail pair ``max_tail_bytes`` / ``max_seeks`` is reserved: 0 on every
+    preset, because no tier reads the tail yet. ``max_probe_links`` is live for
+    :meth:`DetectionCostReceipt.within_budget` (seek-based content-probe allowance);
+    the Brotli walk follows its own ``CHAIN_MAX_LINKS`` (8), so a larger value only
+    widens that allowance.
+    """
+
+    max_prefix_bytes: int
+    max_far_bytes: int
+    max_tail_bytes: int
+    max_seeks: int
+    max_scan_bytes: int
+    max_decode_input: int
+    max_decode_output: int
+    completion_window_bytes: int
+    max_probe_links: int
+    spool_non_seekable_up_to: int
+
+    @classmethod
+    def for_preset(cls, preset: DetectionBudgetPreset) -> DetectionBudget:
+        if preset is DetectionBudgetPreset.BALANCED:
+            return BALANCED_BUDGET
+        if preset is DetectionBudgetPreset.FAST:
+            return FAST_BUDGET
+        if preset is DetectionBudgetPreset.THOROUGH:
+            return THOROUGH_BUDGET
+        raise ValueError(f"unknown detection budget preset: {preset!r}")
+
+
+@dataclass(frozen=True)
+class DetectionCostReceipt:
+    """Measured detection work — charged as reads happen, not reconstructed afterwards."""
+
+    prefix_bytes: int = 0
+    """Sum of range lengths *requested* via ``peek_range`` (overlapping peeks accumulate).
+
+    Not comparable 1:1 with ``max_prefix_bytes``: seek-based ``read_at`` does not charge
+    here, and growing peeks bill each request in full. Prefer ``unique_bytes_read`` for
+    "how much did we fetch from the source".
+    """
+
+    unique_bytes_read: int = 0
+    """Bytes actually fetched from the source (each source byte counted once)."""
+
+    far_bytes: int = 0
+    """Bytes the far-magic tier peeked. Bounded by ``max_far_bytes``."""
+
+    tail_bytes: int = 0
+    scanned_bytes: int = 0
+    seeks: int = 0
+    decode_input: int = 0
+    decode_output: int = 0
+    spooled_bytes: int = 0
+    passes: int = 1
+    """Detection passes this receipt sums, each run under the full budget.
+
+    2 when ``detect_format`` followed a stub-only executable to its sibling split
+    volume: the stub's pass and the volume's pass.
+    """
+
+    def charge(
+        self,
+        *,
+        prefix_bytes: int = 0,
+        unique_bytes_read: int = 0,
+        far_bytes: int = 0,
+        tail_bytes: int = 0,
+        scanned_bytes: int = 0,
+        seeks: int = 0,
+        decode_input: int = 0,
+        decode_output: int = 0,
+        spooled_bytes: int = 0,
+    ) -> DetectionCostReceipt:
+        return replace(
+            self,
+            prefix_bytes=self.prefix_bytes + prefix_bytes,
+            unique_bytes_read=self.unique_bytes_read + unique_bytes_read,
+            far_bytes=self.far_bytes + far_bytes,
+            tail_bytes=self.tail_bytes + tail_bytes,
+            scanned_bytes=self.scanned_bytes + scanned_bytes,
+            seeks=self.seeks + seeks,
+            decode_input=self.decode_input + decode_input,
+            decode_output=self.decode_output + decode_output,
+            spooled_bytes=self.spooled_bytes + spooled_bytes,
+        )
+
+    def within_budget(self, budget: DetectionBudget) -> bool:
+        """Whether aggregate measured work stays inside ``budget``'s limits.
+
+        Seek-based content-probe ``read_at`` charges ``unique_bytes_read`` without
+        growing the prefix. Those bytes are allowed up to
+        ``max_probe_links * _PROBE_HEADER_READ_BYTES`` (aligned with
+        ``brotli_framing.CHAIN_HEADER_READ``) on top of the prefix/far/scan ceiling.
+
+        ``prefix_bytes`` is the one counter not compared: it bills overlapping requests
+        in full, so ``unique_bytes_read`` stands in for it.
+
+        The budget applies per pass: every limit is multiplied by :attr:`passes`, so a
+        receipt that followed a stub to its sibling volume is judged against two
+        budgets, the work each pass was allowed.
+        """
+        # ``passes`` is 1 or 2 from ``detect_format``; a receipt built by hand can
+        # carry anything, and fewer than one pass is judged as one.
+        n = max(1, self.passes)
+        probe_allowance = budget.max_probe_links * _PROBE_HEADER_READ_BYTES
+        return (
+            self.unique_bytes_read
+            <= n
+            * (
+                max(
+                    budget.max_prefix_bytes,
+                    budget.max_far_bytes,
+                    budget.max_scan_bytes,
+                )
+                + budget.max_tail_bytes
+                + budget.spool_non_seekable_up_to
+                + probe_allowance
+            )
+            and self.far_bytes <= n * budget.max_far_bytes
+            and self.seeks <= n * budget.max_seeks
+            and self.tail_bytes <= n * budget.max_tail_bytes
+            and self.scanned_bytes <= n * budget.max_scan_bytes
+            and self.decode_input <= n * budget.max_decode_input
+            and self.decode_output <= n * budget.max_decode_output
+            and self.spooled_bytes <= n * budget.spool_non_seekable_up_to
+        )
+
+
+# ISO CD001 ends at offset 32 773 inclusive → 32 774 bytes from origin.
+_ISO_FAR_BYTES = 32_774
+_SFX_SCAN_BYTES = 2 * 1024 * 1024
+_COMPLETION_WINDOW = 64 * 1024
+_INNER_TAR_DECODE = 1 << 20
+# Per content-probe link header read — keep in sync with brotli_framing.CHAIN_HEADER_READ.
+_PROBE_HEADER_READ_BYTES = 24
+
+
+BALANCED_BUDGET = DetectionBudget(
+    max_prefix_bytes=4096,
+    max_far_bytes=_ISO_FAR_BYTES,
+    max_tail_bytes=0,  # ZIP tail stays out until measured
+    max_seeks=0,
+    max_scan_bytes=_SFX_SCAN_BYTES,
+    max_decode_input=_INNER_TAR_DECODE,
+    max_decode_output=_INNER_TAR_DECODE,
+    completion_window_bytes=_COMPLETION_WINDOW,
+    max_probe_links=8,
+    spool_non_seekable_up_to=0,
+)
+
+FAST_BUDGET = DetectionBudget(
+    max_prefix_bytes=4096,
+    max_far_bytes=_ISO_FAR_BYTES,
+    max_tail_bytes=0,
+    max_seeks=0,
+    max_scan_bytes=256 * 1024,
+    max_decode_input=64 * 1024,
+    max_decode_output=64 * 1024,
+    completion_window_bytes=0,  # no whole-source completion
+    max_probe_links=2,
+    spool_non_seekable_up_to=0,
+)
+
+THOROUGH_BUDGET = DetectionBudget(
+    max_prefix_bytes=4096,
+    max_far_bytes=_ISO_FAR_BYTES,
+    # ZIP tail stays off until prefixed-archive-detection schedules it and measures cost.
+    max_tail_bytes=0,
+    max_seeks=0,
+    max_scan_bytes=_SFX_SCAN_BYTES,
+    max_decode_input=_INNER_TAR_DECODE,
+    max_decode_output=_INNER_TAR_DECODE,
+    # Whole-source completion as far as the decode allowance reaches; the allowance
+    # (``max_decode_input``) is the real bound, so this is the same 1 MiB.
+    completion_window_bytes=_INNER_TAR_DECODE,
+    max_probe_links=32,
+    spool_non_seekable_up_to=0,  # still opt-in via replace()
+)

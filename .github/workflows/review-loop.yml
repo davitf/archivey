@@ -1,0 +1,311 @@
+name: Review loop
+
+# Adding the `review` label to a pull request runs one review round, and the round takes
+# the label off as it starts. That is the whole trigger.
+#
+# A round is a Claude session that did not write the diff reading it from zero with the
+# repo's own `code-review-skill`, posting its findings, and writing a verdict. The
+# verdict decides what the closing comment asks for: when the reviewer wants to see the
+# fixes, the implementer pushes them and adds the label again; otherwise nobody does.
+#
+# Who adds the label is the implementing agent when its pull request is ready and again
+# after each round of fixes (`address-review-findings`), or a person at any time. Only
+# someone with triage access can label a pull request, so the label is also the
+# permission check. The gate refuses an agent's label past `MAX_ROUNDS` and at a commit
+# a review already failed on; a person's label still runs, up to `MAX_FORCED_ROUNDS`.
+# `is_person` in the gate says how the two are told apart.
+#
+# A finished round also leaves an outcome label (`approved`, `approved-with-fixes`,
+# `changes-requested`, `needs-decision`) so the pull request list shows where each one
+# stands. Those labels only report; the gate never reads them.
+#
+# The first lines of this workflow's closing comments are the only state: which rounds
+# ran, with what verdict, and where a review failed. Nothing runs without a fresh label.
+#
+# `scripts/review_loop_gate.py` makes the decisions and writes the closing comment, and
+# is unit tested. `dev-docs/review-loop.md` is the prose version.
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+# Never cancel a review in flight: a half-posted review leaves inline threads with no
+# body to read them against. A request made during a round queues behind it. The label
+# is in the group because GitHub keeps one pending run per group and cancels the older:
+# without it, adding any other label during a round would cancel a queued review.
+concurrency:
+  group: review-loop-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
+  cancel-in-progress: false
+
+jobs:
+  loop:
+    name: Review round
+    # Screened here so that every other label, and a fork, costs no runner. A fork's
+    # `pull_request` run has no secrets and a read-only token, so it could neither
+    # review nor take the label off.
+    if: >-
+      github.event.label.name == 'review' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether to run
+        id: gate
+        env:
+          SENDER_TYPE: ${{ github.event.sender.type }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          # Labelling bumps it, so it dates the label this run is for.
+          LABEL_SINCE: ${{ github.event.pull_request.updated_at }}
+          # The branch head when the label went on. The checkout above is this commit
+          # merged with the base, so its tree is this head's changes. A push after the
+          # label moves the live head but not this; the round records this one, and
+          # its closing comment names any later commits.
+          REVIEWED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Read now, not from the event: the label may have come off since the event
+          # fired.
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels > /tmp/pr.json
+
+          # The first line of each of this workflow's own closing comments: the rounds
+          # that ran, their verdicts, and the commits a review failed on. One line per
+          # comment, gathered afterwards, because `--jq` runs once per page.
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]")
+                      | .body | select(startswith("<!-- archivey-review-"))
+                      | split("\n")[0]' > /tmp/markers.txt
+
+          # Which app, if any, added the label. An agent acting through the
+          # maintainer's account arrives as a `User` sender, and this is the field that
+          # tells it apart (`is_person` in the gate). The events API can lag the
+          # webhook, so fetch again for a while until an event as recent as this
+          # label is listed; the 30 is the gate's `LABEL_EVENT_SKEW`. Found or not,
+          # the gate picks the event, and one it cannot find counts as an agent.
+          for attempt in 1 2 3 4; do
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/events" --paginate \
+              --jq '.[] | select(.event == "labeled" and .label.name == "review")
+                        | {at: .created_at, actor: .actor.login,
+                           app: (.performed_via_github_app.slug // "")}' \
+              > /tmp/label-events.jsonl
+            if jq -e -s --arg since "$LABEL_SINCE" \
+                'any(.[]; (.at | fromdateiso8601) >= ($since | fromdateiso8601) - 30)' \
+                /tmp/label-events.jsonl > /dev/null; then
+              break
+            fi
+            [ "$attempt" = 4 ] || sleep 5
+          done
+
+          jq -n \
+            --slurpfile pr /tmp/pr.json \
+            --rawfile markers /tmp/markers.txt \
+            --arg sender_type "$SENDER_TYPE" \
+            --arg sender_login "$SENDER_LOGIN" \
+            --arg label_since "$LABEL_SINCE" \
+            --slurpfile label_events /tmp/label-events.jsonl \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg head_sha "$REVIEWED_SHA" \
+            '{labels: [$pr[0].labels[].name], head_sha: $head_sha,
+              markers: ($markers | split("\n") | map(select(length > 0))),
+              sender_type: $sender_type, sender_login: $sender_login,
+              label_since: $label_since, label_events: $label_events,
+              repository: $repository}' > /tmp/gate-input.json
+
+          python3 scripts/review_loop_gate.py < /tmp/gate-input.json > /tmp/gate.json
+          cat /tmp/gate.json
+          {
+            echo "run=$(jq -r .run /tmp/gate.json)"
+            echo "round=$(jq -r .round /tmp/gate.json)"
+            echo "final=$(jq -r .final /tmp/gate.json)"
+            echo "max_rounds=$(jq -r .max_rounds /tmp/gate.json)"
+            echo "head_sha=$REVIEWED_SHA"
+          } >> "$GITHUB_OUTPUT"
+          jq -r '"Gate: run=\(.run) round=\(.round) — \(.reason)"' /tmp/gate.json \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # As soon as the gate has answered, and whatever it answered, so the label is free
+      # to be added again: adding a label that is already there raises no event, so one
+      # left on would make the next request silently do nothing. Taking it off at the
+      # start rather than the end means a request made while this round runs is a new
+      # round queued behind it, not one this round then deletes.
+      - name: Take the label off
+        if: always()
+        run: |
+          gh api --method DELETE \
+            "repos/$GITHUB_REPOSITORY/issues/$PR/labels/review" --silent || true
+
+      # Without this, a gate that failed would leave a pull request whose label came
+      # off with nothing on it saying why, and an agent waiting on a closing comment
+      # does not read the Actions tab.
+      - name: Say the round did not start
+        if: failure() && steps.gate.outcome == 'failure'
+        run: |
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "**The review round did not start.** The workflow failed before deciding whether to run, and nothing was counted. Add the \`review\` label again to retry."
+
+      - name: Say why no round runs
+        if: steps.gate.outputs.run == 'false'
+        run: |
+          set -euo pipefail
+          # `-j`, not `-r`: an empty comment must leave an empty file, and `-r` would
+          # write a newline that `-s` counts, then post a blank body and fail the job.
+          jq -j '.comment // ""' /tmp/gate.json > /tmp/comment.md
+          if [ -s /tmp/comment.md ]; then
+            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
+          fi
+
+      - name: Claude review
+        if: steps.gate.outputs.run == 'true'
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The action refuses a bot-initiated run unless the bot is named here, and an
+          # agent adds the label as a bot. Named rather than `*`, so an unexpected bot
+          # cannot spend review credits. The action reports the actor with and without
+          # the `[bot]` suffix depending on the code path, so both spellings are listed.
+          allowed_bots: "claude,claude[bot],cursor,cursor[bot]"
+          claude_args: |
+            --model claude-opus-5
+            --allowedTools Read,Grep,Glob,WebFetch,Bash
+          prompt: |
+            Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            This is review round ${{ steps.gate.outputs.round }}. Your verdict decides
+            whether the closing comment asks for another round; the implementer adds
+            one otherwise only if its fixes grow beyond what you described. An agent can
+            ask for at most ${{ steps.gate.outputs.max_rounds }} rounds — which is the
+            skill's own round budget (its §4), so review as it tells you to and let the
+            verdict say whether another round is needed rather than padding one to
+            reach it.
+
+            Follow this repository's own review skill, in full, as if it had been invoked
+            by name: read `.claude/skills/code-review-skill/SKILL.md` first, then the one
+            reference doc its §1 names for this kind of review, and obey them over any
+            generic review habit. In particular:
+
+            - The three-block output shape (§3), stable finding IDs kept across rounds,
+              and §6 for posting: inline review comments for located findings, blocks 1
+              and 3 in the review body, `event: COMMENT`.
+            - Open every comment you post with a heading, per §6: the round and the
+              verdict on the review body, the ID with its severity and confidence on an
+              inline finding. Post no table in anything — bullets instead.
+            - On any round after the first, open with one status bullet per previous ID
+              before any new finding.
+            - Do not re-run the gates. Do not edit any code. You are reviewing.
+            - Do not write a prompt or brief for whoever fixes this. They read the PR.
+
+            Use `gh` for GitHub writes. End every comment you post with a `---` rule and
+            `_Generated by [Claude Code](https://claude.ai/code)_`.
+
+            Then write `/tmp/loop-verdict.json`, and nothing else to that path:
+
+            {
+              "verdict": "clean" | "approved" | "conditional" | "findings" | "decision",
+              "summary": "at most 400 characters, plain language, no finding IDs and no
+                          file paths: what someone who has not opened the diff needs to
+                          know about where this PR stands",
+              "question": "if verdict is decision: the one question for the maintainer,
+                           in plain language, answerable in a word or a short line.
+                           Otherwise an empty string"
+            }
+
+            `verdict` is "decision" if block 3 has anything in it at all — a maintainer
+            decision stops the review, and that beats the findings. It is "clean" only
+            if block 2 is empty.
+
+            Otherwise it carries your verdict line (§4), and this is the field that decides
+            whether another round is asked for, so match it to what you actually wrote:
+
+            - "approved" for a plain ✅ Approve: nothing is left for the implementer to
+              fix. ("clean" is narrower: block 2 empty, so a plain ✅ Approve over
+              💡/📚/🎉 annotations is "approved", not "clean".)
+            - "conditional" for ✅ Approve conditional on the listed fixes, and for
+              💬 Comment: the findings are the implementer's to fix, and you do not need
+              to see the result.
+
+              Neither asks for another round; the findings are still posted in full and
+              the implementer still works through them. The two differ only in the
+              label the pull request is left with, so pick the one that matches your
+              verdict line.
+            - "findings" for 🔄 Request Changes — a 🔴 stands, or a fix wants a look once
+              it lands. That is what asks for the next round.
+
+            Do not write "findings" to keep a round in hand: rounds are not yours to
+            bank, and one spent re-reading wording you already described is the case the
+            budget exists to stop. Equally, do not write "approved" or "conditional" with
+            a 🔴 open.
+
+      # `always()` so that a review that died still says so, rather than leaving a pull
+      # request whose label came off with nothing on it saying why.
+      - name: Close the round
+        if: always() && steps.gate.outputs.run == 'true'
+        env:
+          ROUND: ${{ steps.gate.outputs.round }}
+          FINAL: ${{ steps.gate.outputs.final }}
+          HEAD_SHA: ${{ steps.gate.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          # A missing file is a review that did not finish, which does not count. A file
+          # that is there but is not a JSON object still counts — the findings were
+          # posted — and the gate treats its verdict as `findings`.
+          if [ ! -f /tmp/loop-verdict.json ]; then
+            verdict=null
+          elif jq -e 'type == "object"' /tmp/loop-verdict.json >/dev/null 2>&1; then
+            verdict="$(cat /tmp/loop-verdict.json)"
+          else
+            verdict='"unreadable"'
+          fi
+
+          # The head now, to name any push that landed while the review ran.
+          live="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+            --json headRefOid --jq .headRefOid || true)"
+
+          jq -n \
+            --argjson round "$ROUND" \
+            --argjson final "$FINAL" \
+            --arg head_sha "$HEAD_SHA" \
+            --arg live_head_sha "$live" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson verdict "$verdict" \
+            '{round: $round, final: $final, head_sha: $head_sha,
+              live_head_sha: $live_head_sha, repository: $repository,
+              verdict: $verdict}' \
+            | python3 scripts/review_loop_gate.py --finish > /tmp/finish.json
+          jq -r '"Verdict: \(.verdict) stop=\(.stop) counted=\(.counted) — \(.reason)"' \
+            /tmp/finish.json >> "$GITHUB_STEP_SUMMARY"
+
+          jq -j '.comment // ""' /tmp/finish.json > /tmp/comment.md
+          if [ -s /tmp/comment.md ]; then
+            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
+          fi
+
+          # The outcome label, for the pull request list. It only reports: nothing
+          # reads it, and a failure here must not fail a round that already posted.
+          label="$(jq -r .label /tmp/finish.json)"
+          if [ -n "$label" ]; then
+            # Only the ones that are on: deleting an absent label is a 404 in the log.
+            # If the listing fails, try them all rather than leave a stale one on.
+            present="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+              --json labels --jq '.labels[].name')" \
+              || present="$(jq -r '.unlabel[]' /tmp/finish.json)"
+            for other in $(jq -r '.unlabel[]' /tmp/finish.json); do
+              if grep -qxF -- "$other" <<< "$present"; then
+                gh api --method DELETE \
+                  "repos/$GITHUB_REPOSITORY/issues/$PR/labels/$other" --silent || true
+              fi
+            done
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" \
+              -f "labels[]=$label" --silent || true
+          fi

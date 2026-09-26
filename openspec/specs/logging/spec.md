@@ -1,0 +1,69 @@
+# Logging
+
+## Purpose
+
+Standard-library logging projection for Archivey events. The library emits through
+the `archivey` hierarchy and never configures output policy.
+
+## Related specs
+
+| Spec | Relationship |
+| --- | --- |
+| `diagnostics` | WARNING logs are ordered projections of diagnostics |
+| `format-detection` | Detection conflict advisory events |
+| `archive-reading` | Reader/stream diagnostic surfaces that may also log |
+| `safe-extraction` | Extraction outcomes and filter decisions |
+| `reader-concurrency` | Handlers run without Archivey locks |
+
+## Requirements
+
+### Requirement: Logging under the archivey logger hierarchy
+
+The system SHALL emit all log messages via `logging.getLogger("archivey")` and
+children. It MUST NOT configure handlers, levels, filters, or formatters.
+
+The loggers the library uses include, but are not limited to, the following. The
+table is illustrative: a logger missing from it is not a contract violation.
+
+| Logger | Events |
+| --- | --- |
+| `archivey.detection` | Format detection events |
+| `archivey.normalization` | Path normalization changes, including warnings when `name` differs from `raw_name` |
+| `archivey.extraction` | Extraction events and filter decisions |
+| `archivey.diagnostics` | Default logger for a diagnostic's WARNING projection. An emit site that names a subsystem logger (`archivey.streams`, `archivey.integrity`, …) logs the WARNING there instead, and most do |
+| `archivey.streams` | Stream-layer events: decompressor and member-stream diagnostics, and how a source's seekability was judged |
+| `archivey.integrity` | Digest verification, including an expected digest that cannot be checked |
+| `archivey.backends` | Backend-specific debug messages. There is one logger for all backends, not one per backend |
+
+#### Scenario: logger-hierarchy matrix
+
+| Case | Expected |
+| --- | --- |
+| Application configures no handlers on `archivey` or ancestors | No output by default; library installs no handler |
+| Magic bytes conflict with extension | `logging.WARNING` on `archivey.detection` |
+| Member-name normalization changes logical meaning relative to `raw_name` | Warning on `archivey.normalization` |
+
+### Requirement: Warning logs are ordered projections of diagnostics
+
+Every WARNING advisory SHALL originate as a `Diagnostic`; logging MUST NOT be a
+second source of truth. For `COLLECT` and `RAISE`, the WARNING SHALL emit after
+counts/retention update and before callback/escalation. For `IGNORE`, no WARNING
+record SHALL emit.
+
+The record SHALL use the event's named `archivey.*` logger and expose
+`diagnostic_code` plus `diagnostic_occurrence_id` in `LogRecord.extra`. Human text
+is not a byte-for-byte compatibility contract.
+
+The system SHALL hold no diagnostic collector, reader, stream, backend, or registry
+lock while invoking application logging handlers. If a handler raises, normal
+Python logging semantics apply: the exception propagates and later
+callback/escalation steps for that occurrence do not run.
+
+#### Scenario: diagnostic-log matrix
+
+| Case | Expected |
+| --- | --- |
+| Diagnostic resolves to default `COLLECT` | Counts/retention update, then one WARNING with `diagnostic_code` and `diagnostic_occurrence_id` |
+| Diagnostic resolves to `IGNORE` | Exact count increments; no log record |
+| Application logging handler runs | No Archivey collector/reader/stream/backend/registry lock is held |
+| Logging handler raises | Handler exception propagates; callback/escalation for the occurrence do not run |

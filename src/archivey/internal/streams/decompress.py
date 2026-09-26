@@ -1,0 +1,1261 @@
+"""Thin ``BaseDecoder`` adapters: zlib/deflate, Brotli, PPMd, BCJ, Deflate64.
+
+Not the seekable engine — that is :mod:`.decompressor_stream`. Each class here
+implements :class:`~archivey.internal.streams.decompressor_stream.Decoder`; helpers
+return a ``DecompressorStream`` wrapping the adapter (no per-codec stream
+subclasses). XZ / lzip / unix-compress decoders live in their own modules for the
+same reason (larger index/LZW logic).
+"""
+
+from __future__ import annotations
+
+import lzma
+import os
+import zlib
+from collections.abc import Mapping
+from typing import BinaryIO, NoReturn, Protocol
+
+from archivey.config import DecoderLimits
+from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
+from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams.decompressor_stream import (
+    BaseDecoder,
+    DecodeOut,
+    DecompressorStream,
+    SeekPoint,
+)
+from archivey.internal.streams.ppmd_child import (
+    PpmdChildAllocationError,
+    PpmdChildDecoder,
+    PpmdChildStartError,
+    child_decoding_available,
+)
+
+_GZIP_MAGIC = b"\x1f\x8b"
+_GZIP_WBITS = 16 + zlib.MAX_WBITS
+
+
+class ZlibDecoder(BaseDecoder):
+    """Inflate a raw-deflate or zlib-wrapped stream via ``zlib.decompressobj``."""
+
+    def __init__(self, wbits: int = -15) -> None:
+        self._wbits = wbits
+        self._decomp = zlib.decompressobj(wbits)
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> ZlibDecoder:
+        del point, inner
+        return ZlibDecoder(self._wbits)
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        # unconsumed_tail holds input not yet consumed under a prior max_length cap;
+        # prepend it exactly once (mirrors gzip._GzipReader).
+        data = self._decomp.unconsumed_tail + chunk
+        if not data:
+            return DecodeOut(b"")
+        if max_length < 0:
+            return DecodeOut(self._decomp.decompress(data))
+        return DecodeOut(self._decomp.decompress(data, max_length))
+
+    def flush(self) -> DecodeOut:
+        if self._decomp.unconsumed_tail:
+            out = self._decomp.decompress(self._decomp.unconsumed_tail)
+            leftover = out + self._decomp.flush()
+        else:
+            leftover = self._decomp.flush()
+        if not self._decomp.eof:
+            self._pending_error = TruncatedError("File is truncated")
+        return DecodeOut(leftover)
+
+    @property
+    def finished(self) -> bool:
+        return self._decomp.eof
+
+    @property
+    def needs_input(self) -> bool:
+        return not self._decomp.unconsumed_tail
+
+
+class GzipDecoder(BaseDecoder):
+    """gzip-window inflate with GzipFile-parity multi-member chaining.
+
+    Uses ``wbits=16+MAX_WBITS`` so zlib validates CRC/ISIZE. After each member,
+    strips leading NUL padding from ``unused_data`` / retained input, then:
+    empty → clean EOF; ``1f 8b`` → new ``decompressobj`` and continue; anything
+    else → deferred :class:`~archivey.exceptions.CorruptionError` (trailing junk /
+    partial magic at true EOF) via :attr:`pending_error`, after returning any
+    already-decoded member bytes — same deliver-then-raise shape as truncation.
+    Cross-``feed`` NUL runs and a lone trailing ``1f`` are retained until the next
+    header (or ``flush``) resolves them.
+
+    Mid-member ``max_length`` remainder stays in ``decompressobj.unconsumed_tail``
+    (same as :class:`ZlibDecoder`); ``_retained`` is only for post-member bytes.
+    """
+
+    def __init__(self) -> None:
+        self._decomp = zlib.decompressobj(_GZIP_WBITS)
+        # Post-member bytes not yet resolved (NUL padding / next magic / junk).
+        # Never store unconsumed_tail here — that lives on the decompressobj.
+        self._retained = b""
+        self._between_members = False
+        self._finished = False
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> GzipDecoder:
+        del point, inner
+        return GzipDecoder()
+
+    def _arm_trailing_junk(self, data: bytes) -> None:
+        """Defer trailing-junk CorruptionError so already-decoded bytes can return.
+
+        Raising from ``feed``/``flush`` would discard the local output buffer (and
+        any prior members in the same call). Mirror truncation: arm pending_error
+        and let the stream raise on the next empty ``read`` / ``readall``.
+        """
+        self._pending_error = CorruptionError(
+            "Trailing non-gzip data after a completed gzip member "
+            f"(starts with {data[:8]!r})"
+        )
+        self._retained = b""
+        self._between_members = False
+        self._finished = True
+
+    def _resolve_between(self, data: bytes) -> bytes:
+        """Strip NULs; start next member, retain partial magic, arm junk, or wait."""
+        i = 0
+        while i < len(data) and data[i] == 0:
+            i += 1
+        data = data[i:]
+        if not data:
+            self._between_members = True
+            self._retained = b""
+            return b""
+        if data.startswith(_GZIP_MAGIC):
+            self._decomp = zlib.decompressobj(_GZIP_WBITS)
+            self._between_members = False
+            self._retained = b""
+            return data
+        if data == b"\x1f":
+            self._between_members = True
+            self._retained = data
+            return b""
+        self._arm_trailing_junk(data)
+        return b""
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        if self._finished or self._pending_error is not None:
+            return DecodeOut(b"")
+
+        if self._between_members:
+            data = self._retained + chunk
+            self._retained = b""
+        else:
+            data = self._decomp.unconsumed_tail + chunk
+
+        output = bytearray()
+        while True:
+            if self._pending_error is not None:
+                break
+            if max_length >= 0 and len(output) >= max_length:
+                if self._between_members and data:
+                    self._retained = data
+                break
+
+            if self._between_members:
+                data = self._resolve_between(data)
+                if self._pending_error is not None:
+                    break
+                if self._retained or not data:
+                    # Partial magic retained, or only NULs/empty — need more input.
+                    break
+                continue
+
+            if not data:
+                break
+
+            limit = max_length - len(output) if max_length >= 0 else -1
+            if limit == 0:
+                break
+            try:
+                if limit < 0:
+                    produced = self._decomp.decompress(data)
+                else:
+                    produced = self._decomp.decompress(data, limit)
+            except zlib.error as e:
+                # Corrupt deflate body (bad CRC/data check inside a member). Raise
+                # CorruptionError here so a raw GzipDecompressorStream is consistent
+                # with flush() and does not leak zlib.error (GzipCodec.translate maps
+                # it too, but the decoder must stand on its own).
+                raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+            output.extend(produced)
+
+            if self._decomp.eof:
+                data = self._decomp.unused_data
+                self._between_members = True
+                continue
+
+            # More compressed input remains under a max_length cap — leave it in
+            # unconsumed_tail for the next feed (do not copy into _retained).
+            data = self._decomp.unconsumed_tail
+            if data and produced and (max_length < 0 or len(output) < max_length):
+                continue
+            break
+
+        return DecodeOut(bytes(output))
+
+    def flush(self) -> DecodeOut:
+        if self._finished and self._pending_error is not None:
+            return DecodeOut(b"")
+        out = bytearray()
+        # Drain mid-member unconsumed_tail / continue member chaining with no new input.
+        drained = self.feed(b"")
+        out.extend(drained.data)
+        if self._pending_error is not None:
+            return DecodeOut(bytes(out))
+
+        if self._between_members:
+            data = self._retained
+            self._retained = b""
+            i = 0
+            while i < len(data) and data[i] == 0:
+                i += 1
+            data = data[i:]
+            if not data:
+                self._finished = True
+                return DecodeOut(bytes(out))
+            if data.startswith(_GZIP_MAGIC):
+                self._decomp = zlib.decompressobj(_GZIP_WBITS)
+                self._between_members = False
+                try:
+                    produced = self._decomp.decompress(data)
+                    out.extend(produced)
+                    if self._decomp.unconsumed_tail:
+                        out.extend(
+                            self._decomp.decompress(self._decomp.unconsumed_tail)
+                        )
+                    if not self._decomp.eof:
+                        out.extend(self._decomp.flush())
+                except zlib.error as e:
+                    raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+                if not self._decomp.eof:
+                    self._pending_error = TruncatedError("gzip stream is truncated")
+                    return DecodeOut(bytes(out))
+                trailing = self._decomp.unused_data
+                j = 0
+                while j < len(trailing) and trailing[j] == 0:
+                    j += 1
+                trailing = trailing[j:]
+                if trailing:
+                    self._arm_trailing_junk(trailing)
+                    return DecodeOut(bytes(out))
+                self._finished = True
+                return DecodeOut(bytes(out))
+            self._arm_trailing_junk(data)
+            return DecodeOut(bytes(out))
+
+        # Mid-member compressed EOF.
+        try:
+            if self._decomp.unconsumed_tail:
+                out.extend(self._decomp.decompress(self._decomp.unconsumed_tail))
+            out.extend(self._decomp.flush())
+        except zlib.error as e:
+            raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+        if not self._decomp.eof:
+            self._pending_error = TruncatedError("gzip stream is truncated")
+        else:
+            # Completed final member exactly at EOF.
+            trailing = self._decomp.unused_data
+            j = 0
+            while j < len(trailing) and trailing[j] == 0:
+                j += 1
+            trailing = trailing[j:]
+            if trailing == b"\x1f" or (
+                trailing and not trailing.startswith(_GZIP_MAGIC)
+            ):
+                self._arm_trailing_junk(trailing)
+            elif trailing.startswith(_GZIP_MAGIC):
+                self._pending_error = TruncatedError("gzip stream is truncated")
+            else:
+                self._finished = True
+        return DecodeOut(bytes(out))
+
+    @property
+    def finished(self) -> bool:
+        return self._finished
+
+    @property
+    def needs_input(self) -> bool:
+        if self._pending_error is not None or self._finished:
+            return True
+        if self._decomp.unconsumed_tail:
+            return False
+        # Full next-member prefix retained — drain without reading more.
+        if self._retained.startswith(_GZIP_MAGIC):
+            return False
+        return True
+
+
+class _BrotliDecompressor(Protocol):
+    """The ``brotli.Decompressor`` methods this adapter calls.
+
+    ``brotli`` is an optional extra with no stubs. ``can_accept_more_data`` /
+    ``output_buffer_limit`` are brotli ≥1.2.0; the adapter probes for them at
+    runtime (``_supports_output_limit``).
+    """
+
+    def process(self, data: bytes, output_buffer_limit: int = ...) -> bytes: ...
+    def can_accept_more_data(self) -> bool: ...
+    def is_finished(self) -> bool: ...
+
+
+class BrotliDecoder(BaseDecoder):
+    """Decode a raw Brotli stream via the ``brotli`` package's incremental decompressor.
+
+    The ``brotli`` import is local because it's an optional dependency with no type stubs;
+    the codec layer's ``_open_brotli`` gates on its presence before constructing this, so
+    the import here always succeeds.
+
+    Brotli ≥1.2.0 exposes ``process(..., output_buffer_limit=)`` and
+    ``can_accept_more_data()`` (CVE-2025-6176 mitigation). The limit is block-granular
+    (observed floor ~32 KiB), not a hard byte cap, but it stops a single ``process``
+    from materializing multi-megabyte bombs on ``read(1)``.
+    """
+
+    def __init__(self) -> None:
+        import brotli
+
+        self._decomp: _BrotliDecompressor = brotli.Decompressor()
+        self._pending = b""
+        # True while a prior budgeted process may still have output to drain via
+        # process(b"", output_buffer_limit=…).
+        self._drain_budgeted = False
+        self._supports_output_limit = callable(
+            getattr(self._decomp, "can_accept_more_data", None)
+        )
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> BrotliDecoder:
+        del point, inner
+        return BrotliDecoder()
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        data = self._pending + chunk
+        self._pending = b""
+        if max_length < 0 or not self._supports_output_limit:
+            self._drain_budgeted = False
+            if not data:
+                return DecodeOut(b"")
+            return DecodeOut(self._decomp.process(data))
+
+        can_accept = bool(self._decomp.can_accept_more_data())
+        if not can_accept:
+            # Limit reached on a prior call: only empty process is legal until
+            # can_accept_more_data() flips true again.
+            self._pending = data
+            out = self._decomp.process(b"", output_buffer_limit=max_length)
+        elif data:
+            out = self._decomp.process(data, output_buffer_limit=max_length)
+        elif self._drain_budgeted:
+            out = self._decomp.process(b"", output_buffer_limit=max_length)
+        else:
+            return DecodeOut(b"")
+
+        finished = bool(self._decomp.is_finished())
+        # Keep draining while output is flowing or the decoder refuses more input.
+        self._drain_budgeted = (not finished) and (
+            len(out) > 0 or not bool(self._decomp.can_accept_more_data())
+        )
+        return DecodeOut(out)
+
+    def flush(self) -> DecodeOut:
+        # Brotli decodes eagerly; there is nothing buffered to flush at EOF.
+        if not self.finished:
+            self._pending_error = TruncatedError("File is truncated")
+        return DecodeOut(b"")
+
+    @property
+    def finished(self) -> bool:
+        return bool(self._decomp.is_finished())
+
+    @property
+    def needs_input(self) -> bool:
+        if self._pending:
+            return False
+        if self._supports_output_limit and not bool(
+            self._decomp.can_accept_more_data()
+        ):
+            return False
+        return not self._drain_budgeted
+
+
+# Per-call output request for PPMd8 decodes without a declared size; 64 KiB matches
+# the stream layer's read chunk. NOTE: a bound is NOT what makes decoding safe — on
+# pyppmd 1.3.x any request exceeding the stream's true remaining output by ≳64 KiB
+# corrupts the heap even without -1 (measured: +64/+4096 over → 0/20 crashes,
+# +65536 over → 13/20). PPMd8 is safe here because its end mark stops the native
+# worker on valid data before any over-decode; PPMd7 has no end mark, which is why
+# PpmdDecoder refuses to decode it without ``unpack_size`` at all.
+_PPMD_UNSIZED_DECODE_CHUNK = 65536
+
+# Per-call ceiling for extra-NUL recovery and post-NUL empty drains. A single
+# ``decode(b"\0", large_remaining)`` on truncated mid-stream input is the
+# exit-after-green / mid-suite abort on pyppmd 1.3.x; chunking at 64 avoids that
+# call shape. When the container pack is known-complete, empty ``decode(b"", 64)``
+# drains may still finish a large tail (including past premature ``eof``); when the
+# pack is known-incomplete, we refuse those post-eof drains (near-EOF MemoryError
+# otherwise). See ``dev-docs/investigations/ppmd-exit-after-green-exploration.md``.
+_PPMD_EXTRA_NUL_MAX_OUTPUT = 64
+
+# Bounded number of single-symbol NUL decodes used to quiesce a parked native
+# worker before the decoder is freed (see ``PpmdDecoder._quiesce_worker``). A
+# parked worker only needs the range coder's few-byte tail lookahead satisfied to
+# reach its 1-symbol budget and exit; 8 is a safe cushion over the observed need.
+_PPMD_QUIESCE_MAX_CALLS = 8
+
+# pyppmd parses ``decode``'s ``length`` as a C ``int``; anything larger raises a bare
+# ``OverflowError``. A request is capped here and the rest is asked for on the next
+# call. The oversized request comes from ``feed(chunk, -1)`` — what ``readall()`` /
+# ``read(-1)`` sends — whose limit is the whole remaining ``unpack_size``, and from
+# one large ``read(n)``; either reaches it on a member over 2 GiB, or on a header
+# that overstates ``unpack_size`` past that.
+_PPMD_MAX_REQUEST = (1 << 31) - 1
+
+# How PPMd avoids pyppmd's crash on corrupt input: pyppmd segfaults when asked to
+# decode after a corrupt stream has ended early, and a caller feeding it in pieces
+# cannot tell that state from a valid stream waiting for input (see ``ppmd_child``).
+# Handed the whole member at once, any short return is the end, and nothing further
+# is asked of it. ``PpmdDecoder`` therefore holds compressed input until it has the
+# whole member, or compressed EOF, or ``DecoderLimits.max_ppmd_in_process_input``;
+# past that the member goes to a child process, where a crash costs the member only.
+
+_DEFAULT_IN_PROCESS_MAX_INPUT = DecoderLimits().max_ppmd_in_process_input
+
+# Output asked of pyppmd per call once a held member is handed over at compressed EOF
+# (a truncated member, or a password check's capped input): the stream drains the rest
+# through further calls rather than taking it all from ``flush``.
+_PPMD_FLUSH_DRAIN_CHUNK = 65536
+
+
+class _PpmdNativeDecoder(Protocol):
+    """The ``pyppmd.Ppmd7Decoder`` / ``Ppmd8Decoder`` methods this adapter calls.
+
+    ``length`` is the library's keyword. ``needs_input`` is read via ``getattr``
+    as defensive coverage; the pinned floor (``pyppmd>=1.3.1``) exposes it on
+    both decoders, and no known build lacks it.
+    """
+
+    def decode(self, data: bytearray | bytes | memoryview, length: int) -> bytes: ...
+
+    @property
+    def eof(self) -> bool: ...
+
+
+class PpmdDecoder(BaseDecoder):
+    """Decode a PPMd stream via ``pyppmd``.
+
+    Variant 7 (``Ppmd7Decoder``) is the 7z var.H coder. Variant 8 (``Ppmd8Decoder``)
+    is ZIP method 98 / WinZip ZIPX PPMd, which also carries a restore-method parameter.
+
+    ``unpack_size`` (the 7z folder / ZIP member size) is passed through as
+    ``max_length`` on every ``decode`` call, matching py7zr's
+    ``PpmdDecompressor.decompress(..., max_length)``. This is load-bearing on pyppmd
+    1.3.x: the native worker thread decodes as many symbols as the request allows, and
+    running it materially past the true end of stream corrupts the heap (Linux
+    ``malloc`` abort/SIGSEGV, Windows ``STATUS_HEAP_CORRUPTION``) — measured for
+    ``-1`` and for sized requests ≳64 KiB beyond the real payload alike. Requesting
+    exactly the remaining output is the safe contract; see
+    ``dev-docs/known-issues.md`` and ``dev-docs/investigations/pyppmd-upstream-report.md``.
+
+    Because PPMd7 has no end mark, there is no safe request size without knowing the
+    payload length — so ``unpack_size`` is **required** for variant 7 (the 7z header
+    always provides it). PPMd8 carries an end mark that stops the native worker on
+    valid data, so variant 8 may be unsized; it is then decoded via bounded
+    :data:`_PPMD_UNSIZED_DECODE_CHUNK` requests in a drain loop, never ``-1``.
+
+    ``pack_size`` is the container-declared compressed length (7z pack stream / ZIP
+    compressed size, or the sized view length). When set, empty post-``eof`` drains
+    that chase ``unpack_size`` are allowed only after ``fed_compressed >= pack_size``;
+    a short pack delivery stops instead (avoids near-EOF ``MemoryError`` on
+    truncated members). It is **required for PPMd7** (see ``__init__``): without it a
+    premature native ``eof`` cannot be told from truncation, and the only safe choice
+    left is to refuse the drain, which silently truncates valid members on chunked
+    reads. ``PpmdCodec`` fills it from the sized source (``compressed_input_size``) or,
+    for chained 7z folders whose PPMd input is unsized (AES), from the plumbed coder
+    input size. PPMd8 may leave it unknown; recovery is then conservative — at most one
+    capped NUL and **no** chunked empty drains. At compressed EOF, at most one
+    documented extra NUL is injected with a per-call budget of
+    :data:`_PPMD_EXTRA_NUL_MAX_OUTPUT`; unsized PPMd8 gets **no** post-eof drain at all
+    (its end mark terminates valid decodes; a drain would only fabricate trailing bytes).
+
+    **Invariant:** ``pack_size`` must measure the same byte stream that
+    ``feed()`` accumulates into ``_fed_compressed`` (the PPMd coder's compressed
+    input — after ZIP method-98 header stripping / as the 7z pack ``SlicingStream``
+    length). If a wrapper sets ``compressed_input_size`` to a larger enclosing
+    member while feeding only a subset, the gate would wrongly treat a complete
+    pack as short and suppress legitimate post-eof drains.
+    """
+
+    def __init__(
+        self,
+        *,
+        order: int,
+        mem_size: int,
+        variant: int = 7,
+        restore_method: int = 0,
+        unpack_size: int | None = None,
+        pack_size: int | None = None,
+        in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
+    ) -> None:
+        if variant != 8 and unpack_size is None:
+            raise ValueError(
+                "PPMd7 (7z var.H) requires unpack_size: the format has no end mark, "
+                "and decoding without the exact output bound runs pyppmd past the "
+                "end of stream (native heap corruption on 1.3.x — see "
+                "dev-docs/known-issues.md)"
+            )
+        if variant != 8 and pack_size is None:
+            # Without pack_size, a premature native ``eof`` (pyppmd flips it early on a
+            # small ``max_length`` over compressible data) is indistinguishable from
+            # truncation: draining toward unpack_size to finish the tail can MemoryError
+            # on 1.3.x, so the decoder must refuse it — which silently truncates a valid
+            # member on chunked reads. PPMd7 is 7z-only and 7z always knows the pack
+            # length (sized pack slice, or the preceding coder's output for AES folders),
+            # so require it rather than choose between truncation and a crash.
+            raise ValueError(
+                "PPMd7 (7z var.H) requires pack_size: it has no end mark, so completing "
+                "a member past a premature native eof needs the declared compressed "
+                "length to tell full delivery from truncation (see "
+                "dev-docs/known-issues.md)"
+            )
+        self._order = order
+        self._mem_size = mem_size
+        self._variant = variant
+        self._restore_method = restore_method
+        self._unpack_size = unpack_size
+        self._pack_size = pack_size
+        self._produced = 0
+        self._fed_compressed = 0
+        self._nul_injected = False
+        self._compressed_eof = False
+        # Set once the payload is provably spent (see ``_note_decoded``); from then on
+        # nothing on the decode path calls the native decoder. Teardown still does:
+        # ``_quiesce_worker`` sends its bounded NUL in exactly this state.
+        self._exhausted = False
+        # ``DecoderLimits.max_ppmd_in_process_input``: past it, a child process, or
+        # ``ResourceLimitError`` where none can start. ``None``: always in-process.
+        self._in_process_max_input = in_process_max_input
+        # Compressed input held back from pyppmd until the whole member is here, or
+        # compressed EOF, or ``in_process_max_input`` is passed (then it goes to a
+        # child process). ``None`` once handed over: from then on ``_decomp`` exists
+        # and the rest of this class works as a plain chunked decoder.
+        self._held: bytearray | None = bytearray()
+        # Set by ``flush`` when it hands the held input over: the stream keeps pulling
+        # output through ``feed(b"")`` until this decoder has none left
+        # (``drains_after_flush``), then calls ``flush`` again.
+        self._draining = False
+        # Set when a member past ``in_process_max_input`` was refused: every later
+        # ``feed`` and ``flush`` raises ``ResourceLimitError`` again, since there is
+        # no decoder to go on with.
+        self._refusal: str | None = None
+        self._decomp: _PpmdNativeDecoder | None = None
+
+    def _open_native(self, *, in_child: bool) -> None:
+        """Create the decoder ``_decomp``, in this process or in a child one.
+
+        ``mem_size`` is bounded one layer up, by ``check_decoder_memory`` in
+        ``codecs.py``, against ``DecoderLimits.max_decoder_memory`` — not here,
+        because these constructor calls are the allocation and there is no catching
+        it once it has been made (pyppmd 1.3.1 aborts the process rather than raising
+        when it is refused). Two paths reach this class without passing that guard: a
+        direct ``PpmdDecompressorStream`` in the tests, and ``recreate()`` rebuilding
+        from a ``mem_size`` the guard already passed. Anything new that constructs a
+        decoder from an archive-declared number calls the guard first.
+        """
+        if self._decomp is not None:  # a test double installed before first use
+            return
+        if in_child:
+            self._decomp = PpmdChildDecoder(
+                variant=self._variant,
+                order=self._order,
+                mem_size=self._mem_size,
+                restore_method=self._restore_method,
+            )
+            return
+        import pyppmd
+
+        if self._variant == 8:
+            self._decomp = pyppmd.Ppmd8Decoder(
+                self._order, self._mem_size, self._restore_method
+            )
+        else:
+            self._decomp = pyppmd.Ppmd7Decoder(self._order, self._mem_size)
+
+    def _release_held(self, *, in_child: bool) -> bytes:
+        """Hand the held input over: open ``_decomp`` and return the bytes to feed it."""
+        held = self._held
+        assert held is not None
+        self._held = None
+        self._open_native(in_child=in_child)
+        return bytes(held)
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> PpmdDecoder:
+        del point, inner
+        return PpmdDecoder(
+            order=self._order,
+            mem_size=self._mem_size,
+            variant=self._variant,
+            restore_method=self._restore_method,
+            unpack_size=self._unpack_size,
+            pack_size=self._pack_size,
+            in_process_max_input=self._in_process_max_input,
+        )
+
+    @property
+    def _native(self) -> _PpmdNativeDecoder:
+        """The decoder, once the held input has been handed over (never before)."""
+        assert self._decomp is not None
+        return self._decomp
+
+    def _max_length(self) -> int:
+        if self._unpack_size is None:
+            return -1
+        return max(0, self._unpack_size - self._produced)
+
+    def _pack_complete(self) -> bool | None:
+        """True if declared pack fully fed, False if known short, None if unknown."""
+        if self._pack_size is None:
+            return None
+        return self._fed_compressed >= self._pack_size
+
+    def _note_decoded(self, out: bytes, requested: int) -> bytes:
+        """Record whether a sized native call proved the payload spent; return ``out``.
+
+        On pyppmd 1.3.1 a ``decode`` returns short of ``requested`` only when its
+        worker blocked on empty input or decoded the model's end. Short **and** at
+        ``eof`` **and** with every compressed byte already fed, no more input is
+        coming and the payload has nothing left: another decode-path call could only
+        resume a worker parked on empty input, which raises a spurious
+        ``MemoryError`` (it reads past the input buffer) rather than returning. So
+        ``feed`` and ``flush`` make no further call; ``_quiesce_worker`` still sends
+        its bounded NUL at teardown, which is what keeps the parked worker from
+        writing into freed memory when the decoder is freed. A valid member never gets
+        here, because its ``unpack_size`` matches the payload and every request is
+        met in full — premature ``eof`` (the ``Code == 0`` proxy) arrives on a *full*
+        return, which is why ``eof`` alone cannot be the stop. Reached when the
+        container overstates ``unpack_size``; ``flush`` then reports
+        ``TruncatedError``.
+
+        ``_decode_unsized`` (PPMd8 without ``unpack_size``) is deliberately not
+        wrapped: its end mark stops the worker on valid data, ``_decode`` refuses to
+        call it again once ``eof`` is set, and ``flush`` runs no post-eof drain without
+        a size, so it never reaches the parked-worker resume this guards against.
+        """
+        if (
+            len(out) < requested
+            and self._native.eof
+            and (self._compressed_eof or self._pack_complete() is True)
+        ):
+            self._exhausted = True
+        return out
+
+    def _decode_unsized(self, data: bytes) -> bytes:
+        # Unsized PPMd8 only (PPMd7 without a size is rejected in __init__). Never
+        # hand pyppmd max_length=-1; request one bounded chunk per call. Valid PPMd8
+        # stops at its end mark before any over-decode; the bound avoids the -1
+        # allocation path and caps the damage on corrupt data. One chunk, not a
+        # drain loop: a held member arrives whole, and draining it here would build
+        # its entire output in one call. The stream asks again while ``needs_input``
+        # is False.
+        return self._native.decode(data, _PPMD_UNSIZED_DECODE_CHUNK)
+
+    def _nul_budget(self, max_length: int) -> int:
+        budget = _PPMD_EXTRA_NUL_MAX_OUTPUT
+        if max_length >= 0:
+            budget = min(max_length, budget)
+        return budget
+
+    def _inject_nul_once(self, max_length: int) -> bytes:
+        """Documented single extra NUL (pyppmd / py7zr); never loop fabricated input."""
+        if self._exhausted or self._nul_injected or self._native.eof:
+            return b""
+        if not getattr(self._native, "needs_input", False):
+            return b""
+        self._nul_injected = True
+        budget = self._nul_budget(max_length)
+        return self._note_decoded(self._native.decode(b"\0", budget), budget)
+
+    def _drain_empty_chunked(self, max_length: int) -> bytes:
+        """Pull remaining output in ``_PPMD_EXTRA_NUL_MAX_OUTPUT`` empty decodes.
+
+        Only for a **known-complete** pack (see :meth:`flush`): premature native
+        ``eof`` after a small ``max_length`` can still leave legitimate symbols
+        reachable via ``decode(b"", …)`` — so this intentionally continues past
+        native ``eof`` (breaking on eof would defeat premature-eof recovery).
+        Stops on ``needs_input``, a short return at ``eof`` (the payload is spent;
+        see :meth:`_note_decoded`), quiet empty, or budget exhaustion. Does **not**
+        run when ``pack_size`` is unknown or short. Corrupt-but-declared-complete
+        packs can still fill toward ``unpack_size`` here; container CRC is the
+        backstop. Worst-case iteration count is ``remaining + 2`` at 64 bytes
+        per call (perf cliff on huge members if this path is hit).
+        """
+        if max_length == 0:
+            return b""
+        parts: list[bytes] = []
+        remaining = max_length
+        quiet = 0
+        # Bound iterations: worst case one byte per call up to remaining.
+        for _ in range(remaining + 2):
+            if remaining <= 0:
+                break
+            if getattr(self._native, "needs_input", False):
+                break
+            budget = min(_PPMD_EXTRA_NUL_MAX_OUTPUT, remaining)
+            chunk = self._note_decoded(self._native.decode(b"", budget), budget)
+            parts.append(chunk)
+            remaining -= len(chunk)
+            if self._exhausted:
+                break
+            if not chunk:
+                quiet += 1
+                if quiet >= 2:
+                    break
+                continue
+            quiet = 0
+        return b"".join(parts)
+
+    def _decode(self, data: bytes, max_length: int) -> bytes:
+        if max_length == 0 or self._exhausted:
+            return b""
+        # Decoding after native EOF is trailing garbage at best (and the crashy
+        # runaway path on pyppmd 1.3.x when unbounded) — drop the input instead.
+        if self._native.eof and max_length < 0:
+            return b""
+        # Empty + needs_input after compressed EOF: at most one documented NUL.
+        # Before compressed EOF, empty+needs_input means "read more pack bytes" —
+        # do not fabricate input.
+        if (
+            not data
+            and getattr(self._native, "needs_input", False)
+            and not self._native.eof
+        ):
+            if not self._compressed_eof:
+                return b""
+            return self._inject_nul_once(max_length)
+        if max_length < 0:
+            return self._decode_unsized(data)
+        max_length = min(max_length, _PPMD_MAX_REQUEST)
+        return self._note_decoded(self._native.decode(data, max_length), max_length)
+
+    def _refuse(self, reason: str, cause: BaseException | None = None) -> NoReturn:
+        """Refuse this member for good; see ``_refusal``."""
+        self._refusal = reason
+        self._held = None
+        raise ResourceLimitError(reason) from cause
+
+    def _check_refusal(self) -> None:
+        if self._refusal is not None:
+            raise ResourceLimitError(self._refusal)
+
+    def _release_to_child(self, limit: int) -> bytes:
+        reason = (
+            f"Decoder limit reached: max_ppmd_in_process_input={limit}. This PPMd "
+            "member is larger, and no child process can be started to decode it "
+            "(pyppmd can crash the process on corrupt input past this size). Raise "
+            "DecoderLimits.max_ppmd_in_process_input to decode it in-process."
+        )
+        if not child_decoding_available():
+            self._refuse(reason)
+        try:
+            return self._release_held(in_child=True)
+        except PpmdChildStartError as exc:
+            self._refuse(f"{reason} ({exc})", exc)
+        except PpmdChildAllocationError as exc:
+            # The child started, so the advice above does not apply: in-process, the
+            # same allocation would abort this process.
+            self._refuse(f"Decoder limit reached: {exc}", exc)
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        self._check_refusal()
+        if chunk:
+            self._fed_compressed += len(chunk)
+        if self._held is not None:
+            self._held += chunk
+            limit = self._in_process_max_input
+            if self._pack_complete() is True:
+                chunk = self._release_held(in_child=False)
+            elif limit is not None and len(self._held) > limit:
+                chunk = self._release_to_child(limit)
+            else:
+                return DecodeOut(b"")
+        # Honour both the container unpack_size cap and the stream-layer read budget.
+        unpack_cap = self._max_length()
+        if max_length >= 0 and unpack_cap >= 0:
+            limit = min(max_length, unpack_cap)
+        elif max_length >= 0:
+            limit = max_length
+        else:
+            limit = unpack_cap
+        if self._compressed_eof:
+            # After compressed EOF (``flush`` has handed the held input over): the same
+            # bounded request as its first call, never the whole declared remainder,
+            # whether or not the drain is still running.
+            limit = (
+                _PPMD_FLUSH_DRAIN_CHUNK
+                if limit < 0
+                else min(limit, _PPMD_FLUSH_DRAIN_CHUNK)
+            )
+        # Empty drains past native eof are only safe when every compressed byte the
+        # decoder will ever get has been handed over: the declared pack was fully
+        # delivered, or ``flush`` handed over everything up to compressed EOF (and
+        # then a short return ends the drain, below). Otherwise refuse (near-EOF
+        # MemoryError / garbage fill). Callers must pass pack_size (or sized-view
+        # compressed_input_size) for correct premature-eof completion.
+        if (
+            not chunk
+            and not (self._draining or self._pack_complete() is True)
+            and self._native.eof
+        ):
+            return DecodeOut(b"")
+        out = self._decode(chunk, limit)
+        self._produced += len(out)
+        if self._draining and len(out) < limit:
+            # All input is in, so a short return is the end: ask pyppmd nothing more
+            # on the drain; the stream's next ``flush`` settles the member.
+            self._draining = False
+        return DecodeOut(out)
+
+    def flush(self) -> DecodeOut:
+        self._check_refusal()
+        self._compressed_eof = True
+        if self._held is not None:
+            # Compressed EOF with input still held: a member shorter than its pack
+            # (truncated, or a password check's capped read), or one with no declared
+            # pack size. Everything that will ever arrive is here, so hand it over
+            # whole, in this process, and take the first chunk of output; the stream
+            # drains the rest through ``feed(b"")`` and then calls ``flush`` again.
+            data = self._release_held(in_child=False)
+            limit = self._max_length()
+            limit = (
+                _PPMD_FLUSH_DRAIN_CHUNK
+                if limit < 0
+                else min(limit, _PPMD_FLUSH_DRAIN_CHUNK)
+            )
+            out = self._decode(data, limit) if limit else b""
+            self._produced += len(out)
+            # Only a full return leaves output to drain: short, the member has ended
+            # and pyppmd is asked nothing more (see ``feed``).
+            if len(out) == limit and not self.finished and not self._exhausted:
+                self._draining = True
+                return DecodeOut(out)
+            return DecodeOut(out + self._finish_input().data)
+        return self._finish_input()
+
+    @property
+    def drains_after_flush(self) -> bool:
+        """True while ``flush`` has handed input over and output may still follow."""
+        return self._draining and not self.finished and not self._exhausted
+
+    def _finish_input(self) -> DecodeOut:
+        # Compressed EOF: optionally one documented extra NUL, then (only when the
+        # pack is known-complete) chunked empty drains. Never inject fabricated
+        # NULs in a loop. Unknown pack_size is treated like incomplete for drains:
+        # single capped NUL only — do not chase unpack_size.
+        self._draining = False
+        max_length = self._max_length()
+        if max_length == 0:
+            return DecodeOut(b"")
+        out = b""
+        if not self._native.eof and getattr(self._native, "needs_input", False):
+            more = self._inject_nul_once(max_length)
+            out += more
+            self._produced += len(more)
+            max_length = self._max_length()
+        # Empty drains past a premature native ``eof`` only run when the pack is
+        # known-complete AND a container ``unpack_size`` bounds them (``max_length >= 0``).
+        # Without that bound the drain is pure fabrication: an unsized PPMd8 stream ends
+        # at its end mark, so any post-eof pull is trailing garbage (measured: +N bytes
+        # on compressible payloads). Corrupt-but-declared-complete sized packs can still
+        # fill toward ``unpack_size`` here — container CRC is the backstop.
+        if max_length > 0 and self._pack_complete() is True and not self._exhausted:
+            if not getattr(self._native, "needs_input", False):
+                drained = self._drain_empty_chunked(max_length)
+                out += drained
+                self._produced += len(drained)
+        if not self.finished:
+            self._pending_error = TruncatedError("File is truncated")
+        return DecodeOut(out)
+
+    @property
+    def finished(self) -> bool:
+        # Prefer the container size when known: it detects truncation (short output
+        # at compressed EOF) and ends the member exactly at its boundary — PPMd7 has
+        # no end mark, so native eof alone cannot do either.
+        if self._unpack_size is not None:
+            return self._produced >= self._unpack_size
+        return self._decomp is not None and bool(self._decomp.eof)
+
+    @property
+    def needs_input(self) -> bool:
+        if self._decomp is None:
+            return True
+        return bool(getattr(self._decomp, "needs_input", True))
+
+    def _quiesce_worker(self) -> None:
+        """Drive a parked native decode worker to exit before the decoder is freed.
+
+        On pyppmd 1.3.x the decode worker thread is left blocked in the reader
+        whenever a ``decode`` requested more output than the fed input could
+        produce (a truncated or abandoned member). ``Ppmd7T_Free`` — run from the
+        pyppmd decoder's ``dealloc`` — then wakes that worker with no new input,
+        and it free-runs into the output block already released by the previous
+        ``decode`` call: a use-after-free that intermittently aborts the process
+        at GC (the "exit-after-green" residual in ``known-issues.md``).
+
+        Feeding one bounded single-symbol NUL makes the worker consume its tail
+        lookahead and exit on its own 1-symbol budget, so ``Ppmd7T_Free`` sees a
+        finished worker and becomes a no-op. Measured: valgrind 8154 → 0 invalid
+        writes on a truncated-pack teardown. Best-effort and idempotent; safe to
+        call more than once. See ``dev-docs/investigations/ppmd-native-investigation-results.md``
+        (§D root cause, §I mitigation).
+        """
+        decomp = getattr(self, "_decomp", None)
+        if decomp is None:
+            return
+        try:
+            # A fully-decoded member exited its worker on budget / the end mark;
+            # only an incomplete (truncated / abandoned) decode can leave one
+            # parked. Skip the happy path so valid closes cost nothing.
+            if self.finished:
+                return
+            for _ in range(_PPMD_QUIESCE_MAX_CALLS):
+                # ``not needs_input`` is the "worker not parked" signal — the last
+                # call exited on budget, so Free is already a no-op. The ``eof``
+                # short-circuit is deliberately kept ahead of it: at native eof the
+                # worker is finished AND feeding a NUL here would be a decode-after-eof
+                # (the unbounded form of which is itself a crash path on 1.3.x), so
+                # never issue one — skip instead. The exception is a spent payload
+                # (``_exhausted``): its last call returned short at ``eof``, which
+                # pyppmd reports with ``needs_input`` False even when the worker is
+                # parked on empty input, so neither flag can be trusted and the NUL
+                # is sent anyway. Measured on an overstated ``unpack_size``: without
+                # it valgrind shows the Free-time invalid write and a later decoder
+                # in the same process can start from corrupted state.
+                if not self._exhausted and (
+                    decomp.eof or not getattr(decomp, "needs_input", False)
+                ):
+                    return
+                # One-symbol budget: the worker resumes, consumes the NUL, and
+                # exits on budget (returns the byte), or blocks needing one more
+                # tail byte — the next iteration feeds it. A non-empty return means
+                # the worker hit its budget and exited, so it will not be resumed.
+                if decomp.decode(b"\0", 1):
+                    return
+        except Exception:  # noqa: BLE001 - teardown hygiene; never raise from close()/__del__
+            pass
+
+    def close(self) -> None:
+        self._quiesce_worker()
+        decomp = getattr(self, "_decomp", None)
+        if isinstance(decomp, PpmdChildDecoder):
+            decomp.close()
+
+    def __del__(self) -> None:
+        # GC safety net: quiesce even when the owning stream's close() did not run
+        # (decoder used directly, or stream leaked). Runs before self._decomp is
+        # dropped, so the native worker is finished before Ppmd7T_Free executes.
+        self.close()
+
+
+# An LZMA2 uncompressed chunk carries at most 64 KiB of payload behind a 3-byte
+# header (control byte + big-endian size-1); see `_Lzma2Framer`.
+_LZMA2_UNCOMPRESSED_CHUNK_MAX = 1 << 16
+
+
+class _Lzma2Framer:
+    """Wrap plain bytes as an LZMA2 stream of *uncompressed* chunks.
+
+    liblzma will not build a raw filter chain whose only member is a branch filter
+    (``lzma.LZMADecompressor(FORMAT_RAW, [{"id": FILTER_X86}])`` raises
+    ``LZMAError: Invalid or unsupported options``) — the chain has to end in a
+    compression filter. Framing the input as LZMA2 uncompressed chunks supplies one
+    without compressing anything: ``[<branch filter>, FILTER_LZMA2]`` then runs the
+    branch filter over the payload and hands the bytes straight back.
+
+    The first chunk's control byte is ``0x01`` (uncompressed, reset dictionary) as
+    LZMA2 requires; later chunks use ``0x02``. ``end()`` emits the ``0x00`` end
+    marker, which is what makes liblzma release the branch filter's final look-ahead
+    bytes. Overhead is 3 bytes per 64 KiB — 0.005% of the payload.
+    """
+
+    def __init__(self) -> None:
+        self._first = True
+
+    def wrap(self, data: bytes) -> bytes:
+        out = bytearray()
+        for start in range(0, len(data), _LZMA2_UNCOMPRESSED_CHUNK_MAX):
+            chunk = data[start : start + _LZMA2_UNCOMPRESSED_CHUNK_MAX]
+            out.append(0x01 if self._first else 0x02)
+            out += (len(chunk) - 1).to_bytes(2, "big")
+            out += chunk
+            self._first = False
+        return bytes(out)
+
+    @staticmethod
+    def end() -> bytes:
+        return b"\x00"
+
+
+class FilterDecoder(BaseDecoder):
+    """Apply a filter-only liblzma stage (a BCJ branch filter, or Delta) to plain bytes.
+
+    The filter runs through liblzma, over an :class:`_Lzma2Framer` wrapper because
+    liblzma needs a compression filter to close the chain. It must not be ``pybcj``:
+    that decoder cannot be constructed for a member of 2 GiB or more, and its IA64
+    filter truncates. See ``dev-docs/known-issues.md`` → "7z BCJ branch filters".
+
+    ``lzma_filter`` is the liblzma filter dict, options included (a BCJ
+    ``start_offset``, a Delta ``dist``). ``unpack_size`` is the coder's declared
+    output length, used only to decide whether the stream finished — never passed
+    to the filter, which needs no bound.
+    """
+
+    def __init__(self, *, lzma_filter: Mapping[str, int], unpack_size: int) -> None:
+        self._lzma_filter = dict(lzma_filter)
+        self._unpack_size = unpack_size
+        self._produced = 0
+        self._framer = _Lzma2Framer()
+        self._decomp: lzma.LZMADecompressor = lzma.LZMADecompressor(
+            format=lzma.FORMAT_RAW,
+            filters=[self._lzma_filter, {"id": lzma.FILTER_LZMA2}],
+        )
+        self._pending = b""
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> FilterDecoder:
+        del point, inner
+        return FilterDecoder(
+            lzma_filter=self._lzma_filter, unpack_size=self._unpack_size
+        )
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        data = self._pending + chunk
+        self._pending = b""
+        if not data:
+            return DecodeOut(b"")
+        if max_length >= 0 and len(data) > max_length:
+            # BCJ is a filter (near 1:1); feed only what the caller budget allows and
+            # retain the rest — bounds peak buffer without a native max_length API.
+            self._pending = data[max_length:]
+            data = data[:max_length]
+        out = self._decomp.decompress(self._framer.wrap(data))
+        self._produced += len(out)
+        return DecodeOut(out)
+
+    def flush(self) -> DecodeOut:
+        pending = self._pending
+        self._pending = b""
+        leftover = self._decomp.decompress(
+            self._framer.wrap(pending) + _Lzma2Framer.end()
+        )
+        self._produced += len(leftover)
+        if not self.finished:
+            self._pending_error = TruncatedError("File is truncated")
+        return DecodeOut(leftover)
+
+    @property
+    def finished(self) -> bool:
+        return self._produced >= self._unpack_size
+
+    @property
+    def needs_input(self) -> bool:
+        return not self._pending
+
+
+class _Inflate64Inflater(Protocol):
+    """The ``inflate64.Inflater`` methods this adapter calls.
+
+    Declared here because ``inflate64`` is an optional extra with no stubs.
+    """
+
+    def inflate(self, data: bytes) -> bytes: ...
+
+    @property
+    def eof(self) -> bool: ...
+
+
+class Deflate64Decoder(BaseDecoder):
+    """Decode a Deflate64 stream via ``inflate64.Inflater``.
+
+    ``inflate64`` has no output-size parameter: one ``inflate`` of a small
+    highly-compressible feed can still allocate the full expansion. When the
+    stream passes ``max_length >= 0``, feed compressed input in small steps
+    (see ``_BUDGETED_FEED``) and retain any overshoot in ``_pending_out`` so
+    ``read(n)`` peak buffers stay near the caller's budget.
+
+    Feed-size tradeoff on a 100 MiB zeros Deflate64 bomb (per-call max_out /
+    throughput): 1→514 B / ~320 MiB/s; 64→19 KiB / ~700 MiB/s; 256→70 KiB /
+    ~710 MiB/s; 64 KiB→18 MiB / ~460 MiB/s. 64 keeps peaks under a 64 KiB
+    read budget while recovering most of the speed of larger feeds.
+    """
+
+    # Compressed bytes per inflate() under a max_length budget. See class docstring.
+    _BUDGETED_FEED = 64
+
+    def __init__(self) -> None:
+        import inflate64
+
+        self._decomp: _Inflate64Inflater = inflate64.Inflater()
+        self._pending = b""
+        self._pending_out = b""
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> Deflate64Decoder:
+        del point, inner
+        return Deflate64Decoder()
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        data = self._pending + chunk
+        self._pending = b""
+        if max_length < 0:
+            if self._pending_out:
+                data = self._pending_out + (self._decomp.inflate(data) if data else b"")
+                self._pending_out = b""
+                return DecodeOut(data)
+            if not data:
+                return DecodeOut(b"")
+            return DecodeOut(self._decomp.inflate(data))
+
+        out = bytearray()
+        if self._pending_out:
+            take = min(len(self._pending_out), max_length)
+            out += self._pending_out[:take]
+            self._pending_out = self._pending_out[take:]
+            if len(out) >= max_length:
+                self._pending = data
+                return DecodeOut(bytes(out))
+
+        step = self._BUDGETED_FEED
+        while data and len(out) < max_length:
+            produced = self._decomp.inflate(data[:step])
+            data = data[step:]
+            room = max_length - len(out)
+            if len(produced) > room:
+                out += produced[:room]
+                self._pending_out = produced[room:]
+                break
+            out += produced
+        self._pending = data
+        return DecodeOut(bytes(out))
+
+    def flush(self) -> DecodeOut:
+        # Flush remaining state with an empty feed (mirrors py7zr's Deflate64Decompressor).
+        if self._pending_out:
+            out = self._pending_out
+            self._pending_out = b""
+            if not self._decomp.eof:
+                out += self._decomp.inflate(b"")
+        elif self._decomp.eof:
+            out = b""
+        else:
+            out = self._decomp.inflate(b"")
+        if not self.finished:
+            self._pending_error = TruncatedError("File is truncated")
+        return DecodeOut(out)
+
+    @property
+    def finished(self) -> bool:
+        return bool(self._decomp.eof) and not self._pending_out
+
+    @property
+    def needs_input(self) -> bool:
+        return not self._pending and not self._pending_out
+
+
+def ZlibDecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+    wbits: int = -15,
+) -> DecompressorStream:
+    """Inflate a raw-deflate or zlib-wrapped stream (forward-only)."""
+    return DecompressorStream(path, make_decoder=lambda _p, _i: ZlibDecoder(wbits))
+
+
+def GzipDecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+) -> DecompressorStream:
+    """Inflate a gzip stream with multi-member chaining (forward-only; O(n) rewind)."""
+    return DecompressorStream(
+        path,
+        make_decoder=lambda _p, _i: GzipDecoder(),
+        codec_name="gzip",
+    )
+
+
+def BrotliDecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+) -> DecompressorStream:
+    """Decode a raw Brotli stream (forward-only)."""
+    return DecompressorStream(path, make_decoder=lambda _p, _i: BrotliDecoder())
+
+
+def PpmdDecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+    *,
+    order: int,
+    mem_size: int,
+    variant: int = 7,
+    restore_method: int = 0,
+    unpack_size: int | None = None,
+    pack_size: int | None = None,
+    in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
+) -> DecompressorStream:
+    """Decode a PPMd stream (forward-only).
+
+    ``variant=7`` is 7z PPMd var.H; ``variant=8`` is ZIP method 98 (PPMd8).
+    ``unpack_size`` and ``pack_size`` are required for PPMd7 (no end mark — see
+    :class:`PpmdDecoder`). ``pack_size`` is the container-declared compressed length
+    (or sized view); post-eof empty drains are gated on full pack delivery.
+    For PPMd8, ``unpack_size`` / ``pack_size`` are recommended when the container
+    declares them; unsized PPMd8 relies on the end mark (no post-eof drain).
+    """
+    return DecompressorStream(
+        path,
+        make_decoder=lambda _p, _i: PpmdDecoder(
+            order=order,
+            mem_size=mem_size,
+            variant=variant,
+            restore_method=restore_method,
+            unpack_size=unpack_size,
+            pack_size=pack_size,
+            in_process_max_input=in_process_max_input,
+        ),
+        codec_name="ppmd",
+    )
+
+
+def FilterStream(
+    path: str | os.PathLike[str] | BinaryIO,
+    *,
+    lzma_filter: Mapping[str, int],
+    unpack_size: int,
+    seekable: bool = False,
+    collector: DiagnosticCollector | None = None,
+    owns_inner: bool = False,
+) -> DecompressorStream:
+    """Apply a filter-only stage — BCJ branch filter or Delta (forward-only).
+
+    ``owns_inner`` is True when this filter wraps a private previous stage
+    (later 7z BCJ stages, including the LZMA1 cap slice). First-stage
+    BCJ (Copy+BCJ, BCJ-alone) leaves the default so the pack view is borrowed.
+    """
+    del collector  # accepted for call-site uniformity; BCJ emits no diagnostics today
+    return DecompressorStream(
+        path,
+        make_decoder=lambda _p, _i: FilterDecoder(
+            lzma_filter=lzma_filter, unpack_size=unpack_size
+        ),
+        codec_name="filter",
+        seekable=seekable,
+        owns_inner=owns_inner,
+    )
+
+
+def Deflate64DecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+) -> DecompressorStream:
+    """Decode a Deflate64 stream (forward-only)."""
+    return DecompressorStream(path, make_decoder=lambda _p, _i: Deflate64Decoder())
