@@ -149,7 +149,12 @@ What is ISO-specific in turning a record into a member:
   its ASCII runs equal the stored bytes' (`_ascii_runs_match`), which rejects a Joliet
   name cut at 64 characters and singles out one of several empty files sharing an extent.
   A directory with no such file under it, or a multi-byte legacy name whose trail bytes
-  are ASCII (Shift-JIS), stays escaped. Joliet decodes as UTF-16BE with U+FFFD for
+  are ASCII (Shift-JIS), stays escaped. A relative link target that falls through is
+  followed from the symlink's directory (`_decode_link_target`), and each component that
+  names a record there decodes as that record's name does, so a link keeps naming its
+  target's member; an absolute target points outside the image and stays escaped. The
+  `MEMBER_NAME_ENCODING_INFERRED` context leaves both encoding fields empty, because no
+  decode of the stored bytes made the name. Joliet decodes as UTF-16BE with U+FFFD for
   anything invalid and ignores `encoding=`. Decoding never raises. Backslash is an
   ordinary character. `raw_name` is the stored bytes in the Rock Ridge and plain
   namespaces, and the UTF-8 of the decoded path in Joliet.

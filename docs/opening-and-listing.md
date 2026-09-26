@@ -288,7 +288,9 @@ converted correctly when the image was written. A Rock Ridge name that is not va
 UTF-8 takes the Joliet name of the same file or directory, when archivey can match the
 two and their ASCII characters agree. The member then carries a
 `member_name_encoding_inferred` diagnostic. A Joliet name that was cut short (writers
-cut them at 64 characters) does not agree, so that name is escaped instead.
+cut them at 64 characters) does not agree, so that name is escaped instead. A relative
+symlink target is decoded to match: each part of it that names a file or directory in
+the image is spelled the way that member's name is.
 
 A ZIP name without the UTF-8 flag is decoded as UTF-8 when its bytes are valid UTF-8,
 and otherwise with `ArchiveyConfig.zip_unflagged_fallback_encoding` (see

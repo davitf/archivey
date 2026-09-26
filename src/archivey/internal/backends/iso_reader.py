@@ -801,6 +801,8 @@ class IsoReader(BaseArchiveReader):
         # The Joliet tree's files by extent, built the first time a Rock Ridge name is
         # not UTF-8 and ``encoding=`` does not decode it; and the records whose name was
         # taken from their Joliet counterpart, by ``id()``, to report on the member.
+        # Unlike ``_SystemUseNotes`` no anchor is kept: the keys are pycdlib's parsed
+        # records, which ``self._iso`` holds for the reader's whole life.
         self._joliet_files: dict[int, list[DirectoryRecord]] | None = None
         self._joliet_named: dict[int, DirectoryRecord] = {}
         # Boundary outside the guard; an exception the translator does not recognize
@@ -1169,8 +1171,11 @@ class IsoReader(BaseArchiveReader):
         # the record walk traverses in-memory parsed catalog records and reads nothing
         # from the image. ``_make_member`` can: for a repeated identifier or a file
         # whose data ends at the end of the image, ``_raw_directory`` re-reads the
-        # directory's extent through ``_cdfp`` and takes the handle guard itself. Any
-        # other image read added to listing needs the same guard. If a future pycdlib
+        # directory's extent through ``_cdfp`` and takes the handle guard itself. The
+        # Joliet name fallback reads nothing either: ``has_joliet()`` tests a parsed
+        # descriptor, ``get_record(joliet_path="/")`` looks among parsed records, and
+        # ``_yield_children`` on the Joliet tree walks them. Any other image read added
+        # to listing needs the same guard. If a future pycdlib
         # version gains handle access in the walk, lock the complete call.
         with self._translated_errors():
             # ``index`` is each member's position in the walk, the id registration
@@ -1226,7 +1231,7 @@ class IsoReader(BaseArchiveReader):
 
         modified, accessed, created, ctime = self._timestamps(record, rr)
         mode, uid, gid = self._posix_metadata(rr)
-        link_target = self._symlink_target(member_type, rr)
+        link_target = self._symlink_target(member_type, record, rr)
 
         size = self._file_size(record) if member_type == MemberType.FILE else None
         compressed_size = size
@@ -1289,8 +1294,10 @@ class IsoReader(BaseArchiveReader):
                     member_name=member.name,
                     member_id=index,
                     raw_name_base64=raw_name_to_base64(member.raw_name),
-                    inferred_encoding="utf-16-be",
-                    declared_encoding="utf-8",
+                    # No decode of the stored bytes happened: the name is another
+                    # record's, and Rock Ridge declares no charset.
+                    inferred_encoding="",
+                    declared_encoding="",
                 ),
                 member=member,
                 attach_to_member=True,
@@ -1432,7 +1439,7 @@ class IsoReader(BaseArchiveReader):
         return None, None, None
 
     def _symlink_target(
-        self, member_type: MemberType, rr: RockRidge | None
+        self, member_type: MemberType, record: DirectoryRecord, rr: RockRidge | None
     ) -> str | None:
         if member_type != MemberType.SYMLINK or rr is None:
             return None
@@ -1440,7 +1447,51 @@ class IsoReader(BaseArchiveReader):
             target = rr.symlink_path()
         except _PYCDLIB_ERRORS:
             return None
-        return self._decode_bytes_name(bytes(target)) if target else None
+        return self._decode_link_target(record, bytes(target)) if target else None
+
+    def _decode_link_target(self, record: DirectoryRecord, target: bytes) -> str:
+        """Decode a Rock Ridge link target so that it names what the member names name.
+
+        A target that is not UTF-8 and that ``encoding=`` does not decode is followed
+        through the image from the symlink's directory, one component at a time. A
+        component that names a record here decodes the way that record's own name does,
+        Joliet fallback included, so a link to ``caf\\xe9.txt`` reads ``café.txt`` when
+        the file lists as ``café.txt``. An absolute target points outside the image and a
+        component that names nothing here has no record to ask, so both are escaped.
+        """
+        decoded = self._decode_known(target)
+        if decoded is not None:
+            return decoded
+        if target.startswith(b"/") or not self._iso.has_joliet():
+            return target.decode("utf-8", errors="surrogateescape")
+        directory: DirectoryRecord | None = record.parent
+        parts: list[str] = []
+        for component in target.split(b"/"):
+            part = self._decode_known(component)
+            here = self._rock_ridge_child(directory, component)
+            if part is None and here is not None:
+                part = self._joliet_name(here, component)
+            if part is None:
+                part = component.decode("utf-8", errors="surrogateescape")
+            parts.append(part)
+            directory = here if here is not None and here.is_dir() else None
+        return "/".join(parts)
+
+    def _rock_ridge_child(
+        self, directory: DirectoryRecord | None, component: bytes
+    ) -> DirectoryRecord | None:
+        """The record ``component`` names from ``directory`` in the Rock Ridge tree."""
+        if directory is None or component in (b"", b"."):
+            return directory
+        if component == b"..":
+            return directory.parent
+        for child in _yield_children(directory, True):
+            if child is None or child.is_dot() or child.is_dotdot():
+                continue
+            rr = child.rock_ridge
+            if rr is not None and bytes(rr.name()) == component:
+                return child
+        return None
 
     # --- data ---------------------------------------------------------------------------
 

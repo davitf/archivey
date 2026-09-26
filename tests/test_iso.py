@@ -1482,6 +1482,10 @@ def _latin1_names_with_joliet_image() -> bytes:
     )
     iso.add_fp(io.BytesIO(b""), 0, "/EMPTY.;1", rr_name="empty#", joliet_path="/emptyé")
     iso.add_fp(io.BytesIO(b""), 0, "/OTHER.;1", rr_name="other", joliet_path="/other")
+    iso.add_symlink("/LNK.;1", rr_symlink_name="lnk", rr_path="caf#.txt")
+    iso.add_symlink("/REP/UP.;1", rr_symlink_name="up", rr_path="../caf#.txt")
+    iso.add_symlink("/DOWN.;1", rr_symlink_name="down", rr_path="r#pertoire/na#ve.txt")
+    iso.add_symlink("/ABS.;1", rr_symlink_name="abs", rr_path="/caf#.txt")
     # A Joliet name cut short, as writers cut them at 64 characters.
     iso.add_fp(
         io.BytesIO(b"long"),
@@ -1516,6 +1520,10 @@ def test_a_latin1_rock_ridge_name_takes_its_joliet_name() -> None:
             "emptyé",
             "other",
             "long\udce9name.txt",
+            "lnk",
+            "répertoire/up",
+            "down",
+            "abs",
         }
         inferred = {
             name
@@ -1533,6 +1541,16 @@ def test_a_latin1_rock_ridge_name_takes_its_joliet_name() -> None:
             "emptyé",
         }
         assert by_name["café.txt"].raw_name == b"caf\xe9.txt"
+        # A link names its target the way the target's member is named; an absolute
+        # target points outside the image and stays escaped.
+        assert by_name["lnk"].link_target == "café.txt"
+        assert by_name["répertoire/up"].link_target == "../café.txt"
+        assert by_name["down"].link_target == "répertoire/naïve.txt"
+        assert by_name["abs"].link_target == "/caf\udce9.txt"
+        # No decode of the stored bytes made the name, so no encoding is claimed.
+        (diagnostic,) = by_name["café.txt"].diagnostics
+        assert diagnostic.context.inferred_encoding == ""
+        assert diagnostic.context.declared_encoding == ""
         assert by_name["répertoire/naïve.txt"].raw_name == b"r\xe9pertoire/na\xefve.txt"
         assert ar.read("répertoire/naïve.txt") == b"naive"
 

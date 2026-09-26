@@ -105,7 +105,12 @@ class NameNormalizationContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class NameEncodingContext(_JsonSafeContext):
-    """Member name bytes decoded with an inferred (not declared) encoding."""
+    """Member name bytes decoded with an inferred (not declared) encoding.
+
+    ``inferred_encoding`` decodes ``raw_name_base64`` to ``member_name``. Both encoding
+    fields are empty when no decode of the stored bytes produced the name: ISO takes a
+    Rock Ridge name that is not UTF-8 from the file's Joliet record instead.
+    """
 
     kind: Literal["name_encoding"] = "name_encoding"
     archive_name: str | None = None
