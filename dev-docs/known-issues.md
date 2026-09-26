@@ -318,6 +318,13 @@ see archivey's guarded `deque` in pycdlib's namespace too. That is a deliberate 
 on hostile input over leaving another library's pycdlib untouched — and the guard is a strict
 superset of pycdlib's own behaviour on valid trees, so it does not change correct results.
 
+The same import also replaces `pycdlib.rockridge.RockRidge.parse` with a wrapper
+(`_install_pycdlib_system_use_filter()`). Unlike the cycle guard, the wrapper changes nothing
+for other code: it filters the System Use bytes only while a `ContextVar` is set, and only
+`IsoReader` sets it, around its own `open_fp` call. A program calling pycdlib directly still
+sees pycdlib refuse a zisofs image or a malformed Rock Ridge entry
+(`test_pycdlib_used_directly_is_not_filtered`).
+
 ## ISO counted a member's typing-time diagnostics once per listing pass (resolved)
 
 **Status:** resolved by the `one-member-listing-per-reader` change. Reported as K28 on
