@@ -379,6 +379,8 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs._AcceleratorStream,  # owns rapidgzip available_block_offsets
         codecs._GzipTruncationCheckStream,
         codecs._Bzip2EmptyStreamCheck,
+        codecs._StdlibUntilRandomAccess,  # forwards to whichever engine is current
+        codecs._ProofVerdictStream,
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -550,6 +552,8 @@ def test_delegating_stream_close_inventory() -> None:
         iso_reader._PyCdlibStream,
         codecs._GzipTruncationCheckStream,
         codecs._Bzip2EmptyStreamCheck,
+        codecs._StdlibUntilRandomAccess,
+        codecs._ProofVerdictStream,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,
     }

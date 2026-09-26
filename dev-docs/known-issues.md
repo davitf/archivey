@@ -448,10 +448,72 @@ review; before that the bzip2 path aborted) reads a caller-owned stream through
 EOF-shaped value, and `_AcceleratorStream` re-raises it as an ordinary Python exception after
 the call. See `dev-docs/topics/exception-handlers.md` §C-boundary trap. Only an upstream fix
 removes the need for the shim. Path sources are unaffected (rapidgzip owns an independent
-handle) for the *Python-source-raises* trigger. Separately, some **path**-source truncations /
-CRC mismatches can still `std::terminate` during worker finalization after a Python exception —
-see `dev-docs/investigations/rapidgzip-upstream-report.md` §2. The stdlib codec fallbacks raise
+handle) for the *Python-source-raises* trigger. The separate abort on a **truncated** DEFLATE
+stream, which hits path sources too, is the next section. The stdlib codec fallbacks raise
 a normal `ValueError`, which the reader boundary translates to `UnsupportedOperationError`.
+
+### rapidgzip aborts on a truncated DEFLATE stream (mitigated)
+
+**Status: open upstream defect, mitigated in archivey** (rapidgzip 0.16.0). When rapidgzip
+decodes a gzip, zlib or raw DEFLATE stream that ends early, the process aborts:
+
+```text
+terminate called after throwing an instance of 'std::logic_error'
+  what():  The bit buffer should not contain more data than have been read from the file!
+```
+
+The throw comes from a destructor. `GzipChunk::determineUsedWindowSymbolsForLastSubchunk`
+installs a `Finally` guard that calls `bitReader.seekTo()`; on a cut stream that reaches
+`BitReader::tell()`, which throws `std::logic_error`. A throw out of a destructor calls
+`std::terminate`. The source type does not matter (path, Python file object, `BytesIO`), and
+`parallelization=1` does not help. The window-sparsity pass that holds the guard cannot be
+turned off from Python, and padding the input either still aborts or decodes garbage. No
+Python-level wrapper can contain it.
+
+Measured on 0.16.0, Linux:
+
+| Input | Aborts |
+| --- | --- |
+| 8 MB gzip of base64 text, random cut of 1 to 200 000 bytes | 27 of 30 |
+| 380 KB gzip, same kind of cut | aborts |
+| Truncated raw deflate / zlib | aborts |
+| Random bit flips in the same 8 MB gzip | 0 of 40 |
+| bzip2 through `IndexedBzip2File`: 110 truncations and bit flips of an 8 MB input | 0 (truncation raises `CorruptionError` / `TruncatedError`) |
+| Any input the stdlib gzip engine decodes to a clean end | 0 |
+
+Before the fix, `open_archive(path, seekable_members=True)` on a truncated `.gz` of about
+1 MiB or more killed the interpreter; the default open raised `TruncatedError`.
+
+**Mitigation** (`_StdlibUntilRandomAccess` in `codecs.py`, OpenSpec change
+`rapidgzip-deflate-stdlib-first`): when gzip, zlib or deflate selects rapidgzip on a seekable
+source, reads and forward seeks use the stdlib engine. The first backward seek switches to
+rapidgzip only after the stdlib engine has decoded the whole input to a clean end: the
+caller's reads got there, a `SEEK_END` got there, or the seek runs one separate stdlib pass.
+If that pass fails, the stream stays on the stdlib engine and the caller meets the error on
+a read. `_ProofVerdictStream` keeps an `ArchiveyError` the pass saw, because a WinZip AES
+member reports its HMAC verdict only once. A non-seekable source goes straight to rapidgzip,
+which refuses it before it decodes. Every rapidgzip `RuntimeError` now translates, to
+`CorruptionError` when no listed message says truncation; an exception from the caller's own
+source, re-raised by `_TrappingSource`, is marked and passes through untranslated.
+`tests/test_accelerator_truncation_abort.py` runs the crash cases in a child interpreter and
+keeps a canary that raw rapidgzip still aborts.
+
+**Cost** (`benchmarks/harness.py --scale realistic`, same machine, before → after):
+
+| Case | Before | After | Accelerator off |
+| --- | ---: | ---: | ---: |
+| `targz_read_all_accel_on` | 17.6 ms (0.91× stdlib) | 26.3 ms (1.44×) | 29.5 ms |
+| `zip_read_all_accel_on` | 95.2 ms, 327 seeks | 25.8 ms, 199 seeks | 20.6 ms |
+| `gzip_read_all`, tar.bz2 cases | unchanged | unchanged | — |
+
+A first sequential pass now runs at stdlib speed (on an 86 MB → 208 MB gzip: zlib 0.65 s,
+rapidgzip 0.23 s). The first backward seek on a stream not yet read to its end costs one
+extra stdlib pass; later seeks run at rapidgzip speed. An eager proof at open was rejected:
+it made every open O(n) and a seekable read-all 3.8× slower.
+
+The gzip ISIZE backstop below still runs but no longer sees a truncated stream that the
+stdlib engine let through; removing it is a possible follow-up. Once an upstream release no
+longer throws from that destructor, the stdlib-first rule can go.
 
 ### Soft EOF on truncated gzip (by design — not a bug)
 

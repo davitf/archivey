@@ -22,6 +22,8 @@ from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import (
     Codec,
     _AcceleratorStream,
+    _GzipTruncationCheckStream,
+    _StdlibUntilRandomAccess,
     open_codec_stream,
 )
 from archivey.internal.streams.decompressor_stream import DecompressorStream
@@ -39,14 +41,22 @@ def _raw_deflate(data: bytes) -> bytes:
     return co.compress(data) + co.flush()
 
 
-def _assert_accelerator(stream: object) -> None:
+def _selects_accelerator(stream: object) -> bool:
+    """Whether the codec chose the rapidgzip path for ``stream``.
+
+    That path decodes with the stdlib engine and switches to rapidgzip at the first
+    backward seek on input proven complete (``_StdlibUntilRandomAccess``), so the object
+    to look for is that switch, not an open rapidgzip stream.
+    """
     inner = getattr(stream, "_inner", None)
     # Length-verifying / ISIZE wraps sit outside the accelerator.
-    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
-
     while isinstance(inner, (VerifyingStream, _GzipTruncationCheckStream)):
         inner = getattr(inner, "_inner", None)
-    assert isinstance(inner, _AcceleratorStream)
+    return isinstance(inner, (_StdlibUntilRandomAccess, _AcceleratorStream))
+
+
+def _assert_accelerator(stream: object) -> None:
+    assert _selects_accelerator(stream)
 
 
 def _assert_stdlib_zlib(stream: object) -> None:
@@ -121,14 +131,13 @@ def test_off_and_below_auto_threshold_use_stdlib(codec: Codec) -> None:
     auto = StreamConfig(use_rapidgzip=AcceleratorMode.AUTO, seekable=True)
 
     with open_codec_stream(codec, io.BytesIO(compressed), config=off) as stream:
-        if codec is Codec.GZIP:
-            assert not isinstance(stream._inner, _AcceleratorStream)
-        else:
+        assert not _selects_accelerator(stream)
+        if codec is not Codec.GZIP:
             _assert_stdlib_zlib(stream)
         assert stream.read()  # non-empty
 
     with open_codec_stream(codec, io.BytesIO(compressed), config=auto) as stream:
-        assert not isinstance(stream._inner, _AcceleratorStream)
+        assert not _selects_accelerator(stream)
 
 
 @pytest.mark.parametrize("codec", [Codec.DEFLATE, Codec.ZLIB, Codec.GZIP])
@@ -294,14 +303,14 @@ def test_verifying_stream_forwards_a_raw_error_on_the_draining_read() -> None:
     stream.close()  # content faults raise from read, never from close
 
 
-def test_standalone_zlib_midcut_may_short_read_through_rapidgzip_on_without_size() -> (
+def test_standalone_zlib_midcut_raises_truncated_through_rapidgzip_on_without_size() -> (
     None
 ):
-    """Accepted ON-without-size limitation: rapidgzip may silently short-read.
+    """A mid-stream cut is caught even with ``ON`` and no declared length.
 
-    ``ON`` bypasses the AUTO verifiable-size gate; without a declared length there is
-    no backstop. Either a short read or a translated error is acceptable — a raw
-    rapidgzip exception is not.
+    rapidgzip alone may short-read here silently, and on a longer stream it aborts the
+    process. The stdlib pass that must end cleanly before rapidgzip is opened catches the
+    cut, and the stdlib engine then raises it from the read.
     """
     pytest.importorskip("rapidgzip")
     full = zlib.compress(_SMALL * 100)
@@ -309,13 +318,9 @@ def test_standalone_zlib_midcut_may_short_read_through_rapidgzip_on_without_size
     # Adler trailer).
     cut = full[: max(len(full) // 2, 20)]
     on = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
-    try:
-        with open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=on) as stream:
-            out = stream.read()
-    except CorruptionError:
-        return
-    # Silent short read: decompressed less than the full payload would have been.
-    assert len(out) < len(_SMALL * 100)
+    with open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=on) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
 
 
 # --- 4.4 Bounded input ---------------------------------------------------------------

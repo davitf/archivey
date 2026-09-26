@@ -348,12 +348,33 @@ def _raise_parked(trap: _TrappingSource | None) -> None:
     """Raise the fault ``trap`` parked, if any, and clear it.
 
     Called inside an ``except`` block, the parked fault carries the accelerator's own
-    error as its ``__context__``.
+    error as its ``__context__``. The fault is marked (see :func:`_mark_source_fault`) so
+    the accelerator translators leave it as the caller's own exception.
     """
     if trap is not None and trap.trapped is not None:
         exc = trap.trapped
         trap.trapped = None
+        _mark_source_fault(exc)
         raise exc
+
+
+# Attribute set on an exception that the caller's source raised and _TrappingSource
+# parked. The accelerator translators map any RuntimeError to CorruptionError, because
+# rapidgzip reports most C++ faults as RuntimeError with no stable text. The mark keeps
+# that fallback off a RuntimeError that came from the caller's own stream, which is not
+# a codec error.
+_SOURCE_FAULT_ATTR = "_archivey_accelerator_source_fault"
+
+
+def _mark_source_fault(exc: BaseException) -> None:
+    try:
+        setattr(exc, _SOURCE_FAULT_ATTR, True)
+    except AttributeError:  # an exception type with __slots__ and no __dict__
+        pass
+
+
+def _is_source_fault(exc: BaseException) -> bool:
+    return getattr(exc, _SOURCE_FAULT_ATTR, False) is True
 
 
 CodecSource = str | os.PathLike[str] | BinaryIO
@@ -634,6 +655,169 @@ def _open_accelerator(
     return stream
 
 
+# Read size for the stdlib proof pass. The output is discarded, so this bounds memory only.
+_PROOF_READ_SIZE = 1 << 20
+
+
+def _stdlib_proof_failure(open_stdlib: Callable[[], BinaryIO]) -> Exception | None:
+    """Decode a whole stream with the stdlib engine; return what stopped it, or ``None``.
+
+    ``None`` means the input decoded to a clean end, so rapidgzip may read it. The output
+    is discarded.
+    """
+    try:
+        with open_stdlib() as proof:
+            while proof.read(_PROOF_READ_SIZE):
+                pass
+    except Exception as exc:  # noqa: BLE001 - any failure only means "not proven"; the caller's own stdlib stream meets it on a read
+        return exc
+    return None
+
+
+class _StdlibUntilRandomAccess(DelegatingStream):
+    """Decode a DEFLATE-family stream with the stdlib engine, and switch to rapidgzip for
+    random access only on input the stdlib engine has decoded to a clean end.
+
+    rapidgzip 0.16 aborts the process when it decodes a DEFLATE stream (gzip, zlib or raw)
+    that ends early: a destructor in its chunk decoder throws ``std::logic_error`` ("The
+    bit buffer should not contain more data than have been read from the file!"), and C++
+    calls ``std::terminate``. This happens for a path source too, where rapidgzip reads its
+    own file descriptor, so :class:`_TrappingSource` cannot contain it, and no Python
+    ``try/except`` can. rapidgzip decodes chunks ahead of the caller on worker threads, so
+    a read of the first byte can reach the end of a short stream.
+
+    Only a full decode shows that a DEFLATE stream is complete. So reads and forward seeks
+    use the stdlib engine, and a first pass costs what it costs with the accelerator off.
+    The first backward seek is where rapidgzip pays: its index serves that seek and later
+    ones without a decode from the start. At that seek the stream switches to rapidgzip if
+    the stdlib engine has decoded the whole input to a clean end. The caller's own reads
+    or a seek to the end can have done that already; otherwise this seek runs a separate
+    stdlib pass over the whole input first (:func:`_stdlib_proof_failure`). If that pass
+    fails, the stream stays on the stdlib engine for good, and the caller meets the
+    failure on a read, as with the accelerator off.
+
+    ``stdlib`` is the first stdlib stream. ``open_stdlib`` returns another one at offset
+    0 over an independent handle or view, for the proof pass. ``open_accelerator`` opens
+    rapidgzip, and is called at most once.
+    """
+
+    # Side-effecting read() (it records a clean end); route readinto through it.
+    readinto_passthrough = False
+
+    def __init__(
+        self,
+        stdlib: BinaryIO,
+        *,
+        open_stdlib: Callable[[], BinaryIO],
+        open_accelerator: Callable[[], BinaryIO],
+    ) -> None:
+        super().__init__(stdlib)
+        self._open_stdlib = open_stdlib
+        self._open_accelerator = open_accelerator
+        # True once the stdlib engine has returned a clean end. The stdlib engine raises
+        # on a truncated or corrupt end, so an end it returns is complete input.
+        self._complete = False
+        # True once the choice of engine is final: switched to rapidgzip, or the proof
+        # failed and the stdlib engine stays.
+        self._settled = False
+
+    def read(self, size: int = -1, /) -> bytes:
+        data = super().read(size)
+        if size < 0 or (size > 0 and not data):
+            self._complete = True
+        return data
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if not self._settled:
+            if whence == io.SEEK_CUR:
+                offset, whence = self._inner.tell() + offset, io.SEEK_SET
+            # SEEK_END is not random access: the stdlib engine decodes forward to find it.
+            if whence == io.SEEK_SET and offset < self._inner.tell():
+                self._settle()
+        result = super().seek(offset, whence)
+        if whence == io.SEEK_END and not self._settled:
+            # The stdlib engine decoded to the end to find it, and did not raise.
+            self._complete = True
+        return result
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        return ask_resume_offset(self._inner, target)
+
+    def _settle(self) -> None:
+        """Switch to rapidgzip if the input is proven complete; otherwise stay on stdlib."""
+        self._settled = True
+        if not self._complete:
+            failure = _stdlib_proof_failure(self._open_stdlib)
+            if failure is not None:
+                if isinstance(failure, ArchiveyError):
+                    self._replace_inner(
+                        _ProofVerdictStream(self._inner, verdict=failure)
+                    )
+                return
+        stdlib = self._inner
+        self._replace_inner(self._open_accelerator())
+        stdlib.close()
+
+
+def _stdlib_until_random_access(
+    source: CodecSource,
+    accel_source: CodecSource,
+    reopen: Callable[[], BinaryIO],
+    open_stdlib: Callable[[CodecSource], BinaryIO],
+) -> _StdlibUntilRandomAccess:
+    """Build a :class:`_StdlibUntilRandomAccess` from the parts a codec already has.
+
+    ``reopen`` and ``accel_source`` come from :func:`_accelerator_backstop_source`, called
+    on ``source``. Each stdlib stream gets a handle or view of its own: a path source
+    gives the stdlib engine the path, so it opens and closes its own handle; a stream
+    source gives it a new view at offset 0, which the source outlives.
+    """
+
+    def fresh_stdlib() -> BinaryIO:
+        if isinstance(source, (str, os.PathLike)):
+            return open_stdlib(os.fspath(source))
+        return open_stdlib(reopen())
+
+    return _StdlibUntilRandomAccess(
+        fresh_stdlib(),
+        open_stdlib=fresh_stdlib,
+        open_accelerator=lambda: _open_rapidgzip(accel_source),
+    )
+
+
+class _ProofVerdictStream(DelegatingStream):
+    """A stdlib stream that keeps the error a failed proof pass raised on the same input.
+
+    The stdlib stream normally raises that error again by itself, at the same point. It
+    does not when the error came from a source stage that reports its verdict only once:
+    a ZIP WinZip AES stage checks its HMAC on the first read that reaches the end of the
+    ciphertext, and that read was the proof pass (:meth:`_StdlibUntilRandomAccess._settle`).
+    So when the stdlib stream reaches a clean end, this raises the kept error: from
+    ``read()`` with no size (its bytes are withheld), or from the ``read(n)`` that returns
+    nothing. A ``read(n)`` that returns a short last chunk still returns it, because the
+    stdlib stream may yet raise its own error on the next read: a truncation delivers its
+    prefix first (ADR 0014). The error is raised again on each read that finds the end.
+    """
+
+    # Side-effecting read() (the end-of-stream verdict); route readinto through it.
+    readinto_passthrough = False
+
+    def __init__(self, inner: BinaryIO, *, verdict: ArchiveyError) -> None:
+        super().__init__(inner)
+        self._verdict = verdict
+
+    def read(self, size: int = -1, /) -> bytes:
+        if size == 0:
+            return b""
+        data = super().read(size)
+        if size < 0 or not data:
+            raise self._verdict
+        return data
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        return ask_resume_offset(self._inner, target)
+
+
 def _accelerator_backstop_source(
     source: CodecSource,
 ) -> tuple[CodecSource, Callable[[], BinaryIO] | None]:
@@ -666,8 +850,18 @@ def _accelerator_backstop_source(
     return source, None
 
 
-def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
-    """Map rapidgzip exceptions for a DEFLATE-family codec (gzip / zlib / deflate)."""
+def _translate_rapidgzip(
+    exc: Exception, label: str, stdlib: ExceptionTranslator
+) -> ArchiveyError | None:
+    """Map rapidgzip exceptions for a DEFLATE-family codec (gzip / zlib / deflate).
+
+    ``stdlib`` is the codec's own translator for the stdlib engine. That engine stands in
+    for rapidgzip on input it did not decode to a clean end (see
+    :class:`_StdlibUntilRandomAccess`) and after the gzip empty-read fallback, so
+    its exceptions arrive here too.
+    """
+    if _is_source_fault(exc):
+        return None
     text = str(exc)
     if isinstance(exc, ValueError) and "Mismatching CRC32" in text:
         return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
@@ -699,21 +893,15 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
         return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
     if isinstance(exc, io.UnsupportedOperation) and "seek" in text:
         return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
-    if isinstance(exc, RuntimeError) and (
-        "std::exception" in text or text == "Unknown exception"
-    ):
-        # Opaque catch-alls rapidgzip raises when a C++ fault has no typed Python
-        # mapping. On Windows a near-end truncation surfaces as a bare
-        # RuntimeError("Unknown exception") (the "Unexpected end of file …" detail only
-        # reaches stderr), so the deflate-family path must translate it like its
-        # indexed_bzip2 sibling rather than leak an untranslated RuntimeError.
-        # Known cross-platform wrinkle: because that detail is lost, a truncation caught here
-        # becomes CorruptionError, whereas the same truncated input on Linux keeps its detail
-        # and maps to TruncatedError above (or is caught by the ISIZE backstop). Recovering the
-        # distinction would need the dropped stderr detail, so callers must treat gzip
-        # truncation as either error type (the accelerator-corruption tests accept both).
+    if isinstance(exc, RuntimeError):
+        # rapidgzip reports most C++ faults as RuntimeError. The text is an internal
+        # message that no list above can keep up with: the opaque "std::exception" and,
+        # on Windows, "Unknown exception" (the detail goes only to stderr), or "Next
+        # block offset index is out of sync!". A raw RuntimeError must not reach the
+        # caller, so the rest map to CorruptionError. A RuntimeError from the caller's
+        # own source was returned unchanged at the top of this function.
         return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
-    return None
+    return stdlib(exc)
 
 
 # --- shared stream wrappers ------------------------------------------------------------
@@ -1303,19 +1491,23 @@ class GzipCodec(StreamCodec):
                 raise PackageNotInstalledError(
                     _RAPIDGZIP_REQUIREMENT.message("gzip random access")
                 )
-            if config.expected_decompressed_size is not None:
-                # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
-                return _wrap_accelerated_length(_open_rapidgzip(source), config)
-            # Truncation backstop for **any** seekable source (path or caller-owned stream):
-            # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
-            # independent view (multi-member keeps the conservative further-magic bailout; the
-            # per-member ISIZE sum is deferred). Capture the ISIZE tri-state up front so no
+            # Capture the ISIZE tri-state before any view of the source is made, so no
             # per-read reopen is needed and `size < 18` truncation is preserved.
             source_len, isize = _gzip_isize_and_length(source)
             accel_source, reopen = _accelerator_backstop_source(source)
-            stream = _open_rapidgzip(accel_source)
             if reopen is None:
-                return stream  # non-seekable: rapidgzip needs a seekable source anyway
+                # Not seekable: rapidgzip refuses the source before it decodes anything.
+                return _open_rapidgzip(accel_source)
+            stream = _stdlib_until_random_access(
+                source, accel_source, reopen, GzipDecompressorStream
+            )
+            if config.expected_decompressed_size is not None:
+                # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
+                return _wrap_accelerated_length(stream, config)
+            # Truncation backstop for **any** seekable source (path or caller-owned stream):
+            # empty→stdlib fallback + single-member ISIZE, with the multi-member scan on an
+            # independent view (multi-member keeps the conservative further-magic bailout; the
+            # per-member ISIZE sum is deferred).
             return _GzipTruncationCheckStream(
                 stream,
                 reopen=reopen,
@@ -1356,7 +1548,7 @@ class GzipCodec(StreamCodec):
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         """Translate the rapidgzip accelerator's exceptions to the library's error types."""
-        return _translate_rapidgzip(exc, "gzip")
+        return _translate_rapidgzip(exc, "gzip", self.translate)
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
         """Surface gzip's stored filename (FNAME) and mtime.
@@ -1474,15 +1666,10 @@ class Bzip2Codec(StreamCodec):
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         """Translate the indexed_bzip2 accelerator's exceptions to the library's error types."""
+        if _is_source_fault(exc):
+            return None
         text = str(exc)
         if isinstance(exc, RuntimeError) and "Calculated CRC" in text:
-            return CorruptionError(
-                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
-            )
-        if isinstance(exc, RuntimeError) and text in (
-            "std::exception",
-            "Unknown exception",
-        ):
             return CorruptionError(
                 f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
             )
@@ -1511,6 +1698,13 @@ class Bzip2Codec(StreamCodec):
         if isinstance(exc, io.UnsupportedOperation) and "seek" in text:
             return StreamNotSeekableError(
                 "indexed_bzip2 does not support non-seekable streams"
+            )
+        if isinstance(exc, RuntimeError):
+            # The same fallback as _translate_rapidgzip: the bundled decoder reports most
+            # C++ faults as RuntimeError with an internal message, and none may reach the
+            # caller raw.
+            return CorruptionError(
+                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
             )
         if isinstance(exc, (EOFError, OSError)):
             # The stdlib engine that _Bzip2EmptyStreamCheck falls back to raises these.
@@ -1820,10 +2014,18 @@ class DeflateCodec(_ZlibErrorCodec):
             # rapidgzip auto-detects raw DEFLATE. Bound the input: it over-reads
             # past EOS looking for a concatenated member (AES pad would look
             # like a second member).
-            return _wrap_accelerated_length(
-                _open_rapidgzip(_bound_rapidgzip_source(source, params, config)),
-                config,
+            bounded = _bound_rapidgzip_source(source, params, config)
+            accel_source, reopen = _accelerator_backstop_source(bounded)
+            if reopen is None:
+                # Not seekable: rapidgzip refuses the source before it decodes anything.
+                return _open_rapidgzip(accel_source)
+            stream = _stdlib_until_random_access(
+                bounded,
+                accel_source,
+                reopen,
+                lambda s: ZlibDecompressorStream(s, wbits=-15),
             )
+            return _wrap_accelerated_length(stream, config)
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=-15)
 
@@ -1836,7 +2038,7 @@ class DeflateCodec(_ZlibErrorCodec):
         return _rapidgzip_rewind_warning("deflate", config)
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
-        return _translate_rapidgzip(exc, "deflate")
+        return _translate_rapidgzip(exc, "deflate", self.translate)
 
 
 def _zlib_header_plausible(prefix: bytes) -> bool:
@@ -1881,10 +2083,18 @@ class ZlibCodec(_ZlibErrorCodec):
                     _RAPIDGZIP_REQUIREMENT.message("zlib random access")
                 )
             # rapidgzip auto-detects zlib-wrapped DEFLATE; no synthetic gzip wrapper.
-            return _wrap_accelerated_length(
-                _open_rapidgzip(_bound_rapidgzip_source(source, params, config)),
-                config,
+            bounded = _bound_rapidgzip_source(source, params, config)
+            accel_source, reopen = _accelerator_backstop_source(bounded)
+            if reopen is None:
+                # Not seekable: rapidgzip refuses the source before it decodes anything.
+                return _open_rapidgzip(accel_source)
+            stream = _stdlib_until_random_access(
+                bounded,
+                accel_source,
+                reopen,
+                lambda s: ZlibDecompressorStream(s, wbits=zlib.MAX_WBITS),
             )
+            return _wrap_accelerated_length(stream, config)
         # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=zlib.MAX_WBITS)
 
@@ -1897,7 +2107,7 @@ class ZlibCodec(_ZlibErrorCodec):
         return _rapidgzip_rewind_warning("zlib", config)
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
-        return _translate_rapidgzip(exc, "zlib")
+        return _translate_rapidgzip(exc, "zlib", self.translate)
 
     def content_probe(
         self,

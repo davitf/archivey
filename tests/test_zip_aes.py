@@ -244,10 +244,12 @@ def test_aes_hmac_survives_a_seekable_accelerator(
 ) -> None:
     """An accelerator that seeks its input does not void the HMAC.
 
-    With ``seekable_members=True`` the decrypt stage is seekable, and rapidgzip reads
-    its source out of order. The HMAC is the only check on an AE-2 member and the
-    confirmation for several candidates, so a caller who reads straight through gets
-    its verdict whatever the codec layer does underneath.
+    With ``seekable_members=True`` the decrypt stage is seekable. A backward seek on the
+    member switches the deflate codec to rapidgzip, which reads its source out of order,
+    after a stdlib pass over the whole stage that reaches the HMAC first. The HMAC is the
+    only check on an AE-2 member and the confirmation for several candidates, so a
+    caller who reads to the end gets its verdict whatever the codec layer does
+    underneath.
     """
     moving_seeks: list[int] = []
     real_seek = WinZipAesDecryptStream.seek
@@ -276,11 +278,14 @@ def test_aes_hmac_survives_a_seekable_accelerator(
             io.BytesIO(data), password=passwords, seekable_members=True, config=config
         ) as ar:
             member = ar.members()[0]
-            if tamper:
-                with pytest.raises((CorruptionError, EncryptionError)):
-                    ar.read(member)
-            else:
-                assert ar.read(member) == payload
+            with ar.open(member) as stream:
+                assert stream.read(1000) == payload[:1000]
+                stream.seek(10)  # backward: rapidgzip from here
+                if tamper:
+                    with pytest.raises((CorruptionError, EncryptionError)):
+                        stream.read()
+                else:
+                    assert stream.read() == payload[10:]
     # The accelerator did move the decrypt stage, so the HMAC above survived real
     # out-of-order reads rather than a straight pass.
     assert moving_seeks

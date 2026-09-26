@@ -102,7 +102,9 @@ With `seekable_members=True`, every member stream from random `open()` reports
 `seekable() is True` and `seek()` works. How the backend does it varies:
 
 - XZ / lzip can seek via native indexes
-- gzip / zlib / raw deflate / bzip2 can use `[seekable]` (`rapidgzip`) when installed
+- gzip / zlib / raw deflate / bzip2 can use `[seekable]` (`rapidgzip`) when installed.
+  gzip, zlib and raw deflate read through the stdlib engine until the first backward
+  seek, then switch to rapidgzip once the input is known to be complete
 - RAR compressed members seek by respawning `unrar`. On a solid archive that
   re-decodes from the start, including members before the one you opened
 - otherwise a backward seek may **re-decompress from the start**
@@ -221,9 +223,13 @@ aborts while archivey's exits cleanly. So closing a source underneath a live str
 a clean failure, not a crash. Still don't do it: the stream is dead and the read
 fails.
 
-One residual is genuinely upstream and not contained: some **path**-source truncations
-and CRC mismatches can still `std::terminate` during worker finalization after a Python
-exception. Details:
+rapidgzip 0.16 also aborts the process when it decodes a gzip, zlib or raw deflate
+stream that ends early, for any source type. Archivey never hands it such a stream. The
+stdlib engine decodes reads and forward seeks. The first backward seek switches to
+rapidgzip only after the stdlib engine has decoded the whole input to a clean end; if the
+input is truncated, the stream stays on the stdlib engine and a read raises
+`TruncatedError`. So a first sequential pass runs at stdlib speed, and the first backward
+seek on a stream not yet read to its end costs one extra stdlib pass. Details:
 [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
 
 ## Measuring what a read cost

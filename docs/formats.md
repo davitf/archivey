@@ -277,12 +277,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   covers the whole member only when the file holds one gzip member, and proving that
   at open would mean reading the whole compressed file. The decoder still checks every
   member's CRC as it reads.
-- With the `[seekable]` rapidgzip accelerator on a seekable `.gz`, truncation detection is
-  **best-effort** (empty→stdlib fallback + single-member ISIZE) — stronger than naked
-  rapidgzip, weaker than stdlib alone. Do **not** rely on it when you need certainty;
-  set `use_rapidgzip=OFF`. This caveat applies to **bare** `.gz` / `open_stream` (and
-  bare zlib/raw deflate), not to ZIP/7z/… **members**: those already carry CRC/size and
-  fail via `VerifyingStream` when the decoded payload is short or wrong.
+- With the `[seekable]` rapidgzip accelerator on a seekable `.gz` (and bare zlib / raw
+  deflate), truncation raises `TruncatedError` as it does without the accelerator. The
+  stdlib engine decodes the stream first, and rapidgzip takes over at the first backward
+  seek only after the stdlib engine has decoded the whole input to a clean end.
 - `.lz` surfaces a whole-member CRC-32 the same way **size** is exposed: whenever the
   source can be seeked — a file path and an in-memory stream both qualify, a pipe does
   not. Declaring `seekable_members=True` is not required and makes no difference:

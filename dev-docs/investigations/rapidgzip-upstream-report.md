@@ -25,7 +25,7 @@ version to 0.16.0`). Soft-EOF paths unchanged on inspected HEAD.
 | Topic | Class |
 | --- | --- |
 | Soft EOF on truncated gzip / empty-short success | **by design** (not a bug) — Archivey limitation; mitigate with empty→stdlib + ISIZE. macOS raises more often than Linux/Windows but still silent at cut=10. |
-| `std::terminate` after some path-source errors | **bug-class** — see known-issues Bugs 1/3 + §2 below |
+| `std::terminate` on truncated DEFLATE input | **bug-class** — mitigated in Archivey; see known-issues "rapidgzip aborts on a truncated DEFLATE stream" + §2 below |
 
 ## 1. Soft EOF on truncated input (by design — Archivey limitation)
 
@@ -78,8 +78,12 @@ some **path** sources — not only Python file-object sources (Bug 3).
 | Bug 3 — Python source raises → terminate | `known-issues.md` |
 | Internal invariant | `std::logic_error` bit-buffer message on some multi-block cuts |
 
-These remain **open upstream defect class** items; Archivey already sandboxes / closes
-aggressively. Soft EOF (§1) is separate from this abort class.
+These remain **open upstream defect class** items. The truncation abort has a known
+cause: a `Finally` destructor in `GzipChunk::determineUsedWindowSymbolsForLastSubchunk` calls
+`BitReader::seekTo()`, which throws the bit-buffer `std::logic_error` on a cut stream. It fires
+for every source type. Archivey now hands rapidgzip only DEFLATE input that the stdlib engine
+has decoded to a clean end (known-issues, "rapidgzip aborts on a truncated DEFLATE stream").
+Soft EOF (§1) is separate from this abort class.
 
 ---
 

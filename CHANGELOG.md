@@ -80,6 +80,16 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A truncated gzip, zlib or raw deflate stream no longer kills the Python process
+  when the `[seekable]` accelerator is on.** rapidgzip 0.16 aborts (`std::terminate`)
+  when it decodes such a stream, for any source type, so `open_archive(path,
+  seekable_members=True)` on a truncated `.gz` could end the interpreter. archivey now
+  reads these streams through the stdlib engine and switches to rapidgzip at the first
+  backward seek, only after the stdlib engine has decoded the whole input to a clean
+  end. Truncated input raises `TruncatedError`. A first sequential pass now runs at
+  stdlib speed, and the first backward seek on a stream not yet read to its end costs
+  one extra stdlib pass. Any other rapidgzip `RuntimeError` now becomes
+  `CorruptionError` instead of reaching the caller raw. bzip2 is unaffected.
 - **A corrupt or hostile PPMd member no longer crashes the Python process.** pyppmd
   segfaults when asked to keep decoding after a corrupt stream has ended early, and
   random bytes (a wrong password, or a crafted 7z or ZIP member) reach that state.

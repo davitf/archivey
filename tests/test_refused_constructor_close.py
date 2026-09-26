@@ -245,6 +245,13 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.codecs._Bzip2EmptyStreamCheck": (
         "plain assignments only"
     ),
+    "archivey.internal.streams.codecs._StdlibUntilRandomAccess": (
+        "DelegatingStream.__init__, then plain assignments; the caller opens the "
+        "first stdlib stream"
+    ),
+    "archivey.internal.streams.codecs._ProofVerdictStream": (
+        "DelegatingStream.__init__, then a plain assignment"
+    ),
     "archivey.internal.streams.codecs._AcceleratorStream": (
         "ensure_binaryio() runs before DelegatingStream.__init__ but raises only on a "
         "text stream, and the inner is always a rapidgzip reader"

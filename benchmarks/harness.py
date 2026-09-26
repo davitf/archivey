@@ -106,8 +106,8 @@ NONSOLID_DECODE_FACTOR = 1.1
 SOLID_RANDOM_BYTES_FACTOR = 1.5
 # Seek-count slack against the committed ci baseline (two-sided: baseline±slack).
 # Was baseline×2+8 (upper-only), which absorbed a full ZIP decode-twice seek doubling
-# (28→52) and could not catch silent non-engagement of paths that seek *more*
-# (in-ZIP accel ON 44 → OFF 28). Fixtures are deterministic; ±8 covers host jitter.
+# (28→52) and could not catch silent non-engagement of paths that seek *more*.
+# Fixtures are deterministic; ±8 covers host jitter.
 SEEK_BASELINE_SLACK = 8
 # Wall-time sanity ceiling for --mode full. Absolute VISION ≤1.3× / ~2× bands stay
 # informational (shared-runner noise); nightly enforces *drift* vs the previous
@@ -1257,7 +1257,6 @@ def _structural_checks(
         #
         # Accelerator ON cases are exempt: their seek counts come from rapidgzip
         # index builds and can drift across rapidgzip versions (all vs all-lowest).
-        # Engagement is gated by the relative ON > OFF check below instead.
         if check_seek_baselines and not r.case.endswith("_accel_on"):
             ref = cases.get(r.case)
             if ref is not None and "source_seek_count" in ref:
@@ -1274,23 +1273,6 @@ def _structural_checks(
                         f"< bound {lower} (below baseline−{SEEK_BASELINE_SLACK})"
                     )
 
-    # In-ZIP accelerator engagement: ON must seek more than OFF on the same
-    # fixture. Version-independent signal that rapidgzip actually engaged
-    # (ON regressing to stdlib keeps seeks≈accel_off).
-    if check_seek_baselines:
-        by_case = {r.case: r for r in results}
-        accel_off = by_case.get("zip_read_all_accel_off")
-        accel_on = by_case.get("zip_read_all_accel_on")
-        # A skipped ON row seeks 0 times because it never ran; that is not evidence
-        # the accelerator failed to engage (this check predates skip rows, when a
-        # missing rapidgzip omitted the case entirely).
-        if accel_off is not None and accel_on is not None and not accel_on.skipped:
-            if accel_on.source_seek_count <= accel_off.source_seek_count:
-                failures.append(
-                    f"zip_read_all_accel_on: source_seek_count="
-                    f"{accel_on.source_seek_count} <= accel_off "
-                    f"{accel_off.source_seek_count} (accelerator not engaged?)"
-                )
     return failures
 
 

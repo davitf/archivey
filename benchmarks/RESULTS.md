@@ -112,6 +112,15 @@ workload reproduced ~0.88× / ~0.50× vs stdlib — direction holds, absolute
 multipliers do not. At **ci** (tiny) scale accel_on is often *slower* than
 accel_off (indexing / thread-pool startup dominates).
 
+**The gzip rows above predate the stdlib-first rule.** rapidgzip 0.16 aborts the
+process on a truncated DEFLATE stream, so gzip / zlib / deflate now read through the
+stdlib engine until the first backward seek (`dev-docs/known-issues.md`, "rapidgzip
+aborts on a truncated DEFLATE stream"). A sequential `.tar.gz` read with accel ON now
+runs at about stdlib speed: on a later realistic run, `targz_read_all_accel_on` went
+from 17.6 ms (0.91× stdlib) to 26.3 ms (1.44×), against 29.5 ms with accel off, and
+`zip_read_all_accel_on` from 95.2 ms / 327 seeks to 25.8 ms / 199 seeks. bzip2 is
+unchanged.
+
 ### 7z BCJ branch filters — liblzma staging vs `pybcj`
 
 `sevenzip_bcj_{lzma2,lzma1,copy}_read_all` were added with the change that moved

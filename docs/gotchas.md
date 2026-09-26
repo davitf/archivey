@@ -102,10 +102,11 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   source (a pipe or socket) the listing reads up to 1 MiB past the trailer, so a
   sender that keeps the connection open after the tar ends makes the listing wait for
   more bytes or EOF. Close the sending side when the tar is done.
-- **Truncation detection on bare gzip/zlib through rapidgzip is best-effort.**
-  Upstream soft-EOFs by design and Archivey backstops it, but a residual hole
-  remains. Use `use_rapidgzip=OFF` when you need certainty. This is about **bare**
-  streams — ZIP/7z members carry their own CRC and fail properly.
+- **With rapidgzip on, a bare gzip/zlib/deflate stream reads at stdlib speed until
+  the first backward seek.** rapidgzip 0.16 aborts the process on a truncated stream,
+  so Archivey lets it decode only input that the stdlib engine has read to a clean
+  end. The first backward seek on a stream not yet read to its end costs one extra
+  stdlib pass. Truncation raises `TruncatedError` either way.
   → [Single-file compressors](formats.md#single-file-compressors)
 - **A misnamed single-file archive fails at `open_archive`, not on the read.** Opening
   a seekable `.gz` / `.bz2` / … decodes one byte, so a file that is not that codec

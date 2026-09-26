@@ -99,7 +99,10 @@ archivey.extract("archive.zip", "out/")
   reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
   percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
 - **Error honesty:** codec/library exceptions are translated to typed `ArchiveyError`s
-  with context; genuine I/O errors propagate unchanged; no catch-all handlers.
+  with context; genuine I/O errors propagate unchanged. The one broad rule is for the
+  rapidgzip accelerator: any `RuntimeError` it raises becomes `CorruptionError`, because
+  it reports most C++ faults that way. An exception raised by your own source object
+  still reaches you unchanged.
 - **Accelerator lifecycle:** C++-threaded accelerators are close-guarded
   (`weakref.finalize`) so crafted-input error paths cannot leave aborting threads
   (see `known-issues.md`).
