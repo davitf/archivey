@@ -263,9 +263,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   zisofs2 (`xorriso -zisofs version_2=on`) lists with `CompressionAlgorithm.UNKNOWN`
   and refuses to read, with `UnsupportedFeatureError`.
 - Rock Ridge and plain ISO 9660 names, and Rock Ridge link targets, decode as UTF-8
-  first. Bytes that are not valid UTF-8 decode with `encoding=` when you pass one, and
-  are escaped otherwise (see [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)).
-  Joliet names are UTF-16 and ignore `encoding=`.
+  first. Bytes that are not valid UTF-8 decode with `encoding=` when you pass one.
+  Without it, a Rock Ridge name takes the Joliet name of the same file or directory
+  when the image has a Joliet tree and the two line up, with a
+  `member_name_encoding_inferred` diagnostic, and is escaped otherwise (see
+  [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)). Joliet
+  names are UTF-16 and ignore `encoding=`.
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
 - Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty

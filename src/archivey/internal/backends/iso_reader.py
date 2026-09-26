@@ -69,7 +69,12 @@ from archivey.cost import (
     ListingCost,
     StreamCapability,
 )
-from archivey.diagnostics import DiagnosticCode, MemberHeaderRecordContext
+from archivey.diagnostics import (
+    DiagnosticCode,
+    MemberHeaderRecordContext,
+    NameEncodingContext,
+    raw_name_to_base64,
+)
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -403,6 +408,24 @@ _PYCDLIB_ERRORS: tuple[type[Exception], ...] = (
 # Trailing ";1"/";42" version suffix on a plain ISO 9660 file identifier.
 _VERSION_SUFFIX = re.compile(r";(\d+)$")
 _VERSION_SUFFIX_BYTES = re.compile(rb";(\d+)$")
+
+# How many records under a Rock Ridge directory are searched for a file that also sits
+# in the Joliet tree, to find that directory's Joliet counterpart. Bounds the cost of a
+# crafted image full of directories whose names are not UTF-8.
+_JOLIET_SEARCH_RECORDS = 64
+
+
+def _ascii_runs_match(raw: bytes, name: str) -> bool:
+    """Whether a byte name and a decoded name have the same ASCII text between the rest.
+
+    A Rock Ridge name in a single-byte legacy encoding and the Joliet name of the same
+    file differ only where the legacy bytes are: ``caf\\xe9.txt`` and ``café.txt`` both
+    read ``caf``, something, ``.txt``. A Joliet name cut at 64 characters, or the name of
+    some other file, does not line up.
+    """
+    return [run.decode("ascii") for run in re.split(rb"[\x80-\xff]+", raw)] == re.split(
+        r"[^\x00-\x7f]+", name
+    )
 
 
 def _is_long_form_date(date: object) -> TypeGuard[VolumeDescriptorDate]:
@@ -775,6 +798,11 @@ class IsoReader(BaseArchiveReader):
         # What the System Use filter kept aside while ``open_fp`` parsed the Rock Ridge
         # areas: zisofs entries, and the areas it cut short.
         self._system_use = _SystemUseNotes()
+        # The Joliet tree's files by extent, built the first time a Rock Ridge name is
+        # not UTF-8 and ``encoding=`` does not decode it; and the records whose name was
+        # taken from their Joliet counterpart, by ``id()``, to report on the member.
+        self._joliet_files: dict[int, list[DirectoryRecord]] | None = None
+        self._joliet_named: dict[int, DirectoryRecord] = {}
         # Boundary outside the guard; an exception the translator does not recognize
         # (a genuine OSError from the handle) propagates unchanged.
         try:
@@ -899,6 +927,15 @@ class IsoReader(BaseArchiveReader):
         ``idna``, which has no ``surrogateescape``); the name then decodes as it would
         with no ``encoding=``.
         """
+        decoded = self._decode_known(raw)
+        return (
+            raw.decode("utf-8", errors="surrogateescape")
+            if decoded is None
+            else decoded
+        )
+
+    def _decode_known(self, raw: bytes) -> str | None:
+        """``raw`` as UTF-8, else with ``encoding=``; ``None`` when neither applies."""
         try:
             return raw.decode("utf-8")
         except UnicodeDecodeError:
@@ -908,7 +945,109 @@ class IsoReader(BaseArchiveReader):
                 return raw.decode(self._encoding, errors="surrogateescape")
             except UnicodeError:
                 pass
-        return raw.decode("utf-8", errors="surrogateescape")
+        return None
+
+    def _joliet_name(self, record: DirectoryRecord, raw: bytes) -> str | None:
+        """The Joliet name of the file or directory a Rock Ridge record describes.
+
+        Rock Ridge names carry no charset, but most images that have them also have a
+        Joliet tree, whose UTF-16 names a legacy name was converted into when the image
+        was written. The two trees are separate, so the counterpart is found through
+        the data: a file by its extent, a directory as the Joliet parent of a file
+        found under it. The Joliet name is used only when its ASCII text lines up with
+        the Rock Ridge bytes (``_ascii_runs_match``); otherwise ``None``.
+        """
+        if not self._iso.has_joliet():
+            return None
+        if self._joliet_files is None:
+            self._joliet_files = self._index_joliet_files()
+        counterpart = (
+            self._joliet_directory(record)
+            if record.is_dir()
+            else self._joliet_file(record, raw)
+        )
+        if counterpart is None:
+            return None
+        try:
+            name = bytes(counterpart.file_identifier()).decode("utf-16_be")
+        except UnicodeDecodeError:
+            return None
+        match = _VERSION_SUFFIX.search(name)
+        if match is not None:
+            name = name[: match.start()]
+        if not _ascii_runs_match(raw, name):
+            return None
+        self._joliet_named[id(record)] = counterpart
+        return name
+
+    def _index_joliet_files(self) -> dict[int, list[DirectoryRecord]]:
+        """Every file record of the Joliet tree, by extent; each directory read once."""
+        files: dict[int, list[DirectoryRecord]] = {}
+        root = self._iso.get_record(joliet_path="/")
+        seen = {root.extent_location()}
+        stack = [root]
+        while stack:
+            for child in _yield_children(stack.pop(), False):
+                if child is None or child.is_dot() or child.is_dotdot():
+                    continue
+                extent = child.extent_location()
+                if not child.is_dir():
+                    files.setdefault(extent, []).append(child)
+                elif extent not in seen:
+                    seen.add(extent)
+                    stack.append(child)
+        return files
+
+    def _joliet_file(
+        self, record: DirectoryRecord, raw: bytes
+    ) -> DirectoryRecord | None:
+        """The one Joliet file at this record's extent whose name lines up with ``raw``.
+
+        Empty files and hard links share an extent, so the name has to single one out.
+        """
+        assert self._joliet_files is not None
+        candidates = [
+            joliet
+            for joliet in self._joliet_files.get(record.extent_location(), ())
+            if _ascii_runs_match(raw, self._joliet_text(joliet))
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _joliet_directory(self, record: DirectoryRecord) -> DirectoryRecord | None:
+        """The Joliet directory holding the same files as this Rock Ridge directory.
+
+        Searches the first ``_JOLIET_SEARCH_RECORDS`` records under it, breadth first,
+        for a non-empty file with exactly one Joliet record at its extent, then climbs
+        that record's Joliet parents as many levels as the file sits below ``record``.
+        """
+        assert self._joliet_files is not None
+        queue = [(record, 1)]
+        visited = 0
+        while queue and visited < _JOLIET_SEARCH_RECORDS:
+            directory, depth = queue.pop(0)
+            for child in _yield_children(directory, True):
+                if child is None or child.is_dot() or child.is_dotdot():
+                    continue
+                visited += 1
+                if visited > _JOLIET_SEARCH_RECORDS:
+                    break
+                if child.is_dir():
+                    queue.append((child, depth + 1))
+                    continue
+                joliet = self._joliet_files.get(child.extent_location(), ())
+                if child.get_data_length() == 0 or len(joliet) != 1:
+                    continue
+                found: DirectoryRecord | None = joliet[0]
+                for _ in range(depth):
+                    found = None if found is None else found.parent
+                return found if found is not None and found.is_dir() else None
+        return None
+
+    @staticmethod
+    def _joliet_text(record: DirectoryRecord) -> str:
+        name = bytes(record.file_identifier()).decode("utf-16_be", errors="replace")
+        match = _VERSION_SUFFIX.search(name)
+        return name if match is None else name[: match.start()]
 
     def _record_name(self, record: DirectoryRecord) -> tuple[str, bytes]:
         """One directory record's own name in the selected namespace, and its bytes.
@@ -920,7 +1059,12 @@ class IsoReader(BaseArchiveReader):
         """
         if self._namespace == "rock_ridge" and record.rock_ridge is not None:
             raw = bytes(record.rock_ridge.name())
-            return self._decode_bytes_name(raw), raw
+            name = self._decode_known(raw)
+            if name is None:
+                name = self._joliet_name(record, raw)
+            if name is None:
+                name = raw.decode("utf-8", errors="surrogateescape")
+            return name, raw
         ident = bytes(record.file_identifier())
         if self._namespace == "rock_ridge":
             # No Rock Ridge entries on this one record: fall back to its ISO 9660
@@ -1133,6 +1277,24 @@ class IsoReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_system_use_cut(member, rr, index)
+        if id(record) in self._joliet_named:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
+                message=(
+                    "Rock Ridge name is not valid UTF-8; the name is taken from the "
+                    f"Joliet tree: {quoted(member.name)}"
+                ),
+                context=NameEncodingContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    raw_name_base64=raw_name_to_base64(member.raw_name),
+                    inferred_encoding="utf-16-be",
+                    declared_encoding="utf-8",
+                ),
+                member=member,
+                attach_to_member=True,
+            )
         if self._namespace == "rock_ridge" and rr is None:
             # The image is Rock Ridge but this record's System Use area carries none
             # (absent or damaged). The member is kept under its ISO 9660 name; what the

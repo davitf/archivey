@@ -19,16 +19,14 @@ the status — this page states the behaviour and links the row.
 | Core dependencies | None can read it: ISO needs `pycdlib`, which is in `[recommended]` |
 | Refuses | Non-seekable sources · raw CD sector images (`.bin`), by name, before `pycdlib` is consulted · a multi-extent file whose extents are not back to back · reading a zisofs2 member · writing |
 | Accepts and ignores | `password=` (`PASSWORD_ARGUMENT_UNUSED`) |
-| `encoding=` | Applied to a Rock Ridge or plain name, or a Rock Ridge link target, whose bytes are not valid UTF-8 (§2.2) |
+| `encoding=` | Applied to a Rock Ridge or plain name, or a Rock Ridge link target, whose bytes are not valid UTF-8; without it, such a Rock Ridge name takes its Joliet name when the two line up (§2.2) |
 
-**Four things a reader might expect and will not find.** There is no integrity check
+**Three things a reader might expect and will not find.** There is no integrity check
 anywhere in the format, so a damaged image reads damaged bytes without an error. A
-*truncated* one is caught only where the data runs out: sizes list as declared, and a
-file cut by the end of the image reads what is there, then raises `TruncatedError` (§4).
-UDF is never read: a DVD or Blu-ray image lists through its ISO 9660 tree when it has
-one, and a UDF-only image is not detected at all (§3). A Rock Ridge name written in
-Latin-1 lists escaped unless the caller passes `encoding=`, even when the Joliet tree
-beside it has the right one (§2.2). And the namespace archivey picks decides which
+*truncated* one is caught only where the data runs out: sizes list as declared, and a file
+cut by the end of the image reads what is there, then raises `TruncatedError` (§4). UDF is
+never read: a DVD or Blu-ray image lists through its ISO 9660 tree when it has one, and a
+UDF-only image is not detected at all (§3). And the namespace archivey picks decides which
 *files* exist, not only how they are named, because the trees are independent (§1).
 
 ## 1. Shape
@@ -138,15 +136,23 @@ come first, then files, in record order, except that plain ISO 9660 files sort b
 
 What is ISO-specific in turning a record into a member:
 
-- **Names.** Rock Ridge `NM` bytes, plain identifiers and Rock Ridge link targets
-  decode as UTF-8. Bytes that are not valid UTF-8 decode with `encoding=` when the caller
-  passed one, and as UTF-8 with `surrogateescape` otherwise: the rule TAR applies to a
-  PAX `path`. Nothing in the image names the charset, and a name that is valid UTF-8 is
-  far more likely UTF-8 than Latin-1 that happens to parse, so `encoding=` cannot turn a
-  valid UTF-8 name into mojibake. Joliet decodes as UTF-16BE with U+FFFD for anything
-  invalid and ignores `encoding=`. Decoding never raises. Backslash is an ordinary
-  character. `raw_name` is the stored bytes in the Rock Ridge and plain namespaces, and
-  the UTF-8 of the decoded path in Joliet.
+- **Names.** Rock Ridge `NM` bytes, plain identifiers and Rock Ridge link targets decode
+  as UTF-8. Bytes that are not valid UTF-8 decode with `encoding=` when the caller passed
+  one, the rule TAR applies to a PAX `path`, and as UTF-8 with `surrogateescape` when
+  nothing better is found. Nothing in the image names the charset, and a name that is
+  valid UTF-8 is far more likely UTF-8 than Latin-1 that happens to parse, so `encoding=`
+  cannot turn a valid UTF-8 name into mojibake. Without `encoding=` (or when it raises), a
+  Rock Ridge name that is not UTF-8 takes the Joliet name of the same file or directory,
+  with `MEMBER_NAME_ENCODING_INFERRED` (`_joliet_name`). The trees are separate, so the
+  match goes through the data: a file by its extent, a directory as the Joliet parent of a
+  non-empty file found in the first 64 records under it. The Joliet name is used only when
+  its ASCII runs equal the stored bytes' (`_ascii_runs_match`), which rejects a Joliet
+  name cut at 64 characters and singles out one of several empty files sharing an extent.
+  A directory with no such file under it, or a multi-byte legacy name whose trail bytes
+  are ASCII (Shift-JIS), stays escaped. Joliet decodes as UTF-16BE with U+FFFD for
+  anything invalid and ignores `encoding=`. Decoding never raises. Backslash is an
+  ordinary character. `raw_name` is the stored bytes in the Rock Ridge and plain
+  namespaces, and the UTF-8 of the decoded path in Joliet.
 - **System Use entries.** `pycdlib` refuses the whole image on any System Use entry it
   cannot parse, so while archivey opens an image the bytes it hands `pycdlib` are
   filtered first (`_SystemUseNotes.filter`). An entry of a type `pycdlib` does not know
@@ -343,7 +349,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A zisofs2 member raises `UnsupportedFeatureError` on read | **archivey** | Only zisofs version 1 is decoded (§2.2) |
 | A symlink from genisoimage with a long target lists with `link_target=None` | **format** | genisoimage wraps the `SL` length; what follows the cut cannot be trusted (§3) |
 | A malformed Rock Ridge entry that is well-formed at the header but that `pycdlib` cannot parse still fails the whole image | **library** | The filter checks each entry's header only; `pycdlib` parses the body, and any parse error is fatal. libarchive's `ce_loop`, `ce_overflow` and `zf_overflow` images fail this way |
-| A Rock Ridge name written in Latin-1 lists with `\udcXX` escapes | **format** | Rock Ridge names have no charset field. Pass `encoding=`; archivey does not fall back to the Joliet name (§7) |
+| A Rock Ridge name written in Latin-1 lists with `\udcXX` escapes | **format** | Rock Ridge names have no charset field, and this image has no Joliet name that lines up with it (none, cut at 64 characters, or a directory with no file under it). Pass `encoding=` (§2.2) |
 | A file exists in the listing of one tool and not another | **format** | The trees are independent (§1). archivey picks Rock Ridge first, 7-Zip Joliet first |
 | A DVD image lists 8.3 names while the disc shows long ones | **archivey** | Long names are in UDF, which is not read (§3) |
 | A multi-extent file with non-contiguous extents raises `UnsupportedFeatureError` on read | **archivey** | Its `size` is right; reading it would need a chained stream rather than one run. No writer seen does this (§2.3) |
@@ -367,17 +373,14 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `format_version` is `None` | ISO 9660 stores no level; `pycdlib`'s inference read 3 on nearly every image | Passing the inference through |
 | Filter System Use bytes before `pycdlib` parses them, only inside archivey's own `open_fp` | One odd record otherwise costs every member, and zisofs is a valid image. A `ContextVar` confines the wrapper to archivey's opens, so a program using `pycdlib` directly keeps its behaviour | Patching `pycdlib` for the whole process; a per-entry leniency layer that retries `pycdlib`'s parse, which would need its partly built state undone |
 | Decode zisofs version 1 in archivey | It is zlib per block, in the stdlib, and seekable from the pointer table; `pycdlib` reads only the stored bytes | Refusing zisofs members as unsupported. zisofs2 is not decoded: only `xorriso` writes it, and only when asked |
-| `encoding=` applies only to bytes that are not valid UTF-8 | The TAR PAX rule; a caller who passes a legacy encoding for one image still gets UTF-8 names right on the next | Applying `encoding=` to every Rock Ridge name, which turns valid UTF-8 into mojibake; falling back to the Joliet name, which matches records across two trees that may hold different files |
+| `encoding=` applies only to bytes that are not valid UTF-8 | The TAR PAX rule; a caller who passes a legacy encoding for one image still gets UTF-8 names right on the next | Applying `encoding=` to every Rock Ridge name, which turns valid UTF-8 into mojibake |
+| Without `encoding=`, a non-UTF-8 Rock Ridge name takes its Joliet name when the ASCII runs line up | The Joliet tree usually holds the name converted correctly when the image was written; matching by extent plus the ASCII check never borrows another file's name | Escaping and leaving it to `encoding=`, which needs the caller to know the charset; matching by position or by name, which the separate trees do not support |
 | Patch `pycdlib`'s `collections` once, at import | A crafted image otherwise hangs `open_fp` forever, and the patch is confined to `pycdlib`'s namespace and inert on valid trees | A per-open swap, which races between threads; a watchdog timeout |
 | `created` holds only a `TF` creation time | `created` never holds `st_ctime`; the attribute-change time goes to `ctime` | Falling back to the attribute-change time, as before PR #470 |
 | A clamped file lists its declared length, read back from the directory record, and fails its read at the cut | A partial download keeps every file before the cut readable, and the listing says what the file should hold; the lookup runs only for records ending exactly at the image end | `size=None` for clamped files; refusing at open when the volume space size exceeds the source, which also refuses the files that survived |
 
 ## 7. Open questions
 
-- **Whether a Rock Ridge name that is not UTF-8 should fall back to its Joliet name**
-  when no `encoding=` is given. Files are matched across the trees by extent;
-  directories have separate extents in each tree, so they would need another match.
-  What would answer it: how common non-UTF-8 Rock Ridge images are in practice.
 - **Whether UDF should be read.** `pycdlib` parses UDF already, so listing from it is
   reachable; the question is whether DVD and Blu-ray images are in scope for 0.2.x.
 
@@ -394,7 +397,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Raw sector images refused by name, without `pycdlib` | `tests/test_iso_raw_sectors.py` |
 | Cost, seekable-only, write refused, password unused | `tests/test_iso.py::test_iso_cost`, `::test_non_seekable_iso_rejected`, `::test_write_rejected`, `::test_password_is_accepted_and_recorded` |
 | Unknown System Use entries skipped; zisofs lists and reads decoded, seeks, refuses zisofs2 (listing `UNKNOWN`) and damaged or over-long blocks, and a member cut by the image end raises `TruncatedError`; a malformed entry costs its own member only, a cut symlink withholds its target, strict refuses; the filter is inert outside archivey | `::test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded`, `::test_a_zisofs_member_seeks_across_blocks`, `::test_a_zisofs_member_this_reader_cannot_decode_is_refused_alone`, `::test_a_damaged_zisofs_block_is_corruption`, `::test_a_zisofs_block_that_inflates_past_the_block_size_is_corruption`, `::test_a_zisofs_member_cut_by_the_image_end_is_truncated`, `::test_a_malformed_rock_ridge_entry_costs_its_own_member_only`, `::test_a_symlink_whose_entries_are_cut_withholds_its_target`, `::test_a_strict_policy_refuses_a_cut_rock_ridge_area`, `::test_pycdlib_used_directly_is_not_filtered`, `::test_the_filter_knows_every_entry_pycdlib_parses` |
-| Names that are not UTF-8 take `encoding=`, UTF-8 names ignore it, `raw_name` is the stored bytes | `::test_a_latin1_rock_ridge_name_decodes_with_encoding`, `::test_a_utf8_rock_ridge_name_ignores_encoding`, `::test_an_encoding_that_cannot_decode_the_name_falls_back_to_escapes`; `tests/test_review_simplicity_consistency.py::test_usable_encoding_argument_is_not_recorded` |
+| Names that are not UTF-8 take `encoding=`, else their Joliet name when it lines up; UTF-8 names ignore it; `raw_name` is the stored bytes | `::test_a_latin1_rock_ridge_name_decodes_with_encoding`, `::test_a_utf8_rock_ridge_name_ignores_encoding`, `::test_an_encoding_that_cannot_decode_the_name_falls_back_to_escapes`, `::test_a_latin1_rock_ridge_name_takes_its_joliet_name`, `::test_encoding_wins_over_the_joliet_name`; `tests/test_review_simplicity_consistency.py::test_usable_encoding_argument_is_not_recorded` |
 | Namespace selection and metadata per namespace | `::test_rock_ridge_namespace_and_fidelity`, `::test_joliet_namespace_and_fidelity`, `::test_plain_iso_namespace_and_fidelity` |
 | Record walk: `/` in a name, duplicate names, cycles, `rr_moved`, a record without Rock Ridge | `::test_a_rock_ridge_name_holding_a_slash_costs_no_sibling`, `::test_duplicate_rock_ridge_names_all_list`, `::test_the_record_walk_descends_each_directory_extent_once`, `::test_rock_ridge_relocation_directory_is_not_listed`, `::test_a_rock_ridge_record_without_entries_lists_under_its_iso_name` |
 | Device node is `OTHER`; plain versions keep the newest current | `::test_a_rock_ridge_device_node_is_other_not_file`, `::test_plain_iso_versions_keep_the_newest_current` |

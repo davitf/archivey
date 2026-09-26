@@ -17,6 +17,8 @@ list escaped.
   to read.
 - `format-iso`, `diagnostics`: ISO takes `encoding=` for Rock Ridge and plain names that
   are not valid UTF-8, the TAR PAX rule, so it no longer emits `ENCODING_ARGUMENT_UNUSED`.
+  Without `encoding=`, such a Rock Ridge name takes the Joliet name of the same file or
+  directory when one lines up.
 
 ## Impact
 

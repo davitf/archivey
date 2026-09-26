@@ -178,7 +178,12 @@ SHALL NOT be listed; the relocated subtrees appear at their logical place.
 The ISO backend SHALL decode Rock Ridge `NM` names, plain ISO 9660 identifiers and Rock
 Ridge `SL` link targets strictly as UTF-8 first. Bytes that are not valid UTF-8 SHALL
 decode with the caller's `encoding=` and `errors="surrogateescape"`, and without
-`encoding=`, or when that codec raises on the bytes, as UTF-8 with
+`encoding=`, or when that codec raises on the bytes, a Rock Ridge `NM` name SHALL take
+the name of the same file or directory in the Joliet tree, and the member SHALL carry
+`MEMBER_NAME_ENCODING_INFERRED`. The counterpart is a Joliet file at the same extent,
+the one whose name fits when several share it, or for a directory the Joliet parent of a
+file found under it; its name is used only when its ASCII runs equal those of the
+stored bytes. Failing that, the bytes SHALL decode as UTF-8 with
 `errors="surrogateescape"`. Decoding MUST NOT raise. Joliet names SHALL decode as
 UTF-16BE whatever `encoding=` says. `raw_name` SHALL be the stored bytes in the Rock
 Ridge and plain namespaces. `ReadBackend.USES_ENCODING` SHALL be `True` for ISO.
@@ -187,7 +192,10 @@ Ridge and plain namespaces. `ReadBackend.USES_ENCODING` SHALL be `True` for ISO.
 
 | Case | Expected |
 | --- | --- |
-| Rock Ridge name stored as Latin-1 `caf\xe9\xe9.txt`, no `encoding=` | `name == "caf\udce9\udce9.txt"`; `raw_name == b"caf\xe9\xe9.txt"` |
+| Rock Ridge name stored as Latin-1 `caf\xe9\xe9.txt`, no Joliet tree, no `encoding=` | `name == "caf\udce9\udce9.txt"`; `raw_name == b"caf\xe9\xe9.txt"` |
+| Latin-1 Rock Ridge names beside a Joliet tree, no `encoding=` (`genisoimage -R -J -input-charset iso8859-1`) | Files and directories take their Joliet names, one `MEMBER_NAME_ENCODING_INFERRED` each; `raw_name` is the stored bytes |
+| The same, where the Joliet name was cut at 64 characters | Escaped, no diagnostic |
+| The same image, `encoding="cp1252"` | Names decode with cp1252; no diagnostic |
 | The same image, `encoding="latin-1"` | `name == "caféé.txt"`; a symlink to it has `link_target == "caféé.txt"`; no `ENCODING_ARGUMENT_UNUSED` |
 | Rock Ridge name stored as UTF-8 `café.txt`, `encoding="latin-1"` | `name == "café.txt"` |
 | The Latin-1 image, `encoding="utf-32"` or `"idna"` | Lists; `name == "caf\udce9\udce9.txt"` |

@@ -250,10 +250,45 @@ handle it:
 - **Name the encoding.** If you know which encoding the archive uses, pass it:
   `open_archive(path, encoding="latin-1")` gives `'café.txt'`. Only ZIP, TAR and ISO
   read `encoding=`; the other formats decode names their own way, and passing it to
-  them emits `ENCODING_ARGUMENT_UNUSED`. ISO applies it the way a PAX `path` record
-  does: to a Rock Ridge or plain ISO 9660 name only when its bytes are not valid UTF-8.
-  Nothing in an ISO image says which charset its Rock Ridge names are in; they follow
-  the locale of whoever wrote the image.
+  them emits `ENCODING_ARGUMENT_UNUSED`. In some cases a name that is valid UTF-8
+  ignores it; see the next section.
+
+### When valid UTF-8 wins over `encoding=`
+
+You might expect `encoding=` to decide how every name is decoded. For some names it
+does not: archivey tries UTF-8 first, and uses your encoding only when the bytes are
+not valid UTF-8.
+
+| Where the name comes from | What `encoding=` does |
+| --- | --- |
+| ZIP, a name with the UTF-8 flag set | Ignored; the name is UTF-8 |
+| ZIP, a name without the flag | Decodes the name, and turns off the UTF-8 guess |
+| TAR, the name in the header block | Decodes every name |
+| TAR, a PAX `path` or `linkpath` record | Used only when the bytes are not valid UTF-8 |
+| ISO, a Rock Ridge or plain ISO 9660 name, or a Rock Ridge link target | Used only when the bytes are not valid UTF-8; without it, see below |
+| ISO, a Joliet name | Ignored; Joliet names are UTF-16 |
+
+The UTF-8 flag and PAX records declare UTF-8, so for them UTF-8 wins. An ISO image never says which
+encoding its Rock Ridge names are in. Most tools write UTF-8, and older ones write
+whatever encoding the author's system used. Trying UTF-8 first means a legacy
+`encoding=` fixes the old names without turning the UTF-8 names in the same image, or
+in the next image you open with the same code, into mojibake.
+
+The cost is that a legacy name whose bytes happen to form valid UTF-8 is read as UTF-8.
+For example, the Latin-1 name `Ã©.txt` is stored as the bytes `c3 a9 2e 74 78 74`,
+which are also the UTF-8 for `é.txt`. The ISO backend lists it as `'é.txt'` even with
+`encoding="latin-1"`. Real text rarely does this, because Latin-1 letters seldom fall
+into valid UTF-8 sequences. When you need a specific decoding for every name,
+`member.raw_name` holds the stored bytes in these cases, and you can decode them
+yourself.
+
+Without `encoding=`, an ISO image gets one more try before its names are escaped. Most
+images with Rock Ridge also have a Joliet tree, whose names are UTF-16 and were
+converted correctly when the image was written. A Rock Ridge name that is not valid
+UTF-8 takes the Joliet name of the same file or directory, when archivey can match the
+two and their ASCII characters agree. The member then carries a
+`member_name_encoding_inferred` diagnostic. A Joliet name that was cut short (writers
+cut them at 64 characters) does not agree, so that name is escaped instead.
 
 A ZIP name without the UTF-8 flag is decoded as UTF-8 when its bytes are valid UTF-8,
 and otherwise with `ArchiveyConfig.zip_unflagged_fallback_encoding` (see

@@ -1448,6 +1448,104 @@ def test_a_latin1_rock_ridge_name_decodes_with_encoding() -> None:
         assert DiagnosticCode.ENCODING_ARGUMENT_UNUSED not in ar.diagnostics.counts
 
 
+def _latin1_names_with_joliet_image() -> bytes:
+    """Rock Ridge names in Latin-1 beside a Joliet tree that has them right, as
+    ``genisoimage -R -J -input-charset iso8859-1`` writes. ``#`` stands for the
+    Latin-1 byte in each Rock Ridge name, swapped in after pycdlib writes the image."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3, rock_ridge="1.09", joliet=3)
+    iso.add_directory("/REP", rr_name="r#pertoire", joliet_path="/répertoire")
+    iso.add_fp(
+        io.BytesIO(b"naive"),
+        5,
+        "/REP/NAIVE.TXT;1",
+        rr_name="na#ve.txt",
+        joliet_path="/répertoire/naïve.txt",
+    )
+    iso.add_directory("/ONLY", rr_name="only#", joliet_path="/onlyé")
+    iso.add_directory("/ONLY/INNER", rr_name="inner", joliet_path="/onlyé/inner")
+    iso.add_fp(
+        io.BytesIO(b"f"),
+        1,
+        "/ONLY/INNER/F.TXT;1",
+        rr_name="f.txt",
+        joliet_path="/onlyé/inner/f.txt",
+    )
+    iso.add_fp(
+        io.BytesIO(b"cafe"),
+        4,
+        "/CAFE.TXT;1",
+        rr_name="caf#.txt",
+        joliet_path="/café.txt",
+    )
+    iso.add_fp(io.BytesIO(b""), 0, "/EMPTY.;1", rr_name="empty#", joliet_path="/emptyé")
+    iso.add_fp(io.BytesIO(b""), 0, "/OTHER.;1", rr_name="other", joliet_path="/other")
+    # A Joliet name cut short, as writers cut them at 64 characters.
+    iso.add_fp(
+        io.BytesIO(b"long"),
+        4,
+        "/LONG.TXT;1",
+        rr_name="long#name.txt",
+        joliet_path="/longé",
+    )
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    data = out.getvalue()
+    for name in (b"r#pertoire", b"only#", b"caf#.txt", b"empty#", b"long#name"):
+        data = data.replace(name, name.replace(b"#", b"\xe9"))
+    return data.replace(b"na#ve.txt", b"na\xefve.txt")
+
+
+def test_a_latin1_rock_ridge_name_takes_its_joliet_name() -> None:
+    """Without ``encoding=``, a Rock Ridge name that is not UTF-8 takes the Joliet name
+    of the same file or directory, and says so; ``raw_name`` stays the stored bytes."""
+    from archivey import DiagnosticCode
+
+    with open_archive(io.BytesIO(_latin1_names_with_joliet_image())) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert set(by_name) == {
+            "répertoire/",
+            "répertoire/naïve.txt",
+            "onlyé/",
+            "onlyé/inner/",
+            "onlyé/inner/f.txt",
+            "café.txt",
+            "emptyé",
+            "other",
+            "long\udce9name.txt",
+        }
+        inferred = {
+            name
+            for name, member in by_name.items()
+            if any(
+                d.code == DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+                for d in member.diagnostics
+            )
+        }
+        assert inferred == {
+            "répertoire/",
+            "répertoire/naïve.txt",
+            "onlyé/",
+            "café.txt",
+            "emptyé",
+        }
+        assert by_name["café.txt"].raw_name == b"caf\xe9.txt"
+        assert by_name["répertoire/naïve.txt"].raw_name == b"r\xe9pertoire/na\xefve.txt"
+        assert ar.read("répertoire/naïve.txt") == b"naive"
+
+
+def test_encoding_wins_over_the_joliet_name() -> None:
+    with open_archive(
+        io.BytesIO(_latin1_names_with_joliet_image()), encoding="cp1252"
+    ) as ar:
+        members = list(ar.members())
+    assert {m.name for m in members} >= {"café.txt", "longéname.txt"}
+    assert all(not m.diagnostics for m in members)
+
+
 @pytest.mark.parametrize("encoding", ["utf-32", "idna"])
 def test_an_encoding_that_cannot_decode_the_name_falls_back_to_escapes(
     encoding: str,
