@@ -1667,6 +1667,7 @@ class ZipReader(BaseArchiveReader):
             decrypt,
             ambiguous_holder=ambiguous_holder,
             promote=promote_candidate_password,
+            failure_is_damage=hmac_anchor,
         )
         stream: BinaryIO = decoded
         if verdict is not PasswordConfirmVerdict.CONFIRMED:
@@ -1873,11 +1874,28 @@ class ZipReader(BaseArchiveReader):
         *,
         ambiguous_holder: list[EncryptionError] | None,
         promote: Callable[[_T], bool] | None = None,
+        failure_is_damage: bool = False,
     ) -> _T:
+        """Try each password through ``decrypt``, and name what exhausting them means.
+
+        ``failure_is_damage`` is for WinZip AES: a candidate that failed integrity had
+        already passed the 16-bit ``pw_verify``, which a wrong password passes once in
+        65 536, so a member every such candidate fails on is far more likely damaged.
+        It raises ``CorruptionError``, as the one-password path's HMAC mismatch does,
+        where ZipCrypto's 8-bit check leaves the ambiguous ``EncryptionError``.
+        """
         try:
             return self._passwords.attempt(member, decrypt, promote=promote)
         except _PasswordCandidatesExhausted as exc:
             ambiguous_failure = ambiguous_holder[0] if ambiguous_holder else None
+            if ambiguous_failure is not None and failure_is_damage:
+                damaged = CorruptionError(
+                    "Every password candidate that passed the WinZip AES password "
+                    "check failed integrity validation for this ZIP member; the "
+                    "member is most likely corrupt"
+                )
+                self._stamp_error_context(damaged, member_name)
+                raise damaged from ambiguous_failure
             if ambiguous_failure is not None:
                 ambiguous = _unverified_data_error(
                     "No password candidate produced integrity-verified data for "
@@ -1932,8 +1950,10 @@ class ZipReader(BaseArchiveReader):
         # A symlink's target is its (possibly encrypted) file data. Listing must stay
         # usable without a password, so a missing/wrong password, or data that fails
         # its check under an unconfirmed ZipCrypto password, leaves link_target
-        # unset (following the link later fails with LinkTargetNotFoundError); other
-        # errors surface translated like any member-read error.
+        # unset (following the link later fails with LinkTargetNotFoundError). A
+        # CorruptionError or TruncatedError propagates, and listing reports the link
+        # as damaged (`_report_damaged_link_target`); other errors surface translated
+        # like any member-read error.
         # The read is capped (`_read_link_target_data`): the data is compressed, so an
         # uncapped read let a few hundred KiB of archive decode to gigabytes here.
         try:

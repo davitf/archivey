@@ -100,7 +100,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   [access costs](access-and-cost.md). **WinZip AES** (method 99 / AE-1 and AE-2) decrypts via the
   `[recommended]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
   (integrity is the HMAC). Without it, an AES member raises
-  `PackageNotInstalledError` but is still listed as encrypted.
+  `PackageNotInstalledError` but is still listed as encrypted. A failing HMAC raises
+  `CorruptionError`, with one password or several: a wrong password gets past the
+  two-byte check only once in 65 536 tries, so damage is by far the likelier cause.
 - **PKWARE Strong Encryption** is not supported. Such members list as encrypted, and
   opening one raises `UnsupportedFeatureError`. An archive whose central directory is
   itself encrypted this way cannot be listed; Archivey raises `UnsupportedFeatureError`

@@ -625,9 +625,14 @@ def test_aes_candidate_passing_pw_verify_does_not_shadow_the_right_one(
 
 @requires("cryptography")
 @pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
-def test_aes_only_colliding_candidates_report_the_ambiguity(
+def test_aes_only_colliding_candidates_report_damage(
     monkeypatch: pytest.MonkeyPatch, method: int
 ) -> None:
+    """A wrong password past ``pw_verify`` reads as damage, as with one password.
+
+    It passes the 16-bit check once in 65 536 tries, so a member every such candidate
+    fails is reported as the likelier cause (S28-K4).
+    """
     data = _build_aes_zip(
         payload=_PAYLOAD,
         password=_PASSWORD,
@@ -637,9 +642,7 @@ def test_aes_only_colliding_candidates_report_the_ambiguity(
     )
     _collide_pw_verify(monkeypatch)
     with open_archive(io.BytesIO(data), password=[_COLLIDER, b"plain-wrong"]) as ar:
-        with pytest.raises(
-            EncryptionError, match=r"password\(s\) may be wrong, or .* may be corrupt"
-        ):
+        with pytest.raises(CorruptionError, match="most likely corrupt"):
             ar.read(ar.members()[0])
 
 
@@ -851,3 +854,25 @@ def test_aes_stored_out_of_range_seeks_match_an_unencrypted_member() -> None:
                     out += [stream.seek(offset, whence), stream.tell(), stream.read(2)]
                 results.append(out)
     assert results[0] == results[1] == [0, 0, b"he", 0, 0, b"he", 1000, 1000, b""]
+
+
+@pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
+@requires("cryptography")
+def test_aes_tampered_hmac_with_candidates_raises_corruption(method: int) -> None:
+    """A candidate list reports a failing HMAC as damage too (S28-K4).
+
+    Every candidate that reached the HMAC had passed the 16-bit ``pw_verify``, which a
+    wrong password passes once in 65 536, so damage is the likely cause, as it is with
+    one password.
+    """
+    data = _build_aes_zip(
+        payload=_PAYLOAD,
+        password=_PASSWORD,
+        vendor_version=2,
+        strength=3,
+        method=method,
+        tamper_hmac=True,
+    )
+    with open_archive(io.BytesIO(data), password=[b"nope", _PASSWORD]) as ar:
+        with pytest.raises(CorruptionError, match="most likely corrupt"):
+            ar.read(ar.members()[0])

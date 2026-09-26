@@ -105,7 +105,9 @@ codec layer for the actual method.
 
 A wrong password SHALL fail fast on the 2-byte verification value with
 `EncryptionError` (no bytes returned). A ciphertext HMAC mismatch SHALL raise
-at the terminal read (`CorruptionError`). AE-2 members SHALL surface no
+at the terminal read (`CorruptionError`), whether one password or several were
+tried: a wrong password passes the verification value once in 65 536, so a member
+that every candidate passing it fails is reported as damaged. AE-2 members SHALL surface no
 `crc32` (the ZIP CRC is 0; integrity is the HMAC) and run no CRC check; AE-1
 members SHALL surface and verify `crc32` in addition to the HMAC. AES
 decryption requires `cryptography` (`[recommended]`); when it is absent an AE member SHALL raise
@@ -121,6 +123,7 @@ the verification value alone.
 | AE-1 or AE-2 member, 128/192/256, correct password, `cryptography` present | Decrypts, decompresses via codec layer, HMAC verified at EOF |
 | Wrong password | `EncryptionError` on the 2-byte verification value; no bytes |
 | Tampered ciphertext, correct password | HMAC mismatch → `CorruptionError` at terminal read |
+| Tampered ciphertext, several candidates including the correct one | `CorruptionError` naming the member as most likely corrupt |
 | Tampered ciphertext, partial read then `close()` | Quiet; `close()` is teardown, not a verdict (ADR 0014) |
 | AE-2 member | `crc32` absent; no CRC check; HMAC is the integrity signal |
 | AE-1 member | `crc32` present and verified alongside the HMAC |
@@ -301,7 +304,8 @@ password, promote it to known-good when confirmation reached the member's CRC, a
 ordinary read-time integrity checking. An `INCONCLUSIVE` survivor is not promoted: this
 path runs only for an ambiguous candidate set. Confirmation failure for all candidates
 SHALL raise `EncryptionError` explaining that passwords may be wrong or the member may be
-corrupt.
+corrupt. For WinZip AES, where each failing candidate had passed the 16-bit `pw_verify`,
+it SHALL raise `CorruptionError` instead, as "Read WinZip AES-encrypted members" says.
 
 Candidate failures SHALL be the `CorruptionError` a wrong key's garbage produces (a
 codec rejection, a CRC or HMAC mismatch), and a codec's `TruncatedError` while the
@@ -324,7 +328,8 @@ unchanged. Rejected-candidate streams SHALL be closed before trying the next can
 | STORED member with several surviving candidates | One shared ciphertext pass computes every candidate CRC; matching candidate accepted and reopened |
 | Multiple STORED CRC matches | Earliest matching candidate in order wins |
 | Corruption beyond confirmed prefix | Caller read raises what the codec layer raises for the same damage unencrypted (`CorruptionError` or `TruncatedError`) |
-| Candidates fail confirmation | `EncryptionError` says password may be wrong or member corrupt; no bytes returned |
+| ZipCrypto candidates fail confirmation | `EncryptionError` says password may be wrong or member corrupt; no bytes returned |
+| WinZip AES candidates all fail after passing `pw_verify` | `CorruptionError`; no bytes returned |
 | `OSError` from the source | Propagates unchanged; failed stream is closed |
 | Structural local-header damage | `CorruptionError`; no further password iteration |
 | One distinct static candidate, stream closed before EOF | Data returned; `ENCRYPTED_MEMBER_UNVERIFIED` (`check="weak_open_check"`) |
