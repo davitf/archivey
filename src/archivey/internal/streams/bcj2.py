@@ -149,6 +149,9 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
     byte raise :class:`CorruptionError`. Nothing is allocated from ``unpack_size``.
     """
 
+    # What close() reads, set before __init__ runs anything that can raise.
+    _owned: Sequence[BinaryIO] = ()
+
     def __init__(
         self,
         main: BinaryIO,
