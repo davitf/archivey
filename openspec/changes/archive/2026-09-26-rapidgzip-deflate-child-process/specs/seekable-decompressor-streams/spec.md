@@ -22,8 +22,9 @@ be ended and reaped when the stream closes or is collected. bzip2 through
 Where no child process can be started (a frozen application, an interpreter without
 `sys.executable`, a spawn or temporary file the operating system refuses, a child that cannot
 import rapidgzip), `AUTO` SHALL decode with the stdlib backend, as it does when rapidgzip is
-absent. `ON` in that case SHALL raise `ResourceLimitError` naming `use_rapidgzip=OFF`; it MUST
-NOT decode in-process.
+absent, and SHALL log one warning per process on the `archivey.streams` logger naming the
+reason and `use_rapidgzip=OFF` (none where rapidgzip is absent). `ON` in that case SHALL raise
+`ResourceLimitError` naming `use_rapidgzip=OFF`; it MUST NOT decode in-process.
 
 rapidgzip over-reads past a DEFLATE end-of-stream looking for a concatenated member, so the
 codec SHALL feed it an exactly-bounded input (e.g. the container's `SlicingStream` sized to

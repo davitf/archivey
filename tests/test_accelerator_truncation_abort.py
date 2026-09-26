@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import gzip
 import io
+import logging
 import os
 import random
 import signal
@@ -719,6 +720,81 @@ def test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto(
             else:
                 with pytest.raises(error):
                     stream.read()
+
+
+def _fallback_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "archivey.streams"
+        and "use_rapidgzip=AcceleratorMode.OFF" in r.message
+    ]
+
+
+@pytest.mark.parametrize("how", ["popen", "tempfile", "frozen"])
+def test_an_auto_fallback_warns_once_per_process(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    how: str,
+) -> None:
+    """A child that cannot start is a fact about the environment: AUTO logs it once,
+    naming why, however many streams fall back. A normal open, and ON (which raises),
+    log nothing."""
+    monkeypatch.setattr(codecs_module, "_child_fallback_warned", False)
+    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    caplog.set_level(logging.WARNING, logger="archivey.streams")
+    payload = _payload()
+    path = _write(tmp_path, "valid.gz", gzip.compress(payload))
+    auto = StreamConfig(
+        seekable=True,
+        use_rapidgzip=AcceleratorMode.AUTO,
+        compressed_input_size=path.stat().st_size,
+    )
+    with open_codec_stream(Codec.GZIP, str(path), config=auto) as stream:
+        assert _has_child_stream(stream)
+    assert _fallback_warnings(caplog) == []
+
+    if how == "frozen":
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+    else:
+        _break_child_start(monkeypatch, tmp_path, how)
+    with pytest.raises(ResourceLimitError):
+        open_codec_stream(Codec.GZIP, str(path), config=_ON)
+    assert _fallback_warnings(caplog) == []
+
+    for _ in range(2):
+        with open_codec_stream(Codec.GZIP, str(path), config=auto) as stream:
+            assert not _has_child_stream(stream)
+            assert stream.read() == payload
+    (message,) = _fallback_warnings(caplog)
+    assert "standard library decoder" in message
+    why = (
+        "frozen or embedded" if how == "frozen" else "Resource temporarily unavailable"
+    )
+    assert why in message
+
+
+def test_no_fallback_warning_when_rapidgzip_is_not_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Without rapidgzip, AUTO reads with the stdlib as it always has, quietly: there is
+    no child to fail."""
+    monkeypatch.setattr(codecs_module, "_child_fallback_warned", False)
+    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    monkeypatch.setattr(codecs_module, "_rapidgzip", None)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    caplog.set_level(logging.WARNING, logger="archivey.streams")
+    payload = _payload()
+    path = _write(tmp_path, "valid.gz", gzip.compress(payload))
+    auto = StreamConfig(
+        seekable=True,
+        use_rapidgzip=AcceleratorMode.AUTO,
+        compressed_input_size=path.stat().st_size,
+    )
+    with open_codec_stream(Codec.GZIP, str(path), config=auto) as stream:
+        assert stream.read() == payload
+    assert _fallback_warnings(caplog) == []
 
 
 def test_background_reads_of_a_stream_source_are_served(tmp_path: Path) -> None:

@@ -29,6 +29,7 @@ import io
 import lzma
 import os
 import struct
+import threading
 import weakref
 import zlib
 from dataclasses import dataclass, field, replace
@@ -45,6 +46,7 @@ from archivey.exceptions import (
     StreamNotSeekableError,
     TruncatedError,
 )
+from archivey.internal import logs
 from archivey.internal.config import (
     DEFAULT_STREAM_CONFIG,
     AcceleratorMode,
@@ -445,6 +447,26 @@ _DEFAULT_PARAMS = CodecParams()
 
 # --- accelerator selection -------------------------------------------------------------
 
+_child_fallback_warned = False
+_child_fallback_lock = threading.Lock()
+
+
+def _warn_child_fallback(why: str) -> None:
+    """Log, once per process, that ``AUTO`` reads with the stdlib because no rapidgzip
+    child can start. It is a fact about the environment, not about any one archive, so
+    one warning says it; ``ON`` raises instead and does not come here."""
+    global _child_fallback_warned
+    with _child_fallback_lock:
+        if _child_fallback_warned:
+            return
+        _child_fallback_warned = True
+    logs.streams.warning(
+        "%s; gzip, zlib and deflate streams are read with the standard library decoder "
+        "instead of rapidgzip. Set use_rapidgzip=AcceleratorMode.OFF to silence this "
+        "warning.",
+        why,
+    )
+
 
 def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
     """Resolve ``use_rapidgzip`` including the DEFLATE-family AUTO size gate.
@@ -457,19 +479,32 @@ def _rapidgzip_enabled(config: StreamConfig, *, available: bool) -> bool:
 
     AUTO also stays on the stdlib backend where no child process can run rapidgzip (a
     frozen application), and falls back to it when a child cannot be started at open
-    (see :func:`_open_rapidgzip`). ``ON`` fails at open in both cases.
+    (see :func:`_open_rapidgzip`); either logs one warning per process. ``ON`` fails at
+    open in both cases.
     """
-    if config.use_rapidgzip is AcceleratorMode.AUTO:
-        if config.expected_decompressed_size is None and not config.gzip_isize_backstop:
-            return False
-        if not rapidgzip_child_available():
-            return False
-    return config.use_rapidgzip.enabled_for(
+    if (
+        config.use_rapidgzip is AcceleratorMode.AUTO
+        and config.expected_decompressed_size is None
+        and not config.gzip_isize_backstop
+    ):
+        return False
+    enabled = config.use_rapidgzip.enabled_for(
         seekable=config.seekable,
         available=available,
         input_size=config.compressed_input_size,
         min_size=RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE,
     )
+    if (
+        enabled
+        and config.use_rapidgzip is AcceleratorMode.AUTO
+        and not rapidgzip_child_available()
+    ):
+        _warn_child_fallback(
+            "the rapidgzip decoder process cannot be started from a frozen or "
+            "embedded interpreter"
+        )
+        return False
+    return enabled
 
 
 def _rapidgzip_rewind_warning(
@@ -639,6 +674,7 @@ def _open_rapidgzip(
     except RapidgzipChildStartError as exc:
         if config.use_rapidgzip is not AcceleratorMode.AUTO:
             raise ResourceLimitError(f"{reason} ({exc}).") from exc
+        _warn_child_fallback(str(exc))
         return None
 
 

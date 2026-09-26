@@ -545,7 +545,8 @@ class ArchiveyConfig:
     process on a stream that ends early; that costs about 45 ms per stream to start and
     open, which is why the ``AUTO`` threshold is 16 MiB. Where no child can be started
     (a frozen application, or a spawn or temporary file the operating system refuses),
-    ``AUTO`` uses the standard library and ``ON`` raises
+    ``AUTO`` uses the standard library, logging one warning per process on the
+    ``archivey.streams`` logger, and ``ON`` raises
     :class:`~archivey.exceptions.ResourceLimitError`. ``OFF`` never starts a child.
     """
 
