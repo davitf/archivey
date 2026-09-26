@@ -732,9 +732,13 @@ class DecompressorStream(ReadOnlyIOStream):
         # read. Partial bytes from this call are dropped: the caller asked for the
         # whole stream and it is incomplete. Gate _size *before* raising so a caller
         # that catches TruncatedError cannot then read a clean prefix-as-complete size.
+        # The dropped bytes still count in _pos: the decoder has consumed them, and a
+        # _pos left behind would make seek() to it a no-op over a finished decoder, so
+        # the next read would return b"" as if the stream ended cleanly.
         err = self._decoder.pending_error
         if err is not None:
             self._decoder.clear_pending_error()
+            self._pos += len(data)
             raise err
         if self._size is None or self._pos <= self._size:
             self._pos += len(data)

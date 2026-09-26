@@ -80,6 +80,11 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A rewind after a failed whole-stream read no longer reads as an empty, clean stream.**
+  When `read()` on a truncated gzip, zlib, raw deflate or xz stream raised
+  `TruncatedError`, a following `seek(0)` did nothing, and the next `read()` returned
+  `b""` with no error. The seek now decodes from the start again, and the read raises
+  `TruncatedError` again.
 - **A corrupt or hostile PPMd member no longer crashes the Python process.** pyppmd
   segfaults when asked to keep decoding after a corrupt stream has ended early, and
   random bytes (a wrong password, or a crafted 7z or ZIP member) reach that state.

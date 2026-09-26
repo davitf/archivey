@@ -542,6 +542,34 @@ def test_unix_compress_truncated_readall_raises() -> None:
             stream.read()
 
 
+@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE, Codec.XZ])
+def test_truncated_readall_then_rewind_raises_again(codec: Codec) -> None:
+    """A read-all that raised consumed the decoder; a rewind must decode again and raise.
+
+    ``seek(0)`` after the failed ``read()`` must not be a no-op over a finished decoder,
+    or the next ``read()`` returns ``b""`` as if the stream ended cleanly.
+    """
+    import lzma
+
+    payload = CONTENT * 200
+    if codec is Codec.GZIP:
+        data = gzip.compress(payload)
+    elif codec is Codec.ZLIB:
+        data = zlib.compress(payload)
+    elif codec is Codec.XZ:
+        data = lzma.compress(payload)
+    else:
+        compressor = zlib.compressobj(wbits=-15)
+        data = compressor.compress(payload) + compressor.flush()
+    config = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.OFF)
+    with open_codec_stream(codec, io.BytesIO(data[:-20]), config=config) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+        stream.seek(0)
+        with pytest.raises(TruncatedError):
+            stream.read()
+
+
 @requires("ncompress")
 def test_unix_compress_maxbits_above_16_rejected() -> None:
     """Format ceiling is 16; 17–31 must raise CorruptionError (not grow the dict)."""
