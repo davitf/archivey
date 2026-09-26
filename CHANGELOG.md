@@ -22,6 +22,15 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Added
 
+- **ISO reads zisofs.** A file stored with Rock Ridge transparent compression (`ZF`)
+  lists the size it decodes to and reads decoded. pycdlib refused such an image
+  outright, and archivey reported the whole image as `CorruptionError`. zisofs2 lists
+  and refuses to read with `UnsupportedFeatureError`.
+- **ISO takes `encoding=`** for Rock Ridge and plain ISO 9660 names, and Rock Ridge link
+  targets, whose bytes are not valid UTF-8, the way TAR takes it for a PAX `path`.
+  Without it such a name lists with surrogate escapes, as before; `raw_name` is now the
+  stored bytes rather than the UTF-8 of the decoded name.
+
 - **`ArchiveyConfig.spool_limits`** (`SpoolLimits`, with a `SpoolLimits.UNLIMITED`
   preset): bounds the temp copy a RAR opened from a stream needs so `unrar` can read it.
   `SpoolLimits.max_bytes` defaults to 1 GiB, counted across a volume set. An archive over
@@ -85,6 +94,13 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `open_archive` and `open_stream` run, which before this always used the default.
 
 ### Fixed
+
+- **One malformed Rock Ridge record no longer costs a whole ISO image.** A System Use
+  entry pycdlib does not know is skipped, as SUSP specifies, and a malformed one ends
+  that record's Rock Ridge data with a `MEMBER_HEADER_RECORD_SKIPPED` diagnostic on the
+  member (a symlink cut this way lists with `link_target` unset and
+  `SYMLINK_TARGET_UNAVAILABLE`). genisoimage writes such a record for a symlink target
+  over 250 bytes, and every member of the image failed with `CorruptionError`.
 
 - **A truncated gzip, zlib or deflate stream no longer kills the process through
   rapidgzip.** rapidgzip 0.16 aborts (`std::terminate`) on such a stream, whatever the
@@ -517,7 +533,7 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED`, and
   `MEMBER_NAME_BIDI_CONTROL` — which promotes the library's last log-only advisory to
   queryable, escalatable data.
-- `encoding=` passed to a backend that decodes names another way (7z, RAR, ISO,
+- `encoding=` passed to a backend that decodes names another way (7z, RAR,
   directory, single-file) is still accepted, but the discard is now recorded rather
   than silent.
 - Four refusals that crossed the API untyped or mistyped now match the spelling the

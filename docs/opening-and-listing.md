@@ -248,9 +248,12 @@ handle it:
 - **Keep the original bytes.** `member.raw_name` holds the name as stored in the
   archive, here `b'caf\xe9.txt'`.
 - **Name the encoding.** If you know which encoding the archive uses, pass it:
-  `open_archive(path, encoding="latin-1")` gives `'café.txt'`. Only ZIP and TAR read
-  `encoding=`; the other formats decode names their own way, and passing it to them
-  emits `ENCODING_ARGUMENT_UNUSED`.
+  `open_archive(path, encoding="latin-1")` gives `'café.txt'`. Only ZIP, TAR and ISO
+  read `encoding=`; the other formats decode names their own way, and passing it to
+  them emits `ENCODING_ARGUMENT_UNUSED`. ISO applies it the way a PAX `path` record
+  does: to a Rock Ridge or plain ISO 9660 name only when its bytes are not valid UTF-8.
+  Nothing in an ISO image says which charset its Rock Ridge names are in; they follow
+  the locale of whoever wrote the image.
 
 A ZIP name without the UTF-8 flag is decoded as UTF-8 when its bytes are valid UTF-8,
 and otherwise with `ArchiveyConfig.zip_unflagged_fallback_encoding` (see

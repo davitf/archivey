@@ -17,17 +17,17 @@ the status — this page states the behaviour and links the row.
 | Access cost | `DIRECT` — every file is one extent (or one run of extents) at an absolute sector |
 | Stream capability | `SEEKABLE` |
 | Core dependencies | None can read it: ISO needs `pycdlib`, which is in `[recommended]` |
-| Refuses | Non-seekable sources · raw CD sector images (`.bin`), by name, before `pycdlib` is consulted · a multi-extent file whose extents are not back to back · writing |
-| Accepts and ignores | `password=` (`PASSWORD_ARGUMENT_UNUSED`) · `encoding=` (`ENCODING_ARGUMENT_UNUSED`, §2.2) |
+| Refuses | Non-seekable sources · raw CD sector images (`.bin`), by name, before `pycdlib` is consulted · a multi-extent file whose extents are not back to back · reading a zisofs2 member · writing |
+| Accepts and ignores | `password=` (`PASSWORD_ARGUMENT_UNUSED`) |
+| `encoding=` | Applied to a Rock Ridge or plain name, or a Rock Ridge link target, whose bytes are not valid UTF-8 (§2.2) |
 
-**Five things a reader might expect and will not find.** There is no integrity check
+**Four things a reader might expect and will not find.** There is no integrity check
 anywhere in the format, so a damaged image reads damaged bytes without an error. A
 *truncated* one is caught only where the data runs out: sizes list as declared, and a
 file cut by the end of the image reads what is there, then raises `TruncatedError` (§4).
 UDF is never read: a DVD or Blu-ray image lists through its ISO 9660 tree when it has
-one, and a UDF-only image is not detected at all (§3). zisofs, the Rock Ridge transparent
-compression, is refused as `CorruptionError` rather than as an unsupported feature (§5).
-`encoding=` cannot fix a Rock Ridge name written in Latin-1, even when the Joliet tree
+one, and a UDF-only image is not detected at all (§3). A Rock Ridge name written in
+Latin-1 lists escaped unless the caller passes `encoding=`, even when the Joliet tree
 beside it has the right one (§2.2). And the namespace archivey picks decides which
 *files* exist, not only how they are named, because the trees are independent (§1).
 
@@ -138,11 +138,26 @@ come first, then files, in record order, except that plain ISO 9660 files sort b
 
 What is ISO-specific in turning a record into a member:
 
-- **Names.** Rock Ridge `NM` bytes and plain identifiers decode as UTF-8 with
-  `surrogateescape`; Joliet decodes as UTF-16BE with U+FFFD for anything invalid. Decoding
-  never raises. `encoding=` is registered as unused for ISO, so it cannot correct a Rock
-  Ridge name written in another charset (§5). Backslash is an ordinary character.
-  `raw_name` is the namespace path re-encoded as UTF-8, not the bytes on disc.
+- **Names.** Rock Ridge `NM` bytes, plain identifiers and Rock Ridge link targets
+  decode as UTF-8. Bytes that are not valid UTF-8 decode with `encoding=` when the caller
+  passed one, and as UTF-8 with `surrogateescape` otherwise: the rule TAR applies to a
+  PAX `path`. Nothing in the image names the charset, and a name that is valid UTF-8 is
+  far more likely UTF-8 than Latin-1 that happens to parse, so `encoding=` cannot turn a
+  valid UTF-8 name into mojibake. Joliet decodes as UTF-16BE with U+FFFD for anything
+  invalid and ignores `encoding=`. Decoding never raises. Backslash is an ordinary
+  character. `raw_name` is the stored bytes in the Rock Ridge and plain namespaces, and
+  the UTF-8 of the decoded path in Joliet.
+- **System Use entries.** `pycdlib` refuses the whole image on any System Use entry it
+  cannot parse, so while archivey opens an image the bytes it hands `pycdlib` are
+  filtered first (`_SystemUseNotes.filter`). An entry of a type `pycdlib` does not know
+  is left out, as SUSP 1.12 §5 has a reader ignore it; a `ZF` entry is kept aside for
+  zisofs. An entry whose own header is malformed (a length under 4 or past the area, a
+  version other than 1 on a type `pycdlib` parses) ends the area there, because every
+  later entry would be read at an untrusted offset. The member lists from the entries
+  before it and carries `MEMBER_HEADER_RECORD_SKIPPED` with `list_truncated`; a symlink
+  cut this way also loses its `link_target`, with `SYMLINK_TARGET_UNAVAILABLE`, because
+  the target may have run on past the cut. `isoinfo` and `xorriso` stop at the same place
+  but show the cut target.
 - **Versions.** In the plain namespace the `;N` suffix and the `.` of an empty extension
   are removed (`FOO.;1` is `FOO`) and the number goes to `extra["iso.version"]`. When a
   directory holds several versions, the highest takes the bare name; older ones are
@@ -159,6 +174,15 @@ What is ISO-specific in turning a record into a member:
   independent files. Records with the hidden flag are listed like any other.
 - **Size.** The sum of the lengths of every extent record of the file. `compression` is
   one `STORED` entry. Directories and links have `size=None`.
+- **zisofs.** A file whose Rock Ridge area carries `ZF` stores zisofs blocks: a 16-byte
+  header, one 32-bit pointer per block plus one, then each block as its own zlib
+  stream, with two equal pointers standing for a block of zeros. It lists `size` from
+  the `ZF` entry, `compressed_size` from its extents, and one `DEFLATE` entry in
+  `compression`. `_ZisofsStream` reads it decoded and seeks by block, inflating one block
+  at a time and never past the block size, so a crafted block cannot inflate further.
+  The header must agree with the `ZF` entry. zisofs2 (`ZF` version 2, `xorriso -zisofs
+  version_2=on`), another algorithm, or a block size outside 32 to 128 KiB lists and
+  refuses to read with `UnsupportedFeatureError`; the member beside it reads.
 - **Times.** `modified` is the Rock Ridge `TF` modification time when there is one, else
   the record's 7-byte date; `TF` also supplies `accessed`. `TF` long-form dates (17 bytes,
   hundredths of a second) are read; MagicISO's out-of-range hundredths become 0. A date
@@ -248,8 +272,9 @@ directory:
 | A 4 400 MiB file, `xorriso -as mkisofs -iso-level 3` | Reads all of it, in two extents (§2.3) |
 | libarchive `test_read_format_iso_multi_extent` | Reads 262 280 bytes from three extents |
 | libarchive Joliet, Rock Ridge, `rr_moved`, `CE`, Nero Joliet, xorriso images | Read |
-| zisofs: `mkzftree` + `genisoimage -R -z`, libarchive `test_read_format_iso_zisofs` | `CorruptionError: … Unknown SUSP record` — `pycdlib` has no `ZF` support |
-| genisoimage `-R`, a symlink target of 12 × 30-character components | `CorruptionError: … Invalid RR version 118!` for the whole image. `isoinfo` and `xorriso` both open it and show the target cut to four components, so genisoimage likely wrote the continuation wrongly |
+| zisofs: `mkzftree` + `genisoimage -R -z`, `xorriso -zisofs default`, libarchive `test_read_format_iso_zisofs` | Reads, decoded. A file `mkzftree` could not shrink is stored plain and has no `ZF` |
+| zisofs2: `xorriso -zisofs version_2=on` | Lists with the decoded sizes; reading a compressed member raises `UnsupportedFeatureError` |
+| genisoimage `-R`, a symlink target of 12 × 30-character components | Opens. genisoimage writes the continuation area's `SL` entry with its length wrapped past 255 (293 bytes stored as 37), so the next "entry" starts inside the target text. The link lists with `link_target` unset and two diagnostics. `isoinfo` and `xorriso` show the target cut to four components |
 | libarchive's crafted `ce_loop`, `ce_overflow`, `cl_re_*`, `utf16be_overflow`, `zf_overflow` images | `CorruptionError`, each at open |
 
 **Every installer image is bootable**, which is why the boot catalog is not a corner: until
@@ -267,7 +292,7 @@ Reading one means stripping every sector to its payload first; it is planned for
 
 **Rock Ridge names follow the writer's locale.** `genisoimage -input-charset iso8859-1`
 stores `café.txt` as `caf\xe9.txt` in the Rock Ridge `NM` record and as proper UTF-16 in
-Joliet; archivey lists `caf\udce9.txt` (§5).
+Joliet; archivey lists `caf\udce9.txt`, and `café.txt` with `encoding="latin-1"` (§2.2).
 
 ## 4. Threat surface
 
@@ -311,16 +336,17 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- | --- | --- |
 | A truncated image (an interrupted download) opens and lists, and only the files the cut reaches fail, with `TruncatedError` after the bytes that survive | **format** | Nothing in the image says it is complete except the volume space size, which is not checked; files before the cut read normally (§4) |
 | A damaged image returns damaged bytes | **format** | No checksum exists anywhere in ISO 9660 (§4) |
-| A zisofs image fails with `CorruptionError: … Unknown SUSP record` | **library** / **archivey** | `pycdlib` does not know the `ZF` entry and refuses the image. The image is valid, so the error should at least name zisofs as unsupported. Tracked internally |
-| One malformed Rock Ridge record fails the whole image | **library** | `pycdlib` parses every record at open, and any parse error is fatal. Seen on genisoimage's long symlinks (§3). Tracked internally |
-| A Rock Ridge name written in Latin-1 lists with `\udcXX` escapes, and `encoding=` is declared unused | **archivey** | Rock Ridge names have no charset field; archivey assumes UTF-8 and does not take the hint, nor fall back to the Joliet name. Tracked internally |
+| A zisofs2 member raises `UnsupportedFeatureError` on read | **archivey** | Only zisofs version 1 is decoded (§2.2) |
+| A symlink from genisoimage with a long target lists with `link_target=None` | **format** | genisoimage wraps the `SL` length; what follows the cut cannot be trusted (§3) |
+| A malformed Rock Ridge entry that is well-formed at the header but that `pycdlib` cannot parse still fails the whole image | **library** | The filter checks each entry's header only; `pycdlib` parses the body, and any parse error is fatal. libarchive's `ce_loop`, `ce_overflow` and `zf_overflow` images fail this way |
+| A Rock Ridge name written in Latin-1 lists with `\udcXX` escapes | **format** | Rock Ridge names have no charset field. Pass `encoding=`; archivey does not fall back to the Joliet name (§7) |
 | A file exists in the listing of one tool and not another | **format** | The trees are independent (§1). archivey picks Rock Ridge first, 7-Zip Joliet first |
 | A DVD image lists 8.3 names while the disc shows long ones | **archivey** | Long names are in UDF, which is not read (§3) |
 | A multi-extent file with non-contiguous extents raises `UnsupportedFeatureError` on read | **archivey** | Its `size` is right; reading it would need a chained stream rather than one run. No writer seen does this (§2.3) |
 | Two members share their bytes, and extraction writes both | **format** | Hardlinks are records sharing an extent; there is no hardlink record to map to `HARDLINK` |
 | Opening a large image is slow and listing is instant | **library** | `open_fp` parses every tree up front (§2.2). The cost class `INDEXED` is still right: nothing is decoded |
 | A program that also uses `pycdlib` sees archivey's guarded `deque` inside it | **archivey** | The cycle guard is installed once, at import, in `pycdlib`'s namespace ([`known-issues.md`](../known-issues.md)) |
-| `password=` or `encoding=` is accepted and has no effect | **archivey** | Dropped with `PASSWORD_ARGUMENT_UNUSED` / `ENCODING_ARGUMENT_UNUSED` — shared behaviour, not ISO's own |
+| `password=` is accepted and has no effect | **archivey** | Dropped with `PASSWORD_ARGUMENT_UNUSED` — shared behaviour, not ISO's own |
 
 ## 6. Decisions
 
@@ -335,15 +361,19 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Read a multi-extent file as one run, and refuse a gap | Every writer seen writes the extents back to back, so one inode covers them; a gap is refused rather than read wrong | A chained stream over per-extent inodes, not needed by any image seen |
 | List the boot catalog as an ordinary file, read from its extent | It is a file in the tree, and 7-Zip lists it the same way; its bytes are on disc | Hiding it; synthesising 7-Zip's `[BOOT]` entries |
 | `format_version` is `None` | ISO 9660 stores no level; `pycdlib`'s inference read 3 on nearly every image | Passing the inference through |
+| Filter System Use bytes before `pycdlib` parses them, only inside archivey's own `open_fp` | One odd record otherwise costs every member, and zisofs is a valid image. A `ContextVar` confines the wrapper to archivey's opens, so a program using `pycdlib` directly keeps its behaviour | Patching `pycdlib` for the whole process; a per-entry leniency layer that retries `pycdlib`'s parse, which would need its partly built state undone |
+| Decode zisofs version 1 in archivey | It is zlib per block, in the stdlib, and seekable from the pointer table; `pycdlib` reads only the stored bytes | Refusing zisofs members as unsupported. zisofs2 is not decoded: only `xorriso` writes it, and only when asked |
+| `encoding=` applies only to bytes that are not valid UTF-8 | The TAR PAX rule; a caller who passes a legacy encoding for one image still gets UTF-8 names right on the next | Applying `encoding=` to every Rock Ridge name, which turns valid UTF-8 into mojibake; falling back to the Joliet name, which matches records across two trees that may hold different files |
 | Patch `pycdlib`'s `collections` once, at import | A crafted image otherwise hangs `open_fp` forever, and the patch is confined to `pycdlib`'s namespace and inert on valid trees | A per-open swap, which races between threads; a watchdog timeout |
 | `created` holds only a `TF` creation time | `created` never holds `st_ctime`; the attribute-change time goes to `ctime` | Falling back to the attribute-change time, as before PR #470 |
 | A clamped file lists its declared length, read back from the directory record, and fails its read at the cut | A partial download keeps every file before the cut readable, and the listing says what the file should hold; the lookup runs only for records ending exactly at the image end | `size=None` for clamped files; refusing at open when the volume space size exceeds the source, which also refuses the files that survived |
 
 ## 7. Open questions
 
-- **Whether to take `encoding=` for Rock Ridge names, or fall back to Joliet.** Both
-  change the names a caller sees on images that list today. What would answer it: how
-  common non-UTF-8 Rock Ridge images are in practice. Tracked internally.
+- **Whether a Rock Ridge name that is not UTF-8 should fall back to its Joliet name**
+  when no `encoding=` is given. Files are matched across the trees by extent;
+  directories have separate extents in each tree, so they would need another match.
+  What would answer it: how common non-UTF-8 Rock Ridge images are in practice.
 - **Whether UDF should be read.** `pycdlib` parses UDF already, so listing from it is
   reachable; the question is whether DVD and Blu-ray images are in scope for 0.2.x.
 
@@ -359,6 +389,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Detection by far magic; a bootable image is not taken by a probe; a short source falls through | `tests/test_detection.py::test_iso_detected_via_extended_window`, `::test_bootable_iso_is_not_claimed_by_the_content_probe`, `::test_zeroed_system_area_iso_still_detected`, `::test_stream_too_short_for_iso_falls_through`; `tests/test_iso.py::test_iso_detected_by_extended_window` |
 | Raw sector images refused by name, without `pycdlib` | `tests/test_iso_raw_sectors.py` |
 | Cost, seekable-only, write refused, password unused | `tests/test_iso.py::test_iso_cost`, `::test_non_seekable_iso_rejected`, `::test_write_rejected`, `::test_password_is_accepted_and_recorded` |
+| Unknown System Use entries skipped; zisofs lists and reads decoded, seeks, refuses zisofs2 and damaged blocks; a malformed entry costs its own member only, a cut symlink withholds its target, strict refuses; the filter is inert outside archivey | `::test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded`, `::test_a_zisofs_member_seeks_across_blocks`, `::test_a_zisofs_member_this_reader_cannot_decode_is_refused_alone`, `::test_a_damaged_zisofs_block_is_corruption`, `::test_a_malformed_rock_ridge_entry_costs_its_own_member_only`, `::test_a_symlink_whose_entries_are_cut_withholds_its_target`, `::test_a_strict_policy_refuses_a_cut_rock_ridge_area`, `::test_pycdlib_used_directly_is_not_filtered` |
+| Names that are not UTF-8 take `encoding=`, UTF-8 names ignore it, `raw_name` is the stored bytes | `::test_a_latin1_rock_ridge_name_decodes_with_encoding`, `::test_a_utf8_rock_ridge_name_ignores_encoding`; `tests/test_review_simplicity_consistency.py::test_usable_encoding_argument_is_not_recorded` |
 | Namespace selection and metadata per namespace | `::test_rock_ridge_namespace_and_fidelity`, `::test_joliet_namespace_and_fidelity`, `::test_plain_iso_namespace_and_fidelity` |
 | Record walk: `/` in a name, duplicate names, cycles, `rr_moved`, a record without Rock Ridge | `::test_a_rock_ridge_name_holding_a_slash_costs_no_sibling`, `::test_duplicate_rock_ridge_names_all_list`, `::test_the_record_walk_descends_each_directory_extent_once`, `::test_rock_ridge_relocation_directory_is_not_listed`, `::test_a_rock_ridge_record_without_entries_lists_under_its_iso_name` |
 | Device node is `OTHER`; plain versions keep the newest current | `::test_a_rock_ridge_device_node_is_other_not_file`, `::test_plain_iso_versions_keep_the_newest_current` |
@@ -377,7 +409,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 **Building fixtures.** The suite builds every image with `pycdlib` (`PyCdlib.new`,
 `add_fp`, `add_directory`, `add_symlink`, `add_eltorito`), and shapes `pycdlib` will not
 write are made by patching bytes: the multi-extent tests split one directory record in two
-(`_split_into_two_extents`). To check against real producers, `genisoimage` and `xorriso`
+(`_split_into_two_extents`), and the zisofs tests replace a 26-byte `TF` entry with a
+16-byte `ZF` and a 10-byte unknown entry, over data built by `_zisofs`. To check against real producers, `genisoimage` and `xorriso`
 install from the distribution (`apt-get install genisoimage xorriso`), and `mkzftree`
 comes with genisoimage for zisofs. A file over 4 GiB needs no disk: make it sparse with
 `truncate`, pipe `xorriso -as mkisofs -iso-level 3 -o -` into a writer that seeks over
