@@ -262,8 +262,10 @@ class ListingLimits:
     """Most bytes of text a listing may retain across its members. 64 MiB.
 
     Counts member names (and raw names), comments, link targets, owner and group names
-    and the string or bytes values in ``extra``, plus the archive comment. Non-ASCII text counts four bytes per character,
-    so it is an upper bound rather than an exact size.
+    and the string or bytes values in ``extra``, plus the keys of a dict nested in it
+    (such as TAR's PAX keywords), plus the archive comment. The top-level ``extra``
+    keys are fixed per format and do not count. Non-ASCII text counts four bytes per
+    character, so it is an upper bound rather than an exact size.
     """
 
     UNLIMITED: ClassVar[ListingLimits]
@@ -473,6 +475,48 @@ DecoderLimits.UNLIMITED = DecoderLimits(
 
 
 @dataclass(frozen=True)
+class SpoolLimits:
+    """Caps on copying the archive source to temporary storage.
+
+    Some reads need the archive as a file on disk even when the caller passed a stream.
+    Today that is RAR: the ``unrar`` binary that decodes member data takes a filesystem
+    path, so a RAR opened from a ``BytesIO`` or another file object is copied to a
+    temporary file (a volume set, to a temporary directory) the first time a member has
+    to go through ``unrar``. The copy is of the whole archive, and it is removed when
+    the reader closes. A source opened from a path is read in place and never copied.
+
+    Applied from the reader's open :attr:`ArchiveyConfig.spool_limits` for its lifetime.
+    ``None`` on a field disables that guard. :attr:`UNLIMITED` disables it.
+    """
+
+    max_bytes: int | None = 2**30
+    """Most bytes one reader may write to temporary storage as a copy of its source. 1 GiB.
+
+    A volume set counts as one copy: the limit applies to the total across its
+    volumes. When the size is known before the copy starts, an archive over the limit
+    raises :class:`~archivey.exceptions.SpoolLimitExceededError` (a
+    :class:`~archivey.exceptions.ResourceLimitError`) before anything is written.
+    Otherwise the copy stops before it passes the limit. Either way the partial copy is
+    removed, and the error names this field. The limit holds for the reader, not per
+    attempt: once a copy is refused, later reads that need it are refused without
+    copying again.
+
+    ``0`` refuses every copy: a stream source then reads only the members archivey can
+    read without ``unrar``, such as stored members of a non-solid RAR. The copy goes
+    to the platform temporary directory (``tempfile.gettempdir()``); where that is
+    memory-backed, such as ``tmpfs``, this limit is a memory limit.
+    """
+
+    UNLIMITED: ClassVar[SpoolLimits]
+
+    def __post_init__(self) -> None:
+        _check_limit(self.max_bytes, cls="SpoolLimits", field_name="max_bytes")
+
+
+SpoolLimits.UNLIMITED = SpoolLimits(max_bytes=None)
+
+
+@dataclass(frozen=True)
 class ArchiveyConfig:
     """Library tuning knobs passed as ``config=`` to :func:`open_archive` / :func:`extract`.
 
@@ -537,6 +581,9 @@ class ArchiveyConfig:
 
     See :class:`DecoderLimits`.
     """
+
+    spool_limits: SpoolLimits = SpoolLimits()
+    """Caps on copying a stream source to temporary storage. See :class:`SpoolLimits`."""
 
     detection_budget: DetectionBudget = BALANCED_BUDGET
     """Upper bounds on what format detection may read and decode.
@@ -612,6 +659,12 @@ class ArchiveyConfig:
             self.decoder_limits,
             DecoderLimits,
             call="ArchiveyConfig(decoder_limits=…)",
+            allow_none=False,
+        )
+        check_instance(
+            self.spool_limits,
+            SpoolLimits,
+            call="ArchiveyConfig(spool_limits=…)",
             allow_none=False,
         )
         check_instance(

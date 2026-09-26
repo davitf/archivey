@@ -898,7 +898,11 @@ class DecompressorStream(ReadOnlyIOStream):
             new_pos = self._size + offset
 
         if new_pos < 0:
-            raise ValueError(f"Invalid offset: {offset}")
+            # Match BytesIO / SlicingStream: relative underflow clamps to the
+            # origin; only an explicitly negative SEEK_SET raises.
+            if whence == io.SEEK_SET:
+                raise ValueError(f"Negative seek position {offset}")
+            new_pos = 0
 
         if self._spent is not None:
             # The decoder is at the end of a truncated input, so no position is

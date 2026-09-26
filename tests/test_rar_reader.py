@@ -4063,6 +4063,24 @@ def test_unrar_owned_stream_close_raises_inner_error_on_quiet_unrar_exit() -> No
     assert caught.value.__cause__ is None
 
 
+def test_unrar_owned_stream_tell_counts_bytes_and_refuses_after_close() -> None:
+    """``tell()`` answers from the bytes read, not the pipe, and like a file it
+    raises ``ValueError`` once the stream is closed."""
+    from archivey.internal.backends.rar_reader import _UnrarOwnedStream
+
+    stream = _UnrarOwnedStream(
+        io.BytesIO(b"0123456789abcdef"),
+        _FakeUnrarProc(0),  # type: ignore[arg-type]
+        named_member=True,
+    )
+    assert stream.tell() == 0
+    assert stream.read(10) == b"0123456789"
+    assert stream.tell() == 10
+    stream.close()
+    with pytest.raises(ValueError, match="closed file"):
+        stream.tell()
+
+
 def test_open_unrar_p_missing_stdout_pipe_is_typed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

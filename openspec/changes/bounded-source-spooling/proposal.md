@@ -1,5 +1,18 @@
 # One spool limit, and a bound on the spool that already happens
 
+> **Split on 2026-09-26: the bound on the spool that already happens has shipped.**
+> `openspec/changes/archive/2026-09-26-rar-stream-spool-limit/` added
+> `ArchiveyConfig.spool_limits` (a frozen `SpoolLimits` with `max_bytes`, default 1 GiB,
+> and `UNLIMITED`) and bounded RAR's stream-source copy with it, raising
+> `SpoolLimitExceededError` (a `ResourceLimitError`, per Q3), before `0.2.0`. What this
+> change still holds: spooling a **non-seekable** source so ZIP, 7z, RAR and ISO can read
+> a pipe, `SpoolLimits.spool_dir`, and the free-space pre-flight. Two spellings
+> moved in the split. `None` on `max_bytes` means **no limit**, as on every other limit
+> class, and "never spool" is `max_bytes=0`; that change's `design.md` gives the reason.
+> Where the text below says *none*, read `max_bytes=0`. Its `format-rar` delta is gone,
+> because the shipped block already says what it said, error type included. The *Why*
+> below predates the split and is kept as the record.
+
 ## Why
 
 `unrar` takes a filesystem path, not a Python object (ADR 0002: native RAR metadata,
@@ -50,7 +63,7 @@ performs. It does not distinguish *why* the spool was needed:
 ```
 SpoolLimits(max_bytes=<bytes>)     # spool when needed, up to this much
 SpoolLimits.UNLIMITED              # never refuse on size
-SpoolLimits(max_bytes=None)        # never spool
+SpoolLimits(max_bytes=0)           # never spool
 ```
 
 **The default is 1 GiB**, settled with the other three open questions on 2026-09-17. A byte
@@ -91,25 +104,26 @@ decompression-bomb territory, and it overlaps Topic 6 and the parked `stream-lay
 
 ## Specs
 
-- **`access-mode-and-cost`** — ADDED: the spool limit, its three settings, the
-  1 GiB default, the `SpoolLimitExceededError` on exceeding it, the open-time caveat naming
-  its bound, the best-effort pre-flight, the rule that a spool happens at the first
-  operation needing it rather than at open, and the rule that a spooled source does not turn
-  a `streaming=True` read into a random-access one. MODIFIED: the non-seekable fail-fast
-  requirement gains its "unless spooling is permitted" clause, so ADR 0010's rule stays
-  stated rather than quietly outgrown.
-- **`archive-reading`** — MODIFIED: the limit reaches the reader through `ArchiveyConfig`,
-  beside `listing_limits`, as a frozen `SpoolLimits` with an `UNLIMITED` classvar.
-- **`format-rar`** — MODIFIED: the existing materialization becomes subject to the limit
-  and to the cost note.
+- **`access-mode-and-cost`** — ADDED: the non-seekable spool under the one limit, and the
+  caller-named spool directory; the open-time caveat for every spool; the best-effort
+  pre-flight; the rule that a spool happens at the first operation needing it rather than
+  at open; and the rule that a spooled source does not turn a `streaming=True` read into a
+  random-access one. The limit's settings, its 1 GiB default, `SpoolLimitExceededError`
+  and the caveat naming the bound for RAR's copy shipped in `rar-stream-spool-limit`, and
+  the delta points at `archive-reading`, `error-handling` and `format-rar` for them.
+  MODIFIED: the non-seekable fail-fast requirement gains its "unless spooling is
+  permitted" clause, so ADR 0010's rule stays stated rather than quietly outgrown.
+- **`archive-reading`** — MODIFIED: `SpoolLimits` (shipped with `max_bytes` alone) gains
+  `spool_dir`, and the temp-storage requirement admits a bounded spool of a non-seekable
+  source.
+- ~~**`format-rar`**~~ — shipped in `rar-stream-spool-limit`.
 
 ## Impact
 
 - **Public surface:** one new `ArchiveyConfig` field carrying a frozen `SpoolLimits`
   (limit plus spool directory), beside `extraction_limits` and `listing_limits`; and one new
-  exception, `SpoolLimitExceededError`, subclassing `ResourceLimitError`. Additive; worth
-  settling pre-`0.2.0` because a config field is cheap to add later and expensive to
-  reshape.
+  exception, `SpoolLimitExceededError`, subclassing `ResourceLimitError`. The field (with
+  `max_bytes` alone) and the exception shipped in the split; `spool_dir` is what is left.
 - **Behaviour change, pre-tag and deliberate:** a RAR-from-stream read of an archive larger
   than 1 GiB starts raising `SpoolLimitExceededError` where it previously succeeded. The
   unbounded case is the defect. **No corpus archive reaches that boundary** — the largest is
