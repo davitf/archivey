@@ -7,8 +7,9 @@ random-access/parallel backend for raw DEFLATE (`deflate` codec) and zlib-wrappe
 (`zlib` codec), in addition to gzip. rapidgzip auto-detects `GZIP`/`ZLIB`/`DEFLATE`, so the
 codec SHALL pass the stream through unwrapped — no synthetic gzip header/footer. Selection is
 gated identically to gzip (`use_rapidgzip` × declared seekability × availability, plus the
-`AUTO` minimum-input-size threshold). The default sequential backend is unchanged: when rapidgzip is
-unavailable, `OFF`, or below the `AUTO` threshold, deflate/zlib decode through stdlib `zlib`.
+`AUTO` minimum-input-size threshold). The default sequential backend is unchanged: when
+rapidgzip is unavailable, `OFF`, or below the `AUTO` threshold, deflate/zlib decode through
+stdlib `zlib`.
 
 rapidgzip 0.16 aborts the process on a DEFLATE-family stream that ends early, so the system
 SHALL run the gzip, zlib and deflate decoders in a child process and MUST NOT decode those
@@ -19,11 +20,10 @@ be ended and reaped when the stream closes or is collected. bzip2 through
 `rapidgzip.IndexedBzip2File` stays in-process.
 
 Where no child process can be started (a frozen application, an interpreter without
-`sys.executable`, a spawn the operating system refuses, a child that cannot import rapidgzip),
-`AUTO` SHALL use the stdlib backend when that is known before the open (a frozen or embedded
-interpreter), and otherwise the open SHALL raise `ResourceLimitError` naming
-`use_rapidgzip=OFF`. `ON` in that case SHALL raise `ResourceLimitError`; it MUST NOT decode
-in-process.
+`sys.executable`, a spawn or temporary file the operating system refuses, a child that cannot
+import rapidgzip), `AUTO` SHALL decode with the stdlib backend, as it does when rapidgzip is
+absent. `ON` in that case SHALL raise `ResourceLimitError` naming `use_rapidgzip=OFF`; it MUST
+NOT decode in-process.
 
 rapidgzip over-reads past a DEFLATE end-of-stream looking for a concatenated member, so the
 codec SHALL feed it an exactly-bounded input (e.g. the container's `SlicingStream` sized to
@@ -38,7 +38,7 @@ the member's compressed length); an unbounded or over-long stream MAY raise a sp
 | Declared-seekable zlib stream, accelerator enabled | rapidgzip auto-detects ZLIB and decodes; backward seek without re-decompress from start |
 | rapidgzip absent, `OFF`, or size < `AUTO` threshold | stdlib `zlib` (`-15` / `MAX_WBITS`); backward seek re-decompresses from start |
 | Accelerator fed an over-long/unbounded slice | May raise a spurious decode error on trailing bytes; callers MUST bound the input |
-| Frozen interpreter, `AUTO` | stdlib backend |
+| No child can be started (frozen interpreter, refused spawn or temporary file), `AUTO` | stdlib backend |
 | No child can be started, `ON` | `ResourceLimitError` at open |
 
 ### Requirement: Accelerator errors translate uniformly

@@ -469,6 +469,15 @@ stream reports it by how it ended: an abort whose stderr names this truncation i
 `tests/test_accelerator_truncation_abort.py`, which also keeps a canary that raw rapidgzip still
 aborts on Linux. When that canary fails, rapidgzip may be safe in-process again.
 
+**What of a cut stream is still read:** a correct prefix, but a short one. rapidgzip decodes
+ahead in parallel, so it can reach the cut, and abort, while the parent is still waiting for
+data well before it. Measured through `ON` with 4 KiB and 1 MiB reads: a cut gzip or zlib of
+2 or 8 MB gave no data before the error; of 32 MB, 22–31 MB of 32.4 (the stdlib engine reads
+to within the last block of the cut). The prefix delivered is checked against the payload in
+`tests/test_accelerator_truncation_abort.py`. `use_rapidgzip=OFF` reads the most of a cut
+stream. Replaying the stdlib engine after a truncation abort, to deliver the rest of the
+prefix, is parked in `review/backlog.md`.
+
 The cost is a fixed ~25 ms to start the child (~45 ms with the open), plus ~70 µs per round
 trip (reduced by a read-ahead buffer in the parent). So `AUTO` uses rapidgzip only from
 16 MiB compressed, past the ~13 MB where the child starts to beat the stdlib; numbers in the

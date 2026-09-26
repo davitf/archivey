@@ -249,10 +249,20 @@ rapidgzip 0.16 also aborts the process on a gzip, zlib or raw deflate stream tha
 early, whatever the source. So archivey runs those three decoders in a **child process**:
 the abort ends the child, and your read raises `TruncatedError` (or `CorruptionError`
 where the abort does not say why). Starting the child costs about 45 ms per accelerated
-stream; under `AUTO` that is paid only for streams of 16 MiB compressed or more. A frozen
-application, which has no Python interpreter to start, reads these codecs with the standard
-library under `AUTO`. Set `use_rapidgzip=OFF` to never start a child. bzip2 runs in your
-process. Details:
+stream; under `AUTO` that is paid only for streams of 16 MiB compressed or more. Where no
+child can start (a frozen application, or a spawn or temporary file the OS refuses), `AUTO`
+reads these codecs with the standard library and `ON` raises `ResourceLimitError`. Set
+`use_rapidgzip=OFF` to never start a child.
+
+The abort costs the rest of the stream, and often more: rapidgzip decodes ahead in
+parallel, so it can reach the cut before your first read returns. On a cut gzip of 2 or
+8 MB the error came before any data; on 32 MB, 1 to 10 MB short of the cut. What you do
+read is correct. To read as much of a cut stream as the data allows, open it with
+`use_rapidgzip=OFF`: the standard library decodes up to the cut before it raises.
+
+bzip2 runs in your process. It did not abort on cut or damaged input in the tests behind
+this page (cuts, bit flips, CRC damage, as path and as file object), but that is testing,
+not a guarantee: an input that aborts the bzip2 decoder would end your process. Details:
 [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
 
 ## Measuring what a read cost

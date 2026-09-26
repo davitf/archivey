@@ -3,7 +3,9 @@
 
 rapidgzip 0.16 aborts the process on a truncated DEFLATE stream, so archivey decodes the
 DEFLATE family through rapidgzip in a child process (``rapidgzip_child.py``). This script
-records the numbers that design rests on:
+records the numbers that design rests on, and the ``AUTO`` threshold
+(``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE``): the child's fixed start from rows 1 and 4, and
+the per-MB saving of a child read over the stdlib from row 2.
 
 1. Child start-up: spawn to first reply, with and without ``import rapidgzip``.
 2. A full sequential read of a ~100 MB-output gzip: stdlib ``zlib``, rapidgzip in-process

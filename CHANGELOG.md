@@ -95,8 +95,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `ResourceLimitError`; one ended any other way raises `ReadError`. Starting the child
   costs about 45 ms per accelerated stream, so `AUTO` now uses rapidgzip only from
   16 MiB of compressed input (was 1 MiB); smaller streams use the standard library.
-  Under `AUTO` a frozen application, which cannot start a child, uses the standard
-  library; `ON` there, or a spawn the OS refuses, raises `ResourceLimitError`. bzip2
+  Where no child can start (a frozen application, a spawn or temporary file the OS
+  refuses), `AUTO` uses the standard library and `ON` raises `ResourceLimitError`. bzip2
   stays in-process. `use_rapidgzip=OFF` avoids the child entirely.
 
 - **A truncated stream that raised once no longer reads as an empty, clean stream

@@ -51,11 +51,12 @@ Through archivey (`open_codec_stream(GZIP)`, `use_rapidgzip=ON`), in-process aga
 - **Death classification** follows the PPMd child (`is_crash`): SIGSEGV/SIGABRT/SIGBUS/SIGILL/
   SIGFPE or the Windows NTSTATUS for them (and the MSVC `abort()` status 3, which the worker
   never uses itself) is a crash, SIGKILL is the OOM killer, anything else came from outside.
-  stderr goes to a temporary file, not a pipe (no drain thread, no deadlock), and all of it
-  (up to 1 MiB) is searched after a death: rapidgzip's abort message on an early end makes it
-  `TruncatedError`. Not only the last few KiB: with faulthandler on (`PYTHONFAULTHANDLER`,
-  which the child inherits), Python 3.14 writes ~6.5 KiB of thread and C stacks after the
-  message, and a 4 KiB tail missed it on CI. The helpers are in `child_exit.py`, shared with
+  stderr goes to a temporary file, not a pipe (no drain thread, no deadlock), and after a
+  death it is scanned from the start, a line at a time (capped at 64 MiB): rapidgzip's abort
+  message on an early end makes it `TruncatedError`. Not a window at either end: with
+  faulthandler on (`PYTHONFAULTHANDLER`, which the child inherits), Python 3.14 writes
+  ~6.5 KiB of thread and C stacks after the message, and a 4 KiB tail missed it on CI; output
+  written before the abort would push it out of a window at the start the same way. The helpers are in `child_exit.py`, shared with
   the PPMd child.
 - **Read-ahead in the parent.** Measured through a `.tar.gz`, whose reader reads in small
   pieces, a round trip per piece was the cost. After the first read that follows a seek, a
@@ -69,9 +70,14 @@ Through archivey (`open_codec_stream(GZIP)`, `use_rapidgzip=ON`), in-process aga
 - **No escape hatch in new config.** rapidgzip has no safe in-process mode for these codecs,
   so there is nothing like `max_ppmd_in_process_input` to size. A caller that wants no child
   process sets `use_rapidgzip=OFF`.
-- **Where no child can run:** a frozen or embedded interpreter is known before the open, so
-  `AUTO` quietly uses the stdlib backend. A spawn that fails at open raises
-  `ResourceLimitError` (as PPMd does); `ON` always does.
+- **Where no child can run:** `AUTO` decodes with the stdlib backend, whether that is known
+  before the open (a frozen or embedded interpreter) or only at it (a spawn or temporary file
+  the operating system refuses, a child that cannot import rapidgzip). The stdlib backend is
+  correct and raises `TruncatedError` on a cut stream the same way, only slower, and `AUTO`
+  already uses it for every stream under the threshold. The PPMd child raises instead
+  because its alternative is decoding in-process, which is the hazard; here it is not. Each
+  of those failures comes before the child reads the source, so the stdlib decoder starts
+  where the source was. `ON` raises `ResourceLimitError`.
 - **bzip2 stays in-process.** It never aborted in 110 random cuts, and its seek index is the
   reason to use it at all.
 

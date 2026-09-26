@@ -25,6 +25,7 @@ import textwrap
 import threading
 import zlib
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -297,6 +298,45 @@ def test_truncated_deflate_family_with_accelerator_on_raises_truncated(
 # --- the child stream serves the codec layer --------------------------------------------
 
 
+@pytest.mark.parametrize("chunk", [4096, 1 << 20])
+@pytest.mark.parametrize("cut", _CUTS)
+@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
+def test_what_a_cut_stream_delivers_before_the_abort_is_a_correct_prefix(
+    tmp_path: Path, codec: Codec, cut: int, chunk: int
+) -> None:
+    """The bytes read before the child aborts are the payload's own: the read-ahead
+    buffer never serves data from past the cut or out of order. How many there are is
+    rapidgzip's to decide (it can abort before the first read returns), so this pins
+    only that they are right, and that the error is a truncation or corruption."""
+    payload = _payload()
+    path = _write(tmp_path, f"cut.{codec.value}", _compress(codec, payload)[:-cut])
+    got = bytearray()
+    with open_codec_stream(codec, str(path), config=_ON) as stream:
+        with pytest.raises((TruncatedError, CorruptionError)):
+            while block := stream.read(chunk):
+                got += block
+    assert len(got) < len(payload)
+    assert payload.startswith(got)
+
+
+@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB])
+def test_a_large_cut_stream_delivers_a_correct_prefix_before_the_abort(
+    tmp_path: Path, codec: Codec
+) -> None:
+    """On a small cut stream rapidgzip usually aborts before any data comes back, which
+    leaves the prefix check above nothing to check. On about 32 MB it returned 22 to
+    31 MB first (4 CPUs), so the read-ahead's bookkeeping is exercised here."""
+    payload = base64.encodebytes(random.Random(32).randbytes(24_000_000))
+    path = _write(tmp_path, f"cut.{codec.value}", _compress(codec, payload)[:-500])
+    got = bytearray()
+    with open_codec_stream(codec, str(path), config=_ON) as stream:
+        with pytest.raises((TruncatedError, CorruptionError)):
+            while block := stream.read(4096 if codec is Codec.GZIP else 10_000):
+                got += block
+    assert got
+    assert payload.startswith(got)
+
+
 @pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
 @pytest.mark.parametrize("mode", ["path", "bytesio"])
 def test_the_child_stream_reads_and_seeks_like_stdlib(
@@ -324,6 +364,15 @@ def _child_stream(stream: object) -> RapidgzipChildStream:
     while not isinstance(inner, RapidgzipChildStream):
         inner = getattr(inner, "_inner")
     return inner
+
+
+def _has_child_stream(stream: object) -> bool:
+    inner: object = stream
+    while inner is not None:
+        if isinstance(inner, RapidgzipChildStream):
+            return True
+        inner = getattr(inner, "_inner", None)
+    return False
 
 
 def test_rewind_offset_comes_from_the_childs_index() -> None:
@@ -438,25 +487,31 @@ def test_a_child_death_is_reported_by_how_it_ended(
         assert str(second.value) == str(first.value)
 
 
-def test_the_abort_message_is_found_under_a_long_stack_dump(tmp_path: Path) -> None:
-    """A faulthandler dump after the abort message does not hide it.
+@pytest.mark.parametrize("where", ["before", "after"])
+def test_the_abort_message_is_found_among_other_output(
+    tmp_path: Path, where: str
+) -> None:
+    """Output before or after the abort message does not hide it.
 
     With ``PYTHONFAULTHANDLER`` set, Python 3.14 wrote about 6.5 KiB of thread and C
     stacks after rapidgzip's ``what():`` line, and a search of the last 4 KiB missed
-    it: every truncation read as ``CorruptionError``.
+    it: every truncation read as ``CorruptionError``. A window at the start of the file
+    would miss it the same way behind earlier output, so both sides get more than a
+    MiB.
     """
     abort = (
         b"terminate called after throwing an instance of 'std::logic_error'\n"
         b"  what():  The bit buffer should not contain more data than have been read "
         b"from the file!\nFatal Python error: Aborted\n\n"
     )
-    dump = b'  Binary file "/lib/x86_64-linux-gnu/libc.so.6", at +0x9caa4\n' * 2000
+    other = b'  Binary file "/lib/x86_64-linux-gnu/libc.so.6", at +0x9caa4\n' * 40_000
+    assert len(other) > 2 << 20
+    content = abort + other if where == "after" else other + abort
     with (tmp_path / "stderr").open("w+b") as stderr:
-        stderr.write(abort + dump)
-        tail = rapidgzip_child._stderr_tail(stderr)
-    assert len(dump) > 64 * 1024
-    assert rapidgzip_child._TRUNCATION_ABORT in tail
-    assert rapidgzip_child._abort_reason(tail).startswith(": The bit buffer")
+        stderr.write(content)
+        truncated, reason = rapidgzip_child._scan_stderr(stderr)
+    assert truncated
+    assert reason.startswith(": The bit buffer")
 
 
 @pytest.mark.parametrize(
@@ -496,10 +551,16 @@ def test_close_reaps_the_child_and_later_calls_raise(tmp_path: Path) -> None:
     child = _child_stream(stream)
     proc = child._proc
     assert proc is not None
+    # Two sequential reads: the second fills the read-ahead buffer, so a read after
+    # close() could be answered from it without reaching the child.
+    child.read(10)
+    child.read(10)
+    assert child._buffer_at < len(child._buffer)
     stream.close()
     assert proc.returncode is not None
-    with pytest.raises(ValueError):
-        child.read(1)
+    for call in (lambda: child.read(1), lambda: child.read(), child.tell):
+        with pytest.raises(ValueError, match="closed file"):
+            call()
 
 
 def test_an_interrupted_request_leaves_the_stream_unusable(tmp_path: Path) -> None:
@@ -528,6 +589,8 @@ def test_without_a_child_auto_uses_stdlib_and_on_refuses(
     """A frozen application has no interpreter to run the worker. AUTO decodes with the
     standard library; ON, which asked for rapidgzip, is refused rather than run in-process."""
     monkeypatch.setattr(codecs_module, "rapidgzip_child_available", lambda: False)
+    # Low enough that AUTO would otherwise pick rapidgzip for this input.
+    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
     payload = _payload()
     path = _write(tmp_path, "valid.gz", gzip.compress(payload))
     auto = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.AUTO)
@@ -537,13 +600,79 @@ def test_without_a_child_auto_uses_stdlib_and_on_refuses(
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
 
 
-def test_a_child_that_cannot_start_is_a_resource_limit(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def _refuse(*args: object, **kwargs: object) -> NoReturn:
+    raise OSError(11, "Resource temporarily unavailable")
+
+
+# What can refuse a child at open: the spawn itself (a process cap, RLIMIT_NPROC, EMFILE)
+# and the temporary file its stderr goes to (no writable temporary directory).
+_START_FAILURES = {
+    "popen": ("subprocess", "Popen"),
+    "tempfile": ("tempfile", "TemporaryFile"),
+    "no-interpreter": None,
+}
+
+
+def _break_child_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, how: str
 ) -> None:
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "no-such-python"))
+    target = _START_FAILURES[how]
+    if target is None:
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "no-such-python"))
+    else:
+        module, name = target
+        monkeypatch.setattr(getattr(rapidgzip_child, module), name, _refuse)
+
+
+@pytest.mark.parametrize("how", sorted(_START_FAILURES))
+def test_a_child_that_cannot_start_is_a_resource_limit_under_on(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, how: str
+) -> None:
+    """ON asked for rapidgzip, so a refused child is an error, not a quiet fallback."""
     path = _write(tmp_path, "valid.gz", gzip.compress(_payload()))
+    _break_child_start(monkeypatch, tmp_path, how)
     with pytest.raises(ResourceLimitError, match="cannot start"):
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
+
+
+@pytest.mark.parametrize("mode", ["path", "bytesio"])
+@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
+@pytest.mark.parametrize("how", sorted(_START_FAILURES))
+def test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, how: str, codec: Codec, mode: str
+) -> None:
+    """AUTO decodes with the standard library when no child starts, as it does when
+    rapidgzip is absent: valid data reads, and cut or damaged data raises as the stdlib
+    backend reports it (translated, from the original start of the source)."""
+    monkeypatch.setattr(codecs_module, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
+    payload = _payload()
+    data = _compress(codec, payload)
+    damaged = bytearray(data)
+    damaged[len(data) // 2 : len(data) // 2 + 64] = bytes(64)
+    cases: list[tuple[bytes, type[Exception] | None]] = [
+        (data, None),
+        (data[:-1500], TruncatedError),
+    ]
+    if codec is not Codec.DEFLATE:
+        # Raw deflate carries no checksum: the stdlib can decode damage it cannot see.
+        cases.append((bytes(damaged), CorruptionError))
+    _break_child_start(monkeypatch, tmp_path, how)
+    for i, (content, error) in enumerate(cases):
+        path = _write(tmp_path, f"{i}.{codec.value}", content)
+        source: str | io.BytesIO = str(path) if mode == "path" else io.BytesIO(content)
+        config = StreamConfig(
+            seekable=True,
+            use_rapidgzip=AcceleratorMode.AUTO,
+            compressed_input_size=len(content),
+            expected_decompressed_size=(None if codec is Codec.GZIP else len(payload)),
+        )
+        with open_codec_stream(codec, source, config=config) as stream:
+            assert not _has_child_stream(stream)
+            if error is None:
+                assert stream.read() == payload
+            else:
+                with pytest.raises(error):
+                    stream.read()
 
 
 def test_background_reads_of_a_stream_source_are_served(tmp_path: Path) -> None:

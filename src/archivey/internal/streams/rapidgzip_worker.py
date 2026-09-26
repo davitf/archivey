@@ -60,7 +60,9 @@ OPEN_PATH, OPEN_STREAM = 0, 1
 _EOF = (0, 0, b"")
 
 
-def _read_exact(stream: IO[bytes], size: int) -> bytes | None:
+def read_exact(stream: IO[bytes], size: int) -> bytes | None:
+    """``size`` bytes from ``stream``, or ``None`` if it ends first. Both ends of the
+    pipe read frames with it; ``rapidgzip_child`` imports it."""
     parts: list[bytes] = []
     while size:
         chunk = stream.read(size)
@@ -90,11 +92,11 @@ class _Channel:
     def _pump(self) -> None:
         try:
             while True:
-                header = _read_exact(self._stdin, FRAME.size)
+                header = read_exact(self._stdin, FRAME.size)
                 if header is None:
                     break
                 tag, arg, size = FRAME.unpack(header)
-                payload = _read_exact(self._stdin, size) if size else b""
+                payload = read_exact(self._stdin, size) if size else b""
                 if payload is None:
                     break
                 target = self.answers if tag >= SRC_DATA else self.requests

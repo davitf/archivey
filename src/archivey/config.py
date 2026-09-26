@@ -105,8 +105,6 @@ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 16 * 1024 * 1024
 # which tracks bytes re-decoded.
 #
 # Below about a megabyte of re-decoding, the work is not worth a caller's attention.
-# (RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE used to share this number. It is now set by the
-# cost of starting rapidgzip's child process, a different quantity.)
 REWIND_REDECODE_WARN_BYTES: int = 1 * 1024 * 1024
 
 
@@ -545,9 +543,9 @@ class ArchiveyConfig:
 
     rapidgzip runs in a child Python process, one per open stream, because it aborts the
     process on a stream that ends early; that costs about 45 ms per stream to start and
-    open, which is why the ``AUTO`` threshold is 16 MiB. ``AUTO`` does not use it where
-    no child can be started (a frozen application). ``ON`` there,
-    or a spawn the operating system refuses, raises
+    open, which is why the ``AUTO`` threshold is 16 MiB. Where no child can be started
+    (a frozen application, or a spawn or temporary file the operating system refuses),
+    ``AUTO`` uses the standard library and ``ON`` raises
     :class:`~archivey.exceptions.ResourceLimitError`. ``OFF`` never starts a child.
     """
 

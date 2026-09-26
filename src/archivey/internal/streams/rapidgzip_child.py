@@ -65,6 +65,7 @@ from archivey.internal.streams.rapidgzip_worker import (
     SRC_SEEK,
     SRC_TELL,
     SRC_VALUE,
+    read_exact,
 )
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
 
@@ -128,17 +129,6 @@ def rapidgzip_child_available() -> bool:
     )
 
 
-def _read_exact(stream: IO[bytes], size: int) -> bytes | None:
-    parts: list[bytes] = []
-    while size:
-        chunk = stream.read(size)
-        if not chunk:
-            return None
-        parts.append(chunk)
-        size -= len(chunk)
-    return b"".join(parts)
-
-
 _FROM_CHILD = "_archivey_reported_by_rapidgzip_child"
 
 
@@ -199,31 +189,36 @@ def _reap(
         pass
 
 
-# The most of the child's stderr read to classify its death. The abort message comes
-# first and anything the dying process adds follows it: with faulthandler on
-# (``PYTHONFAULTHANDLER``, ``-X faulthandler``), Python dumps every thread's stack, and
-# from 3.14 the C stack too, several KiB after the ``what():`` line. So the search
-# covers everything the child wrote, up to this cap, not only the last few KiB.
-_STDERR_LIMIT = 1 << 20
+# How much of the child's stderr is scanned to classify its death. The abort message
+# can sit anywhere in it: the child may have written warnings before it, and a dying
+# process adds more after it (with faulthandler on, ``PYTHONFAULTHANDLER`` or
+# ``-X faulthandler``, Python dumps every thread's stack, and from 3.14 the C stack
+# too). So the scan reads the file from the start, a line at a time, rather than a
+# window at either end; the cap only bounds the time a runaway writer can cost.
+_STDERR_SCAN_LIMIT = 64 << 20
+_STDERR_LINE_LIMIT = 64 << 10
 
 
-def _stderr_tail(stderr: IO[bytes]) -> bytes:
+def _scan_stderr(stderr: IO[bytes]) -> tuple[bool, str]:
+    """Whether the child's stderr holds rapidgzip's truncation abort, and the text of
+    its C++ ``what():`` line (``": <text>"``, or an empty string when there is none)."""
+    truncated, reason = False, ""
     try:
-        stderr.seek(0, io.SEEK_END)
-        stderr.seek(max(0, stderr.tell() - _STDERR_LIMIT))
-        return stderr.read()
+        stderr.seek(0)
+        scanned = 0
+        while scanned < _STDERR_SCAN_LIMIT:
+            line = stderr.readline(_STDERR_LINE_LIMIT)
+            if not line:
+                break
+            scanned += len(line)
+            truncated = truncated or _TRUNCATION_ABORT in line
+            stripped = line.strip()
+            if not reason and stripped.startswith(b"what():"):
+                text = stripped[len(b"what():") :].strip().decode("utf-8", "replace")
+                reason = f": {text[:200]}"
     except (OSError, ValueError):
-        return b""
-
-
-def _abort_reason(tail: bytes) -> str:
-    """The ``what():`` line of a C++ abort in ``tail``, or an empty string."""
-    for line in reversed(tail.splitlines()):
-        line = line.strip()
-        if line.startswith(b"what():"):
-            text = line[len(b"what():") :].strip().decode("utf-8", "replace")
-            return f": {text[:200]}"
-    return ""
+        pass
+    return truncated, reason
 
 
 class RapidgzipChildStream(ReadOnlyIOStream):
@@ -322,11 +317,11 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         proc = self._proc
         assert proc is not None and proc.stdout is not None
         try:
-            header = _read_exact(proc.stdout, FRAME.size)
+            header = read_exact(proc.stdout, FRAME.size)
             if header is None:
                 return None
             tag, arg, size = FRAME.unpack(header)
-            payload = _read_exact(proc.stdout, size) if size else b""
+            payload = read_exact(proc.stdout, size) if size else b""
         except (OSError, ValueError):
             return None
         if payload is None:
@@ -414,7 +409,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             cls, message = self._death
             raise cls(message)
         if self._proc is None:
-            raise ValueError("I/O operation on closed file")
+            raise ValueError("I/O operation on closed file.")
 
     def _abandon(self) -> None:
         self._death = (
@@ -443,7 +438,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             returncode = proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             returncode = None  # it closed its pipes and did not exit; ended below
-        tail = _stderr_tail(self._stderr)
+        truncated, reason = _scan_stderr(self._stderr)
         self._stop(kill=returncode is None)
         how = describe_exit(returncode)
         label = self._label
@@ -454,17 +449,17 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 f"the rapidgzip decoder process for this {label} stream ended ({how}) "
                 f"after a read from the source failed: {caused_by_source!r}"
             )
-        elif is_crash(returncode) and _TRUNCATION_ABORT in tail:
+        elif is_crash(returncode) and truncated:
             cls = TruncatedError
             message = (
                 f"{label} stream is truncated: the rapidgzip decoder process aborted "
-                f"on it ({how}{_abort_reason(tail)})"
+                f"on it ({how}{reason})"
             )
         elif is_crash(returncode):
             cls = CorruptionError
             message = (
                 f"Error reading {label} stream: the rapidgzip decoder process crashed "
-                f"on it ({how}{_abort_reason(tail)})"
+                f"on it ({how}{reason})"
             )
         elif is_system_kill(returncode):
             cls = ResourceLimitError
@@ -502,8 +497,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         return data
 
     def read(self, n: int | None = -1, /) -> bytes:
+        # Before the buffer: a closed or dead stream raises even with read-ahead left.
+        self._raise_if_unusable()
         if n == 0:
-            self._raise_if_unusable()
             return b""
         if self._pos is None:
             self.tell()
@@ -604,4 +600,5 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             return
         self._stop()
         self._source = None
+        self._drop_buffer()
         super().close()

@@ -75,6 +75,14 @@ the file!"), and `std::terminate` aborts the process. It fires for path, file-ob
 on Linux. The macOS build raises "Unexpected end of file when getting block ..." instead.
 `IndexedBzip2File` never aborted in 110 tries.
 
+A CRC mismatch is a complete stream with the wrong content, not a short one. For the DEFLATE
+family it goes through the child like any other input, so an abort on it would be contained
+the same way; gzip CRC32 damage raised `CorruptionError` in 8 runs of 8 without one. The
+bzip2 decoder still runs in the caller's process: its stream-CRC damage, 12 bit flips and
+4 cuts of a 3 MB stream, each read from a path and from a file object, raised
+`CorruptionError` or read clean, with no abort in 40 runs. That is testing, not proof; an
+input that aborts the bzip2 decoder would still end the caller's process.
+
 Archivey runs the DEFLATE-family decoders in a child process, so the abort costs the member:
 the parent reports `TruncatedError` when the abort message names this truncation, else
 `CorruptionError` (known-issues Bug 4). This is the report worth filing upstream: a

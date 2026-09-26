@@ -19,8 +19,8 @@ ZIP deflate member read with the accelerator on, kills the caller's interpreter.
 - A child that dies is reported by how it died: an abort that names the truncation is
   `TruncatedError`, another crash `CorruptionError`, SIGKILL `ResourceLimitError`, anything
   else `ReadError`. Every later call raises the same error.
-- Where no child can run, `AUTO` uses the stdlib backend when that is known up front (a frozen
-  application); otherwise the open raises `ResourceLimitError` naming `use_rapidgzip=OFF`.
+- Where no child can run, `AUTO` uses the stdlib backend; `ON` raises `ResourceLimitError`
+  naming `use_rapidgzip=OFF`.
 - bzip2 stays in-process.
 
 ## Impact

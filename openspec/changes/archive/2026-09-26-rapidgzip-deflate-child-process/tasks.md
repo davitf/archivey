@@ -12,7 +12,8 @@
       parked source faults, death classification, read-ahead buffer.
 - [x] 2.3 `child_exit.py`: crash / SIGKILL / other classification.
 - [x] 2.4 `codecs.py`: gzip, zlib and deflate open through the child; `AUTO` skips rapidgzip
-      where no child can run; spawn failure is `ResourceLimitError`; child-reported
+      where no child can run, before or at the open; under `ON` a child that cannot start is
+      `ResourceLimitError`; child-reported
       `RuntimeError` translates to `CorruptionError`.
 
 ## 3. Tests
