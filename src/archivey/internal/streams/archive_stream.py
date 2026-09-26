@@ -540,7 +540,7 @@ class ArchiveStream(ReadOnlyIOStream):
             return 0
         return self._inner.tell()
 
-    def make_forward_only(self) -> None:
+    def _make_forward_only(self) -> None:
         """Refuse ``seek()`` on this handle from now on, whatever it was built with.
 
         ``stream_members()`` calls this on every handle it yields: a pass owns the

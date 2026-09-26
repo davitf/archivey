@@ -449,6 +449,8 @@ class _UnrarOwnedStream(DelegatingStream):
         return data
 
     def tell(self, /) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
         # The inner is a pipe, whose tell() raises ESPIPE. Every byte goes through
         # read() (readinto_passthrough is off), so the count is the position.
         return self._bytes_read

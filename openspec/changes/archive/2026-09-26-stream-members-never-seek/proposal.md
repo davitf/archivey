@@ -29,11 +29,12 @@ can come to rely on a per-format accident. A caller that needs to seek uses rand
 - `testing-contract`: one parametrized test covers the five cases over one format matrix.
 
 This is a behaviour change for a caller that seeked a `stream_members()` handle on ZIP,
-TAR, ISO, directory, single-file or non-solid RAR archives.
+TAR, ISO, directory, single-file or non-solid RAR archives, and for a caller that
+opened a nested archive from one: `open_archive()` now sees a non-seekable source.
 
 ## Impact
 
-Code: `ArchiveStream.make_forward_only()`, called on every yielded handle in
+Code: `ArchiveStream._make_forward_only()`, called on every yielded handle in
 `BaseArchiveReader._iter_stream_members` (one place for every backend). RAR
 `_UnrarOwnedStream.tell()` counts bytes instead of asking the pipe, which raised
 `OSError`. Tests: `tests/test_member_stream_contract.py`. Docs:

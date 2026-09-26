@@ -23,7 +23,12 @@ Two defaults keep the common case cheap, and each can be lifted at open time:
 
 - Member streams are **forward-only**. `seek()` raises unless you opened with
   `seekable_members=True`. With that flag, every random `open()` stream seeks. A
-  `stream_members()` stream never seeks, with or without the flag.
+  `stream_members()` stream never seeks, with or without the flag. That includes
+  handing it to `open_archive()` to read a nested archive: to archivey it is a
+  non-seekable source, so ZIP, 7z, RAR and ISO refuse it with
+  `StreamNotSeekableError`, and TAR and single-file compressed streams open only
+  with `streaming=True`. To read a nested archive at random, pass `open_archive()`
+  the stream from `open()` under `seekable_members=True`.
 - **One stream may be live at a time.** Opening a second while the first is still
   open raises `ConcurrentAccessError` unless you opened with
   `concurrent_members=True`.

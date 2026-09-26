@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "machine": {
-    "python": "3.11.16",
-    "git": "ebbbb0e1d162",
-    "date": "2026-09-17",
+    "python": "3.11.15",
+    "git": "3c5df366945f",
+    "date": "2026-09-26",
     "rar": "/usr/bin/rar RAR 7.00   Copyright (c) 1993-2024 Alexander Roshal   26 Feb 2024",
     "unrar": "/usr/bin/unrar UNRAR 7.00 freeware      Copyright (c) 1993-2024 Alexander Roshal",
     "7z": "/usr/bin/7z 7-Zip 23.01 (x64) : Copyright (c) 1999-2023 Igor Pavlov : 2023-06-20",
@@ -149,9 +149,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "file1.txt=False, empty_file.txt=False, subdir/file2.txt=False, implicit_subdir/file3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -218,10 +218,10 @@
         },
         {
           "name": "seekable_opt_in",
-          "verdict": "DECLARED-NOT-DELIVERED",
+          "verdict": "OK",
           "declared": "SEEKABLE",
-          "observed": "also_secret.txt=False, secret.txt=False",
-          "detail": "'also_secret.txt' seekable=False codec=stored; 'secret.txt' seekable=False codec=stored"
+          "observed": "also_secret.txt=True, secret.txt=True",
+          "detail": ""
         },
         {
           "name": "seekable_default",
@@ -275,9 +275,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "also_secret.txt=True, secret.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "also_secret.txt=False, secret.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -394,9 +394,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "file1.txt=False, empty_file.txt=False, subdir/file2.txt=False, implicit_subdir/file3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -513,9 +513,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "file1.txt=False, empty_file.txt=False, subdir/file2.txt=False, implicit_subdir/file3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -632,9 +632,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "file1.txt=False, empty_file.txt=False, subdir/file2.txt=False, implicit_subdir/file3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -751,9 +751,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "file1.txt=False, empty_file.txt=False, subdir/file2.txt=False, implicit_subdir/file3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -870,9 +870,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "file1.txt=False, empty_file.txt=False, subdir/file2.txt=False, implicit_subdir/file3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -989,9 +989,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "file1.txt=False, empty_file.txt=False, subdir/file2.txt=False, implicit_subdir/file3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -1108,9 +1108,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "file1.txt=False, empty_file.txt=False, subdir/file2.txt=False, implicit_subdir/file3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -1227,9 +1227,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "file1.txt=False, empty_file.txt=False, subdir/file2.txt=False, implicit_subdir/file3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -1346,9 +1346,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "file1.txt=False, empty_file.txt=False, subdir/file2.txt=False, implicit_subdir/file3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -1465,9 +1465,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "empty_file.txt=True, file1.txt=True, implicit_subdir/file3.txt=True, subdir/file2.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "empty_file.txt=False, file1.txt=False, implicit_subdir/file3.txt=False, subdir/file2.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -1480,126 +1480,7 @@
           "name": "listing_cost",
           "verdict": "OK",
           "declared": "indexed",
-          "observed": "n=7 seeks=28 decomp=0 consumed=None",
-          "detail": ""
-        },
-        {
-          "name": "member_count",
-          "verdict": "OK",
-          "declared": "None",
-          "observed": "declared=None listed=7",
-          "detail": "None is allowed when a count would require a scan"
-        },
-        {
-          "name": "is_encrypted",
-          "verdict": "OK",
-          "declared": "header-level only (ArchiveInfo docstring)",
-          "observed": "archive=False members=[]",
-          "detail": ""
-        },
-        {
-          "name": "is_solid",
-          "verdict": "OK",
-          "declared": "is_solid=False",
-          "observed": "access_cost=direct",
-          "detail": ""
-        },
-        {
-          "name": "is_multivolume",
-          "verdict": "OK",
-          "declared": "False",
-          "observed": "False",
-          "detail": ""
-        },
-        {
-          "name": "source_path",
-          "verdict": "OK",
-          "declared": "seekable",
-          "observed": "seekable",
-          "detail": ""
-        },
-        {
-          "name": "access_cost",
-          "verdict": "OK",
-          "declared": "direct",
-          "observed": "delta=16 last=16 total=41 solid=False",
-          "detail": ""
-        },
-        {
-          "name": "seekable_opt_in",
-          "verdict": "OK",
-          "declared": "SEEKABLE",
-          "observed": "empty_file.txt=True, file1.txt=True, implicit_subdir/file3.txt=True, subdir/file2.txt=True",
-          "detail": ""
-        },
-        {
-          "name": "seekable_default",
-          "verdict": "OK",
-          "declared": "DEFAULT",
-          "observed": "seekable=False, seek raises",
-          "detail": ""
-        },
-        {
-          "name": "concurrent_default",
-          "verdict": "OK",
-          "declared": "DEFAULT",
-          "observed": "second open ConcurrentAccessError",
-          "detail": ""
-        },
-        {
-          "name": "concurrent_opt_in",
-          "verdict": "OK",
-          "declared": "CONCURRENT",
-          "observed": "overlapping open of 'empty_file.txt' and 'file1.txt'",
-          "detail": ""
-        },
-        {
-          "name": "source_pipe",
-          "verdict": "OK",
-          "declared": "forward_only (or refuse)",
-          "observed": "raise StreamNotSeekableError",
-          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
-        },
-        {
-          "name": "lifetime_default",
-          "verdict": "OK",
-          "declared": "closed on reader.close",
-          "observed": "ValueError: I/O operation on closed file.",
-          "detail": ""
-        },
-        {
-          "name": "lifetime_seekable",
-          "verdict": "OK",
-          "declared": "closed on reader.close",
-          "observed": "ValueError: I/O operation on closed file.",
-          "detail": ""
-        },
-        {
-          "name": "lifetime_stream_members",
-          "verdict": "OK",
-          "declared": "closed on reader.close",
-          "observed": "ValueError: I/O operation on closed file.",
-          "detail": ""
-        },
-        {
-          "name": "stream_members_seekable",
-          "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "empty_file.txt=True, file1.txt=True, implicit_subdir/file3.txt=True, subdir/file2.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
-        }
-      ]
-    },
-    {
-      "entry": "basic",
-      "key": "iso-joliet",
-      "skipped": null,
-      "checks": [
-        {
-          "name": "listing_cost",
-          "verdict": "OK",
-          "declared": "indexed",
-          "observed": "n=7 seeks=25 decomp=0 consumed=None",
+          "observed": "n=7 seeks=29 decomp=0 consumed=None",
           "detail": ""
         },
         {
@@ -1703,9 +1584,128 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "file1.txt=True, empty_file.txt=True, implicit_subdir/file3.txt=True, subdir/file2.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "file1.txt=False, empty_file.txt=False, implicit_subdir/file3.txt=False, subdir/file2.txt=False",
+          "detail": ""
+        }
+      ]
+    },
+    {
+      "entry": "basic",
+      "key": "iso-joliet",
+      "skipped": null,
+      "checks": [
+        {
+          "name": "listing_cost",
+          "verdict": "OK",
+          "declared": "indexed",
+          "observed": "n=7 seeks=26 decomp=0 consumed=None",
+          "detail": ""
+        },
+        {
+          "name": "member_count",
+          "verdict": "OK",
+          "declared": "None",
+          "observed": "declared=None listed=7",
+          "detail": "None is allowed when a count would require a scan"
+        },
+        {
+          "name": "is_encrypted",
+          "verdict": "OK",
+          "declared": "header-level only (ArchiveInfo docstring)",
+          "observed": "archive=False members=[]",
+          "detail": ""
+        },
+        {
+          "name": "is_solid",
+          "verdict": "OK",
+          "declared": "is_solid=False",
+          "observed": "access_cost=direct",
+          "detail": ""
+        },
+        {
+          "name": "is_multivolume",
+          "verdict": "OK",
+          "declared": "False",
+          "observed": "False",
+          "detail": ""
+        },
+        {
+          "name": "source_path",
+          "verdict": "OK",
+          "declared": "seekable",
+          "observed": "seekable",
+          "detail": ""
+        },
+        {
+          "name": "access_cost",
+          "verdict": "OK",
+          "declared": "direct",
+          "observed": "delta=16 last=16 total=41 solid=False",
+          "detail": ""
+        },
+        {
+          "name": "seekable_opt_in",
+          "verdict": "OK",
+          "declared": "SEEKABLE",
+          "observed": "empty_file.txt=True, file1.txt=True, implicit_subdir/file3.txt=True, subdir/file2.txt=True",
+          "detail": ""
+        },
+        {
+          "name": "seekable_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "seekable=False, seek raises",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_default",
+          "verdict": "OK",
+          "declared": "DEFAULT",
+          "observed": "second open ConcurrentAccessError",
+          "detail": ""
+        },
+        {
+          "name": "concurrent_opt_in",
+          "verdict": "OK",
+          "declared": "CONCURRENT",
+          "observed": "overlapping open of 'empty_file.txt' and 'file1.txt'",
+          "detail": ""
+        },
+        {
+          "name": "source_pipe",
+          "verdict": "OK",
+          "declared": "forward_only (or refuse)",
+          "observed": "raise StreamNotSeekableError",
+          "detail": "no CostReceipt; format refuses a pipe even with streaming=True"
+        },
+        {
+          "name": "lifetime_default",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_seekable",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "lifetime_stream_members",
+          "verdict": "OK",
+          "declared": "closed on reader.close",
+          "observed": "ValueError: I/O operation on closed file.",
+          "detail": ""
+        },
+        {
+          "name": "stream_members_seekable",
+          "verdict": "OK",
+          "declared": "forward-only (never seeks)",
+          "observed": "empty_file.txt=False, file1.txt=False, implicit_subdir/file3.txt=False, subdir/file2.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -1718,7 +1718,7 @@
           "name": "listing_cost",
           "verdict": "OK",
           "declared": "indexed",
-          "observed": "n=1 seeks=1 decomp=0 consumed=None",
+          "observed": "n=1 seeks=2 decomp=1 consumed=None",
           "detail": ""
         },
         {
@@ -1822,9 +1822,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "single-file=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "single-file=False",
+          "detail": ""
         }
       ]
     },
@@ -1837,7 +1837,7 @@
           "name": "listing_cost",
           "verdict": "OK",
           "declared": "indexed",
-          "observed": "n=1 seeks=1 decomp=0 consumed=None",
+          "observed": "n=1 seeks=2 decomp=1 consumed=None",
           "detail": ""
         },
         {
@@ -1941,9 +1941,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "single-file-meta=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "single-file-meta=False",
+          "detail": ""
         }
       ]
     },
@@ -1954,10 +1954,10 @@
       "checks": [
         {
           "name": "listing_cost",
-          "verdict": "MEASUREMENT-HOLE",
+          "verdict": "OK",
           "declared": "indexed",
-          "observed": "n=1 seeks=0 decomp=0 consumed=None",
-          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+          "observed": "n=1 seeks=1 decomp=1 consumed=None",
+          "detail": ""
         },
         {
           "name": "member_count",
@@ -2060,9 +2060,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "single-file=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "single-file=False",
+          "detail": ""
         }
       ]
     },
@@ -2073,10 +2073,10 @@
       "checks": [
         {
           "name": "listing_cost",
-          "verdict": "MEASUREMENT-HOLE",
+          "verdict": "OK",
           "declared": "indexed",
-          "observed": "n=1 seeks=0 decomp=0 consumed=None",
-          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+          "observed": "n=1 seeks=1 decomp=1 consumed=None",
+          "detail": ""
         },
         {
           "name": "member_count",
@@ -2179,9 +2179,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "single-file=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "single-file=False",
+          "detail": ""
         }
       ]
     },
@@ -2192,10 +2192,10 @@
       "checks": [
         {
           "name": "listing_cost",
-          "verdict": "MEASUREMENT-HOLE",
+          "verdict": "OK",
           "declared": "indexed",
-          "observed": "n=1 seeks=0 decomp=0 consumed=None",
-          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+          "observed": "n=1 seeks=1 decomp=1 consumed=None",
+          "detail": ""
         },
         {
           "name": "member_count",
@@ -2298,9 +2298,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "single-file=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "single-file=False",
+          "detail": ""
         }
       ]
     },
@@ -2311,10 +2311,10 @@
       "checks": [
         {
           "name": "listing_cost",
-          "verdict": "MEASUREMENT-HOLE",
+          "verdict": "OK",
           "declared": "indexed",
-          "observed": "n=1 seeks=0 decomp=0 consumed=None",
-          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+          "observed": "n=1 seeks=1 decomp=1 consumed=None",
+          "detail": ""
         },
         {
           "name": "member_count",
@@ -2417,9 +2417,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "single-file=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "single-file=False",
+          "detail": ""
         }
       ]
     },
@@ -2430,10 +2430,10 @@
       "checks": [
         {
           "name": "listing_cost",
-          "verdict": "MEASUREMENT-HOLE",
+          "verdict": "OK",
           "declared": "indexed",
-          "observed": "n=1 seeks=0 decomp=0 consumed=None",
-          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+          "observed": "n=1 seeks=1 decomp=1 consumed=None",
+          "detail": ""
         },
         {
           "name": "member_count",
@@ -2536,9 +2536,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "single-file=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "single-file=False",
+          "detail": ""
         }
       ]
     },
@@ -2549,10 +2549,10 @@
       "checks": [
         {
           "name": "listing_cost",
-          "verdict": "MEASUREMENT-HOLE",
+          "verdict": "OK",
           "declared": "indexed",
-          "observed": "n=1 seeks=0 decomp=0 consumed=None",
-          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+          "observed": "n=1 seeks=1 decomp=1 consumed=None",
+          "detail": ""
         },
         {
           "name": "member_count",
@@ -2655,9 +2655,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "single-file=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "single-file=False",
+          "detail": ""
         }
       ]
     },
@@ -2668,10 +2668,10 @@
       "checks": [
         {
           "name": "listing_cost",
-          "verdict": "MEASUREMENT-HOLE",
+          "verdict": "OK",
           "declared": "indexed",
-          "observed": "n=1 seeks=0 decomp=0 consumed=None",
-          "detail": "INDEXED but source_seek_count=0; cannot falsify a header walk"
+          "observed": "n=1 seeks=1 decomp=1 consumed=None",
+          "detail": ""
         },
         {
           "name": "member_count",
@@ -2774,9 +2774,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "single-file=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "single-file=False",
+          "detail": ""
         }
       ]
     },
@@ -2893,9 +2893,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
+          "declared": "forward-only (never seeks)",
           "observed": "empty_file.txt=False, file1.txt=False, implicit_subdir/file3.txt=False, subdir/file2.txt=False",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "detail": ""
         }
       ]
     },
@@ -3012,9 +3012,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "file1.txt=True, empty_file.txt=True, subdir/file2.txt=True, implicit_subdir/file3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "file1.txt=False, empty_file.txt=False, subdir/file2.txt=False, implicit_subdir/file3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -3131,9 +3131,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "also_secret.txt=True, secret.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "also_secret.txt=False, secret.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -3250,9 +3250,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
+          "declared": "forward-only (never seeks)",
           "observed": "also_secret.txt=False, secret.txt=False",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "detail": ""
         }
       ]
     },
@@ -3376,9 +3376,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "secret.txt=True, also_secret.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "secret.txt=False, also_secret.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -3495,9 +3495,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "also_secret.txt=True, not_secret.txt=True, secret.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "also_secret.txt=False, not_secret.txt=False, secret.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -3564,10 +3564,10 @@
         },
         {
           "name": "seekable_opt_in",
-          "verdict": "DECLARED-NOT-DELIVERED",
+          "verdict": "OK",
           "declared": "SEEKABLE",
-          "observed": "also_secret.txt=False, not_secret.txt=True, secret.txt=False",
-          "detail": "'also_secret.txt' seekable=False codec=stored; 'secret.txt' seekable=False codec=stored"
+          "observed": "also_secret.txt=True, not_secret.txt=True, secret.txt=True",
+          "detail": ""
         },
         {
           "name": "seekable_default",
@@ -3621,9 +3621,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "also_secret.txt=True, not_secret.txt=True, secret.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "also_secret.txt=False, not_secret.txt=False, secret.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -3740,9 +3740,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
+          "declared": "forward-only (never seeks)",
           "observed": "also_secret.txt=False, not_secret.txt=False, secret.txt=False",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "detail": ""
         }
       ]
     },
@@ -3866,9 +3866,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "not_secret.txt=True, secret.txt=True, also_secret.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "not_secret.txt=False, secret.txt=False, also_secret.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -3985,9 +3985,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
+          "declared": "forward-only (never seeks)",
           "observed": "also_secret.txt=False, secret.txt=False",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "detail": ""
         }
       ]
     },
@@ -4104,9 +4104,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "also_secret.txt=True, plain.txt=True, secret.txt=True, very_secret.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "also_secret.txt=False, plain.txt=False, secret.txt=False, very_secret.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -4173,10 +4173,10 @@
         },
         {
           "name": "seekable_opt_in",
-          "verdict": "DECLARED-NOT-DELIVERED",
+          "verdict": "OK",
           "declared": "SEEKABLE",
-          "observed": "also_secret.txt=False, plain.txt=True, secret.txt=False, very_secret.txt=False",
-          "detail": "'also_secret.txt' seekable=False codec=stored; 'secret.txt' seekable=False codec=stored; 'very_secret.txt' seekable=False codec=stored"
+          "observed": "also_secret.txt=True, plain.txt=True, secret.txt=True, very_secret.txt=True",
+          "detail": ""
         },
         {
           "name": "seekable_default",
@@ -4230,9 +4230,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "also_secret.txt=True, plain.txt=True, secret.txt=True, very_secret.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "also_secret.txt=False, plain.txt=False, secret.txt=False, very_secret.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -4349,9 +4349,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "large1.txt=False, large2.txt=False, large3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -4468,9 +4468,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "large1.txt=False, large2.txt=False, large3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -4587,9 +4587,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "large1.txt=False, large2.txt=False, large3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -4706,9 +4706,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
+          "declared": "forward-only (never seeks)",
           "observed": "large1.txt=False, large2.txt=False, large3.txt=False",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "detail": ""
         }
       ]
     },
@@ -4825,9 +4825,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "large1.txt=True, large2.txt=True, large3.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "large1.txt=False, large2.txt=False, large3.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -4951,9 +4951,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
-          "observed": "zeros.bin=True, repeated.txt=True",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "declared": "forward-only (never seeks)",
+          "observed": "zeros.bin=False, repeated.txt=False",
+          "detail": ""
         }
       ]
     },
@@ -5070,9 +5070,9 @@
         {
           "name": "stream_members_seekable",
           "verdict": "OK",
-          "declared": "not required to seek",
+          "declared": "forward-only (never seeks)",
           "observed": "stored.bin=False",
-          "detail": "MemberStreams.SEEKABLE exempts stream_members() yields"
+          "detail": ""
         }
       ]
     }

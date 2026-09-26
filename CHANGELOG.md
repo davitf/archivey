@@ -328,9 +328,12 @@ promise with that line; treat `0.2.0` as the first release of this library.
   without `seekable_members=True` and with or without `streaming=True`; `tell()` still
   works. Before, under `seekable_members=True` over a file source, the handles of ZIP,
   TAR, compressed TAR, non-solid RAR, ISO, directory and single-file archives could
-  seek, and the handles of solid 7z could not. To seek, open the member with random
-  `open()` under `seekable_members=True`. `tell()` on a RAR member decoded by `unrar`
-  no longer raises `OSError`.
+  seek, and the handles of solid 7z could not. A nested archive opened from such a
+  handle now gets a non-seekable source, even without a `seek()` call: ZIP, 7z, RAR
+  and ISO raise `StreamNotSeekableError`, and TAR and single-file streams need
+  `streaming=True`. To seek, or to open a nested archive at random, open the member
+  with random `open()` under `seekable_members=True`. `tell()` on a RAR member decoded
+  by `unrar` no longer raises `OSError`.
 
 - **`created` is a birth time or nothing.** It never holds Unix `st_ctime` (inode
   change), in any format. Where a writer stores `st_ctime`, or may, the time moves to
