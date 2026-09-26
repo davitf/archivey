@@ -2172,10 +2172,14 @@ class PpmdCodec(StreamCodec):
         # A corrupt PPMd8 payload can surface as SystemError from the C extension.
         if isinstance(exc, SystemError):
             return CorruptionError(f"Error reading PPMd stream: {exc!r}")
-        # The child process decoding a large member died: pyppmd crashes only on data
-        # it cannot decode (see ``ppmd_child``).
+        # The child process decoding a large member crashed (a fault signal, or its
+        # Windows NTSTATUS), which is what pyppmd does on data it cannot decode. Any
+        # other death is reported as ``ResourceLimitError`` or ``ReadError`` by
+        # ``PpmdChildDecoder.decode`` and never reaches here (see ``ppmd_child``).
         if isinstance(exc, PpmdChildError):
-            return CorruptionError(f"PPMd decoder crashed on this data: {exc}")
+            return CorruptionError(
+                f"PPMd decoder process crashed while decoding this member: {exc}"
+            )
         return None
 
 

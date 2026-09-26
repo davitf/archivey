@@ -435,11 +435,17 @@ class DecoderLimits:
             after which nothing more is asked of pyppmd. That costs memory: the
             held input, and about as much again while pyppmd copies it. A member
             larger than this field is decoded in a child Python process instead,
-            where a crash becomes :class:`~archivey.exceptions.CorruptionError`;
-            it still holds this much before handing over. Where no child process
-            can be started (a frozen application, a spawn the operating system
-            refuses, or a child that cannot import pyppmd), such a member raises
-            :class:`~archivey.exceptions.ResourceLimitError` instead.
+            where a crash (a fault signal such as SIGSEGV) becomes
+            :class:`~archivey.exceptions.CorruptionError`; it still holds this
+            much before handing over. A child killed by SIGKILL (most often the
+            out-of-memory killer), or one that dies allocating the member's model
+            under a memory cap, raises
+            :class:`~archivey.exceptions.ResourceLimitError` instead. So does
+            such a member where no child process can be started (a frozen
+            application, an interpreter that does not know its own path, a spawn
+            the operating system refuses, or a child that cannot import pyppmd).
+            A child ended any other way (SIGTERM, a plain exit status) raises
+            :class:`~archivey.exceptions.ReadError`: not a verdict on the data.
 
             16 MiB keeps the in-process peak near 32 MiB. At pyppmd's 2 to 8 MB/s
             a member that size takes seconds to decode, so the child's start-up

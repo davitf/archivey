@@ -5,18 +5,22 @@ a stream that has already ended; see ``dev-docs/known-issues.md``). Large PPMd m
 are therefore decoded in a child process that runs this file, so a crash costs the
 member and not the caller.
 
-This file is run as a script (``python -P ppmd_worker.py``), never imported by the
-worker: importing any ``archivey`` module imports the whole package, which costs more
-start-up time than the decode of a small member. It depends on the standard library
-and ``pyppmd`` only. The parent keeps all the decoding logic; the child owns one native
+This file is run as a script (``python -P ppmd_worker.py``) and imports nothing from
+``archivey``: importing any ``archivey`` module imports the whole package, which costs
+more start-up time than the decode of a small member. It depends on the standard
+library and ``pyppmd`` only. The parent keeps all the decoding logic; the child owns one native
 decoder and answers one request at a time.
 
 Protocol, all integers little-endian, over the child's stdin and stdout:
 
-- Parent sends ``<BBIB`` (variant, order, mem_size, restore_method) once.
+- Parent sends ``<BBIB`` (variant, order, mem_size, restore_method) once. The child
+  replies twice: once after ``import pyppmd``, and once after it has constructed the
+  decoder. The constructor allocates ``mem_size`` bytes, and pyppmd aborts the process
+  rather than raising when it cannot, so the parent can tell a child that died
+  allocating its model (between the two replies) from one that never started.
 - Then, per request: ``<iI`` (length, data size) and the data bytes. The child calls
   ``decode(data, length)``.
-- Every reply, including the one to the opening message: ``<BBBI`` (status, eof,
+- Every reply, including the two to the opening message: ``<BBBI`` (status, eof,
   needs_input, payload size) and the payload. Status 0 carries the decoded bytes;
   status 1 carries ``"<exception type name>\\n<message>"`` in UTF-8.
 - The parent closes stdin to end the child.
@@ -66,7 +70,11 @@ def main() -> None:
     decoder = None
     try:
         import pyppmd
-
+    except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
+        _reply(stdout, 1, decoder, _error_payload(exc))
+        return
+    _reply(stdout, 0, decoder, b"")
+    try:
         if variant == 8:
             decoder = pyppmd.Ppmd8Decoder(order, mem_size, restore_method)
         else:
