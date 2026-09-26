@@ -391,6 +391,20 @@ def test_stored_crc_under_four_bytes_does_not_confirm_a_password(
     assert recorded == []
 
 
+def test_unverified_zipcrypto_error_keeps_raising_after_a_seek_back() -> None:
+    """The password-or-damage error is a content verdict too: it stays (S28-K1)."""
+    blob = corrupt_zipcrypto_payload(
+        build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=zipfile.ZIP_STORED)
+    )
+    with open_archive(io.BytesIO(blob), password=RIGHT, seekable_members=True) as ar:
+        with ar.open(NAME) as stream:
+            with pytest.raises(EncryptionError, match=UNCONFIRMED) as first:
+                stream.read()
+            with pytest.raises(EncryptionError) as again:
+                stream.seek(0)
+            assert again.value is first.value
+
+
 def test_provider_encryption_error_is_not_rewritten_after_candidate_failure() -> None:
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA)
     collider = find_check_byte_collision(blob, NAME, RIGHT)

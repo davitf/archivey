@@ -24,6 +24,12 @@ asked for a verdict at all.
   **withholding** the reaching chunk; a truncation-shaped end delivers the
   best-effort prefix and raises `TruncatedError` on the read past it.
 - Stopping early is not verification, and is quiet.
+- **A verdict sticks to its stream.** Once a read or seek has raised a content verdict
+  (`CorruptionError`, `TruncatedError`, or an error raised from one), every later read
+  and seek on that stream raises it again. Without this, a caller who caught the
+  verdict and seeked back re-read the damaged member with no error, because a verifier
+  checks a member once. Decided by the maintainer on 2026-09-26 (sweep finding S28-K1);
+  it lives in `ArchiveStream`, so it holds for every format.
 - `close()` never raises a content error (target contract; best-effort on a few
   backends today).
 

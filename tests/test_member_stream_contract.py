@@ -162,6 +162,44 @@ def test_read_none_reads_to_eof(member: tuple[Path, str]) -> None:
         assert f.read(None) == b""
 
 
+@pytest.mark.parametrize(
+    "compression",
+    [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED],
+    ids=["stored", "deflated"],
+)
+def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> None:
+    """A stream that raised a content verdict raises it on every later read and seek.
+
+    It used to raise once: a caller who caught the CRC mismatch and seeked back read
+    the whole damaged member with no error (S28-K1).
+    """
+    import os
+
+    from archivey.exceptions import CorruptionError
+
+    payload = os.urandom(3000)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression) as zf:
+        zf.writestr("a.bin", payload)
+    blob = bytearray(buf.getvalue())
+    # Flip the stored CRC (central directory and local header), so the data decodes
+    # cleanly and only the digest at the end objects.
+    for sig, off in ((b"PK\x01\x02", 16), (b"PK\x03\x04", 14)):
+        at = blob.index(sig) + off
+        blob[at] ^= 0x01
+    with open_archive(io.BytesIO(bytes(blob)), seekable_members=True) as ar:
+        stream = ar.open("a.bin")
+        with pytest.raises(CorruptionError) as first:
+            stream.read()
+        with pytest.raises(CorruptionError) as again:
+            stream.seek(0)
+        assert again.value is first.value
+        with pytest.raises(CorruptionError) as after:
+            stream.read(10)
+        assert after.value is first.value
+        stream.close()
+
+
 def test_readinto_oversized_buffer_truncates_at_eof(member: tuple[Path, str]) -> None:
     # readinto into a buffer larger than the remaining data must return the actual byte
     # count (not the buffer size) and fill only those bytes — never reading into a

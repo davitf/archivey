@@ -236,6 +236,30 @@ def test_aes_tampered_hmac_raises_corruption(method: int) -> None:
             ar.read(ar.members()[0])
 
 
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+@requires("cryptography")
+def test_aes_hmac_mismatch_keeps_raising_after_a_seek_back(method: int) -> None:
+    """After the HMAC fails, seeking back and re-reading raises it again (S28-K1)."""
+    data = _build_aes_zip(
+        payload=_PAYLOAD,
+        password=_PASSWORD,
+        vendor_version=2,
+        strength=3,
+        method=method,
+        tamper_hmac=True,
+    )
+    with open_archive(
+        io.BytesIO(data), password=_PASSWORD, seekable_members=True
+    ) as ar:
+        with ar.open(ar.members()[0]) as stream:
+            with pytest.raises(CorruptionError, match="HMAC"):
+                stream.read()
+            with pytest.raises(CorruptionError, match="HMAC"):
+                stream.seek(0)
+            with pytest.raises(CorruptionError, match="HMAC"):
+                stream.read()
+
+
 @requires("cryptography")
 def test_aes_stage_read_none_reads_to_the_hmac() -> None:
     """``read(None)`` on the decrypt stage reads to the end and checks the HMAC (S28-K3)."""

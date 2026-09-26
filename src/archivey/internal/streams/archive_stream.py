@@ -26,7 +26,12 @@ from archivey.diagnostics import (
     DiagnosticSummary,
     StreamRewindContext,
 )
-from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.exceptions import (
+    ArchiveyError,
+    ArchiveyUsageError,
+    CorruptionError,
+    TruncatedError,
+)
 from archivey.internal.diagnostics_collector import resolve_collector
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.resume import ask_resume_offset
@@ -138,6 +143,9 @@ class ArchiveStream(ReadOnlyIOStream):
         # still calls ``close()`` on an instance whose ``__init__`` raised.
         self._finalizer: weakref.finalize | None = None
         self._verifier: MemberVerifier | None = verifier
+        # The content verdict this stream raised, if any. Every later read and seek
+        # raises it again (see ``_fail``).
+        self._verdict: ArchiveyError | None = None
         # A stream's diagnostics are everything emitted from its open onward: capture the
         # collector position here and difference against "now" on each query. No per-stream
         # bookkeeping is retained collector-side.
@@ -363,6 +371,28 @@ class ArchiveStream(ReadOnlyIOStream):
         )
 
     def _fail(self, e: Exception) -> NoReturn:
+        """Translate + stamp ``e`` and raise it, remembering a content verdict.
+
+        A content verdict is an error that says the member's data is damaged: a
+        ``CorruptionError`` or ``TruncatedError``, or an error raised from one (a
+        ZipCrypto member's password-or-damage ``EncryptionError``). The stream keeps
+        raising it on every later read and seek, so a caller who catches it and seeks
+        back cannot re-read the damaged member as clean data. A verifier checks a member
+        once, on the read that reaches its end.
+        """
+        try:
+            self._raise_translated(e)
+        except ArchiveyError as raised:
+            if self._verdict is None and _is_content_verdict(raised):
+                self._verdict = raised
+            raise
+
+    def _raise_verdict(self) -> None:
+        """Raise the content verdict this stream already raised, if there is one."""
+        if self._verdict is not None:
+            raise self._verdict
+
+    def _raise_translated(self, e: Exception) -> NoReturn:
         """Translate + stamp ``e`` and raise, or re-raise it unchanged."""
         if isinstance(e, ArchiveyError):
             self._stamp(e)
@@ -405,6 +435,7 @@ class ArchiveStream(ReadOnlyIOStream):
         # mid-stream needs a full-count layer in front (the ``ArchiveSource`` at the
         # boundary is one), not a loop here.
         inner = self._ensure_open()
+        self._raise_verdict()
         verifier = self._verifier
         try:
             if verifier is not None:
@@ -424,6 +455,7 @@ class ArchiveStream(ReadOnlyIOStream):
         if not self._seekable_hint:
             raise io.UnsupportedOperation("seek")
         inner = self._ensure_open()  # outside the try, same as read()
+        self._raise_verdict()
         before: int | None = None
         try:
             before = inner.tell()
@@ -606,3 +638,15 @@ class ArchiveStream(ReadOnlyIOStream):
 
     def __repr__(self) -> str:
         return f"<ArchiveStream inner={self._inner!r}>"
+
+
+def _is_content_verdict(error: BaseException) -> bool:
+    """Whether ``error``, or an error it was raised from, says the data is damaged."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if isinstance(current, (CorruptionError, TruncatedError)):
+            return True
+        seen.add(id(current))
+        current = current.__cause__
+    return False
