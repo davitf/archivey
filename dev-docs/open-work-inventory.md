@@ -7,7 +7,9 @@
 > Linear wins; when they disagree about reasoning, the registers win. GitHub issues are
 > deliberately not used for internal tracking — they stay clear for external reports.
 >
-> **A dated snapshot, not a register.** Snapshot: **2026-09-24** against `main` @ `3a2602c`.
+> **A dated snapshot, not a register.** Summary refreshed **2026-09-26** against `main` @
+> `436037c` (the #315 counts and the `open-issues.md` row); the body below is the
+> **2026-09-24** snapshot against `main` @ `3a2602c`.
 > Every item below lives somewhere canonical — [`open-issues.md`](open-issues.md),
 > [`threat-model.md`](threat-model.md), [`IDEAS.md`](IDEAS.md),
 > [`review/backlog.md`](../review/backlog.md), [`review/STATUS.md`](../review/STATUS.md),
@@ -28,17 +30,14 @@ Eleven registers hold open work, and **two bodies of work that no register cover
 codebase sweep that produced #315, whose reading half finished on 2026-09-20, and the two
 documentation rewrites. Those two are the largest open items on this page.
 
-**Every pull request is merged, and the #315 count is going down.** On 2026-09-23 no pull
-request is open apart from the hub. The hub holds **209 threads, 98 resolved and 111 open**,
-against 140 open at the previous revision: #393 cleared 26 in one PR, #394 closed S15-K4, and
-this revision closed four more after checking each against `main` (the PPMd window, the tar
-and ISO header allocations, and the `ConcatenatedFile` docstring). Nothing refills the pool
-now — every file has been read once — except new code, which arrives unswept (see [the
-coverage section](#the-first-pass-over-src-is-complete-and-countable)).
+**Where #315 stands on 2026-09-26: 223 threads, 6 open, none blocking, and the fix for
+each of the 6 is on `main`.** What is left is resolving those threads, not work. Nothing
+refills the pool — every file has been read once — except new code, which arrives unswept
+(see [the coverage section](#the-first-pass-over-src-is-complete-and-countable)).
 
-**Eight blocking findings remain**, down from eleven. #396 fixed the tar and ISO allocations
-and #398 fixed the PPMd window, by adding the public `DecoderLimits` type that the LZMA
-dictionary size and the KDF budget are now waiting to use.
+The history, for the reasoning below: 111 threads were open on 2026-09-23 and 45 on
+2026-09-24. The last eight **blocking** findings were closed by #407, #408, #410, #412 and
+#415 on 2026-09-24.
 
 **The four S20–S25 rulings davi gave have landed** (#415, 2026-09-24). What still waits on
 him is listed under [#315](#315--the-209-threads). The historical note: seventeen findings
@@ -49,9 +48,9 @@ names.
 | Register | Open items | Health |
 | --- | --- | --- |
 | Open PRs | **0 live**, 1 hub | Everything merged by 2026-09-24 14:15Z: twenty-seven since the previous revision, #406 to #432. Before that, everything merged by 2026-09-23 14:17Z. Seventeen merged after the previous revision (#388, 2026-09-21 12:45Z): #386, #387, #389, #391, #392, #393, #394, #395, #396, #397, #398, #399, #400, #401, #402, #403, #404. See [Open PRs](#open-prs) |
-| [#315](https://github.com/davitf/archivey/pull/315) review threads | 209 total, **164 resolved, 45 open** | No blocking finding is open. 36 of the 45 can be fixed now; 9 wait on davi. See [#315](#315--the-209-threads) |
+| [#315](https://github.com/davitf/archivey/pull/315) review threads | 223 total, **6 open** (2026-09-26) | No blocking finding is open, and each of the 6 is fixed on `main`. The 2026-09-24 breakdown of the then-45 is under [#315](#315--the-209-threads) |
 | `openspec/changes/` (11 active) | 9 unimplemented, 2 partly done | `prefixed-archive-detection` is 33/69 (15 of the open tasks struck 2026-09-25) and `detection-result-surface` 3/15 after its cut; the rest are 0/N (bar one task on `archive-origin-reporting`). **238 tasks unticked, 223 once the struck ones are set aside**, counted 2026-09-25 from the tree. `detection-evidence-ledger`, `single-archive-source` and `one-member-listing-per-reader` are archived |
-| [`open-issues.md`](open-issues.md) | 13 product candidates, 1 deliberate docs gap | P15/P16 are specced; P2/P3/P4/P5 are unowned; **P18 is new** since the first snapshot |
+| [`open-issues.md`](open-issues.md) | 9 product candidates open (P2–P6, P9, P11–P13), 1 deliberate docs gap | Refreshed 2026-09-26: P14 and P18 closed, P15–P17 closed earlier; P2/P3/P4/P5 are unowned |
 | [`formats/rar.md`](formats/rar.md) `§10` | **gone** — the section is deleted | It said to delete it once empty, and it is: 19 of 21 shipped, #19 and #21 last. The two that had not shipped moved to homes that outlive it — the stream-copy bound to §7, the `unrar` mask port to [`IDEAS.md`](IDEAS.md) — and both are tracked internally |
 | [`formats/rar.md`](formats/rar.md) `§7` | 5 open questions | Healthy; the duplicated entry was merged in #323 |
 | [`IDEAS.md`](IDEAS.md) | 55 entries | A park, **not a queue** — see below. Two entries have stale framing; see [Already dead](#already-dead) |
@@ -262,6 +261,9 @@ the reasoning is kept only so the closures are not re-litigated.
   long bullet. Merged in this pass.
 
 ## #315 — the 209 threads
+
+**2026-09-26: 223 threads, 6 open, none blocking; each of the 6 is fixed on `main`.** The
+rest of this section is the 2026-09-24 count and the analysis behind it.
 
 **2026-09-24 14:30Z: 164 resolved, 45 open, none blocking**, counted from the
 `ccr/review_threads` route after #422 to #432 merged. Twenty threads were resolved that
