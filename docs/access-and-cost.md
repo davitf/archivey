@@ -181,7 +181,19 @@ and the fix is to buffer the source to a file or a `BytesIO` first.
 A seekable stream is not that pipe case. RAR still needs a filesystem path for compressed
 member data (RARLAB `unrar` or `rar`), so a `BytesIO` or file object may be copied to a
 temp file when a compressed member is read. `archive.cost.notes` states that caveat at
-open. Path sources do not copy.
+open, with the limit that bounds it; when the limit already rules the copy out, the note
+says such a read will be refused instead. Path sources do not copy.
+
+The copy is of the whole archive (every volume, for a volume set), it happens on the
+first member read that goes through `unrar` rather than at open, and it is removed when
+the reader closes. Listing never needs it. `ArchiveyConfig.spool_limits` bounds it:
+`SpoolLimits.max_bytes` defaults to 1 GiB, counted across a volume set. An archive over
+the limit raises `SpoolLimitExceededError`, a `ResourceLimitError`, before anything is
+written, and later reads on that reader are refused the same way. `None`
+(`SpoolLimits.UNLIMITED`) removes the limit, and `0` refuses every copy, which leaves only
+the members archivey reads without `unrar` (stored members of a non-solid archive). The
+copy goes to the platform temporary directory; where that is memory-backed (`tmpfs`), the
+limit bounds memory rather than disk.
 
 ## Streaming mode is one pass
 

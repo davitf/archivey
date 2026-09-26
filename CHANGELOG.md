@@ -22,6 +22,12 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Added
 
+- **`ArchiveyConfig.spool_limits`** (`SpoolLimits`, with a `SpoolLimits.UNLIMITED`
+  preset): bounds the temp copy a RAR opened from a stream needs so `unrar` can read it.
+  `SpoolLimits.max_bytes` defaults to 1 GiB, counted across a volume set. An archive over
+  it raises the new `SpoolLimitExceededError`, a `ResourceLimitError` subclass, before
+  anything is written; `None` removes the limit. Before this the copy had no bound. Path
+  sources are never copied.
 - **`ArchiveReader.format_info`**: the `FormatInfo` that `open_archive`'s own detection
   produced (confidence, `detected_by`, `payload_offset`), or `None` under `format=`.
   `archivey info` prints it instead of detecting the file a second time.

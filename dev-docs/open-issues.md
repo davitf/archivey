@@ -216,27 +216,24 @@ nor `DIRECTORY`. Original write-up below.
   (once-per-reader would be the shape). Deliberately parked rather than left implicit.
 - **Refs:** `spec-drop-unimplemented-solid-warning` (#225); O-23.
 
-### P11. A RAR stream source silently costs a whole-archive disk copy, in no signal
+### P11. A RAR stream source silently costs a whole-archive disk copy, in no signal — **CLOSED**
 
-> **Half fixed; the measurement below is stale.** The *reporting* half shipped:
-> `format-rar` now requires the disk-copy caveat in `ar.cost.notes` at open for non-path
-> stream sources, and `rar_reader.py:119` emits it. Re-measured on `main` at `74a8f92`, a
-> `rar -m5` archive read from a `BytesIO` gives
-> `cost.notes = ('Reading a compressed member will copy the whole archive to disk so RARLAB
-> unrar or rar can read it.',)`, no diagnostics, and a temp `.rar` of full archive size —
-> so the `notes=()` line below is no longer what the library does, and the open question it
-> poses is answered. **The bound is what remains:** the caller is told and still cannot say
-> no, because no spool limit exists.
->
-> `openspec/changes/bounded-source-spooling` is the home for that half. It reframes P11 as an
-> *unmanaged instance* of a feature rather than a standalone defect, and puts every spool
-> under **one configured byte limit** (a count, an unlimited sentinel, or none) that also
-> lets a non-seekable source be spooled so seek-requiring formats can read a pipe.
-> Specs-first; the four design questions were settled on 2026-09-17 — a 1 GiB default limit,
-> a frozen `SpoolLimits` with an `UNLIMITED` classvar, a `SpoolLimitExceededError`
-> subclassing `ResourceLimitError`, and `streaming=True` reading forward from the spooled
-> file. The default is the load-bearing one: a RAR-from-stream read over 1 GiB starts
-> failing where it works today.
+**Fixed in two halves.** The *reporting* half shipped first: `format-rar` requires the
+disk-copy caveat in `ar.cost.notes` at open for non-path stream sources. The *bound*
+shipped in `openspec/changes/archive/2026-09-26-rar-stream-spool-limit/` (maintainer
+ruling 2026-09-26: "let's add a cap, it would be a config field"):
+`ArchiveyConfig.spool_limits` carries a frozen `SpoolLimits` whose `max_bytes` defaults to
+1 GiB, measured across a whole volume set. An archive over it raises
+`SpoolLimitExceededError` (a `ResourceLimitError`) before anything is written. When the
+size is not known up front, the copy stops at the limit, the partial file is removed, and
+later reads on that reader are refused without copying again. `None`
+(`SpoolLimits.UNLIMITED`) removes the limit, and the open-time caveat names the limit in
+force.
+
+What `openspec/changes/bounded-source-spooling` still holds is the rest of that design:
+spooling a *non-seekable* source so ZIP, 7z, RAR and ISO can read a pipe, a caller-named
+spool directory, and a free-space pre-flight. None of it is needed to bound the copy that
+already happens. The original write-up follows; the `notes=()` measurement in it is stale.
 
 - **Today:** `unrar` needs a filesystem path, so `RarReader._ensure_archive_path()`
   (`src/archivey/internal/backends/rar_reader.py:532-555`) writes the **entire archive**
@@ -732,6 +729,7 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 
 | Item | Closed by |
 | --- | --- |
+| **P11** A RAR stream source's disk copy for `unrar` is reported at open and bounded by `ArchiveyConfig.spool_limits` (1 GiB default) | `openspec/changes/archive/2026-09-26-rar-stream-spool-limit/` |
 | **P18** `detected_by="sfx_scan"` kept, not renamed: documented as an open set covering every prefixed hit (`docs/formats.md`, the `FormatInfo` docstring); the rename's home, `detection-result-surface`, was cut to the `detection=` handoff | Resolved 2026-09-25 |
 | **P14** Exported names documented nowhere: every name in `archivey.__all__` now renders on `docs/api.md`, and `tests/test_public_api.py` keeps it that way | #465 |
 | **P15** Single-file open-time validation decodes one byte; **P16** a corrupt `.bz2` raises under the accelerator | `openspec/changes/archive/2026-09-25-single-file-open-time-validation/` |

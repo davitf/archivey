@@ -912,8 +912,9 @@ size as an implicit side effect of open/read/validate/password-confirm. Silently
 spooling plaintext to a temp file is forbidden. A per-format strategy that
 inherently needs proportional temp storage (e.g. `format-rar`'s documented copy of
 a non-path archive source to disk, so `unrar` can seek it) is allowed only when
-declared in that format's capability spec. Caller's own buffering of a returned
-stream is unrestricted.
+declared in that format's capability spec, and a strategy that copies the archive
+source SHALL be bounded by `ArchiveyConfig.spool_limits`. Caller's own buffering of a
+returned stream is unrestricted.
 
 #### Scenario: bounded storage matrix
 
@@ -921,6 +922,7 @@ stream is unrestricted.
 | --- | --- |
 | Encrypted member, many candidates | Confirmation temp use bounded by a constant |
 | Backend can only serve via materialization | Strategy declared in format spec, not adopted silently |
+| Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `SpoolLimitExceededError` |
 
 ### Requirement: Explicit configuration object
 
@@ -949,6 +951,11 @@ class DecoderLimits:
     UNLIMITED: ClassVar["DecoderLimits"]
 
 @dataclass(frozen=True)
+class SpoolLimits:
+    max_bytes: int | None = 2**30
+    UNLIMITED: ClassVar["SpoolLimits"]
+
+@dataclass(frozen=True)
 class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
@@ -958,6 +965,7 @@ class ArchiveyConfig:
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
     decoder_limits: DecoderLimits = DecoderLimits()
+    spool_limits: SpoolLimits = SpoolLimits()
     detection_budget: DetectionBudget = BALANCED_BUDGET
     diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
     max_retained_diagnostic_references: int = 256
@@ -995,6 +1003,14 @@ auto-detection itself, and under `format=` the stub-volume check and the rescan 
 confirms an empty listing. It is annotated as a `DetectionBudget`, like the accelerator
 fields beside it: a preset member or its name is converted at construction, so the field
 always holds a budget.
+`spool_limits` SHALL bound the bytes one reader writes to temporary storage as a copy of
+its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
+volume set and across attempts: a copy refused once SHALL stay refused for that reader
+without writing again. `None` SHALL disable the guard; `SpoolLimits.UNLIMITED` sets it to
+`None`. A copy over the limit SHALL raise `SpoolLimitExceededError`, a subclass of
+`ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when the
+size is known, and otherwise before the written total passes the limit, with the partial
+copy removed. A path source is not copied and SHALL NOT be refused by it.
 `read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
 the format stores as member data (see "Link targets stored as member data are read only
 when configured"); like `listing_limits`, it holds for the reader's lifetime.
@@ -1011,7 +1027,7 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 
 | Case | Expected |
 | --- | --- |
-| `ArchiveyConfig()` | AUTO accelerators; documented extraction and listing defaults; COLLECT; budget 256; no callback |
+| `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB); COLLECT; budget 256; no callback |
 | `extract(..., extraction_limits=ExtractionLimits(max_ratio=100))` | 100:1 per-member ratio enforced (`safe-extraction`) |
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
