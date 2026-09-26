@@ -1,4 +1,4 @@
-# archive-reading — the rest of the spool limit on the config surface
+# archive-reading — the spool limit on the config surface
 
 ## MODIFIED Requirements
 
@@ -13,24 +13,13 @@ declared in that format's capability spec, and a strategy that copies the archiv
 source SHALL be bounded by `ArchiveyConfig.spool_limits`. Caller's own buffering of a
 returned stream is unrestricted.
 
-**A spool of the archive source is not implicit** when it is bounded by the caller's
-configured spool limit and recorded in `CostReceipt.notes` (`access-mode-and-cost`).
-The word this requirement turns on is *silently*: what it forbids is temp storage the
-caller could not have known about or bounded, and a configured limit removes both
-halves. Spooling proportional to **archive** size under that limit is therefore
-permitted, for a non-seekable source as much as for RAR's copy; spooling **plaintext
-member data** proportional to member size remains forbidden, and the spool limit does
-not license it.
-
 #### Scenario: bounded storage matrix
 
 | Case | Expected |
 | --- | --- |
 | Encrypted member, many candidates | Confirmation temp use bounded by a constant |
 | Backend can only serve via materialization | Strategy declared in format spec, not adopted silently |
-| Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `SpoolLimitExceededError` |
-| Non-seekable archive source spooled within the configured limit | Permitted; bounded by the limit and recorded in `CostReceipt.notes` |
-| Plaintext member data spooled proportional to member size | Forbidden; the spool limit does not license it |
+| Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `ResourceLimitError` |
 
 ### Requirement: Explicit configuration object
 
@@ -61,7 +50,6 @@ class DecoderLimits:
 @dataclass(frozen=True)
 class SpoolLimits:
     max_bytes: int | None = 2**30
-    spool_dir: str | os.PathLike[str] | None = None
     UNLIMITED: ClassVar["SpoolLimits"]
 
 @dataclass(frozen=True)
@@ -113,15 +101,12 @@ confirms an empty listing. It is annotated as a `DetectionBudget`, like the acce
 fields beside it: a preset member or its name is converted at construction, so the field
 always holds a budget.
 `spool_limits` SHALL bound the bytes one reader writes to temporary storage as a copy of
-its source (`format-rar`'s copy of a stream source for `unrar`, and a non-seekable source
-spooled so a seek-requiring format can open it), totalled across a
+its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
 volume set. `None` SHALL disable the guard; `SpoolLimits.UNLIMITED` sets it to `None`. A
-copy over the limit SHALL raise `SpoolLimitExceededError` (a `ResourceLimitError`)
-naming `SpoolLimits.max_bytes`,
+copy over the limit SHALL raise `ResourceLimitError` naming `SpoolLimits.max_bytes`,
 before any byte is written when the size is known, and otherwise before the written
 total passes the limit, with the partial copy removed. A path source is not copied and
-SHALL NOT be refused by it. `spool_dir` SHALL name the directory a spool is written to;
-`None` SHALL use the platform temporary directory.
+SHALL NOT be refused by it.
 `read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
 the format stores as member data (see "Link targets stored as member data are read only
 when configured"); like `listing_limits`, it holds for the reader's lifetime.
@@ -138,8 +123,7 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 
 | Case | Expected |
 | --- | --- |
-| `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB, platform temporary directory); COLLECT; budget 256; no callback |
-| Reader opened with `spool_limits=SpoolLimits(max_bytes=0)` | No operation on that reader writes the source to temporary storage |
+| `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB); COLLECT; budget 256; no callback |
 | `extract(..., extraction_limits=ExtractionLimits(max_ratio=100))` | 100:1 per-member ratio enforced (`safe-extraction`) |
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |

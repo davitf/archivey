@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Literal
 
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, SpoolLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -97,6 +97,7 @@ from archivey.internal.password import (
 )
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
+from archivey.internal.spool import SpoolBudget
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
@@ -139,22 +140,36 @@ _STREAM_VOLUMES_DISK_COPY_NOTE = (
 )
 
 
-def _rar_stream_copy_cost_notes(source: ArchiveSource) -> tuple[str, ...]:
+def _spool_bound_sentence(limits: SpoolLimits) -> str:
+    if limits.max_bytes is None:
+        return "The copy has no size limit (SpoolLimits.max_bytes=None)."
+    return (
+        f"An archive over SpoolLimits.max_bytes={limits.max_bytes} is refused "
+        f"instead of copied."
+    )
+
+
+def _rar_stream_copy_cost_notes(
+    source: ArchiveSource, limits: SpoolLimits
+) -> tuple[str, ...]:
     """Open-time caveat when member data needs a filesystem path for ``unrar``.
 
     A file source, or a joined set of files, gets no note. Both stream shapes get the
     same predictive caveat: the copy happens on the first read ``unrar`` has to serve,
     not at open. Keyed from the source's facts so a mixed set, whose file parts
     ``_materialize_stream_volumes`` copies alongside the streams, is labelled as the
-    streams it contains.
+    streams it contains. The caveat names the spool limit, so the caller reads the
+    worst case at open.
     """
     if source.path is not None:
         return ()
     if source.joined is not None:
         if source.volume_paths:
             return ()
-        return (_STREAM_VOLUMES_DISK_COPY_NOTE,)
-    return (_STREAM_SINGLE_DISK_COPY_NOTE,)
+        note = _STREAM_VOLUMES_DISK_COPY_NOTE
+    else:
+        note = _STREAM_SINGLE_DISK_COPY_NOTE
+    return (f"{note} {_spool_bound_sentence(limits)}",)
 
 
 # rarfile / RAR host_os values (parser maps RAR5 Windows→2, Unix→3).
@@ -771,7 +786,9 @@ class RarReader(BaseArchiveReader):
         self._volume0_parse_origin = 0  # set after sibling discovery when origin > 0
         # Open-time caveat from source shape, not from later materialization
         # (CostReceipt is a static snapshot; see access-mode-and-cost).
-        self._cost_notes = _rar_stream_copy_cost_notes(source)
+        self._cost_notes = _rar_stream_copy_cost_notes(
+            source, self._config.spool_limits
+        )
 
         if not source.seekable():
             raise StreamNotSeekableError(
@@ -889,6 +906,11 @@ class RarReader(BaseArchiveReader):
         """
         items = self._stream_volume_items
         ranges = self._stream_volume_ranges()
+        budget = self._spool_budget("every volume")
+        # The whole set is one copy, so the limit weighs the total. The joined source
+        # already knows every volume's size, so an oversized set is refused here,
+        # before the temp directory exists.
+        budget.check_total(sum(size for _, size in ranges))
         temp_dir = Path(tempfile.mkdtemp(prefix="archivey-rar-vol-"))
         self._temp_dir = temp_dir
         stem = "archive"
@@ -898,14 +920,18 @@ class RarReader(BaseArchiveReader):
         try:
             for index, item in enumerate(items, start=1):
                 dest = temp_dir / f"{stem}.part{index}.rar"
+                # A file volume goes through the budget too, not ``shutil.copy2``:
+                # its size was read when the set was joined, and a file that grew
+                # since then must not carry the copy past the limit.
                 if isinstance(item, Path):
-                    shutil.copy2(item, dest)
+                    with item.open("rb") as src, dest.open("wb") as out:
+                        budget.copy(src, out)
                 else:
                     start, size = ranges[index - 1]
                     view = self._shared.view(start, size)
                     try:
                         with dest.open("wb") as out:
-                            shutil.copyfileobj(view, out, length=1 << 20)
+                            budget.copy(view, out)
                     finally:
                         view.close()
                 paths.append(dest)
@@ -915,6 +941,17 @@ class RarReader(BaseArchiveReader):
             raise
         self._volume_paths = paths
         self._archive_path = paths[0]
+
+    def _spool_budget(self, what: str) -> SpoolBudget:
+        return SpoolBudget(
+            self._config.spool_limits,
+            what=(
+                f"reading this member needs RARLAB unrar, which reads only files, so "
+                f"{what} of the stream source must be copied to a temporary location"
+            ),
+            archive_name=self._archive_name,
+            source_format=ArchiveFormat.RAR,
+        )
 
     def _stream_volume_ranges(self) -> list[tuple[int, int]]:
         """``(start, size)`` per volume in the concatenated space this reader reads."""
@@ -1194,6 +1231,11 @@ class RarReader(BaseArchiveReader):
                 assert self._archive_path is not None
                 return self._archive_path
             # Single stream source: write one temp .rar for unrar.
+            budget = self._spool_budget("the whole archive")
+            source_size = self._shared.size
+            # Checked before mkstemp, so a refused archive leaves no temp file.
+            if source_size is not None:
+                budget.check_total(max(source_size - self._origin, 0))
             fd, name = tempfile.mkstemp(suffix=".rar")
             path = Path(name)
             try:
@@ -1204,11 +1246,9 @@ class RarReader(BaseArchiveReader):
                     # plain RAR is both smaller and one less thing to rely on.
                     view = self._shared.view(self._origin)
                     try:
-                        # Keep the 1 MiB chunk: each SharedView read takes the lock
-                        # and seek+reads, so copyfileobj's 64 KiB default is ~16×
-                        # the acquisitions. This method already holds the mkstemp
-                        # fd, so copyfileobj writes to it rather than opening dest.
-                        shutil.copyfileobj(view, out, length=1 << 20)
+                        # The budget stops the copy at the limit when the size above
+                        # was not known, or was wrong.
+                        budget.copy(view, out)
                     finally:
                         view.close()
             except BaseException:

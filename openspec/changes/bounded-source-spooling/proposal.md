@@ -1,5 +1,19 @@
 # One spool limit, and a bound on the spool that already happens
 
+> **Split on 2026-09-26: the bound on the spool that already happens has shipped.**
+> `openspec/changes/archive/2026-09-26-rar-stream-spool-limit/` added
+> `ArchiveyConfig.spool_limits` (a frozen `SpoolLimits` with `max_bytes`, default 1 GiB,
+> and `UNLIMITED`) and bounded RAR's stream-source copy with it, raising
+> `ResourceLimitError`, before `0.2.0`. What this change still holds: spooling a
+> **non-seekable** source so ZIP, 7z, RAR and ISO can read a pipe, `SpoolLimits.spool_dir`,
+> the `SpoolLimitExceededError` subclass, and the free-space pre-flight. Two spellings
+> moved in the split. `None` on `max_bytes` means **no limit**, as on every other limit
+> class, and "never spool" is `max_bytes=0`; that change's `design.md` gives the reason.
+> Where the text below says *none*, read `max_bytes=0`. Its `format-rar` delta is gone,
+> because the shipped block already says what it said, except the error type: when
+> `SpoolLimitExceededError` lands, re-derive a `format-rar` delta from the live block to
+> name it. The *Why* below predates the split and is kept as the record.
+
 ## Why
 
 `unrar` takes a filesystem path, not a Python object (ADR 0002: native RAR metadata,
@@ -50,7 +64,7 @@ performs. It does not distinguish *why* the spool was needed:
 ```
 SpoolLimits(max_bytes=<bytes>)     # spool when needed, up to this much
 SpoolLimits.UNLIMITED              # never refuse on size
-SpoolLimits(max_bytes=None)        # never spool
+SpoolLimits(max_bytes=0)           # never spool
 ```
 
 **The default is 1 GiB**, settled with the other three open questions on 2026-09-17. A byte
@@ -98,10 +112,10 @@ decompression-bomb territory, and it overlaps Topic 6 and the parked `stream-lay
   a `streaming=True` read into a random-access one. MODIFIED: the non-seekable fail-fast
   requirement gains its "unless spooling is permitted" clause, so ADR 0010's rule stays
   stated rather than quietly outgrown.
-- **`archive-reading`** — MODIFIED: the limit reaches the reader through `ArchiveyConfig`,
-  beside `listing_limits`, as a frozen `SpoolLimits` with an `UNLIMITED` classvar.
-- **`format-rar`** — MODIFIED: the existing materialization becomes subject to the limit
-  and to the cost note.
+- **`archive-reading`** — MODIFIED: `SpoolLimits` (shipped with `max_bytes` alone) gains
+  `spool_dir`, and the temp-storage requirement admits a bounded spool of a non-seekable
+  source.
+- ~~**`format-rar`**~~ — shipped in `rar-stream-spool-limit`.
 
 ## Impact
 

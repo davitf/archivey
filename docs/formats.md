@@ -224,6 +224,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **Encrypted old-style comments are not decoded.** A RAR 1.5 / 2.x comment block with
   its password or salt flag set gives `comment` as `None`. No available tool writes such
   a comment, so there is nothing to test a decode path against.
+- **A stream source is copied to disk for `unrar`.** `unrar` reads only files, so a RAR
+  opened from a `BytesIO` or a file object is copied whole to a temp file (a volume set,
+  to a temp directory) on the first member read that needs `unrar`, and removed on close.
+  Stored members of a non-solid archive are read in place and need no copy. The copy is
+  bounded by `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB):
+  over it, the read raises `ResourceLimitError` before anything is written. Open from a
+  path to avoid the copy. See [Access and cost](access-and-cost.md#non-seekable-sources).
 - Read-only — no RAR writer.
 
 ## ISO 9660

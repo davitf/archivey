@@ -241,13 +241,14 @@ class NameRewrittenError(ExtractionError):
 
 
 class ResourceLimitError(ArchiveyError):
-    """A configured listing, extraction, or decoder resource limit was exceeded.
+    """A configured listing, extraction, decoder or spool resource limit was exceeded.
 
     Covers :class:`~archivey.config.ListingLimits` materialization caps,
     parse-time ``max_members`` on 7z and RAR,
-    :class:`~archivey.config.ExtractionLimits` bomb guards, and
+    :class:`~archivey.config.ExtractionLimits` bomb guards,
     :class:`~archivey.config.DecoderLimits` caps on archive-declared decoder memory
-    and key-derivation work.
+    and key-derivation work, and :class:`~archivey.config.SpoolLimits`, the cap on
+    copying a stream source to temporary storage.
     Sibling of :class:`ExtractionError` (not a subclass): limit trips are not
     filter/path failures.
     """

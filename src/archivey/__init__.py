@@ -35,6 +35,7 @@ from archivey.config import (
     PasswordInput,
     PasswordProvider,
     PasswordRequest,
+    SpoolLimits,
 )
 from archivey.core import (
     detect_format,
@@ -150,6 +151,7 @@ __all__ = [
     "DecoderLimits",
     "ExtractionLimits",
     "ListingLimits",
+    "SpoolLimits",
     "AcceleratorMode",
     "PasswordInput",
     "PasswordRequest",

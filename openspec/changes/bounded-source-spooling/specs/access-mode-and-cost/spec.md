@@ -9,9 +9,9 @@ requires it, and SHALL bound every such spool by one configured limit. The limit
 accept three settings:
 
 - a **byte count** — spool when needed, up to that many bytes;
-- an **unlimited** sentinel, matching the `ExtractionLimits.UNLIMITED` /
-  `ListingLimits.UNLIMITED` pattern — never refuse on size;
-- **none** — never spool.
+- **unlimited** — `None`, which `SpoolLimits.UNLIMITED` sets, matching the
+  `ExtractionLimits.UNLIMITED` / `ListingLimits.UNLIMITED` pattern — never refuse on size;
+- **none** — `max_bytes=0`, never spool.
 
 The default SHALL be **1 GiB**. A byte count is the default rather than unlimited or none:
 unlimited leaves the behaviour that makes this a defect in place, and none removes a
