@@ -122,6 +122,8 @@ system SHALL refuse with `UnsupportedFeatureError`, before spawning `unar`:
   password);
 - a member or solid pass that needs a password that is not ASCII, or contains NUL
   (`unar` 1.10 does not decrypt with it);
+- every member of a multi-volume RAR5 set with encrypted headers (XADMaster 1.10.8
+  returns no data for it, and exits 0);
 - in a RAR5 solid archive, a member with data that follows an empty file, a
   directory or a link;
 - a compressed member whose extract version is below 20 (RAR 1.5 algorithm);
@@ -154,6 +156,7 @@ missing, the comment SHALL be `None`, as it is with `unrar`.
 | `unar` selected, encrypted RAR5 member, wrong password | `EncryptionError` |
 | `unar` selected, encrypted RAR 2.x-4.x member | `UnsupportedFeatureError` naming the RAR 2.x-4.x reason |
 | `unar` selected, non-ASCII password | `UnsupportedFeatureError` naming the password reason |
+| `unar` selected, RAR5 volume set with encrypted headers, right password | `UnsupportedFeatureError` |
 | `unar` selected, RAR5 solid, empty file first | Members with data after it are refused; listing is not |
 | `unar` selected, member before the first empty entry in a RAR5 solid pass | Read correctly from a run that names only readable members |
 | `unar` selected, RAR 1.5 compressed member | `UnsupportedFeatureError` |

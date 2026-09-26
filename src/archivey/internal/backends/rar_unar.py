@@ -44,6 +44,10 @@ REFUSE_RAR4_ENCRYPTED = (
 REFUSE_NON_ASCII_PASSWORD = (
     "unar 1.10 does not decrypt with a password that is not ASCII. " + _USE_UNRAR
 )
+REFUSE_HEADER_ENCRYPTED_VOLUMES = (
+    "unar 1.10.8 returns no data, and reports success, for a multi-volume RAR5 set "
+    "with encrypted headers, even with the right password. " + _USE_UNRAR
+)
 REFUSE_RAR15 = (
     "unar 1.10 returns no data, and reports success, for a member compressed with the "
     "RAR 1.5 algorithm. " + _USE_UNRAR
@@ -134,6 +138,20 @@ def _rar4_encrypted(archive: RarArchive, info: RarMemberInfo) -> bool:
     return archive.version != 5 and _needs_password(archive, info)
 
 
+def _archive_refusal(archive: RarArchive) -> str | None:
+    """Why no solid pass over this archive can use ``unar``, or ``None``."""
+    if archive.version != 5 and (
+        archive.has_header_encryption
+        or any(_needs_password(archive, info) for info in archive.members)
+    ):
+        return REFUSE_RAR4_ENCRYPTED
+    # Measured on the Homebrew bottle (XADMaster 1.10.8) with ``tinyvol_hp``: no data,
+    # exit 0. Debian's 1.10.1 reads the same set; the version is not told apart.
+    if archive.version == 5 and archive.has_header_encryption and archive.is_volume:
+        return REFUSE_HEADER_ENCRYPTED_VOLUMES
+    return None
+
+
 class UnarRarPolicy:
     """The refusals and pipe layout for one parsed archive, computed once."""
 
@@ -141,14 +159,11 @@ class UnarRarPolicy:
         self._archive = archive
         self._index = unar_entry_index(archive)
         self._solid_after_empty = _rar5_solid_after_empty(archive)
-        self._any_rar4_encryption = archive.version != 5 and (
-            archive.has_header_encryption
-            or any(_needs_password(archive, info) for info in archive.members)
-        )
+        self._archive_refusal = _archive_refusal(archive)
         self._pass_refusals: dict[int, str] = {}
         self._pass_indexes: list[int] | None = None
         self._pass_offsets: dict[int, int] = {}
-        if not self._any_rar4_encryption:
+        if self._archive_refusal is None:
             self._plan_solid_pass()
 
     def _plan_solid_pass(self) -> None:
@@ -189,6 +204,8 @@ class UnarRarPolicy:
         """Why ``unar`` must not read this member on its own, or ``None``."""
         if _rar4_encrypted(self._archive, info):
             return REFUSE_RAR4_ENCRYPTED
+        if self._archive_refusal == REFUSE_HEADER_ENCRYPTED_VOLUMES:
+            return self._archive_refusal
         if (
             info.extract_version is not None
             and info.extract_version < _FIRST_UNAR_SAFE_EXTRACT_VERSION
@@ -210,8 +227,8 @@ class UnarRarPolicy:
         In a RAR 2.x-4.x archive, one encrypted member anywhere refuses the whole run:
         ``unar`` would have to decode it to reach any later member of the solid stream.
         """
-        if self._any_rar4_encryption:
-            return REFUSE_RAR4_ENCRYPTED
+        if self._archive_refusal is not None:
+            return self._archive_refusal
         return self._pass_refusals.get(id(info))
 
     def solid_pass_emits_data(self) -> bool:

@@ -82,8 +82,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `RarDecompressor.UNAR` (`unar` 1.10 or later, which `brew install unar` provides on
   macOS), or `RarDecompressor.AUTO` (RARLAB when it is installed, `unar` otherwise,
   chosen once when the archive opens). `unar` reads less than `unrar`: encrypted RAR
-  2.x-4.x data, non-ASCII passwords, RAR 1.5 compression, some RAR5 solid layouts and
-  prefixed multi-volume sets are refused with `UnsupportedFeatureError` before it runs.
+  2.x-4.x data, non-ASCII passwords, header-encrypted RAR5 volume sets, RAR 1.5
+  compression, some RAR5 solid layouts and prefixed multi-volume sets are refused with
+  `UnsupportedFeatureError` before it runs.
   `unar` takes the password on its command line, so other local users can read it in
   the process list. See `docs/formats.md`.
 

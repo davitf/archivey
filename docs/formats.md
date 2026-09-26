@@ -200,6 +200,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   - encrypted data in a RAR 2.x-4.x archive, and every member of a solid one that has
     it (RAR5 encryption is read);
   - a password that is not ASCII;
+  - a multi-volume RAR5 set with encrypted headers (Homebrew's `unar` 1.10.8 returns
+    nothing for it);
   - in a RAR5 solid archive, a member that comes after an empty file, a directory or a
     link;
   - a member compressed with the RAR 1.5 algorithm;

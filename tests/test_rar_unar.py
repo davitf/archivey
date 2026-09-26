@@ -81,6 +81,8 @@ _PASSWORDS = {
 }
 # RAR 2.x-4.x encryption: unar 1.10.1 returns nothing even with the right password.
 _RAR4_ENCRYPTED = {"encryption__rar4.rar", "encrypted_header__rar4.rar"}
+# A RAR5 volume set with encrypted headers: XADMaster 1.10.8 returns nothing.
+_HEADER_ENCRYPTED_VOLUMES = {"tinyvol_hp.part1.rar"}
 
 
 def _parity_cases() -> list[object]:
@@ -145,6 +147,14 @@ def test_unar_matches_unrar_or_refuses(
         reason = _REFUSED.get((path.name, name))
         if path.name in _RAR4_ENCRYPTED and got.startswith("UnsupportedFeatureError"):
             assert "encrypted RAR 2.x-4.x data" in got
+            continue
+        if (
+            path.name in _HEADER_ENCRYPTED_VOLUMES
+            and password is not None
+            and not name.startswith("<")
+        ):
+            assert got.startswith("UnsupportedFeatureError"), (name, got)
+            assert "multi-volume RAR5 set with encrypted headers" in got
             continue
         if reason is not None:
             assert got.startswith("UnsupportedFeatureError"), (name, got)

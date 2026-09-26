@@ -230,7 +230,7 @@ without a failing sample, on the same no-data-in-the-stream grounds). The solid 
 names only the readable members by index, so `unar` never reaches the crash and loses no
 buffered output. RAR4 is not gated; the size and digest check on each member is the net.
 
-**Five more `unar` 1.10.1 behaviours found on the committed fixtures**, all handled:
+**Six more `unar` behaviours found on the committed fixtures**, all handled:
 
 - **RAR 1.5 compression** (`rar15-comment.rar`, `FILE1.TXT`, method 3 at version 15):
   `unar` writes nothing for the member and exits 0. Refused when a member's extract
@@ -254,6 +254,10 @@ buffered output. RAR4 is not gated; the size and digest check on each member is 
 - **A non-ASCII password** does not decrypt RAR5 data (measured with the `rar` writer
   and a password with `é`). Refused. A password starting with `-`, or holding quotes or
   backslashes, works because it is its own argv item.
+- **A multi-volume RAR5 set with encrypted headers** (`tinyvol_hp.part1.rar`): Debian's
+  1.10.1 decodes it with the right password, but the Homebrew bottle (XADMaster 1.10.8)
+  writes nothing and exits 0 (CI's macOS leg, 2026-09-26). Refused under every
+  version, since the finder does not tell 1.10.1 and 1.10.8 apart for this.
 
 Also different from `unrar p`, and handled in the pipe layout rather than refused: an
 all-entries run always includes file-version history rows, and a RAR3/4 symlink emits its
