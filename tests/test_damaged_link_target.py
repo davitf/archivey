@@ -10,7 +10,6 @@ itself is raised where the caller touches the link: opening it, or extracting it
 from __future__ import annotations
 
 import io
-import os
 import stat
 import subprocess
 import zipfile
@@ -62,18 +61,24 @@ def _damaged_aes_symlink() -> bytes:
 
 
 def _damaged_7z_symlink(tmp_path: Path) -> bytes:
-    """A stored (``-mx0``) 7z holding a real symlink whose data fails its CRC."""
+    """A stored (``-mx0``) 7z holding ``tree/link``, a symlink whose data fails its CRC.
+
+    Invoked as the `test_windows_reparse.py` fixtures are, which run on every CI
+    platform. 7z stores names as UTF-16, so the ASCII target occurs once, in the
+    link's data.
+    """
     tree = tmp_path / "tree"
     tree.mkdir()
     (tree / "target.txt").write_bytes(b"payload")
-    os.symlink(_TARGET.decode(), tree / "link")
+    (tree / "link").symlink_to(_TARGET.decode())
     archive = tmp_path / "link.7z"
-    subprocess.run(
-        ["7z", "a", "-snl", "-mx0", "-mhc=off", str(archive), "target.txt", "link"],
-        cwd=tree,
-        check=True,
+    done = subprocess.run(
+        ["7z", "a", "-snl", "-mx0", "-y", str(archive), "tree"],
+        cwd=tmp_path,
         capture_output=True,
+        text=True,
     )
+    assert done.returncode == 0, done.stdout + done.stderr
     return _flip_byte(archive.read_bytes(), _TARGET)
 
 
@@ -86,13 +91,13 @@ def _link_diagnostics(ar: ArchiveReader) -> list[SymlinkTargetContext]:
     return contexts
 
 
-def _assert_listed_targetless(ar: ArchiveReader) -> None:
-    (link,) = [m for m in ar.members() if m.name == "link"]
+def _assert_listed_targetless(ar: ArchiveReader, name: str = "link") -> None:
+    (link,) = [m for m in ar.members() if m.name == name]
     assert link.type is MemberType.SYMLINK
     assert link.link_target is None
     (context,) = _link_diagnostics(ar)
     assert context.reason == "target_data_damaged"
-    assert context.member_name == "link"
+    assert context.member_name == name
 
 
 def test_damaged_zip_link_target_keeps_the_listing() -> None:
@@ -120,8 +125,8 @@ def test_damaged_aes_link_target_keeps_the_listing(
 @requires_binary("7z")
 def test_damaged_7z_link_target_keeps_the_listing(tmp_path: Path) -> None:
     with open_archive(io.BytesIO(_damaged_7z_symlink(tmp_path))) as ar:
-        _assert_listed_targetless(ar)
-        assert ar.read(ar.get("target.txt")) == b"payload"
+        _assert_listed_targetless(ar, "tree/link")
+        assert ar.read(ar.get("tree/target.txt")) == b"payload"
 
 
 def test_damaged_link_target_in_a_streaming_pass() -> None:
