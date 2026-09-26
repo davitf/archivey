@@ -34,8 +34,7 @@ per folder) and keep the header-size bound only. RAR applies
 still caps at `members()`. TAR has no member table to parse at `open_archive`, so its
 caps can only bind the header walk: the random-access walk parses headers in batches
 that stop one header past `max_members` or `max_metadata_bytes`, so an over-limit tar
-costs the cap rather than the archive, for the text the cap weighs: PAX keywords in
-`extra` are not weighed ([`known-issues.md`](known-issues.md)). `None`
+costs the cap rather than the archive, PAX keywords and values included. `None`
 (`ListingLimits.UNLIMITED`) disables that bound.
 `max_metadata_bytes` remains a materialization guard on every format,
 including 7z and RAR. RAR also checks it at `open_archive` against the summed

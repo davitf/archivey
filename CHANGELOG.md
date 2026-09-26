@@ -80,6 +80,13 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **`max_metadata_bytes` weighs the keys in `extra`, not only the values.** TAR keeps
+  every PAX record in `extra["tar.pax_headers"]`, and a PAX keyword can be as long as
+  its value. A member with a 100 000-byte keyword and a one-byte value weighed 4 bytes,
+  so a 514 KiB `.tar.gz` could list under a 1 MiB cap while holding about 300 MB of
+  keywords. Keys now count on every format, and the TAR header walk stops at the cap
+  on keywords as it does on values.
+
 - **A corrupt or hostile PPMd member no longer crashes the Python process.** pyppmd
   segfaults when asked to keep decoding after a corrupt stream has ended early, and
   random bytes (a wrong password, or a crafted 7z or ZIP member) reach that state.

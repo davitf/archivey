@@ -128,14 +128,14 @@ def _header_text_bytes(info: tarfile.TarInfo) -> int:
     walk uses it to stop parsing where the byte cap would, without the base's running
     total. ``linkname`` counts only on a link: on any other member
     ``_drop_unweighed_link_name`` has already cleared it, so it is not retained.
-    PAX keywords are not counted, because the base does not weigh them either
-    (``dev-docs/known-issues.md``).
+    PAX records count keyword and value, as the base weighs both in
+    ``extra["tar.pax_headers"]``.
     """
     total = len(info.name) + len(info.uname) + len(info.gname)
     if info.issym() or info.islnk():
         total += len(info.linkname)
-    for value in info.pax_headers.values():
-        total += len(value)
+    for keyword, value in info.pax_headers.items():
+        total += len(keyword) + len(value)
     return total
 
 

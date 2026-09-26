@@ -21,20 +21,30 @@ def _str_retained_bytes(value: str) -> int:
     return n if value.isascii() else n * 4
 
 
+def _retained_bytes(value: object) -> int:
+    """Retained size of a ``str``/``bytes`` value; anything else weighs nothing."""
+    if isinstance(value, str):
+        return _str_retained_bytes(value)
+    if isinstance(value, bytes):
+        return len(value)
+    return 0
+
+
 def _extra_bytes(extra: Mapping[str, object]) -> int:
-    """Sum retained ``str``/``bytes`` lengths in ``extra`` (one-level nested dicts)."""
+    """Sum retained ``str``/``bytes`` lengths in ``extra`` (one-level nested dicts).
+
+    Keys count as well as values: a key is text the member holds for as long as the
+    value, and TAR copies every PAX record into ``extra["tar.pax_headers"]``, where the
+    keyword is as attacker-sized as the value.
+    """
     total = 0
-    for value in extra.values():
-        if isinstance(value, str):
-            total += _str_retained_bytes(value)
-        elif isinstance(value, bytes):
-            total += len(value)
-        elif isinstance(value, dict):
-            for nested in value.values():
-                if isinstance(nested, str):
-                    total += _str_retained_bytes(nested)
-                elif isinstance(nested, bytes):
-                    total += len(nested)
+    for key, value in extra.items():
+        total += _retained_bytes(key)
+        if isinstance(value, dict):
+            for nested_key, nested in value.items():
+                total += _retained_bytes(nested_key) + _retained_bytes(nested)
+        else:
+            total += _retained_bytes(value)
     return total
 
 
