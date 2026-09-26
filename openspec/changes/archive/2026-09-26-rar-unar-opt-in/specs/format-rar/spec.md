@@ -26,6 +26,7 @@ covered by `Read RAR member data with unar only when selected`.
 | RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed/encrypted member data; spawn is `rar p` |
 | RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
 | Listing only, both missing | No data dependency is checked |
+| Listing only, both missing, archive has a compressed RAR 1.5/2.x comment | The comment is `None`; nothing else depends on a data program |
 
 ### Requirement: Serve random access and extraction with bounded explicit temp use
 

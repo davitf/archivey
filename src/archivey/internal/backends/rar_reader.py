@@ -153,9 +153,12 @@ def _stream_volumes_disk_copy_note(program: str) -> str:
 def _stream_volume_name(stem: str, index: int, *, old_style: bool) -> str:
     """File name of volume ``index`` (1-based) when a stream set is written to disk.
 
-    Old-style names run ``.rar``, ``.r00`` … ``.r99``, ``.s00`` …, as RAR writes them.
+    Old-style names run ``.rar``, ``.r00`` … ``.r99``, ``.s00`` … ``.z99``, as RAR
+    writes them. That scheme has no name past volume 901, so a longer set falls back
+    to ``partN``; ``unrar`` reads either, and ``unar`` would not find the next volume
+    of such a set under any name.
     """
-    if not old_style:
+    if not old_style or index > 901:
         return f"{stem}.part{index}.rar"
     if index == 1:
         return f"{stem}.rar"

@@ -505,6 +505,8 @@ def test_stream_volume_set_reads_with_unar(names: tuple[str, ...]) -> None:
         (2, True, "a.r00"),
         (101, True, "a.r99"),
         (102, True, "a.s00"),
+        (901, True, "a.z99"),
+        (902, True, "a.part902.rar"),
     ],
 )
 def test_stream_volume_names_follow_the_set_scheme(

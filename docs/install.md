@@ -26,7 +26,8 @@ RAR **member data** also needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH
 The per-format detail lives on [Formats and extras](formats.md); the short version
 is that every format except RAR is a pip install away, and RAR **member data** needs
 RARLAB `unrar` or `rar` **6.0 or later** on `PATH` — not `unrar-free` or `7z`.
-Listing and metadata work without it. `unar` can stand in for `unrar` when you ask for it
+Listing and metadata work without it, except a compressed comment in a RAR 1.5 / 2.x
+archive, which is then `None`. `unar` can stand in for `unrar` when you ask for it
 with `ArchiveyConfig(rar_decompressor="unar")`, but it reads fewer RAR archives; see
 [Formats and extras](formats.md#rar).
 

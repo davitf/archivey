@@ -3,8 +3,10 @@
 ## Purpose
 
 Archivey parses RAR metadata natively (RAR 1.5 / 2.x through RAR5) with no
-`rarfile` dependency. Listing uses the native parser only; reading compressed or
-encrypted member data delegates to the system RARLAB `unrar` binary. RAR is
+`rarfile` dependency. Listing uses the native parser only (except a compressed
+RAR 1.5/2.x comment, which the data program decodes); reading compressed or
+encrypted member data delegates to the system RARLAB `unrar` binary, or to `unar`
+when selected. RAR is
 read-only, and `rarfile` is only a test oracle.
 
 This native-metadata/system-decompressor split follows the `archivey-dev`
@@ -232,6 +234,7 @@ covered by `Read RAR member data with unar only when selected`.
 | RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed/encrypted member data; spawn is `rar p` |
 | RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
 | Listing only, both missing | No data dependency is checked |
+| Listing only, both missing, archive has a compressed RAR 1.5/2.x comment | The comment is `None`; nothing else depends on a data program |
 
 ### Requirement: Constrain unrar argv by call site
 

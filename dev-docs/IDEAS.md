@@ -140,8 +140,8 @@
   (`internal/backends/rar_unrar.py`) runs the same policy as
   `internal/external/cli.py`'s `CliToolFinder`: `which` over two names, a banner probe
   with a timeout, a version floor, a stat-keyed cache that remembers a hung probe. The
-  two already share `stat_identity` and `terminate_process`; the loop, the cache and
-  the refusal wording are still two copies, so a probe or cache fix has to land twice.
+  finder already uses the shared `stat_identity` (and the `unrar` read paths the shared
+  `terminate_process`); the loop, the cache and the refusal wording are still two copies, so a probe or cache fix has to land twice.
   What stops a mechanical move: about sixty test sites in `test_rar_reader.py`,
   `test_rar_unrar_argv.py` and `test_rar_header_record_leniency.py` monkeypatch
   `_cached_unrar` and `_is_rarlab_unrar` or read the cache entries directly, and the

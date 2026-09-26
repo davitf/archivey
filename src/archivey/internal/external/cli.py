@@ -7,9 +7,9 @@ probe again, and a binary replaced on disk is probed afresh.
 
 This is the policy :func:`archivey.internal.backends.rar_unrar.find_rarlab_unrar`
 applies to RARLAB ``unrar``, written once for any program. That finder shares
-:func:`stat_identity` and :func:`terminate_process` with this module but still runs its
-own loop and cache; moving it onto :class:`CliToolFinder` is recorded in
-``dev-docs/IDEAS.md``.
+:func:`stat_identity` with this module, whose :func:`terminate_process` the ``unrar``
+read paths also use, but it still runs its own loop and cache; moving it onto
+:class:`CliToolFinder` is recorded in ``dev-docs/IDEAS.md``.
 """
 
 from __future__ import annotations
