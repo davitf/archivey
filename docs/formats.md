@@ -192,7 +192,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **`unar` instead of `unrar`:** `ArchiveyConfig.rar_decompressor` chooses the program.
   The default, `"auto"`, uses `unrar` when a usable one is on `PATH` and `unar`
   otherwise; the choice is made once, when the archive is opened, and a read `unar`
-  refuses is not retried with `unrar`. `"unrar"` and `"unar"` use only that program.
+  refuses is not retried with `unrar`. When `"auto"` picks `unar`, `ar.cost.notes` says
+  so at open. `"unrar"` and `"unar"` use only that program.
   `unar` 1.10 or later (`brew install unar`, `apt install unar`) is free software and
   easy to install on macOS, but it reads less than `unrar`. Archivey refuses these reads with
   `UnsupportedFeatureError` before `unar` runs, because `unar` gets them wrong,

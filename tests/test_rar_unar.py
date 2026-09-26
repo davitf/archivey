@@ -306,6 +306,7 @@ def test_auto_prefers_unrar(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(rar_reader, "open_unar_stdout", refuse)
     with open_archive(_CORPUS / "compressed.rar", config=_AUTO) as archive:
+        assert rar_reader.AUTO_CHOSE_UNAR_NOTE not in archive.cost.notes
         for member in archive.members():
             if member.is_file:
                 archive.read(member)
@@ -328,6 +329,8 @@ def test_auto_uses_unar_when_unrar_is_missing(
 
     monkeypatch.setattr(rar_reader, "open_unar_stdout", counting)
     assert _read_members(_CORPUS / "compressed.rar", _AUTO, streamed=False) == expected
+    with open_archive(_CORPUS / "compressed.rar", config=_AUTO) as archive:
+        assert archive.cost.notes[0] == rar_reader.AUTO_CHOSE_UNAR_NOTE
     assert spawned
 
 

@@ -834,7 +834,9 @@ unencrypted, unsplit members SHALL still be read directly. The system MUST NOT u
 unidentified `unar` SHALL raise `PackageNotInstalledError` naming `unar`. `auto` SHALL
 choose once per reader, when the archive opens; a read `unar` refuses MUST NOT be
 retried with `unrar`, and with neither program present `auto` SHALL raise the
-`PackageNotInstalledError` that names RARLAB `unrar` or `rar`.
+`PackageNotInstalledError` that names RARLAB `unrar` or `rar`. When `auto` chooses
+`unar`, `ar.cost.notes` SHALL say so at open, naming the password exposure and the
+`unrar` setting that avoids it.
 
 The argv SHALL be
 `unar -o - -q -nr -k skip [-p <password>] [-i] -- <absolute path> [index …]`:
@@ -876,7 +878,7 @@ missing, the comment SHALL be `None`, as it is with `unrar`.
 | Case | Expected |
 | --- | --- |
 | Default config (`auto`), RARLAB `unrar` present, compressed member | `unrar` is spawned; `unar` is not |
-| Default config (`auto`), only `unar` present, compressed member | `unar` is spawned |
+| Default config (`auto`), only `unar` present, compressed member | `unar` is spawned; `ar.cost.notes` says why at open |
 | `rar_decompressor="unrar"`, only `unar` present | `PackageNotInstalledError` names RARLAB `unrar` or `rar`; `unar` is not used |
 | `rar_decompressor="unar"`, `unar` missing, `unrar` present | `PackageNotInstalledError` names `unar`; `unrar` is not used |
 | `rar_decompressor="auto"`, RARLAB `unrar` present | `unrar` is spawned; `unar` is not |

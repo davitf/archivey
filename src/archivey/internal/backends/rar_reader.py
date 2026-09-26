@@ -182,6 +182,15 @@ def _resolve_decompressor(choice: RarDecompressor) -> RarDecompressor:
     return RarDecompressor.UNAR
 
 
+AUTO_CHOSE_UNAR_NOTE = (
+    "RAR member data is read with unar because no RARLAB unrar or rar 6.0 or later was "
+    "found. unar "
+    "reads fewer archives than unrar, and a password is passed on its command line, "
+    "where other local users can see it. Install unrar, or set "
+    "ArchiveyConfig.rar_decompressor to 'unrar', to avoid both."
+)
+
+
 def _stream_volume_name(stem: str, index: int, *, old_style: bool) -> str:
     """File name of volume ``index`` (1-based) when a stream set is written to disk.
 
@@ -847,6 +856,11 @@ class RarReader(BaseArchiveReader):
             if self._decompressor is RarDecompressor.UNAR
             else "RARLAB unrar or rar",
         )
+        if (
+            self._config.rar_decompressor is RarDecompressor.AUTO
+            and self._decompressor is RarDecompressor.UNAR
+        ):
+            self._cost_notes = (AUTO_CHOSE_UNAR_NOTE, *self._cost_notes)
 
         if not source.seekable():
             raise StreamNotSeekableError(
