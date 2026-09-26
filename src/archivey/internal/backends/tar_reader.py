@@ -482,7 +482,10 @@ class TarReader(BaseArchiveReader):
             fileobj=fileobj,
             mode=mode,
             errorlevel=1,  # raise on fatal read errors (truncation/corruption surface below)
-            encoding=self._encoding,  # None → tarfile applies its utf-8 default
+            # None → tarfile.ENCODING: UTF-8 on Windows, the process filesystem
+            # encoding on POSIX (usually UTF-8, but not under a non-UTF-8 locale).
+            # Only ustar/GNU names use it; a PAX path record is tried as UTF-8 first.
+            encoding=self._encoding,
         )
 
     def _translate_open_error(self, exc: Exception) -> ArchiveyError:

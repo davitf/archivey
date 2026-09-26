@@ -19,8 +19,10 @@ from archivey import (
     ArchiveyConfig,
     CompressionAlgorithm,
     CompressionMethod,
+    ExtractionLimits,
     MemberType,
     UnsupportedOperationError,
+    extract,
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
@@ -33,6 +35,7 @@ from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
     ReadError,
+    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
 )
@@ -122,17 +125,17 @@ def _tar_content_end(data: bytes) -> int:
     return end
 
 
-def _tar_sparse_gnu() -> bytes:
+def _tar_sparse_gnu(logical: int = 1024 * 1024) -> bytes:
     """A hand-built old-GNU-format sparse tar whose logical size ≫ packed size.
 
     Constructed in pure Python (no system ``tar``, so it runs identically on every OS —
-    BSD/Windows ``tar`` reject ``--sparse``). One 3-byte sparse region carried by a 1 MiB
-    logical file: the physical next-header offset (``offset_data + roundup(3)``) is far
-    below ``offset_data + roundup(logical size)``, which is exactly the layout that used to
-    false-negative the RA EOF probe. Verified read back through stdlib ``tarfile``.
+    BSD/Windows ``tar`` reject ``--sparse``). One 3-byte sparse region carried by a
+    ``logical``-byte file (1 MiB by default): the physical next-header offset
+    (``offset_data + roundup(3)``) is far below ``offset_data + roundup(logical size)``,
+    which is exactly the layout that used to false-negative the RA EOF probe. Verified
+    read back through stdlib ``tarfile``.
     """
     physical = b"xyz"
-    logical = 1024 * 1024
 
     def octal(value: int, width: int) -> bytes:
         return ("%0*o" % (width - 1, value)).encode() + b"\x00"
@@ -808,6 +811,27 @@ def test_sparse_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> N
     assert members
     assert members[0].is_sparse
     assert _eof_warnings(caplog) == []
+
+
+def test_sparse_member_extracts_dense_and_counts_toward_ratio(tmp_path: Path) -> None:
+    # docs/formats.md promises both halves: the holes are written as zeros, and those
+    # zeros count as output for the archive-wide ratio limit. 10 MiB of logical data in
+    # a 2 KiB tar is far past the default max_ratio of 1000, and past the 5 MiB
+    # activation threshold, so the default limits must refuse it.
+    logical = 10 * 1024 * 1024
+    archive = tmp_path / "sparse.tar"
+    archive.write_bytes(_tar_sparse_gnu(logical))
+
+    with pytest.raises(ResourceLimitError):
+        extract(archive, tmp_path / "default")
+
+    out = tmp_path / "unlimited"
+    extract(archive, out, limits=ExtractionLimits(max_ratio=None))
+    written = out / "sparse.bin"
+    assert written.stat().st_size == logical
+    with written.open("rb") as f:
+        assert f.read(3) == b"xyz"
+        assert f.read(1024 * 1024).count(0) == 1024 * 1024
 
 
 def _tar_sparse_pax_1_0() -> bytes:
