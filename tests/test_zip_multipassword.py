@@ -405,6 +405,31 @@ def test_unverified_zipcrypto_error_keeps_raising_after_a_seek_back() -> None:
             assert again.value is first.value
 
 
+def test_stored_crc_floor_counts_the_body_not_the_declared_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member that declares 4 plaintext bytes but stores none still cannot confirm
+    a password on its CRC (the empty body's CRC is 0, like the declared one)."""
+    blob = bytearray(
+        build_zipcrypto_zip(RIGHT, b"small.txt", b"", compression=zipfile.ZIP_STORED)
+    )
+    blob[22:26] = (4).to_bytes(4, "little")  # local header file_size
+    cd = blob.index(b"PK\x01\x02")
+    blob[cd + 24 : cd + 28] = (4).to_bytes(4, "little")  # central directory file_size
+    recorded: list[bytes] = []
+    original = password_module._PasswordCandidates.record_success
+
+    def spy(self: Any, password: bytes) -> None:
+        recorded.append(password)
+        original(self, password)
+
+    monkeypatch.setattr(password_module._PasswordCandidates, "record_success", spy)
+    with open_archive(io.BytesIO(bytes(blob)), password=[b"also-wrong", RIGHT]) as ar:
+        with contextlib.suppress(ArchiveyError):
+            ar.read("small.txt")
+    assert recorded == []
+
+
 def test_provider_encryption_error_is_not_rewritten_after_candidate_failure() -> None:
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA)
     collider = find_check_byte_collision(blob, NAME, RIGHT)

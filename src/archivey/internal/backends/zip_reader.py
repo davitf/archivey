@@ -1410,8 +1410,11 @@ class ZipReader(BaseArchiveReader):
         - **One possible password:** accept it on the cheap check. The CRC (or HMAC)
           at EOF is the real test, and a stream abandoned before it reports
           ``ENCRYPTED_MEMBER_UNVERIFIED``.
-        - **Several, STORED ZipCrypto:** nothing but the whole-member CRC can tell
-          them apart; one shared ciphertext pass decides (:meth:`_open_stored_confirmed`).
+        - **Several, STORED ZipCrypto, at least**
+          :data:`~archivey.internal.password_confirm.PASSWORD_CONFIRM_MIN_VERIFIED_BYTES`
+          **long:** nothing but the whole-member CRC can tell them apart; one shared
+          ciphertext pass decides (:meth:`_open_stored_confirmed`). A smaller member's
+          CRC cannot confirm a password, so it takes the bounded confirm below.
         - **Several, otherwise:** each candidate runs a bounded confirm: the CRC when
           it is in reach, codec rejection for a codec that rejects random input, and
           for WinZip AES the HMAC, which covers the whole member.
@@ -1467,10 +1470,14 @@ class ZipReader(BaseArchiveReader):
         if (
             not hmac_anchor
             and method == zipfile.ZIP_STORED
-            and info.file_size >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES
+            and min(info.file_size, info.compress_size - ZIPCRYPTO_HEADER_LEN)
+            >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES
         ):
             # A CRC over fewer bytes can reject a candidate but not confirm one, so a
             # smaller member takes the bounded confirm below, which never promotes it.
+            # Both sizes are the archive's word: the declared plaintext and the body
+            # the CRC pass will read. ``_open_stored_confirmed`` also checks the bytes
+            # the pass actually covered, for a file that ends early.
             winner = self._open_stored_confirmed(info, member, member_name=member_name)
             return self._verified_member_stream(
                 decode_body(stage(winner)), info, member, member_name
@@ -1700,7 +1707,10 @@ class ZipReader(BaseArchiveReader):
 
         A STORED member has no decompressor to reject a wrong key, and ZipCrypto's 1-byte
         header check admits ~1/256 of wrong passwords, so a full CRC pass over the member's
-        plaintext is the only way to disambiguate. To keep that pass single and bounded:
+        plaintext is the only way to disambiguate. The caller sends only a member whose
+        declared sizes clear ``PASSWORD_CONFIRM_MIN_VERIFIED_BYTES``, and a CRC match
+        over fewer bytes than that (a file that ends early) confirms nothing here either.
+        To keep that pass single and bounded:
 
         1. **Collect survivors** — run every static candidate through the cheap 1-byte
            check; keep the ~1/256 that pass.
@@ -1735,9 +1745,15 @@ class ZipReader(BaseArchiveReader):
                 try:
                     raw.seek(ZIPCRYPTO_HEADER_LEN)  # every pass starts at the body
                     crcs = parallel_plaintext_crc32(survivors, header, raw)
+                    covered = raw.tell() - ZIPCRYPTO_HEADER_LEN
                 except _ZIP_MEMBER_READ_ERRORS as exc:
                     self._reraise_member_error(exc, member_name)
-                winner = first_crc_match(expected_crc, crcs)
+                # A CRC over fewer bytes than the floor cannot confirm a password.
+                winner = (
+                    first_crc_match(expected_crc, crcs)
+                    if covered >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES
+                    else None
+                )
                 if winner is None:
                     failure = EncryptionError(
                         "Password candidate failed integrity validation for this ZIP member"
