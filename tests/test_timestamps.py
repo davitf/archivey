@@ -6,7 +6,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from archivey.internal.timestamps import filetime_to_datetime, unix_to_datetime
+from archivey.internal.timestamps import (
+    filetime_to_datetime,
+    unix32_to_datetime,
+    unix_to_datetime,
+)
 
 _EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
 
@@ -83,3 +87,21 @@ def test_unix_to_datetime_pre_1970(seconds: float, expected: datetime) -> None:
 )
 def test_unix_to_datetime_out_of_range_is_none(seconds: float) -> None:
     assert unix_to_datetime(seconds) is None
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (-(2**31), datetime(1901, 12, 13, 20, 45, 52, tzinfo=timezone.utc)),
+        (-1, datetime(1969, 12, 31, 23, 59, 59, tzinfo=timezone.utc)),
+        (0, datetime(1970, 1, 1, tzinfo=timezone.utc)),
+        (2**31 - 1, datetime(2038, 1, 19, 3, 14, 7, tzinfo=timezone.utc)),
+        (2**32 - 1, datetime(2106, 2, 7, 6, 28, 15, tzinfo=timezone.utc)),
+    ],
+)
+def test_unix32_to_datetime_covers_every_32_bit_value(
+    seconds: int, expected: datetime
+) -> None:
+    # The extremes of a signed and an unsigned 32-bit field, so no value such a field
+    # holds needs a None case.
+    assert unix32_to_datetime(seconds) == expected

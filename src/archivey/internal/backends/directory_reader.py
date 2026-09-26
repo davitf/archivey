@@ -321,9 +321,9 @@ class DirectoryReader(BaseArchiveReader):
         # must route through that helper.
         #
         # Timestamps are guarded like every backend's (see internal/timestamps.py): a
-        # network/FUSE filesystem can report out-of-range values, and on Windows even
-        # tz-aware fromtimestamp raises OSError for them — one bad file must not sink
-        # the whole walk.
+        # network/FUSE filesystem can report a value outside datetime's range, which
+        # lists as None rather than sinking the whole walk. A pre-1970 value is a real
+        # date on every platform.
         modified = _stat_datetime(st.st_mtime)
         accessed = _stat_datetime(st.st_atime)
         # st_birthtime is the true creation time but only exists on some platforms

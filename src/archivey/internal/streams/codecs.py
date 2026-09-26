@@ -92,7 +92,7 @@ from archivey.internal.streams.zstd_framing import (
 from archivey.internal.streams.zstd_framing import (
     regular_frame_behind_skippable_frames,
 )
-from archivey.internal.timestamps import unix_to_datetime
+from archivey.internal.timestamps import unix32_to_datetime
 from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
@@ -1392,7 +1392,7 @@ class GzipCodec(StreamCodec):
         flg = header[3]
         mtime = int.from_bytes(header[4:8], "little")
         if mtime != 0:
-            member.modified = unix_to_datetime(mtime)
+            member.modified = unix32_to_datetime(mtime)
 
         pos = 10
         if flg & 0x04:  # FEXTRA: 2-byte length + data

@@ -2,12 +2,14 @@
 
 The NTFS FILETIME conversion (100 ns ticks since 1601-01-01 UTC → ``datetime``) is used by
 every backend that reads Windows-origin timestamps — ZIP's NTFS extra field, the native
-7z reader, and RAR5 FILETIME extras — and the Unix-seconds one by TAR, ZIP's extended
+7z reader, and RAR5 FILETIME extras — and the Unix-seconds ones by TAR, ZIP's extended
 timestamp, RAR, gzip and the directory backend, so each lives here rather than being
-copy-pasted per backend. Both are ``datetime`` + ``timedelta`` arithmetic, which gives
+copy-pasted per backend. All are ``datetime`` + ``timedelta`` arithmetic, which gives
 the same answer on every platform and raises ``OverflowError`` everywhere for a value
-outside ``datetime``'s range. That guard is the load-bearing part: a hostile timestamp
-must degrade to ``None`` + a reported issue, never sink the whole listing.
+outside ``datetime``'s range. For a field wide enough to hold such a value that guard is
+the load-bearing part: a hostile timestamp must degrade to ``None`` + a reported issue,
+never sink the whole listing. A 32-bit Unix field cannot hold one, so
+:func:`unix32_to_datetime` has no failure case.
 """
 
 from __future__ import annotations
@@ -38,6 +40,17 @@ def unix_to_datetime(seconds: float) -> datetime | None:
         return _UNIX_EPOCH + timedelta(seconds=seconds)
     except (OverflowError, ValueError):
         return None
+
+
+def unix32_to_datetime(seconds: int) -> datetime:
+    """A 32-bit Unix seconds field (signed or unsigned) as an aware UTC datetime.
+
+    The widest such field spans 1901-12-13 (``-2**31``) to 2106-02-07 (``2**32 - 1``),
+    well inside ``datetime``'s range, so unlike :func:`unix_to_datetime` this cannot
+    fail and has no ``None`` case for a caller to handle. ZIP's extended timestamp,
+    RAR's Unix times and gzip's MTIME are such fields.
+    """
+    return _UNIX_EPOCH + timedelta(seconds=seconds)
 
 
 @dataclass(frozen=True)

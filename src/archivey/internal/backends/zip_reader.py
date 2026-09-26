@@ -132,7 +132,7 @@ from archivey.internal.streams.verify import VerifyingStream
 from archivey.internal.timestamps import (
     TimestampIssue,
     filetime_to_datetime,
-    unix_to_datetime,
+    unix32_to_datetime,
 )
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import quoted
@@ -534,22 +534,9 @@ def _zip_timestamps(
                     ut_field[cursor : cursor + 4], "little", signed=True
                 )
                 cursor += 4
-                # A signed field: a pre-1970 date is legitimate, and unix_to_datetime
-                # reads it the same on every platform.
-                when = unix_to_datetime(ts)
-                if when is None:
-                    issues.append(
-                        TimestampIssue(
-                            field=ut_name,
-                            source="extended",
-                            value_repr=repr(ts),
-                            message=(
-                                f"Invalid ZIP extended timestamp for "
-                                f"{quoted(info.filename)}: {ts!r}"
-                            ),
-                        )
-                    )
-                    continue
+                # A signed 32-bit field: a pre-1970 date is legitimate, and every
+                # value it can hold is a valid datetime on every platform.
+                when = unix32_to_datetime(ts)
                 if bit == 0x01:
                     modified = when
                 elif bit == 0x02:
