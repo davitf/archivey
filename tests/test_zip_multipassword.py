@@ -317,6 +317,32 @@ def test_structural_bad_zip_is_corruption_not_password_ambiguity() -> None:
             ar.open(NAME)
 
 
+def test_stored_confirm_reads_through_the_validated_local_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The STORED CRC pass never runs over a member the open would refuse (S28-K5).
+
+    It used to parse the local header by hand, skipping the name, data-offset and
+    overlap checks, so it decrypted the whole member before the open raised.
+    """
+    blob = bytearray(
+        build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=zipfile.ZIP_STORED)
+    )
+    blob[30] ^= 0x01  # local-header name no longer matches the central directory
+    passes: list[int] = []
+    original = zip_reader.parallel_plaintext_crc32
+
+    def counting(*args: Any, **kwargs: Any) -> list[tuple[bytes, int]]:
+        passes.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(zip_reader, "parallel_plaintext_crc32", counting)
+    with open_archive(io.BytesIO(blob), password=[b"also-wrong", RIGHT]) as ar:
+        with pytest.raises(CorruptionError, match="differ"):
+            ar.open(NAME)
+    assert passes == []
+
+
 def test_provider_encryption_error_is_not_rewritten_after_candidate_failure() -> None:
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA)
     collider = find_check_byte_collision(blob, NAME, RIGHT)

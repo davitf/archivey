@@ -386,7 +386,10 @@ class ArchiveStream(ReadOnlyIOStream):
             raise translated from e
         raise e
 
-    def read(self, n: int = -1, /) -> bytes:
+    def read(self, n: int | None = -1, /) -> bytes:
+        # ``None`` reads to EOF, as on any ``io`` stream.
+        if n is None:
+            n = -1
         # _ensure_open is outside the try: its read-after-close ValueError is the
         # wrapper's own (plain file semantics, not translated), and a lazy open failure
         # is already routed through _fail inside it.

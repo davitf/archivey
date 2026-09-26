@@ -154,6 +154,14 @@ def test_read_at_eof_returns_empty(member: tuple[Path, str]) -> None:
         assert f.read(64) == b""
 
 
+def test_read_none_reads_to_eof(member: tuple[Path, str]) -> None:
+    # ``None`` means "to EOF" on every ``io`` stream (S28-K3); it used to raise TypeError.
+    source, name = member
+    with open_archive(source) as ar, ar.open(name) as f:
+        assert f.read(None) == CONTENT
+        assert f.read(None) == b""
+
+
 def test_readinto_oversized_buffer_truncates_at_eof(member: tuple[Path, str]) -> None:
     # readinto into a buffer larger than the remaining data must return the actual byte
     # count (not the buffer size) and fill only those bytes — never reading into a

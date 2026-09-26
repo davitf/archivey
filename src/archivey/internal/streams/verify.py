@@ -429,7 +429,7 @@ class MemberVerifier:
                 self._finish(inner)
         return b"".join(chunks)
 
-    def read(self, inner: BinaryIO, n: int = -1) -> bytes:
+    def read(self, inner: BinaryIO, n: int | None = -1) -> bytes:
         """Read from ``inner``, update digests/bounds, and verify on clean EOF.
 
         Bounded ``read(n)`` is full-count by way of one ``inner.read`` — the inner is
@@ -437,6 +437,9 @@ class MemberVerifier:
         rather than retry (ADR 0014). A size-declared reaching read that fails
         digest / over-run raises and returns no bytes for that call.
         """
+        # ``None`` reads to EOF, as on any ``io`` stream.
+        if n is None:
+            n = -1
         # read(0) is a no-op — never treat it as EOF (stdlib file / BytesIO contract).
         if n == 0:
             return b""
@@ -613,7 +616,7 @@ class VerifyingStream(ReadOnlyIOStream):
     def _expected_size(self) -> int | None:
         return self._verifier._expected_size
 
-    def read(self, n: int = -1, /) -> bytes:
+    def read(self, n: int | None = -1, /) -> bytes:
         return self._verifier.read(self._inner, n)
 
     def seekable(self) -> bool:

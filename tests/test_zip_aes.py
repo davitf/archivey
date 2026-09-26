@@ -236,6 +236,31 @@ def test_aes_tampered_hmac_raises_corruption(method: int) -> None:
             ar.read(ar.members()[0])
 
 
+@requires("cryptography")
+def test_aes_stage_read_none_reads_to_the_hmac() -> None:
+    """``read(None)`` on the decrypt stage reads to the end and checks the HMAC (S28-K3)."""
+    data = _build_aes_zip(
+        payload=_PAYLOAD,
+        password=_PASSWORD,
+        vendor_version=2,
+        strength=3,
+        method=zipfile.ZIP_STORED,
+        tamper_hmac=True,
+    )
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        info = zf.infolist()[0]
+        aes = parse_winzip_aes_extra(info.extra)
+        assert aes is not None
+        (name_len, extra_len) = struct.unpack_from("<HH", data, info.header_offset + 26)
+        start = info.header_offset + 30 + name_len + extra_len
+    raw = io.BytesIO(data[start : start + info.compress_size])
+    stream = open_winzip_aes_member(
+        raw, aes=aes, password=_PASSWORD, compress_size=info.compress_size
+    )
+    with pytest.raises(CorruptionError, match="HMAC"):
+        stream.read(None)
+
+
 @pytest.mark.parametrize("mode", [AcceleratorMode.AUTO, AcceleratorMode.ON])
 @pytest.mark.parametrize("passwords", [[_PASSWORD], [b"other", _PASSWORD]])
 @requires("cryptography", "rapidgzip")

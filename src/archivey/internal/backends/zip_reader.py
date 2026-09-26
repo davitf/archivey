@@ -32,7 +32,7 @@ import struct
 import zipfile
 import zlib
 from collections.abc import Callable
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1064,67 +1064,25 @@ class ZipReader(BaseArchiveReader):
         # stdlib ZipFile serializes fp access via a private lock; typeshed omits it.
         return getattr(self._archive, "_lock")
 
-    @contextmanager
-    def _ciphertext_body_stream(
-        self,
-        info: zipfile.ZipInfo,
-    ) -> Iterator[BinaryIO]:
-        """Yield a :class:`SlicingStream` over the ZipCrypto ciphertext body.
+    def _read_zipcrypto_header(self, raw: BinaryIO, member_name: str) -> bytes:
+        """Read the 12-byte ZipCrypto header from the start of ``raw``, the payload.
 
-        The view starts after the 12-byte encryption header and covers the rest of the
-        member's compressed payload. Held under ``ZipFile``'s lock with the archive
-        position restored on exit; never buffers the whole member.
+        A payload the file cuts short is ``TruncatedError`` on every password path.
+        ``raw`` is left open, positioned at the ciphertext body.
         """
-        zf = self._archive
-        header_len = 12
-        body_len = max(0, info.compress_size - header_len)
-
-        with self._zipfile_lock():
-            fp = zf.fp
-            if fp is None:
-                raise _closed_archive_error()
-            saved = fp.tell()
-            try:
-                fp.seek(info.header_offset)
-                fheader = read_exact(fp, 30)
-                if len(fheader) != 30 or fheader[:4] != b"PK\x03\x04":
-                    raise zipfile.BadZipFile("Bad magic number for file header")
-                name_len, extra_len = struct.unpack_from("<HH", fheader, 26)
-                body_start = info.header_offset + 30 + name_len + extra_len + header_len
-                # typeshed types ZipFile.fp as IO[bytes], not BinaryIO; it is the
-                # binary file ZipFile read its directory from.
-                yield SlicingStream(
-                    cast("BinaryIO", fp), start=body_start, length=body_len
-                )
-            finally:
-                fp.seek(saved)
-
-    def _read_zipcrypto_header(self, info: zipfile.ZipInfo) -> bytes:
-        """Return the 12-byte ZipCrypto header ciphertext for ``info``."""
-        zf = self._archive
-        with self._zipfile_lock():
-            fp = zf.fp
-            if fp is None:
-                raise _closed_archive_error()
-            saved = fp.tell()
-            try:
-                fp.seek(info.header_offset)
-                fheader = read_exact(fp, 30)
-                if len(fheader) != 30 or fheader[:4] != b"PK\x03\x04":
-                    raise zipfile.BadZipFile("Bad magic number for file header")
-                name_len, extra_len = struct.unpack_from("<HH", fheader, 26)
-                read_exact(fp, name_len + extra_len)
-                header = read_exact(fp, 12)
-                if len(header) != 12:
-                    # Same short-header case ZipFile.open surfaces as IndexError.
-                    raise TruncatedError(
-                        "Truncated ZipCrypto header",
-                        archive_name=self._archive_name,
-                        source_format=ArchiveFormat.ZIP,
-                    )
-                return header
-            finally:
-                fp.seek(saved)
+        try:
+            header = read_exact(raw, ZIPCRYPTO_HEADER_LEN)
+        except _ZIP_MEMBER_READ_ERRORS as exc:
+            self._reraise_member_error(exc, member_name)
+        if len(header) != ZIPCRYPTO_HEADER_LEN:
+            truncated = TruncatedError(
+                "Truncated ZipCrypto header",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.ZIP,
+            )
+            self._stamp_error_context(truncated, member_name)
+            raise truncated
+        return header
 
     def _local_data_region(self, info: zipfile.ZipInfo) -> tuple[int, int]:
         """Return ``(data_start, compress_size)`` for ``info`` from its local file header.
@@ -1191,8 +1149,8 @@ class ZipReader(BaseArchiveReader):
             if self._archive.fp is None:
                 raise _closed_archive_error()
 
-        # typeshed types ZipFile.fp as IO[bytes], not BinaryIO (as in
-        # _ciphertext_body_stream).
+        # typeshed types ZipFile.fp as IO[bytes], not BinaryIO; it is the binary
+        # file ZipFile read its directory from.
         return SharedView(
             cast("BinaryIO", fp),
             start=data_start,
@@ -1397,21 +1355,10 @@ class ZipReader(BaseArchiveReader):
         def stage(password: bytes) -> BinaryIO:
             raw = self._open_raw_payload(info, member_name)
             try:
-                header = read_exact(raw, ZIPCRYPTO_HEADER_LEN)
-            except BaseException as exc:
+                header = self._read_zipcrypto_header(raw, member_name)
+            except BaseException:
                 raw.close()
-                if isinstance(exc, _ZIP_MEMBER_READ_ERRORS):
-                    self._reraise_member_error(exc, member_name)
                 raise
-            if len(header) != ZIPCRYPTO_HEADER_LEN:
-                raw.close()
-                truncated = TruncatedError(
-                    "Truncated ZipCrypto header",
-                    archive_name=self._archive_name,
-                    source_format=ArchiveFormat.ZIP,
-                )
-                self._stamp_error_context(truncated, member_name)
-                raise truncated
             keys, check = keys_after_header(password, header)
             if check != check_byte:
                 raw.close()
@@ -1762,8 +1709,13 @@ class ZipReader(BaseArchiveReader):
         check_byte = self._zipcrypto_check_byte(info)
         expected_crc = info.CRC & 0xFFFFFFFF
 
-        with self._translated_errors(member_name):
-            header = self._read_zipcrypto_header(info)
+        # The same validated view every member open reads through: the local
+        # header's name, data offset and overlap are checked before any pass runs.
+        raw = self._open_raw_payload(info, member_name)
+        try:
+            header = self._read_zipcrypto_header(raw, member_name)
+        finally:
+            raw.close()
 
         def weak_ok(password: bytes) -> bool:
             return password_matches_check_byte(password, header, check_byte)
@@ -1774,8 +1726,13 @@ class ZipReader(BaseArchiveReader):
                 return None
             # No decompressor to reject garbage: one shared ciphertext pass computes
             # every survivor's plaintext CRC-32 in constant memory.
-            with self._ciphertext_body_stream(info) as body:
-                crcs = parallel_plaintext_crc32(survivors, header, body)
+            body = self._open_raw_payload(info, member_name)
+            try:
+                body.seek(ZIPCRYPTO_HEADER_LEN)
+                with self._translated_errors(member_name):
+                    crcs = parallel_plaintext_crc32(survivors, header, body)
+            finally:
+                body.close()
             winner = first_crc_match(expected_crc, crcs)
             if winner is None:
                 failure = EncryptionError(
