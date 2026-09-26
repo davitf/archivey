@@ -4,6 +4,12 @@
 `0c0a71c`; this file tracks the re-run on 2026-09-17 (`origin/main` plus
 this PR). The method is the script, not the numbers in this page.
 
+**Note (2026-09-26):** `reader.member_streams` no longer exists — the property was
+removed at the 0.2.0 API freeze along with `MemberStreams` leaving the public surface.
+The snippets below that read it are as run on 2026-09-17; the script now reads the
+reader's private `_member_streams` field, and the "UNTYPED" finding about the attribute
+being off the ABC is moot (there is no attribute).
+
 ## Re-run
 
 ```bash

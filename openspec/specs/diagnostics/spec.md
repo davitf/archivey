@@ -22,7 +22,7 @@ detection, readers, streams, and extraction.
 ### Requirement: Immutable diagnostic values with stable codes and safe typed context
 
 Every advisory event SHALL be an immutable `Diagnostic`: opaque process-local
-`occurrence_id`, stable `DiagnosticCode`, `DiagnosticSeverity`, human `message`,
+`occurrence_id`, stable `DiagnosticCode`, human `message`,
 and code-specific frozen `DiagnosticContext`. Codes are the machine contract;
 messages are not stable.
 
@@ -222,7 +222,7 @@ extracting.
 
 The system SHALL provide a frozen `DiagnosticPolicy` with a default disposition
 and immutable per-code overrides. The only dispositions SHALL be `IGNORE`,
-`COLLECT`, and `RAISE` (no severity/logger matching).
+`COLLECT`, and `RAISE` (no logger matching).
 
 | Disposition | Counts | Retain/attach | WARNING log | Callback | Raise |
 | --- | --- | --- | --- | --- | --- |

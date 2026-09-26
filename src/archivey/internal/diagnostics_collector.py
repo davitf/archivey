@@ -27,7 +27,6 @@ from archivey.diagnostics import (
     DiagnosticContext,
     DiagnosticDisposition,
     DiagnosticPolicy,
-    DiagnosticSeverity,
     DiagnosticSummary,
     OnDiagnostic,
     validate_code_context,
@@ -273,7 +272,6 @@ class DiagnosticCollector:
         code: DiagnosticCode,
         message: str,
         context: DiagnosticContext,
-        severity: DiagnosticSeverity = DiagnosticSeverity.WARNING,
         member: ArchiveMember | None = None,
         attach_to_member: bool = False,
         logger: logging.Logger | None = None,
@@ -323,7 +321,6 @@ class DiagnosticCollector:
                         replayed = Diagnostic(
                             occurrence_id=uuid.uuid4().hex,
                             code=code,
-                            severity=severity,
                             message=message,
                             context=context,
                         )
@@ -343,7 +340,6 @@ class DiagnosticCollector:
             diagnostic = Diagnostic(
                 occurrence_id=uuid.uuid4().hex,
                 code=code,
-                severity=severity,
                 message=message,
                 context=context,
             )
@@ -420,7 +416,6 @@ class DiagnosticCollector:
         code: DiagnosticCode,
         message: str,
         context: DiagnosticContext,
-        severity: DiagnosticSeverity = DiagnosticSeverity.WARNING,
     ) -> None:
         """Evaluate ``code``'s policy and raise on ``RAISE`` — recording nothing.
 
@@ -450,7 +445,6 @@ class DiagnosticCollector:
             diagnostic=Diagnostic(
                 occurrence_id=uuid.uuid4().hex,
                 code=code,
-                severity=severity,
                 message=message,
                 context=context,
             ),

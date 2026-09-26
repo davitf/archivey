@@ -31,6 +31,22 @@ def test_open_archive_returns_an_archive_reader(tmp_path) -> None:
         assert isinstance(ar, archivey.ArchiveReader)
 
 
+def test_member_streams_is_demoted_from_the_surface(tmp_path) -> None:
+    """The flag type behind ``seekable_members`` / ``concurrent_members`` stays internal.
+
+    Pins the archive-reading spec: not re-exported, not in ``__all__``, still importable
+    from ``archivey.types``, and no reader attribute exposes the declared flags.
+    """
+    from archivey.types import MemberStreams
+
+    assert MemberStreams is not None
+    assert "MemberStreams" not in archivey.__all__
+    assert not hasattr(archivey, "MemberStreams")
+    (tmp_path / "f.txt").write_bytes(b"x")
+    with archivey.open_archive(tmp_path, seekable_members=True) as ar:
+        assert not hasattr(ar, "member_streams")
+
+
 def test_public_interface_hides_internal_hooks() -> None:
     """The public ``ArchiveReader`` surface must not expose backend-internal hooks.
 
@@ -93,7 +109,6 @@ def test_public_symbols_are_in_all() -> None:
         "SymlinkTargetContext",
         "UnconfirmedFormatContext",
         "UnusedArgumentContext",
-        "WriteError",
     }
 
     public = {

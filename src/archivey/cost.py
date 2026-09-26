@@ -19,8 +19,10 @@ class ListingCost(Enum):
     INDEXED = "indexed"
     """Members can be listed without scanning header-to-header or decompressing payload.
 
-    Examples: ZIP central directory, 7z header, ISO directory tree at open. A
-    filesystem directory is **not** indexed (its walk is ``REQUIRES_SCANNING``).
+    Examples: ZIP central directory, 7z header, ISO directory tree at open, and a
+    single-file compressed stream (gzip, xz, …), whose one member is known from the
+    header without decompressing. A filesystem directory is **not** indexed (its walk
+    is ``REQUIRES_SCANNING``).
     RAR is ``INDEXED`` because the reader walks all file headers at open and caches
     the table — by ``members()`` time the list is already in memory.
     """

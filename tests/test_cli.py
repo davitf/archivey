@@ -2052,14 +2052,12 @@ def test_log_records_escape_diagnostic_messages() -> None:
     from archivey.diagnostics import (
         Diagnostic,
         DiagnosticCode,
-        DiagnosticSeverity,
         MemberNameControlsContext,
     )
 
     diagnostic = Diagnostic(
         occurrence_id="1",
         code=DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
-        severity=DiagnosticSeverity.WARNING,
         message="Member name has controls: /out/ev\x1b[2Kil\rSPOOF.txt",
         context=MemberNameControlsContext(member_name="ev\x1b[2Kil.txt"),
     )

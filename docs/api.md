@@ -1,8 +1,10 @@
 # API reference
 
 Everything documented here is re-exported from the top-level `archivey` package and
-listed in `archivey.__all__`, except the [front-end helpers](#front-end-helpers) at the
-end, which are imported from `archivey.terminal`. Narrative guide: [Home](index.md).
+listed in `archivey.__all__`, except two side modules at the end: the
+[detection budget and receipt](#detection-cost) types in `archivey.detection_cost`, and
+the [front-end helpers](#front-end-helpers) in `archivey.terminal`. Narrative guide:
+[Home](index.md).
 Authoritative contracts: `openspec/specs/`.
 
 ## Opening archives
@@ -25,7 +27,6 @@ Authoritative contracts: `openspec/specs/`.
 ::: archivey.ArchiveReader
 ::: archivey.ArchiveStream
 ::: archivey.MemberSelector
-::: archivey.MemberStreams
 
 ## Data model
 
@@ -62,7 +63,6 @@ spec for lifecycle, retention, and policy.
 ::: archivey.Diagnostic
 ::: archivey.DiagnosticContext
 ::: archivey.DiagnosticCode
-::: archivey.DiagnosticSeverity
 ::: archivey.DiagnosticDisposition
 ::: archivey.DiagnosticPolicy
 ::: archivey.ARCHIVE_INTEGRITY_CODES
@@ -147,6 +147,25 @@ subclasses of `ArchiveyError` and unrelated to each other.
 
 ::: archivey.ArchiveyUsageError
 ::: archivey.ConcurrentAccessError
+
+## Detection cost
+
+These live in the `archivey.detection_cost` module and are not re-exported from
+`archivey`. A budget bounds what [`detect_format`][archivey.detect_format] and
+`open_archive` may read and decode before they answer; it is set on
+`ArchiveyConfig(detection_budget=...)`, `BALANCED_BUDGET` by default. The receipt on
+[`FormatInfo.cost_receipt`][archivey.FormatInfo] says what detection actually did. Both
+are stable under the same rule as the rest of this page.
+
+::: archivey.detection_cost.DetectionBudget
+::: archivey.detection_cost.DetectionBudgetPreset
+::: archivey.detection_cost.BALANCED_BUDGET
+::: archivey.detection_cost.FAST_BUDGET
+::: archivey.detection_cost.THOROUGH_BUDGET
+::: archivey.detection_cost.DetectionCostReceipt
+::: archivey.detection_cost.TierSkip
+::: archivey.detection_cost.TierSkipReason
+::: archivey.detection_cost.DetectionCapability
 
 ## Front-end helpers
 

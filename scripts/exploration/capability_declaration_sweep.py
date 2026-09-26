@@ -258,6 +258,13 @@ def _is_only_stored(member: Any) -> bool:
     return bool(chain) and all(c.algo is CompressionAlgorithm.STORED for c in chain)
 
 
+def _declared(reader: Any) -> MemberStreams:
+    # The declared flags have no public attribute (the ``reader.member_streams``
+    # property was removed at the 0.2.0 freeze); an exploration script that compares
+    # declaration with behaviour reads the reader's own field.
+    return reader._member_streams
+
+
 def _flag_label(value: MemberStreams) -> str:
     if value == MemberStreams(0):
         return "DEFAULT"
@@ -270,7 +277,7 @@ def _flag_label(value: MemberStreams) -> str:
 
 
 def _check_seekable_opt_in(reader: Any) -> Check:
-    declared = _flag_label(reader.member_streams)
+    declared = _flag_label(_declared(reader))
     files = _file_members(reader)
     if not files:
         return Check("seekable_opt_in", UNTESTED, declared, "no FILE members")
@@ -314,7 +321,7 @@ def _check_seekable_opt_in(reader: Any) -> Check:
 
 
 def _check_seekable_default(reader: Any) -> Check:
-    declared = _flag_label(reader.member_streams)
+    declared = _flag_label(_declared(reader))
     files = _file_members(reader)
     if not files:
         return Check("seekable_default", UNTESTED, declared, "no FILE members")
@@ -344,7 +351,7 @@ def _check_seekable_default(reader: Any) -> Check:
 
 def _check_concurrent(reader: Any, *, expected: bool) -> Check:
     name = "concurrent_opt_in" if expected else "concurrent_default"
-    declared = _flag_label(reader.member_streams)
+    declared = _flag_label(_declared(reader))
     files = _file_members(reader)
     if not files:
         return Check(name, UNTESTED, declared, "no FILE members")
@@ -689,7 +696,7 @@ def _check_lifetime_stream_members(path: Path, entry: CorpusEntry) -> Check:
 def _check_stream_members_seekable(path: Path, entry: CorpusEntry) -> Check:
     """SEEKABLE does not require stream_members() handles to seek (docstring)."""
     with open_archive(path, password=_password(entry), seekable_members=True) as reader:
-        declared = _flag_label(reader.member_streams)
+        declared = _flag_label(_declared(reader))
         flags: list[str] = []
         for member, stream in reader.stream_members():
             if not member.is_file or stream is None:

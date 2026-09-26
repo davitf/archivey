@@ -21,7 +21,6 @@ from archivey import (
     DiagnosticDisposition,
     DiagnosticPolicy,
     DiagnosticRaisedError,
-    DiagnosticSeverity,
     ExtractionReport,
     ExtractionStatus,
     OnError,
@@ -502,6 +501,26 @@ def test_oneshot_extract_report_includes_detection(
     assert any(r.status is ExtractionStatus.EXTRACTED for r in report.results)
 
 
+def test_extract_all_report_covers_only_its_own_call(tmp_path: Path) -> None:
+    # The two report scopes, pinned against each other: the one-shot ``extract()``
+    # (above) widens its report to detection and open, because the caller has no
+    # reader to ask. ``reader.extract_all()`` reports its own call only; the open-phase
+    # diagnostics stay on ``reader.diagnostics``.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", b"hi")
+    src = tmp_path / "looks.tar"
+    src.write_bytes(buf.getvalue())
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with open_archive(src) as reader:
+        assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in reader.diagnostics.counts
+        report = reader.extract_all(dest)
+        assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT not in report.diagnostics.counts
+        assert report.diagnostics.total_count == 0
+        assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in reader.diagnostics.counts
+
+
 def test_extraction_report_behaves_like_its_results_sequence(tmp_path: Path) -> None:
     # The report iterates / sizes / indexes as ``results`` so the common extraction loop
     # (`for r in extract(...)`, `len(...)`, `report[0]`) keeps working alongside
@@ -739,8 +758,7 @@ def test_empty_summary_helper() -> None:
     assert empty.dropped_count == 0
 
 
-def test_public_severity_and_exports() -> None:
-    assert DiagnosticSeverity.WARNING.value == "warning"
+def test_public_disposition_values() -> None:
     assert DiagnosticDisposition.COLLECT.value == "collect"
 
 

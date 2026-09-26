@@ -107,12 +107,13 @@ keep its `seekable: bool` parameter, and both entry points SHALL use the same `s
 vocabulary for the same concept; concurrency has no meaning for a single standalone
 stream, so `open_stream` MUST NOT gain a concurrency parameter.
 
-The `MemberStreams` flag type SHALL remain publicly exported as the internal
-representation the booleans map to at the entry point. It is no longer an input to
-`open_archive`. It is NOT required to appear on `CostReceipt` or in diagnostics —
-neither carries it, and no requirement SHALL claim otherwise. Whether the declared
-capabilities become a typed part of the `ArchiveReader` contract (today
-`member_streams` exists only on the concrete base class) is deliberately left open.
+The `MemberStreams` flag type is the internal representation the booleans map to at
+the entry point. It SHALL stay importable from `archivey.types` for backends and tests
+and SHALL NOT be re-exported from `archivey` or listed on the API page. It is no longer
+an input to `open_archive`. It is NOT required to appear on `CostReceipt` or in
+diagnostics — neither carries it, and no requirement SHALL claim otherwise. No public
+reader attribute SHALL expose the declared capabilities; the two booleans on
+`open_archive` are the whole contract.
 
 **Default (neither declared), every format including directory:** at most one live member
 data stream per reader; streams are forward-only. "Live" spans `open()` →

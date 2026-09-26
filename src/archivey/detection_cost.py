@@ -5,21 +5,23 @@ Detection's I/O happens before a reader exists, so its measured work is a siblin
 kinds of work; they are never summed together. See the ``detection-cost`` and
 ``access-mode-and-cost`` capability specs.
 
-**Not part of the package-root surface.** Callers reach :class:`DetectionBudget`, its
-presets and :class:`DetectionBudgetPreset` here, as ``archivey.detection_cost.…``, to
-set :attr:`ArchiveyConfig.detection_budget <archivey.ArchiveyConfig.detection_budget>`.
-The receipt and the capability and skip types serve tests and the fuzz harness and are
-internal in all but location.
+**Public, not re-exported.** Callers reach :class:`DetectionBudget`, its presets and
+:class:`DetectionBudgetPreset` here, as ``archivey.detection_cost.…``, to set
+:attr:`ArchiveyConfig.detection_budget <archivey.ArchiveyConfig.detection_budget>`.
+The receipt, capability and skip types are what :attr:`FormatInfo.cost_receipt
+<archivey.FormatInfo.cost_receipt>` is made of. All of them are documented on the API
+page and stable under the same rule as ``archivey.terminal``; the mutable accumulator
+detectors write into lives under ``internal/``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from enum import Enum
 
 
 class DetectionBudgetPreset(Enum):
-    """Named detection budgets. :attr:`BALANCED` is the ``detect_format`` default."""
+    """Named detection budgets. ``BALANCED`` is the ``detect_format`` default."""
 
     BALANCED = "balanced"
     FAST = "fast"
@@ -265,45 +267,3 @@ THOROUGH_BUDGET = DetectionBudget(
     max_probe_links=32,
     spool_non_seekable_up_to=0,  # still opt-in via replace()
 )
-
-
-def default_detection_budget() -> DetectionBudget:
-    return BALANCED_BUDGET
-
-
-@dataclass
-class MutableDetectionCostReceipt:
-    """Mutable accumulator used by the workspace; freeze with :meth:`freeze`."""
-
-    prefix_bytes: int = 0
-    unique_bytes_read: int = 0
-    far_bytes: int = 0
-    tail_bytes: int = 0
-    scanned_bytes: int = 0
-    seeks: int = 0
-    decode_input: int = 0
-    decode_output: int = 0
-    spooled_bytes: int = 0
-    passes: int = 1
-    skips: list[TierSkip] = field(default_factory=list)
-
-    def freeze(self) -> DetectionCostReceipt:
-        return DetectionCostReceipt(
-            prefix_bytes=self.prefix_bytes,
-            unique_bytes_read=self.unique_bytes_read,
-            far_bytes=self.far_bytes,
-            tail_bytes=self.tail_bytes,
-            scanned_bytes=self.scanned_bytes,
-            seeks=self.seeks,
-            decode_input=self.decode_input,
-            decode_output=self.decode_output,
-            spooled_bytes=self.spooled_bytes,
-            passes=self.passes,
-        )
-
-    def record_skip(self, tier: str, reason: TierSkipReason) -> None:
-        # A second pass records the same policy skips again (``zip_tail`` on every
-        # pass); a repeat carries no information, so the list keeps one of each.
-        skip = TierSkip(tier=tier, reason=reason)
-        if skip not in self.skips:
-            self.skips.append(skip)

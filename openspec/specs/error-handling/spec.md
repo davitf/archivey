@@ -35,14 +35,15 @@ ArchiveyError(Exception)
 │   ├── TruncatedError
 │   ├── EncryptionError
 │   └── LinkTargetNotFoundError
-├── WriteError
 ├── ExtractionError
-│   └── FilterRejectionError
+│   ├── FilterRejectionError
 │       ├── PathTraversalError
 │       ├── SymlinkEscapeError
 │       ├── SpecialFileError
 │       ├── UnportableNameError
 │       └── DeceptiveNameError
+│   ├── NameCollisionError            raised only under abort_on=
+│   └── NameRewrittenError            raised only under abort_on=
 ├── ResourceLimitError
 ├── UnsupportedFeatureError
 ├── PackageNotInstalledError

@@ -174,10 +174,6 @@ class LinkTargetNotFoundError(ReadError):
     """A symlink/hardlink target is absent from the archive."""
 
 
-class WriteError(ArchiveyError):
-    """Error writing an archive."""
-
-
 class ExtractionError(ArchiveyError):
     """Error extracting a member to disk."""
 

@@ -55,7 +55,6 @@ from archivey.detection import DetectedBy, DetectionConfidence, FormatInfo
 from archivey.detection_cost import (
     DetectionBudget,
     DetectionCapability,
-    MutableDetectionCostReceipt,
     TierSkipReason,
 )
 from archivey.diagnostics import (
@@ -64,6 +63,7 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import ArchiveyError, FormatDetectionError
 from archivey.internal.arg_checks import check_config
+from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
 from archivey.internal.detection_workspace import DETECTION_LIMIT, PrefixWorkspace
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
@@ -610,17 +610,14 @@ def detect_format(
     source: str | Path | BinaryIO,
     *,
     config: ArchiveyConfig | None = None,
-    collector: DiagnosticCollector | None = None,
     follow_stub_volumes: bool = True,
 ) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.
 
     Returns a :class:`FormatInfo`. Raises :class:`FormatDetectionError` when no magic
-    pattern matches and no extension guess is available.
-
-    ``collector``, when provided (e.g. from :func:`archivey.open_archive`), receives
-    detection diagnostics into the prospective reader's shared collector. When omitted,
-    a finite standalone collector is created from ``config`` (or the library default).
+    pattern matches and no extension guess is available. Detection diagnostics are on
+    the returned :attr:`FormatInfo.diagnostics`, recorded into a standalone collector
+    made from ``config`` (or the library default).
 
     What detection may read and decode is ``config.detection_budget``
     (:attr:`ArchiveyConfig.detection_budget`), ``BALANCED`` by default — the same
@@ -638,6 +635,25 @@ def detect_format(
     confidence and ``detected_by="directory"``, matching ``open_archive``, which reads
     it as a directory archive. Nothing is read to decide that, so ``cost_receipt`` is
     the zero receipt (one pass, no bytes).
+    """
+    return detect_format_into(
+        source, config=config, collector=None, follow_stub_volumes=follow_stub_volumes
+    )
+
+
+def detect_format_into(
+    source: str | Path | BinaryIO,
+    *,
+    config: ArchiveyConfig | None,
+    collector: DiagnosticCollector | None,
+    follow_stub_volumes: bool = True,
+) -> FormatInfo:
+    """:func:`detect_format` with the collector chosen by the caller.
+
+    ``open_archive`` passes the prospective reader's collector so detection diagnostics
+    land on ``reader.diagnostics``; ``None`` makes a finite standalone collector from
+    ``config``. Internal: the public entry point never takes a collector, so the
+    ``internal/`` type stays off the surface.
     """
     # Before anything is read: an object that is neither a path nor a binary stream
     # used to reach the prefix workspace and die there as
