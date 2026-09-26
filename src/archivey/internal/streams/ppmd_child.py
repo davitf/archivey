@@ -16,7 +16,6 @@ The child runs ``ppmd_worker.py`` as a script, which imports nothing from ``arch
 
 from __future__ import annotations
 
-import signal
 import struct
 import subprocess
 import sys
@@ -24,6 +23,7 @@ from pathlib import Path
 from typing import IO
 
 from archivey.exceptions import ArchiveyUsageError, ReadError, ResourceLimitError
+from archivey.internal.streams.child_exit import describe_exit, is_crash, is_system_kill
 
 _OPEN = struct.Struct("<BBIB")
 _REQUEST = struct.Struct("<iI")
@@ -31,28 +31,8 @@ _REPLY = struct.Struct("<BBBI")
 
 _WORKER = Path(__file__).with_name("ppmd_worker.py")
 
-# How a dead child's exit reads when the system killed it: the kernel's out-of-memory
-# killer, or an operator or supervisor, sends SIGKILL. Windows has no such signal.
-_SIGKILL: int | None = getattr(signal, "SIGKILL", None)
-
-# The deaths that read as a crash of the decoder itself, and so as a verdict on the
-# data it was decoding: the POSIX signals a native fault raises, and the Windows
-# NTSTATUS codes for the same faults. Any other death (SIGTERM, SIGHUP, SIGINT,
-# SIGKILL, a plain non-zero exit status) came from outside the decoder.
-_CRASH_SIGNALS = frozenset(
-    -int(sig)
-    for name in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE")
-    if (sig := getattr(signal, name, None)) is not None
-)
-_CRASH_NTSTATUS = frozenset(
-    {
-        0xC0000005,  # access violation
-        0xC000001D,  # illegal instruction
-        0xC0000094,  # integer divide by zero
-        0xC00000FD,  # stack overflow
-        0xC0000409,  # stack buffer overrun / fail-fast (the C runtime's abort path)
-    }
-)
+# How a child's death is read (``is_crash``, ``is_system_kill``, ``describe_exit``) is
+# shared with the rapidgzip child, in ``child_exit``.
 
 
 class _PpmdError(ValueError):
@@ -133,31 +113,6 @@ def child_decoding_available() -> bool:
     """
     return (
         not getattr(sys, "frozen", False) and bool(sys.executable) and _WORKER.is_file()
-    )
-
-
-def _describe_exit(returncode: int | None) -> str:
-    """How a child ended, for an error message: a signal name or an exit status."""
-    if returncode is None:
-        return "exit status unknown"
-    if returncode < 0:
-        try:
-            return f"killed by {signal.Signals(-returncode).name}"
-        except ValueError:
-            return f"killed by signal {-returncode}"
-    if returncode > 255:  # a Windows NTSTATUS, such as 0xC0000005 (access violation)
-        return f"exit status {returncode:#x}"
-    return f"exit status {returncode}"
-
-
-def is_crash(returncode: int | None) -> bool:
-    """Whether a child that ended with ``returncode`` crashed, rather than was ended.
-
-    A crash (a native fault signal, or its Windows NTSTATUS) is what pyppmd does on
-    data it cannot decode. Every other end is not a verdict on the data.
-    """
-    return returncode is not None and (
-        returncode in _CRASH_SIGNALS or returncode in _CRASH_NTSTATUS
     )
 
 
@@ -247,7 +202,7 @@ class PpmdChildDecoder:
         self.close()
         returncode = proc.returncode if proc is not None else None
         self._child_death = PpmdChildError(
-            f"PPMd decoder process exited unexpectedly ({_describe_exit(returncode)})",
+            f"PPMd decoder process exited unexpectedly ({describe_exit(returncode)})",
             returncode,
         )
         return self._child_death
@@ -310,7 +265,7 @@ class PpmdChildDecoder:
                 # A crash, left for ``PpmdCodec.translate`` to call corruption.
                 raise
             # Not a crash on the data: something outside the decoder ended the child.
-            if _SIGKILL is not None and exc.returncode == -_SIGKILL:
+            if is_system_kill(exc.returncode):
                 raise ResourceLimitError(
                     f"{exc}. SIGKILL comes from outside the decoder, most often the "
                     "system's out-of-memory killer, so the archive may be valid; "

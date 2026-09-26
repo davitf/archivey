@@ -75,10 +75,12 @@ same change when relevant.
 
 - **Today:** Upstream rapidgzip 0.16 can `terminate()` if the Python source raises
   under a live accelerator stream. Archivey avoids closing *its* SharedSource under
-  the stream, and every rapidgzip decoder reads a **caller-owned** source through
+  the stream. The in-process bzip2 decoder reads a **caller-owned** source through
   `_TrappingSource` (`internal/streams/codecs.py`), which parks the callback's exception
-  and re-raises it in Python after the call. What remains open is upstream: the abort
-  paths that do not start in a Python callback (`known-issues.md` Bug 3).
+  and re-raises it in Python after the call; gzip / zlib / deflate run rapidgzip in a
+  child process whose source reads this process serves (`rapidgzip_child.py`). What
+  remains open is upstream: the abort paths that do not start in a Python callback,
+  contained by the child for the DEFLATE family (`known-issues.md` Bugs 3 and 4).
 - **Why partially fixable:** The Python-callback trigger is contained in-tree; a full
   fix is upstream. Remaining product work: hang sandbox for untrusted input
   (threat-model O5 follow-up).

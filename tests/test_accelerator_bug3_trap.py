@@ -3,11 +3,13 @@ faults mid-decode (``dev-docs/known-issues.md`` Bug 3).
 
 rapidgzip ``std::terminate``s (SIGABRT) when a Python source callback raises while it is
 decoding — classically, the caller closes their own source underneath a live accelerator. No
-Python ``try/except`` can contain that abort. ``_open_rapidgzip`` wraps a caller-owned source in
-``_TrappingSource`` so the fault is swallowed and re-raised by ``_AcceleratorStream`` as a normal
-Python exception instead. Each scenario runs in its own subprocess so an abort is contained; the
-assertion is that the **untrapped** raw path aborts (documenting the hazard) while archivey's
-**trapped** path exits cleanly with a Python-level error.
+Python ``try/except`` can contain that abort. ``_open_rapidgzip`` runs rapidgzip in a child
+process and serves the child's reads of a caller-owned source from this process, so the fault
+is raised here as a normal Python exception, and rapidgzip only ever sees an end of input. (The
+in-process bzip2 decoder gets the same guarantee from ``_TrappingSource``; see
+``tests/test_exception_handlers.py``.) Each scenario runs in its own subprocess so an abort is
+contained; the assertion is that the **untrapped** raw path aborts (documenting the hazard)
+while archivey's path exits cleanly with a Python-level error.
 """
 
 from __future__ import annotations
@@ -76,12 +78,14 @@ _UNTRAPPED = _SETUP + textwrap.dedent(
 
 _TRAPPED = _SETUP + textwrap.dedent(
     """
+    from archivey.internal.config import AcceleratorMode, StreamConfig
     from archivey.internal.streams.codecs import _open_rapidgzip
     src = Src(full)
     # Fault on the next source pull after ~64 KiB compressed — well after open/header,
     # well before the 20 MiB payload is exhausted, so decode must observe it.
     src.fail_after = 64 * 1024
-    stream = _open_rapidgzip(src)                 # archivey: _TrappingSource + _AcceleratorStream
+    on = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.ON)
+    stream = _open_rapidgzip(src, "gzip", on)  # archivey: rapidgzip in a child process
     raised = None
     try:
         stream.read()

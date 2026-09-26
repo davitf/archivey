@@ -146,8 +146,10 @@ The flag changes what member streams can *do*, and nothing else. It does not cha
 
 Under `ArchiveyConfig.use_rapidgzip=AUTO` (the default), rapidgzip is selected only when
 seekability is declared **and** the known compressed input is at least
-`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (1 MiB). Smaller members stay on stdlib `zlib`/`gzip`
-so archives of many tiny entries do not pay per-stream accelerator setup. Set
+`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (16 MiB). rapidgzip runs in a child process that
+takes about 45 ms to start and open, and it saves about 3.4 ms per MB of compressed input
+over the stdlib, so it is only faster from about 13 MB. Smaller members stay on stdlib
+`zlib`/`gzip`. Set
 `use_rapidgzip=ON` to force the accelerator regardless of size, or `OFF` to disable it.
 
 The two settings differ when `rapidgzip` is not installed. `ON` is a request, so it
@@ -243,9 +245,27 @@ aborts while archivey's exits cleanly. So closing a source underneath a live str
 a clean failure, not a crash. Still don't do it: the stream is dead and the read
 fails.
 
-One residual is genuinely upstream and not contained: some **path**-source truncations
-and CRC mismatches can still `std::terminate` during worker finalization after a Python
-exception. Details:
+rapidgzip 0.16 also aborts the process on a gzip, zlib or raw deflate stream that ends
+early, whatever the source. So archivey runs those three decoders in a **child process**:
+the abort ends the child, and your read raises `TruncatedError` (or `CorruptionError`
+where the abort does not say why). Starting the child costs about 45 ms per accelerated
+stream; under `AUTO` that is paid only for streams of 16 MiB compressed or more. Where no
+child can start (a frozen application, archivey imported from a zip, or a spawn or
+temporary file the OS refuses), `AUTO` reads these codecs with the standard library and
+`ON` raises `ResourceLimitError`. The `AUTO` fallback logs one warning per process on the
+`archivey.streams` logger, naming the reason: it is a fact about the environment, not
+about your archive. Set `use_rapidgzip=OFF` to never start a child, and to silence that
+warning.
+
+The abort costs the rest of the stream, and often more: rapidgzip decodes ahead in
+parallel, so it can reach the cut before your first read returns. On a cut gzip of 2 or
+8 MB the error came before any data; on 32 MB, 1 to 10 MB short of the cut. What you do
+read is correct. To read as much of a cut stream as the data allows, open it with
+`use_rapidgzip=OFF`: the standard library decodes up to the cut before it raises.
+
+bzip2 runs in your process. It did not abort on cut or damaged input in the tests behind
+this page (cuts, bit flips, CRC damage, as path and as file object), but that is testing,
+not a guarantee: an input that aborts the bzip2 decoder would end your process. Details:
 [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
 
 ## Measuring what a read cost

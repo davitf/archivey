@@ -13,7 +13,7 @@ Deep dive (code citations, issue table, repros):
 Archivey product mitigation (empty→stdlib fallback + single-member ISIZE backstop):
 **implemented** in `_GzipTruncationCheckStream` (OpenSpec change
 `rapidgzip-truncation-investigation`). Accelerator shutdown / dual-load /
-Python-source `terminate()`: `dev-docs/known-issues.md` (Bugs 1–3).
+Python-source `terminate()` / truncated-DEFLATE abort: `dev-docs/known-issues.md` (Bugs 1–4).
 
 Pinned: **rapidgzip 0.16.0** ≡ librapidarchive `1221a30` (`[version] Bump rapidgzip
 version to 0.16.0`). Soft-EOF paths unchanged on inspected HEAD.
@@ -25,7 +25,7 @@ version to 0.16.0`). Soft-EOF paths unchanged on inspected HEAD.
 | Topic | Class |
 | --- | --- |
 | Soft EOF on truncated gzip / empty-short success | **by design** (not a bug) — Archivey limitation; mitigate with empty→stdlib + ISIZE. macOS raises more often than Linux/Windows but still silent at cut=10. |
-| `std::terminate` after some path-source errors | **bug-class** — see known-issues Bugs 1/3 + §2 below |
+| `std::terminate` on a truncated DEFLATE stream | **bug-class** — contained by a child process; known-issues Bug 4 + §2 below |
 
 ## 1. Soft EOF on truncated input (by design — Archivey limitation)
 
@@ -65,21 +65,36 @@ GitHub issues do not treat silent-empty `read()` as a user-facing bug.
 
 ---
 
-## 2. Abort / `std::terminate` after errors (bug-class — already tracked)
+## 2. Abort / `std::terminate` on truncated input (bug-class — contained)
 
-Near-trailer truncations and CRC mismatches often raise `RuntimeError: std::exception`
-(and may log the Unexpected-end stderr line) and then **abort** the process via
-worker-thread finalization / GIL checks (`ScopedGIL` → `std::terminate`), including on
-some **path** sources — not only Python file-object sources (Bug 3).
+A gzip, zlib or raw DEFLATE stream that ends early makes rapidgzip throw from a destructor
+(`GzipChunk::determineUsedWindowSymbolsForLastSubchunk` → `BitReader::tell()`,
+`std::logic_error` "The bit buffer should not contain more data than have been read from
+the file!"), and `std::terminate` aborts the process. It fires for path, file-object and
+`BytesIO` sources alike, from about 380 KB up; on an 8 MB gzip, 27 of 30 random cuts aborted
+on Linux. The macOS build raises "Unexpected end of file when getting block ..." instead.
+`IndexedBzip2File` never aborted in 110 tries.
+
+A CRC mismatch is a complete stream with the wrong content, not a short one. For the DEFLATE
+family it goes through the child like any other input, so an abort on it would be contained
+the same way; gzip CRC32 damage raised `CorruptionError` in 8 runs of 8 without one. The
+bzip2 decoder still runs in the caller's process: its stream-CRC damage, 12 bit flips and
+4 cuts of a 3 MB stream, each read from a path and from a file object, raised
+`CorruptionError` or read clean, with no abort in 40 runs. That is testing, not proof; an
+input that aborts the bzip2 decoder would still end the caller's process.
+
+Archivey runs the DEFLATE-family decoders in a child process, so the abort costs the member:
+the parent reports `TruncatedError` when the abort message names this truncation, else
+`CorruptionError` (known-issues Bug 4). This is the report worth filing upstream: a
+destructor must not throw, and the input is only short, not hostile.
 
 | Related Archivey notes | |
 | --- | --- |
 | Bug 1 — must `close()` accelerators | `known-issues.md` |
 | Bug 3 — Python source raises → terminate | `known-issues.md` |
-| Internal invariant | `std::logic_error` bit-buffer message on some multi-block cuts |
+| Bug 4 — truncated DEFLATE → terminate | `known-issues.md` |
 
-These remain **open upstream defect class** items; Archivey already sandboxes / closes
-aggressively. Soft EOF (§1) is separate from this abort class.
+Soft EOF (§1) is separate from this abort class.
 
 ---
 

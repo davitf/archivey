@@ -86,6 +86,26 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A truncated gzip, zlib or deflate stream no longer kills the process through
+  rapidgzip.** rapidgzip 0.16 aborts (`std::terminate`) on such a stream, whatever the
+  source, so `seekable_members=True` on a cut `.gz` of 1 MiB or more, or a cut ZIP
+  deflate member read with the accelerator on, ended the interpreter. archivey now runs
+  rapidgzip for these codecs in a child process: the read raises `TruncatedError` (or
+  `CorruptionError` where the abort does not say why). A child killed by SIGKILL raises
+  `ResourceLimitError`; one ended any other way raises `ReadError`. Starting the child
+  costs about 45 ms per accelerated stream, so `AUTO` now uses rapidgzip only from
+  16 MiB of compressed input (was 1 MiB); smaller streams use the standard library.
+  Where no child can start (a frozen application, archivey imported from a zip, a
+  spawn or temporary file the OS refuses), `AUTO` uses the standard library and logs one warning per process on the
+  `archivey.streams` logger, naming the reason; `ON` raises `ResourceLimitError`. bzip2
+  stays in-process. `use_rapidgzip=OFF` avoids the child entirely, and the warning.
+
+- **An exception from your own stream reaches you as itself through the accelerators.**
+  With the `[seekable]` extra, a caller-owned stream that raised `EOFError` while
+  rapidgzip read it (for example a network file object on a dropped connection) was
+  reported as `TruncatedError`, a verdict on the archive. It now propagates unchanged,
+  for bzip2 and for gzip, zlib and raw deflate.
+
 - **A truncated stream that raised once no longer reads as an empty, clean stream
   afterwards.** This affected every codec archivey decodes in its own decompressing
   stream: gzip, zlib, raw deflate, deflate64, xz, lzip, brotli, PPMd and `.Z`. After a
@@ -95,8 +115,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   stream's size. Every later read now raises the same error, a seek decodes from the
   start again, and no size is published. With the `[seekable]` extra, gzip, zlib and
   raw deflate can read through the rapidgzip accelerator instead. That is a separate
-  stream, and this fix does not change it: after it reports a truncation, a later read
-  there still returns `b""`.
+  stream, and this fix does not change it; when its decoder process aborts on a
+  truncation (see the entry above), every later read there raises the same error too.
 
 - **Pre-1970 Unix timestamps list their date on Windows too.** TAR, the ZIP extended
   timestamp field, RAR, gzip and the directory backend converted Unix seconds with
