@@ -85,3 +85,20 @@ Nothing in this review is a hostile-input finding. The one bound it touched, the
 retention budget on the diagnostics collector, is a resource cap and belongs to the
 `ResourceLimitError` register in `dev-docs/threat-model.md`, where the family already
 is.
+
+## Rulings (2026-09-26)
+
+The maintainer answered each question in the project thread, one at a time.
+
+| Q | Ruling | Note |
+| --- | --- | --- |
+| Q1 | (a) document `detection_cost` where it is | "minimizes root exports, these are too niche for root" |
+| Q2 | (a) demote `MemberStreams` | |
+| Q3 | **(b) remove** `DiagnosticSeverity`, the field and the JSON key | "let's simplify the API" (against the recommendation) |
+| Q4 | (a) drop `collector=` from `detect_format` | |
+| Q5 | **(c) delete** the `WriteError` class | the third option offered in the thread, not in the file above |
+| Q6 | (a) document the two report scopes, one pinning test | |
+| Q7 | (a) add the missing table rows | whether every exception type is needed is a follow-up after 0.2.0, tracked internally |
+
+All seven are implemented in the fix PR that follows this one, together with D0-1 (the
+page) and the Low docstring findings.
