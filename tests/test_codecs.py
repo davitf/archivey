@@ -896,7 +896,12 @@ def test_unix_compress_valid_stream_has_zero_leftover_padding() -> None:
 
 @requires("ncompress")
 def test_unix_compress_clear_seek_points() -> None:
-    """CLEAR boundaries become SeekPoints; random access resumes without rewind diagnostics."""
+    """CLEAR boundaries become SeekPoints, so a short step back resumes at a CLEAR point.
+
+    That step back from the end is not a reported rewind. The full rewinds after it
+    discard more than 1 MiB and are reported whatever the index holds, so the count is
+    asserted before them.
+    """
     # Distinct words force dictionary growth until classic compress emits CLEAR. The
     # payload is past the 1 MiB rewind-report threshold, so a rewind that restarted at
     # the origin instead of a CLEAR point would be reported.

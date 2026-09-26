@@ -791,6 +791,9 @@ class DecompressorStream(ReadOnlyIOStream):
 
         Re-raising the stored instance as is would append each raise's frames to one
         traceback, which grows with every retry and keeps every frame on it alive.
+        The same instance is raised each time, so a caller that kept an earlier raise
+        sees its traceback replaced by the latest one; the message and type do not
+        change, and a bounded traceback is worth more than the first raise's frames.
         """
         assert self._spent is not None
         raise self._spent.with_traceback(None)
