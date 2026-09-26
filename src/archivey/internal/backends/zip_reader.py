@@ -1631,6 +1631,7 @@ class ZipReader(BaseArchiveReader):
             # for a wrong key's garbage.
             body = stage(password)
             probe: ArchiveStream | None = None
+            ended_early: TruncatedError | None = None
             try:
                 probe = decode_body(body)
                 verdict = run_password_confirm_plan(probe, plan)
@@ -1638,6 +1639,16 @@ class ZipReader(BaseArchiveReader):
                     # The read that finds the end is the one that checks the HMAC.
                     if probe.read(1):
                         verdict = PasswordConfirmVerdict.REJECTED
+                elif verdict is PasswordConfirmVerdict.REJECTED and hmac_anchor:
+                    # The plan rejects a short read without saying so. For WinZip AES
+                    # that is the data ending before its declared size, the damage the
+                    # one-password path reports as TruncatedError; say so here too.
+                    got = probe.tell()
+                    if got < size and not probe.read(1):
+                        ended_early = TruncatedError(
+                            f"Decompressed content ended after {got} of {size} "
+                            f"expected bytes."
+                        )
             except ArchiveyError as exc:
                 if not _is_candidate_integrity_failure(
                     exc, payload_complete=payload_complete
@@ -1648,7 +1659,7 @@ class ZipReader(BaseArchiveReader):
                 if probe is not None:
                     probe.close()
             if verdict is PasswordConfirmVerdict.REJECTED:
-                raise candidate_failed(None)
+                raise candidate_failed(ended_early)
             # Fresh stream for the caller: nothing decoded here is handed out.
             return decode_body(stage(password)), verdict
 
@@ -1881,18 +1892,25 @@ class ZipReader(BaseArchiveReader):
         ``failure_is_damage`` is for WinZip AES: a candidate that failed integrity had
         already passed the 16-bit ``pw_verify``, which a wrong password passes once in
         65 536, so a member every such candidate fails on is far more likely damaged.
-        It raises ``CorruptionError``, as the one-password path's HMAC mismatch does,
-        where ZipCrypto's 8-bit check leaves the ambiguous ``EncryptionError``.
+        It raises the damage the candidate met, as the one-password path does:
+        ``TruncatedError`` for data that ended early, ``CorruptionError`` for anything
+        else (an HMAC mismatch, a codec rejection). ZipCrypto's 8-bit check leaves the
+        ambiguous ``EncryptionError``.
         """
         try:
             return self._passwords.attempt(member, decrypt, promote=promote)
         except _PasswordCandidatesExhausted as exc:
             ambiguous_failure = ambiguous_holder[0] if ambiguous_holder else None
             if ambiguous_failure is not None and failure_is_damage:
-                damaged = CorruptionError(
+                damage_type: type[ArchiveyError] = (
+                    TruncatedError
+                    if isinstance(ambiguous_failure.__cause__, TruncatedError)
+                    else CorruptionError
+                )
+                damaged = damage_type(
                     "Every password candidate that passed the WinZip AES password "
                     "check failed integrity validation for this ZIP member; the "
-                    "member is most likely corrupt"
+                    "member is most likely damaged"
                 )
                 self._stamp_error_context(damaged, member_name)
                 raise damaged from ambiguous_failure

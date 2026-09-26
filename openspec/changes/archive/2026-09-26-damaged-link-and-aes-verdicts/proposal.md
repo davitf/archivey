@@ -13,11 +13,13 @@ listing.
 ## What Changes
 
 - A WinZip AES member that every candidate passing `pw_verify` fails on integrity raises
-  `CorruptionError`, as the one-password path's HMAC mismatch does. ZipCrypto keeps its
+  the damage, as the one-password path does: `CorruptionError`, or `TruncatedError` for
+  data that ends before its declared size. ZipCrypto keeps its
   ambiguous `EncryptionError`: its check is 8 bits, not 16.
 - Link finalization catches `CorruptionError` / `TruncatedError` per link: the link stays
   listed without a target, `SYMLINK_TARGET_UNAVAILABLE` (`reason="target_data_damaged"`)
-  says why, and opening or extracting the link raises the fault.
+  says why, and opening or extracting the link raises the fault. RAR3/4 reads link
+  targets with no check, so this cannot happen there.
 
 ## Impact
 

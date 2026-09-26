@@ -1,7 +1,8 @@
 """A damaged link target costs that link its target, not the whole listing.
 
-ZIP, 7z and RAR4 store a symlink's target as the member's data, so listing has to read
-and verify it. When that read fails its integrity check, only the link is wrong: the
+ZIP and 7z store a symlink's target as the member's data, so listing has to read and
+verify it. (RAR3/4 stores it as data too, but reads it with no check, so a damaged
+RAR3/4 target is returned as stored: there is nothing here to fail.) When that read fails its integrity check, only the link is wrong: the
 listing keeps every member, the link has no ``link_target``, and
 ``SYMLINK_TARGET_UNAVAILABLE`` (``reason="target_data_damaged"``) says why. The fault
 itself is raised where the caller touches the link: opening it, or extracting it.
@@ -11,7 +12,6 @@ from __future__ import annotations
 
 import io
 import stat
-import subprocess
 import zipfile
 from pathlib import Path
 
@@ -24,6 +24,7 @@ from archivey.exceptions import CorruptionError, DiagnosticRaisedError
 from archivey.reader import ArchiveReader
 from archivey.types import MemberType, OnError
 from tests.conftest import requires, requires_binary
+from tests.test_link_target_cap import _sevenzip_with_link
 from tests.zip_aes_fixture import build_aes_zip
 
 _TARGET = b"zz-link-target-zz"
@@ -61,25 +62,13 @@ def _damaged_aes_symlink() -> bytes:
 
 
 def _damaged_7z_symlink(tmp_path: Path) -> bytes:
-    """A stored (``-mx0``) 7z holding ``tree/link``, a symlink whose data fails its CRC.
+    """A stored 7z holding ``link``, a symlink whose data fails its CRC.
 
-    Invoked as the `test_windows_reparse.py` fixtures are, which run on every CI
-    platform. 7z stores names as UTF-16, so the ASCII target occurs once, in the
-    link's data.
+    Built as a regular file re-flagged as a link (`_sevenzip_with_link`) rather than
+    with ``7z -snl``, which stores a Windows reparse buffer on Windows and exits 1 on
+    macOS. 7z stores names as UTF-16, so the ASCII target occurs once, in the data.
     """
-    tree = tmp_path / "tree"
-    tree.mkdir()
-    (tree / "target.txt").write_bytes(b"payload")
-    (tree / "link").symlink_to(_TARGET.decode())
-    archive = tmp_path / "link.7z"
-    done = subprocess.run(
-        ["7z", "a", "-snl", "-mx0", "-y", str(archive), "tree"],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-    )
-    assert done.returncode == 0, done.stdout + done.stderr
-    return _flip_byte(archive.read_bytes(), _TARGET)
+    return _flip_byte(_sevenzip_with_link(tmp_path, _TARGET, store=True), _TARGET)
 
 
 def _link_diagnostics(ar: ArchiveReader) -> list[SymlinkTargetContext]:
@@ -125,8 +114,9 @@ def test_damaged_aes_link_target_keeps_the_listing(
 @requires_binary("7z")
 def test_damaged_7z_link_target_keeps_the_listing(tmp_path: Path) -> None:
     with open_archive(io.BytesIO(_damaged_7z_symlink(tmp_path))) as ar:
-        _assert_listed_targetless(ar, "tree/link")
-        assert ar.read(ar.get("tree/target.txt")) == b"payload"
+        _assert_listed_targetless(ar)
+        with pytest.raises(CorruptionError):
+            ar.open(ar.get("link"))
 
 
 def test_damaged_link_target_in_a_streaming_pass() -> None:

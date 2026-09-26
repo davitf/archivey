@@ -290,6 +290,16 @@ unbounded into memory. This is why the sized path MUST NOT delegate to
 carrying it SHALL say so inline. The unsized path (no declared size, no cap)
 MAY delegate to `inner.read(-1)` and then run the EOF verdict.
 
+Once the public `ArchiveStream` has raised a content verdict (`CorruptionError` or
+`TruncatedError`, or an error raised from one, such as ZipCrypto's
+password-or-damage `EncryptionError`), every later `read` / `readinto` / `seek` on that
+stream SHALL raise the same error object again, with the traceback it was first raised
+with rather than one that grows per call. A caller who catches the verdict and seeks
+back SHALL NOT read the damaged member as clean data: a verifier checks a member once,
+on the read that reaches its end. `tell()`, `seekable()` and `close()` are not gated,
+and `close()` still does not raise the verdict. Opening the member again gives a fresh
+stream.
+
 #### Scenario: close vs read matrix
 
 | Case | Expected |
@@ -312,6 +322,9 @@ MAY delegate to `inner.read(-1)` and then run the EOF verdict.
 | Seek to/past declared size on an **over-long** member, then `read` | Concluding reads the gap and probes past the declared size; `CorruptionError` (over-run), not a silent `b""` |
 | Partial read then `close` before clean EOF (verify) | No digest/length verdict |
 | Inner teardown fails on `close` | Teardown error may propagate |
+| `ArchiveStream` raised a content verdict; caller catches it, then `seek(0)` or `read()` | Raises the same error object again; no bytes returned |
+| Same, retried many times | Traceback stays the first one; it does not grow per call |
+| Same, `tell()` or `close()` | Not gated; `close()` does not raise the verdict |
 
 ### Requirement: Decompressed output digests are verified at clean EOF
 

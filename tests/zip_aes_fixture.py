@@ -49,8 +49,8 @@ def build_aes_zip(
 
     ``tamper_hmac`` flips a byte in the first member's AES HMAC (for corruption
     tests). ``unix_mode`` records every member as written on Unix with that mode
-    (``0o120777`` makes them symlinks). AE-2 (``vendor_version=2``) stores CRC 0 in the headers; AE-1 stores
-    the plaintext CRC.
+    (``0o120777`` makes them symlinks). AE-2 (``vendor_version=2``) stores CRC 0
+    in the headers; AE-1 stores the plaintext CRC.
     """
     if not members:
         raise ValueError("build_aes_zip requires at least one member")

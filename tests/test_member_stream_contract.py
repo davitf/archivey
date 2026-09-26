@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import gzip
 import io
+import os
 import tarfile
+import traceback
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +26,7 @@ from typing import Callable
 import pytest
 
 from archivey import list_known_formats, open_archive
+from archivey.exceptions import CorruptionError
 from archivey.types import (
     ArchiveFormat,
     CompressionAlgorithm,
@@ -173,10 +176,6 @@ def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> No
     It used to raise once: a caller who caught the CRC mismatch and seeked back read
     the whole damaged member with no error (S28-K1).
     """
-    import os
-
-    from archivey.exceptions import CorruptionError
-
     payload = os.urandom(3000)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression) as zf:
@@ -197,6 +196,14 @@ def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> No
         with pytest.raises(CorruptionError) as after:
             stream.read(10)
         assert after.value is first.value
+        # Each raise resets the traceback to where the damage was found, so a retry
+        # loop does not grow it (and the frames it keeps alive) without bound.
+        depths = []
+        for _ in range(20):
+            with pytest.raises(CorruptionError) as retry:
+                stream.read()
+            depths.append(len(traceback.extract_tb(retry.value.__traceback__)))
+        assert len(set(depths)) == 1
         stream.close()
 
 

@@ -18,6 +18,7 @@ import sys
 import threading
 import weakref
 from dataclasses import dataclass
+from types import TracebackType
 from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, NoReturn
 
 from archivey.config import REWIND_REDECODE_WARN_BYTES
@@ -146,6 +147,8 @@ class ArchiveStream(ReadOnlyIOStream):
         # The content verdict this stream raised, if any. Every later read and seek
         # raises it again (see ``_fail``).
         self._verdict: ArchiveyError | None = None
+        # Its traceback as first raised: where the damage was found.
+        self._verdict_tb: TracebackType | None = None
         # A stream's diagnostics are everything emitted from its open onward: capture the
         # collector position here and difference against "now" on each query. No per-stream
         # bookkeeping is retained collector-side.
@@ -385,12 +388,19 @@ class ArchiveStream(ReadOnlyIOStream):
         except ArchiveyError as raised:
             if self._verdict is None and _is_content_verdict(raised):
                 self._verdict = raised
+                self._verdict_tb = raised.__traceback__
             raise
 
     def _raise_verdict(self) -> None:
-        """Raise the content verdict this stream already raised, if there is one."""
+        """Raise the content verdict this stream already raised, if there is one.
+
+        Each ``raise`` adds the caller's frames to the exception's traceback, and the
+        object lives as long as the stream. Resetting it to the first traceback keeps
+        a retry loop from growing it without bound, and keeps it pointing at where the
+        damage was found.
+        """
         if self._verdict is not None:
-            raise self._verdict
+            raise self._verdict.with_traceback(self._verdict_tb)
 
     def _raise_translated(self, e: Exception) -> NoReturn:
         """Translate + stamp ``e`` and raise, or re-raise it unchanged."""

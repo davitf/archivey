@@ -1281,10 +1281,12 @@ the header (ZIP, 7z, RAR3/4), in both access modes.
 
 ### Requirement: A damaged data-stored link target leaves the listing intact
 
-When a backend reads a symlink's target from the member's data (ZIP, 7z, RAR3/4) and
-that read raises `CorruptionError` or `TruncatedError` (a CRC or HMAC mismatch, a
-decompressor failure, data past the declared size, data the file cuts short), link
-finalization SHALL NOT raise it. The link SHALL stay listed with its type and
+When a backend reads a symlink's target from the member's data and that read raises
+`CorruptionError` or `TruncatedError` (a CRC or HMAC mismatch, a decompressor failure,
+data past the declared size, data the file cuts short), link finalization SHALL NOT
+raise it. ZIP and 7z verify that read like any member read. RAR3/4 reads the target
+bytes straight out of the archive with no check, so it has nothing to fail: a damaged
+RAR3/4 target is returned as it is stored. The link SHALL stay listed with its type and
 `link_target` unset, the other links SHALL still be resolved, and
 `SYMLINK_TARGET_UNAVAILABLE` SHALL be emitted with `reason="target_data_damaged"` and a
 message naming the fault. The member SHALL NOT be memoized as resolved: opening the link,

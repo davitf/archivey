@@ -642,7 +642,7 @@ def test_aes_only_colliding_candidates_report_damage(
     )
     _collide_pw_verify(monkeypatch)
     with open_archive(io.BytesIO(data), password=[_COLLIDER, b"plain-wrong"]) as ar:
-        with pytest.raises(CorruptionError, match="most likely corrupt"):
+        with pytest.raises(CorruptionError, match="most likely damaged"):
             ar.read(ar.members()[0])
 
 
@@ -874,5 +874,34 @@ def test_aes_tampered_hmac_with_candidates_raises_corruption(method: int) -> Non
         tamper_hmac=True,
     )
     with open_archive(io.BytesIO(data), password=[b"nope", _PASSWORD]) as ar:
-        with pytest.raises(CorruptionError, match="most likely corrupt"):
+        with pytest.raises(CorruptionError, match="most likely damaged"):
+            ar.read(ar.members()[0])
+
+
+@pytest.mark.parametrize(
+    "passwords", [_PASSWORD, [b"nope", _PASSWORD]], ids=["single", "candidates"]
+)
+@requires("cryptography")
+def test_aes_short_payload_is_truncated_on_both_password_paths(
+    passwords: bytes | list[bytes],
+) -> None:
+    """A member declaring more than it stores is ``TruncatedError`` either way.
+
+    The candidate path used to turn it into ``CorruptionError``, so a caller catching
+    ``TruncatedError`` saw it under one password and missed it under a list.
+    """
+    data = bytearray(
+        _build_aes_zip(
+            payload=b"hello world",
+            password=_PASSWORD,
+            vendor_version=2,
+            strength=3,
+            method=0,
+            name=b"a.bin",
+        )
+    )
+    for signature, size_at in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
+        struct.pack_into("<I", data, data.index(signature) + size_at, 100)
+    with open_archive(io.BytesIO(bytes(data)), password=passwords) as ar:
+        with pytest.raises(TruncatedError):
             ar.read(ar.members()[0])

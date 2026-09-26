@@ -68,7 +68,7 @@ def _zip_with_links(*targets: bytes) -> bytes:
     return buf.getvalue()
 
 
-def _sevenzip_with_link(tmp_path: Path, target: bytes) -> bytes:
+def _sevenzip_with_link(tmp_path: Path, target: bytes, *, store: bool = False) -> bytes:
     """A 7z holding one symlink, ``link``, whose stored target is ``target``.
 
     A real symlink cannot be longer than ``PATH_MAX``, so ``7z -snl`` cannot write the
@@ -76,6 +76,7 @@ def _sevenzip_with_link(tmp_path: Path, target: bytes) -> bytes:
     target bytes, and its mode in the (uncompressed) header is then patched from
     a regular file to ``S_IFLNK``, which is the only thing that differs between the two
     in a 7z archive. Both header CRCs are recomputed so the archive stays valid.
+    ``store`` writes the data uncompressed (``-mx0``), so a test can find and damage it.
     """
     tree = tmp_path / "tree"
     tree.mkdir()
@@ -83,7 +84,7 @@ def _sevenzip_with_link(tmp_path: Path, target: bytes) -> bytes:
     os.chmod(tree / "link", 0o644)
     archive = tmp_path / "link.7z"
     subprocess.run(
-        ["7z", "a", "-mhc=off", str(archive), "link"],
+        ["7z", "a", "-mhc=off", *(["-mx0"] if store else []), str(archive), "link"],
         cwd=tree,
         check=True,
         capture_output=True,
