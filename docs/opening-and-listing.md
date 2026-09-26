@@ -223,8 +223,16 @@ recipe and what each failure means.
 
 A TAR stores member names as bytes. Archivey decodes them as UTF-8 unless you pass
 `encoding=`, whatever the process locale, so the same archive lists the same way on
-every machine. A PAX `path` record is UTF-8 by definition and is decoded that way even
-when you pass `encoding=`.
+every machine. A PAX `path` record is decoded as UTF-8 first; only when its bytes are
+not valid UTF-8 does the `encoding=` you passed apply, and without one they are escaped
+as described below.
+
+On a host whose filesystem encoding is not UTF-8, this also changes what extraction
+writes. A name is written in the filesystem encoding rather than as the bytes stored in
+the archive, and a name that encoding cannot represent is rejected by the extraction
+guard (`PathTraversalError`, "Member name cannot be encoded for the filesystem").
+Passing the locale's encoding as `encoding=` makes each name encode back to its stored
+bytes on disk.
 
 A name written in a legacy encoding, such as Latin-1 `caf\xe9.txt`, is not valid
 UTF-8. Archivey keeps such a name rather than failing: each byte that does not decode

@@ -1657,12 +1657,27 @@ def test_a_member_larger_than_the_read_step_still_reads_whole(tmp_path: Path) ->
             assert stream.read() == payload
 
 
-def _pax_tar(name: str) -> bytes:
+def _one_member_tar(
+    name: str,
+    codec: str,
+    fmt: int,
+    *,
+    linkname: str | None = None,
+    owner: str = "",
+) -> bytes:
+    """A one-member TAR whose header strings are stored in ``codec``: a regular file,
+    or a symlink to ``linkname``, with ``owner`` as both ``uname`` and ``gname``."""
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+    with tarfile.open(fileobj=buf, mode="w", format=fmt, encoding=codec) as t:
         info = tarfile.TarInfo(name)
-        info.size = 3
-        t.addfile(info, io.BytesIO(b"abc"))
+        info.uname = info.gname = owner
+        if linkname is None:
+            info.size = 1
+            t.addfile(info, io.BytesIO(b"x"))
+        else:
+            info.type = tarfile.SYMTYPE
+            info.linkname = linkname
+            t.addfile(info)
     return buf.getvalue()
 
 
@@ -1673,38 +1688,24 @@ def test_pax_raw_name_is_the_stored_utf8_whatever_the_encoding(
     """A PAX ``path`` record is UTF-8 whatever ``encoding=`` says; re-encoding it with
     the caller's codec either crashed the listing or fabricated bytes."""
     for name in ("日本語.txt", "café.txt"):
-        with open_archive(io.BytesIO(_pax_tar(name)), encoding=encoding) as ar:
+        data = _one_member_tar(name, "utf-8", tarfile.PAX_FORMAT)
+        with open_archive(io.BytesIO(data), encoding=encoding) as ar:
             (member,) = ar.members()
             assert member.name == name
             assert member.raw_name == name.encode("utf-8")
 
 
 def test_ustar_raw_name_follows_the_archive_encoding() -> None:
-    buf = io.BytesIO()
-    with tarfile.open(
-        fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT, encoding="latin-1"
-    ) as t:
-        info = tarfile.TarInfo("café.txt")
-        info.size = 1
-        t.addfile(info, io.BytesIO(b"x"))
-    with open_archive(io.BytesIO(buf.getvalue()), encoding="latin-1") as ar:
+    data = _one_member_tar("café.txt", "latin-1", tarfile.USTAR_FORMAT)
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
         (member,) = ar.members()
         assert member.name == "café.txt"
         assert member.raw_name == b"caf\xe9.txt"
 
 
-def _tar_with_name_bytes(name: str, codec: str, fmt: int) -> bytes:
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w", format=fmt, encoding=codec) as t:
-        info = tarfile.TarInfo(name)
-        info.size = 1
-        t.addfile(info, io.BytesIO(b"x"))
-    return buf.getvalue()
-
-
 # tarfile's own default is TarFile.encoding (= tarfile.ENCODING, the filesystem
 # encoding on POSIX). Setting it to Latin-1 stands in for a process under a Latin-1
-# locale, where every byte decodes, so neither test below can pass by accident.
+# locale, where every byte decodes, so none of the tests below can pass by accident.
 _NON_UTF8_LOCALE = mock.patch.object(tarfile.TarFile, "encoding", "latin-1")
 
 
@@ -1718,15 +1719,28 @@ _NON_UTF8_LOCALE = mock.patch.object(tarfile.TarFile, "encoding", "latin-1")
 )
 def test_utf8_name_decodes_as_utf8_under_a_non_utf8_locale(fmt: int) -> None:
     name = "café-" + "x" * (120 if fmt == tarfile.GNU_FORMAT else 0) + ".txt"
-    data = _tar_with_name_bytes(name, "utf-8", fmt)
+    data = _one_member_tar(name, "utf-8", fmt)
+    assert (b"././@LongLink" in data) == (fmt == tarfile.GNU_FORMAT)
     with _NON_UTF8_LOCALE, open_archive(io.BytesIO(data)) as ar:
         (member,) = ar.members()
         assert member.name == name
         assert member.raw_name == name.encode("utf-8")
 
 
+def test_utf8_link_target_and_owner_decode_as_utf8_under_a_non_utf8_locale() -> None:
+    target = "цель/café.txt"
+    data = _one_member_tar(
+        "link", "utf-8", tarfile.USTAR_FORMAT, linkname=target, owner="josé"
+    )
+    with _NON_UTF8_LOCALE, open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        assert member.link_target == target
+        assert member.uname == "josé"
+        assert member.gname == "josé"
+
+
 def test_invalid_utf8_name_is_surrogate_escaped_under_a_non_utf8_locale() -> None:
-    data = _tar_with_name_bytes("café.txt", "latin-1", tarfile.USTAR_FORMAT)
+    data = _one_member_tar("café.txt", "latin-1", tarfile.USTAR_FORMAT)
     with _NON_UTF8_LOCALE, open_archive(io.BytesIO(data)) as ar:
         (member,) = ar.members()
         assert member.name == "caf\udce9.txt"
@@ -1734,25 +1748,45 @@ def test_invalid_utf8_name_is_surrogate_escaped_under_a_non_utf8_locale() -> Non
 
 
 def test_caller_encoding_overrides_the_utf8_default() -> None:
-    data = _tar_with_name_bytes("café.txt", "utf-8", tarfile.USTAR_FORMAT)
+    data = _one_member_tar("café.txt", "utf-8", tarfile.USTAR_FORMAT)
     with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
         (member,) = ar.members()
         assert member.name == "cafÃ©.txt"
         assert member.raw_name == "café.txt".encode("utf-8")
 
 
-def test_pax_raw_name_with_undecodable_bytes_round_trips() -> None:
-    """Bytes that are not UTF-8 fall back to the archive codec with surrogateescape;
-    the surrogates send the name back through that codec, recovering the bytes."""
-    raw = b"caf\xe9\xe9.txt"
-    data = bytearray(_pax_tar("café.txt"))
+def _pax_tar_with_non_utf8_path(raw: bytes) -> bytes:
+    """A PAX archive whose ``path`` record holds ``raw``, which is not UTF-8."""
+    data = bytearray(_one_member_tar("café.txt", "utf-8", tarfile.PAX_FORMAT))
     # Swap the PAX path value for non-UTF-8 bytes of the same length.
     stored = "path=café.txt\n".encode()
     at = data.index(stored)
     data[at + 5 : at + len(stored) - 1] = raw
-    with open_archive(io.BytesIO(bytes(data))) as ar:
+    return bytes(data)
+
+
+def test_pax_raw_name_with_undecodable_bytes_round_trips() -> None:
+    """Bytes that are not UTF-8 fall back to the archive codec with surrogateescape;
+    the surrogates send the name back through that codec, recovering the bytes. The
+    fallback codec is the UTF-8 default, not the locale's."""
+    raw = b"caf\xe9\xe9.txt"
+    with (
+        _NON_UTF8_LOCALE,
+        open_archive(io.BytesIO(_pax_tar_with_non_utf8_path(raw))) as ar,
+    ):
         (member,) = ar.members()
+        assert member.name == "caf\udce9\udce9.txt"
         assert member.raw_name == raw
+
+
+def test_pax_path_that_is_not_utf8_falls_back_to_the_caller_encoding() -> None:
+    raw = b"caf\xe9\xe9.txt"
+    data = _pax_tar_with_non_utf8_path(raw)
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+        (member,) = ar.members()
+        assert member.name == "caféé.txt"
+        # raw_name is not asserted: the UTF-8 bytes of "caféé.txt" decode to the same
+        # name, so which bytes were stored cannot be recovered from it.
 
 
 def test_close_releases_the_owned_stream_when_tarfile_close_raises(

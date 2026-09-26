@@ -13,7 +13,8 @@ current tar writers use.
 
 - `format-tar`: without `encoding=`, ustar and GNU names (and `uname`, `gname`,
   `linkname`) decode as UTF-8 with `surrogateescape`, whatever the locale. A caller's
-  `encoding=` still wins. PAX records are unchanged.
+  `encoding=` still wins. A PAX record stays UTF-8 first; when its bytes are not UTF-8
+  it falls back to that same codec, so it too stops following the locale.
 
 ## Impact
 

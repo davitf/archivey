@@ -488,8 +488,12 @@ class TarReader(BaseArchiveReader):
             # tarfile.ENCODING, is the process filesystem encoding on POSIX, so the
             # same archive would list differently under a non-UTF-8 locale. tarfile
             # keeps its errors="surrogateescape" default, so undecodable bytes survive
-            # as U+DC80..U+DCFF. Only ustar/GNU names (and uname/gname/linkname) use
-            # this codec; a PAX record is tried as UTF-8 first whatever it is.
+            # as U+DC80..U+DCFF. ustar/GNU names (and uname/gname/linkname) always use
+            # this codec. A PAX record is decoded strictly as UTF-8 first and falls
+            # back to this codec when that fails (or for its own hdrcharset=BINARY), so
+            # it reaches PAX bytes that are not UTF-8 too. There is no config-level
+            # default as ZIP has: ZIP's fallback codec serves a name it sniffed as not
+            # UTF-8, and TAR sniffs nothing, so encoding= per call is the override.
             encoding=self._encoding if self._encoding is not None else "utf-8",
         )
 
