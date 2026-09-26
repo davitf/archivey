@@ -83,13 +83,14 @@ def _assert_clean_exit(proc: subprocess.CompletedProcess[str], expected: str) ->
 _RAW_RAPIDGZIP = """
 import sys, rapidgzip
 stream = rapidgzip.open(sys.argv[1], parallelization=0)
+outcome = "CLEAN"
 try:
     while stream.read(1 << 20):
         pass
-except Exception:
-    pass
+except Exception as exc:
+    outcome = "RAISED " + type(exc).__name__
 stream.close()
-print("NO_ABORT")
+print(outcome)
 """
 
 
@@ -97,13 +98,19 @@ print("NO_ABORT")
 def test_raw_rapidgzip_aborts_on_truncated_gzip(tmp_path: Path, cut: int) -> None:
     """Canary: the upstream hazard this module guards against still exists.
 
-    If a later rapidgzip stops aborting here, this test fails. That is the signal that
-    rapidgzip may be safe to use without a stdlib pass first.
+    On Linux, rapidgzip 0.16 aborts on each of these inputs. The macOS build raises an
+    exception on them instead ("Unexpected end of file when getting block ..."), so there
+    the canary accepts an abort or a raise. On every platform, rapidgzip must not decode
+    the truncated input without an error. If a later rapidgzip stops aborting on Linux,
+    this test fails: the signal that rapidgzip may be safe to use without a stdlib pass
+    first.
     """
     path = _write(tmp_path, "cut.gz", gzip.compress(_payload())[:-cut])
     proc = _run(_RAW_RAPIDGZIP, str(path))
-    assert proc.returncode != 0, proc.stdout
-    assert "NO_ABORT" not in proc.stdout
+    if proc.returncode != 0:
+        return  # aborted: the hazard is present
+    assert not sys.platform.startswith("linux"), ("no abort", proc.stdout, proc.stderr)
+    assert proc.stdout.strip().startswith("RAISED "), (proc.stdout, proc.stderr)
 
 
 # Each access pattern a caller can use on a member: read straight through; read part,

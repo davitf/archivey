@@ -470,7 +470,10 @@ installs a `Finally` guard that calls `bitReader.seekTo()`; on a cut stream that
 turned off from Python, and padding the input either still aborts or decodes garbage. No
 Python-level wrapper can contain it.
 
-Measured on 0.16.0, Linux:
+Measured on 0.16.0, Linux. On the macOS CI runner (py3.14, arm64) the three cut inputs in
+`tests/test_accelerator_truncation_abort.py` made rapidgzip raise ("Unexpected end of file
+when getting block ...") instead of abort, so the abort is platform-dependent; archivey applies
+the same rule on every platform.
 
 | Input | Aborts |
 | --- | --- |
