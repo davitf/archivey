@@ -236,6 +236,55 @@ def test_aes_tampered_hmac_raises_corruption(method: int) -> None:
             ar.read(ar.members()[0])
 
 
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+@requires("cryptography")
+def test_aes_hmac_mismatch_keeps_raising_after_a_seek_back(method: int) -> None:
+    """After the HMAC fails, seeking back and re-reading raises it again (S28-K1)."""
+    data = _build_aes_zip(
+        payload=_PAYLOAD,
+        password=_PASSWORD,
+        vendor_version=2,
+        strength=3,
+        method=method,
+        tamper_hmac=True,
+    )
+    with open_archive(
+        io.BytesIO(data), password=_PASSWORD, seekable_members=True
+    ) as ar:
+        with ar.open(ar.members()[0]) as stream:
+            with pytest.raises(CorruptionError, match="HMAC"):
+                stream.read()
+            with pytest.raises(CorruptionError, match="HMAC"):
+                stream.seek(0)
+            with pytest.raises(CorruptionError, match="HMAC"):
+                stream.read()
+
+
+@requires("cryptography")
+def test_aes_stage_read_none_reads_to_the_hmac() -> None:
+    """``read(None)`` on the decrypt stage reads to the end and checks the HMAC (S28-K3)."""
+    data = _build_aes_zip(
+        payload=_PAYLOAD,
+        password=_PASSWORD,
+        vendor_version=2,
+        strength=3,
+        method=zipfile.ZIP_STORED,
+        tamper_hmac=True,
+    )
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        info = zf.infolist()[0]
+        aes = parse_winzip_aes_extra(info.extra)
+        assert aes is not None
+        (name_len, extra_len) = struct.unpack_from("<HH", data, info.header_offset + 26)
+        start = info.header_offset + 30 + name_len + extra_len
+    raw = io.BytesIO(data[start : start + info.compress_size])
+    stream = open_winzip_aes_member(
+        raw, aes=aes, password=_PASSWORD, compress_size=info.compress_size
+    )
+    with pytest.raises(CorruptionError, match="HMAC"):
+        stream.read(None)
+
+
 @pytest.mark.parametrize("mode", [AcceleratorMode.AUTO, AcceleratorMode.ON])
 @pytest.mark.parametrize("passwords", [[_PASSWORD], [b"other", _PASSWORD]])
 @requires("cryptography", "rapidgzip")
@@ -576,9 +625,14 @@ def test_aes_candidate_passing_pw_verify_does_not_shadow_the_right_one(
 
 @requires("cryptography")
 @pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
-def test_aes_only_colliding_candidates_report_the_ambiguity(
+def test_aes_only_colliding_candidates_report_damage(
     monkeypatch: pytest.MonkeyPatch, method: int
 ) -> None:
+    """A wrong password past ``pw_verify`` reads as damage, as with one password.
+
+    It passes the 16-bit check once in 65 536 tries, so a member every such candidate
+    fails is reported as the likelier cause (S28-K4).
+    """
     data = _build_aes_zip(
         payload=_PAYLOAD,
         password=_PASSWORD,
@@ -588,9 +642,7 @@ def test_aes_only_colliding_candidates_report_the_ambiguity(
     )
     _collide_pw_verify(monkeypatch)
     with open_archive(io.BytesIO(data), password=[_COLLIDER, b"plain-wrong"]) as ar:
-        with pytest.raises(
-            EncryptionError, match=r"password\(s\) may be wrong, or .* may be corrupt"
-        ):
+        with pytest.raises(CorruptionError, match="most likely corrupt"):
             ar.read(ar.members()[0])
 
 
@@ -802,3 +854,25 @@ def test_aes_stored_out_of_range_seeks_match_an_unencrypted_member() -> None:
                     out += [stream.seek(offset, whence), stream.tell(), stream.read(2)]
                 results.append(out)
     assert results[0] == results[1] == [0, 0, b"he", 0, 0, b"he", 1000, 1000, b""]
+
+
+@pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
+@requires("cryptography")
+def test_aes_tampered_hmac_with_candidates_raises_corruption(method: int) -> None:
+    """A candidate list reports a failing HMAC as damage too (S28-K4).
+
+    Every candidate that reached the HMAC had passed the 16-bit ``pw_verify``, which a
+    wrong password passes once in 65 536, so damage is the likely cause, as it is with
+    one password.
+    """
+    data = _build_aes_zip(
+        payload=_PAYLOAD,
+        password=_PASSWORD,
+        vendor_version=2,
+        strength=3,
+        method=method,
+        tamper_hmac=True,
+    )
+    with open_archive(io.BytesIO(data), password=[b"nope", _PASSWORD]) as ar:
+        with pytest.raises(CorruptionError, match="most likely corrupt"):
+            ar.read(ar.members()[0])

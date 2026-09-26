@@ -43,11 +43,13 @@ def build_aes_zip(
     strength: int = 3,
     method: int = 8,
     tamper_hmac: bool = False,
+    unix_mode: int | None = None,
 ) -> bytes:
     """Build a WinZip AES ZIP from ``(name, payload)`` members.
 
     ``tamper_hmac`` flips a byte in the first member's AES HMAC (for corruption
-    tests). AE-2 (``vendor_version=2``) stores CRC 0 in the headers; AE-1 stores
+    tests). ``unix_mode`` records every member as written on Unix with that mode
+    (``0o120777`` makes them symlinks). AE-2 (``vendor_version=2``) stores CRC 0 in the headers; AE-1 stores
     the plaintext CRC.
     """
     if not members:
@@ -99,7 +101,7 @@ def build_aes_zip(
         cd = struct.pack(
             "<IHHHHHHIIIHHHHHII",
             0x02014B50,
-            51,
+            51 if unix_mode is None else 0x0300 | 51,  # made by: 3 = Unix
             51,
             flags,
             99,
@@ -113,7 +115,7 @@ def build_aes_zip(
             0,
             0,
             0,
-            0,
+            0 if unix_mode is None else unix_mode << 16,
             offset,
         )
         central.extend(cd)

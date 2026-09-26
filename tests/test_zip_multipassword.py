@@ -27,6 +27,7 @@ from archivey.exceptions import (
     EncryptionError,
     TruncatedError,
 )
+from archivey.internal import password as password_module
 from archivey.internal import password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
@@ -315,6 +316,118 @@ def test_structural_bad_zip_is_corruption_not_password_ambiguity() -> None:
     with open_archive(io.BytesIO(blob), password=[RIGHT, b"also-wrong"]) as ar:
         with pytest.raises(CorruptionError, match="Error reading ZIP archive"):
             ar.open(NAME)
+
+
+def test_stored_confirm_reads_through_the_validated_local_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The STORED CRC pass never runs over a member the open would refuse (S28-K5).
+
+    It used to parse the local header by hand, skipping the name, data-offset and
+    overlap checks, so it decrypted the whole member before the open raised.
+    """
+    blob = bytearray(
+        build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=zipfile.ZIP_STORED)
+    )
+    blob[30] ^= 0x01  # local-header name no longer matches the central directory
+    passes: list[int] = []
+    original = zip_reader.parallel_plaintext_crc32
+
+    def counting(*args: Any, **kwargs: Any) -> list[tuple[bytes, int]]:
+        passes.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(zip_reader, "parallel_plaintext_crc32", counting)
+    with open_archive(io.BytesIO(blob), password=[b"also-wrong", RIGHT]) as ar:
+        with pytest.raises(CorruptionError, match="differ"):
+            ar.open(NAME)
+    assert passes == []
+
+
+def test_stored_confirm_refuses_an_overlapped_member_before_any_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A STORED member whose declared size runs into the central directory is refused
+    as an overlap bomb before the CRC pass decrypts a byte of it."""
+    blob = bytearray(
+        build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=zipfile.ZIP_STORED)
+    )
+    cd = blob.index(b"PK\x01\x02")
+    compress_size = int.from_bytes(blob[cd + 20 : cd + 24], "little")
+    blob[cd + 20 : cd + 24] = (compress_size + 64).to_bytes(4, "little")
+    passes: list[int] = []
+    original = zip_reader.parallel_plaintext_crc32
+
+    def counting(*args: Any, **kwargs: Any) -> list[tuple[bytes, int]]:
+        passes.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(zip_reader, "parallel_plaintext_crc32", counting)
+    with open_archive(io.BytesIO(blob), password=[b"also-wrong", RIGHT]) as ar:
+        with pytest.raises(CorruptionError, match="Overlapped entries"):
+            ar.open(NAME)
+    assert passes == []
+
+
+@pytest.mark.parametrize("data", [b"", b"abc"], ids=["empty", "three_bytes"])
+def test_stored_crc_under_four_bytes_does_not_confirm_a_password(
+    monkeypatch: pytest.MonkeyPatch, data: bytes
+) -> None:
+    """A CRC over fewer than 4 bytes carries under 32 bits of evidence: it can reject
+    a candidate but never confirm one, so the survivor is not recorded as known-good."""
+    blob = build_zipcrypto_zip(
+        RIGHT, b"small.txt", data, compression=zipfile.ZIP_STORED
+    )
+    recorded: list[bytes] = []
+    original = password_module._PasswordCandidates.record_success
+
+    def spy(self: Any, password: bytes) -> None:
+        recorded.append(password)
+        original(self, password)
+
+    monkeypatch.setattr(password_module._PasswordCandidates, "record_success", spy)
+    with open_archive(io.BytesIO(blob), password=[b"also-wrong", RIGHT]) as ar:
+        assert ar.read("small.txt") == data
+    assert recorded == []
+
+
+def test_unverified_zipcrypto_error_keeps_raising_after_a_seek_back() -> None:
+    """The password-or-damage error is a content verdict too: it stays (S28-K1)."""
+    blob = corrupt_zipcrypto_payload(
+        build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=zipfile.ZIP_STORED)
+    )
+    with open_archive(io.BytesIO(blob), password=RIGHT, seekable_members=True) as ar:
+        with ar.open(NAME) as stream:
+            with pytest.raises(EncryptionError, match=UNCONFIRMED) as first:
+                stream.read()
+            with pytest.raises(EncryptionError) as again:
+                stream.seek(0)
+            assert again.value is first.value
+
+
+def test_stored_crc_floor_counts_the_body_not_the_declared_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member that declares 4 plaintext bytes but stores none still cannot confirm
+    a password on its CRC (the empty body's CRC is 0, like the declared one)."""
+    blob = bytearray(
+        build_zipcrypto_zip(RIGHT, b"small.txt", b"", compression=zipfile.ZIP_STORED)
+    )
+    blob[22:26] = (4).to_bytes(4, "little")  # local header file_size
+    cd = blob.index(b"PK\x01\x02")
+    blob[cd + 24 : cd + 28] = (4).to_bytes(4, "little")  # central directory file_size
+    recorded: list[bytes] = []
+    original = password_module._PasswordCandidates.record_success
+
+    def spy(self: Any, password: bytes) -> None:
+        recorded.append(password)
+        original(self, password)
+
+    monkeypatch.setattr(password_module._PasswordCandidates, "record_success", spy)
+    with open_archive(io.BytesIO(bytes(blob)), password=[b"also-wrong", RIGHT]) as ar:
+        with contextlib.suppress(ArchiveyError):
+            ar.read("small.txt")
+    assert recorded == []
 
 
 def test_provider_encryption_error_is_not_rewritten_after_candidate_failure() -> None:

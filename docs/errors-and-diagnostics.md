@@ -291,6 +291,9 @@ What that does and does not promise:
   known-good, not known-bad.
 - **A full-length return means the checksum matched.** Trust it as far as you trust
   that digest.
+- **Once a stream has raised, it stays failed.** Every later `read()` or `seek()` on
+  it raises the same error, so seeking back cannot hand you the damaged member as
+  clean data. Open the member again if you want to retry.
 - **A short return with no exception does not mean "complete".** `read(member.size)`
   on a truncated member hands back what it has and stays quiet. Check the length — or
   just read again, because the *next* read raises.

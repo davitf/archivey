@@ -52,6 +52,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
     UnsupportedOperationError,
+    raw_message_of,
 )
 from archivey.internal.arg_checks import (
     check_callable,
@@ -1179,10 +1180,12 @@ class BaseArchiveReader(ArchiveReader):
     ) -> None:
         """Resolve hardlink/symlink targets with one double-fault policy.
 
-        When ``error is not None`` (incomplete listing / terminal pass damage), a
-        secondary ``CorruptionError`` / ``TruncatedError`` during link-target reads is
-        swallowed so the recovered prefix stays publishable. When ``error is None``
-        (clean EOF / complete listing), secondary faults propagate.
+        A ``CorruptionError`` / ``TruncatedError`` reading one link's target leaves
+        that link targetless and reported (``_report_damaged_link_target``), and the
+        others resolve. Past that, when ``error is not None`` (incomplete listing /
+        terminal pass damage), a secondary fault of those types is swallowed so the
+        recovered prefix stays publishable. When ``error is None`` (clean EOF / complete
+        listing), it propagates.
 
         Eager materialization uses a child scope + internal-open exemption for
         link-data reads; a streaming pass's finalization does not open a child scope.
@@ -1218,7 +1221,11 @@ class BaseArchiveReader(ArchiveReader):
                 if unread:
                     self._prepare_link_target_reads(unread)
                 for member in unread:
-                    self._resolve_link_target(member)
+                    try:
+                        self._resolve_link_target(member)
+                    except (CorruptionError, TruncatedError) as exc:
+                        self._report_damaged_link_target(member, exc)
+                        continue
                     if member.link_target is not None:
                         self._listing_tracker.account_link_target(
                             member.link_target, enforce=enforce_listing_limits
@@ -1253,6 +1260,30 @@ class BaseArchiveReader(ArchiveReader):
         except (CorruptionError, TruncatedError):
             if error is None:
                 raise
+
+    def _report_damaged_link_target(
+        self, member: ArchiveMember, exc: CorruptionError | TruncatedError
+    ) -> None:
+        """Leave a link whose target data is damaged listed, targetless, and reported.
+
+        One damaged member does not make the rest of the listing wrong, and a listing
+        that raised would take every other member with it. So the link stays in the
+        list with ``link_target`` unset and ``SYMLINK_TARGET_UNAVAILABLE``
+        (``reason="target_data_damaged"``) says why; a strict policy still refuses the
+        archive, since the code is an integrity one. The memo stays unset, so opening
+        or extracting the link reads the target again and raises the fault itself.
+        """
+        self._emit_link_target_unavailable(
+            member,
+            reason="target_data_damaged",
+            message=(
+                f"The symlink target of {quoted(member.name)} could not be read: "
+                f"{raw_message_of(exc).rstrip('.')}. Leaving link_target unset."
+            ),
+            # The archive does carry the target; reading it failed. Extraction fails
+            # this member rather than dropping it under a status that reads as success.
+            target_in_archive=True,
+        )
 
     def _prepare_link_target_reads(self, members: list[ArchiveMember]) -> None:
         """Hook: ``members`` are about to have their data-stored targets read.
@@ -1554,9 +1585,10 @@ class BaseArchiveReader(ArchiveReader):
             return
         self._ensure_link_target(member)
         # After, not before: a hook that raised did not look and come back empty, it
-        # never finished. `_finalize_links` swallows CorruptionError / TruncatedError on
-        # an already-damaged listing, so marking it resolved on the way out would trade
-        # the real fault for a generic "Link target is unknown" at the next access.
+        # never finished. `_finalize_links` reports a CorruptionError / TruncatedError
+        # here and lists the link without a target, so marking it resolved on the way
+        # out would trade the real fault for a generic "Link target is unknown" when the
+        # caller opens or extracts the link.
         # A backend that catches EncryptionError returns normally, so the repeated-read
         # case this memo exists for is still covered.
         member._link_target_resolved = True

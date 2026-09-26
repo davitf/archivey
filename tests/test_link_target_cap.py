@@ -246,7 +246,8 @@ def test_a_zip_target_longer_than_its_declared_size_is_corruption(
     ZIP verifies every member's data against its declared size, so the read stops at
     those 10 bytes and the data left over raises there, as it would for any other
     member. The cap is never what decides this case, and nothing past the declared
-    size plus one byte is decoded.
+    size plus one byte is decoded. A damaged target costs only that link its target
+    (`test_damaged_link_target.py`): the listing reports it, and opening it raises.
     """
     data = bytearray(_zip_with_links(b"x" * 500_000))
     for signature, size_at in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
@@ -254,8 +255,20 @@ def test_a_zip_target_longer_than_its_declared_size_is_corruption(
         header = data.find(signature, data.find(signature) + 1)
         struct.pack_into("<I", data, header + size_at, 10)
     with open_archive(io.BytesIO(bytes(data)), streaming=streaming) as reader:
-        with pytest.raises(CorruptionError, match="declared size of 10 bytes"):
-            _list(reader, streaming)
+        members = _list(reader, streaming)
+        (link,) = [m for m in members if m.name == "link0"]
+        assert link.link_target is None
+        (diagnostic,) = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+        assert diagnostic.context.reason == "target_data_damaged"  # type: ignore[union-attr]
+        assert "declared size of 10 bytes" in diagnostic.message
+        assert not _too_long(reader)
+        if not streaming:
+            with pytest.raises(CorruptionError, match="declared size of 10 bytes"):
+                reader.open(link)
 
 
 def test_the_read_stops_one_byte_past_the_cap_when_the_size_is_unknown() -> None:
