@@ -10,8 +10,10 @@ its end, and a seek back forfeits that. davi ruled (2026-09-26): keep raising.
 ## What Changes
 
 - `ArchiveStream` keeps the first content verdict (`CorruptionError` / `TruncatedError`,
-  or an error raised from one) and raises it again on every later read and seek, with
-  its first traceback so a retry loop does not grow it.
+  or an error raised from one) and raises it again on every later read until the
+  caller seeks, with its first traceback so a retry loop does not grow it. A seek
+  restarts the decode, matching the rewind rule for truncated streams on `main`
+  (#491); the read that reaches the end raises the verdict again.
 - `tell()`, `seekable()` and `close()` are not gated.
 
 ## Impact

@@ -3,7 +3,7 @@
 ## 1. Stream
 
 - [x] 1.1 `ArchiveStream` stores the first content verdict and re-raises it from `read`
-      and `seek`, with its first traceback.
+      until a seek, and from the read that reaches the end after one.
 - [x] 1.2 ADR 0014 bullet and `docs/errors-and-diagnostics.md`.
 
 ## 2. Tests

@@ -255,8 +255,7 @@ def test_aes_hmac_mismatch_keeps_raising_after_a_seek_back(method: int) -> None:
         with ar.open(ar.members()[0]) as stream:
             with pytest.raises(CorruptionError, match="HMAC"):
                 stream.read()
-            with pytest.raises(CorruptionError, match="HMAC"):
-                stream.seek(0)
+            stream.seek(0)
             with pytest.raises(CorruptionError, match="HMAC"):
                 stream.read()
 

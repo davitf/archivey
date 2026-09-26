@@ -400,8 +400,9 @@ def test_unverified_zipcrypto_error_keeps_raising_after_a_seek_back() -> None:
         with ar.open(NAME) as stream:
             with pytest.raises(EncryptionError, match=UNCONFIRMED) as first:
                 stream.read()
+            stream.seek(0)
             with pytest.raises(EncryptionError) as again:
-                stream.seek(0)
+                stream.read()
             assert again.value is first.value
 
 

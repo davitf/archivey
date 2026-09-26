@@ -177,10 +177,12 @@ def test_read_none_reads_to_eof(member: tuple[Path, str]) -> None:
     ids=["stored", "deflated"],
 )
 def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> None:
-    """A stream that raised a content verdict raises it on every later read and seek.
+    """A stream that raised a content verdict raises it again until the caller seeks,
+    and after a seek the read that reaches the end raises it again.
 
     It used to raise once: a caller who caught the CRC mismatch and seeked back read
-    the whole damaged member with no error (S28-K1).
+    the whole damaged member with no error (S28-K1). A seek still restarts the decode,
+    so the prefix reads again, as for a truncated stream.
     """
     payload = os.urandom(3000)
     buf = io.BytesIO()
@@ -197,11 +199,17 @@ def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> No
         with pytest.raises(CorruptionError) as first:
             stream.read()
         with pytest.raises(CorruptionError) as again:
-            stream.seek(0)
-        assert again.value is first.value
-        with pytest.raises(CorruptionError) as after:
             stream.read(10)
+        assert again.value is first.value
+        stream.seek(0)
+        assert stream.read(10) == payload[:10]
+        with pytest.raises(CorruptionError) as after:
+            stream.read()
         assert after.value is first.value
+        stream.seek(0)
+        with pytest.raises(CorruptionError):
+            while stream.read(1000):
+                pass
         # Each raise resets the traceback to where the damage was found, so a retry
         # loop does not grow it (and the frames it keeps alive) without bound.
         depths = []
