@@ -1,7 +1,9 @@
 # Alternative RAR decompressors (`unar`, `7z`, `bsdtar`, `unrar-free`)
 
-**Status:** finished evidence (explore, not implemented). `unar` candidate
-kept open; `7z` closed.  
+**Status:** finished evidence. `7z` closed. **`unar` implemented 2026-09-26** as the
+opt-in `ArchiveyConfig.rar_decompressor="unar"`, with the early-fail gate widened after
+new measurements (see [`known-issues.md`](../known-issues.md) §MacPaw `unar`). The body
+below is the 2026-09-01 evidence as recorded.  
 **Date:** 2026-09-01  
 **Trigger:** Homebrew disabled the `rar` cask (Gatekeeper / notarization); CI now
 compiles RARLAB UnRAR from a pinned GitHub mirror

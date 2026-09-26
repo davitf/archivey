@@ -155,7 +155,9 @@ The reason to switch is memory safety and uniformity: Archivey parses 7z and RAR
 in pure Python rather than delegating to a third-party parser, and the same reader
 interface covers every other format you handle. One RAR difference: `rarfile` will use
 `unar` or `7z` for member data if that is what is on `PATH`; archivey requires RARLAB
-`unrar` or `rar` and will not fall back to those lookalikes.
+`unrar` or `rar` and will not fall back to those on its own. You can select `unar`
+explicitly with `ArchiveyConfig(rar_decompressor="unar")`, which reads fewer archives
+([Formats and extras](formats.md#rar)).
 
 ## Things that will bite you
 

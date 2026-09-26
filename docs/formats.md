@@ -24,8 +24,9 @@ most often surprise callers. For more depth, the maintainer handbook has pages o
 
 **RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`.** No pip extra
 can supply it — listing and metadata work without it, reading bytes does not.
-`rarfile` will use `unar` or `7z` if that is what is on `PATH`; archivey will not.
-How to get the binary: [Install and extras](install.md#getting-rarlab-unrar-or-rar).
+`rarfile` will use `unar` or `7z` if that is what is on `PATH`; archivey will not on its
+own. You can choose `unar` instead with `ArchiveyConfig(rar_decompressor="unar")`, with
+the limits listed under [RAR](#rar). How to get the binary: [Install and extras](install.md#getting-rarlab-unrar-or-rar).
 
 Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
 rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
@@ -180,10 +181,27 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 ## RAR
 
 - Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`).
-- Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`,
-  `unar`, or `7z` — `rarfile` accepts those last two; archivey does not). `unrar` is
-  preferred when both exist. Passwords are passed as bare `-p` with the secret on stdin
+- Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
+  or `7z`). `unrar` is preferred when both exist. `unar` is used only when you select it;
+  see the next item. Passwords are passed as bare `-p` with the secret on stdin
   (not in argv). Install: [Getting RARLAB unrar or rar](install.md#getting-rarlab-unrar-or-rar).
+- **`unar` instead of `unrar`:** `ArchiveyConfig(rar_decompressor="unar")` reads member
+  data with `unar` 1.10 or later (`brew install unar`, `apt install unar`). It is free
+  software and easy to install on macOS, but it reads less than `unrar`. Archivey refuses
+  these reads with `UnsupportedFeatureError` before `unar` runs, because `unar` gets them
+  wrong, sometimes with a success exit:
+  - any encrypted member, and every member of a solid archive that has one: `unar` takes a
+    password only on its command line, where other local users can see it;
+  - in a RAR5 solid archive, a member that comes after an empty file, a directory or a
+    link;
+  - a member compressed with the RAR 1.5 algorithm;
+  - a multi-volume set with a prefix before the first volume (an SFX stub). A single
+    prefixed file is copied to a temporary file first.
+
+  Stored members still need neither program. A member whose stored name contains `*` or
+  `?` needs no `rar_allow_glob_member_concatenation`: `unar` selects members by index,
+  not by name. Archivey never switches between the two programs on its own; with `unar`
+  selected and missing, a read raises `PackageNotInstalledError`.
 - `[recommended]`: header-encrypted RAR5. BLAKE2sp verification needs **no** package —
   it is implemented natively on stdlib `hashlib`. RAR5 members with the HASHMAC flag
   verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a password is available;

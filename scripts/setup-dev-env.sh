@@ -59,7 +59,8 @@ install_linux_packages() {
   #   tests/fixtures/rar/README.md. The corpus RAR column itself does not skip
   #   without it. macOS / CI install unrar only.
   # p7zip-full: encrypted ZIP fixtures built by shelling out to `7z`.
-  ${SUDO} apt-get install -y unrar rar p7zip-full
+  # unar: the opt-in second RAR data program (tests/test_rar_unar.py skips without it).
+  ${SUDO} apt-get install -y unrar rar p7zip-full unar
 }
 
 install_macos_packages() {
@@ -91,6 +92,7 @@ install_macos_packages() {
     return 0
   fi
   command -v 7z >/dev/null 2>&1 || brew install p7zip
+  command -v unar >/dev/null 2>&1 || brew install unar
 }
 
 install_windows_packages() {
@@ -160,7 +162,7 @@ def _on_login_path(found: str) -> bool:
     return parent in login_dirs
 
 
-for tool in ("unrar", "7z"):
+for tool in ("unrar", "7z", "unar"):
     found = shutil.which(tool)
     if not found:
         print(f"MISSING {tool}")

@@ -4,7 +4,11 @@ Module split:
 
 - :mod:`.rar_parser` — metadata, offsets, encryption headers, multi-volume merge
 - :mod:`.rar_unrar` — spawn RARLAB ``unrar p`` (password on stdin; ``-n./member``)
-- this module — ``BaseArchiveReader``: list from the parser; member **data** via unrar
+- :mod:`.rar_unar` — the refusals and pipe layout when the caller selects ``unar``
+  (``ArchiveyConfig.rar_decompressor``); the process itself is
+  :mod:`archivey.internal.external.unar`
+- this module — ``BaseArchiveReader``: list from the parser; member **data** via unrar,
+  or via ``unar`` when selected (same shapes, entries named by index instead of mask)
 
 Data-open shapes:
 
@@ -35,7 +39,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Literal
 
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, RarDecompressor
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -70,6 +74,7 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_volumes,
     rar5_hash_key,
 )
+from archivey.internal.backends.rar_unar import UNAR_PURPOSE, UnarRarPolicy
 from archivey.internal.backends.rar_unrar import (
     _unrar_glob_demux_ok,
     _unrar_mask_for,
@@ -85,6 +90,8 @@ from archivey.internal.base_reader import (
 )
 from archivey.internal.config import KeyDerivationBudget
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.external.cli import terminate_process
+from archivey.internal.external.unar import UnarOutputStream, open_unar_stdout
 from archivey.internal.listing_limits import check_metadata_budget
 from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
@@ -701,6 +708,11 @@ def _bounded_member_pipe(inner: BinaryIO, *, prefix: int, size: int) -> BinaryIO
         raise
 
 
+def _open_unar_blob_pipe(path: Path) -> tuple[subprocess.Popen[bytes], BinaryIO]:
+    """``unar`` for the one-entry archive :func:`decompress_rar3_blob` builds."""
+    return open_unar_stdout(path, [0], purpose=UNAR_PURPOSE)
+
+
 # What a service header's payload would have answered, for the diagnostic that
 # reports one whose walk stopped: the payload is then refused, because a header
 # nobody finished reading may be hiding the record that says it is ciphertext.
@@ -761,6 +773,8 @@ class RarReader(BaseArchiveReader):
         self._temp_dir: Path | None = None
         self._owned_concat: ConcatenatedFile | None = None
         self._archive_path: Path | None = None
+        # A copy of a prefixed path source that starts at the RAR, for unar only.
+        self._unar_copy_path: Path | None = None
         # Guards the check-then-write in ``_ensure_archive_path``: two concurrent
         # compressed opens used to both see ``None`` and both copy, and close
         # only removed the winner.
@@ -814,6 +828,13 @@ class RarReader(BaseArchiveReader):
         )
         if self._archive.is_volume or self._volume_count > 1:
             self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
+        # Built once from the parse, and only when the caller chose unar: it holds the
+        # refusals and the pipe layout, and none of it applies to unrar.
+        self._unar_policy: UnarRarPolicy | None = (
+            UnarRarPolicy(self._archive)
+            if self._config.rar_decompressor is RarDecompressor.UNAR
+            else None
+        )
         self._check_rar3_comment_budget()
         self._archive.comment = self._resolve_rar3_comment(self._archive.comment)
         for info in self._archive.members:
@@ -1194,29 +1215,61 @@ class RarReader(BaseArchiveReader):
                 assert self._archive_path is not None
                 return self._archive_path
             # Single stream source: write one temp .rar for unrar.
-            fd, name = tempfile.mkstemp(suffix=".rar")
-            path = Path(name)
-            try:
-                with os.fdopen(fd, "wb") as out:
-                    # From the origin, so the temp holds the payload alone. A path source
-                    # keeps its own path here and `unrar` sees the stub, which it handles
-                    # natively; this branch is the stream case, where making the temp a
-                    # plain RAR is both smaller and one less thing to rely on.
-                    view = self._shared.view(self._origin)
-                    try:
-                        # Keep the 1 MiB chunk: each SharedView read takes the lock
-                        # and seek+reads, so copyfileobj's 64 KiB default is ~16×
-                        # the acquisitions. This method already holds the mkstemp
-                        # fd, so copyfileobj writes to it rather than opening dest.
-                        shutil.copyfileobj(view, out, length=1 << 20)
-                    finally:
-                        view.close()
-            except BaseException:
-                path.unlink(missing_ok=True)
-                raise
+            path = self._spool_from(self._origin)
             self._temp_path = path
             self._archive_path = path
             return path
+
+    def _spool_from(self, start: int) -> Path:
+        """Copy the source from ``start`` to a new temp ``.rar``; the caller owns it."""
+        fd, name = tempfile.mkstemp(suffix=".rar")
+        path = Path(name)
+        try:
+            with os.fdopen(fd, "wb") as out:
+                # From the origin, so the temp holds the payload alone. A path source
+                # keeps its own path for `unrar`, which handles the stub natively;
+                # a stream becomes a plain RAR, which is both smaller and one less
+                # thing to rely on.
+                view = self._shared.view(start)
+                try:
+                    # Keep the 1 MiB chunk: each SharedView read takes the lock
+                    # and seek+reads, so copyfileobj's 64 KiB default is ~16×
+                    # the acquisitions. This method already holds the mkstemp
+                    # fd, so copyfileobj writes to it rather than opening dest.
+                    shutil.copyfileobj(view, out, length=1 << 20)
+                finally:
+                    view.close()
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        return path
+
+    def _unar_archive_path(self, member: ArchiveMember | None) -> Path:
+        """A path ``unar`` can open: the RAR must start at byte 0 of the file.
+
+        ``unar`` does not look for a RAR after a prefix, whether that is an SFX stub
+        or anything else; it reports an unknown format and writes nothing. A single
+        prefixed archive is therefore copied once from where the RAR starts: the
+        detected origin plus any stub the parser skipped past. A prefixed
+        multi-volume set is refused: every volume would need copying under its
+        sibling name, and ``unrar`` reads that set in place.
+        """
+        start = self._origin + self._archive.sfx_offset
+        if self._volume_set_size() > 1 and (
+            self._volume0_parse_origin or self._archive.sfx_offset
+        ):
+            raise self._unar_refused(
+                member,
+                "unar does not find a RAR after a prefix, and a prefixed multi-volume "
+                "set is not copied for it. Set ArchiveyConfig.rar_decompressor to "
+                "'unrar' to read it with RARLAB unrar.",
+            )
+        if start == 0:
+            return self._ensure_archive_path()
+        with self._materialize_lock:
+            if self._unar_copy_path is None:
+                self._unar_copy_path = self._spool_from(start)
+            return self._unar_copy_path
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
@@ -1260,6 +1313,7 @@ class RarReader(BaseArchiveReader):
             return comment
         try:
             unpacked = decompress_rar3_blob(
+                open_pipe=None if self._unar_policy is None else _open_unar_blob_pipe,
                 extract_version=comment.extract_version,
                 compress_type=comment.compress_type,
                 packed=comment.packed,
@@ -1407,6 +1461,9 @@ class RarReader(BaseArchiveReader):
         if not self._archive.is_solid:
             # Nonsolid: default lazy per-member named opens (never ALL-pipe demux).
             yield from super()._iter_with_data()
+            return
+        if self._unar_policy is not None:
+            yield from self._iter_solid_with_unar(self._unar_policy)
             return
 
         # Bare ``unrar p`` omits ``-ver`` history from the ALL pipe; pass ``-ver``
@@ -2014,6 +2071,9 @@ class RarReader(BaseArchiveReader):
             self._confirm_unsettled_plaintext(raw, member)
             return self._wrap_payload_stream(self._direct_view(raw), member)
 
+        if self._unar_policy is not None:
+            return self._open_member_with_unar(member, raw, self._unar_policy)
+
         # unrar addresses the member by its presented name (``path`` or ``path;n``) via a
         # ``-n`` include mask (see open_unrar_p); a history row needs ``-ver``. Do not use
         # the normalized ``member.name`` (may differ on separators).
@@ -2139,17 +2199,28 @@ class RarReader(BaseArchiveReader):
                 owned.close()
                 raise
 
+        return self._open_spawned_member(member, _spawn)
+
+    def _open_spawned_member(
+        self, member: ArchiveMember, spawn: Callable[[], BinaryIO]
+    ) -> ArchiveStream:
+        """Wrap one member's decompressor pipe: respawn on rewind, verify, count.
+
+        ``spawn`` starts the process and returns a stream that owns it, already
+        counted by ``_track_decompressed``. The same wrapping serves ``unrar`` and
+        ``unar``.
+        """
         # Spawn now so PackageNotInstalledError / a missing stdout pipe surface at
         # open(), and so a spawn-count right after open() is 1 (the live-stream
         # gate's "refused second open does not spawn" pin). Password and
-        # corruption still map on the completing read — unrar's exit is only
+        # corruption still map on the completing read — the exit status is only
         # known after the process ends.
-        inner = _spawn()
+        inner = spawn()
         try:
             rewind: RewindWarning | None = None
             if self._seek_declared():
                 inner = _UnrarRespawnStream(
-                    _spawn, inner, size=_member_stream_size(member)
+                    spawn, inner, size=_member_stream_size(member)
                 )
                 rewind = RewindWarning(
                     codec_name="rar",
@@ -2164,6 +2235,138 @@ class RarReader(BaseArchiveReader):
         except BaseException:
             inner.close()
             raise
+
+    def _unar_refused(
+        self, member: ArchiveMember | None, reason: str
+    ) -> UnsupportedFeatureError:
+        if member is None:
+            return UnsupportedFeatureError(
+                f"Cannot read RAR member data: {reason}",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.RAR,
+            )
+        return UnsupportedFeatureError(
+            f"Cannot read RAR member {quoted(member.name)}: {reason}",
+            archive_name=self._archive_name,
+            member_name=member.name,
+            source_format=ArchiveFormat.RAR,
+        )
+
+    def _open_member_with_unar(
+        self, member: ArchiveMember, raw: RarMemberInfo, policy: UnarRarPolicy
+    ) -> ArchiveStream:
+        """Serve one member from ``unar -i <index>``.
+
+        The member is named by its entry index, not by its stored name, so none of the
+        ``unrar`` include-mask handling applies: no sibling can match, and a glob name
+        costs nothing extra. The refusals are the ones ``unar`` needs instead
+        (:class:`UnarRarPolicy`), decided from the parse before anything is spooled or
+        spawned.
+        """
+        refusal = policy.member_refusal(raw)
+        if refusal is not None:
+            raise self._unar_refused(member, refusal)
+        # Encrypted members are refused above, so no tweaked digest reaches here: the
+        # stored CRC32 or BLAKE2sp, when present, is checked as is.
+        has_digest = bool(member.hashes)
+        index = policy.entry_index(raw)
+        path = self._unar_archive_path(member)
+
+        def _spawn() -> BinaryIO:
+            proc, stdout = open_unar_stdout(path, [index], purpose=UNAR_PURPOSE)
+            try:
+                owned: BinaryIO = UnarOutputStream(
+                    stdout, proc, has_verifiable_digest=has_digest
+                )
+            except BaseException:
+                terminate_process(proc)
+                raise
+            try:
+                return self._track_decompressed(owned)
+            except BaseException:
+                owned.close()
+                raise
+
+        return self._open_spawned_member(member, _spawn)
+
+    def _iter_solid_with_unar(
+        self, policy: UnarRarPolicy
+    ) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+        """The solid pass over one all-entries ``unar`` run.
+
+        Same shape as the ``unrar`` pass in :meth:`_iter_with_data`: one process, spawned
+        on the first read, demultiplexed by :class:`SolidBlockReader`. The offsets come
+        from :meth:`UnarRarPolicy.solid_pass_offset` because ``unar`` emits a different
+        set of entries than ``unrar p`` (history rows always, RAR3/4 symlink targets
+        too), or only the entries the policy names. A refused member raises on its first
+        read, so a pass that only lists, or skips it, is not refused.
+        """
+        solid: SolidBlockReader | None = None
+
+        def _pipe() -> SolidBlockReader:
+            nonlocal solid
+            if solid is None:
+                path = self._unar_archive_path(None)
+                proc, stdout = open_unar_stdout(
+                    path, policy.solid_pass_indexes, purpose=UNAR_PURPOSE
+                )
+                try:
+                    # Every member read from this pipe is checked against its declared
+                    # size and stored digest, so unar's exit status adds nothing.
+                    owned: BinaryIO = UnarOutputStream(
+                        stdout, proc, has_verifiable_digest=True
+                    )
+                except BaseException:
+                    terminate_process(proc)
+                    raise
+                try:
+                    owned = self._track_decompressed(owned)
+                    solid = SolidBlockReader(owned)
+                except BaseException:
+                    owned.close()
+                    raise
+            return solid
+
+        def _refuse(member: ArchiveMember, reason: str) -> BinaryIO:
+            raise self._unar_refused(member, reason)
+
+        def _open(member: ArchiveMember) -> ArchiveStream | None:
+            raw = member._raw
+            assert isinstance(raw, RarMemberInfo)
+            if not raw.is_payload_file() or not member.is_file:
+                return None
+            size = _member_stream_size(member)
+            refusal = policy.solid_pass_refusal(raw)
+            open_fn: Callable[[], BinaryIO]
+            if refusal is not None:
+                open_fn = lambda: _refuse(member, refusal)  # noqa: E731
+            else:
+                offset = policy.solid_pass_offset(raw)
+                open_fn = lambda: _pipe().open_member(offset, size, lazy=True)  # noqa: E731
+            hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
+            return self._wrap_member_stream(
+                None,
+                member.name,
+                open_fn=open_fn,
+                size=member.size,
+                track_output=False,
+                seekable=False,
+                expected_hashes=hashes,
+                expected_size=vsize,
+                digest_transforms=transforms,
+                verify_member=verify_member,
+            )
+
+        def _cleanup() -> None:
+            if solid is not None:
+                solid.close()
+
+        yield from self._drive_pass_streams(
+            self._listed_members(),
+            open_member=_open,
+            close_previous=True,
+            cleanup=_cleanup,
+        )
 
     def _get_archive_info(self) -> ArchiveInfo:
         is_solid = self._archive.is_solid
@@ -2212,6 +2415,12 @@ class RarReader(BaseArchiveReader):
                 except OSError:
                     pass
                 self._temp_path = None
+            if self._unar_copy_path is not None:
+                try:
+                    self._unar_copy_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self._unar_copy_path = None
             if self._temp_dir is not None:
                 # Single-stream copy (_ensure_archive_path) owns _temp_path;
                 # stream volumes (_materialize_stream_volumes) own _temp_dir.

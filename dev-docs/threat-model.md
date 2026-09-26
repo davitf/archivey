@@ -777,9 +777,15 @@ RAR member data requires an external tool. `unrar` is **non-free** (freeware lic
 exists on macOS. A multi-tool fallback matrix would otherwise degrade into "works on my
 machine" plus divergent solid/password behavior.
 
-*Decision (closed):* Archivey supports **RARLAB `unrar` only** for RAR member data.
+*Decision (closed):* Archivey uses **RARLAB `unrar`** for RAR member data by default.
 Non-RARLAB binaries on `PATH` raise `PackageNotInstalledError` naming RARLAB `unrar`;
-there is no silent fallback to `unrar-free` / `unar` / `7z`. Licensing remains a
+there is no silent fallback to `unrar-free` / `unar` / `7z`. *Amended 2026-09-26:* a
+caller can select `unar` explicitly (`ArchiveyConfig.rar_decompressor="unar"`). That is
+a choice, not a fallback: it applies only when asked for, and a missing `unar` raises.
+The `unar` path keeps the `unrar` boundary's rules — a banner probe with a timeout and a
+stat-keyed cache, a fixed argv ending in `--` and an absolute archive path, members named
+by decimal entry index (no hostile name reaches argv, no include mask) — and refuses
+encrypted data rather than put a password on `unar`'s command line. Licensing remains a
 documented system dependency (archivey itself stays permissively licensed). See
 ADR [`0002-native-rar-metadata-unrar-data`](decisions/0002-native-rar-metadata-unrar-data.md)
 and OpenSpec `format-rar`.

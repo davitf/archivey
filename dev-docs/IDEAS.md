@@ -105,7 +105,10 @@
   `unrar` binary. Could remove the `unrar` runtime requirement for common cases.
   **Higher-risk / research spike** — RAR decode correctness is hard and libarchive's
   RAR5 coverage is partial; `unrar` remains the reference.
-- **`unar` as a second RAR data backend** — ~~spike after Homebrew dropped the
+- **`unar` as a second RAR data backend** — **Shipped 2026-09-26 as the opt-in
+  `ArchiveyConfig.rar_decompressor="unar"`** (gate in `internal/backends/rar_unar.py`).
+  The history below is the 2026-09-01 investigation.
+  ~~spike after Homebrew dropped the
   `rar` cask.~~ **Investigated 2026-09-01; `unar` kept open, `7z` closed.**
   `unar` stdout concat is real, but RAR5 solid+empty SIGSEGVs (1.10.1) or
   returns rc=0 empty (1.10.7 / Homebrew XADMaster 1.10.8) on stdout **and**
@@ -123,6 +126,16 @@
   `dev-docs/investigations/alternative-rar-decompressors.md`;
   `dev-docs/known-issues.md` (XADMaster RAR5 solid+empty).
 
+- **`unar` for formats or codecs archivey does not decode** — XADMaster reads many
+  legacy formats (StuffIt, LHA/LZH, ARJ, ACE, CAB, Compact Pro, old Mac archives) and
+  codecs 7z/ZIP members may use that archivey has no Python library for. The process
+  layer is already format-agnostic (`internal/external/unar.py`: identification,
+  argv by entry index, the stdout wrapper), so a backend would add only its own
+  refusals and entry mapping, the way `rar_unar.py` does for RAR. What is missing for a
+  listing-side use is a native parser or a bounded `lsar -j` reader; for a codec-side
+  use, a way to hand `unar` one member's raw bytes (a synthetic one-member archive, as
+  `decompress_rar3_blob` does for RAR3 comments). Not started; requested as a direction
+  by the maintainer on 2026-09-26.
 - **Subprocess decompressor streams** — a single reusable `SubprocessDecompressorStream`
   that pipes compressed/uncompressed data through a system binary (`zstd`, `xz`,
   `brotli`, `lz4`, …) as an alternative to installing the Python codec libs. Same pattern

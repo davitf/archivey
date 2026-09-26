@@ -202,39 +202,48 @@ The regression tests are in `tests/test_sevenzip_reader.py`: the IA64 case round
 2911-byte member through `7z`, and the 2 GiB case pins `FilterDecoder` against an `unpack_size`
 of 2^31 without building a fixture, since the size no longer reaches the filter.
 
-## MacPaw `unar` / XADMaster: RAR5 solid + empty FILE is silent-wrong (open)
+## MacPaw `unar` / XADMaster: RAR5 solid after an empty entry is silent-wrong (open)
 
-**Status:** open upstream; archivey does not use `unar`. Recorded because a future
-optional `unar` data backend is still on the table after Homebrew dropped the
-`rar` cask. Evidence:
+**Status:** open upstream; worked around. `unar` is the opt-in RAR data program
+(`ArchiveyConfig.rar_decompressor="unar"`), and `internal/backends/rar_unar.py` refuses
+every read below before `unar` runs. Evidence:
 [`alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md).
 
-On a **RAR5 solid** archive that contains **any empty FILE**, `unar` fails while
-reading a *non-empty* member — stdout **and** extract-to-disk. Skipping the empty
-names in the extract argv does not help: the decoder still walks that solid slot.
+On a **RAR5 solid** archive, `unar` fails on a member with data that comes **after** an
+empty file or a directory — stdout **and** extract-to-disk. Selecting only the later
+member does not help: the decoder still walks the earlier slot. An empty entry that comes
+last is harmless, and so is every member before the first empty entry.
 
 | `unar` lineage | `unar -o -` / disk extract |
 | --- | --- |
-| Debian `unar 1.10.7+ds1+really1.10.1` | **SIGSEGV**, 0 bytes |
+| Debian `unar 1.10.7+ds1+really1.10.1` | **SIGSEGV**. Output of *earlier* members that `unar` had buffered is lost too (`wildcard_names_solid__.rar`: 8192 of 8202 bytes of member 0) |
 | Locally built MacPaw XADMaster `v1.10.8` (banner **v1.10.7**) | **rc=0**, empty output (silent wrong data) |
-| homebrew-core formula `unar` (XADMaster **v1.10.8**, bottles include `arm64_tahoe`) | Same 1.10.8 lineage. `brew install unar` **installs**; fixture matrix on a brew bottle **not yet run**. |
+| homebrew-core formula `unar` (XADMaster **v1.10.8**) | Same 1.10.8 lineage. CI's macOS leg installs it and runs `tests/test_rar_unar.py` against it |
 
-The *newer* behaviour is the dangerous one. Without a gate, a `unar` backend
-would hand callers empty files with a successful exit.
+Measured 2026-09-26 with `rar a -s -ds -m3` probes (order kept): empty file first or in
+the middle fails, empty file last passes, a directory between members fails
+(`wildcard_names_solid__.rar`), directories written last pass. RAR4 passed every shape.
 
-**Early-fail gate (listing only, not yet implemented).** Archivey's native RAR
-parser already knows `format`, `info.is_solid`, member type and size before
-touching a decompressor. Refuse:
+**The gate as shipped.** From the native listing: in a RAR5 solid archive, refuse every
+member with data that follows an empty file, a directory, or a link (links are included
+without a failing sample, on the same no-data-in-the-stream grounds). The solid pass then
+names only the readable members by index, so `unar` never reaches the crash and loses no
+buffered output. RAR4 is not gated; the size and digest check on each member is the net.
 
-`format == RAR and info.is_solid and any FILE with size == 0`
+**Two more `unar` 1.10.1 behaviours found on the committed fixtures**, both gated:
 
-Gate RAR4 too (conservative: RAR4 solid+empty reportedly works in `unar`). The
-predicate is generalized from one fixture family (`basic_solid__.rar` with the
-empty member first / mid / last); ANTI members and packed-nonzero /
-unpacked-zero empties are untested.
+- **RAR 1.5 compression** (`rar15-comment.rar`, `FILE1.TXT`, method 3 at version 15):
+  `unar` writes nothing for the member and exits 0. Refused when a member's extract
+  version is below 20 and it is not stored.
+- **A prefix before the RAR** (an SFX stub, or any leading bytes): `unar` reports an
+  unknown format. A single prefixed archive is copied from where the RAR starts; a
+  prefixed multi-volume set is refused.
 
-Do not add the backend until the gate ships with it, the Homebrew bottle is
-measured, and the XADMaster bug is filed.
+Also different from `unrar p`, and handled in the pipe layout rather than refused: an
+all-entries run always includes file-version history rows, and a RAR3/4 symlink emits its
+stored target as data.
+
+Still to do: file the XADMaster bug upstream.
 
 ## stdlib `tarfile` treats a corrupt non-first header as clean end-of-archive
 

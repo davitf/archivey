@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, cast
@@ -485,6 +486,7 @@ def _unrar_mask_match(name: str, mask: str) -> bool:
 
 def decompress_rar3_blob(
     *,
+    open_pipe: Callable[[Path], tuple[subprocess.Popen[bytes], BinaryIO]] | None = None,
     extract_version: int,
     compress_type: int,
     packed: bytes,
@@ -502,6 +504,9 @@ def decompress_rar3_blob(
     ``unrar`` can report a CRC error for the synthetic FILE because old comment
     blocks retain only a CRC16. The caller validates that CRC16 against the
     returned bytes, which is the integrity check the on-disk comment provides.
+
+    ``open_pipe`` spawns the decompressor on the synthetic archive and returns
+    ``(proc, stdout)`` for its only member; ``None`` means :func:`open_unrar_p`.
 
     An encrypted comment (the PASSWORD or SALT flag) returns ``None`` before any
     archive is built. The parser already drops one
@@ -559,7 +564,7 @@ def decompress_rar3_blob(
     try:
         with os.fdopen(fd, "wb") as archive:
             archive.write(_RAR3_ID + main_header + file_header + packed)
-        proc, stdout = open_unrar_p(path)
+        proc, stdout = (open_pipe or open_unrar_p)(path)
         try:
             # A comment's declared unpacked length is a uint16. Bound the
             # process output so a malformed blob cannot turn archive listing

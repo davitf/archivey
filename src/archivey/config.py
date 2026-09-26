@@ -79,6 +79,28 @@ class AcceleratorMode(Enum):
         return True
 
 
+class RarDecompressor(Enum):
+    """Which external program decompresses RAR member data.
+
+    The native parser lists a RAR archive without either program. One of them is needed
+    only to read a compressed or encrypted member; stored members are read directly.
+
+    - ``UNRAR`` — RARLAB ``unrar`` 6.0 or later (or the RARLAB ``rar`` writer). It
+      reads every RAR archive, including encrypted ones. This is the default.
+    - ``UNAR`` — ``unar`` 1.10 or later, from The Unarchiver's XADMaster library. It is
+      free software and ``brew install unar`` installs it on macOS. It is **not** a full
+      substitute: archivey refuses, before ``unar`` runs, every read that ``unar`` is
+      known to get wrong or that would expose a password. See ``docs/formats.md``.
+
+    Archivey never changes from one program to the other on its own. Selecting ``UNAR``
+    when ``unar`` is not installed raises ``PackageNotInstalledError``, even when
+    ``unrar`` is available.
+    """
+
+    UNRAR = "unrar"
+    UNAR = "unar"
+
+
 # Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
 # rapidgzip for a DEFLATE-family stream (gzip / zlib / raw deflate). Below this,
 # stdlib backends stay cheaper: rapidgzip's per-stream index/thread setup dominates
@@ -482,6 +504,13 @@ class ArchiveyConfig:
     read it anyway. A glob name that matches no other member is unaffected either way.
     """
 
+    rar_decompressor: RarDecompressor = RarDecompressor.UNRAR
+    """Which external program decompresses RAR member data. See :class:`RarDecompressor`.
+
+    Accepts the member or its name (``"unrar"``, ``"unar"``). The listing does not
+    depend on it.
+    """
+
     read_link_targets: bool = True
     """Whether the reader reads a symlink's target when the format stores it as member
     data (ZIP, 7z, RAR3/4) rather than in the header.
@@ -634,6 +663,16 @@ class ArchiveyConfig:
                     param=f"{field_name}=",
                 ),
             )
+        object.__setattr__(
+            self,
+            "rar_decompressor",
+            coerce_enum(
+                self.rar_decompressor,
+                RarDecompressor,
+                call="ArchiveyConfig()",
+                param="rar_decompressor=",
+            ),
+        )
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()
