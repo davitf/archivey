@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import stat
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Mapping
 
@@ -35,6 +35,7 @@ from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.timestamps import unix_to_datetime
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -52,14 +53,10 @@ from archivey.types import (
 def _stat_datetime(ts: float) -> datetime | None:
     """A stat timestamp as an aware UTC datetime, or ``None`` when out of range.
 
-    ``datetime.fromtimestamp`` raises ``ValueError``/``OverflowError`` on POSIX and
-    ``OSError`` on Windows (its ``gmtime()`` rejects pre-1970/huge values) for
-    out-of-range inputs, which a network/FUSE filesystem can genuinely report.
+    A network/FUSE filesystem can genuinely report an out-of-range value, and a
+    pre-1970 one is a real date on every platform (``unix_to_datetime``).
     """
-    try:
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
-    except (ValueError, OverflowError, OSError):
-        return None
+    return unix_to_datetime(ts)
 
 
 def _link_extra(member_type: MemberType, is_junction: bool) -> MemberExtra:

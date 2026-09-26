@@ -33,7 +33,7 @@ from __future__ import annotations
 import stat
 import tarfile
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 from io import BytesIO
 from typing import BinaryIO, Iterator, Literal, Mapping, cast
 
@@ -82,6 +82,7 @@ from archivey.internal.streams.streamtools import (
     ensure_bufferedio,
     read_within_reach,
 )
+from archivey.internal.timestamps import unix_to_datetime
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -214,9 +215,10 @@ def _pax_time(info: tarfile.TarInfo, key: str) -> datetime | None:
     if raw is None:
         return None
     try:
-        return datetime.fromtimestamp(float(raw), tz=timezone.utc)
-    except (ValueError, OverflowError, OSError):
+        seconds = float(raw)
+    except ValueError:
         return None
+    return unix_to_datetime(seconds)
 
 
 class _EofProbeStream(ReadOnlyIOStream):
@@ -859,12 +861,8 @@ class TarReader(BaseArchiveReader):
         # one field honors both the standard ustar mtime and the PAX override. A hostile
         # out-of-range value (e.g. a crafted PAX mtime beyond datetime's range) must not
         # sink the whole listing, so it degrades to None like _pax_time does.
-        mtime_invalid = False
-        try:
-            modified = datetime.fromtimestamp(info.mtime, tz=timezone.utc)
-        except (ValueError, OverflowError, OSError):
-            mtime_invalid = True
-            modified = None
+        modified = unix_to_datetime(info.mtime)
+        mtime_invalid = modified is None
 
         compression = (
             _STORED_COMPRESSION

@@ -34,7 +34,7 @@ import zlib
 from collections.abc import Callable
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import (
     IO,
@@ -129,7 +129,11 @@ from archivey.internal.streams.streamtools import (
     read_exact,
 )
 from archivey.internal.streams.verify import VerifyingStream
-from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
+from archivey.internal.timestamps import (
+    TimestampIssue,
+    filetime_to_datetime,
+    unix_to_datetime,
+)
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import quoted
 from archivey.types import (
@@ -530,14 +534,10 @@ def _zip_timestamps(
                     ut_field[cursor : cursor + 4], "little", signed=True
                 )
                 cursor += 4
-                try:
-                    when = datetime.fromtimestamp(ts, tz=timezone.utc)
-                except (ValueError, OverflowError, OSError):
-                    # Same out-of-range guard as the DOS/NTFS fields above: on Windows
-                    # even tz-aware fromtimestamp routes through gmtime(), which raises
-                    # OSError for pre-1970 values — a signed field an archive (hostile
-                    # or merely old) can legitimately carry. Degrade to an issue, never
-                    # sink the listing with a raw platform error.
+                # A signed field: a pre-1970 date is legitimate, and unix_to_datetime
+                # reads it the same on every platform.
+                when = unix_to_datetime(ts)
+                if when is None:
                     issues.append(
                         TimestampIssue(
                             field=ut_name,

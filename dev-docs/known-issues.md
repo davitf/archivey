@@ -278,16 +278,6 @@ A caller that expects sparse files raises `max_ratio`. Revisit if extraction eve
 preserves holes, since the disk would then hold only the data. Handbook:
 [`formats/tar.md`](formats/tar.md) §6.
 
-## Pre-1970 Unix timestamps list as invalid on Windows only (open)
-
-Unix-seconds fields are converted with `datetime.fromtimestamp(ts, tz=timezone.utc)` in
-the TAR, ZIP (UT extra field), RAR and gzip paths. On Windows that goes through
-`gmtime()`, which rejects negative values, so a member dated 1969 lists with
-`modified=None` plus `MEMBER_TIMESTAMP_INVALID` there and with the right date on Linux
-and macOS. The fix is one helper, `epoch + timedelta(seconds=ts)`, used at every site.
-Not reproduced on Windows here; the behaviour is the one the ZIP reader's UT-field
-comment already records.
-
 ## WinRAR 3.x SHA-1 KDF mutates its input buffer (emulated)
 
 **Status: emulated, not an archivey bug.** WinRAR's RAR3 string-to-key runs SHA-1's

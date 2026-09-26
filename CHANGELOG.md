@@ -80,6 +80,13 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **Pre-1970 Unix timestamps list their date on Windows too.** TAR, the ZIP extended
+  timestamp field, RAR, gzip and the directory backend converted Unix seconds with
+  `datetime.fromtimestamp`, which goes through `gmtime()` on Windows and rejects a
+  negative value, so a member dated 1969 listed as `modified=None` with
+  `MEMBER_TIMESTAMP_INVALID` there only. The conversion is now epoch plus `timedelta`
+  on every platform; a value outside `datetime`'s range still reports as before.
+
 - **A seek before the start of a member follows `io.BytesIO`.** `seek(-n, SEEK_CUR)` or
   `seek(-n, SEEK_END)` past the start of a compressed member raised `ValueError`, which
   the ZIP backend reported as `CorruptionError` on an undamaged archive; ISO did the same
