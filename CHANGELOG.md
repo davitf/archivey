@@ -80,11 +80,13 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
-- **A rewind after a failed whole-stream read no longer reads as an empty, clean stream.**
-  When `read()` on a truncated gzip, zlib, raw deflate or xz stream raised
-  `TruncatedError`, a following `seek(0)` did nothing, and the next `read()` returned
-  `b""` with no error. The seek now decodes from the start again, and the read raises
-  `TruncatedError` again.
+- **A truncated stream that raised once no longer reads as an empty, clean stream
+  afterwards.** After a read of a truncated gzip, zlib, raw deflate, xz or `.Z` stream
+  raised `TruncatedError`, the next `read()` returned `b""` with no error, also after
+  `seek(0)` when the failed read was `read()`. A second `read()` also made the truncated
+  prefix the stream's size. Every later read now raises the same error, a seek decodes
+  from the start again, and no size is published. This is the stdlib decoders, used by
+  default; the `[seekable]` rapidgzip accelerator reads through a different stream.
 - **A corrupt or hostile PPMd member no longer crashes the Python process.** pyppmd
   segfaults when asked to keep decoding after a corrupt stream has ended early, and
   random bytes (a wrong password, or a crafted 7z or ZIP member) reach that state.

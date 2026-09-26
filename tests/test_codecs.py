@@ -542,31 +542,136 @@ def test_unix_compress_truncated_readall_raises() -> None:
             stream.read()
 
 
-@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE, Codec.XZ])
-def test_truncated_readall_then_rewind_raises_again(codec: Codec) -> None:
-    """A read-all that raised consumed the decoder; a rewind must decode again and raise.
+# --- a stream that raised its truncation stays truncated -------------------------------
+#
+# ``DecompressorStream`` reports a deferred truncation once, from the read that reaches the
+# end. Every later read, and any seek that does not restart the decoder, must not turn the
+# stream into an empty, clean one. The stdlib engines are pinned: with ``[seekable]``
+# installed, gzip/zlib/deflate would otherwise go through rapidgzip, a different stream.
 
-    ``seek(0)`` after the failed ``read()`` must not be a no-op over a finished decoder,
-    or the next ``read()`` returns ``b""`` as if the stream ended cleanly.
-    """
+_STDLIB_SEEKABLE = StreamConfig(
+    seekable=True,
+    use_rapidgzip=AcceleratorMode.OFF,
+    use_indexed_bzip2=AcceleratorMode.OFF,
+)
+_TRUNCATION_PAYLOAD = CONTENT * 200
+
+
+def _truncated(codec: Codec, cut: str) -> bytes:
+    """``cut`` is "tail" (drop the last bytes: a prefix decodes) or "head" (keep only the
+    first bytes: nothing decodes)."""
     import lzma
 
-    payload = CONTENT * 200
+    payload = _TRUNCATION_PAYLOAD
     if codec is Codec.GZIP:
         data = gzip.compress(payload)
+        head = 11  # header only
     elif codec is Codec.ZLIB:
         data = zlib.compress(payload)
+        head = 3
     elif codec is Codec.XZ:
         data = lzma.compress(payload)
+        head = 40
     else:
         compressor = zlib.compressobj(wbits=-15)
         data = compressor.compress(payload) + compressor.flush()
-    config = StreamConfig(seekable=True, use_rapidgzip=AcceleratorMode.OFF)
-    with open_codec_stream(codec, io.BytesIO(data[:-20]), config=config) as stream:
+        head = 1
+    return data[:head] if cut == "head" else data[:-20]
+
+
+_TRUNCATED_CODECS = [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE, Codec.XZ]
+
+
+@pytest.mark.parametrize("cut", ["tail", "head"])
+@pytest.mark.parametrize("codec", _TRUNCATED_CODECS)
+def test_truncated_readall_then_rewind_raises_again(codec: Codec, cut: str) -> None:
+    """A rewind after a failed read-all decodes again and raises again, also when the
+    failed read decoded nothing."""
+    source = io.BytesIO(_truncated(codec, cut))
+    with open_codec_stream(codec, source, config=_STDLIB_SEEKABLE) as stream:
         with pytest.raises(TruncatedError):
             stream.read()
         stream.seek(0)
         with pytest.raises(TruncatedError):
+            stream.read()
+
+
+@pytest.mark.parametrize("codec", _TRUNCATED_CODECS)
+def test_a_rewind_after_a_failed_read_all_recovers_the_prefix(codec: Codec) -> None:
+    """The rewind restarts the decoder, so a chunked read gets the recoverable prefix
+    before the error, as on a fresh stream."""
+    source = io.BytesIO(_truncated(codec, "tail"))
+    with open_codec_stream(codec, source, config=_STDLIB_SEEKABLE) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+        stream.seek(0)
+        assert stream.read(1000) == _TRUNCATION_PAYLOAD[:1000]
+
+
+@pytest.mark.parametrize("chunked", [False, True], ids=["read-all", "read-n"])
+@pytest.mark.parametrize("codec", _TRUNCATED_CODECS)
+def test_a_read_after_the_truncation_error_raises_again(
+    codec: Codec, chunked: bool
+) -> None:
+    """With no seek, and with a seek to the current position, the next read raises."""
+    source = io.BytesIO(_truncated(codec, "tail"))
+    with open_codec_stream(codec, source, config=_STDLIB_SEEKABLE) as stream:
+        with pytest.raises(TruncatedError):
+            if chunked:
+                while stream.read(1000):
+                    pass
+            else:
+                stream.read()
+        with pytest.raises(TruncatedError):
+            stream.read(1000 if chunked else -1)
+        stream.seek(stream.tell())
+        with pytest.raises(TruncatedError):
+            stream.read(1000 if chunked else -1)
+
+
+@pytest.mark.parametrize("codec", _TRUNCATED_CODECS)
+def test_a_truncated_stream_never_publishes_its_prefix_as_the_size(
+    codec: Codec,
+) -> None:
+    source = io.BytesIO(_truncated(codec, "tail"))
+    with open_codec_stream(codec, source, config=_STDLIB_SEEKABLE) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+        with pytest.raises(TruncatedError):
+            stream.read()
+        with pytest.raises(TruncatedError):
+            stream.seek(0, io.SEEK_END)
+
+
+def test_the_rewind_after_a_failed_read_all_is_not_a_reported_rewind() -> None:
+    """``tell()`` after a failed read-all is what the caller received (nothing), so the
+    recovery ``seek(0)`` discards no progress and emits no rewind diagnostic."""
+    payload = CONTENT * 30_000  # decodes past the 1 MiB rewind-report threshold
+    source = io.BytesIO(gzip.compress(payload)[:-20])
+    with open_codec_stream(Codec.GZIP, source, config=_STDLIB_SEEKABLE) as stream:
+        with pytest.raises(TruncatedError):
+            stream.read()
+        assert stream.tell() == 0
+        stream.seek(0)
+        counts = stream.diagnostics.counts
+        assert counts.get(DiagnosticCode.STREAM_REWIND_REDECOMPRESSES, 0) == 0
+        with pytest.raises(TruncatedError):
+            stream.read()
+
+
+@requires("ncompress")
+def test_unix_compress_truncated_readall_then_rewind_raises_again() -> None:
+    compressed = make_unix_compress(CONTENT)
+    truncated = compressed[: len(compressed) // 2]
+    with open_codec_stream(
+        Codec.UNIX_COMPRESS, io.BytesIO(truncated), config=_STDLIB_SEEKABLE
+    ) as stream:
+        with pytest.raises(TruncatedError, match="leftover bits"):
+            stream.read()
+        with pytest.raises(TruncatedError, match="leftover bits"):
+            stream.read()
+        stream.seek(0)
+        with pytest.raises(TruncatedError, match="leftover bits"):
             stream.read()
 
 
