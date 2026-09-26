@@ -28,7 +28,9 @@ is that every format except RAR is a pip install away, and RAR **member data** n
 RARLAB `unrar` or `rar` **6.0 or later** on `PATH` — not `unrar-free` or `7z`.
 Listing and metadata work without it, except a compressed comment in a RAR 1.5 / 2.x
 archive, which is then `None`. `unar` can stand in for `unrar` when you ask for it
-with `ArchiveyConfig(rar_decompressor="unar")`, but it reads fewer RAR archives; see
+with `ArchiveyConfig(rar_decompressor="unar")`, or as a second choice with
+`rar_decompressor="auto"`, but it reads fewer RAR archives and takes the password on
+its command line, where other local users can see it; see
 [Formats and extras](formats.md#rar).
 
 What each install line adds, by what you type. [Formats and extras](formats.md) stays
@@ -80,8 +82,9 @@ Listing a RAR works without either. Reading member bytes does not. Archivey look
 from inside `UNRAR`. Run the binary with no arguments to check. An older RARLAB build
 is refused at identification, not per member. `unar`, `7z`, and `unrar-free` stay
 refused even if they sit on `PATH` under another name. To use `unar`, select it with
-`ArchiveyConfig(rar_decompressor="unar")` and install `unar` 1.10 or later
-(`brew install unar` on macOS, `sudo apt install unar` on Debian and Ubuntu).
+`ArchiveyConfig(rar_decompressor="unar")`, or with `"auto"` to use it only when no
+RARLAB program is found, and install `unar` 1.10 or later (`brew install unar` on
+macOS, `sudo apt install unar` on Debian and Ubuntu).
 
 ### Linux
 

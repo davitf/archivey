@@ -74,12 +74,17 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_volumes,
     rar5_hash_key,
 )
-from archivey.internal.backends.rar_unar import UNAR_PURPOSE, UnarRarPolicy
+from archivey.internal.backends.rar_unar import (
+    REFUSE_NON_ASCII_PASSWORD,
+    UNAR_PURPOSE,
+    UnarRarPolicy,
+)
 from archivey.internal.backends.rar_unrar import (
     _unrar_glob_demux_ok,
     _unrar_mask_for,
     _unrar_mask_match,
     decompress_rar3_blob,
+    find_rarlab_unrar,
     open_unrar_p,
 )
 from archivey.internal.base_reader import (
@@ -90,7 +95,12 @@ from archivey.internal.base_reader import (
 from archivey.internal.config import KeyDerivationBudget
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.external.cli import terminate_process
-from archivey.internal.external.unar import UnarOutputStream, open_unar_stdout
+from archivey.internal.external.unar import (
+    UnarOutputStream,
+    find_unar,
+    open_unar_stdout,
+    unar_password_supported,
+)
 from archivey.internal.listing_limits import check_metadata_budget
 from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
@@ -148,6 +158,28 @@ def _stream_volumes_disk_copy_note(program: str) -> str:
         "Reading a compressed member will copy every volume to a temp directory "
         f"so {program} can read them."
     )
+
+
+def _resolve_decompressor(choice: RarDecompressor) -> RarDecompressor:
+    """The program ``AUTO`` stands for: ``unrar`` when usable, else ``unar``.
+
+    Neither found resolves to ``UNRAR``, so a data read raises the ``unrar``
+    refusal it always has. Probing costs one identification run per binary per
+    process; the finders cache the answer.
+    """
+    if choice is not RarDecompressor.AUTO:
+        return choice
+    try:
+        find_rarlab_unrar()
+    except PackageNotInstalledError:
+        pass
+    else:
+        return RarDecompressor.UNRAR
+    try:
+        find_unar(purpose=UNAR_PURPOSE)
+    except PackageNotInstalledError:
+        return RarDecompressor.UNRAR
+    return RarDecompressor.UNAR
 
 
 def _stream_volume_name(stem: str, index: int, *, old_style: bool) -> str:
@@ -807,10 +839,12 @@ class RarReader(BaseArchiveReader):
         self._volume0_parse_origin = 0  # set after sibling discovery when origin > 0
         # Open-time caveat from source shape, not from later materialization
         # (CostReceipt is a static snapshot; see access-mode-and-cost).
+        # The data program, with ``AUTO`` resolved once for the life of this reader.
+        self._decompressor = _resolve_decompressor(self._config.rar_decompressor)
         self._cost_notes = _rar_stream_copy_cost_notes(
             source,
             "unar"
-            if self._config.rar_decompressor is RarDecompressor.UNAR
+            if self._decompressor is RarDecompressor.UNAR
             else "RARLAB unrar or rar",
         )
 
@@ -859,7 +893,7 @@ class RarReader(BaseArchiveReader):
         # refusals and the pipe layout, and none of it applies to unrar.
         self._unar_policy: UnarRarPolicy | None = (
             UnarRarPolicy(self._archive)
-            if self._config.rar_decompressor is RarDecompressor.UNAR
+            if self._decompressor is RarDecompressor.UNAR
             else None
         )
         if (
@@ -2281,6 +2315,14 @@ class RarReader(BaseArchiveReader):
             inner.close()
             raise
 
+    def _unar_password(
+        self, member: ArchiveMember | None, password: str | None
+    ) -> str | None:
+        """``password`` if ``unar`` can use it; refuse one it cannot."""
+        if password is not None and not unar_password_supported(password):
+            raise self._unar_refused(member, REFUSE_NON_ASCII_PASSWORD)
+        return password
+
     def _unar_refused(
         self, member: ArchiveMember | None, reason: str
     ) -> UnsupportedFeatureError:
@@ -2311,17 +2353,29 @@ class RarReader(BaseArchiveReader):
         refusal = policy.member_refusal(raw)
         if refusal is not None:
             raise self._unar_refused(member, refusal)
-        # Encrypted members are refused above, so no tweaked digest reaches here: the
-        # stored CRC32 or BLAKE2sp, when present, is checked as is.
-        has_digest = bool(member.hashes)
+        # Picked the way the ``unrar`` path picks it, before anything is copied: a
+        # RAR5 PswCheck rejects a wrong candidate here, without spawning ``unar``.
+        data_password = self._unar_password(member, self._member_data_password(member))
+        # The stored CRC32 or BLAKE2sp, when present, is checked; an encrypted RAR5
+        # member's tweaked digest needs the password picked above.
+        has_digest = bool(member.hashes) or self._tweaked_verify_spec(raw) is not None
+        # ``unar`` answers a wrong password with no output and exit 0.
+        empty_means_wrong_password = (
+            raw.is_encrypted and _member_stream_size(member) > 0
+        )
         index = policy.entry_index(raw)
         path = self._unar_archive_path(member)
 
         def _spawn() -> BinaryIO:
-            proc, stdout = open_unar_stdout(path, [index], purpose=UNAR_PURPOSE)
+            proc, stdout = open_unar_stdout(
+                path, [index], purpose=UNAR_PURPOSE, password=data_password
+            )
             try:
                 owned: BinaryIO = UnarOutputStream(
-                    stdout, proc, has_verifiable_digest=has_digest
+                    stdout,
+                    proc,
+                    has_verifiable_digest=has_digest,
+                    empty_means_wrong_password=empty_means_wrong_password,
                 )
             except BaseException:
                 terminate_process(proc)
@@ -2351,17 +2405,29 @@ class RarReader(BaseArchiveReader):
         def _pipe() -> SolidBlockReader:
             nonlocal solid
             if solid is None:
+                password = self._unar_password(None, self._archive_data_password())
                 path = self._unar_archive_path(None)
                 proc, stdout = open_unar_stdout(
-                    path, policy.solid_pass_indexes, purpose=UNAR_PURPOSE
+                    path,
+                    policy.solid_pass_indexes,
+                    purpose=UNAR_PURPOSE,
+                    password=password,
                 )
                 try:
                     # Every member read from this pipe is checked against its declared
                     # size, and against its stored CRC32 or BLAKE2sp when it has one.
                     # unar's failures are short or missing output, which the size
-                    # check catches, so its exit status adds nothing.
+                    # check catches, so its exit status adds nothing. A wrong password
+                    # gives no output at all, reported as such when a password was
+                    # needed.
                     owned: BinaryIO = UnarOutputStream(
-                        stdout, proc, has_verifiable_digest=True
+                        stdout,
+                        proc,
+                        has_verifiable_digest=True,
+                        empty_means_wrong_password=(
+                            self._archive_has_encryption
+                            and policy.solid_pass_emits_data()
+                        ),
                     )
                 except BaseException:
                     terminate_process(proc)

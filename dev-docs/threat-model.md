@@ -780,12 +780,20 @@ machine" plus divergent solid/password behavior.
 *Decision (closed):* Archivey uses **RARLAB `unrar`** for RAR member data by default.
 Non-RARLAB binaries on `PATH` raise `PackageNotInstalledError` naming RARLAB `unrar`;
 there is no silent fallback to `unrar-free` / `unar` / `7z`. *Amended 2026-09-26:* a
-caller can select `unar` explicitly (`ArchiveyConfig.rar_decompressor="unar"`). That is
-a choice, not a fallback: it applies only when asked for, and a missing `unar` raises.
+caller can select `unar` explicitly (`ArchiveyConfig.rar_decompressor="unar"`), or ask
+for `"auto"`, which takes RARLAB `unrar` when it is installed and `unar` otherwise. Both
+are choices, not fallbacks: they apply only when asked for, `"auto"` decides once when
+the archive opens, a read `unar` refuses is never retried with `unrar`, and a missing
+`unar` under `"unar"` raises.
 The `unar` path keeps the `unrar` boundary's rules — a banner probe with a timeout and a
 stat-keyed cache, a fixed argv ending in `--` and an absolute archive path, members named
-by decimal entry index (no hostile name reaches argv, no include mask) — and refuses
-encrypted data rather than put a password on `unar`'s command line. Licensing remains a
+by decimal entry index (no hostile name reaches argv, no include mask). One rule differs:
+`unar` takes a password only on its command line, so under `unar` the password is
+visible to other local users in `ps` and `/proc/<pid>/cmdline` for the life of the
+process. The maintainer accepted that (2026-09-26, "fine in most cases"); the user docs
+say so and point shared-machine users at `unrar`, which reads the password from stdin.
+The password is its own argv item after `-p`, before `--`, so a leading `-` cannot turn
+it into an option. Licensing remains a
 documented system dependency (archivey itself stays permissively licensed). See
 ADR [`0002-native-rar-metadata-unrar-data`](decisions/0002-native-rar-metadata-unrar-data.md)
 and OpenSpec `format-rar`.

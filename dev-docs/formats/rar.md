@@ -15,9 +15,9 @@ Registers keep the status — this page states the behaviour and links the row.
 | Listing cost | `INDEXED` — RAR5 with QO: read the copies, skip matching FILE headers on the walk (§1.1). Otherwise a header-to-header walk cached at open (§1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
 | Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
-| Core dependencies | None to list an unencrypted archive. Member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1), or `unar` 1.10+ when `rar_decompressor="unar"` (§3) |
+| Core dependencies | None to list an unencrypted archive. Member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1), or `unar` 1.10+ when `rar_decompressor="unar"`, or `"auto"` finds no RARLAB binary (§3) |
 | Optional | `[recommended]` (`cryptography`): header decryption, RAR3/RAR4 and RAR5 alike. BLAKE2sp needs nothing — stdlib `hashlib` |
-| Refuses | Non-seekable sources · a non-RARLAB `unrar`/`rar` (no fallback to `unar` / `7z` / `bsdtar` / `unrar-free`; `unar` only when selected) · with `unar` selected: encrypted data, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · a glob-named member whose mask also matches **earlier** members, unless `rar_allow_glob_member_concatenation=True` · writing |
+| Refuses | Non-seekable sources · a non-RARLAB `unrar`/`rar` (no fallback to `unar` / `7z` / `bsdtar` / `unrar-free`; `unar` only when selected, or by `"auto"` when no RARLAB binary is found) · with `unar`: encrypted RAR 2.x-4.x data, a non-ASCII password, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · a glob-named member whose mask also matches **earlier** members, unless `rar_allow_glob_member_concatenation=True` · writing |
 
 **Two things a reader might expect and will not find.** Nothing amortizes repeated
 random reads of a solid archive: there is no `unrar x` anywhere in `src/`, so every
@@ -598,8 +598,11 @@ unmeasured. Measured across the other candidates
 **Update 2026-09-26: `unar` shipped as an explicit opt-in**
 (`ArchiveyConfig.rar_decompressor="unar"`), at the maintainer's request. The gate is
 wider than the one proposed below: RAR5 solid members after an empty file *or a
-directory*, RAR 1.5 compression, and encrypted data (password on argv) are refused before
-`unar` runs; a prefixed single file is copied first. Measurements and the reasons are in
+directory*, RAR 1.5 compression, encrypted RAR 2.x-4.x data and non-ASCII passwords are
+refused before `unar` runs; a prefixed single file is copied first. Encrypted RAR5 data
+is read with the password on `unar`'s argv (visible to local users; the maintainer
+accepted that and asked for it to be documented), and `"auto"` picks RARLAB `unrar`
+when installed, `unar` otherwise, once per reader. Measurements and the reasons are in
 [`known-issues.md`](../known-issues.md) §MacPaw `unar`; the process layer is
 `internal/external/`, the RAR policy `internal/backends/rar_unar.py`. CI's macOS leg now
 runs the fixture parity test against the Homebrew bottle. The upstream report is still

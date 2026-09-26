@@ -92,15 +92,21 @@ class RarDecompressor(Enum):
     - ``UNAR`` — ``unar`` 1.10 or later, from The Unarchiver's XADMaster library. It is
       free software and ``brew install unar`` installs it on macOS. It is **not** a full
       substitute: archivey refuses, before ``unar`` runs, every read that ``unar`` is
-      known to get wrong or that would expose a password. See ``docs/formats.md``.
+      known to get wrong. A password is passed on ``unar``'s command line, where other
+      local users can see it while it runs. See ``docs/formats.md``.
+    - ``AUTO`` — ``unrar`` when a usable one is on ``PATH``, otherwise ``unar``. The
+      choice is made once per opened archive, when it is opened, and holds for every
+      read of it: a read that ``unar`` refuses is not retried with ``unrar``. With
+      neither installed, a read raises ``PackageNotInstalledError`` naming ``unrar``.
 
-    Archivey never changes from one program to the other on its own. Selecting ``UNAR``
-    when ``unar`` is not installed raises ``PackageNotInstalledError``, even when
-    ``unrar`` is available.
+    With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
+    Selecting ``UNAR`` when ``unar`` is not installed raises
+    ``PackageNotInstalledError``, even when ``unrar`` is available.
     """
 
     UNRAR = "unrar"
     UNAR = "unar"
+    AUTO = "auto"
 
 
 # Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
@@ -509,7 +515,7 @@ class ArchiveyConfig:
     rar_decompressor: RarDecompressor = RarDecompressor.UNRAR
     """Which external program decompresses RAR member data. See :class:`RarDecompressor`.
 
-    Accepts the member or its name (``"unrar"``, ``"unar"``). The listing does not
+    Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``). The listing does not
     depend on it, except that the selected program decodes compressed RAR 1.5/2.x
     comments.
     """

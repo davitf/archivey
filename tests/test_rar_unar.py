@@ -18,6 +18,7 @@ import hashlib
 import io
 import itertools
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ from archivey import ArchiveyConfig, RarDecompressor, open_archive
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    EncryptionError,
     PackageNotInstalledError,
     ReadError,
     UnsupportedFeatureError,
@@ -64,18 +66,32 @@ _REFUSED: dict[tuple[str, str], str] = {
     },
     ("rar15-comment.rar", "FILE1.TXT"): "RAR 1.5",
 }
-_ENCRYPTED = {
-    "encryption__.rar",
-    "encryption__rar4.rar",
-    "encryption_blake2sp.rar",
-    "encryption_solid__.rar",
-    "encryption_stored__.rar",
-    "encrypted.rar",
-    "encrypted-mixed.rar",
-    "encrypted_header__.rar",
-    "encrypted_header__rar4.rar",
-    "tinyvol_hp.part1.rar",
+# The password each encrypted fixture was written with.
+_PASSWORDS = {
+    "encryption__.rar": "password",
+    "encryption__rar4.rar": "password",
+    "encryption_blake2sp.rar": "password",
+    "encryption_solid__.rar": "password",
+    "encryption_stored__.rar": "password",
+    "encrypted.rar": "password",
+    "encrypted-mixed.rar": "password",
+    "encrypted_header__.rar": "header_password",
+    "encrypted_header__rar4.rar": "header_password",
+    "tinyvol_hp.part1.rar": "header_password",
 }
+# RAR 2.x-4.x encryption: unar 1.10.1 returns nothing even with the right password.
+_RAR4_ENCRYPTED = {"encryption__rar4.rar", "encrypted_header__rar4.rar"}
+
+
+def _parity_cases() -> list[object]:
+    cases: list[object] = []
+    for path in _fixtures():
+        cases.append(pytest.param(path, None, id=path.name))
+        if path.name in _PASSWORDS:
+            cases.append(
+                pytest.param(path, _PASSWORDS[path.name], id=f"{path.name}-password")
+            )
+    return cases
 
 
 def _outcome(read: object) -> str:
@@ -87,10 +103,16 @@ def _outcome(read: object) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _read_members(path: Path, config: ArchiveyConfig, *, streamed: bool) -> dict:
+def _read_members(
+    path: Path,
+    config: ArchiveyConfig,
+    *,
+    streamed: bool,
+    password: str | None = None,
+) -> dict:
     results: dict[str, str] = {}
     try:
-        with open_archive(path, config=config) as archive:
+        with open_archive(path, config=config, password=password) as archive:
             # Compressed old-style comments go through the selected program too.
             results["<comment>"] = repr(archive.info.comment)
             if streamed:
@@ -112,17 +134,17 @@ def _read_members(path: Path, config: ArchiveyConfig, *, streamed: bool) -> dict
 
 @requires_binary("unar", "unrar")
 @pytest.mark.parametrize("streamed", [False, True], ids=["open", "stream"])
-@pytest.mark.parametrize("path", _fixtures(), ids=lambda p: p.name)
-def test_unar_matches_unrar_or_refuses(path: Path, streamed: bool) -> None:
-    with_unrar = _read_members(path, _UNRAR, streamed=streamed)
-    with_unar = _read_members(path, _UNAR, streamed=streamed)
+@pytest.mark.parametrize(("path", "password"), _parity_cases())
+def test_unar_matches_unrar_or_refuses(
+    path: Path, password: str | None, streamed: bool
+) -> None:
+    with_unrar = _read_members(path, _UNRAR, streamed=streamed, password=password)
+    with_unar = _read_members(path, _UNAR, streamed=streamed, password=password)
     assert with_unar.keys() == with_unrar.keys()
     for name, got in with_unar.items():
         reason = _REFUSED.get((path.name, name))
-        if path.name in _ENCRYPTED and got.startswith("UnsupportedFeatureError"):
-            # Every stored or plain member still reads, and every encrypted one is
-            # refused, whatever unrar made of it without a password.
-            assert "password only on its command line" in got
+        if path.name in _RAR4_ENCRYPTED and got.startswith("UnsupportedFeatureError"):
+            assert "encrypted RAR 2.x-4.x data" in got
             continue
         if reason is not None:
             assert got.startswith("UnsupportedFeatureError"), (name, got)
@@ -134,6 +156,14 @@ def test_unar_matches_unrar_or_refuses(path: Path, streamed: bool) -> None:
             # unrar refuses glob names it cannot select by mask; unar selects by
             # index, so it reads them. Their bytes are checked against the digest.
             assert "include mask" in with_unrar[name] or "backslash" in with_unrar[name]
+            continue
+        if got.startswith("EncryptionError") and (
+            with_unrar[name].startswith("EncryptionError")
+            or (password is None and path.name in _PASSWORDS)
+        ):
+            # A missing or wrong password: same error type, each program's wording.
+            # Without a password, unrar's solid pass reports a later member of the
+            # same pipe as truncated; unar's pipe is empty, which says why.
             continue
         assert got == with_unrar[name], name
 
@@ -240,7 +270,120 @@ def test_selected_unar_missing_does_not_fall_back_to_unrar(
 def test_config_accepts_the_name() -> None:
     config = ArchiveyConfig(rar_decompressor="UNAR")  # pyright: ignore[reportArgumentType]
     assert config.rar_decompressor is RarDecompressor.UNAR
+    config = ArchiveyConfig(rar_decompressor="auto")  # pyright: ignore[reportArgumentType]
+    assert config.rar_decompressor is RarDecompressor.AUTO
     assert ArchiveyConfig().rar_decompressor is RarDecompressor.UNRAR
+
+
+_AUTO = ArchiveyConfig(rar_decompressor=RarDecompressor.AUTO)
+
+
+def _path_with(tmp_path: Path, *programs: str) -> str:
+    """A PATH holding only links to the named programs."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for program in programs:
+        found = shutil.which(program)
+        assert found is not None
+        (bin_dir / program).symlink_to(found)
+    return str(bin_dir)
+
+
+@requires_binary("unar", "unrar")
+def test_auto_prefers_unrar(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("unar spawned while unrar is available")
+
+    monkeypatch.setattr(rar_reader, "open_unar_stdout", refuse)
+    with open_archive(_CORPUS / "compressed.rar", config=_AUTO) as archive:
+        for member in archive.members():
+            if member.is_file:
+                archive.read(member)
+
+
+@_posix_only
+@requires_binary("unar", "unrar")
+def test_auto_uses_unar_when_unrar_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    expected = _read_members(_CORPUS / "compressed.rar", _UNRAR, streamed=False)
+    monkeypatch.setenv("PATH", _path_with(tmp_path, "unar"))
+    unar.clear_unar_cache()
+    spawned: list[object] = []
+    real = rar_reader.open_unar_stdout
+
+    def counting(*args: object, **kwargs: object) -> object:
+        spawned.append(args)
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_reader, "open_unar_stdout", counting)
+    assert _read_members(_CORPUS / "compressed.rar", _AUTO, streamed=False) == expected
+    assert spawned
+
+
+@_posix_only
+def test_auto_with_neither_names_unrar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    unar.clear_unar_cache()
+    with open_archive(_CORPUS / "compressed.rar", config=_AUTO) as archive:
+        member = next(m for m in archive.members() if m.is_file)
+        with pytest.raises(PackageNotInstalledError, match="RARLAB"):
+            archive.read(member)
+
+
+@requires_binary("unar")
+def test_wrong_password_is_an_encryption_error() -> None:
+    with open_archive(
+        _RAR / "encryption__.rar", config=_UNAR, password="wrong"
+    ) as archive:
+        with pytest.raises(EncryptionError):
+            archive.read("secret.txt")
+
+
+@requires_binary("unar")
+def test_empty_pipe_for_encrypted_data_is_a_password_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """unar answers a wrong password with exit 0 and no bytes; that is not truncation.
+
+    The RAR5 PswCheck stops a wrong password before unar runs, so the check is
+    skipped here to let one reach unar.
+    """
+    monkeypatch.setattr(rar_reader, "_psw_check_usable", lambda _enc: False)
+    with open_archive(
+        _RAR / "encryption__.rar", config=_UNAR, password="wrong"
+    ) as archive:
+        with pytest.raises(EncryptionError, match="missing or wrong"):
+            archive.read("secret.txt")
+
+
+@requires_binary("unar", "rar")
+@pytest.mark.parametrize(
+    ("password", "readable"),
+    [("-starts with a dash", True), ("ünïcode", False)],
+    ids=["dash", "non-ascii"],
+)
+def test_password_on_the_command_line(
+    tmp_path: Path, password: str, readable: bool
+) -> None:
+    """A password is a separate argv item, so a leading ``-`` is still the value.
+
+    unar 1.10.1 does not decrypt with a non-ASCII password, so one is refused.
+    """
+    (tmp_path / "f.txt").write_bytes(b"hello\n")
+    subprocess.run(
+        ["rar", "a", "-idq", "-ma5", f"-p{password}", "t.rar", "f.txt"],
+        cwd=tmp_path,
+        check=True,
+    )
+    with open_archive(tmp_path / "t.rar", config=_UNAR, password=password) as archive:
+        if readable:
+            assert archive.read("f.txt") == b"hello\n"
+        else:
+            with pytest.raises(UnsupportedFeatureError, match="not ASCII"):
+                archive.read("f.txt")
 
 
 # --- argv -----------------------------------------------------------------------------
@@ -252,6 +395,14 @@ def test_argv_names_entries_by_index_after_a_terminator() -> None:
     assert cmd[8] == "--"
     assert Path(cmd[9]).is_absolute() and cmd[9].endswith("-x.rar")
     assert cmd[10:] == ["3", "0"]
+
+
+def test_argv_puts_the_password_before_the_terminator() -> None:
+    cmd = unar.unar_argv("/bin/unar", "/a.rar", [0], password="-p x")
+    assert cmd[cmd.index("-p") + 1] == "-p x"
+    assert cmd.index("-p") < cmd.index("--")
+    with pytest.raises(ValueError, match="non-ASCII"):
+        unar.unar_argv("/bin/unar", "/a.rar", [0], password="é")
 
 
 def test_argv_without_indexes_selects_all() -> None:
@@ -425,7 +576,9 @@ def test_digest_checked_pipe_ignores_the_exit_status() -> None:
 
 @requires_binary("unar")
 def test_refusal_names_the_way_out() -> None:
-    with open_archive(_RAR / "encryption__.rar", config=_UNAR) as archive:
+    with open_archive(
+        _RAR / "encryption__rar4.rar", config=_UNAR, password="password"
+    ) as archive:
         with pytest.raises(UnsupportedFeatureError) as info:
             archive.read("secret.txt")
     assert "rar_decompressor to 'unrar'" in str(info.value)

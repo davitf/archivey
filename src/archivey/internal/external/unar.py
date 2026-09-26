@@ -7,7 +7,7 @@ archives ``unar`` reads correctly; a backend refuses those before it calls here
 
 The argv is fixed except for the archive path and the optional index list:
 
-``unar -o - -q -nr -k skip [-i] -- <absolute archive path> [index …]``
+``unar -o - -q -nr -k skip [-p <password>] [-i] -- <absolute archive path> [index …]``
 
 - ``-o -`` writes every selected entry to stdout, concatenated in archive order with no
   framing, and creates no file.
@@ -22,10 +22,13 @@ The argv is fixed except for the archive path and the optional index list:
 - ``--`` ends option parsing and the archive path is absolute, so a path that starts
   with ``-`` cannot read as an option.
 
-Passwords are not supported. ``unar`` accepts one only as ``-p <password>`` on its
-command line, where any local user can read it from the process list, and it answers a
-wrong password with exit 0 and no output. A caller that needs a password uses a
-different program.
+A password goes on the command line as ``-p <password>``, the only way ``unar``
+accepts one. **Other local users can read it** from the process list (``ps``,
+``/proc/<pid>/cmdline``) while ``unar`` runs; the public docs say so. ``unar`` answers a
+wrong password with exit 0 and no output, so :class:`UnarOutputStream` can map an empty
+pipe to ``EncryptionError`` when the caller says the entry is encrypted. Measured on
+1.10.1: a password that is not ASCII does not decrypt (RAR5), whatever the locale, so
+:func:`unar_password_supported` rejects one before ``unar`` runs.
 """
 
 from __future__ import annotations
@@ -36,7 +39,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import BinaryIO, cast
 
-from archivey.exceptions import CorruptionError, PackageNotInstalledError, ReadError
+from archivey.exceptions import (
+    CorruptionError,
+    EncryptionError,
+    PackageNotInstalledError,
+    ReadError,
+)
 from archivey.internal.external.cli import Banner, CliToolFinder, terminate_process
 from archivey.internal.streams.streamtools import DelegatingStream
 
@@ -89,15 +97,30 @@ def clear_unar_cache() -> None:
     _finder.clear_cache()
 
 
+def unar_password_supported(password: str) -> bool:
+    """Whether ``unar`` 1.10 can use ``password``: ASCII only, and no NUL for argv."""
+    return password.isascii() and "\x00" not in password
+
+
 def unar_argv(
-    unar: str, archive_path: str | Path, indexes: Sequence[int] | None
+    unar: str,
+    archive_path: str | Path,
+    indexes: Sequence[int] | None,
+    *,
+    password: str | None = None,
 ) -> list[str]:
     """The complete argv for one ``unar`` stdout run. See the module docstring.
 
     ``indexes=None`` selects every entry. An empty sequence is refused: ``unar -i`` with
     no index also selects every entry, which is never what an empty selection means.
+    ``password`` is passed as the value of ``-p``, a separate argument, so one that
+    starts with ``-`` is still read as the value.
     """
     cmd = [unar, "-o", "-", "-q", "-nr", "-k", "skip"]
+    if password is not None:
+        if not unar_password_supported(password):
+            raise ValueError("unar cannot use a password with non-ASCII or NUL")
+        cmd += ["-p", password]
     selected: list[str] = []
     if indexes is not None:
         if not indexes:
@@ -112,7 +135,11 @@ def unar_argv(
 
 
 def open_unar_stdout(
-    archive_path: str | Path, indexes: Sequence[int] | None, *, purpose: str
+    archive_path: str | Path,
+    indexes: Sequence[int] | None,
+    *,
+    purpose: str,
+    password: str | None = None,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """Spawn ``unar`` for the given entries (``None``: all) and return ``(proc, stdout)``.
 
@@ -123,7 +150,7 @@ def open_unar_stdout(
     archive legitimately produces no bytes while earlier entries decode.
     """
     unar = find_unar(purpose=purpose)
-    cmd = unar_argv(unar, archive_path, indexes)
+    cmd = unar_argv(unar, archive_path, indexes, password=password)
     try:
         proc = subprocess.Popen(
             cmd,
@@ -159,6 +186,11 @@ class UnarOutputStream(DelegatingStream):
     stored digest of every entry it reads; that is what catches short or wrong bytes.
     ``has_verifiable_digest`` says the caller does that for every byte of this pipe, and
     then a failure status is not reported: the digest check has already decided.
+
+    ``empty_means_wrong_password`` says the pipe carries encrypted data that is not
+    empty. ``unar`` answers a wrong password with exit 0 and nothing on stdout, so end
+    of file before any byte then raises ``EncryptionError`` rather than the short read
+    the caller's size check would report.
     """
 
     readinto_passthrough = False
@@ -170,19 +202,31 @@ class UnarOutputStream(DelegatingStream):
         proc: subprocess.Popen[bytes],
         *,
         has_verifiable_digest: bool,
+        empty_means_wrong_password: bool = False,
     ) -> None:
         # Everything close() reads is assigned before DelegatingStream.__init__,
         # which can raise, so a half-built instance still reaps the child.
         self._proc = proc
         self._has_verifiable_digest = has_verifiable_digest
+        self._empty_means_wrong_password = empty_means_wrong_password
+        self._bytes_read = 0
         self._saw_eof = False
         self._exit_checked = False
         super().__init__(stdout)
 
     def read(self, n: int = -1, /) -> bytes:
         data = super().read(n)
+        self._bytes_read += len(data)
         if not data and n != 0:
             self._saw_eof = True
+            if self._empty_means_wrong_password and self._bytes_read == 0:
+                # This is the verdict; the exit status that follows (2 when no
+                # password was given, 0 for a wrong one) must not replace it.
+                self._exit_checked = True
+                raise EncryptionError(
+                    "unar produced no data for encrypted content: the password is "
+                    "missing or wrong"
+                )
             self._check_exit(wait_timeout=1.0)
         return data
 

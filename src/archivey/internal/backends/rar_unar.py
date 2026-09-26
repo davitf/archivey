@@ -11,9 +11,10 @@ from the native parse before any process starts:
   unpacked bytes in archive order. That differs from ``unrar p``: every file-version
   history row is included (``unrar`` needs ``-ver``), a RAR3/4 symlink emits its stored
   target, and a directory or a RAR5 redirect emits nothing.
-- **Refusals.** The reads ``unar`` 1.10 is known to get wrong, or that would need a
-  password on its command line. Each is refused with ``UnsupportedFeatureError`` before
-  ``unar`` runs, because ``unar`` reports several of them with exit 0.
+- **Refusals.** The reads ``unar`` 1.10 is known to get wrong. Each is refused with
+  ``UnsupportedFeatureError`` before ``unar`` runs, because ``unar`` reports several of
+  them with exit 0. RAR5 encryption is read, with the password on ``unar``'s command
+  line (see :mod:`archivey.internal.external.unar`).
 
 Measurements: ``dev-docs/investigations/alternative-rar-decompressors.md`` and
 ``scripts/exploration/rar_decompressor_matrix.py``.
@@ -36,10 +37,12 @@ _USE_UNRAR = (
     "Set ArchiveyConfig.rar_decompressor to 'unrar' to read it with RARLAB unrar."
 )
 
-REFUSE_ENCRYPTED = (
-    "unar is not used for encrypted RAR data: it accepts a password only on its command "
-    "line, where other local users can read it, and it answers a wrong password with "
-    "success and no data. " + _USE_UNRAR
+REFUSE_RAR4_ENCRYPTED = (
+    "unar 1.10 returns no data, and reports success, for encrypted RAR 2.x-4.x data "
+    "even with the right password. " + _USE_UNRAR
+)
+REFUSE_NON_ASCII_PASSWORD = (
+    "unar 1.10 does not decrypt with a password that is not ASCII. " + _USE_UNRAR
 )
 REFUSE_RAR15 = (
     "unar 1.10 returns no data, and reports success, for a member compressed with the "
@@ -127,6 +130,10 @@ def _needs_password(archive: RarArchive, info: RarMemberInfo) -> bool:
     return archive.has_header_encryption or info.is_encrypted or info.encryption_unknown
 
 
+def _rar4_encrypted(archive: RarArchive, info: RarMemberInfo) -> bool:
+    return archive.version != 5 and _needs_password(archive, info)
+
+
 class UnarRarPolicy:
     """The refusals and pipe layout for one parsed archive, computed once."""
 
@@ -134,13 +141,14 @@ class UnarRarPolicy:
         self._archive = archive
         self._index = unar_entry_index(archive)
         self._solid_after_empty = _rar5_solid_after_empty(archive)
-        self._any_password = archive.has_header_encryption or any(
-            _needs_password(archive, info) for info in archive.members
+        self._any_rar4_encryption = archive.version != 5 and (
+            archive.has_header_encryption
+            or any(_needs_password(archive, info) for info in archive.members)
         )
         self._pass_refusals: dict[int, str] = {}
         self._pass_indexes: list[int] | None = None
         self._pass_offsets: dict[int, int] = {}
-        if not self._any_password:
+        if not self._any_rar4_encryption:
             self._plan_solid_pass()
 
     def _plan_solid_pass(self) -> None:
@@ -179,8 +187,8 @@ class UnarRarPolicy:
 
     def member_refusal(self, info: RarMemberInfo) -> str | None:
         """Why ``unar`` must not read this member on its own, or ``None``."""
-        if _needs_password(self._archive, info):
-            return REFUSE_ENCRYPTED
+        if _rar4_encrypted(self._archive, info):
+            return REFUSE_RAR4_ENCRYPTED
         if (
             info.extract_version is not None
             and info.extract_version < _FIRST_UNAR_SAFE_EXTRACT_VERSION
@@ -199,12 +207,22 @@ class UnarRarPolicy:
     def solid_pass_refusal(self, info: RarMemberInfo) -> str | None:
         """Why this payload member cannot come out of the solid pass's run, or ``None``.
 
-        One encrypted member anywhere refuses the whole run: ``unar`` would need the
-        password to decode the solid stream up to any later member.
+        In a RAR 2.x-4.x archive, one encrypted member anywhere refuses the whole run:
+        ``unar`` would have to decode it to reach any later member of the solid stream.
         """
-        if self._any_password:
-            return REFUSE_ENCRYPTED
+        if self._any_rar4_encryption:
+            return REFUSE_RAR4_ENCRYPTED
         return self._pass_refusals.get(id(info))
+
+    def solid_pass_emits_data(self) -> bool:
+        """Whether the solid pass's run writes at least one byte when it decrypts."""
+        if self._pass_indexes is not None:
+            return any(
+                info.file_size > 0
+                for info in self._archive.members
+                if id(info) in self._pass_offsets
+            )
+        return any(unar_emitted_size(info) > 0 for info in self._archive.members)
 
     def solid_pass_offset(self, info: RarMemberInfo) -> int:
         """Where this readable payload member starts in the solid pass's run."""

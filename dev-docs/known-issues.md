@@ -230,7 +230,7 @@ without a failing sample, on the same no-data-in-the-stream grounds). The solid 
 names only the readable members by index, so `unar` never reaches the crash and loses no
 buffered output. RAR4 is not gated; the size and digest check on each member is the net.
 
-**Three more `unar` 1.10.1 behaviours found on the committed fixtures**, all handled:
+**Five more `unar` 1.10.1 behaviours found on the committed fixtures**, all handled:
 
 - **RAR 1.5 compression** (`rar15-comment.rar`, `FILE1.TXT`, method 3 at version 15):
   `unar` writes nothing for the member and exits 0. Refused when a member's extract
@@ -246,6 +246,14 @@ buffered output. RAR4 is not gated; the size and digest check on each member is 
   `unar` looks for volume 2 only under the scheme the main header names, and read an
   old-style set written to disk as `partN` as volume 1 alone (a short member, caught by
   the size check). Stream volumes are now written under the set's own scheme.
+- **Encrypted RAR 2.x-4.x data** (`encryption__rar4.rar`, the RAR4 header-encrypted
+  fixtures): `unar -p <right password>` writes nothing and exits 0. Refused. Encrypted
+  RAR5 data, header-encrypted RAR5 included, decodes correctly with `-p`. A wrong
+  password also gives exit 0 and no output, so an empty pipe for a non-empty encrypted
+  member is reported as `EncryptionError`; no password at all gives exit 2.
+- **A non-ASCII password** does not decrypt RAR5 data (measured with the `rar` writer
+  and a password with `é`). Refused. A password starting with `-`, or holding quotes or
+  backslashes, works because it is its own argv item.
 
 Also different from `unrar p`, and handled in the pipe layout rather than refused: an
 all-entries run always includes file-version history rows, and a RAR3/4 symlink emits its

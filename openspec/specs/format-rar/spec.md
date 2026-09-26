@@ -220,8 +220,8 @@ If a decompressor is required and missing or incompatible, the system SHALL rais
 `PackageNotInstalledError` naming RARLAB `unrar` or `rar`. Archivey MUST NOT
 silently use `unrar-free`, `unar`, `bsdtar`, `7z`, or a degraded backend. The
 spawn SHALL be the `p` (print to stdout) command only. This requirement applies
-when `ArchiveyConfig.rar_decompressor` is `unrar` (the default); `unar` is
-covered by `Read RAR member data with unar only when selected`.
+when `ArchiveyConfig.rar_decompressor` is `unrar` (the default), or `auto` with a
+usable RARLAB binary on `PATH`; `unar` is covered by `Read RAR member data with unar only when selected`.
 
 #### Scenario: unrar dependency matrix
 
@@ -825,19 +825,32 @@ refused.
 
 ### Requirement: Read RAR member data with unar only when selected
 
-When `ArchiveyConfig.rar_decompressor` is `unar`, the system SHALL read compressed
+When `ArchiveyConfig.rar_decompressor` is `unar`, or `auto` with no usable RARLAB
+`unrar` or `rar` on `PATH`, the system SHALL read compressed
 member data by invoking `unar` 1.10 or later, identified on `PATH` by its `unar -h`
 banner with the same probe timeout and stat-keyed cache as RARLAB `unrar`. Stored,
 unencrypted, unsplit members SHALL still be read directly. The system MUST NOT use
 `unrar` in that mode, and MUST NOT use `unar` in any other mode; a missing or
-unidentified `unar` SHALL raise `PackageNotInstalledError` naming `unar`.
+unidentified `unar` SHALL raise `PackageNotInstalledError` naming `unar`. `auto` SHALL
+choose once per reader, when the archive opens; a read `unar` refuses MUST NOT be
+retried with `unrar`, and with neither program present `auto` SHALL raise the
+`PackageNotInstalledError` that names RARLAB `unrar` or `rar`.
 
-The argv SHALL be `unar -o - -q -nr -k skip [-i] -- <absolute path> [index …]`:
+The argv SHALL be
+`unar -o - -q -nr -k skip [-p <password>] [-i] -- <absolute path> [index …]`:
 members named by decimal entry index in parse order, never by stored name. The
+password is on the command line because `unar` takes it nowhere else, so other local
+users can read it in the process list; the documentation SHALL say so. The native
+RAR5 password check SHALL reject a wrong password before `unar` runs where the archive
+stores one; otherwise, when `unar` produces no data for a non-empty encrypted member,
+the read SHALL raise `EncryptionError`. The
 system SHALL refuse with `UnsupportedFeatureError`, before spawning `unar`:
 
-- a member that needs a password, and every member of a solid pass over an archive
-  that has one (`unar` takes a password only on its command line);
+- an encrypted RAR 2.x-4.x member, and every member of a solid pass over such an
+  archive (`unar` 1.10 returns no data for it, and exits 0, even with the right
+  password);
+- a member or solid pass that needs a password that is not ASCII, or contains NUL
+  (`unar` 1.10 does not decrypt with it);
 - in a RAR5 solid archive, a member with data that follows an empty file, a
   directory or a link;
 - a compressed member whose extract version is below 20 (RAR 1.5 algorithm);
@@ -862,8 +875,14 @@ missing, the comment SHALL be `None`, as it is with `unrar`.
 | --- | --- |
 | Default config, compressed member | `unrar` is spawned; `unar` is not |
 | `rar_decompressor="unar"`, `unar` missing, `unrar` present | `PackageNotInstalledError` names `unar`; `unrar` is not used |
+| `rar_decompressor="auto"`, RARLAB `unrar` present | `unrar` is spawned; `unar` is not |
+| `rar_decompressor="auto"`, only `unar` present | `unar` is spawned |
+| `rar_decompressor="auto"`, neither present | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
 | `unar` selected, member name contains `*` | Read by index; no `rar_allow_glob_member_concatenation` needed |
-| `unar` selected, encrypted member | `UnsupportedFeatureError` naming the password reason |
+| `unar` selected, encrypted RAR5 member, right password | Read correctly; the password is passed with `-p` |
+| `unar` selected, encrypted RAR5 member, wrong password | `EncryptionError` |
+| `unar` selected, encrypted RAR 2.x-4.x member | `UnsupportedFeatureError` naming the RAR 2.x-4.x reason |
+| `unar` selected, non-ASCII password | `UnsupportedFeatureError` naming the password reason |
 | `unar` selected, RAR5 solid, empty file first | Members with data after it are refused; listing is not |
 | `unar` selected, member before the first empty entry in a RAR5 solid pass | Read correctly from a run that names only readable members |
 | `unar` selected, RAR 1.5 compressed member | `UnsupportedFeatureError` |
