@@ -588,13 +588,13 @@ does neither.
   `read(member.size)` must pull the underlying CRC/auth trailer and validate *before*
   the call returns or raises — the read that reaches the declared size finalizes the
   hash.
-- **Seek-state tracking.** Once a seek off the sequential frontier disables the
-  checksum verdict, it stays disabled for that handle (the WinZip AES HMAC excepted,
-  above; the hashed-frontier generalization is in `dev-docs/IDEAS.md`). Length /
-  over-run / truncation key off the **furthest position an actual read reached** (a
-  read high-water mark), not seek-updated `tell` alone. When a seek jumps to/past the declared size without
-  reading the gap, concluding reads that gap (bounded by the declared size) **and
-  probes one byte past the declared size** to decide completeness — so past-EOF
+- **Seek-state tracking.** Once a seek off the sequential frontier disables the checksum
+  verdict, it stays disabled for that handle (the WinZip AES HMAC excepted, above; the
+  hashed-frontier generalization is in `dev-docs/IDEAS.md`). Length / over-run /
+  truncation key off the **furthest position an actual read reached** (a read high-water
+  mark), not seek-updated `tell` alone. When a seek jumps to/past the declared size
+  without reading the gap, concluding reads that gap (bounded by the declared size)
+  **and probes one byte past the declared size** to decide completeness — so past-EOF
   `seek(declared_size)` neither silences truncation (short → `TruncatedError`) or
   over-run (long → `CorruptionError`) nor fabricates either on a complete one
   (`seek(size); read(1)` returns `b""`). A member already read to its declared size
