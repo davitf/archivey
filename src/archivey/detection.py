@@ -72,25 +72,35 @@ class FormatInfo:
     """What detection reported on its way to the answer."""
 
     corroborated: bool = field(default=False, compare=False, repr=False)
-    """Internal, not part of the ``detect_format`` contract: whether a matching
-    extension or an inner-TAR upgrade corroborated a content-probe claim."""
-    # ``compare=False`` keeps it out of ``__eq__`` and ``repr=False`` out of ``__repr__``;
-    # that is what holds it outside the public contract. Deliberate: ``False`` is
-    # overloaded — it means both "a probe with no corroboration" and "not a probe at
-    # all", so an exact magic hit reads False — and a bool cannot separate those.
+    """Provisional, informational: whether a matching extension or an inner-TAR upgrade
+    corroborated a content-probe claim.
+
+    Read it only together with ``detected_by == "content_probe"``. ``False`` also means
+    "not a probe at all", so an exact magic hit reads ``False`` too. A later release may
+    replace this field with a record of the evidence that separates the two cases."""
+    # ``compare=False`` and ``repr=False`` keep it out of ``__eq__`` and ``__repr__``, so
+    # two results that differ only here compare equal. The overloaded ``False`` is why it
+    # is provisional: a bool cannot separate "no corroboration" from "not a probe".
     # ``probe-provenance-unconfirmed`` task 5.1 tracks the evidence-set shape that could.
 
     cost_receipt: DetectionCostReceipt | None = field(
         default=None, compare=False, repr=False
     )
-    """Internal, not part of the ``detect_format`` contract: the work the whole call
-    did, both passes when it followed a stub."""
-    # Not merged into ``CostReceipt`` / ``ArchiveInfo.cost``. Public exposure is the
-    # ``detection-result-surface`` change; kept here so tests and the fuzz harness can
-    # assert the access-shape and budget invariants.
+    """The work detection did, as a
+    :class:`~archivey.detection_cost.DetectionCostReceipt`: bytes read, seeks, decode
+    input and output, and the number of passes. It covers the whole call, both passes
+    when :func:`~archivey.detect_format` followed a stub to its split volume.
+
+    :func:`~archivey.detect_format` always fills it; a directory gets the zero receipt.
+    ``None`` only on a ``FormatInfo`` that detection did not produce."""
+    # ``compare=False`` and ``repr=False`` keep equality about what was detected, not
+    # about what detecting it cost. Not merged into ``CostReceipt`` /
+    # ``ArchiveInfo.cost``: the two receipts are never summed.
 
     unavailable_tiers: tuple[TierSkip, ...] = field(
         default=(), compare=False, repr=False
     )
-    """Internal, not part of the ``detect_format`` contract: the detection tiers that
-    did not run, and why (a missing package, the budget)."""
+    """The detection tiers that did not run, each a
+    :class:`~archivey.detection_cost.TierSkip` with its
+    :class:`~archivey.detection_cost.TierSkipReason`: not enabled by policy, a
+    capability the source lacks, or the budget ran out. Empty when every tier ran."""
