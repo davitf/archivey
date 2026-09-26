@@ -513,8 +513,8 @@ the parallel-extraction entry in `IDEAS.md`.
 1. **Native 7z** header parse (packed streams, folders/coder chains, substreams,
    files info) + decode via stdlib `lzma`(raw)/`bz2`/`zlib` + STORED; true pull
    streaming for `stream_members()`, decode-from-folder-start for random `open()`;
-   PPMd/Deflate64 and AES via `[recommended]`; **BCJ2 and unknown method IDs
-   rejected explicitly** (never silent fallback). 7z **writing** is deferred (no
+   PPMd/Deflate64 and AES via `[recommended]`; BCJ2 decoded natively in pure
+   Python; **unknown method IDs rejected explicitly** (never silent fallback). 7z **writing** is deferred (no
    7z-writing extra in the current release); `py7zr` remains a **dev oracle** only;
    reads import no third-party lib.
 2. **Native RAR** RAR4/RAR5 metadata parse (listing without `unrar`); member data

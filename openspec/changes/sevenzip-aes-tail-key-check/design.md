@@ -13,8 +13,8 @@ difference is padding the decoder is expected to discard.
 CBC decryption of one block needs only that block and its predecessor
 (`P_n = D(C_n) XOR C_{n-1}`, with the IV standing in when there is only one block), so the
 check reads 32 bytes at EOF of the pack view and runs one block decrypt. No folder decode,
-no decompressor, no new stream machinery — `_folder_pack_view` already returns a seekable
-`SharedSource` view.
+no decompressor, no new stream machinery — `_folder_pack_views` already returns seekable
+`SharedSource` views, one per pack stream.
 
 ## What is actually in those bytes
 
@@ -87,8 +87,8 @@ Task 1.1 names only the first half, and the second is not implied by it: a heade
 
 `_CryptographyDecryptStage.finalize` raises `_AesCbcTruncatedError` when the ciphertext it
 was fed is not a whole number of blocks. It cannot say whether the header lied or the bytes
-are missing, because the difference is erased before the stream exists: `_folder_pack_view`
-(`sevenzip_reader.py:583-595`) hands the declared `pack_size` to `SharedSource.view`, which
+are missing, because the difference is erased before the stream exists: `_folder_pack_views`
+(`sevenzip_reader.py`) hands the declared `pack_size` to `SharedSource.view`, which
 clamps an over-long length to the real source size (`shared.py:107`, `_clamp_slice_length`).
 A clamped view and an honestly-short declaration arrive identical.
 

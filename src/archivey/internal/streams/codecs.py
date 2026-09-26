@@ -1899,7 +1899,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         )
 
 
-_LZMA_DICTIONARY_FILTERS: dict[int, str] = {
+LZMA_DICTIONARY_FILTERS: dict[int, str] = {
     lzma.FILTER_LZMA1: "LZMA",
     lzma.FILTER_LZMA2: "LZMA2",
 }
@@ -1920,11 +1920,11 @@ class _RawLzmaCodec(_LzmaErrorCodec):
         # with no ``dict_size`` (7z LZMA without properties) gets liblzma's preset
         # default, which the archive did not choose.
         for spec in params.filters:
-            if spec.get("id") in _LZMA_DICTIONARY_FILTERS and "dict_size" in spec:
+            if spec.get("id") in LZMA_DICTIONARY_FILTERS and "dict_size" in spec:
                 check_decoder_memory(
                     spec["dict_size"],
                     limits=config.decoder_limits,
-                    what=f"{_LZMA_DICTIONARY_FILTERS[spec['id']]} dictionary size",
+                    what=f"{LZMA_DICTIONARY_FILTERS[spec['id']]} dictionary size",
                 )
         return ensure_binaryio(
             lzma.LZMAFile(
@@ -2211,7 +2211,7 @@ class UnixCompressCodec(StreamCodec):
         return None
 
 
-def _parse_ppmd_var_h_properties(properties: bytes | None) -> tuple[int, int]:
+def parse_ppmd_var_h_properties(properties: bytes | None) -> tuple[int, int]:
     """Parse 7z PPMd var.H coder properties → ``(order, mem_size)``."""
 
     if properties is None:
@@ -2267,7 +2267,7 @@ class PpmdCodec(StreamCodec):
                 pack_size=pack_size,
                 in_process_max_input=in_process_max_input,
             )
-        order, mem_size = _parse_ppmd_var_h_properties(params.properties)
+        order, mem_size = parse_ppmd_var_h_properties(params.properties)
         check_decoder_memory(
             mem_size, limits=config.decoder_limits, what="7z PPMd var.H memory size"
         )

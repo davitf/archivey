@@ -74,7 +74,7 @@ See `openspec/schemas/library/README.md` and the `rules:` / `context:` blocks in
 **7z/RAR strategy (native-first):** 7z and RAR are read with **native** parsers,
 not `py7zr`/`rarfile`. 7z reading decodes common codecs through stdlib
 `lzma`/`bz2`/`zlib` (zero runtime deps); PPMd/Deflate64 and AES decryption come from
-the `[recommended]` extra, and only BCJ2 is detect-and-rejected. RAR metadata
+the `[recommended]` extra, and BCJ2 decodes in pure Python. RAR metadata
 is parsed natively (encrypted RAR5 headers decrypted via `cryptography`) while the
 external `unrar` binary does the proprietary data decompression. `py7zr` and
 `rarfile` serve only as `dev`-group test oracles (see `testing-contract`);

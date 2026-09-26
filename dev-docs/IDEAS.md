@@ -625,7 +625,8 @@
   `threat-model.md` was owned by another open pull request each time, and an `O`-numbered
   row cannot be appended without knowing what numbers that one takes. Write it once that
   lands; the measurements are in the `DecoderLimits` docstring and
-  `tests/test_decoder_limits.py`.
+  `tests/test_decoder_limits.py`. The row's unit for LZMA is the 7z folder, not the
+  decoder: a BCJ2 folder's branch dictionaries (and PPMd sizes) are checked together (O20).
 
 - **Detection budget / receipt public surface** — deferred by `detection-prefix-workspace`
   Decision 3A. Types live in `archivey.detection_cost` but are omitted from
