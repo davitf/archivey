@@ -40,7 +40,7 @@ The history, for the reasoning below: 111 threads were open on 2026-09-23 and 45
 #415 on 2026-09-24.
 
 **The four S20–S25 rulings davi gave have landed** (#415, 2026-09-24). What still waits on
-him is listed under [#315](#315--the-209-threads). The historical note: seventeen findings
+him is listed under [#315](#315--the-review-threads). The historical note: seventeen findings
 needed a ruling; the first four answered were removing `extract_all(config=)` and
 `strict_archive_eof`, refusing raw `.bin` ISO images, and pinning `__module__` on the public
 names.
@@ -48,7 +48,7 @@ names.
 | Register | Open items | Health |
 | --- | --- | --- |
 | Open PRs | **0 live**, 1 hub | Everything merged by 2026-09-24 14:15Z: twenty-seven since the previous revision, #406 to #432. Before that, everything merged by 2026-09-23 14:17Z. Seventeen merged after the previous revision (#388, 2026-09-21 12:45Z): #386, #387, #389, #391, #392, #393, #394, #395, #396, #397, #398, #399, #400, #401, #402, #403, #404. See [Open PRs](#open-prs) |
-| [#315](https://github.com/davitf/archivey/pull/315) review threads | 223 total, **6 open** (2026-09-26) | No blocking finding is open, and each of the 6 is fixed on `main`. The 2026-09-24 breakdown of the then-45 is under [#315](#315--the-209-threads) |
+| [#315](https://github.com/davitf/archivey/pull/315) review threads | 223 total, **6 open** (2026-09-26) | No blocking finding is open, and each of the 6 is fixed on `main`. The 2026-09-24 breakdown of the then-45 is under [#315](#315--the-review-threads) |
 | `openspec/changes/` (11 active) | 9 unimplemented, 2 partly done | `prefixed-archive-detection` is 33/69 (15 of the open tasks struck 2026-09-25) and `detection-result-surface` 3/15 after its cut; the rest are 0/N (bar one task on `archive-origin-reporting`). **238 tasks unticked, 223 once the struck ones are set aside**, counted 2026-09-25 from the tree. `detection-evidence-ledger`, `single-archive-source` and `one-member-listing-per-reader` are archived |
 | [`open-issues.md`](open-issues.md) | 9 product candidates open (P2–P6, P9, P11–P13), 1 deliberate docs gap | Refreshed 2026-09-26: P14 and P18 closed, P15–P17 closed earlier; P2/P3/P4/P5 are unowned |
 | [`formats/rar.md`](formats/rar.md) `§10` | **gone** — the section is deleted | It said to delete it once empty, and it is: 19 of 21 shipped, #19 and #21 last. The two that had not shipped moved to homes that outlive it — the stream-copy bound to §7, the `unrar` mask port to [`IDEAS.md`](IDEAS.md) — and both are tracked internally |
@@ -78,7 +78,7 @@ revision has merged, and so has everything opened since.
 
 | PR | What | Where it sits |
 | --- | --- | --- |
-| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge.** Head *is* `main` (base is an orphan `empty-base`), so it re-renders against current `main` automatically — there is nothing to merge into it. 209 threads, 45 open. Carries `no-review` so no review round can run on it. **It was closed by accident twice on 2026-09-21 and reopened both times** — see the note below |
+| [#315](https://github.com/davitf/archivey/pull/315) | `[COMMENT ONLY]` full-codebase review hub | **Not a PR to merge.** Head *is* `main` (base is an orphan `empty-base`), so it re-renders against current `main` automatically — there is nothing to merge into it. 223 threads, 6 open (2026-09-26). Carries `no-review` so no review round can run on it. **It was closed by accident twice on 2026-09-21 and reopened both times** — see the note below |
 
 **Twenty-seven merged between 2026-09-23 14:17Z and 2026-09-24 14:15Z**, #406 to #432 less
 the unused numbers. The last ten were merged together on 2026-09-24 after main plus all ten
@@ -260,7 +260,7 @@ the reasoning is kept only so the closures are not re-litigated.
   stream-source copy be made small, rather than just moved?"* appeared as both a short and a
   long bullet. Merged in this pass.
 
-## #315 — the 209 threads
+## #315 — the review threads
 
 **2026-09-26: 223 threads, 6 open, none blocking; each of the 6 is fixed on `main`.** The
 rest of this section is the 2026-09-24 count and the analysis behind it.

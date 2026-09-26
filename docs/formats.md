@@ -127,7 +127,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   count as output for the [ratio limit](extracting.md#limits), which a TAR checks across
   the whole archive because a member has no compressed size. A 10 MiB sparse file packs
   into a 10 KiB tar, 1024:1, and `extract` raises `ResourceLimitError` against the
-  default `max_ratio` of 1000. For a sparse archive you trust, raise the limit:
+  default `max_ratio` of 1000. `member.is_sparse` tells you which members are sparse
+  before you extract. For a sparse archive you trust, raise the limit:
   `extract(path, dest, limits=ExtractionLimits(max_ratio=...))`, or `max_ratio=None`.
 - **Mid-archive corruption can silently shorten the listing.** Stdlib `tarfile` treats a
   corrupt member header *after the first* as a clean end of archive — no exception is
