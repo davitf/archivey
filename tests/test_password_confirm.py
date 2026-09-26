@@ -383,10 +383,15 @@ class _Calls:
         self.reasons.append(reason)
 
 
-def _watch(data: bytes) -> tuple[UnverifiedPasswordReadWatch, _Calls]:
+def _watch(
+    data: bytes, *, seek_forfeits: bool = True
+) -> tuple[UnverifiedPasswordReadWatch, _Calls]:
     calls = _Calls()
     watch = UnverifiedPasswordReadWatch(
-        io.BytesIO(data), size=len(data), on_unverified=calls
+        io.BytesIO(data),
+        size=len(data),
+        on_unverified=calls,
+        seek_forfeits=seek_forfeits,
     )
     return watch, calls
 
@@ -481,22 +486,35 @@ class _TellFails(io.BytesIO):
         raise RuntimeError("tell failed")
 
 
-@pytest.mark.parametrize("inner_type", [_MovesThenRaises, _TellFails])
+@pytest.mark.parametrize(
+    ("inner_type", "seek_forfeits", "expected"),
+    [
+        (_MovesThenRaises, True, ["seek"]),
+        (_TellFails, True, ["seek"]),
+        # A digest that survives seeks is reached by the read to the end...
+        (_MovesThenRaises, False, []),
+        # ...unless the position is unknown, and then no read can be placed.
+        (_TellFails, False, ["seek"]),
+    ],
+)
 def test_a_seek_error_that_moved_forfeits_the_digest(
-    inner_type: type[io.BytesIO],
+    inner_type: type[io.BytesIO], seek_forfeits: bool, expected: list[str]
 ) -> None:
     # A failed seek that moved the stream (or left its position unknown) forfeits the
     # digest the inner drops on a seek, so reading on to the end still reports.
     calls = _Calls()
     watch = UnverifiedPasswordReadWatch(
-        inner_type(b"0123456789"), size=10, on_unverified=calls
+        inner_type(b"0123456789"),
+        size=10,
+        on_unverified=calls,
+        seek_forfeits=seek_forfeits,
     )
     watch.read(3)
     with pytest.raises(RuntimeError):
         watch.seek(1)
     watch.read()
     watch.close()
-    assert calls.count == 1
+    assert calls.reasons == expected
 
 
 def test_watch_readinto_counts_as_a_read() -> None:
@@ -516,6 +534,24 @@ def test_a_seek_forfeits_the_digest_when_the_inner_drops_it() -> None:
     assert watch.read() == b"56789"
     watch.close()
     assert calls.reasons == ["seek"]
+
+
+def test_a_seek_keeps_a_digest_that_survives_seeks() -> None:
+    # A WinZip AES HMAC is completed by the read that reaches the end, wherever the
+    # reads started, so a skip then a read to the end is verified...
+    watch, calls = _watch(b"0123456789", seek_forfeits=False)
+    watch.read(1)
+    watch.seek(5)
+    assert watch.read() == b"56789"
+    watch.close()
+    assert calls.count == 0
+    # ...and a skip then a short read is a partial read, not a seek.
+    watch, calls = _watch(b"0123456789", seek_forfeits=False)
+    watch.read(1)
+    watch.seek(5)
+    assert watch.read(2) == b"56"
+    watch.close()
+    assert calls.reasons == ["partial_read"]
 
 
 def test_rejecting_codec_budget_cut_after_a_large_crc_less_item() -> None:

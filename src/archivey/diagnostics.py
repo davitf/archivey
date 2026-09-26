@@ -319,7 +319,8 @@ class EncryptedVerificationContext(_JsonSafeContext):
     ``pw_verify``) or ``"confirm_budget_exhausted"`` (confirmation survived its bounded
     prefix without reaching a checksum). ``reason`` names why the digest was not
     reached: ``"partial_read"`` (closed before the end) or ``"seek"`` (a seek gave up
-    a CRC; a WinZip AES HMAC survives seeks). No password or key material is ever
+    a CRC; a WinZip AES HMAC survives seeks, so for an AES member it means only that a
+    failed seek left the position unknown). No password or key material is ever
     carried.
 
     The code answers a question a member stream cannot answer for itself yet. Retire it

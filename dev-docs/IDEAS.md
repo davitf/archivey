@@ -543,6 +543,17 @@
 
 ## Performance & robustness
 
+- **Say when a WinZip AES seek makes the last read re-read the ciphertext** — to keep
+  the HMAC across seeks, the read that returns an AES member's last byte first reads,
+  without decrypting, the ciphertext the seeks skipped. Measured 2026-09-26 on a 4 MiB
+  STORED AE-2 member: `seek(size - 5); read(5)` read 4 194 372 source bytes, while
+  `read(4)` from the same place read 58. It is paid at most once per handle and
+  decompresses nothing, and `docs/gotchas.md` states it, but it is silent at run time.
+  `STREAM_REWIND_REDECOMPRESSES` fires at about a megabyte of discarded decode progress;
+  a megabyte of re-read ciphertext is the same family of cost. Candidate: a code (or a
+  context on the forfeited-checksum diagnostic above) when the catch-up pass exceeds
+  that threshold. Raised in review of the WinZip AES seek change, 2026-09-26.
+
 - **Batch small members into one `unrar` call on a nonsolid archive** — a nonsolid
   `stream_members()` pass spawns one `unrar p -n./<member>` **per member**; only the
   *solid* path uses a single unnamed ALL-pipe demuxed by `SolidBlockReader`

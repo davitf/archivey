@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import io
 import os
+import random
 import struct
 import subprocess
 import zipfile
@@ -28,6 +29,7 @@ from archivey.internal.backends.zip_aes import (
     open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
+from archivey.internal.streams.streamtools.binaryio import source_byte_size
 from archivey.types import CompressionAlgorithm, HashAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.zip_aes_fixture import aes_ctr_le_encrypt, build_aes_zip
@@ -259,9 +261,11 @@ def test_aes_hmac_survives_a_seekable_accelerator(
 
     monkeypatch.setattr(WinZipAesDecryptStream, "seek", spy_seek)
     config = ArchiveyConfig(use_rapidgzip=mode)
+    # Incompressible and over the 1 MiB AUTO threshold, which sees the stage's size.
+    payload = random.Random(480).randbytes(1_200_000)
     for tamper in (False, True):
         data = _build_aes_zip(
-            payload=_PAYLOAD,
+            payload=payload,
             password=_PASSWORD,
             vendor_version=2,
             strength=3,
@@ -276,7 +280,7 @@ def test_aes_hmac_survives_a_seekable_accelerator(
                 with pytest.raises((CorruptionError, EncryptionError)):
                     ar.read(member)
             else:
-                assert ar.read(member) == _PAYLOAD
+                assert ar.read(member) == payload
     # The accelerator did move the decrypt stage, so the HMAC above survived real
     # out-of-order reads rather than a straight pass.
     assert moving_seeks
@@ -664,6 +668,48 @@ def test_aes_decrypt_stream_seeks_keep_the_hmac(moves: list[tuple[int, int]]) ->
         else:
             expected = payload[last_at:] if last_n < 0 else payload[last_at:][:last_n]
             assert stream.read(last_n) == expected
+
+
+@pytest.mark.parametrize("tamper", ["none", "mac", "ciphertext"])
+@requires("cryptography")
+def test_aes_decrypt_stream_hmac_across_a_pull_that_straddles_the_frontier(
+    tamper: str,
+) -> None:
+    """A pull that starts behind the hashed prefix and ends past it hashes only the
+    part past it: no byte is hashed twice, and none is skipped.
+
+    Over one pull (64 KiB) of ciphertext, so the first read leaves the prefix inside
+    the member and the pull after the seek back straddles it.
+    """
+    enc_key, auth_key = os.urandom(32), os.urandom(32)
+    payload = os.urandom(200 * 1024)
+    cipher = bytearray(aes_ctr_le_encrypt(enc_key, payload))
+    mac = hmac.new(auth_key, bytes(cipher), hashlib.sha1).digest()[:10]
+    if tamper == "mac":
+        mac = bytes([mac[0] ^ 1]) + mac[1:]
+    elif tamper == "ciphertext":
+        cipher[150_000] ^= 1  # past every byte the reads below decrypt
+    stream = WinZipAesDecryptStream(
+        io.BytesIO(bytes(cipher) + mac),
+        enc_key=enc_key,
+        auth_key=auth_key,
+        cipher_len=len(cipher),
+    )
+    assert stream.read(70_000) == payload[:70_000]
+    assert stream._hashed == 2 * 65536  # two pulls: the prefix ends mid-member
+    stream.seek(1000)
+    if tamper == "none":
+        assert stream.read() == payload[1000:]
+    else:
+        with pytest.raises(CorruptionError, match="HMAC"):
+            stream.read()
+
+
+@requires("cryptography")
+def test_aes_decrypt_stream_reports_its_size() -> None:
+    """The codec layer's accelerator threshold reads the stage's exact size."""
+    payload = os.urandom(100)
+    assert source_byte_size(_ctr_stream(payload)) == 100
 
 
 @requires("cryptography")

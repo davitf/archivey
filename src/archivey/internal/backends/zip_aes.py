@@ -104,8 +104,8 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
 
     ``source`` must be positioned at the start of the ciphertext (after salt +
     pw_verify) and bounded to ``cipher_len + 10`` (ciphertext + MAC). The HMAC is
-    checked by the read that returns the last plaintext byte, before it returns. ``close`` is teardown only — it does not drain or authenticate (ADR
-    0014).
+    checked by the read that returns the last plaintext byte, before it returns.
+    ``close`` is teardown only — it does not drain or authenticate (ADR 0014).
 
     Positions are plaintext offsets, equal to ciphertext offsets: CTR adds no bytes.
     Seeking needs a seekable ``source``. CTR decrypts from any offset (the counter
@@ -146,6 +146,10 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         self._hashed = 0  # length of the ciphertext prefix the HMAC has taken in
         self._authenticated = False
         self._cipher_len = cipher_len
+        # The plaintext length, exactly (CTR adds no bytes). ``source_byte_size`` reads
+        # it, so the codec layer's accelerator threshold and source bound see the true
+        # input size of a member decoded from this stage.
+        self.size = cipher_len
         self._cipher_remaining = cipher_len
         self._origin = source.tell() if source.seekable() else 0
         self._mac = b""

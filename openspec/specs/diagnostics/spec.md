@@ -100,11 +100,11 @@ closed before its declared digest was reached **and** the password behind those 
 accepted on a check weaker than that digest. `check` names what accepted the password
 (`"weak_open_check"`, `"confirm_budget_exhausted"`); `reason` names why the digest was
 not reached (`"partial_read"`, or `"seek"` when a seek forfeited it; a WinZip AES HMAC
-survives seeks, so there a seek is never the reason). It SHALL NOT be emitted for a
-partial read whose password was confirmed against an integrity anchor — that restates
-what the caller already knows, which the admission clause refuses. Nor SHALL it be
-emitted for a stream closed before any read returned bytes, since nothing unchecked was
-delivered.
+survives seeks, so there `"seek"` means only that a failed seek left the position
+unknown). It SHALL NOT be emitted for a partial read whose password was confirmed
+against an integrity anchor — that restates what the caller already knows, which the
+admission clause refuses. Nor SHALL it be emitted for a stream closed before any read
+returned bytes, since nothing unchecked was delivered.
 
 #### Scenario: value-model matrix
 

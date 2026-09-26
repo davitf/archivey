@@ -20,7 +20,9 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
 - **Don't expect a CRC verdict after seeking.** A seek that moves the position
   gives up the member's CRC check; read from the start to the end without seeking
   when you need it. A WinZip AES member's HMAC is the exception: it is still checked
-  when a read reaches the end.
+  when a read reaches the end, and that read first re-reads, without decrypting, the
+  ciphertext your seeks skipped. A short read at the end of a large AES member can
+  therefore read the whole member from the archive.
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
 - **Don't open members out of order in a solid archive.** On solid 7z / RAR and any
   compressed TAR, a named `open()` can restart the whole block. Prefer one forward
