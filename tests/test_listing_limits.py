@@ -254,8 +254,13 @@ def test_tar_listing_stops_reading_headers_at_max_metadata_bytes(
         assert len(tar.members) <= 6
 
 
-def test_metadata_accounting_counts_extra_keys() -> None:
-    """A long key in ``extra`` weighs its length, not nothing."""
+def test_metadata_accounting_counts_long_nested_extra_keys() -> None:
+    """A PAX keyword inside ``extra["tar.pax_headers"]`` weighs its length.
+
+    The bomb-scale case: a 100 000-byte nested key. The exact arithmetic, and the
+    top-level keys that do not count, are
+    ``test_metadata_accounting_skips_top_level_keys_and_counts_nested_keys``.
+    """
     member = ArchiveMember(
         type=MemberType.FILE,
         name="f",

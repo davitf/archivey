@@ -254,8 +254,20 @@ def _assert_seek_underflow_matches_bytesio(stream: BinaryIO) -> None:
         stream.seek(-1)
     # The caller's own error, not a translated archive error.
     assert type(excinfo.value) is ValueError
-    # The refused seek did not move the stream.
+    _assert_unknown_whence_is_value_error(stream)
+    # The refused seeks did not move the stream.
     assert stream.tell() == len(content)
+
+
+def _assert_unknown_whence_is_value_error(stream: BinaryIO) -> None:
+    """An unknown ``whence`` is the caller's ``ValueError`` on every format.
+
+    Without the check in ``ArchiveStream.seek`` the ZIP translator reports it as
+    ``CorruptionError`` on an undamaged archive.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        stream.seek(0, 7)
+    assert type(excinfo.value) is ValueError
 
 
 def test_seek_underflow_matches_bytesio(member: tuple[Path, str]) -> None:
@@ -273,6 +285,7 @@ def test_seek_underflow_matches_bytesio(member: tuple[Path, str]) -> None:
             with pytest.raises(ValueError) as excinfo:
                 f.seek(-1)
             assert type(excinfo.value) is ValueError
+            _assert_unknown_whence_is_value_error(f)
             return
         _assert_seek_underflow_matches_bytesio(f)
 
@@ -509,8 +522,13 @@ def test_corpus_seek_underflow_matches_bytesio(
         with ar.open(member) as f:
             if spec.key == "dir":
                 # A directory member is a real file: relative underflow is its OSError.
+                # A negative SEEK_SET or unknown whence is refused before the file.
                 with pytest.raises(OSError):
                     f.seek(-1, io.SEEK_CUR)
+                with pytest.raises(ValueError) as excinfo:
+                    f.seek(-1)
+                assert type(excinfo.value) is ValueError
+                _assert_unknown_whence_is_value_error(f)
                 return
             _assert_seek_underflow_matches_bytesio(f)
 
