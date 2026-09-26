@@ -58,6 +58,10 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
 
     @abc.abstractmethod
     def read(self, n: int = -1, /) -> bytes:
+        # The internal contract takes an int. ``read(None)`` (read to EOF, the ``io``
+        # contract) is accepted at the public boundary, ``ArchiveStream.read``, which
+        # passes ``-1`` inward; the streams that also accept ``None`` do so as a
+        # convenience, and a new stream need not.
         # @abstractmethod marks the subclass contract. On Python 3.12+ ABCMeta already
         # rejects constructing a subclass that omits read(); on 3.11, io.RawIOBase's C
         # __new__ still allows construction, so this body is the runtime guard — a

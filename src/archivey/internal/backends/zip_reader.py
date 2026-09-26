@@ -105,6 +105,7 @@ from archivey.internal.password import (
     wrong_password_error,
 )
 from archivey.internal.password_confirm import (
+    PASSWORD_CONFIRM_MIN_VERIFIED_BYTES,
     PASSWORD_CONFIRM_PREFIX_BYTES,
     REJECTING_CODECS,
     PasswordConfirmPlan,
@@ -1463,7 +1464,13 @@ class ZipReader(BaseArchiveReader):
                 zipcrypto=not hmac_anchor,
                 payload_complete=payload_complete,
             )
-        if not hmac_anchor and method == zipfile.ZIP_STORED:
+        if (
+            not hmac_anchor
+            and method == zipfile.ZIP_STORED
+            and info.file_size >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES
+        ):
+            # A CRC over fewer bytes can reject a candidate but not confirm one, so a
+            # smaller member takes the bounded confirm below, which never promotes it.
             winner = self._open_stored_confirmed(info, member, member_name=member_name)
             return self._verified_member_stream(
                 decode_body(stage(winner)), info, member, member_name
@@ -1711,64 +1718,63 @@ class ZipReader(BaseArchiveReader):
 
         # The same validated view every member open reads through: the local
         # header's name, data offset and overlap are checked before any pass runs.
+        # One view serves the header read and every CRC pass; each pass rewinds it.
         raw = self._open_raw_payload(info, member_name)
         try:
             header = self._read_zipcrypto_header(raw, member_name)
+
+            def weak_ok(password: bytes) -> bool:
+                return password_matches_check_byte(password, header, check_byte)
+
+            def disambiguate(survivors: list[bytes]) -> bytes | None:
+                nonlocal ambiguous_failure
+                if not survivors:
+                    return None
+                # No decompressor to reject garbage: one shared ciphertext pass computes
+                # every survivor's plaintext CRC-32 in constant memory.
+                try:
+                    raw.seek(ZIPCRYPTO_HEADER_LEN)  # every pass starts at the body
+                    crcs = parallel_plaintext_crc32(survivors, header, raw)
+                except _ZIP_MEMBER_READ_ERRORS as exc:
+                    self._reraise_member_error(exc, member_name)
+                winner = first_crc_match(expected_crc, crcs)
+                if winner is None:
+                    failure = EncryptionError(
+                        "Password candidate failed integrity validation for this ZIP member"
+                    )
+                    if ambiguous_failure is None:
+                        ambiguous_failure = failure
+                return winner
+
+            # Phase 1 — collect the static candidates that pass the cheap 1-byte check.
+            tried: set[bytes] = set()
+            survivors: list[bytes] = []
+            for password in self._passwords.iter_candidates():
+                tried.add(password)
+                if weak_ok(password):
+                    survivors.append(password)
+
+            # Phase 2 — one shared CRC pass over the survivors.
+            winner = disambiguate(survivors)
+
+            # Phase 3 — provider fallback: ask, cheap-check, per-candidate CRC pass, repeat.
+            attempt = 1
+            while winner is None and self._passwords.has_provider():
+                try:
+                    password = self._passwords.ask_provider(member, attempt)
+                except EncryptionError as exc:
+                    self._stamp_error_context(exc, member_name)
+                    raise
+                if password is None:
+                    break
+                if password in tried:
+                    break
+                tried.add(password)
+                if weak_ok(password):
+                    winner = disambiguate([password])
+                attempt += 1
         finally:
             raw.close()
-
-        def weak_ok(password: bytes) -> bool:
-            return password_matches_check_byte(password, header, check_byte)
-
-        def disambiguate(survivors: list[bytes]) -> bytes | None:
-            nonlocal ambiguous_failure
-            if not survivors:
-                return None
-            # No decompressor to reject garbage: one shared ciphertext pass computes
-            # every survivor's plaintext CRC-32 in constant memory.
-            body = self._open_raw_payload(info, member_name)
-            try:
-                body.seek(ZIPCRYPTO_HEADER_LEN)
-                with self._translated_errors(member_name):
-                    crcs = parallel_plaintext_crc32(survivors, header, body)
-            finally:
-                body.close()
-            winner = first_crc_match(expected_crc, crcs)
-            if winner is None:
-                failure = EncryptionError(
-                    "Password candidate failed integrity validation for this ZIP member"
-                )
-                if ambiguous_failure is None:
-                    ambiguous_failure = failure
-            return winner
-
-        # Phase 1 — collect the static candidates that pass the cheap 1-byte check.
-        tried: set[bytes] = set()
-        survivors: list[bytes] = []
-        for password in self._passwords.iter_candidates():
-            tried.add(password)
-            if weak_ok(password):
-                survivors.append(password)
-
-        # Phase 2 — one shared CRC pass over the survivors.
-        winner = disambiguate(survivors)
-
-        # Phase 3 — provider fallback: ask, cheap-check, per-candidate CRC pass, repeat.
-        attempt = 1
-        while winner is None and self._passwords.has_provider():
-            try:
-                password = self._passwords.ask_provider(member, attempt)
-            except EncryptionError as exc:
-                self._stamp_error_context(exc, member_name)
-                raise
-            if password is None:
-                break
-            if password in tried:
-                break
-            tried.add(password)
-            if weak_ok(password):
-                winner = disambiguate([password])
-            attempt += 1
 
         # Phase 4 — resolve the outcome (winner, else the most specific error).
         if winner is not None:

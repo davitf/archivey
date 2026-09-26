@@ -27,6 +27,7 @@ from archivey.exceptions import (
     EncryptionError,
     TruncatedError,
 )
+from archivey.internal import password as password_module
 from archivey.internal import password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
@@ -341,6 +342,53 @@ def test_stored_confirm_reads_through_the_validated_local_header(
         with pytest.raises(CorruptionError, match="differ"):
             ar.open(NAME)
     assert passes == []
+
+
+def test_stored_confirm_refuses_an_overlapped_member_before_any_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A STORED member whose declared size runs into the central directory is refused
+    as an overlap bomb before the CRC pass decrypts a byte of it."""
+    blob = bytearray(
+        build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=zipfile.ZIP_STORED)
+    )
+    cd = blob.index(b"PK\x01\x02")
+    compress_size = int.from_bytes(blob[cd + 20 : cd + 24], "little")
+    blob[cd + 20 : cd + 24] = (compress_size + 64).to_bytes(4, "little")
+    passes: list[int] = []
+    original = zip_reader.parallel_plaintext_crc32
+
+    def counting(*args: Any, **kwargs: Any) -> list[tuple[bytes, int]]:
+        passes.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(zip_reader, "parallel_plaintext_crc32", counting)
+    with open_archive(io.BytesIO(blob), password=[b"also-wrong", RIGHT]) as ar:
+        with pytest.raises(CorruptionError, match="Overlapped entries"):
+            ar.open(NAME)
+    assert passes == []
+
+
+@pytest.mark.parametrize("data", [b"", b"abc"], ids=["empty", "three_bytes"])
+def test_stored_crc_under_four_bytes_does_not_confirm_a_password(
+    monkeypatch: pytest.MonkeyPatch, data: bytes
+) -> None:
+    """A CRC over fewer than 4 bytes carries under 32 bits of evidence: it can reject
+    a candidate but never confirm one, so the survivor is not recorded as known-good."""
+    blob = build_zipcrypto_zip(
+        RIGHT, b"small.txt", data, compression=zipfile.ZIP_STORED
+    )
+    recorded: list[bytes] = []
+    original = password_module._PasswordCandidates.record_success
+
+    def spy(self: Any, password: bytes) -> None:
+        recorded.append(password)
+        original(self, password)
+
+    monkeypatch.setattr(password_module._PasswordCandidates, "record_success", spy)
+    with open_archive(io.BytesIO(blob), password=[b"also-wrong", RIGHT]) as ar:
+        assert ar.read("small.txt") == data
+    assert recorded == []
 
 
 def test_provider_encryption_error_is_not_rewritten_after_candidate_failure() -> None:
