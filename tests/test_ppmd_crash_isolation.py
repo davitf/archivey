@@ -15,6 +15,7 @@ import struct
 import subprocess
 import textwrap
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -172,8 +173,8 @@ def test_truncated_member_returns_its_prefix_then_raises(
     chunked reader still gets everything the truncated input decodes to (well past
     64 KiB here) before ``TruncatedError``.
     """
-    payload, cut = _truncated_text_member()
-    params = _params(7, len(cut) * 4 // 3 + 3, len(payload))
+    payload, packed, cut = _truncated_text_member()
+    params = _params(7, len(packed), len(payload))
     got = bytearray()
     with open_codec_stream(
         Codec.PPMD, io.BytesIO(cut), params=params, config=ppmd_config
@@ -185,12 +186,13 @@ def test_truncated_member_returns_its_prefix_then_raises(
     assert bytes(got) == payload[: len(got)]
 
 
-def _truncated_text_member() -> tuple[bytes, bytes]:
+def _truncated_text_member() -> tuple[bytes, bytes, bytes]:
+    """``(payload, packed, cut)``: a text member and its first three quarters."""
     rng = random.Random(9)
     words = [rng.randbytes(6).hex().encode() for _ in range(20_000)]
     payload = b" ".join(rng.choice(words) for _ in range(60_000))  # ~780 KB of text
     packed = _encode_ppmd7(payload)
-    return payload, packed[: len(packed) * 3 // 4]
+    return payload, packed, packed[: len(packed) * 3 // 4]
 
 
 def test_truncated_member_read_whole_asks_bounded_chunks(
@@ -217,8 +219,8 @@ def test_truncated_member_read_whole_asks_bounded_chunks(
             return getattr(self._real, name)
 
     monkeypatch.setattr(pyppmd, "Ppmd7Decoder", Spy)
-    payload, cut = _truncated_text_member()
-    params = _params(7, len(cut) * 4 // 3 + 3, len(payload))
+    payload, packed, cut = _truncated_text_member()
+    params = _params(7, len(packed), len(payload))
     with open_codec_stream(Codec.PPMD, io.BytesIO(cut), params=params) as stream:
         got = bytearray()
         with pytest.raises(TruncatedError):
@@ -251,7 +253,7 @@ def test_without_a_child_process_a_large_member_is_refused(
 
 @pytest.mark.parametrize("failure", ["spawn", "handshake"])
 def test_a_child_that_cannot_start_is_a_resource_limit(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object, failure: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
 ) -> None:
     """A spawn refused by the OS, or a child that dies before its decoder is ready
     (it cannot import pyppmd), is the same ``ResourceLimitError`` as no child."""
@@ -262,9 +264,6 @@ def test_a_child_that_cannot_start_is_a_resource_limit(
 
         monkeypatch.setattr(subprocess, "Popen", refuse)
     else:
-        import pathlib
-
-        assert isinstance(tmp_path, pathlib.Path)
         worker = tmp_path / "worker.py"
         worker.write_text("raise SystemExit(3)\n")
         monkeypatch.setattr(ppmd_child_module, "_WORKER", worker)
