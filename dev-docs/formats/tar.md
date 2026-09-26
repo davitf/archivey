@@ -328,6 +328,7 @@ extraction checks (§2.4).
 | `member_count` is `None`, even after listing | **format** | No index (§1). `len(reader.members())` after the walk is the count |
 | Listing a `.tar.gz` takes as long as extracting it | **format** | Headers are spread through the compressed stream, so finding them decodes everything (§1) |
 | Reading members of a `.tar.gz` by name is slow, and reports `STREAM_REWIND_REDECOMPRESSES` | **format** / **archivey** | Each backward seek decodes from the nearest resume point (§2.3). `stream_members()` decodes once. `[seekable]` adds resume points for gzip and bzip2 |
+| A seek past the end of a member returns the member size, not the target | **library** | stdlib `ExFileObject` clamps the position; reads agree either way ([`known-issues.md`](../known-issues.md)) |
 | A tar with no trailer warns `ARCHIVE_EOF_MARKER_MISSING` and still lists | **format** | Complete-without-trailer and truncated-at-a-boundary are the same bytes. Set the code to `RAISE` when completeness matters |
 | A corrupt last header raises in random access and only warns when streaming | **library** | tarfile's `_Stream` hides the block the walk stopped on. A native header walker would close it (open-issues **P3**, [`known-issues.md`](../known-issues.md)) |
 | Two tars joined with `cat` list as one archive's members plus `ARCHIVE_TRAILING_DATA` | **format** / **archivey** | The first trailer ends the walk. archivey does not read past it the way `tar -i` does (§6) |

@@ -285,7 +285,7 @@ With `seekable_members=True`, `seek(10)` on a 3-byte TAR member returns 3 and le
 `tarfile`'s `ExFileObject`, which clamps the position to the member size. Reads agree
 either way (both return `b""`), so only the returned position differs. Found while
 running the seek-before-start test over the corpus, which starts from `seek(5)` and
-so could not use an empty TAR member.
+so could not use an empty TAR member. Handbook: [`formats/tar.md`](formats/tar.md) §5.
 
 ## WinRAR 3.x SHA-1 KDF mutates its input buffer (emulated)
 
