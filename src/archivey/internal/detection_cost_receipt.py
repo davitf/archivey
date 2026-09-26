@@ -1,4 +1,4 @@
-"""Detection's mutable cost accumulator and the default budget.
+"""Detection's mutable cost accumulator.
 
 Implementation companions to :mod:`archivey.detection_cost`: detectors write into
 :class:`MutableDetectionCostReceipt` and freeze it into the public
@@ -10,16 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from archivey.detection_cost import (
-    BALANCED_BUDGET,
-    DetectionBudget,
     DetectionCostReceipt,
     TierSkip,
     TierSkipReason,
 )
-
-
-def default_detection_budget() -> DetectionBudget:
-    return BALANCED_BUDGET
 
 
 @dataclass

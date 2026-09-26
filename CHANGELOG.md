@@ -327,15 +327,17 @@ promise with that line; treat `0.2.0` as the first release of this library.
 - **Four names leave the public surface before the freeze**, on the API review's
   recommendation. `MemberStreams` is no longer exported from `archivey` or on the API
   page (it is the internal form of the `seekable_members` / `concurrent_members`
-  booleans, still importable from `archivey.types`). `DiagnosticSeverity`, the
+  booleans, still importable from `archivey.types`), and the runtime
+  `reader.member_streams` property is removed with it: the two booleans you passed to
+  `open_archive` are the whole record of what was declared. `DiagnosticSeverity`, the
   `Diagnostic.severity` field and the `severity` key of `Diagnostic.to_dict()` are gone:
   every diagnostic was `WARNING`, and whether one stops you is the policy's disposition.
   `WriteError` is deleted; no write API exists to raise it. `detect_format` no longer
   takes `collector=`, which typed an `internal/` class on a public signature;
-  `open_archive` reaches detection through an internal entry instead. The two
-  implementation names in `archivey.detection_cost` (`MutableDetectionCostReceipt`,
-  `default_detection_budget`) move under `internal/`; the rest of that module is now
-  documented on the API page.
+  `open_archive` reaches detection through an internal entry instead. `archivey.detection_cost` is now
+  documented on the API page; its mutable accumulator `MutableDetectionCostReceipt`
+  moves under `internal/` and `default_detection_budget()`, which had no callers, is
+  deleted (`ArchiveyConfig.detection_budget` defaults to `BALANCED_BUDGET` directly).
 - **`detect_format(budget=)` is removed**; set `ArchiveyConfig.detection_budget` and pass
   `config=` instead. `DetectionBudget` loses the two fields it only reserved,
   `max_index_bytes` and `collect_nonmaximal_candidates`, and `DetectionCostReceipt` loses

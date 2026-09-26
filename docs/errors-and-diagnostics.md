@@ -118,7 +118,8 @@ whichever view fits what you were doing:
 | You call | Where the diagnostics are | What it covers |
 | --- | --- | --- |
 | `open_archive(...)` and anything on the reader | `reader.diagnostics` | Everything since detection started, cumulative, including any of the rows below |
-| `reader.open(member)` / `reader.read(member)` | `stream.diagnostics` on the returned stream | That one member read |
+| `reader.open(member)` | `stream.diagnostics` on the returned stream | That one member read |
+| `reader.read(member)` | `reader.diagnostics` | `read()` opens and closes the stream inside the call, so there is no stream to ask |
 | `reader.members()` / `reader.stream_members()` | `member.diagnostics` on each `ArchiveMember` | The diagnostics about that member (a rewritten name, an invalid timestamp) |
 | `reader.members_report()` | `report.diagnostics` | The listing |
 | `reader.extract_all(...)` | `report.diagnostics` | **That extraction call only.** Diagnostics from opening the archive are on `reader.diagnostics`, not here, and a second call gets a fresh window |
@@ -159,12 +160,11 @@ axis. To adjust one code, pass `overrides={DiagnosticCode.X: DiagnosticDispositi
 to silence one code's log line, set it to `IGNORE`. The [named presets](#named-policy-presets)
 below cover the common cases.
 
-Two things are deliberately **not** diagnostics. What extraction did to each member
-(blocked, renamed, collided, failed) is on `ExtractionReport.results`, one row per
-member, and never also a diagnostic; `abort_on=` is the way to be stopped by one of
-those. And a password offered to an unencrypted ZIP, 7z or RAR records nothing, because
-those formats can use one; only a format with no encryption at all (TAR, ISO, a
-directory, a single compressed file) records `PASSWORD_ARGUMENT_UNUSED`.
+Two things a reader might expect here are deliberately not diagnostics: what extraction
+did to each member, which lives on `ExtractionReport.results` (see
+[what is not here](#what-is-not-here-per-member-extraction-outcomes) below), and a
+password offered to a format that can use one (see the `PASSWORD_ARGUMENT_UNUSED` row
+in the next table).
 
 The full list of codes, one line each, is on [`DiagnosticCode`][archivey.DiagnosticCode]
 in the API reference; the ones that need more than a line are in the next table. The
