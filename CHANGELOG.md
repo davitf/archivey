@@ -100,6 +100,12 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `archivey.streams` logger, naming the reason; `ON` raises `ResourceLimitError`. bzip2
   stays in-process. `use_rapidgzip=OFF` avoids the child entirely, and the warning.
 
+- **An exception from your own stream reaches you as itself through the accelerators.**
+  With the `[seekable]` extra, a caller-owned stream that raised `EOFError` while
+  rapidgzip read it (for example a network file object on a dropped connection) was
+  reported as `TruncatedError`, a verdict on the archive. It now propagates unchanged,
+  for bzip2 and for gzip, zlib and raw deflate.
+
 - **A truncated stream that raised once no longer reads as an empty, clean stream
   afterwards.** This affected every codec archivey decodes in its own decompressing
   stream: gzip, zlib, raw deflate, deflate64, xz, lzip, brotli, PPMd and `.Z`. After a
