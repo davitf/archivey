@@ -234,7 +234,11 @@ buffered output. RAR4 is not gated; the size and digest check on each member is 
 
 - **RAR 1.5 compression** (`rar15-comment.rar`, `FILE1.TXT`, method 3 at version 15):
   `unar` writes nothing for the member and exits 0. Refused when a member's extract
-  version is below 20 and it is not stored.
+  version is below 20 and it is not stored. The same archive's comment blobs carry the
+  same method (`extract_version=15`, `compress_type=0x34`), and `unar` 1.10.1 decodes
+  them correctly through the one-file RAR `decompress_rar3_blob` builds (measured
+  2026-09-26, archive and both member comments). Comments are therefore not gated; the
+  stored CRC16 drops any wrong or missing output under either program.
 - **A prefix before the RAR** (an SFX stub, or any leading bytes): `unar` reports an
   unknown format. A single prefixed archive is copied from where the RAR starts; a
   prefixed multi-volume set is refused.
