@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import random
 import struct
+import subprocess
 import textwrap
 from collections.abc import Iterator
 
@@ -21,8 +22,13 @@ from archivey.config import DecoderLimits
 from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams import decompress as decompress_module
+from archivey.internal.streams import ppmd_child as ppmd_child_module
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
-from archivey.internal.streams.ppmd_child import PpmdChildDecoder, PpmdChildError
+from archivey.internal.streams.ppmd_child import (
+    PpmdChildDecoder,
+    PpmdChildError,
+    PpmdChildReportedError,
+)
 from tests.conftest import requires
 from tests.test_ppmd_raw_streams import (
     _MEM,
@@ -166,12 +172,8 @@ def test_truncated_member_returns_its_prefix_then_raises(
     chunked reader still gets everything the truncated input decodes to (well past
     64 KiB here) before ``TruncatedError``.
     """
-    rng = random.Random(9)
-    words = [rng.randbytes(6).hex().encode() for _ in range(20_000)]
-    payload = b" ".join(rng.choice(words) for _ in range(60_000))  # ~780 KB of text
-    packed = _encode_ppmd7(payload)
-    cut = packed[: len(packed) * 3 // 4]
-    params = _params(7, len(packed), len(payload))
+    payload, cut = _truncated_text_member()
+    params = _params(7, len(cut) * 4 // 3 + 3, len(payload))
     got = bytearray()
     with open_codec_stream(
         Codec.PPMD, io.BytesIO(cut), params=params, config=ppmd_config
@@ -183,11 +185,89 @@ def test_truncated_member_returns_its_prefix_then_raises(
     assert bytes(got) == payload[: len(got)]
 
 
+def _truncated_text_member() -> tuple[bytes, bytes]:
+    rng = random.Random(9)
+    words = [rng.randbytes(6).hex().encode() for _ in range(20_000)]
+    payload = b" ".join(rng.choice(words) for _ in range(60_000))  # ~780 KB of text
+    packed = _encode_ppmd7(payload)
+    return payload, packed[: len(packed) * 3 // 4]
+
+
+def test_truncated_member_read_whole_asks_bounded_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``read()`` on a truncated member: after the handover at compressed EOF, no
+    request asks pyppmd for more than one 64 KiB chunk, and nothing is asked after a
+    short return (the member has ended)."""
+    import pyppmd
+
+    calls: list[tuple[int, int, int]] = []
+    real = pyppmd.Ppmd7Decoder
+
+    class Spy:
+        def __init__(self, *args: int) -> None:
+            self._real = real(*args)
+
+        def decode(self, data: bytes, length: int) -> bytes:
+            out = self._real.decode(data, length)
+            calls.append((len(data), length, len(out)))
+            return out
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(pyppmd, "Ppmd7Decoder", Spy)
+    payload, cut = _truncated_text_member()
+    params = _params(7, len(cut) * 4 // 3 + 3, len(payload))
+    with open_codec_stream(Codec.PPMD, io.BytesIO(cut), params=params) as stream:
+        got = bytearray()
+        with pytest.raises(TruncatedError):
+            got += stream.read()
+    assert calls, calls
+    handover = next(i for i, (size, _, _) in enumerate(calls) if size)
+    after = calls[handover:]
+    assert all(length <= 65536 for _, length, _ in after), after
+    first_short = next(i for i, (_, length, out) in enumerate(after) if out < length)
+    # At most the one documented extra NUL follows the short return, bounded at 64.
+    assert all(length <= 64 for _, length, _ in after[first_short + 1 :]), after
+
+
 def test_without_a_child_process_a_large_member_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A frozen app cannot start a child: past the limit, ``ResourceLimitError``."""
     monkeypatch.setattr(decompress_module, "child_decoding_available", lambda: False)
+    packed = _encode_ppmd7(_ZERO_RUN)
+    params = _params(7, len(packed), len(_ZERO_RUN))
+    with open_codec_stream(
+        Codec.PPMD, io.BytesIO(packed), params=params, config=_config("child")
+    ) as stream:
+        with pytest.raises(ResourceLimitError, match="max_ppmd_in_process_input"):
+            stream.read(10)
+        # The refusal sticks: a second read says the same, never a stray error.
+        with pytest.raises(ResourceLimitError, match="max_ppmd_in_process_input"):
+            stream.read(10)
+
+
+@pytest.mark.parametrize("failure", ["spawn", "handshake"])
+def test_a_child_that_cannot_start_is_a_resource_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object, failure: str
+) -> None:
+    """A spawn refused by the OS, or a child that dies before its decoder is ready
+    (it cannot import pyppmd), is the same ``ResourceLimitError`` as no child."""
+    if failure == "spawn":
+
+        def refuse(*args: object, **kwargs: object) -> None:
+            raise PermissionError("fork refused by policy")
+
+        monkeypatch.setattr(subprocess, "Popen", refuse)
+    else:
+        import pathlib
+
+        assert isinstance(tmp_path, pathlib.Path)
+        worker = tmp_path / "worker.py"
+        worker.write_text("raise SystemExit(3)\n")
+        monkeypatch.setattr(ppmd_child_module, "_WORKER", worker)
     packed = _encode_ppmd7(_ZERO_RUN)
     params = _params(7, len(packed), len(_ZERO_RUN))
     with open_codec_stream(
@@ -234,6 +314,19 @@ def test_child_decoder_round_trip_and_errors() -> None:
         bad.close()
     with pytest.raises(PpmdChildError):
         bad.decode(b"\x00" * 16, 10)
+
+
+def test_child_error_of_unknown_type_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exception the child reports with no mapping is not called corruption."""
+    monkeypatch.setattr(ppmd_child_module, "_KNOWN_ERRORS", {})
+    child = PpmdChildDecoder(variant=7, order=_ORDER, mem_size=_MEM)
+    try:
+        with pytest.raises(PpmdChildReportedError, match="^ValueError: "):
+            child.decode(b"\x00\x01", 10)
+    finally:
+        child.close()
 
 
 def test_child_crash_surfaces_as_corruption_error(

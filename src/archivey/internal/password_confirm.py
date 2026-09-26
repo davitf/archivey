@@ -39,7 +39,8 @@ from archivey.internal.streams.streamtools.base import DelegatingStream
 # both the 7z and the ZIP reader. Measured as non-rejecting and left out: Brotli (about
 # one random input in twenty decodes a full prefix) and PPMd (about one in a hundred;
 # archivey decodes it so that pyppmd's crash on random input cannot happen, see
-# ``DecoderLimits.max_ppmd_in_process_input``). Filters never reject. A codec not listed is non-rejecting.
+# ``DecoderLimits.max_ppmd_in_process_input``). Filters never reject. A codec not
+# listed is non-rejecting.
 REJECTING_CODECS = frozenset(
     {
         Codec.LZMA,

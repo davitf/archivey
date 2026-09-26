@@ -71,7 +71,7 @@ def main() -> None:
             decoder = pyppmd.Ppmd8Decoder(order, mem_size, restore_method)
         else:
             decoder = pyppmd.Ppmd7Decoder(order, mem_size)
-    except BaseException as exc:  # noqa: BLE001 - reported to the parent, which raises
+    except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
         _reply(stdout, 1, decoder, _error_payload(exc))
         return
     _reply(stdout, 0, decoder, b"")
@@ -85,7 +85,7 @@ def main() -> None:
             return
         try:
             result = decoder.decode(data, length)
-        except BaseException as exc:  # noqa: BLE001 - reported to the parent, which raises
+        except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
             _reply(stdout, 1, decoder, _error_payload(exc))
             continue
         _reply(stdout, 0, decoder, result)

@@ -436,10 +436,12 @@ class DecoderLimits:
 
             16 MiB keeps the in-process peak near 32 MiB. At pyppmd's 2 to 8 MB/s
             a member that size takes seconds to decode, so the child's start-up
-            (about 75 ms) is small beside the members it applies to. A password check reads at most 1 MiB of a member, so it
-            always runs in-process. ``None`` decodes every member in-process and
-            never starts a child process, at a memory cost that grows with the
-            member.
+            (about 75 ms) is small beside the members it applies to, and so is
+            moving the data: the pipe carries about 450 MB/s, compressed input in
+            and decoded output back. A password check reads at most 1 MiB of a
+            member, so it always runs in-process. ``None`` decodes every member
+            in-process and never starts a child process, at a memory cost that
+            grows with the member.
     """
 
     max_decoder_memory: int | None = 2 * 2**30

@@ -40,10 +40,28 @@ _KNOWN_ERRORS: dict[str, type[Exception]] = {
 
 
 class PpmdChildError(RuntimeError):
-    """The PPMd child process died, or reported an error it has no type for.
+    """The PPMd child process died while decoding.
 
     ``PpmdCodec.translate`` maps it to ``CorruptionError``: the child dies only on
     data pyppmd cannot decode safely.
+    """
+
+
+class PpmdChildStartError(RuntimeError):
+    """No working PPMd child process could be started.
+
+    The spawn failed (a sandbox that refuses ``fork``/``exec``, a process cap, a
+    ``sys.executable`` that is not Python), or the child failed before its decoder
+    was ready (it cannot import pyppmd). ``PpmdDecoder`` turns it into the same
+    ``ResourceLimitError`` it raises when no child can be started at all.
+    """
+
+
+class PpmdChildReportedError(RuntimeError):
+    """The child reported an exception whose type is not in ``_KNOWN_ERRORS``.
+
+    Not mapped by ``PpmdCodec.translate``, so it propagates: an unknown exception is
+    a bug or an environment fault to map on purpose, not a verdict on the data.
     """
 
 
@@ -82,17 +100,30 @@ class PpmdChildDecoder:
         self.eof = False
         self.needs_input = True
         self._dead = False
-        self._proc: subprocess.Popen[bytes] | None = subprocess.Popen(
-            # -P: the worker's own directory is not put on sys.path, so its sibling
-            # modules (``codecs.py``) cannot shadow the standard library.
-            [sys.executable, "-P", str(_WORKER)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
+        # Assigned before the spawn, so ``close`` (and ``__del__``) work on an object
+        # whose ``Popen`` raised.
+        self._proc: subprocess.Popen[bytes] | None = None
+        try:
+            self._proc = subprocess.Popen(
+                # -P: the worker's own directory is not put on sys.path, so its
+                # sibling modules (``codecs.py``) cannot shadow the standard library.
+                [sys.executable, "-P", str(_WORKER)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise PpmdChildStartError(
+                f"cannot start the PPMd decoder process: {exc}"
+            ) from exc
         try:
             self._send(_OPEN.pack(variant, order, mem_size, restore_method))
             self._receive()
+        except (PpmdChildError, PpmdChildReportedError) as exc:
+            self.close()
+            raise PpmdChildStartError(
+                f"the PPMd decoder process failed to start: {exc}"
+            ) from exc
         except BaseException:
             self.close()
             raise
@@ -126,7 +157,10 @@ class PpmdChildDecoder:
         if status == 0:
             return payload
         name, _, message = payload.decode("utf-8", "replace").partition("\n")
-        raise _KNOWN_ERRORS.get(name, PpmdChildError)(message)
+        known = _KNOWN_ERRORS.get(name)
+        if known is None:
+            raise PpmdChildReportedError(f"{name}: {message}")
+        raise known(message)
 
     def decode(self, data: bytes | bytearray | memoryview, length: int) -> bytes:
         self._send(_REQUEST.pack(length, len(data)), bytes(data))
@@ -134,7 +168,7 @@ class PpmdChildDecoder:
 
     def close(self) -> None:
         """End the child and wait for it. Idempotent; never raises."""
-        proc, self._proc = self._proc, None
+        proc, self._proc = getattr(self, "_proc", None), None
         if proc is None:
             return
         try:

@@ -13,7 +13,7 @@ import lzma
 import os
 import zlib
 from collections.abc import Mapping
-from typing import BinaryIO, Protocol
+from typing import BinaryIO, NoReturn, Protocol
 
 from archivey.config import DecoderLimits
 from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
@@ -26,6 +26,7 @@ from archivey.internal.streams.decompressor_stream import (
 )
 from archivey.internal.streams.ppmd_child import (
     PpmdChildDecoder,
+    PpmdChildStartError,
     child_decoding_available,
 )
 
@@ -548,6 +549,10 @@ class PpmdDecoder(BaseDecoder):
         # output through ``feed(b"")`` until this decoder has none left
         # (``drains_after_flush``), then calls ``flush`` again.
         self._draining = False
+        # Set when a member past ``in_process_max_input`` was refused: every later
+        # ``feed`` and ``flush`` raises ``ResourceLimitError`` again, since there is
+        # no decoder to go on with.
+        self._refusal: str | None = None
         self._decomp: _PpmdNativeDecoder | None = None
 
     def _open_native(self, *, in_child: bool) -> None:
@@ -737,7 +742,32 @@ class PpmdDecoder(BaseDecoder):
         max_length = min(max_length, _PPMD_MAX_REQUEST)
         return self._note_decoded(self._native.decode(data, max_length), max_length)
 
+    def _refuse(self, reason: str, cause: BaseException | None = None) -> NoReturn:
+        """Refuse this member for good; see ``_refusal``."""
+        self._refusal = reason
+        self._held = None
+        raise ResourceLimitError(reason) from cause
+
+    def _check_refusal(self) -> None:
+        if self._refusal is not None:
+            raise ResourceLimitError(self._refusal)
+
+    def _release_to_child(self, limit: int) -> bytes:
+        reason = (
+            f"Decoder limit reached: max_ppmd_in_process_input={limit}. This PPMd "
+            "member is larger, and no child process can be started to decode it "
+            "(pyppmd can crash the process on corrupt input past this size). Raise "
+            "DecoderLimits.max_ppmd_in_process_input to decode it in-process."
+        )
+        if not child_decoding_available():
+            self._refuse(reason)
+        try:
+            return self._release_held(in_child=True)
+        except PpmdChildStartError as exc:
+            self._refuse(f"{reason} ({exc})", exc)
+
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        self._check_refusal()
         if chunk:
             self._fed_compressed += len(chunk)
         if self._held is not None:
@@ -746,17 +776,7 @@ class PpmdDecoder(BaseDecoder):
             if self._pack_complete() is True:
                 chunk = self._release_held(in_child=False)
             elif limit is not None and len(self._held) > limit:
-                if not child_decoding_available():
-                    self._held = None
-                    raise ResourceLimitError(
-                        "Decoder limit reached: max_ppmd_in_process_input="
-                        f"{limit}. This PPMd member is larger, and no child process "
-                        "can be started to decode it (pyppmd can crash the process "
-                        "on corrupt input past this size). Raise "
-                        "DecoderLimits.max_ppmd_in_process_input to decode it "
-                        "in-process."
-                    )
-                chunk = self._release_held(in_child=True)
+                chunk = self._release_to_child(limit)
             else:
                 return DecodeOut(b"")
         # Honour both the container unpack_size cap and the stream-layer read budget.
@@ -767,21 +787,36 @@ class PpmdDecoder(BaseDecoder):
             limit = max_length
         else:
             limit = unpack_cap
-        # Empty drains past native eof are only safe when the declared pack was
-        # fully delivered. Unknown or short pack: refuse (near-EOF MemoryError /
-        # garbage fill). Callers must pass pack_size (or sized-view
+        if self._draining:
+            # After ``flush`` handed the held input over: the same bounded request as
+            # its first call, never the whole declared remainder.
+            limit = (
+                _PPMD_FLUSH_DRAIN_CHUNK
+                if limit < 0
+                else min(limit, _PPMD_FLUSH_DRAIN_CHUNK)
+            )
+        # Empty drains past native eof are only safe when every compressed byte the
+        # decoder will ever get has been handed over: the declared pack was fully
+        # delivered, or ``flush`` handed over everything up to compressed EOF (and
+        # then a short return ends the drain, below). Otherwise refuse (near-EOF
+        # MemoryError / garbage fill). Callers must pass pack_size (or sized-view
         # compressed_input_size) for correct premature-eof completion.
         if (
             not chunk
-            and not (self._compressed_eof or self._pack_complete() is True)
+            and not (self._draining or self._pack_complete() is True)
             and self._native.eof
         ):
             return DecodeOut(b"")
         out = self._decode(chunk, limit)
         self._produced += len(out)
+        if self._draining and len(out) < limit:
+            # All input is in, so a short return is the end: ask pyppmd nothing more
+            # on the drain; the stream's next ``flush`` settles the member.
+            self._draining = False
         return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
+        self._check_refusal()
         self._compressed_eof = True
         if self._held is not None:
             # Compressed EOF with input still held: a member shorter than its pack
@@ -798,7 +833,9 @@ class PpmdDecoder(BaseDecoder):
             )
             out = self._decode(data, limit) if limit else b""
             self._produced += len(out)
-            if out and not self.finished and not self._exhausted:
+            # Only a full return leaves output to drain: short, the member has ended
+            # and pyppmd is asked nothing more (see ``feed``).
+            if len(out) == limit and not self.finished and not self._exhausted:
                 self._draining = True
                 return DecodeOut(out)
             return DecodeOut(out + self._finish_input().data)
