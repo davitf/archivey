@@ -413,10 +413,10 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 `add_fp`, `add_directory`, `add_symlink`, `add_eltorito`), and shapes `pycdlib` will not
 write are made by patching bytes: the multi-extent tests split one directory record in two
 (`_split_into_two_extents`), and the zisofs tests replace a 26-byte `TF` entry with a
-16-byte `ZF` and a 10-byte unknown entry, over data built by `_zisofs`. To check against real producers, `genisoimage` and `xorriso`
-install from the distribution (`apt-get install genisoimage xorriso`), and `mkzftree`
-comes with genisoimage for zisofs. A file over 4 GiB needs no disk: make it sparse with
-`truncate`, pipe `xorriso -as mkisofs -iso-level 3 -o -` into a writer that seeks over
+16-byte `ZF` and a 10-byte unknown entry, over data built by `_zisofs`. To check against
+real producers, `genisoimage` and `xorriso` install from the distribution (`apt-get
+install genisoimage xorriso`), and `mkzftree` comes with genisoimage for zisofs. A file
+over 4 GiB needs no disk: make it sparse with `truncate`, pipe `xorriso -as mkisofs -iso-level 3 -o -` into a writer that seeks over
 zero blocks, and the image is sparse too. libarchive's ISO fixtures live in
 `libarchive/test/*iso*.uu` (uuencoded, most also `.Z`-compressed);
 `tests/test_libarchive_corpus.py` reads them only as nested `.Z` streams, not as ISO.

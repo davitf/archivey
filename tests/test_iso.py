@@ -1438,6 +1438,35 @@ def test_a_latin1_rock_ridge_name_decodes_with_encoding() -> None:
         assert DiagnosticCode.ENCODING_ARGUMENT_UNUSED not in ar.diagnostics.counts
 
 
+@pytest.mark.parametrize("encoding", ["utf-32", "idna"])
+def test_an_encoding_that_cannot_decode_the_name_falls_back_to_escapes(
+    encoding: str,
+) -> None:
+    """A text codec that fails on the bytes, or has no ``surrogateescape``, costs
+    neither the listing nor the name: it decodes as with no ``encoding=``."""
+    with open_archive(io.BytesIO(_latin1_name_image()), encoding=encoding) as ar:
+        names = {m.name for m in ar.members()}
+    assert "caf\udce9\udce9.txt" in names
+
+
+def test_the_filter_knows_every_entry_pycdlib_parses() -> None:
+    """``_PYCDLIB_SUSP_TAGS`` mirrors pycdlib's dispatch by hand. pycdlib names one
+    ``RR<TAG>Record`` class per tag it parses, so a release that adds one fails here
+    rather than having archivey drop the new entry before pycdlib sees it."""
+    import re
+
+    from pycdlib import rockridge
+
+    from archivey.internal.backends.iso_reader import _PYCDLIB_SUSP_TAGS
+
+    tags = {
+        name[2:4].encode()
+        for name in dir(rockridge)
+        if re.fullmatch(r"RR[A-Z]{2}Record", name)
+    }
+    assert tags == _PYCDLIB_SUSP_TAGS
+
+
 def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
     def populate(iso: Any) -> None:
         iso.add_fp(io.BytesIO(b"x"), 1, "/CAF.TXT;1", rr_name="café.txt")

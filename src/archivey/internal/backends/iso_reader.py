@@ -892,12 +892,20 @@ class IsoReader(BaseArchiveReader):
         is whatever the writer's locale was. UTF-8 is tried first; bytes that are not
         valid UTF-8 are decoded with ``encoding=`` when the caller gave one, as TAR
         does for its names, and with UTF-8 and ``surrogateescape`` otherwise. Never
-        raises: an unknown codec is refused by ``open_archive`` before any reader runs.
+        raises: a text codec ``open_archive`` accepted can still fail here (``utf-32``
+        on an odd length, or ``idna``, which has no ``surrogateescape``), and then the
+        name decodes as it would with no ``encoding=``.
         """
         try:
             return raw.decode("utf-8")
         except UnicodeDecodeError:
-            return raw.decode(self._encoding or "utf-8", errors="surrogateescape")
+            pass
+        if self._encoding is not None:
+            try:
+                return raw.decode(self._encoding, errors="surrogateescape")
+            except UnicodeError:
+                pass
+        return raw.decode("utf-8", errors="surrogateescape")
 
     def _record_name(self, record: DirectoryRecord) -> tuple[str, bytes]:
         """One directory record's own name in the selected namespace, and its bytes.
@@ -1633,8 +1641,7 @@ class IsoReadBackend(ReadBackend):
     # needs a seekable source.
     # Same requirement the reader raises from, so the hint reported by listing /
     # format_availability and the one in the open() failure cannot diverge.
-    # Rock Ridge and plain ISO 9660 names that are not valid UTF-8 decode with it.
-    USES_ENCODING = True
+    USES_ENCODING = True  # for Rock Ridge and plain names that are not valid UTF-8
     OPTIONAL_DEPENDENCY = _PYCDLIB_REQUIREMENT.name
     INSTALL_HINT = _PYCDLIB_REQUIREMENT.install_hint
 

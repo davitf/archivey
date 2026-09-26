@@ -30,7 +30,6 @@ promise with that line; treat `0.2.0` as the first release of this library.
   targets, whose bytes are not valid UTF-8, the way TAR takes it for a PAX `path`.
   Without it such a name lists with surrogate escapes, as before; `raw_name` is now the
   stored bytes rather than the UTF-8 of the decoded name.
-
 - **`ArchiveyConfig.spool_limits`** (`SpoolLimits`, with a `SpoolLimits.UNLIMITED`
   preset): bounds the temp copy a RAR opened from a stream needs so `unrar` can read it.
   `SpoolLimits.max_bytes` defaults to 1 GiB, counted across a volume set. An archive over
