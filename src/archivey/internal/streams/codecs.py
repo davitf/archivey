@@ -72,6 +72,7 @@ from archivey.internal.streams.decompress import (
     ZlibDecompressorStream,
 )
 from archivey.internal.streams.lzip import LzipDecompressorStream
+from archivey.internal.streams.ppmd_child import PpmdChildError
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
@@ -2088,6 +2089,7 @@ class PpmdCodec(StreamCodec):
         pack_size = params.pack_size
         if pack_size is None:
             pack_size = config.compressed_input_size
+        in_process_max_input = config.decoder_limits.max_ppmd_in_process_input
         if params.ppmd_order is not None:
             if params.ppmd_mem_size is None:
                 raise ValueError("ZIP PPMd requires ppmd_order and ppmd_mem_size")
@@ -2104,6 +2106,7 @@ class PpmdCodec(StreamCodec):
                 restore_method=params.ppmd_restore_method,
                 unpack_size=params.unpack_size,
                 pack_size=pack_size,
+                in_process_max_input=in_process_max_input,
             )
         order, mem_size = _parse_ppmd_var_h_properties(params.properties)
         check_decoder_memory(
@@ -2115,6 +2118,7 @@ class PpmdCodec(StreamCodec):
             mem_size=mem_size,
             unpack_size=params.unpack_size,
             pack_size=pack_size,
+            in_process_max_input=in_process_max_input,
         )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
@@ -2127,6 +2131,10 @@ class PpmdCodec(StreamCodec):
         # A corrupt PPMd8 payload can surface as SystemError from the C extension.
         if isinstance(exc, SystemError):
             return CorruptionError(f"Error reading PPMd stream: {exc!r}")
+        # The child process decoding a large member died: pyppmd crashes only on data
+        # it cannot decode (see ``ppmd_child``).
+        if isinstance(exc, PpmdChildError):
+            return CorruptionError(f"PPMd decoder crashed on this data: {exc}")
         return None
 
 

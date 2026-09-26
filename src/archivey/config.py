@@ -417,10 +417,36 @@ class DecoderLimits:
             :class:`~archivey.exceptions.ResourceLimitError` before the
             derivation that would cross it starts. Code that opens archives it
             did not choose may want ``2**24``, one maximum-cost derivation.
+        max_ppmd_in_process_input: Largest PPMd member, in compressed bytes, decoded
+            inside this process. The default is 16 MiB.
+
+            pyppmd, the PPMd decoder, crashes the whole process when asked to keep
+            decoding after a corrupt stream has ended early, and random bytes (a
+            wrong password, a crafted member) reach that state. A decoder fed in
+            pieces cannot tell it apart from a valid stream waiting for input, so
+            archivey holds a member's compressed input and hands it over whole,
+            after which nothing more is asked of pyppmd. That costs memory: the
+            held input, and about as much again while pyppmd copies it. A member
+            larger than this field is decoded in a child Python process instead,
+            where a crash becomes :class:`~archivey.exceptions.CorruptionError`;
+            it still holds this much before handing over. Where no child process
+            can be started (a frozen application, a spawn the operating system
+            refuses, or a child that cannot import pyppmd), such a member raises
+            :class:`~archivey.exceptions.ResourceLimitError` instead.
+
+            16 MiB keeps the in-process peak near 32 MiB. At pyppmd's 2 to 8 MB/s
+            a member that size takes seconds to decode, so the child's start-up
+            (about 75 ms) is small beside the members it applies to, and so is
+            moving the data: the pipe carries about 450 MB/s, compressed input in
+            and decoded output back. A password check reads at most 1 MiB of a
+            member, so it always runs in-process. ``None`` decodes every member
+            in-process and never starts a child process, at a memory cost that
+            grows with the member.
     """
 
     max_decoder_memory: int | None = 2 * 2**30
     max_key_derivation_rounds: int | None = 2**27
+    max_ppmd_in_process_input: int | None = 16 * 2**20
 
     UNLIMITED: ClassVar[DecoderLimits]
 
@@ -432,11 +458,17 @@ class DecoderLimits:
             cls=cls,
             field_name="max_key_derivation_rounds",
         )
+        _check_limit(
+            self.max_ppmd_in_process_input,
+            cls=cls,
+            field_name="max_ppmd_in_process_input",
+        )
 
 
 DecoderLimits.UNLIMITED = DecoderLimits(
     max_decoder_memory=None,
     max_key_derivation_rounds=None,
+    max_ppmd_in_process_input=None,
 )
 
 

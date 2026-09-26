@@ -530,21 +530,45 @@ older `dev-docs/investigations/pyppmd-upstream-report.md` is folded into a point
 attributed the corruption to the model walk; §J corrects that to the output-buffer UAF).
 The deterministic valgrind gate is `scripts/ppmd_uaf_valgrind.py`.
 
-### Random input also corrupts, sized decode or not (found 2026-09-25)
+### Random input: decode after an early end segfaults (found 2026-09-25, mitigated 2026-09-26)
 
 The "not adversarial input" line above describes how the defect was found, not its
-reach. Feeding random bytes — which is what a wrong 7z AES key hands the PPMd coder, and
-what a hostile archive can hand it directly — through archivey's own bounded `Codec.PPMD`
-path (order 6, 16 MiB, `unpack_size` and `pack_size` set) makes
-`Ppmd7Decoder.decode` return `NULL` without setting an exception: every decode of
-`random.Random(1).randbytes(256 * 1024)` surfaces as `CorruptionError` wrapping
-`SystemError: ... returned NULL without setting an exception`. That is the C extension
-reporting failure with its state already inconsistent. In a run of a few hundred such
-decodes in one process, after other codecs had run, the process died with SIGSEGV
-inside `decode` (faulthandler: `decompress.py` `_decode` → `Ppmd7Decoder.decode`). Found
-while measuring codec rejection for `bounded-password-confirmation`; that change keeps PPMd
-non-rejecting and never feeds it random input in-process in tests. Password confirmation
-decoding a wrong key into PPMd predates the change. Tracked internally.
+reach. Random bytes — what a wrong 7z AES key hands the PPMd coder, and what a hostile
+archive can hand it directly — crash pyppmd by a second route.
+
+**Two separate symptoms.** A PPMd7 stream whose first byte is not 0 fails the range
+decoder's init, and pyppmd returns `NULL` without setting an exception (`SystemError`,
+mapped to `CorruptionError`; it also leaks a buffer export per call). Harmless. The crash
+is the other 1 in 256: with a zero first byte, the model decodes garbage until it
+returns its end result after a few hundred symbols, pyppmd raises `eof` and returns
+short, and the caller feeds it the rest of the member. The next `decode` starts a new
+worker thread on a model that has finished, and within one or two calls the process
+segfaults in `Ppmd7_DecodeSymbol` (gdb: `ThreadDecoder.c:124`). Deterministic: 64 KiB
+feeds of `random.Random(3011).randbytes(256 * 1024)` with a 512 KiB request crash on the
+third call. PPMd8 (ZIP method 98) crashes the same way. **pyppmd 1.2.0 crashes too**, so
+no version pin avoids it.
+
+**Why the caller cannot just stop at "short and `eof`".** pyppmd also raises `eof` when
+the range coder's `Code` is 0, and never clears it. That happens on valid streams: at a
+feed boundary inside a run of zero bytes in the compressed data (a 7z of a file with
+2 MB of zeros raised it on half its 64-byte feed boundaries), and one byte before the
+end of most 7-Zip-written streams. `needs_input` reads the same in both cases. A first
+fix that stopped there broke those valid files.
+
+**Mitigation (`PpmdDecoder`, 2026-09-26).** Handed the whole member in its first
+`decode`, pyppmd has no more input to wait for, so any short return is the end and
+nothing more is asked of it. `PpmdDecoder` holds compressed input until it has the
+whole member, or compressed EOF, or `DecoderLimits.max_ppmd_in_process_input` (default
+16 MiB). Past that, the member decodes in a child process
+(`internal/streams/ppmd_child.py`, running `ppmd_worker.py`), where the old chunked
+logic runs and a crash becomes `CorruptionError`. A password check reads at most 1 MiB,
+so it stays in-process. Where no child can be started (a frozen app, a spawn the OS
+refuses, or a child that cannot import pyppmd), a member past the limit raises
+`ResourceLimitError`; `None` holds any member in-process. Measured:
+0 crashes in 1200 hostile members across both paths (was 10 of 10 runs); 111 valid
+7-Zip-written members byte-exact on both paths. Regression tests:
+`tests/test_ppmd_crash_isolation.py`. A draft report for pyppmd (a flag for "the model
+ended", and an exception on init failure) is held back; tracked internally.
 
 ### Windows: `STATUS_HEAP_CORRUPTION` on fresh PPMd children
 

@@ -335,9 +335,9 @@ def test_rejecting_codecs_reject_random_input(codec: Codec) -> None:
 def test_brotli_does_not_reject_random_input() -> None:
     """Measured: about one random input in twenty decodes a full prefix. Non-rejecting.
 
-    PPMd is non-rejecting too (2 of 200 in the design's measurement), but it is not
-    fed random input in-process here: pyppmd 1.3.x corrupts its heap on some of it
-    (``dev-docs/known-issues.md``, the PPMd teardown entry).
+    PPMd is non-rejecting too (2 of 200 in the design's measurement). Its random-input
+    runs live in ``tests/test_ppmd_crash_isolation.py``, inside a child interpreter:
+    unguarded pyppmd 1.3.x segfaults on some of it (``dev-docs/known-issues.md``).
     """
     if not is_codec_available(Codec.BROTLI):
         pytest.skip("brotli backend not installed")

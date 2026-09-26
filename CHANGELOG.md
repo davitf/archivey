@@ -80,6 +80,17 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A corrupt or hostile PPMd member no longer crashes the Python process.** pyppmd
+  segfaults when asked to keep decoding after a corrupt stream has ended early, and
+  random bytes (a wrong password, or a crafted 7z or ZIP member) reach that state.
+  archivey now hands pyppmd a member of up to 16 MiB of compressed data in one piece,
+  so it never makes that call, and decodes larger members in a child process, where a
+  crash becomes `CorruptionError`. Output still streams. The new
+  `DecoderLimits.max_ppmd_in_process_input` sets the size; where no child process can
+  be started (a frozen app, a spawn the OS refuses, or a child that cannot import
+  pyppmd), a larger member raises `ResourceLimitError`, and `None` (as in
+  `DecoderLimits.UNLIMITED`) decodes every member in-process.
+
 - **ISO: bootable images read and extract.** An El Torito boot catalog listed as a file
   but raised `CorruptionError` when read, so `extract_all()` stopped on every bootable
   image. Its bytes are now read from the image.
