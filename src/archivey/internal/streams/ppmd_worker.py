@@ -1,4 +1,4 @@
-"""Child-process side of :class:`~archivey.internal.streams.decompress.PpmdChildDecoder`.
+"""Child-process side of :class:`~archivey.internal.streams.ppmd_child.PpmdChildDecoder`.
 
 pyppmd can take the whole process down on corrupt input (it decodes past the end of
 a stream that has already ended; see ``dev-docs/known-issues.md``). Large PPMd members
@@ -26,14 +26,15 @@ from __future__ import annotations
 
 import struct
 import sys
+from typing import IO
 
 _OPEN = struct.Struct("<BBIB")
 _REQUEST = struct.Struct("<iI")
 _REPLY = struct.Struct("<BBBI")
 
 
-def _read_exact(stream, size: int) -> bytes | None:  # type: ignore[no-untyped-def]
-    parts = []
+def _read_exact(stream: IO[bytes], size: int) -> bytes | None:
+    parts: list[bytes] = []
     while size:
         chunk = stream.read(size)
         if not chunk:
@@ -43,7 +44,7 @@ def _read_exact(stream, size: int) -> bytes | None:  # type: ignore[no-untyped-d
     return b"".join(parts)
 
 
-def _reply(out, status: int, decoder, payload: bytes) -> None:  # type: ignore[no-untyped-def]
+def _reply(out: IO[bytes], status: int, decoder: object, payload: bytes) -> None:
     eof = bool(getattr(decoder, "eof", False))
     needs_input = bool(getattr(decoder, "needs_input", True))
     out.write(_REPLY.pack(status, eof, needs_input, len(payload)))
