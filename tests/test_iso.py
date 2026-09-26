@@ -1192,13 +1192,18 @@ def _zisofs(data: bytes, *, log2_block_size: int = 15) -> bytes:
 
 
 def _zf_entry(
-    size: int, *, version: int = 1, algorithm: bytes = b"pz", log2_block_size: int = 15
+    size: int,
+    *,
+    version: int = 1,
+    algorithm: bytes = b"pz",
+    header_size: int = 16,
+    log2_block_size: int = 15,
 ) -> bytes:
     return (
         b"ZF\x10"
         + bytes([version])
         + algorithm
-        + bytes([4, log2_block_size])
+        + bytes([header_size // 4, log2_block_size])
         + struct.pack("<I", size)
         + struct.pack(">I", size)
     )
@@ -1263,8 +1268,13 @@ def test_a_zisofs_member_seeks_across_blocks() -> None:
 
 @pytest.mark.parametrize(
     "zf",
-    [{"version": 2}, {"algorithm": b"xz"}, {"log2_block_size": 20}],
-    ids=["zisofs2", "algorithm", "block-size"],
+    [
+        {"version": 2},
+        {"algorithm": b"xz"},
+        {"header_size": 20},
+        {"log2_block_size": 20},
+    ],
+    ids=["zisofs2", "algorithm", "header-size", "block-size"],
 )
 def test_a_zisofs_member_this_reader_cannot_decode_is_refused_alone(
     zf: dict[str, Any],

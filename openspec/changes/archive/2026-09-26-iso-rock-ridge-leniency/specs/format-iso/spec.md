@@ -48,9 +48,9 @@ it SHALL return the decoded bytes, seekable by block, inflating one block at a t
 never past the block size. A block that inflates past its size, a damaged block, or a
 header that disagrees with the `ZF` entry SHALL raise `CorruptionError`; data cut by the
 end of the image SHALL raise `TruncatedError`. A `ZF` entry of version 2 (zisofs2), an
-algorithm other than `pz`, or a block size outside 32 to 128 KiB SHALL list with
-`CompressionAlgorithm.UNKNOWN` and raise `UnsupportedFeatureError` when read, without
-affecting other members.
+algorithm other than `pz`, a header size other than 16 bytes, or a block size outside 32
+to 128 KiB SHALL list with `CompressionAlgorithm.UNKNOWN` and raise
+`UnsupportedFeatureError` when read, without affecting other members.
 
 #### Scenario: zisofs
 

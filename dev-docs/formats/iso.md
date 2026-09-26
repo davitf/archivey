@@ -179,13 +179,14 @@ What is ISO-specific in turning a record into a member:
   stream, with two equal pointers standing for a block of zeros. It lists `size` from
   the `ZF` entry, `compressed_size` from its extents, and one `DEFLATE` entry in
   `compression`. `_ZisofsStream` reads it decoded and seeks by block, inflating one block
-  at a time and never past the block size, so a crafted block cannot inflate further.
-  The header must agree with the `ZF` entry. zisofs2 (`ZF` version 2, `xorriso -zisofs
-  version_2=on`), another algorithm, or a block size outside 32 to 128 KiB lists with
-  `UNKNOWN` in `compression` and refuses to read with `UnsupportedFeatureError`; the
-  member beside it reads. A block that inflates past the block size is
-  `CorruptionError`, and a file cut by the end of the image raises `TruncatedError`
-  where its stored data runs out, so the declared-length check other files get is off.
+  at a time and never past the block size, so a crafted block cannot inflate further. The
+  header must agree with the `ZF` entry. zisofs2 (`ZF` version 2, `xorriso -zisofs
+  version_2=on`), another algorithm, a header size other than 16 bytes, or a block size
+  outside 32 to 128 KiB lists with `UNKNOWN` in `compression` and refuses to read with
+  `UnsupportedFeatureError`; the member beside it reads. A block that inflates past the
+  block size is `CorruptionError`, and a file cut by the end of the image raises
+  `TruncatedError` where its stored data runs out, so the declared-length check other
+  files get is off.
 - **Times.** `modified` is the Rock Ridge `TF` modification time when there is one, else
   the record's 7-byte date; `TF` also supplies `accessed`. `TF` long-form dates (17 bytes,
   hundredths of a second) are read; MagicISO's out-of-range hundredths become 0. A date
