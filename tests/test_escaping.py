@@ -17,7 +17,6 @@ import pytest
 from archivey.diagnostics import (
     Diagnostic,
     DiagnosticCode,
-    DiagnosticSeverity,
     MemberNameControlsContext,
 )
 from archivey.exceptions import ArchiveyError, ExtractionError, raw_message_of
@@ -139,7 +138,6 @@ def test_diagnostic_message_is_escaped_and_context_is_raw() -> None:
     d = Diagnostic(
         occurrence_id="1",
         code=DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
-        severity=DiagnosticSeverity.WARNING,
         message=f"Member name has controls: {quoted(name)}",
         context=MemberNameControlsContext(member_name=name),
     )

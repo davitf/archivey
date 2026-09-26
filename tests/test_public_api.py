@@ -93,7 +93,6 @@ def test_public_symbols_are_in_all() -> None:
         "SymlinkTargetContext",
         "UnconfirmedFormatContext",
         "UnusedArgumentContext",
-        "WriteError",
     }
 
     public = {

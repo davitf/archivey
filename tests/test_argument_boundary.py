@@ -57,7 +57,7 @@ from archivey import (
     open_archive,
     open_stream,
 )
-from archivey.detection_cost import DetectionBudgetPreset, default_detection_budget
+from archivey.detection_cost import BALANCED_BUDGET, DetectionBudgetPreset
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 
 # TypeError is permitted only for the arguments named here; see the module docstring.
@@ -581,7 +581,6 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     # An internal type, accepted so a caller can thread one detection's diagnostics
     # into the reader that follows. A wrong one fails on its own methods, inside code
     # the caller reached for deliberately.
-    ("detect_format", "collector"): "internal type, deliberate hand-off",
     # ``get`` is mapping-shaped on purpose: like ``dict.get`` it answers with the
     # default rather than raising, so ``reader.get(0)`` returning ``None`` is the
     # contract, not an escape. ``reader.open("absent.txt")`` is where a lookup raises.
@@ -696,7 +695,7 @@ def test_valid_arguments_still_work(archive: Path, tmp_path: Path) -> None:
     dest.mkdir()
 
     assert detect_format(archive).format.container.name == "ZIP"
-    for budget in (DetectionBudgetPreset.BALANCED, default_detection_budget()):
+    for budget in (DetectionBudgetPreset.BALANCED, BALANCED_BUDGET):
         config = ArchiveyConfig(detection_budget=budget)
         assert detect_format(archive, config=config).format.container.name == "ZIP"
     assert extract(archive, dest / "a", config=ArchiveyConfig()).results

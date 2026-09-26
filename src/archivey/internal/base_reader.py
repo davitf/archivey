@@ -543,11 +543,6 @@ class BaseArchiveReader(ArchiveReader):
         """
         return _TranslatedErrorBoundary(self, member_name, stamp_encryption)
 
-    @property
-    def member_streams(self) -> MemberStreams:
-        """Declared member-stream capabilities for this reader."""
-        return self._member_streams
-
     def _seek_declared(self) -> bool:
         return self._state.seekable
 

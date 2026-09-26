@@ -35,7 +35,6 @@ ArchiveyError(Exception)
 │   ├── TruncatedError
 │   ├── EncryptionError
 │   └── LinkTargetNotFoundError
-├── WriteError
 ├── ExtractionError
 │   └── FilterRejectionError
 │       ├── PathTraversalError

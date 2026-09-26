@@ -5,7 +5,7 @@ for the lifecycle, retention, and policy contracts.
 
 Layout of this module:
 
-1. **Codes / severity / disposition** — stable enums callers match on.
+1. **Codes / disposition** — stable enums callers match on.
 2. **Context payloads** — one frozen dataclass per ``kind``; fields are JSON-safe
    scalars so :meth:`Diagnostic.to_dict` needs no per-class serializers.
 3. **Records** — :class:`Diagnostic`, :class:`DiagnosticSummary`, policy, reports.
@@ -80,16 +80,6 @@ class DiagnosticCode(str, Enum):
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
-
-
-class DiagnosticSeverity(str, Enum):
-    """Severity axis on a diagnostic record.
-
-    Only ``WARNING`` is used initially; the axis remains so a later informational
-    taxonomy does not require changing the value shape.
-    """
-
-    WARNING = "warning"
 
 
 class DiagnosticDisposition(str, Enum):
@@ -558,14 +548,13 @@ class Diagnostic:
     Escaping runs in ``__post_init__``: on a frozen dataclass that is the hook that
     covers every construction path. (A hand-written ``__init__`` would survive the
     decorator — it does not overwrite one defined in the class body — but with no
-    dataclass base to delegate to it would mean spelling out all five fields and keeping
+    dataclass base to delegate to it would mean spelling out all four fields and keeping
     them in step with the declarations above.) Nothing reconstructs a ``Diagnostic``
     with :func:`dataclasses.replace`, which would escape a second time.
     """
 
     occurrence_id: str
     code: DiagnosticCode
-    severity: DiagnosticSeverity
     message: str
     context: DiagnosticContext
 
@@ -577,7 +566,6 @@ class Diagnostic:
         return {
             "occurrence_id": self.occurrence_id,
             "code": self.code.value,
-            "severity": self.severity.value,
             "message": self.message,
             "context": self.context.to_dict(),
         }
@@ -664,7 +652,11 @@ class ExtractionReport:
 
     The report iterates, indexes, and sizes as its ``results`` sequence, so the common
     ``for result in extract(...)`` / ``len(...)`` / ``report[0]`` idioms keep working while
-    ``report.diagnostics`` exposes the operation's diagnostic summary.
+    ``report.diagnostics`` exposes the operation's diagnostic summary. Its scope depends
+    on who opened the reader: from :meth:`ArchiveReader.extract_all` it covers that call
+    only (open-phase diagnostics stay on ``reader.diagnostics``); from the one-shot
+    :func:`archivey.extract` it covers detection, open and extraction together, because
+    the caller has no reader to ask.
     """
 
     results: tuple[ExtractionResult, ...]
@@ -732,7 +724,6 @@ __all__ = [
     "DiagnosticContext",
     "DiagnosticDisposition",
     "DiagnosticPolicy",
-    "DiagnosticSeverity",
     "DiagnosticSummary",
     "DigestContext",
     "EmptyArchiveContext",

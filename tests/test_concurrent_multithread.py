@@ -17,8 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from archivey import MemberStreams, open_archive
+from archivey import open_archive
 from archivey.exceptions import ArchiveyUsageError
+from archivey.types import MemberStreams
 
 pytestmark = pytest.mark.concurrent_reader
 

@@ -61,7 +61,6 @@ from archivey.diagnostics import (
     DiagnosticContext,
     DiagnosticDisposition,
     DiagnosticPolicy,
-    DiagnosticSeverity,
     DiagnosticSummary,
     DigestContext,  # noqa: F401
     EmptyArchiveContext,  # noqa: F401
@@ -110,7 +109,6 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     UnsupportedFormatError,
     UnsupportedOperationError,
-    WriteError,  # noqa: F401 — write API not shipped yet; kept importable
 )
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.measurement import IoStats, enable_measurement
@@ -134,7 +132,6 @@ from archivey.types import (
     HashAlgorithm,
     MemberExtra,
     MemberFilter,
-    MemberStreams,
     MemberType,
     MissingComponent,
     OnError,
@@ -188,7 +185,6 @@ __all__ = [
     "ArchiveInfoExtra",
     "MemberExtra",
     "MemberType",
-    "MemberStreams",
     "CompressionAlgorithm",
     "CompressionMethod",
     "CreateSystem",
@@ -203,7 +199,6 @@ __all__ = [
     "Diagnostic",
     "DiagnosticCode",
     "DiagnosticContext",
-    "DiagnosticSeverity",
     "DiagnosticDisposition",
     "DiagnosticPolicy",
     "DiagnosticSummary",

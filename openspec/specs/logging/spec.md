@@ -63,7 +63,7 @@ callback/escalation steps for that occurrence do not run.
 
 | Case | Expected |
 | --- | --- |
-| Warning-severity diagnostic resolves to default `COLLECT` | Counts/retention update, then one WARNING with `diagnostic_code` and `diagnostic_occurrence_id` |
-| Warning-severity diagnostic resolves to `IGNORE` | Exact count increments; no log record |
+| Diagnostic resolves to default `COLLECT` | Counts/retention update, then one WARNING with `diagnostic_code` and `diagnostic_occurrence_id` |
+| Diagnostic resolves to `IGNORE` | Exact count increments; no log record |
 | Application logging handler runs | No Archivey collector/reader/stream/backend/registry lock is held |
 | Logging handler raises | Handler exception propagates; callback/escalation for the occurrence do not run |

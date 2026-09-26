@@ -19,9 +19,9 @@ from archivey.detection_cost import (
     DetectionBudget,
     DetectionCapability,
     DetectionCostReceipt,
-    MutableDetectionCostReceipt,
     TierSkipReason,
 )
+from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
     is_seekable,

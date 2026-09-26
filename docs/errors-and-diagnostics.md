@@ -22,12 +22,18 @@ React to specific cases with the subtypes:
 
 | Exception | Raised when |
 | --- | --- |
-| [`OpenError`][archivey.OpenError] | the source can't be opened — `FormatDetectionError` (unknown format), `UnsupportedFormatError`, `StreamNotSeekableError` (a pipe, where the format or the access mode needs seek) |
+| [`OpenError`][archivey.OpenError] | the source can't be opened — `FormatDetectionError` (unknown format), `UnsupportedFormatError` (the format is known and no backend can open it, usually a missing package), `StreamNotSeekableError` (a pipe, where the format or the access mode needs seek) |
+| [`ReadError`][archivey.ReadError] | the archive opened but a member could not be read; the parent of the next three rows, and the thing to catch when you do not care which |
 | [`EncryptionError`][archivey.EncryptionError] | a password is required, missing, or wrong; for a ZipCrypto member, also when its data fails its integrity check after the password passed the format's one-byte check, which a damaged member can cause too (see [Gotchas](gotchas.md)) |
 | [`CorruptionError`][archivey.CorruptionError] / [`TruncatedError`][archivey.TruncatedError] | the archive is malformed or cut short |
+| [`LinkTargetNotFoundError`][archivey.LinkTargetNotFoundError] | a symlink or hardlink member points at a target the archive does not contain |
 | [`PackageNotInstalledError`][archivey.PackageNotInstalledError] | an optional package or tool is absent, or RARLAB `unrar`/`rar` is older than 6.0 (see [Install](install.md#getting-rarlab-unrar-or-rar)) |
-| [`FilterRejectionError`][archivey.FilterRejectionError] | extraction blocked an unsafe member — `PathTraversalError`, `SymlinkEscapeError`, `SpecialFileError` |
+| [`ExtractionError`][archivey.ExtractionError] | writing a member to disk failed; the parent of the next two rows |
+| [`FilterRejectionError`][archivey.FilterRejectionError] | extraction blocked an unsafe member — `PathTraversalError`, `SymlinkEscapeError`, `SpecialFileError`, `UnportableNameError` (a name the destination OS cannot store safely, such as a Windows-reserved name), `DeceptiveNameError` (a name built to display as something it is not, such as a bidi override) |
 | [`NameCollisionError`][archivey.NameCollisionError] / [`NameRewrittenError`][archivey.NameRewrittenError] | raised only when you opted in with `abort_on` (see [Safe extraction](extracting.md)); without it, a collision or a portable-name rewrite is recorded in the result, not raised |
+| [`UnsupportedFeatureError`][archivey.UnsupportedFeatureError] | the format is handled but this archive uses a variant or codec the backend cannot decode (BCJ2, or PPMd without its package); unlike `UnsupportedFormatError` the archive opened, and unlike `UnsupportedOperationError` the problem is the archive, not the call |
+| [`UnsupportedOperationError`][archivey.UnsupportedOperationError] | the call is not valid for this archive, backend or access mode — `members()` on a streaming reader, `seek()` where the format cannot |
+| [`DiagnosticRaisedError`][archivey.DiagnosticRaisedError] | a diagnostic whose disposition you set to `RAISE` fired; carries the `Diagnostic` (see [Diagnostics](#diagnostics)) |
 | [`ResourceLimitError`][archivey.ResourceLimitError] | a listing, extraction, or decoder safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and compressed RAR 1.5/2.x comment bytes at open), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, or the total password-hashing rounds an encrypted archive asks for, checked before each key is derived |
 
 Mistakes in **your** code are deliberately kept out of that hierarchy: opening a second
@@ -90,10 +96,81 @@ what the library said. It never converts *every* exception, and that shapes your
 
 ## Diagnostics
 
-Structured advisories are queryable on the reader and on the extraction report — not
-only in logs. Prefer `reader.diagnostics` and the returned `ExtractionReport` over
-hoping something appeared in a log handler. See the `diagnostics` capability and the
-[API reference](api.md).
+### How diagnostics work
+
+Archivey has two ways of telling you something went wrong. An **exception** means the
+operation could not give you a correct answer, so it stopped. A **diagnostic** means the
+operation finished and its answer is correct, but something on the way is worth knowing:
+a name was rewritten to display safely, a password you offered was never needed, a
+timestamp in the archive was invalid and is `None`, an archive listed no members. Nothing
+you would want a batch job to stop for is a diagnostic by default, and nothing that makes
+the result wrong is only a diagnostic.
+
+Each diagnostic is a frozen [`Diagnostic`][archivey.Diagnostic] record with a stable
+`code` (a [`DiagnosticCode`][archivey.DiagnosticCode], the thing to match on), a human
+`message` (not stable; do not parse it), and a typed `context` with the structured facts,
+such as `member_name` or `archive_name`. `to_dict()` on either gives JSON.
+
+**Where a diagnostic lands.** Every diagnostic is recorded once, at the moment it
+happens, in one collector that belongs to the reader. You read that record through
+whichever view fits what you were doing:
+
+| You call | Where the diagnostics are | What it covers |
+| --- | --- | --- |
+| `open_archive(...)` and anything on the reader | `reader.diagnostics` | Everything since detection started, cumulative, including any of the rows below |
+| `reader.open(member)` / `reader.read(member)` | `stream.diagnostics` on the returned stream | That one member read |
+| `reader.members()` / `reader.stream_members()` | `member.diagnostics` on each `ArchiveMember` | The diagnostics about that member (a rewritten name, an invalid timestamp) |
+| `reader.members_report()` | `report.diagnostics` | The listing |
+| `reader.extract_all(...)` | `report.diagnostics` | **That extraction call only.** Diagnostics from opening the archive are on `reader.diagnostics`, not here, and a second call gets a fresh window |
+| `archivey.extract(...)` (one-shot) | `report.diagnostics` | Detection, open and extraction together, because the call opened the reader for you and there is no reader to ask |
+| `detect_format(...)` | `FormatInfo.diagnostics` | Detection alone |
+
+Each view is a [`DiagnosticSummary`][archivey.DiagnosticSummary], a snapshot taken when
+you read the property: `total_count` and `counts` (per code) are exact; `retained` holds
+the full records, in order, up to a budget
+(`ArchiveyConfig.max_retained_diagnostic_references`, 256 by default); `dropped_count`
+says how many records the budget did not keep. The counts are always right even when the
+records are not all there.
+
+Two more things happen when a diagnostic is recorded, and both are on by default: it is
+**logged** at `WARNING` under the `archivey` logger hierarchy, which is why a script with
+`logging.basicConfig()` prints a line and why the `archivey` command prints `WARNING:`
+lines; and if you set `ArchiveyConfig(on_diagnostic=...)` your **callback** is called
+with the record as it happens. Neither is the source of truth. The summary is.
+
+**What to do about one.** For most programs: nothing. Read the result, and if you care
+about a specific condition, check `reader.diagnostics.counts` for its code after the
+operation. For a program that must not proceed on an anomalous archive, set a policy:
+
+```python
+from archivey import ArchiveyConfig, DiagnosticPolicy
+
+config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+```
+
+A [`DiagnosticPolicy`][archivey.DiagnosticPolicy] gives every code one of three
+dispositions. `COLLECT` (the default for every code) records, logs and calls back.
+`RAISE` does all of that and then raises
+[`DiagnosticRaisedError`][archivey.DiagnosticRaisedError] (an `ArchiveyError`, carrying
+the `Diagnostic`) from the call that hit it. `IGNORE` counts the event and does nothing
+else: no record, no log line, no callback. Whether a condition stops you or is only noted
+is decided by the disposition; every diagnostic is a warning, there is no severity
+axis. To adjust one code, pass `overrides={DiagnosticCode.X: DiagnosticDisposition.RAISE}`;
+to silence one code's log line, set it to `IGNORE`. The [named presets](#named-policy-presets)
+below cover the common cases.
+
+Two things are deliberately **not** diagnostics. What extraction did to each member
+(blocked, renamed, collided, failed) is on `ExtractionReport.results`, one row per
+member, and never also a diagnostic; `abort_on=` is the way to be stopped by one of
+those. And a password offered to an unencrypted ZIP, 7z or RAR records nothing, because
+those formats can use one; only a format with no encryption at all (TAR, ISO, a
+directory, a single compressed file) records `PASSWORD_ARGUMENT_UNUSED`.
+
+The full list of codes, one line each, is on [`DiagnosticCode`][archivey.DiagnosticCode]
+in the API reference; the ones that need more than a line are in the next table. The
+context classes (`NameNormalizationContext` and the others) live in
+`archivey.diagnostics`; you receive them on `Diagnostic.context` and can match on
+`context.kind` or `isinstance`, but never need to construct one.
 
 ### Things that are said with a diagnostic rather than an exception
 

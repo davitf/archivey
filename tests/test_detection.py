@@ -1263,11 +1263,11 @@ def test_content_probes_share_one_decode_allowance() -> None:
     from archivey.config import DEFAULT_ARCHIVEY_CONFIG
     from archivey.detection_cost import (
         BALANCED_BUDGET,
-        MutableDetectionCostReceipt,
         TierSkip,
         TierSkipReason,
     )
     from archivey.internal.detection import _detect_format_body
+    from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
     from archivey.internal.diagnostics_collector import collector_from_config
     from archivey.internal.registry import get_registry
 

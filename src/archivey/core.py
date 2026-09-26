@@ -50,6 +50,7 @@ from archivey.internal.backends.zip_detect import (
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.detection import (
     detect_format,
+    detect_format_into,
     directory_format_info,
     probe_config,
 )
@@ -357,7 +358,7 @@ def open_archive(
 
     # The public surface is two booleans; everything below the entry point keeps
     # working in MemberStreams flags. A concrete reader exposes the value it was
-    # opened with as `reader.member_streams`; CostReceipt does not carry it.
+    # opened with only internally; CostReceipt does not carry it.
     member_streams = MemberStreams(0)
     if seekable_members:
         member_streams |= MemberStreams.SEEKABLE
@@ -470,7 +471,7 @@ def _open_resolved(
         # the volume beside it; doing that here would report 7z/ZIP while still
         # handing the stub bytes to the backend.
         try:
-            detected = detect_format(
+            detected = detect_format_into(
                 archive_source,
                 config=config,
                 collector=collector,
@@ -486,7 +487,9 @@ def _open_resolved(
             resolved = followed
             archive_source = slot.replace(resolved.source)
             archive_name = resolved.archive_name
-            detected = detect_format(archive_source, config=config, collector=collector)
+            detected = detect_format_into(
+                archive_source, config=config, collector=collector
+            )
         resolved_format = detected.format
         format_info = detected
     elif archive_source.path is not None and is_sfx_stub_name(archive_source.path.name):
@@ -794,7 +797,7 @@ def _resolve_stream_format(
     # which is the silent fall-through this function's boundary check exists to close.
     assert format is None, f"unvalidated format argument reached detection: {format!r}"
 
-    detected = detect_format(open_source, config=config, collector=collector)
+    detected = detect_format_into(open_source, config=config, collector=collector)
     if detected.format.container is not ContainerFormat.RAW_STREAM:
         raise UnsupportedFormatError(
             f"Detected {detected.format!r}, which is not a single-file compressed "
