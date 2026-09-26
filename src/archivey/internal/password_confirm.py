@@ -275,8 +275,11 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
     reports. A seek that raised has not: the caller can catch it and keep reading, so
     the report stays armed.
 
-    The member's verifier forfeits the checksum on a seek off the read frontier (ADR
-    0014), so any position-changing seek means the digest can no longer be reached.
+    A member's verifier forfeits its checksum on a seek off the read frontier (ADR
+    0014), so by default any position-changing seek means the digest can no longer be
+    reached. Pass ``seek_forfeits=False`` for a digest that survives seeks (the
+    WinZip AES HMAC, which the decrypt stage completes over the ciphertext at the
+    end): only a read that reaches ``size`` counts there, wherever it started.
     """
 
     readinto_passthrough = False
@@ -287,6 +290,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         *,
         size: int,
         on_unverified: Callable[[str], None],
+        seek_forfeits: bool = True,
     ) -> None:
         # Set before the base constructor, which ``close()`` must survive: IOBase's
         # finalizer calls ``close()`` on an instance whose ``__init__`` raised.
@@ -296,6 +300,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         self._delivered = False
         self._reached = size <= 0
         self._forfeited = False
+        self._seek_forfeits = seek_forfeits
         super().__init__(inner)
 
     def _note_position(self) -> None:
@@ -335,7 +340,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             self._note_failed_seek()
             raise
         if position != self._watch_pos:
-            self._forfeited = True
+            self._forfeited = self._seek_forfeits
         self._watch_pos = position
         return position
 
@@ -345,7 +350,8 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         A refused seek (a negative position) moves nothing, and the digest is intact.
         A seek can also raise after it moved (``ArchiveStream._note_raised_seek``), and
         then it counts as a seek. When the position cannot be read, the stream may
-        have moved, so the digest counts as forfeited.
+        have moved and no later read can be placed, so the digest counts as forfeited
+        even where seeks do not forfeit it.
         """
         try:
             position = self.tell()
@@ -354,7 +360,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             return
         if position == self._watch_pos:
             return
-        self._forfeited = True
+        self._forfeited = self._seek_forfeits
         self._watch_pos = position
 
     def close(self) -> None:

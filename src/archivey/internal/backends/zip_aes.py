@@ -104,15 +104,16 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
 
     ``source`` must be positioned at the start of the ciphertext (after salt +
     pw_verify) and bounded to ``cipher_len + 10`` (ciphertext + MAC). The HMAC is
-    checked when a completing read pulls the trailing MAC. ``close`` is teardown
-    only — it does not drain or authenticate (ADR 0014).
+    checked by the read that returns the last plaintext byte, before it returns. ``close`` is teardown only — it does not drain or authenticate (ADR
+    0014).
 
     Positions are plaintext offsets, equal to ciphertext offsets: CTR adds no bytes.
     Seeking needs a seekable ``source``. CTR decrypts from any offset (the counter
-    for byte ``p`` is ``1 + p // 16``), but the HMAC covers the whole ciphertext in
-    order, so a seek that moves the position forfeits it, as a seek forfeits a CRC
-    (ADR 0014): the stream then never raises the HMAC mismatch, and does not read
-    the MAC. A seek to the current position changes nothing. Seek positions follow
+    for byte ``p`` is ``1 + p // 16``). The HMAC covers the ciphertext, not the
+    plaintext, so a seek does not give it up: the HMAC takes in ciphertext only while
+    reads continue its hashed prefix, and the read that reaches the end re-reads the
+    rest of the ciphertext from ``source`` to complete it. That costs one sequential
+    read of the unhashed ciphertext and no decryption. Seek positions follow
     :class:`~archivey.internal.streams.streamtools.SlicingStream` (and ``BytesIO``):
     only a negative ``SEEK_SET`` raises, a relative seek below 0 clamps to 0, and a
     seek past the end returns the requested position, where reads return ``b""``.
@@ -141,8 +142,9 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
             )
         self._enc_key = enc_key
         self._ctr = self._ctr_stage_at(0)
-        # None once a seek has forfeited the HMAC.
-        self._hmac: hmac.HMAC | None = hmac.new(auth_key, digestmod=hashlib.sha1)
+        self._hmac = hmac.new(auth_key, digestmod=hashlib.sha1)
+        self._hashed = 0  # length of the ciphertext prefix the HMAC has taken in
+        self._authenticated = False
         self._cipher_len = cipher_len
         self._cipher_remaining = cipher_len
         self._origin = source.tell() if source.seekable() else 0
@@ -164,37 +166,57 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         return stage
 
     def _pull(self) -> None:
+        """Decrypt the next chunk; at the ciphertext end, authenticate instead."""
         if self._cipher_remaining > 0:
+            at = self._cipher_len - self._cipher_remaining
             chunk = self._source.read(min(65536, self._cipher_remaining))
             if not chunk:
                 raise TruncatedError("Truncated WinZip AES ciphertext before HMAC")
             self._cipher_remaining -= len(chunk)
-            if self._hmac is not None:
-                self._hmac.update(chunk)
+            if at <= self._hashed < at + len(chunk):
+                # Extend the hashed prefix by whatever of this chunk continues it.
+                self._hmac.update(chunk[self._hashed - at :])
+                self._hashed = at + len(chunk)
             self._buf.extend(self._ctr.process(chunk))
             return
-        if self._mac_needed > 0 and self._hmac is not None:
-            mac = read_exact(self._source, self._mac_needed)
-            if len(mac) != self._mac_needed:
-                raise TruncatedError("Truncated WinZip AES HMAC")
-            self._mac += mac
-            self._mac_needed = 0
-            expected = self._hmac.digest()[:_HMAC_LEN]
-            if not hmac.compare_digest(self._mac, expected):
-                raise CorruptionError(
-                    "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
-                )
+        self._authenticate()
+
+    def _authenticate(self) -> None:
+        """Complete the HMAC over the whole ciphertext and compare it with the MAC.
+
+        Runs once, from a read at the ciphertext end. The source is then at the MAC.
+        When seeks left part of the ciphertext unhashed, that part is read from the
+        source again first; the source ends at the MAC either way.
+        """
+        if self._authenticated:
+            return
+        if self._hashed < self._cipher_len:
+            self._source.seek(self._origin + self._hashed)
+            while self._hashed < self._cipher_len:
+                chunk = self._source.read(min(65536, self._cipher_len - self._hashed))
+                if not chunk:
+                    raise TruncatedError("Truncated WinZip AES ciphertext before HMAC")
+                self._hmac.update(chunk)
+                self._hashed += len(chunk)
+        mac = read_exact(self._source, self._mac_needed)
+        if len(mac) != self._mac_needed:
+            raise TruncatedError("Truncated WinZip AES HMAC")
+        self._mac += mac
+        self._mac_needed = 0
+        self._authenticated = True
+        expected = self._hmac.digest()[:_HMAC_LEN]
+        if not hmac.compare_digest(self._mac, expected):
+            raise CorruptionError(
+                "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
+            )
 
     def read(self, size: int = -1) -> bytes:
-        # Past the end nothing is left to read. The loop below would also return b""
-        # there (the seek cleared the buffer and the HMAC); this keeps a past-end read
-        # from ever reaching the MAC bytes if those conditions change.
+        # Past the end nothing is left to read, and a position the caller seeked
+        # past the end is not a read that reached it: no verdict there.
         if size == 0 or self._overshoot:
             return b""
         while size < 0 or len(self._buf) < size:
-            if self._cipher_remaining <= 0 and (
-                self._mac_needed <= 0 or self._hmac is None
-            ):
+            if self._cipher_remaining <= 0 and self._authenticated:
                 break
             before = len(self._buf)
             self._pull()
@@ -203,9 +225,14 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         if size < 0:
             out = bytes(self._buf)
             self._buf.clear()
-            return out
-        out = bytes(self._buf[:size])
-        del self._buf[:size]
+        else:
+            out = bytes(self._buf[:size])
+            del self._buf[:size]
+        if out and not self._buf and self._cipher_remaining <= 0:
+            # This read hands out the last plaintext byte: authenticate before it
+            # returns, so a consumer that knows the size and never reads past it
+            # still gets the verdict (and a mismatch withholds the last chunk).
+            self._authenticate()
         return out
 
     def seekable(self) -> bool:
@@ -232,7 +259,6 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
             return pos
         reach = min(target, self._cipher_len)
         self._source.seek(self._origin + reach)
-        self._hmac = None
         self._buf.clear()
         self._cipher_remaining = self._cipher_len - reach
         self._ctr = self._ctr_stage_at(reach)

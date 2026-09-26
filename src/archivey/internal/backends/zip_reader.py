@@ -1276,7 +1276,6 @@ class ZipReader(BaseArchiveReader):
         codec: Codec,
         member_name: str,
         sequential_body: bool = False,
-        authenticated_body: bool = False,
     ) -> ArchiveStream:
         """Decode a member body through the shared codec layer.
 
@@ -1287,20 +1286,10 @@ class ZipReader(BaseArchiveReader):
         ``sequential_body`` marks a body that seeks only by re-reading from its start
         (the ZipCrypto stage). ``AUTO`` accelerators then stay off: they read their
         input at scattered offsets, and every step back would decrypt the member again.
-
-        ``authenticated_body`` marks a body whose own check a seek gives up (the WinZip
-        AES stage and its HMAC). Accelerators stay off there even under ``ON``: their
-        out-of-order reads would void the HMAC for a caller who reads straight through.
         """
         size = member.size if member is not None else info.file_size
         config = replace(self._stream_config, expected_decompressed_size=size)
-        if authenticated_body:
-            config = replace(
-                config,
-                use_rapidgzip=AcceleratorMode.OFF,
-                use_indexed_bzip2=AcceleratorMode.OFF,
-            )
-        elif sequential_body:
+        if sequential_body:
             config = replace(
                 config,
                 use_rapidgzip=_sequential_accelerator(config.use_rapidgzip),
@@ -1512,7 +1501,6 @@ class ZipReader(BaseArchiveReader):
                 codec=codec,
                 member_name=member_name,
                 sequential_body=not hmac_anchor,
-                authenticated_body=hmac_anchor,
             )
 
         def payload_complete() -> bool:
@@ -1568,7 +1556,12 @@ class ZipReader(BaseArchiveReader):
             except _ZIP_MEMBER_READ_ERRORS as exc:
                 self._reraise_member_error(exc, member_name)
             decoded = self._watch_unverified(
-                decoded, info, member, member_name, check="weak_open_check"
+                decoded,
+                info,
+                member,
+                member_name,
+                check="weak_open_check",
+                seek_forfeits=False,
             )
             return self._verified_member_stream(decoded, info, member, member_name)
 
@@ -1608,7 +1601,12 @@ class ZipReader(BaseArchiveReader):
         )
         # Only the check byte vouched for this password; the CRC at EOF is the check.
         stream = self._watch_unverified(
-            stream, info, member, member_name, check="weak_open_check"
+            stream,
+            info,
+            member,
+            member_name,
+            check="weak_open_check",
+            seek_forfeits=True,
         )
         return self._wrap_member_stream(stream, member_name, size=size)
 
@@ -1712,7 +1710,12 @@ class ZipReader(BaseArchiveReader):
         stream: BinaryIO = decoded
         if verdict is not PasswordConfirmVerdict.CONFIRMED:
             stream = self._watch_unverified(
-                decoded, info, member, member_name, check="confirm_budget_exhausted"
+                decoded,
+                info,
+                member,
+                member_name,
+                check="confirm_budget_exhausted",
+                seek_forfeits=not hmac_anchor,
             )
         return self._verified_member_stream(stream, info, member, member_name)
 
@@ -1842,12 +1845,14 @@ class ZipReader(BaseArchiveReader):
         member_name: str,
         *,
         check: Literal["weak_open_check", "confirm_budget_exhausted"],
+        seek_forfeits: bool,
     ) -> BinaryIO:
         """Report ``ENCRYPTED_MEMBER_UNVERIFIED`` if ``stream`` is abandoned before EOF.
 
         For a password that a check weaker than the member's digest accepted: a wrong
         ZipCrypto password that passes the check byte decrypts to readable garbage,
-        and only the CRC at EOF notices.
+        and only the CRC at EOF notices. ``seek_forfeits`` is False for a WinZip AES
+        member: its HMAC survives seeks, so only a read reaching the end counts.
         """
 
         def report(reason: str) -> None:
@@ -1878,6 +1883,7 @@ class ZipReader(BaseArchiveReader):
             stream,
             size=info.file_size,
             on_unverified=report,
+            seek_forfeits=seek_forfeits,
         )
 
     def _finish_password_attempt(

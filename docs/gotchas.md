@@ -17,9 +17,10 @@ matrices, policy tables and unsupported-feature lists live on their owning pages
   backward seek **re-decompresses from the start** — loudly, via
   `STREAM_REWIND_REDECOMPRESSES`, but it still costs.
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
-- **Don't expect a checksum verdict after seeking.** A seek that moves the
-  position gives up the member's CRC or WinZip AES HMAC check; read from the start
-  to the end without seeking when you need the verdict.
+- **Don't expect a CRC verdict after seeking.** A seek that moves the position
+  gives up the member's CRC check; read from the start to the end without seeking
+  when you need it. A WinZip AES member's HMAC is the exception: it is still checked
+  when a read reaches the end.
   → [Seeking](access-and-cost.md#seeking-inside-compressed-members)
 - **Don't open members out of order in a solid archive.** On solid 7z / RAR and any
   compressed TAR, a named `open()` can restart the whole block. Prefer one forward

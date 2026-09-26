@@ -73,10 +73,11 @@ decrypt natively (see below) and then feed the codec layer; stdlib `zipfile`
 decodes no member data. A ZipCrypto member SHALL seek under `seekable_members=True`:
 a backward seek restarts decryption from the member's start, a forward seek decrypts
 what it skips, and `AUTO` accelerators stay off over the decrypt stage. A WinZip AES
-member SHALL seek too: CTR restarts at the target's block (counter `1 + offset // 16`),
-and a seek that moves the position forfeits the HMAC as it forfeits the CRC. Over the
-WinZip AES stage accelerators SHALL stay off under `AUTO` and `ON` alike, so that only
-the caller's own seek forfeits the HMAC.
+member SHALL seek too: CTR restarts at the target's block (counter `1 + offset // 16`).
+A seek SHALL NOT give up the HMAC, whether the caller or an accelerator made it: the
+HMAC covers the ciphertext, so the read that returns the member's last byte SHALL
+complete it by reading, without decrypting, the ciphertext the seeks skipped, and raise
+`CorruptionError` on a mismatch. A read that stops short of the end gives no verdict.
 
 #### Scenario: ZIP codec-layer decoding
 

@@ -109,9 +109,10 @@ With `seekable_members=True`, every member stream from random `open()` reports
 
 Encrypted members seek like any other when `seekable_members=True`; the cost is the
 codec's. ZipCrypto restarts decryption from the member's start on a backward seek.
-WinZip AES and encrypted 7z restart at the target's cipher block. WinZip AES's HMAC
-covers the whole ciphertext, so a seek that moves the position gives it up, as a seek
-gives up a CRC check.
+WinZip AES and encrypted 7z restart at the target's cipher block. A seek that moves
+the position gives up a CRC check, but not WinZip AES's HMAC: the HMAC covers the
+ciphertext, so the read that reaches the member's end first reads, without decrypting,
+whatever ciphertext your seeks skipped, and then checks it.
 
 Whether that gets a diagnostic is decided by **what the seek actually costs**, not by the
 codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the rewind discards more than
@@ -138,15 +139,12 @@ seekability is declared **and** the known compressed input is at least
 `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (1 MiB). Smaller members stay on stdlib `zlib`/`gzip`
 so archives of many tiny entries do not pay per-stream accelerator setup. Set
 `use_rapidgzip=ON` to force the accelerator regardless of size, or `OFF` to disable it.
-Inside a WinZip AES member neither setting engages it: the accelerator's own seeks
-would give up the member's HMAC check, so that member decodes with the stdlib decoder.
 
 The two settings differ when `rapidgzip` is not installed. `ON` is a request, so it
 raises `PackageNotInstalledError` naming `[seekable]` — even without
 `seekable_members=True`, at the first gzip, zlib or deflate stream it would handle.
-A WinZip AES member is the exception: `ON` does not engage the accelerator there, so it
-does not raise either. `AUTO` treats the accelerator as an enhancement and falls back to
-the stdlib decoder without raising. The stream is still seekable, but a backward seek may re-decode from
+`AUTO` treats the accelerator as an enhancement and falls back to the stdlib decoder
+without raising. The stream is still seekable, but a backward seek may re-decode from
 the start. `use_indexed_bzip2` behaves the same way for bzip2.
 
 Declare seek only when you need it (e.g. parquet-in-zip random reads).
