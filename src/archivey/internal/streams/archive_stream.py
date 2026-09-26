@@ -421,6 +421,13 @@ class ArchiveStream(ReadOnlyIOStream):
         if not self._seekable_hint:
             raise io.UnsupportedOperation("seek")
         inner = self._ensure_open()  # outside the try, same as read()
+        # A bad position or whence is the caller's error, raised as io raises it. Checked
+        # here because inside the try a backend translator that reads ValueError as a
+        # corrupt offset (ZIP, ISO) would report an undamaged archive as corrupt.
+        if whence == io.SEEK_SET and offset < 0:
+            raise ValueError(f"Negative seek position {offset}")
+        if whence not in (io.SEEK_SET, io.SEEK_CUR, io.SEEK_END):
+            raise ValueError(f"Invalid whence ({whence})")
         before: int | None = None
         try:
             before = inner.tell()

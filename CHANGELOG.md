@@ -80,6 +80,14 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A seek before the start of a member follows `io.BytesIO`.** `seek(-n, SEEK_CUR)` or
+  `seek(-n, SEEK_END)` past the start of a compressed member raised `ValueError`, which
+  the ZIP backend reported as `CorruptionError` on an undamaged archive; ISO did the same
+  for every member. Both now clamp to position 0, as stored members already did. A
+  negative `SEEK_SET` offset, or an unknown `whence`, raises `ValueError` on every
+  format instead of `CorruptionError` on ZIP and ISO. A directory member is still the
+  file itself and raises `OSError` as any file does.
+
 - **`max_metadata_bytes` weighs the keys in `extra`, not only the values.** TAR keeps
   every PAX record in `extra["tar.pax_headers"]`, and a PAX keyword can be as long as
   its value. A member with a 100 000-byte keyword and a one-byte value weighed 4 bytes,

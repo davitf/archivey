@@ -863,7 +863,11 @@ class DecompressorStream(ReadOnlyIOStream):
             new_pos = self._size + offset
 
         if new_pos < 0:
-            raise ValueError(f"Invalid offset: {offset}")
+            # Match BytesIO / SlicingStream: relative underflow clamps to the
+            # origin; only an explicitly negative SEEK_SET raises.
+            if whence == io.SEEK_SET:
+                raise ValueError("Negative seek position")
+            new_pos = 0
 
         if self._size is not None and new_pos >= self._size:
             self._buffer.clear()

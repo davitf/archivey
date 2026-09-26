@@ -19,7 +19,7 @@ import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import BinaryIO, Callable
 
 import pytest
 
@@ -225,6 +225,74 @@ def test_seek_to_start_rereads(member: tuple[Path, str]) -> None:
         assert f.read(5) == CONTENT[:5]
         f.seek(0)
         assert f.read() == CONTENT
+
+
+def _assert_seek_underflow_matches_bytesio(stream: BinaryIO) -> None:
+    """A relative seek before the start clamps to 0; a negative SEEK_SET is ValueError.
+
+    That is what ``io.BytesIO`` does. A compressed member used to raise
+    ``ValueError("Invalid offset")`` on the relative case, which a backend translator
+    (ZIP) then reported as ``CorruptionError`` on an undamaged archive.
+    """
+    content = stream.read()
+    assert stream.seek(5) == 5
+    assert stream.seek(-100, io.SEEK_CUR) == 0
+    assert stream.read() == content
+    assert stream.seek(-(len(content) + 100), io.SEEK_END) == 0
+    assert stream.tell() == 0
+    assert stream.read() == content
+    with pytest.raises(ValueError) as excinfo:
+        stream.seek(-1)
+    # The caller's own error, not a translated archive error.
+    assert type(excinfo.value) is ValueError
+    # The refused seek did not move the stream.
+    assert stream.tell() == len(content)
+
+
+def test_seek_underflow_matches_bytesio(member: tuple[Path, str]) -> None:
+    source, name = member
+    with open_archive(source, seekable_members=True) as ar, ar.open(name) as f:
+        if not f.seekable():
+            pytest.skip("member stream is not seekable")
+        if source.is_dir():
+            # A directory member is the file itself, opened with open(): a relative seek
+            # before its start raises OSError(EINVAL) as it does on any file.
+            with pytest.raises(OSError):
+                f.seek(-1, io.SEEK_CUR)
+            return
+        _assert_seek_underflow_matches_bytesio(f)
+
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.mark.parametrize(
+    ("archive", "member_name"),
+    [
+        pytest.param(
+            "zipcrypto/check_byte_collision.zip", "deflated.txt", id="zipcrypto"
+        ),
+        pytest.param(
+            "zipcrypto/check_byte_collision.zip", "stored.txt", id="zipcrypto_stored"
+        ),
+        pytest.param(
+            "external/aes_ae1_pyzipper036.zip",
+            "secret.txt",
+            id="aes",
+            marks=requires("cryptography"),
+        ),
+    ],
+)
+def test_encrypted_zip_seek_underflow_matches_bytesio(
+    archive: str, member_name: str
+) -> None:
+    with (
+        open_archive(
+            _FIXTURES / archive, password="secret", seekable_members=True
+        ) as ar,
+        ar.open(member_name) as f,
+    ):
+        _assert_seek_underflow_matches_bytesio(f)
 
 
 # ---------------------------------------------------------------------------
