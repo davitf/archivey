@@ -104,13 +104,15 @@ decompression-bomb territory, and it overlaps Topic 6 and the parked `stream-lay
 
 ## Specs
 
-- **`access-mode-and-cost`** — ADDED: the spool limit, its three settings, the
-  1 GiB default, the `SpoolLimitExceededError` on exceeding it, the open-time caveat naming
-  its bound, the best-effort pre-flight, the rule that a spool happens at the first
-  operation needing it rather than at open, and the rule that a spooled source does not turn
-  a `streaming=True` read into a random-access one. MODIFIED: the non-seekable fail-fast
-  requirement gains its "unless spooling is permitted" clause, so ADR 0010's rule stays
-  stated rather than quietly outgrown.
+- **`access-mode-and-cost`** — ADDED: the non-seekable spool under the one limit, and the
+  caller-named spool directory; the open-time caveat for every spool; the best-effort
+  pre-flight; the rule that a spool happens at the first operation needing it rather than
+  at open; and the rule that a spooled source does not turn a `streaming=True` read into a
+  random-access one. The limit's settings, its 1 GiB default, `SpoolLimitExceededError`
+  and the caveat naming the bound for RAR's copy shipped in `rar-stream-spool-limit`, and
+  the delta points at `archive-reading`, `error-handling` and `format-rar` for them.
+  MODIFIED: the non-seekable fail-fast requirement gains its "unless spooling is
+  permitted" clause, so ADR 0010's rule stays stated rather than quietly outgrown.
 - **`archive-reading`** — MODIFIED: `SpoolLimits` (shipped with `max_bytes` alone) gains
   `spool_dir`, and the temp-storage requirement admits a bounded spool of a non-seekable
   source.

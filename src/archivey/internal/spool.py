@@ -50,7 +50,7 @@ class SpoolBudget:
         self._archive_name = archive_name
         self._source_format = source_format
         self._written = 0
-        # The size named by the first refusal, repeated by every later one.
+        # The reason given by the first refusal, repeated by every later one.
         self._refused: str | None = None
 
     def check_total(self, total: int | None) -> None:
@@ -82,7 +82,7 @@ class SpoolBudget:
             if not chunk:
                 return
             if len(chunk) > remaining:
-                raise self._refuse(f"more than {limit} bytes")
+                raise self._refuse(f"more than {remaining} bytes")
             out.write(chunk)
             self._written += len(chunk)
 
@@ -91,6 +91,13 @@ class SpoolBudget:
             raise self._error(self._refused)
 
     def _refuse(self, size: str) -> SpoolLimitExceededError:
+        """Record and return the refusal of a copy of ``size`` more bytes.
+
+        Bytes already charged are named, so the sentence stays true when an earlier
+        attempt that failed part-way spent some of the allowance.
+        """
+        if self._written:
+            size += f" on top of {self._written} bytes this reader already spooled"
         self._refused = size
         return self._error(size)
 

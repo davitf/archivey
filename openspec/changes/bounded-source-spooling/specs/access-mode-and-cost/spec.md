@@ -5,36 +5,21 @@
 ### Requirement: Source spooling is bounded by a single configured limit
 
 The system SHALL write an archive source to temporary storage only when an operation
-requires it, and SHALL bound every such spool by one configured limit. The limit SHALL
-accept three settings:
-
-- a **byte count** — spool when needed, up to that many bytes;
-- **unlimited** — `None`, which `SpoolLimits.UNLIMITED` sets, matching the
-  `ExtractionLimits.UNLIMITED` / `ListingLimits.UNLIMITED` pattern — never refuse on size;
-- **none** — `max_bytes=0`, never spool.
-
-The default SHALL be **1 GiB**. A byte count is the default rather than unlimited or none:
-unlimited leaves the behaviour that makes this a defect in place, and none removes a
-capability that works today. 1 GiB keeps essentially every archive that works today working
-while making the bound real.
+requires it, and SHALL bound every such spool by the one configured limit,
+`ArchiveyConfig.spool_limits`. `archive-reading` defines that limit — its settings, its
+1 GiB default, and the refusal before or during the write — and `error-handling` defines
+`SpoolLimitExceededError`, the `ResourceLimitError` it raises. This requirement adds the
+spool of a **non-seekable** source to what that limit governs, and the directory the
+spool is written to.
 
 The system SHALL NOT expose *why* a spool was needed as a configuration axis. Materializing
 a seekable source for an external binary that accepts only a filesystem path, and
 materializing a non-seekable source so a seek-requiring format can read it, are the same
 operation at the same cost with the same remedy, and SHALL be governed by the same limit.
 
-A spool that would exceed the limit SHALL raise `SpoolLimitExceededError`, and SHALL do so
-**before writing any bytes** when the source's size is known in advance. When the size is
-not known, the system SHALL enforce the limit during the write and SHALL remove the partial
-temporary file before raising.
-
-`SpoolLimitExceededError` SHALL subclass `ResourceLimitError`, so that `except
-ResourceLimitError` keeps catching every configured-limit trip while a caller who wants to
-distinguish the spool can. The **none** setting SHALL raise the same error: a limit of none
-is a limit of zero bytes, and any spool exceeds it. The system SHALL NOT use
-`UnsupportedOperationError` — a limit the caller can raise is not something that cannot be
-done — nor `ArchiveyUsageError`, which sits outside `ArchiveyError` (ADR 0012) and would
-present a configured bound as a programming mistake.
+A non-seekable source's size is not known in advance, so its spool SHALL be bounded during
+the write: over the limit it SHALL raise `SpoolLimitExceededError` and SHALL remove the
+partial temporary file before raising.
 
 The system SHALL allow the caller to name the directory used for spooling.
 
@@ -42,14 +27,9 @@ The system SHALL allow the caller to name the directory used for spooling.
 
 | Case | Expected |
 | --- | --- |
-| Limit is a byte count, source smaller | Spooled; the open-time caveat already named the bound |
-| Limit is a byte count, source larger, size known in advance | `SpoolLimitExceededError` before any bytes are written |
-| Limit is a byte count, source larger, size not known in advance | `SpoolLimitExceededError` during the write; partial file removed |
-| Limit is unlimited | Spooled whatever the size; still recorded in `CostReceipt.notes` |
-| Limit is none, operation needs a spool | `SpoolLimitExceededError`; nothing is written |
-| No limit configured | 1 GiB applies |
-| Caller catches `ResourceLimitError` | The spool refusal is caught, like a listing or extraction limit |
-| Limit is none, operation needs no spool | Unaffected |
+| Non-seekable source, seek-requiring format, spool within the limit | Spooled; the open-time caveat already named the bound |
+| Non-seekable source, seek-requiring format, spool over the limit | `SpoolLimitExceededError` during the write; partial file removed |
+| Non-seekable source, limit is unlimited | Spooled whatever the size; still recorded in `CostReceipt.notes` |
 | Caller names a spool directory | That directory is used; the platform default is not consulted |
 | Reader closed | Temporary file or directory removed |
 
@@ -63,8 +43,9 @@ it.
 `CostReceipt` is an immutable open-time cost description, and the caveat is a static
 open-time statement, not an occurrence log: it SHALL be present even if nothing is
 ultimately spooled, and SHALL NOT be added later by a spool that happens after open.
-That contract is already stated for RAR in `format-rar` and is unchanged here; what this
-change adds is the bound in the caveat's text.
+`format-rar` already states that contract, bound included, for RAR's copy of a stream
+source; this requirement makes it hold for every spool, including a spooled non-seekable
+source.
 
 The system SHALL NOT emit a diagnostic for a spool. The `diagnostics` admission clause
 covers what the caller could not determine from the declared contract of the call, and a

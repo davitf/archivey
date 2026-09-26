@@ -170,6 +170,43 @@ def test_budget_check_total_counts_bytes_already_written() -> None:
         budget.check_total(41)
 
 
+class _FailsAfterOneChunk(io.RawIOBase):
+    """Yields one chunk, then fails like a disk or source I/O error part-way."""
+
+    def __init__(self, chunk: bytes) -> None:
+        self._chunk: bytes | None = chunk
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:  # type: ignore[override]
+        if self._chunk is None:
+            raise OSError(5, "Input/output error")
+        chunk, self._chunk = self._chunk, None
+        return chunk
+
+
+def test_budget_refusal_names_bytes_an_earlier_attempt_spent() -> None:
+    """A refusal whose own size fits must say what the earlier attempt charged."""
+    budget = _budget(100)
+    budget.check_total(80)
+    with pytest.raises(OSError):
+        budget.copy(_FailsAfterOneChunk(b"x" * 40), io.BytesIO())  # type: ignore[arg-type]
+    with pytest.raises(SpoolLimitExceededError) as info:
+        budget.check_total(80)
+    message = str(info.value)
+    assert "80 bytes on top of 40 bytes this reader already spooled" in message
+    assert "SpoolLimits.max_bytes=100" in message
+
+
+def test_budget_copy_refusal_names_what_is_left() -> None:
+    budget = _budget(100)
+    budget.copy(io.BytesIO(b"x" * 60), io.BytesIO())
+    with pytest.raises(SpoolLimitExceededError) as info:
+        budget.copy(io.BytesIO(b"x" * 41), io.BytesIO())
+    assert "more than 40 bytes on top of 60 bytes" in str(info.value)
+
+
 def test_budget_refuses_everything_after_its_first_refusal() -> None:
     budget = _budget(100)
     with pytest.raises(SpoolLimitExceededError):
