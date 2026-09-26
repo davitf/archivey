@@ -2571,6 +2571,13 @@ class BaseArchiveReader(ArchiveReader):
                     current.close()
                     current = None
                 if selector is None or selector(m):
+                    if stream is not None:
+                        # One rule for every backend, here rather than in each
+                        # _iter_with_data: a pass handle never seeks. A seek would
+                        # re-decode behind the pass, and a handle that could seek on
+                        # some formats only is a per-format accident callers would
+                        # come to rely on. seekable_members=True is for open().
+                        stream.make_forward_only()
                     current = stream
                     # Suspended at the yield: this thread runs the caller's loop body,
                     # which is not re-entry (see OperationToken.suspended).

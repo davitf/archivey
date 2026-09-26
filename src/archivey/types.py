@@ -58,8 +58,8 @@ class MemberStreams(Flag):
         (loud-slow-rewind) when there is no index or accelerator. This is a
         guarantee, not a request mask: a backend that can list a file member
         must also seek it when the flag is set. ``stream_members()`` yields
-        stay a single-pass decode; this flag does not require those handles
-        to seek.
+        never seek, with or without this flag: a pass is a single-pass
+        decode on every format.
     """
 
     CONCURRENT = auto()

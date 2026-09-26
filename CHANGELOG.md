@@ -323,6 +323,15 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **A `stream_members()` handle never seeks, on any format.** It reports
+  `seekable()` as `False` and `seek()` raises `io.UnsupportedOperation`, with or
+  without `seekable_members=True` and with or without `streaming=True`; `tell()` still
+  works. Before, under `seekable_members=True` over a file source, the handles of ZIP,
+  TAR, compressed TAR, non-solid RAR, ISO, directory and single-file archives could
+  seek, and the handles of solid 7z could not. To seek, open the member with random
+  `open()` under `seekable_members=True`. `tell()` on a RAR member decoded by `unrar`
+  no longer raises `OSError`.
+
 - **`created` is a birth time or nothing.** It never holds Unix `st_ctime` (inode
   change), in any format. Where a writer stores `st_ctime`, or may, the time moves to
   the new `ArchiveMember.ctime` field and `created` stays `None`: the Rock Ridge

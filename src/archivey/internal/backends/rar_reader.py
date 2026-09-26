@@ -448,6 +448,11 @@ class _UnrarOwnedStream(DelegatingStream):
             self._map_exit_if_reaped(wait_timeout=1.0)
         return data
 
+    def tell(self, /) -> int:
+        # The inner is a pipe, whose tell() raises ESPIPE. Every byte goes through
+        # read() (readinto_passthrough is off), so the count is the position.
+        return self._bytes_read
+
     def _raise_for_returncode(self, rc: int) -> None:
         """Map an unrar exit code to an archivey error, or return quietly."""
         # RARLAB unrar exit codes: 11 bad password, 3 CRC/corrupt data, 2 fatal

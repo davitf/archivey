@@ -413,6 +413,72 @@ def test_corpus_seekable_members_seek_and_reread(
             assert f.tell() == len(data)
 
 
+def _assert_forward_only(f) -> None:
+    assert f.seekable() is False
+    head = f.read(1)
+    assert f.tell() == len(head)
+    with pytest.raises(io.UnsupportedOperation):
+        f.seek(0)
+    # The refused seek did not move the stream.
+    assert f.tell() == len(head)
+
+
+# (seekable_members, streaming, API) -> does the handle seek. Only random open() under
+# seekable_members=True seeks: a stream_members() pass is single-pass on every format,
+# whatever the source or the declaration.
+_SEEKABILITY_CASES = (
+    pytest.param(False, False, "open", False, id="default-open"),
+    pytest.param(False, False, "stream_members", False, id="default-pass"),
+    pytest.param(True, False, "open", True, id="seekable-open"),
+    pytest.param(True, False, "stream_members", False, id="seekable-pass"),
+    pytest.param(True, True, "stream_members", False, id="seekable-streaming-pass"),
+)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [pytest.param(s, id=f"{s.entry_id}/{s.key}") for s in _SEEK_ARCHIVES],
+)
+@pytest.mark.parametrize(
+    ("seekable_members", "streaming", "api", "expect_seekable"), _SEEKABILITY_CASES
+)
+def test_member_stream_seekability_matrix(
+    spec: _SeekSpec,
+    seekable_members: bool,
+    streaming: bool,
+    api: str,
+    expect_seekable: bool,
+    tmp_path: Path,
+) -> None:
+    entry = _BY_ID[spec.entry_id]
+    skip_unless_runnable(entry, spec.key)
+    source = corpus_archive_path(entry, spec.key, tmp_path)
+    with open_archive(
+        source,
+        seekable_members=seekable_members,
+        streaming=streaming,
+        password=list(entry.passwords) or None,
+    ) as ar:
+        if api == "open":
+            file_member = next(m for m in ar.members() if m.is_file)
+            with ar.open(file_member) as f:
+                if expect_seekable:
+                    assert f.seekable() is True
+                    f.read(1)
+                    assert f.seek(0) == 0
+                else:
+                    _assert_forward_only(f)
+            return
+        seen = 0
+        for member, stream in ar.stream_members():
+            if stream is None:
+                continue
+            assert member.is_file
+            seen += 1
+            _assert_forward_only(stream)
+        assert seen, "archive yielded no file member streams"
+
+
 # Formats / mechanisms this contract should cover but cannot construct here.
 # Skip (not pass): a missing row would look like the format was certified.
 _UNTESTED: tuple[tuple[str, str], ...] = (
