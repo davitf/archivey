@@ -218,14 +218,15 @@ disk-copy caveat in `ar.cost.notes` at open for non-path stream sources. The *bo
 in `openspec/changes/archive/2026-09-26-rar-stream-spool-limit/` (maintainer ruling
 2026-09-26: "let's add a cap, it would be a config field"): `ArchiveyConfig.spool_limits`
 carries a frozen `SpoolLimits` whose `max_bytes` defaults to 1 GiB, measured across a
-whole volume set. An archive over it raises `ResourceLimitError` before anything is
-written. When the size is not known up front, the copy stops at the limit and the partial
-file is removed. `None` (`SpoolLimits.UNLIMITED`) removes the limit, and the open-time
+whole volume set. An archive over it raises `SpoolLimitExceededError` (a
+`ResourceLimitError`) before anything is written. When the size is not known up front, the
+copy stops at the limit, the partial file is removed, and later reads on that reader are
+refused without copying again. `None` (`SpoolLimits.UNLIMITED`) removes the limit, and the open-time
 caveat names the limit in force.
 
 What `openspec/changes/bounded-source-spooling` still holds is the rest of that design:
 spooling a *non-seekable* source so ZIP, 7z, RAR and ISO can read a pipe, a caller-named
-spool directory, the dedicated `SpoolLimitExceededError`, and a free-space pre-flight. None
+spool directory, and a free-space pre-flight. None
 of it is needed to bound the copy that already happens. The original write-up follows; the
 `notes=()` measurement in it is stale.
 

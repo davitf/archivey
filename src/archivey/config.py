@@ -491,11 +491,13 @@ class SpoolLimits:
     """Most bytes one reader may write to temporary storage as a copy of its source. 1 GiB.
 
     A volume set counts as one copy: the limit applies to the total across its
-    volumes. When the size is known before the copy starts, which it is for every
-    source archivey copies today, an archive over the limit raises
-    :class:`~archivey.exceptions.ResourceLimitError` before anything is written.
+    volumes. When the size is known before the copy starts, an archive over the limit
+    raises :class:`~archivey.exceptions.SpoolLimitExceededError` (a
+    :class:`~archivey.exceptions.ResourceLimitError`) before anything is written.
     Otherwise the copy stops before it passes the limit. Either way the partial copy is
-    removed, and the error names this field.
+    removed, and the error names this field. The limit holds for the reader, not per
+    attempt: once a copy is refused, later reads that need it are refused without
+    copying again.
 
     ``0`` refuses every copy: a stream source then reads only the members archivey can
     read without ``unrar``, such as stored members of a non-solid RAR. The copy goes

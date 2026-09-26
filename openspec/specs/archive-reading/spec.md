@@ -912,7 +912,7 @@ returned stream is unrestricted.
 | --- | --- |
 | Encrypted member, many candidates | Confirmation temp use bounded by a constant |
 | Backend can only serve via materialization | Strategy declared in format spec, not adopted silently |
-| Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `ResourceLimitError` |
+| Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `SpoolLimitExceededError` |
 
 ### Requirement: Explicit configuration object
 
@@ -995,11 +995,12 @@ fields beside it: a preset member or its name is converted at construction, so t
 always holds a budget.
 `spool_limits` SHALL bound the bytes one reader writes to temporary storage as a copy of
 its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
-volume set. `None` SHALL disable the guard; `SpoolLimits.UNLIMITED` sets it to `None`. A
-copy over the limit SHALL raise `ResourceLimitError` naming `SpoolLimits.max_bytes`,
-before any byte is written when the size is known, and otherwise before the written
-total passes the limit, with the partial copy removed. A path source is not copied and
-SHALL NOT be refused by it.
+volume set and across attempts: a copy refused once SHALL stay refused for that reader
+without writing again. `None` SHALL disable the guard; `SpoolLimits.UNLIMITED` sets it to
+`None`. A copy over the limit SHALL raise `SpoolLimitExceededError`, a subclass of
+`ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when the
+size is known, and otherwise before the written total passes the limit, with the partial
+copy removed. A path source is not copied and SHALL NOT be refused by it.
 `read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
 the format stores as member data (see "Link targets stored as member data are read only
 when configured"); like `listing_limits`, it holds for the reader's lifetime.

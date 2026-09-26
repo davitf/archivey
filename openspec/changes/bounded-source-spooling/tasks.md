@@ -3,9 +3,9 @@
 > **Split on 2026-09-26.** Tasks marked *(shipped)* landed in
 > `openspec/changes/archive/2026-09-26-rar-stream-spool-limit/`, which bounded RAR's
 > existing stream-source copy with `ArchiveyConfig.spool_limits` and raises
-> `ResourceLimitError`. What is left is the non-seekable spool, `spool_dir`,
-> `SpoolLimitExceededError` and the pre-flight. `None` on `max_bytes` shipped as *no
-> limit*; the "none" setting below is `max_bytes=0`.
+> `SpoolLimitExceededError`. What is left is the non-seekable spool, `spool_dir` and the
+> pre-flight. `None` on `max_bytes` shipped as *no limit*; the "none" setting below is
+> `max_bytes=0`.
 
 > **Specs-first proposal. Nothing here is implemented.** These tasks describe the
 > implementation for when the change is accepted and scheduled. Run tools through `uv`
@@ -37,9 +37,8 @@
 - [ ] 2.1 One internal helper performing a bounded spool: takes the limit, the directory, a
       source and an optional known size; returns a path; raises `SpoolLimitExceededError` on
       the limit; registers cleanup with the reader's close.
-- [ ] 2.1a Add `SpoolLimitExceededError` subclassing `ResourceLimitError`, and widen
-      `ResourceLimitError`'s docstring, which currently scopes itself to `ExtractionLimits`
-      and `ListingLimits`.
+- [x] 2.1a *(shipped)* Add `SpoolLimitExceededError` subclassing `ResourceLimitError`, and
+      widen `ResourceLimitError`'s docstring to name `SpoolLimits`.
 - [x] 2.2 *(shipped, `archivey.internal.spool.SpoolBudget`)* Check the size **before**
       writing when it is known; enforce during the write when it is not, removing the
       partial file on the way out.
@@ -55,8 +54,8 @@
 
 ## 3. Route the existing RAR materialization through it
 
-- [x] 3.1 *(shipped)* `RarReader._ensure_archive_path()` uses the primitive. Switch its
-      error to `SpoolLimitExceededError` with 2.1a.
+- [x] 3.1 *(shipped)* `RarReader._ensure_archive_path()` uses the primitive and raises
+      `SpoolLimitExceededError`.
 - [x] 3.2 *(shipped)* `RarReader._materialize_stream_volumes()` likewise, with the limit
       measured across the whole volume set rather than per volume.
 - [x] 3.3 *(shipped)* Confirm no behaviour change for path sources, for listing a stream
@@ -80,7 +79,7 @@
 - [x] 5.1a *(shipped)* Drive the **1 GiB default** boundary directly. No corpus archive
       comes near it (the largest RAR is 188 KiB), so nothing else will catch a wrong
       default. A sparse or synthesised source keeps this off the corpus.
-- [ ] 5.1b `except ResourceLimitError` catches the spool refusal.
+- [x] 5.1b *(shipped)* `except ResourceLimitError` catches the spool refusal.
 - [ ] 5.2 Every row of the four delta scenario matrices — spool limit, reporting, timing,
       pre-flight/directory — plus the RAR matrix.
 - [ ] 5.3 Timing specifically: listing a RAR from a stream does **not** spool; the first

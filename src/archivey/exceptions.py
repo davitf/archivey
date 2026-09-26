@@ -248,9 +248,23 @@ class ResourceLimitError(ArchiveyError):
     :class:`~archivey.config.ExtractionLimits` bomb guards,
     :class:`~archivey.config.DecoderLimits` caps on archive-declared decoder memory
     and key-derivation work, and :class:`~archivey.config.SpoolLimits`, the cap on
-    copying a stream source to temporary storage.
+    copying a stream source to temporary storage (raised as its subclass
+    :class:`SpoolLimitExceededError`).
     Sibling of :class:`ExtractionError` (not a subclass): limit trips are not
     filter/path failures.
+    """
+
+
+class SpoolLimitExceededError(ResourceLimitError):
+    """A copy of the archive source to temporary storage would pass its limit.
+
+    Raised when :attr:`~archivey.config.SpoolLimits.max_bytes` refuses the copy a
+    backend needs because it cannot read the caller's stream in place. Today that is a
+    RAR opened from a stream, whose compressed members go through RARLAB ``unrar``,
+    which reads only files. A subclass of :class:`ResourceLimitError`, so
+    ``except ResourceLimitError`` still catches it; catch this one to tell a spool
+    refusal apart from the other configured limits. Opening the archive from a path
+    avoids the copy.
     """
 
 

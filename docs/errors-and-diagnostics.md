@@ -35,6 +35,7 @@ React to specific cases with the subtypes:
 | [`UnsupportedOperationError`][archivey.UnsupportedOperationError] | the call is not valid for this archive, backend or access mode — `members()` on a streaming reader, `seek()` where the format cannot |
 | [`DiagnosticRaisedError`][archivey.DiagnosticRaisedError] | a diagnostic whose disposition you set to `RAISE` fired; carries the `Diagnostic` (see [Diagnostics](#diagnostics)) |
 | [`ResourceLimitError`][archivey.ResourceLimitError] | a listing, extraction, decoder or spool safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and compressed RAR 1.5/2.x comment bytes at open), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, the total password-hashing rounds an encrypted archive asks for, checked before each key is derived, or the size of the temp copy a RAR stream source needs for `unrar`, checked before it is written |
+| [`SpoolLimitExceededError`][archivey.SpoolLimitExceededError] | the `ResourceLimitError` for that last case: `SpoolLimits.max_bytes` refused the temp copy a RAR stream source needs for `unrar`; catch it to tell a refused copy from the other limits, or open the archive from a path, which is never copied |
 
 Mistakes in **your** code are deliberately kept out of that hierarchy: opening a second
 overlapping stream without `concurrent_members=True`, using a closed reader, and similar

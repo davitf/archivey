@@ -311,10 +311,12 @@ When the copy does happen for a volume set it SHALL write the whole set, because
 The copy SHALL be bounded by `ArchiveyConfig.spool_limits` (`archive-reading`), measured
 across the whole volume set, file volumes of a mixed set included. The archive size is
 known before the copy, so an archive over `SpoolLimits.max_bytes` SHALL raise
-`ResourceLimitError` before any byte is written and before `unrar` is spawned. Where the
-size is not known up front, the copy SHALL stop before its total passes the limit and
-SHALL remove what it wrote. With `max_bytes=0` a member that cannot be read directly
-SHALL be refused, and a member that can SHALL still read.
+`SpoolLimitExceededError` (a `ResourceLimitError`) before any byte is written and before
+`unrar` is spawned. Where the size is not known up front, the copy SHALL stop before its
+total passes the limit and SHALL remove what it wrote. The limit SHALL hold for the
+reader, not for each attempt: once a copy has been refused, a later read that needs it
+SHALL raise the same refusal without writing again. With `max_bytes=0` a member that
+cannot be read directly SHALL be refused, and a member that can SHALL still read.
 
 When the archive is opened from a
 non-path stream source, `ar.cost.notes` SHALL include a human-readable disk-copy
@@ -322,7 +324,10 @@ caveat **at open** (path sources SHALL NOT): a single stream source SHALL warn
 that reading a compressed member will copy the whole archive to disk; ordered
 stream volumes SHALL warn that reading a compressed member will copy every volume
 to a temp directory. The caveat SHALL name the spool limit in force (or say there is
-none), so the caller reads the worst case at open. The note is a
+none), so the caller reads the worst case at open. When the limit already rules the copy
+out — `max_bytes=0`, or a copy whose size is known at open and is over the limit — the
+caveat SHALL say that such a read will be refused, in place of the copy warning. The
+note is a
 static open-time caveat, not an occurrence log:
 it SHALL be present even if only stored members are read, and SHALL NOT appear
 after materialization if it was absent at open. Mixed-password
@@ -339,12 +344,14 @@ desynchronize sizes).
 | `extract_all()` | The same `stream_members()` pass as any other caller, plus a second pass when a selected hardlink's source was excluded and must be re-read; no `unrar x` |
 | Mixed-password nonsolid stream/open | Per-member named `unrar` (or equivalent); no ALL-pipe demux |
 | Single non-path stream, at open | `ar.cost.notes` warns a compressed read will copy to disk and names the spool limit; nothing is written yet |
-| Ordered stream volumes, at open | `ar.cost.notes` warns a compressed read will copy every volume; nothing is written yet |
+| Ordered stream volumes, at open | `ar.cost.notes` warns a compressed read will copy every volume and names the spool limit; nothing is written yet |
+| Stream source at open, `max_bytes=0` or a known size over the limit | `ar.cost.notes` says a compressed read will be refused and promises no copy |
 | Ordered stream volumes, listing only | No temp directory is created |
 | Solid `stream_members()` pass, no member read | Nothing is written, even from a stream source |
 | Ordered stream volumes, first compressed read | The whole set is written once; later reads reuse it; close removes it |
-| Stream source over `SpoolLimits.max_bytes` | `ResourceLimitError` naming the field; no temp file or directory; no `unrar` spawn |
-| Volume set, each volume within the limit, total over it | `ResourceLimitError`; the limit weighs the total |
+| Stream source over `SpoolLimits.max_bytes` | `SpoolLimitExceededError` naming the field; no temp file or directory; no `unrar` spawn |
+| Volume set, each volume within the limit, total over it | `SpoolLimitExceededError`; the limit weighs the total |
+| Stream source of unknown size refused mid-copy, then another compressed read | The same refusal, with no second temp file |
 | Stream source, `max_bytes=0` | Stored members of a non-solid archive read; a member needing `unrar` is refused |
 | Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
 | Path source | `ar.cost.notes` has no disk-copy caveat; the spool limit never refuses it |

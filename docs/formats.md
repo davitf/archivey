@@ -229,7 +229,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   to a temp directory) on the first member read that needs `unrar`, and removed on close.
   Stored members of a non-solid archive are read in place and need no copy. The copy is
   bounded by `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB):
-  over it, the read raises `ResourceLimitError` before anything is written. Open from a
+  over it, the read raises `SpoolLimitExceededError` before anything is written. Open from a
   path to avoid the copy. See [Access and cost](access-and-cost.md#non-seekable-sources).
 - Read-only — no RAR writer.
 

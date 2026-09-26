@@ -9,13 +9,18 @@ is not, measured across a whole volume set, and never applied to a path source.
 from __future__ import annotations
 
 import io
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from archivey import ArchiveyConfig, SpoolLimits, open_archive
-from archivey.exceptions import ArchiveyUsageError, ResourceLimitError
+from archivey.exceptions import (
+    ArchiveyUsageError,
+    ResourceLimitError,
+    SpoolLimitExceededError,
+)
 from archivey.internal.backends import rar_reader
 from archivey.internal.spool import SpoolBudget
 from archivey.types import ArchiveFormat
@@ -157,6 +162,27 @@ def test_budget_is_shared_across_copies() -> None:
         budget.copy(io.BytesIO(b"x" * 41), io.BytesIO())
 
 
+def test_budget_check_total_counts_bytes_already_written() -> None:
+    budget = _budget(100)
+    budget.copy(io.BytesIO(b"x" * 60), io.BytesIO())
+    budget.check_total(40)
+    with pytest.raises(SpoolLimitExceededError):
+        budget.check_total(41)
+
+
+def test_budget_refuses_everything_after_its_first_refusal() -> None:
+    budget = _budget(100)
+    with pytest.raises(SpoolLimitExceededError):
+        budget.check_total(101)
+    # Well within the limit on its own, and still refused, before any read.
+    with pytest.raises(SpoolLimitExceededError, match="101 bytes"):
+        budget.check_total(None)
+    src = io.BytesIO(b"x")
+    with pytest.raises(SpoolLimitExceededError):
+        budget.copy(src, io.BytesIO())
+    assert src.tell() == 0
+
+
 def test_budget_without_a_limit_copies_everything() -> None:
     out = io.BytesIO()
     budget = _budget(None)
@@ -186,6 +212,8 @@ def test_stream_over_the_limit_refuses_before_writing_or_spawning(
         assert "file1.txt" in [m.name for m in archive.members()]
         with pytest.raises(ResourceLimitError) as info:
             archive.read("file1.txt")
+    # Its own type, and still a ResourceLimitError for callers who catch that.
+    assert type(info.value) is SpoolLimitExceededError
     message = str(info.value)
     assert "SpoolLimits.max_bytes" in message
     assert f"{len(blob)} bytes" in message
@@ -234,15 +262,74 @@ def test_no_limit_never_refuses(limits: SpoolLimits) -> None:
         assert archive.read("file1.txt")
 
 
+def _only_note(source: object, max_bytes: int | None) -> str:
+    with open_archive(source, config=_config(max_bytes)) as archive:  # type: ignore[arg-type]
+        (note,) = archive.cost.notes
+    return note
+
+
 def test_cost_note_names_the_limit() -> None:
     blob = _SOLID.read_bytes()
-    with open_archive(io.BytesIO(blob), config=_config(12345)) as archive:
-        (note,) = archive.cost.notes
+    note = _only_note(io.BytesIO(blob), len(blob))
     assert "will copy the whole archive to disk" in note
-    assert "SpoolLimits.max_bytes=12345" in note
-    with open_archive(io.BytesIO(blob), config=_config(None)) as archive:
-        (note,) = archive.cost.notes
-    assert "no size limit" in note
+    assert f"SpoolLimits.max_bytes={len(blob)}" in note
+    note = _only_note(_volume_streams(), _volume_total())
+    assert "will copy every volume to a temp directory" in note
+    assert f"SpoolLimits.max_bytes={_volume_total()}" in note
+    for source in (io.BytesIO(blob), _volume_streams()):
+        note = _only_note(source, None)
+        assert "will copy" in note
+        assert "no size limit" in note
+
+
+@pytest.mark.parametrize(
+    ("source", "max_bytes", "reason"),
+    [
+        pytest.param(
+            lambda: io.BytesIO(_SOLID.read_bytes()),
+            0,
+            "max_bytes=0 allows no copy",
+            id="zero",
+        ),
+        # Zero decides the outcome even when the size is not known at open.
+        pytest.param(
+            lambda: _UnsizedStream(_SOLID.read_bytes()),
+            0,
+            "max_bytes=0 allows no copy",
+            id="zero-unknown-size",
+        ),
+        pytest.param(
+            lambda: io.BytesIO(_SOLID.read_bytes()),
+            _SOLID.stat().st_size - 1,
+            f"a copy of the archive would be {_SOLID.stat().st_size} bytes",
+            id="stream-over",
+        ),
+        pytest.param(
+            _volume_streams,
+            _volume_total() - 1,
+            f"a copy of every volume would be {_volume_total()} bytes",
+            id="volumes-over",
+        ),
+        pytest.param(
+            _volume_streams, 0, "max_bytes=0 allows no copy", id="volumes-zero"
+        ),
+    ],
+)
+def test_cost_note_says_refused_when_the_limit_decides_at_open(
+    source: Callable[[], object], max_bytes: int, reason: str
+) -> None:
+    """No copy is promised when the limit already rules one out."""
+    note = _only_note(source(), max_bytes)
+    assert "will be refused" in note
+    assert reason in note
+    assert "will copy" not in note
+
+
+def test_cost_note_for_an_unknown_size_names_the_limit() -> None:
+    blob = _SOLID.read_bytes()
+    note = _only_note(_UnsizedStream(blob), len(blob) - 1)
+    assert "will copy the whole archive to disk" in note
+    assert f"SpoolLimits.max_bytes={len(blob) - 1}" in note
 
 
 def test_over_default_limit_is_refused(
@@ -250,16 +337,30 @@ def test_over_default_limit_is_refused(
 ) -> None:
     """The 1 GiB default itself, driven with a sparse file one byte over it.
 
-    No corpus archive comes near 1 GiB, so this is the only test that would notice a
-    wrong default. The trailing zeros sit after the end-of-archive block, where the
-    parser does not read; opening the file as a stream makes it a copy candidate.
+    ``test_default_is_one_gib_and_unlimited_disables_it`` pins the constant; this one
+    pins its wiring, that a config left at its default actually refuses. No corpus
+    archive comes near 1 GiB, so this is the only test that would notice the default
+    not reaching the guard. The trailing zeros sit after the end-of-archive block,
+    where the parser does not read; opening the file as a stream makes it a copy
+    candidate. Nothing is read or copied from the zeros.
+
+    The cost: ext4, APFS and tmpfs keep the file sparse, so it takes no space. NTFS
+    does not unless the file is marked sparse, so on Windows the file claims a real
+    gigabyte of the temp filesystem. The test skips when that filesystem has less
+    free space than the file, or refuses the size.
     """
+    size = 2**30 + 1
+    if shutil.disk_usage(tmp_path).free < size + (64 << 20):
+        pytest.skip("temp filesystem has too little free space for the 1 GiB file")
     big = tmp_path / "big.rar"
     with big.open("wb") as out:
         out.write(_SOLID.read_bytes())
-        out.truncate(2**30 + 1)
+        try:
+            out.truncate(size)
+        except OSError as exc:
+            pytest.skip(f"temp filesystem cannot hold a {size}-byte file: {exc}")
     with big.open("rb") as handle, open_archive(handle) as archive:
-        with pytest.raises(ResourceLimitError, match=str(2**30 + 1)):
+        with pytest.raises(SpoolLimitExceededError, match=str(size)):
             archive.read("file1.txt")
     assert temp_artifacts == []
 
@@ -335,3 +436,22 @@ def test_path_source_is_never_copied_or_refused(temp_artifacts: list[Path]) -> N
     with open_archive(_VOLUMES[0], config=_config(0)) as archive:
         assert archive.read("payload.bin") == _VOLUME_PAYLOAD
     assert temp_artifacts == []
+
+
+def test_refusal_is_remembered_so_a_retry_writes_nothing(
+    temp_artifacts: list[Path], no_unrar: None
+) -> None:
+    """One reader's limit holds across retries, not per attempt.
+
+    With no size to check up front, each refused attempt writes up to the limit before
+    it trips. A caller that catches the error and reads again, or ``extract_all`` with
+    ``OnError.CONTINUE`` moving to the next member, must not start the copy over.
+    """
+    blob = _SOLID.read_bytes()
+    with open_archive(_UnsizedStream(blob), config=_config(len(blob) // 2)) as archive:
+        names = [m.name for m in archive.members() if m.is_file]
+        assert len(names) > 1
+        for name in names * 2:
+            with pytest.raises(ResourceLimitError, match=r"SpoolLimits\.max_bytes"):
+                archive.read(name)
+    assert len(temp_artifacts) == 1

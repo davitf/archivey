@@ -253,7 +253,8 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
 - **Temporary copies of a stream source** — RAR member data goes through `unrar`, which
   reads only files, so a RAR opened from a stream is copied to a temp file first
   (`SpoolLimits.max_bytes` on `ArchiveyConfig.spool_limits`, default 1 GiB across the
-  whole copy). Checked before anything is written. Trips raise `ResourceLimitError`.
+  whole copy). Checked before anything is written. Trips raise `SpoolLimitExceededError`,
+  a `ResourceLimitError`.
   A path source is never copied.
 - **PPMd members decoded in-process** — pyppmd, the PPMd decoder (7z and ZIP method
   98), can crash the whole process on corrupt input unless it is handed a member in one

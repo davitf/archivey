@@ -18,7 +18,7 @@ Maintainer ruling, 2026-09-26: *"let's add a cap, it would be a config field"*, 
 This change carves the bound on the **existing** copy out of `bounded-source-spooling`,
 which designs a wider feature (spooling a non-seekable source so ZIP, 7z, RAR and ISO can
 read a pipe). It uses the shape and default that change settled with the maintainer on
-2026-09-17 (its `design.md` Q1 and Q2), and nothing else from it:
+2026-09-17 (its `design.md` Q1, Q2 and Q3), and nothing else from it:
 
 ```python
 @dataclass(frozen=True)
@@ -29,19 +29,20 @@ class SpoolLimits:
 ArchiveyConfig.spool_limits: SpoolLimits = SpoolLimits()
 ```
 
-- Over the limit raises `ResourceLimitError`, naming `SpoolLimits.max_bytes`. When the
-  size is known up front, which it is for every source archivey copies today, the refusal
-  comes before anything is written and before `unrar` is spawned. When it is not, the copy
-  stops before it passes the limit and the partial copy is removed.
+- Over the limit raises `SpoolLimitExceededError`, a new `ResourceLimitError` subclass,
+  naming `SpoolLimits.max_bytes`. When the size is known up front, the refusal comes
+  before anything is written and before `unrar` is spawned. When it is not, the copy stops
+  before it passes the limit and the partial copy is removed. The limit holds for the
+  reader: a refused copy is not retried by the next read.
 - A volume set is one copy: the limit weighs the total across its volumes, file volumes of
   a mixed set included.
-- The existing open-time caveat stays and gains a sentence naming the limit in force.
+- The existing open-time caveat stays and names the limit in force; when the limit
+  already rules the copy out at open, it says the read will be refused instead.
 - Path sources are never copied and never refused.
 
 **Left in `bounded-source-spooling`:** spooling a non-seekable source, a caller-named
-spool directory, the `SpoolLimitExceededError` subclass, and the free-space pre-flight.
-Each is additive on top of this: a new `SpoolLimits` field, and a subclass that
-`except ResourceLimitError` still catches.
+spool directory, and the free-space pre-flight. Each is additive on top of this: a new
+`SpoolLimits` field, or a new raise site of `SpoolLimitExceededError`.
 
 ## Specs
 
@@ -49,10 +50,13 @@ Each is additive on top of this: a new `SpoolLimits` field, and a subclass that
   temp-storage requirement names the bound on RAR's declared strategy.
 - **`format-rar`** — MODIFIED: the stream-source copy is bounded by the spool limit, and
   the open-time caveat names it.
+- **`error-handling`** — MODIFIED: `SpoolLimitExceededError` joins the hierarchy under
+  `ResourceLimitError`.
 
 ## Impact
 
-- **Public surface:** `archivey.SpoolLimits` and `ArchiveyConfig.spool_limits`. Additive.
+- **Public surface:** `archivey.SpoolLimits`, `ArchiveyConfig.spool_limits` and
+  `archivey.SpoolLimitExceededError`. Additive.
 - **Behaviour change, pre-tag and deliberate:** a RAR-from-stream read of a member that
   needs `unrar`, on an archive over 1 GiB, now raises where it used to copy. No corpus
   archive comes near that size, so a test drives the default with a sparse file.
