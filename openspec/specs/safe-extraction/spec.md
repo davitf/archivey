@@ -413,7 +413,7 @@ non-bypassable safety checks.
 | Path, absolute-path, link-escape, special-file rejection | Always | Always | Always |
 | Missing file/dir mode | File `0o644`, dir `0o755` | File `0o644`, dir `0o755` | Apply as stored |
 | Permission normalization | Files max `0o644`; dirs `0o755`; strip file execute | Preserve ordinary execute bits | Apply as stored |
-| setuid/setgid/sticky | Strip all | Strip setuid/setgid | Preserve |
+| setuid/setgid/sticky | Strip all | Strip all | Preserve |
 | uid/gid | Strip | Strip | Apply only when running as root; otherwise skip silently |
 
 #### Scenario: metadata policy matrix
@@ -421,7 +421,7 @@ non-bypassable safety checks.
 | Case | Expected |
 | --- | --- |
 | FILE `mode=0o755` under `STRICT` | Written as `0o644` |
-| FILE `mode=0o755` under `STANDARD` | Execute bits preserved; setuid/setgid stripped |
+| FILE `mode=0o755` under `STANDARD` | Execute bits preserved; setuid/setgid/sticky stripped |
 | FILE with uid/gid under `TRUSTED` as root | uid/gid applied |
 | Any policy, unsafe path/link/special file | Universal safety rejection still applies |
 
