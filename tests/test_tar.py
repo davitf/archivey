@@ -1693,6 +1693,54 @@ def test_ustar_raw_name_follows_the_archive_encoding() -> None:
         assert member.raw_name == b"caf\xe9.txt"
 
 
+def _tar_with_name_bytes(name: str, codec: str, fmt: int) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=fmt, encoding=codec) as t:
+        info = tarfile.TarInfo(name)
+        info.size = 1
+        t.addfile(info, io.BytesIO(b"x"))
+    return buf.getvalue()
+
+
+# tarfile's own default is TarFile.encoding (= tarfile.ENCODING, the filesystem
+# encoding on POSIX). Setting it to Latin-1 stands in for a process under a Latin-1
+# locale, where every byte decodes, so neither test below can pass by accident.
+_NON_UTF8_LOCALE = mock.patch.object(tarfile.TarFile, "encoding", "latin-1")
+
+
+@pytest.mark.parametrize(
+    "fmt",
+    [
+        pytest.param(tarfile.USTAR_FORMAT, id="ustar"),
+        # A name over 100 bytes goes into a GNU long-name record.
+        pytest.param(tarfile.GNU_FORMAT, id="gnu-longname"),
+    ],
+)
+def test_utf8_name_decodes_as_utf8_under_a_non_utf8_locale(fmt: int) -> None:
+    name = "café-" + "x" * (120 if fmt == tarfile.GNU_FORMAT else 0) + ".txt"
+    data = _tar_with_name_bytes(name, "utf-8", fmt)
+    with _NON_UTF8_LOCALE, open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        assert member.name == name
+        assert member.raw_name == name.encode("utf-8")
+
+
+def test_invalid_utf8_name_is_surrogate_escaped_under_a_non_utf8_locale() -> None:
+    data = _tar_with_name_bytes("café.txt", "latin-1", tarfile.USTAR_FORMAT)
+    with _NON_UTF8_LOCALE, open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        assert member.name == "caf\udce9.txt"
+        assert member.raw_name == b"caf\xe9.txt"
+
+
+def test_caller_encoding_overrides_the_utf8_default() -> None:
+    data = _tar_with_name_bytes("café.txt", "utf-8", tarfile.USTAR_FORMAT)
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+        (member,) = ar.members()
+        assert member.name == "cafÃ©.txt"
+        assert member.raw_name == "café.txt".encode("utf-8")
+
+
 def test_pax_raw_name_with_undecodable_bytes_round_trips() -> None:
     """Bytes that are not UTF-8 fall back to the archive codec with surrogateescape;
     the surrogates send the name back through that codec, recovering the bytes."""

@@ -221,21 +221,15 @@ recipe and what each failure means.
 
 ## Names that do not decode
 
-A TAR stores member names as bytes. Unless you pass `encoding=`, a ustar or GNU name
-is decoded with Python's `tarfile` default: UTF-8 on Windows, and on other systems the
-process filesystem encoding, which is usually UTF-8. A PAX `path` record is decoded as
-UTF-8 whatever the locale.
+A TAR stores member names as bytes. Archivey decodes them as UTF-8 unless you pass
+`encoding=`, whatever the process locale, so the same archive lists the same way on
+every machine. A PAX `path` record is UTF-8 by definition and is decoded that way even
+when you pass `encoding=`.
 
 A name written in a legacy encoding, such as Latin-1 `caf\xe9.txt`, is not valid
 UTF-8. Archivey keeps such a name rather than failing: each byte that does not decode
-becomes a surrogate escape, a code point in the range U+DC80 to U+DCFF, so under a
-UTF-8 locale `member.name` is `'caf\udce9.txt'`.
-
-Because the default follows the locale, the same ustar or GNU archive can list
-differently on another machine. Under a Latin-1 locale that name decodes to
-`'café.txt'` with no escapes; under an ASCII one, even a valid UTF-8 name such as
-`café.txt` comes back escaped. Pass `encoding=` when you need the same names
-everywhere.
+becomes a surrogate escape, a code point in the range U+DC80 to U+DCFF, so
+`member.name` is `'caf\udce9.txt'`.
 
 That string cannot be encoded as UTF-8, so `print(member.name)` can raise
 `UnicodeEncodeError`, and so can writing it to a UTF-8 log or JSON file. Three ways to

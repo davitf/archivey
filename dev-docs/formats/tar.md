@@ -188,9 +188,11 @@ there both lists grow for the whole pass.
 | `is_sparse` | `TarInfo.issparse()`, which is true for the old GNU `S` typeflag and for all three PAX sparse encodings |
 | `extra` | `tar.type` always; `tar.pax_headers` when there are any; `tar.devmajor` / `tar.devminor` for device members |
 
-`encoding=` reaches `tarfile.open`, where `None` means tarfile's UTF-8 default. It
-changes how ustar and GNU names decode and never changes a PAX name, which is UTF-8 by
-definition.
+`encoding=` reaches `tarfile.open`; without it the reader passes `"utf-8"`, not
+tarfile's own default (`tarfile.ENCODING`, the filesystem encoding on POSIX), so a
+listing does not depend on the process locale. tarfile's `surrogateescape` handler
+stays. `encoding=` changes how ustar and GNU names decode and never changes a PAX name,
+which is UTF-8 by definition.
 
 ### 2.3 Member data
 
@@ -385,6 +387,7 @@ extraction checks (§2.4).
 | Random access needs a seekable source; streaming works on a pipe, plain and compressed | `::test_non_seekable_tar_fails_fast`, `::test_non_seekable_tar_streaming_opens_without_scanning`, `::test_non_seekable_plain_tar_stream_members`, `::test_non_seekable_tar_gz_streaming` |
 | Metadata mapping, PAX `mtime`, PAX `atime` and `ctime`, libarchive birth time | `::test_member_metadata`, `::test_pax_mtime_override`, `::test_pax_atime_ctime`, `::test_pax_libarchive_creationtime_is_created` |
 | `raw_name` for PAX and ustar names under a non-UTF-8 `encoding` | `::test_pax_raw_name_is_the_stored_utf8_whatever_the_encoding`, `::test_ustar_raw_name_follows_the_archive_encoding`, `::test_pax_raw_name_with_undecodable_bytes_round_trips`, `::test_gnu_long_name_under_a_global_pax_path_keeps_the_archive_codec` |
+| ustar and GNU names are UTF-8 by default, not the locale's codec; `encoding=` overrides | `::test_utf8_name_decodes_as_utf8_under_a_non_utf8_locale`, `::test_invalid_utf8_name_is_surrogate_escaped_under_a_non_utf8_locale`, `::test_caller_encoding_overrides_the_utf8_default` |
 | Out-of-range `mtime` degrades | `::test_out_of_range_mtime_degrades_to_none` |
 | Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically | `::test_sparse_tar_eof_no_false_positive`, `::test_pax_sparse_member_is_reported_sparse` (one case per PAX encoding) |
 | End classification: good, minimal and padded trailers stay silent | `::test_valid_tar_eof_silent`, `::test_minimal_eof_trailer_silent`, `::test_padded_tar_eof_no_false_positive` |

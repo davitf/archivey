@@ -323,6 +323,11 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **TAR names decode as UTF-8 whatever the locale.** Without `encoding=`, ustar and GNU
+  names (and `uname`, `gname`, link targets) used to follow Python's `tarfile` default,
+  the process filesystem encoding on POSIX, so the same archive listed differently under
+  a non-UTF-8 locale. They now decode as UTF-8, with bytes that are not UTF-8 kept as
+  surrogate escapes as before. Pass `encoding=` to read a legacy archive.
 - **`created` is a birth time or nothing.** It never holds Unix `st_ctime` (inode
   change), in any format. Where a writer stores `st_ctime`, or may, the time moves to
   the new `ArchiveMember.ctime` field and `created` stays `None`: the Rock Ridge
