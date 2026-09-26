@@ -1466,3 +1466,41 @@ def test_empty_source_says_it_is_empty(tmp_path: Path) -> None:
     assert "positioned at its end" in str(caught.value)
     with pytest.raises(FormatDetectionError, match="no magic bytes"):
         detect_format(io.BytesIO(b"plain text, not an archive"))
+
+
+def test_mutable_receipt_freezes_every_public_counter() -> None:
+    """The mutable receipt, ``freeze()`` and ``charge()`` agree on the counters.
+
+    The three write the field list out by hand. A counter added to the public
+    receipt and missed in one of the others would read 0 on every
+    ``FormatInfo.cost_receipt``; this fails instead.
+    """
+    import inspect
+    from dataclasses import fields
+
+    from archivey.detection_cost import DetectionCostReceipt
+    from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
+
+    public = [f.name for f in fields(DetectionCostReceipt)]
+    mutable = [f.name for f in fields(MutableDetectionCostReceipt)]
+    # ``skips`` is reported on its own, not in the frozen receipt.
+    assert [name for name in mutable if name != "skips"] == public
+
+    # Each counter a distinct value, so a swapped or dropped copy shows.
+    receipt = MutableDetectionCostReceipt(
+        **{name: 1000 + i for i, name in enumerate(public)}
+    )
+    frozen = receipt.freeze()
+    assert {name: getattr(frozen, name) for name in public} == {
+        name: 1000 + i for i, name in enumerate(public)
+    }
+
+    # ``charge`` adds to every counter but ``passes``, which is set per pass.
+    charged = [
+        name
+        for name in inspect.signature(DetectionCostReceipt.charge).parameters
+        if name != "self"
+    ]
+    assert charged == [name for name in public if name != "passes"]
+    after = DetectionCostReceipt().charge(**dict.fromkeys(charged, 7))
+    assert all(getattr(after, name) == 7 for name in charged)
