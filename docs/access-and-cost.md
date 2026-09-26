@@ -99,7 +99,10 @@ Without `seekable_members=True`, member streams report `seekable() is False` and
 accelerators are not built until you ask.
 
 With `seekable_members=True`, every member stream from random `open()` reports
-`seekable() is True` and `seek()` works. How the backend does it varies:
+`seekable() is True` and `seek()` works. A stream from `stream_members()` never seeks,
+with or without the flag, on every format: the pass owns the position, and a seek would
+decode again behind it. To seek inside a member, open it with `open()`. How the backend
+does it varies:
 
 - XZ / lzip can seek via native indexes
 - gzip / zlib / raw deflate / bzip2 can use `[seekable]` (`rapidgzip`) when installed
@@ -114,17 +117,24 @@ the position gives up a CRC check, but not WinZip AES's HMAC: the HMAC covers th
 ciphertext, so the read that reaches the member's end first reads, without decrypting,
 whatever ciphertext your seeks skipped, and then checks it.
 
-Whether that gets a diagnostic is decided by **what the seek actually costs**, not by the
-codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the rewind discards more than
-about a megabyte of decoded progress — the bytes you would have to decode again to get
-back where you were. On a solid RAR that includes the prefix in front of this member,
-not just the bytes already read from this stream. That matters because a format that
-*can* carry an index does not always *have* a useful one. A single-block `.xz` (what
-`lzma.compress` and un-threaded `xz` produce) has exactly one seek point, at the origin,
-so rewinding it costs the same as rewinding a codec with no index at all — and an
-engaged `rapidgzip` can hold an index sparse enough for the same thing. Small rewinds
-stay quiet on every codec unless the carrier declares a higher floor (solid RAR's
-prefix).
+A seek that lands before the start of a member behaves like `io.BytesIO`: a relative
+seek (`SEEK_CUR` or `SEEK_END`) clamps to position 0, and a negative `SEEK_SET` offset
+or an unknown `whence` raises `ValueError`. A directory member is a real file, so a
+relative seek before its start reaches the OS and raises `OSError`. A seek past the end
+of a TAR member returns the member size rather than the position you asked for, where
+other formats return the target; reads from there return `b""` either way.
+
+Whether a seek that moves the position gets a diagnostic is decided by **what the seek
+actually costs**, not by the codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the
+rewind discards more than about a megabyte of decoded progress — the bytes you would
+have to decode again to get back where you were. On a solid RAR that includes the prefix
+in front of this member, not just the bytes already read from this stream. That matters
+because a format that *can* carry an index does not always *have* a useful one. A
+single-block `.xz` (what `lzma.compress` and un-threaded `xz` produce) has exactly one
+seek point, at the origin, so rewinding it costs the same as rewinding a codec with no
+index at all — and an engaged `rapidgzip` can hold an index sparse enough for the same
+thing. Small rewinds stay quiet on every codec unless the carrier declares a higher
+floor (solid RAR's prefix).
 
 If you set a `DiagnosticPolicy` to `RAISE` on that code as a guard against accidentally
 quadratic seek loops, note that it fires on **every** qualifying seek, not only the
@@ -136,8 +146,10 @@ The flag changes what member streams can *do*, and nothing else. It does not cha
 
 Under `ArchiveyConfig.use_rapidgzip=AUTO` (the default), rapidgzip is selected only when
 seekability is declared **and** the known compressed input is at least
-`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (1 MiB). Smaller members stay on stdlib `zlib`/`gzip`
-so archives of many tiny entries do not pay per-stream accelerator setup. Set
+`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (16 MiB). rapidgzip runs in a child process that
+takes about 45 ms to start and open, and it saves about 3.4 ms per MB of compressed input
+over the stdlib, so it is only faster from about 13 MB. Smaller members stay on stdlib
+`zlib`/`gzip`. Set
 `use_rapidgzip=ON` to force the accelerator regardless of size, or `OFF` to disable it.
 
 The two settings differ when `rapidgzip` is not installed. `ON` is a request, so it
@@ -178,7 +190,19 @@ and the fix is to buffer the source to a file or a `BytesIO` first.
 A seekable stream is not that pipe case. RAR still needs a filesystem path for compressed
 member data (RARLAB `unrar` or `rar`), so a `BytesIO` or file object may be copied to a
 temp file when a compressed member is read. `archive.cost.notes` states that caveat at
-open. Path sources do not copy.
+open, with the limit that bounds it; when the limit already rules the copy out, the note
+says such a read will be refused instead. Path sources do not copy.
+
+The copy is of the whole archive (every volume, for a volume set), it happens on the
+first member read that goes through `unrar` rather than at open, and it is removed when
+the reader closes. Listing never needs it. `ArchiveyConfig.spool_limits` bounds it:
+`SpoolLimits.max_bytes` defaults to 1 GiB, counted across a volume set. An archive over
+the limit raises `SpoolLimitExceededError`, a `ResourceLimitError`, before anything is
+written, and later reads on that reader are refused the same way. `None`
+(`SpoolLimits.UNLIMITED`) removes the limit, and `0` refuses every copy, which leaves only
+the members archivey reads without `unrar` (stored members of a non-solid archive). The
+copy goes to the platform temporary directory; where that is memory-backed (`tmpfs`), the
+limit bounds memory rather than disk.
 
 ## Streaming mode is one pass
 
@@ -221,9 +245,27 @@ aborts while archivey's exits cleanly. So closing a source underneath a live str
 a clean failure, not a crash. Still don't do it: the stream is dead and the read
 fails.
 
-One residual is genuinely upstream and not contained: some **path**-source truncations
-and CRC mismatches can still `std::terminate` during worker finalization after a Python
-exception. Details:
+rapidgzip 0.16 also aborts the process on a gzip, zlib or raw deflate stream that ends
+early, whatever the source. So archivey runs those three decoders in a **child process**:
+the abort ends the child, and your read raises `TruncatedError` (or `CorruptionError`
+where the abort does not say why). Starting the child costs about 45 ms per accelerated
+stream; under `AUTO` that is paid only for streams of 16 MiB compressed or more. Where no
+child can start (a frozen application, archivey imported from a zip, or a spawn or
+temporary file the OS refuses), `AUTO` reads these codecs with the standard library and
+`ON` raises `ResourceLimitError`. The `AUTO` fallback logs one warning per process on the
+`archivey.streams` logger, naming the reason: it is a fact about the environment, not
+about your archive. Set `use_rapidgzip=OFF` to never start a child, and to silence that
+warning.
+
+The abort costs the rest of the stream, and often more: rapidgzip decodes ahead in
+parallel, so it can reach the cut before your first read returns. On a cut gzip of 2 or
+8 MB the error came before any data; on 32 MB, 1 to 10 MB short of the cut. What you do
+read is correct. To read as much of a cut stream as the data allows, open it with
+`use_rapidgzip=OFF`: the standard library decodes up to the cut before it raises.
+
+bzip2 runs in your process. It did not abort on cut or damaged input in the tests behind
+this page (cuts, bit flips, CRC damage, as path and as file object), but that is testing,
+not a guarantee: an input that aborts the bzip2 decoder would end your process. Details:
 [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
 
 ## Measuring what a read cost

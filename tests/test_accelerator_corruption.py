@@ -13,6 +13,7 @@ from __future__ import annotations
 import bz2
 import gzip
 import io
+import random
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,11 @@ from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
 )
-from archivey.internal.streams.codecs import Codec, open_codec_stream
+from archivey.internal.streams.codecs import (
+    Codec,
+    _GzipTruncationCheckStream,
+    open_codec_stream,
+)
 
 _GZ_ON = StreamConfig(use_rapidgzip=AcceleratorMode.ON)
 _BZ_ON = StreamConfig(use_indexed_bzip2=AcceleratorMode.ON)
@@ -434,3 +439,81 @@ def test_indexed_bzip2_seek_before_read_still_raises(
         s.seek(100)
         with pytest.raises(CorruptionError):
             s.read()
+
+
+def _soft_short_backstop() -> tuple[_GzipTruncationCheckStream, bytes]:
+    """The gzip backstop over an inner that ends early without raising, as rapidgzip
+    does on some cuts: a prefix, then a clean EOF, with the ISIZE of the whole payload."""
+    payload = b"the quick brown fox jumps over the lazy dog.\n" * 2000
+    whole = gzip.compress(payload)
+    prefix = payload[: len(payload) // 3]
+    stream = _GzipTruncationCheckStream(
+        io.BytesIO(prefix),
+        reopen=lambda: io.BytesIO(whole),
+        isize=len(payload),
+        source_len=len(whole),
+        fallback_path=None,
+    )
+    return stream, prefix
+
+
+def _drain(stream: _GzipTruncationCheckStream, read_all: bool, got: bytearray) -> None:
+    if read_all:
+        got += stream.read()
+        return
+    while block := stream.read(4096):
+        got += block
+
+
+@pytest.mark.parametrize("read_all", [True, False], ids=["read_all", "chunked"])
+def test_gzip_backstop_keeps_raising_after_its_own_truncation(read_all: bool) -> None:
+    """Once the ISIZE backstop has called a stream truncated, a later read raises the same
+    error instead of reading as a clean, empty end, and a seek back re-reads the prefix
+    to the same error, not to a clean EOF."""
+    stream, prefix = _soft_short_backstop()
+    with pytest.raises(TruncatedError, match="ISIZE") as first:
+        _drain(stream, read_all, bytearray())
+    with pytest.raises(TruncatedError) as again:
+        stream.read(4096)
+    assert again.value is first.value
+    assert stream.seek(0) == 0
+    got = bytearray()
+    with pytest.raises(TruncatedError) as reread:
+        _drain(stream, read_all, got)
+    assert reread.value is first.value
+    # A chunked re-read delivers the prefix again before the error; read() raises
+    # without returning it, as it did the first time.
+    assert bytes(got) == (b"" if read_all else prefix)
+
+
+class _SourceFailingMidway(io.BytesIO):
+    """The caller's own stream, failing on a read that starts past its first 64 KiB."""
+
+    def __init__(self, data: bytes, exc: Exception) -> None:
+        super().__init__(data)
+        self._exc = exc
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        if self.tell() > 64 * 1024:
+            raise self._exc
+        return super().read(size)
+
+
+@pytest.mark.parametrize("error", [OSError, EOFError])
+def test_bzip2_callers_source_exception_reaches_the_caller_unchanged(
+    error: type[Exception],
+) -> None:
+    """The in-process bzip2 decoder reads a caller's stream through a shim that parks
+    its exception and re-raises it after the call. That exception is the caller's, not
+    a verdict on the data: an ``EOFError`` (a dropped network file object) must not be
+    translated to ``TruncatedError`` as bzip2's own ``EOFError`` would be."""
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    payload = bytes(random.Random(1).randbytes(3_000_000))
+    failure = error("caller source failed")
+    source = _SourceFailingMidway(bz2.compress(payload), failure)
+    config = StreamConfig(use_indexed_bzip2=AcceleratorMode.ON, seekable=True)
+    with open_codec_stream(Codec.BZIP2, source, config=config) as stream:
+        with pytest.raises(error) as info:
+            while stream.read(1 << 16):
+                pass
+    assert info.value is failure

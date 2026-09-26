@@ -18,9 +18,17 @@ Who does what:
   several are possible (a shared CRC pass for STORED ZipCrypto).
 - PKWARE Strong Encryption — refused (``UnsupportedFeatureError``).
 
-Split/spanned multi-volume sets are rejected — rejoin first (see ``format-zip``):
-Info-ZIP ``.zNN`` / final ``.zip`` (EOCD disk fields), 7-Zip ``.zip.NNN``, and
-ZIP64 locator ``disks > 1``.
+Multi-volume sets:
+
+- 7-Zip ``.zip.NNN`` split sets are byte slices of one ordinary ZIP. ``open_archive``
+  joins the parts before this backend sees them (``source.volume_count > 1``).
+- A lone ``.zip.NNN`` segment whose sibling parts are missing is an incomplete set,
+  not a spanned one: ``open_archive`` raises ``TruncatedError`` naming the missing
+  parts. The ``UnsupportedFeatureError`` in ``ZipReader.__init__`` is only the
+  backstop for a segment that did not pass through that check.
+- Spanned sets are rejected with ``UnsupportedFeatureError``; rejoin them with the
+  tool that made them (see ``format-zip``): Info-ZIP ``.zNN`` / final ``.zip`` (EOCD
+  disk fields) and ZIP64 locator ``disks > 1``.
 """
 
 from __future__ import annotations
@@ -34,7 +42,7 @@ import zlib
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import (
     IO,
@@ -130,7 +138,11 @@ from archivey.internal.streams.streamtools import (
     read_exact,
 )
 from archivey.internal.streams.verify import VerifyingStream
-from archivey.internal.timestamps import TimestampIssue, filetime_to_datetime
+from archivey.internal.timestamps import (
+    TimestampIssue,
+    filetime_to_datetime,
+    unix32_to_datetime,
+)
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import quoted
 from archivey.types import (
@@ -531,26 +543,9 @@ def _zip_timestamps(
                     ut_field[cursor : cursor + 4], "little", signed=True
                 )
                 cursor += 4
-                try:
-                    when = datetime.fromtimestamp(ts, tz=timezone.utc)
-                except (ValueError, OverflowError, OSError):
-                    # Same out-of-range guard as the DOS/NTFS fields above: on Windows
-                    # even tz-aware fromtimestamp routes through gmtime(), which raises
-                    # OSError for pre-1970 values — a signed field an archive (hostile
-                    # or merely old) can legitimately carry. Degrade to an issue, never
-                    # sink the listing with a raw platform error.
-                    issues.append(
-                        TimestampIssue(
-                            field=ut_name,
-                            source="extended",
-                            value_repr=repr(ts),
-                            message=(
-                                f"Invalid ZIP extended timestamp for "
-                                f"{quoted(info.filename)}: {ts!r}"
-                            ),
-                        )
-                    )
-                    continue
+                # A signed 32-bit field: a pre-1970 date is legitimate, and every
+                # value it can hold is a valid datetime on every platform.
+                when = unix32_to_datetime(ts)
                 if bit == 0x01:
                     modified = when
                 elif bit == 0x02:

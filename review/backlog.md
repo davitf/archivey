@@ -37,6 +37,17 @@ flight) → **Topic 8** ∥ **Topic 10** → **Topic 6** → **Topic 7** last. S
 
 ## Parked from PR reviews
 
+- **#493 K8 — a truncation abort in the rapidgzip child loses the readable prefix.**
+  rapidgzip decodes ahead in parallel, so the child often aborts before the parent has read
+  anything: a cut gzip or zlib of 2 or 8 MB delivers no data through `use_rapidgzip=ON`,
+  and of 32 MB, 1–10 MB less than the stdlib engine (measured, `dev-docs/known-issues.md`
+  Bug 4). What is delivered is a correct prefix. `_GzipTruncationCheckStream` already
+  switches to the stdlib engine when rapidgzip returns an empty soft EOF; the same switch on
+  a `TruncatedError` from the child, resuming at the parent's position and raising the same
+  error at the cut, would deliver the rest. Parked because it is a new mechanism (the
+  switch has to keep `tell`/`seek` and the raised error consistent across two engines), not
+  a fix to what #493 ships.
+
 - **#446 K5 — the review workflow's prompt still names the addendum.**
   `.github/workflows/review-loop.yml` (~lines 180-190) tells each round to read
   `archivey-review-addendum.md` first and calls the cap "the addendum's own round

@@ -52,6 +52,7 @@ from archivey import (
     DiagnosticPolicy,
     ExtractionLimits,
     ListingLimits,
+    SpoolLimits,
     detect_format,
     extract,
     open_archive,
@@ -352,6 +353,12 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 bad,
                 lambda b=bad: DecoderLimits(max_ppmd_in_process_input=b),
             ),
+            _case(
+                "SpoolLimits",
+                "max_bytes",
+                bad,
+                lambda b=bad: SpoolLimits(max_bytes=b),
+            ),
         ]
 
     # ``ratio_activation_threshold`` is the one limit field that is not ``| None``, so
@@ -406,6 +413,15 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 "decoder_limits",
                 bad,
                 lambda b=bad: _with_config(archive, out(), decoder_limits=b),
+            )
+        )
+    for bad in ("x", 0, SpoolLimits, None):
+        rows.append(
+            _case(
+                "ArchiveyConfig",
+                "spool_limits",
+                bad,
+                lambda b=bad: _with_config(archive, out(), spool_limits=b),
             )
         )
     for bad in ("x", 0, DiagnosticPolicy, None):
@@ -600,7 +616,13 @@ def _public_surface() -> list[tuple[str, list[str]]]:
     for method in ("open", "read", "extract_all", "stream_members", "get"):
         names = list(inspect.signature(getattr(ArchiveReader, method)).parameters)
         surface.append((method, [n for n in names if n != "self"]))
-    for cls in (ArchiveyConfig, DecoderLimits, ExtractionLimits, ListingLimits):
+    for cls in (
+        ArchiveyConfig,
+        DecoderLimits,
+        ExtractionLimits,
+        ListingLimits,
+        SpoolLimits,
+    ):
         surface.append((cls.__name__, [f.name for f in dataclasses.fields(cls)]))
     return surface
 

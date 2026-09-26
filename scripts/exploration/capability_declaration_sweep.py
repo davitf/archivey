@@ -694,31 +694,38 @@ def _check_lifetime_stream_members(path: Path, entry: CorpusEntry) -> Check:
 
 
 def _check_stream_members_seekable(path: Path, entry: CorpusEntry) -> Check:
-    """SEEKABLE does not require stream_members() handles to seek (docstring)."""
+    """A stream_members() handle never seeks, even under seekable_members=True.
+
+    The spec (archive-reading) makes every pass handle forward-only on every format:
+    ``seekable()`` is False and ``seek()`` raises ``io.UnsupportedOperation``. A pass
+    handle that seeks is DELIVERED-NOT-DECLARED.
+    """
     with open_archive(path, password=_password(entry), seekable_members=True) as reader:
-        declared = _flag_label(_declared(reader))
         flags: list[str] = []
+        seeking: list[str] = []
         for member, stream in reader.stream_members():
             if not member.is_file or stream is None:
-                if stream is not None:
-                    stream.close()
                 continue
-            flags.append(f"{member.name}={stream.seekable()}")
-            stream.close()
+            seekable = stream.seekable()
+            try:
+                stream.seek(0)
+                seek_ok = True
+            except io.UnsupportedOperation:
+                seek_ok = False
+            flags.append(f"{member.name}={seekable}")
+            if seekable or seek_ok:
+                seeking.append(f"{member.name!r} seekable={seekable} seek_ok={seek_ok}")
+        declared = "forward-only (never seeks)"
         if not flags:
             return Check(
-                "stream_members_seekable",
-                UNTESTED,
-                declared,
-                "no FILE stream",
+                "stream_members_seekable", UNTESTED, declared, "no FILE stream"
             )
-        return Check(
-            "stream_members_seekable",
-            OK,
-            "not required to seek",
-            ", ".join(flags),
-            "MemberStreams.SEEKABLE exempts stream_members() yields",
-        )
+        observed = ", ".join(flags)
+        if seeking:
+            return Check(
+                "stream_members_seekable", DNDC, declared, observed, "; ".join(seeking)
+            )
+        return Check("stream_members_seekable", OK, declared, observed)
 
 
 def _check_mechanism(reader: Any, entry: CorpusEntry, key: str) -> Check | None:

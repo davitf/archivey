@@ -124,6 +124,14 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - Hardlinks are first-class at extraction; unfiltered `extract_all` resolves them in one
   pass.
 - `concurrent_members=True` uses a per-reader shared-handle lock (same shape as ISO).
+- **Sparse members are extracted dense.** A GNU or PAX sparse member (`tar -S`) is
+  written with its holes filled by zeros, so it takes its full size on disk. The zeros
+  count as output for the [ratio limit](extracting.md#limits), which a TAR checks across
+  the whole archive because a member has no compressed size. A 10 MiB sparse file packs
+  into a 10 KiB tar, 1024:1, and `extract` raises `ResourceLimitError` against the
+  default `max_ratio` of 1000. `member.is_sparse` tells you which members are sparse
+  before you extract. For a sparse archive you trust, raise the limit:
+  `extract(path, dest, limits=ExtractionLimits(max_ratio=...))`, or `max_ratio=None`.
 - **Mid-archive corruption can silently shorten the listing.** Stdlib `tarfile` treats a
   corrupt member header *after the first* as a clean end of archive — no exception is
   raised; iteration just stops early. Archivey backstops this with its end-of-archive
@@ -226,6 +234,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **Encrypted old-style comments are not decoded.** A RAR 1.5 / 2.x comment block with
   its password or salt flag set gives `comment` as `None`. No available tool writes such
   a comment, so there is nothing to test a decode path against.
+- **A stream source is copied to disk for `unrar`.** `unrar` reads only files, so a RAR
+  opened from a `BytesIO` or a file object is copied whole to a temp file (a volume set,
+  to a temp directory) on the first member read that needs `unrar`, and removed on close.
+  Stored members of a non-solid archive are read in place and need no copy. The copy is
+  bounded by `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB):
+  over it, the read raises `SpoolLimitExceededError` before anything is written. Open from a
+  path to avoid the copy. See [Access and cost](access-and-cost.md#non-seekable-sources).
 - Read-only — no RAR writer.
 
 ## ISO 9660

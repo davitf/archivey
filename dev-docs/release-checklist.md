@@ -18,11 +18,11 @@ from the git tag). `publish.yml` fails if the tag and packaged version disagree.
 - [ ] Default branch green (CI + recent nightly wall job not in unexplained fail).
 - [ ] No open “must land before this tag” items on `review/STATUS.md` /
       debt-ledger pay-list / in-flight OpenSpec changes you intended for this
-      version (for `0.2.0`, that includes remaining pay-list items such as
-      T2/T3/T7/D4; D2 `SECURITY.md` and DD4 rapidgzip characterization are done).
-- [ ] First public release only: cutover runbook complete (or consciously
-      releasing to TestPyPI while finishing remaining cutover steps — see
-      `dev-docs/release-repo-cutover.md`; repo is already named `archivey`).
+      version. The 2026-07-28 debt-ledger pay-list is closed
+      (`review/archive/2026-07-28-debt-ledger/SUMMARY.md`).
+- [ ] First public release only: cutover runbook complete — see
+      `dev-docs/release-repo-cutover.md`; the repo is already named `archivey`.
+      Do a TestPyPI dry run first (§6).
 
 ---
 
@@ -47,7 +47,7 @@ write the entry-zero under `## [0.2.0]` from `[Unreleased]`.)
 - [ ] Move `[Unreleased]` items into a new `## [X.Y.Z] - YYYY-MM-DD` section; leave
   a fresh empty `[Unreleased]` above it.
 - [ ] Add / update the compare links at the bottom of `CHANGELOG.md` once the tag
-  name is known (repo may still be `archivey-2` pre-cutover).
+  name is known.
 
 ---
 
@@ -134,8 +134,9 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
       “safe extraction” marketing).
 - [ ] `pyproject.toml` metadata: name, description, classifiers, URLs, extras ↔
       capabilities (`packaging-and-extras` spec).
-- [ ] Free-threading / platform support statement matches CI (core-only `3.13t`
-      job — document honestly).
+- [ ] Free-threading / platform support statement matches CI: the `3.13t` job runs
+      the full suite on the zero-dep core, then again with the GIL-safe
+      `[free-threaded]` extra (`docs/support-matrix.md`).
 - [ ] Optional: OSS-Fuzz onboarding status noted (may trail the first tag).
 
 ---
@@ -188,9 +189,11 @@ Also:
   git push origin "vX.Y.Z"
   ```
 
-- [ ] Confirm `publish.yml` built distributions and published to the expected
-      index (TestPyPI while repo is `archivey-2`; PyPI after cutover to
-      `archivey`). See cutover runbook for Trusted Publishing setup.
+- [ ] Before tagging, run the TestPyPI dry run: Actions → Publish → Run workflow,
+      `target=testpypi`. No tag is needed, and no PyPI version number is used up.
+- [ ] Confirm `publish.yml` built distributions and published the tag to PyPI (a
+      pushed `v*` tag always goes to PyPI). See the cutover runbook for Trusted
+      Publishing setup.
 - [ ] Create a GitHub Release for `vX.Y.Z` whose body **mirrors** the CHANGELOG
       section (generated notes are optional; the committed file remains
       authoritative).

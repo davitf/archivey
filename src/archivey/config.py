@@ -80,12 +80,17 @@ class AcceleratorMode(Enum):
 
 
 # Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
-# rapidgzip for a DEFLATE-family stream (gzip / zlib / raw deflate). Below this,
-# stdlib backends stay cheaper: rapidgzip's per-stream index/thread setup dominates
-# for tiny members (many-small ZIP/gzip case). Benchmarked in
-# ``scripts/bench_rapidgzip_auto_threshold.py``; see the rapidgzip-deflate-zlib
-# acceleration design note. ``ON`` ignores this; unknown size keeps pre-threshold AUTO.
-RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 1 * 1024 * 1024
+# rapidgzip for a DEFLATE-family stream (gzip / zlib / raw deflate). ``ON`` ignores
+# this; unknown size keeps pre-threshold AUTO.
+#
+# rapidgzip runs in a child process, so each accelerated stream pays about 45 ms to
+# start the child and open the stream, and a full read then saves about 3.4 ms per MB
+# of compressed input against the stdlib (``scripts/bench_rapidgzip_child.py``). So the
+# child breaks even near 13 MB compressed, and below that the stdlib is faster; 16 MiB
+# keeps AUTO on the side where rapidgzip pays for itself. A caller that seeks backward
+# a lot gains from rapidgzip's index sooner, and can set ``ON``. See the
+# rapidgzip-deflate-child-process design note.
+RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 16 * 1024 * 1024
 
 
 # How many decompressed bytes a backward seek must re-decode before
@@ -99,9 +104,7 @@ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 1 * 1024 * 1024
 # quietest exactly where the absolute cost is highest. The caller cares about wall time,
 # which tracks bytes re-decoded.
 #
-# Same number as RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE above. They measure different
-# quantities (compressed input size vs decompressed re-decode distance) but encode the
-# same judgement: below about a megabyte the work is not worth a caller's attention.
+# Below about a megabyte of re-decoding, the work is not worth a caller's attention.
 REWIND_REDECODE_WARN_BYTES: int = 1 * 1024 * 1024
 
 
@@ -262,8 +265,10 @@ class ListingLimits:
     """Most bytes of text a listing may retain across its members. 64 MiB.
 
     Counts member names (and raw names), comments, link targets, owner and group names
-    and the string or bytes values in ``extra``, plus the archive comment. Non-ASCII text counts four bytes per character,
-    so it is an upper bound rather than an exact size.
+    and the string or bytes values in ``extra``, plus the keys of a dict nested in it
+    (such as TAR's PAX keywords), plus the archive comment. The top-level ``extra``
+    keys are fixed per format and do not count. Non-ASCII text counts four bytes per
+    character, so it is an upper bound rather than an exact size.
     """
 
     UNLIMITED: ClassVar[ListingLimits]
@@ -428,11 +433,17 @@ class DecoderLimits:
             after which nothing more is asked of pyppmd. That costs memory: the
             held input, and about as much again while pyppmd copies it. A member
             larger than this field is decoded in a child Python process instead,
-            where a crash becomes :class:`~archivey.exceptions.CorruptionError`;
-            it still holds this much before handing over. Where no child process
-            can be started (a frozen application, a spawn the operating system
-            refuses, or a child that cannot import pyppmd), such a member raises
-            :class:`~archivey.exceptions.ResourceLimitError` instead.
+            where a crash (a fault signal such as SIGSEGV) becomes
+            :class:`~archivey.exceptions.CorruptionError`; it still holds this
+            much before handing over. A child killed by SIGKILL (most often the
+            out-of-memory killer), or one that dies allocating the member's model
+            under a memory cap, raises
+            :class:`~archivey.exceptions.ResourceLimitError` instead. So does
+            such a member where no child process can be started (a frozen
+            application, an interpreter that does not know its own path, a spawn
+            the operating system refuses, or a child that cannot import pyppmd).
+            A child ended any other way (SIGTERM, a plain exit status) raises
+            :class:`~archivey.exceptions.ReadError`: not a verdict on the data.
 
             16 MiB keeps the in-process peak near 32 MiB. At pyppmd's 2 to 8 MB/s
             a member that size takes seconds to decode, so the child's start-up
@@ -473,6 +484,48 @@ DecoderLimits.UNLIMITED = DecoderLimits(
 
 
 @dataclass(frozen=True)
+class SpoolLimits:
+    """Caps on copying the archive source to temporary storage.
+
+    Some reads need the archive as a file on disk even when the caller passed a stream.
+    Today that is RAR: the ``unrar`` binary that decodes member data takes a filesystem
+    path, so a RAR opened from a ``BytesIO`` or another file object is copied to a
+    temporary file (a volume set, to a temporary directory) the first time a member has
+    to go through ``unrar``. The copy is of the whole archive, and it is removed when
+    the reader closes. A source opened from a path is read in place and never copied.
+
+    Applied from the reader's open :attr:`ArchiveyConfig.spool_limits` for its lifetime.
+    ``None`` on a field disables that guard. :attr:`UNLIMITED` disables it.
+    """
+
+    max_bytes: int | None = 2**30
+    """Most bytes one reader may write to temporary storage as a copy of its source. 1 GiB.
+
+    A volume set counts as one copy: the limit applies to the total across its
+    volumes. When the size is known before the copy starts, an archive over the limit
+    raises :class:`~archivey.exceptions.SpoolLimitExceededError` (a
+    :class:`~archivey.exceptions.ResourceLimitError`) before anything is written.
+    Otherwise the copy stops before it passes the limit. Either way the partial copy is
+    removed, and the error names this field. The limit holds for the reader, not per
+    attempt: once a copy is refused, later reads that need it are refused without
+    copying again.
+
+    ``0`` refuses every copy: a stream source then reads only the members archivey can
+    read without ``unrar``, such as stored members of a non-solid RAR. The copy goes
+    to the platform temporary directory (``tempfile.gettempdir()``); where that is
+    memory-backed, such as ``tmpfs``, this limit is a memory limit.
+    """
+
+    UNLIMITED: ClassVar[SpoolLimits]
+
+    def __post_init__(self) -> None:
+        _check_limit(self.max_bytes, cls="SpoolLimits", field_name="max_bytes")
+
+
+SpoolLimits.UNLIMITED = SpoolLimits(max_bytes=None)
+
+
+@dataclass(frozen=True)
 class ArchiveyConfig:
     """Library tuning knobs passed as ``config=`` to :func:`open_archive` / :func:`extract`.
 
@@ -487,6 +540,14 @@ class ArchiveyConfig:
     when the compressed input is known to be at least
     ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`` bytes and the decompressed size can be
     verified, so a truncated stream cannot be swallowed silently.
+
+    rapidgzip runs in a child Python process, one per open stream, because it aborts the
+    process on a stream that ends early; that costs about 45 ms per stream to start and
+    open, which is why the ``AUTO`` threshold is 16 MiB. Where no child can be started
+    (a frozen application, archivey imported from a zip, or a spawn or temporary file
+    the operating system refuses), ``AUTO`` uses the standard library, logging one
+    warning per process on the ``archivey.streams`` logger, and ``ON`` raises
+    :class:`~archivey.exceptions.ResourceLimitError`. ``OFF`` never starts a child.
     """
 
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
@@ -537,6 +598,9 @@ class ArchiveyConfig:
 
     See :class:`DecoderLimits`.
     """
+
+    spool_limits: SpoolLimits = SpoolLimits()
+    """Caps on copying a stream source to temporary storage. See :class:`SpoolLimits`."""
 
     detection_budget: DetectionBudget = BALANCED_BUDGET
     """Upper bounds on what format detection may read and decode.
@@ -612,6 +676,12 @@ class ArchiveyConfig:
             self.decoder_limits,
             DecoderLimits,
             call="ArchiveyConfig(decoder_limits=…)",
+            allow_none=False,
+        )
+        check_instance(
+            self.spool_limits,
+            SpoolLimits,
+            call="ArchiveyConfig(spool_limits=…)",
             allow_none=False,
         )
         check_instance(

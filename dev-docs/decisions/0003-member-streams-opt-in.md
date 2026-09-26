@@ -38,6 +38,11 @@ when the flag is set; loud-slow-rewind is allowed. `stream_members()` stays a
 single-pass decode — SEEKABLE does not require those handles to seek. The original
 decision (off by default, demand-driven indexes) is unchanged.
 
+**Amended (2026-09-26, davitf):** a `stream_members()` handle never seeks, on any
+format, with or without `seekable_members=True`: `seekable()` is `False`, `seek()`
+raises `io.UnsupportedOperation`, `tell()` works. Before, whether a pass handle could
+seek depended on the backend. `seekable_members=True` is for random `open()` only.
+
 ## Consequences
 
 - Default path: no shared-handle locks, no seek tables, no accelerators.

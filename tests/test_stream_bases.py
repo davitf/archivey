@@ -369,6 +369,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.streams.counting as counting
     import archivey.internal.streams.crypto as crypto
     import archivey.internal.streams.decompressor_stream as decompressor_stream
+    import archivey.internal.streams.rapidgzip_child as rapidgzip_child
     import archivey.internal.streams.streamtools.locked as locked
     import archivey.internal.streams.streamtools.slice as slice_mod
     import archivey.internal.streams.streamtools.solid as solid
@@ -377,6 +378,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     forwards_or_owns = {
         archive_stream.ArchiveStream,
         codecs._AcceleratorStream,  # owns rapidgzip available_block_offsets
+        rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index
         codecs._GzipTruncationCheckStream,
         codecs._Bzip2EmptyStreamCheck,
         counting.OutputCountingStream,

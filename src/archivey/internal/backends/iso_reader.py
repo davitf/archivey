@@ -32,6 +32,7 @@ is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever
 from __future__ import annotations
 
 import importlib
+import io
 import re
 import stat
 import struct
@@ -397,6 +398,17 @@ class _PyCdlibStream(DelegatingStream):
         # nominal hierarchy, so cast at the DelegatingStream boundary.
         super().__init__(cast("BinaryIO", raw))
         raw.__enter__()  # set up the read offset; close() -> inner.close() exits the context
+        self._raw = raw
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        # pycdlib raises its own PyCdlibInvalidInput on a relative seek before the start,
+        # which the translator must read as corruption. Resolve a relative seek here and
+        # clamp it to the origin, as BytesIO does.
+        if whence == io.SEEK_CUR:
+            return super().seek(max(self._raw.tell() + offset, 0), io.SEEK_SET)
+        if whence == io.SEEK_END:
+            return super().seek(max(self._raw.length() + offset, 0), io.SEEK_SET)
+        return super().seek(offset, whence)
 
 
 class IsoReader(BaseArchiveReader):
