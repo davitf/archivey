@@ -1556,7 +1556,12 @@ class ZipReader(BaseArchiveReader):
             except _ZIP_MEMBER_READ_ERRORS as exc:
                 self._reraise_member_error(exc, member_name)
             decoded = self._watch_unverified(
-                decoded, info, member, member_name, check="weak_open_check"
+                decoded,
+                info,
+                member,
+                member_name,
+                check="weak_open_check",
+                seek_forfeits=False,
             )
             return self._verified_member_stream(decoded, info, member, member_name)
 
@@ -1596,7 +1601,12 @@ class ZipReader(BaseArchiveReader):
         )
         # Only the check byte vouched for this password; the CRC at EOF is the check.
         stream = self._watch_unverified(
-            stream, info, member, member_name, check="weak_open_check"
+            stream,
+            info,
+            member,
+            member_name,
+            check="weak_open_check",
+            seek_forfeits=True,
         )
         return self._wrap_member_stream(stream, member_name, size=size)
 
@@ -1700,7 +1710,12 @@ class ZipReader(BaseArchiveReader):
         stream: BinaryIO = decoded
         if verdict is not PasswordConfirmVerdict.CONFIRMED:
             stream = self._watch_unverified(
-                decoded, info, member, member_name, check="confirm_budget_exhausted"
+                decoded,
+                info,
+                member,
+                member_name,
+                check="confirm_budget_exhausted",
+                seek_forfeits=not hmac_anchor,
             )
         return self._verified_member_stream(stream, info, member, member_name)
 
@@ -1830,29 +1845,35 @@ class ZipReader(BaseArchiveReader):
         member_name: str,
         *,
         check: Literal["weak_open_check", "confirm_budget_exhausted"],
+        seek_forfeits: bool,
     ) -> BinaryIO:
         """Report ``ENCRYPTED_MEMBER_UNVERIFIED`` if ``stream`` is abandoned before EOF.
 
         For a password that a check weaker than the member's digest accepted: a wrong
         ZipCrypto password that passes the check byte decrypts to readable garbage,
-        and only the CRC at EOF notices.
+        and only the CRC at EOF notices. ``seek_forfeits`` is False for a WinZip AES
+        member: its HMAC survives seeks, so only a read reaching the end counts.
         """
 
-        def report() -> None:
+        def report(reason: str) -> None:
+            missed = (
+                "gave up its integrity check by seeking"
+                if reason == "seek"
+                else "was closed before its integrity check was reached"
+            )
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
                 message=(
-                    f"Encrypted ZIP member {quoted(member_name)} was closed before its "
-                    f"integrity check was reached, and the password was accepted on a "
-                    f"weaker check: the bytes read may have been decrypted with a "
-                    f"wrong password."
+                    f"Encrypted ZIP member {quoted(member_name)} {missed}, and the "
+                    f"password was accepted on a weaker check: the bytes read may have "
+                    f"been decrypted with a wrong password."
                 ),
                 context=EncryptedVerificationContext(
                     archive_name=self._archive_name,
                     member_name=member_name,
                     member_id=member._member_id if member is not None else None,
                     check=check,
-                    reason="partial_read",
+                    reason=reason,
                 ),
                 member=member,
                 logger=integrity_logger,
@@ -1862,6 +1883,7 @@ class ZipReader(BaseArchiveReader):
             stream,
             size=info.file_size,
             on_unverified=report,
+            seek_forfeits=seek_forfeits,
         )
 
     def _finish_password_attempt(

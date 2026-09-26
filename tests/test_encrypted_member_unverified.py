@@ -161,6 +161,31 @@ def test_winzip_aes_partial_read_is_reported() -> None:
 
 
 @requires("cryptography")
+def test_winzip_aes_seek_then_full_read_is_not_reported() -> None:
+    # A seek does not give up the HMAC: reading on to EOF completes it over the
+    # skipped ciphertext, so the password is checked and nothing is reported.
+    with open_archive(_AE1, password="secret", seekable_members=True) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with reader.open(member) as stream:
+            stream.seek(1)
+            assert stream.read()
+        assert _unverified(reader) == []
+
+
+@requires("cryptography")
+def test_winzip_aes_seek_then_partial_read_is_reported_as_a_partial_read() -> None:
+    with open_archive(_AE1, password="secret", seekable_members=True) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        assert member.size is not None and member.size > 2
+        with reader.open(member) as stream:
+            stream.seek(1)
+            assert stream.read(1)
+        (context,) = _unverified(reader)
+        assert context.check == "weak_open_check"
+        assert context.reason == "partial_read"
+
+
+@requires("cryptography")
 def test_winzip_aes_full_read_is_not_reported() -> None:
     with open_archive(_AE1, password="secret") as reader:
         member = next(m for m in reader.members() if m.is_file)

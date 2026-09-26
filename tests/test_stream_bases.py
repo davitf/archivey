@@ -403,8 +403,8 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # The source boundary: it wraps the archive source, and every seek-point
         # table is above it.
         source_mod.ArchiveSource,
+        # Decrypt stages below the codec: compressed-side offsets, no table.
         zip_aes.WinZipAesDecryptStream,
-        # A decrypt stage below the codec: compressed-side offsets, no table.
         zipcrypto.ZipCryptoDecryptStream,
         # Translates errors between the reader's unverified-read watch and the
         # member's verifier; like the watch, nothing above it asks it for a resume
