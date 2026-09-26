@@ -105,8 +105,9 @@ skip, not fail, when the oracle library or CLI is unavailable.
 
 The 7z corpus MUST cover core codecs supported without extras (LZMA1, LZMA2, simple
 BCJ filters, Delta, BZip2, Deflate, STORED), optional PPMd / Deflate64 and
-AES-encrypted archives under `[recommended]`. Unsupported codecs such as BCJ2 and
-unrecognized method IDs MUST raise the documented unsupported-codec error rather
+AES-encrypted archives under `[recommended]`, and BCJ2 folders written by the `7z`
+CLI (`py7zr` cannot read BCJ2, so the CLI is the only oracle for it). Unrecognized
+method IDs MUST raise the documented unsupported-codec error rather
 than returning bytes that diverge from the oracle.
 
 The RAR corpus MUST cover RAR4 and RAR5, solid and nonsolid, stored M0, symlinks,
@@ -125,7 +126,8 @@ cross-check metadata and bytes against rarfile/`unrar`.
 | --- | --- |
 | 7z corpus entry read by native reader and `py7zr` | Metadata and bytes match; skipped if oracle unavailable |
 | RAR corpus entry read by native reader and `rarfile`/`unrar` | Metadata and bytes match; skipped if oracle unavailable |
-| 7z entry uses BCJ2 or unknown method ID | Documented unsupported-codec error; no guessed output |
+| 7z entry uses BCJ2 | Bytes match `7z x`; `py7zr` is not consulted |
+| 7z entry uses unknown method ID | Documented unsupported-codec error; no guessed output |
 | RAR solid+links / multi-volume / header-encrypted entry | Exercised once native RAR is registered; skip only if `unrar`/crypto/oracle absent |
 | RAR5 `-ver` history members | Native exposes `path;n` + live path; bytes match `unrar p` exact name / `-ver`; rarfile list equality not required for history rows |
 

@@ -68,7 +68,7 @@ configured limits while `except ResourceLimitError` still catches it.
 | Error split | Meaning |
 | --- | --- |
 | `UnsupportedOperationError` | Valid API call against a reader/backend/mode that cannot provide the requested operation: random access on `streaming=True`, write through read-only RAR. Post-close use is `ArchiveyUsageError` (below). |
-| `UnsupportedFeatureError` | Valid archive uses a recognized feature Archivey does not implement: unsupported ZIP method, AES ZIP entry, 7z BCJ2, unknown coder. |
+| `UnsupportedFeatureError` | Valid archive uses a recognized feature Archivey does not implement: unsupported ZIP method, AES ZIP entry, unknown 7z coder, a 7z coder graph that is not a tree of chains. |
 | `ResourceLimitError` | A configured resource limit was exceeded (`ListingLimits` materialization caps, `ExtractionLimits` bomb guards, a `DecoderLimits` cap on archive-declared decoder memory or key-derivation work, or `SpoolLimits`). |
 | `SpoolLimitExceededError` | The `SpoolLimits.max_bytes` cap refused a copy of the archive source to temporary storage. |
 

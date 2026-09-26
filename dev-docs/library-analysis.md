@@ -309,8 +309,8 @@ inherits the first. liblzma has neither flaw. Because liblzma refuses a raw chai
 only filter is a branch filter, a separately-staged BCJ frames its input as LZMA2
 *uncompressed* chunks (3 bytes per 64 KiB, no compression work) so the chain becomes
 `[<branch filter>, FILTER_LZMA2]`. Output is byte-identical to `pybcj`'s wherever `pybcj`
-is correct, verified across all six filters; see `known-issues.md`. BCJ2 remains
-unsupported.
+is correct, verified across all six filters; see `known-issues.md`. BCJ2 is not a
+liblzma filter; archivey decodes it in pure Python (`internal/streams/bcj2.py`).
 
 ### raw Deflate / zlib — stdlib `zlib`, accelerated by `rapidgzip`
 

@@ -15,8 +15,6 @@ Triage (2026-07, vs libarchive ``libarchive/test``) — known failures marked
 ``xfail``:
 
 **7z**
-* **SPEC** ``*_bcj2_*`` — BCJ2 multi-packed-stream folders correctly raise
-  ``UnsupportedFeatureError`` (format-7z rejects BCJ2).
 * **GAP** ``*_arm64`` (method ``0x0a``) — newer ARM64 BCJ filter not in our
   method table; correctly raises ``UnsupportedFeatureError`` today.
 
@@ -133,42 +131,6 @@ _PART_RE = re.compile(
 # Triaged divergences. Values are (strict, reason).
 _XFAIL: dict[str, tuple[bool, str]] = {
     # --- 7z ---
-    "test_read_format_7zip_bcj2_bzip2.7z": (
-        True,
-        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
-    ),
-    "test_read_format_7zip_bcj2_copy_1.7z": (
-        True,
-        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
-    ),
-    "test_read_format_7zip_bcj2_copy_2.7z": (
-        True,
-        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
-    ),
-    "test_read_format_7zip_bcj2_copy_lzma.7z": (
-        True,
-        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
-    ),
-    "test_read_format_7zip_bcj2_deflate.7z": (
-        True,
-        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
-    ),
-    "test_read_format_7zip_bcj2_lzma1_1.7z": (
-        True,
-        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
-    ),
-    "test_read_format_7zip_bcj2_lzma1_2.7z": (
-        True,
-        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
-    ),
-    "test_read_format_7zip_bcj2_lzma2_1.7z": (
-        True,
-        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
-    ),
-    "test_read_format_7zip_bcj2_lzma2_2.7z": (
-        True,
-        "SPEC: BCJ2 multi-packed-stream folders are unsupported",
-    ),
     "test_read_format_7zip_deflate_arm64.7z": (
         True,
         "GAP: ARM64 BCJ method 0x0a not in method table",

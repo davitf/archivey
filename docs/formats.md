@@ -15,7 +15,7 @@ most often surprise callers. For more depth, the maintainer handbook has pages o
 | `.tar.gz` / `.bz2` / `.xz` | yes | — | needs decompression | solid | Prefer `stream_members()` |
 | Directory | yes | — | indexed | direct | Same stream-capability defaults as archives |
 | Single-file gz/bz2/xz | yes | — | one member | seek with `SEEKABLE` | See single-file section |
-| 7z | yes (common codecs) | `[recommended]` for PPMd/Deflate64/zstd/brotli/AES | indexed | solid folders | Native reader; BCJ2 unsupported |
+| 7z | yes (common codecs) | `[recommended]` for PPMd/Deflate64/zstd/brotli/AES | indexed | solid folders | Native reader; BCJ2 in pure Python |
 | RAR | yes (metadata) | **`unrar` or `rar` binary for data**; `[recommended]` for header crypto | native metadata | solid when solid | No write |
 | ISO | no | `[recommended]` (`pycdlib`) | indexed | direct | Seekable source required |
 | `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | — | rewind seek unless indexed later | |
@@ -163,7 +163,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **Native** header parse + stdlib codecs for the common set (LZMA/LZMA2/BCJ/Delta/
   Deflate/BZip2/stored). No `py7zr` on the read path.
 - `[recommended]` adds PPMd, Deflate64, Zstd, Brotli, and AES.
-- **BCJ2** is detected and rejected (`UnsupportedFeatureError`) — never garbage output.
+- **BCJ2** (what 7-Zip writes for x86 executables at `-mx9`) reads on a core install,
+  encrypted or not. Its decoder is pure Python, about half the speed of the same file under
+  BCJ. It keeps no seek points, so a backward seek decodes again from the folder start.
 - Solid folders: `stream_members()` decodes each folder once; random `open()` of a mid-
   folder member may re-decode from the folder start.
 - **AES + store/copy with no folder digest and no member CRC:** 7z has no password check

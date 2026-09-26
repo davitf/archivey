@@ -152,6 +152,10 @@ bytes after the last output byte. That check SHALL read at most one byte from ea
 input and SHALL NOT drain an input. It SHALL NOT allocate from a declared size: output
 is produced in bounded blocks, and each input is read in bounded blocks.
 
+The LZMA decoders of a BCJ2 folder's branches run at once, so the dictionary sizes they
+declare SHALL be checked together against `DecoderLimits.max_decoder_memory`, before any
+branch decoder is built, and exceeding it SHALL raise `ResourceLimitError`.
+
 #### Scenario: BCJ2 decode matrix
 
 | Case | Expected |
@@ -165,3 +169,4 @@ is produced in bounded blocks, and each input is read in bounded blocks.
 | `call` stream cut short | `TruncatedError` naming the stream |
 | `main` longer than the output consumes | `CorruptionError`, after reading one byte past the end, not the rest of `main` |
 | `open()` of the second member of a BCJ2 folder | Bytes match; decoded from the folder start |
+| BCJ2 folder whose branch dictionaries each fit `max_decoder_memory` but together do not | `ResourceLimitError`; no branch decoder is built |

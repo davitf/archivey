@@ -117,9 +117,10 @@ Blake2sp backend.
 
 The system SHALL keep `py7zr` and `rarfile` as **dev-only** test oracles. 7z writing is
 not shipped in the current release (no 7z-writing extra); when writing lands in a later
-phase it MAY reintroduce a dedicated write extra. BCJ2-filtered 7z members MUST remain
-unsupported by every extra. No user-facing extra SHALL pull an alternate RAR decompressor
-library or tool wrapper, and no extra can supply the RARLAB `unrar` binary.
+phase it MAY reintroduce a dedicated write extra. BCJ2-filtered 7z members SHALL be
+read on a core install, by archivey's own decoder; no extra adds or replaces it. No
+user-facing extra SHALL pull an alternate RAR decompressor library or tool wrapper, and
+no extra can supply the RARLAB `unrar` binary.
 
 Development tools, oracle libraries, and fixture generators such as `ncompress` SHALL live
 in the PEP 735 `dev` dependency group, not in user-facing runtime extras. The system SHALL

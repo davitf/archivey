@@ -233,7 +233,7 @@ Support SHALL be computed across the format backend and codecs/tools:
 - Requirements a format needs only for some members or at read time — `cryptography`
   for encrypted members, the `unrar` binary for RAR member data — SHALL NOT lower
   support.
-- By-design unsupported features such as 7z BCJ2 and unknown 7z method IDs SHALL
+- By-design unsupported features such as unknown 7z method IDs SHALL
   not lower support; members using them raise `UnsupportedFeatureError`.
 
 `list_supported_formats()` SHALL return FULL plus PARTIAL formats.
@@ -272,7 +272,7 @@ conservative answer.
 | 7z availability without the optional 7z packages | PARTIAL; missing names each absent package and `[recommended]`; LZMA2/bzip2/copy members still read |
 | ZSTD availability before Python 3.14 without zstd backend | NONE with `backports.zstd` / `pip install archivey[recommended]` hint |
 | GZIP availability | FULL; no missing components |
-| 7z with the optional 7z packages installed | FULL even though BCJ2 still raises `UnsupportedFeatureError` |
+| 7z with the optional 7z packages installed | FULL even though an unknown method ID still raises `UnsupportedFeatureError` |
 | ZIP with every optional member codec installed | FULL; no missing components |
 | ZIP missing deflate64 and/or zstd packages | PARTIAL; missing names absent codec packages; stored/deflate members still list/read |
 | `format_availability(StreamFormat.ZSTD)` | `ArchiveyUsageError`; no `FormatAvailability` returned |
