@@ -369,6 +369,17 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **TAR names decode as UTF-8 whatever the locale.** Without `encoding=`, ustar and GNU
+  names (and `uname`, `gname`, link targets) used to follow Python's `tarfile` default,
+  the process filesystem encoding on POSIX, so the same archive listed differently under
+  a non-UTF-8 locale. They now decode as UTF-8, with bytes that are not UTF-8 kept as
+  surrogate escapes as before. A PAX record whose bytes are not UTF-8 falls back to the
+  same codec, so under such a locale it now lists as surrogate escapes, with `raw_name`
+  the stored bytes rather than a re-encoding. On a host whose filesystem encoding is not
+  UTF-8, extraction follows the decoded name: it is written in the locale's encoding
+  rather than as the stored bytes, and a name the locale cannot represent is rejected
+  by the extraction guard. Pass `encoding=` to read a legacy archive, or the locale's
+  encoding to extract as before.
 - **A `stream_members()` handle never seeks, on any format.** It reports
   `seekable()` as `False` and `seek()` raises `io.UnsupportedOperation`, with or
   without `seekable_members=True` and with or without `streaming=True`; `tell()` still

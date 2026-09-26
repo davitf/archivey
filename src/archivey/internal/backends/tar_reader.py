@@ -484,10 +484,17 @@ class TarReader(BaseArchiveReader):
             fileobj=fileobj,
             mode=mode,
             errorlevel=1,  # raise on fatal read errors (truncation/corruption surface below)
-            # None → tarfile.ENCODING: UTF-8 on Windows, the process filesystem
-            # encoding on POSIX (usually UTF-8, but not under a non-UTF-8 locale).
-            # Only ustar/GNU names use it; a PAX path record is tried as UTF-8 first.
-            encoding=self._encoding,
+            # UTF-8 unless the caller passed encoding=. tarfile's own default,
+            # tarfile.ENCODING, is the process filesystem encoding on POSIX, so the
+            # same archive would list differently under a non-UTF-8 locale. tarfile
+            # keeps its errors="surrogateescape" default, so undecodable bytes survive
+            # as U+DC80..U+DCFF. ustar/GNU names (and uname/gname/linkname) always use
+            # this codec. A PAX record is decoded strictly as UTF-8 first and falls
+            # back to this codec when that fails (or for its own hdrcharset=BINARY), so
+            # it reaches PAX bytes that are not UTF-8 too. There is no config-level
+            # default as ZIP has: ZIP's fallback codec serves a name it sniffed as not
+            # UTF-8, and TAR sniffs nothing, so encoding= per call is the override.
+            encoding=self._encoding if self._encoding is not None else "utf-8",
         )
 
     def _translate_open_error(self, exc: Exception) -> ArchiveyError:

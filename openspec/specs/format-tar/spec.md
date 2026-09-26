@@ -296,3 +296,25 @@ listing accounts for.
 | Missing / short trailer | `ARCHIVE_EOF_MARKER_MISSING`; the scan does not run | Raises on that code |
 | `.tar.gz`, junk inside the gzip stream after the trailer | Tail decompressed, at most 1 MiB; `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
 | `.tar.gz`, junk after the gzip stream or a missing gzip footer | No diagnostic, no error | No diagnostic, no error |
+
+### Requirement: Decode TAR member names as UTF-8 by default
+
+When the caller does not pass `encoding=`, the TAR backend SHALL decode ustar and GNU
+long-name fields, and the other header strings `tarfile` decodes with the archive codec
+(`uname`, `gname`, `linkname`), as UTF-8 with `errors="surrogateescape"`. The result MUST
+NOT depend on the process locale or `sys.getfilesystemencoding()`. A caller-passed
+`encoding=` SHALL replace UTF-8 for those fields, with the same error handler. A PAX
+record SHALL be decoded strictly as UTF-8 first; when that fails, or when the member's
+own header block says `hdrcharset=BINARY`, it SHALL be decoded with the same archive
+codec and error handler, so `encoding=` (or the UTF-8 default) applies to a PAX record
+only when its bytes are not UTF-8.
+
+#### Scenario: TAR default name decoding
+
+| Case | Expected |
+| --- | --- |
+| ustar or GNU long name stored as UTF-8 `café.txt`, no `encoding=`, filesystem encoding Latin-1 or ASCII | `name == "café.txt"`; `raw_name` is the UTF-8 bytes |
+| ustar name stored as Latin-1 `caf\xe9.txt`, no `encoding=`, any locale | `name == "caf\udce9.txt"`; `raw_name == b"caf\xe9.txt"` |
+| ustar name stored as UTF-8 `café.txt`, `encoding="latin-1"` | `name == "cafÃ©.txt"`; `raw_name` is the UTF-8 bytes |
+| PAX `path` record holding the non-UTF-8 bytes `caf\xe9\xe9.txt`, no `encoding=`, any locale | `name == "caf\udce9\udce9.txt"`; `raw_name == b"caf\xe9\xe9.txt"` |
+| The same PAX record, `encoding="latin-1"` | `name == "caféé.txt"` |
