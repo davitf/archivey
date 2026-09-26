@@ -767,6 +767,26 @@ covers it. Header-stored targets (TAR, RAR5, Rock Ridge) were already weighed at
 registration and bounded by their header parsers. Found on PR #315 (S21-K10); tracked
 internally.
 
+### O20. A 7z BCJ2 folder decodes in pure Python, and its branches decode unseen — accepted / mitigated
+
+**CPU.** The BCJ2 decoder's Python loop runs once per branch candidate (`E8`, `E9`,
+`0F 8x`), not per byte. A `main` stream made of nothing but candidates is the worst case:
+measured 1.8 MB/s for every byte `E8` and 3.4 MB/s for `0F 80` pairs (CPython 3.11),
+against 26 MB/s on a real executable. LZMA2 compresses such a stream to almost nothing,
+so a small archive can declare a large, slow member. *Accepted:* `ExtractionLimits`
+(`max_extracted_bytes`, `max_ratio`) bound it in `extract_all`, and a caller reading
+`open()` to the end has no limit, as with any decompression bomb; the amount is the same,
+only the rate is lower. A "work per output byte" field on `DecoderLimits` was considered
+and not added: no other codec has one.
+
+**Memory.** Three LZMA decoders run at once in a BCJ2 folder (`main`, `call`, `jump`),
+each with a dictionary the archive declares. *Mitigated:* each is capped on its own by
+`DecoderLimits.max_decoder_memory`, as for any 7z LZMA coder, and the folder's sum is
+checked against the same cap before any of them is built
+(`sevenzip_pipeline.open_folder_pipeline`). Bytes decoded inside a branch never reach the
+folder stream that `ExtractionLimits` counts, so the decoder's end-of-output check reads
+at most one byte from each branch and never drains one.
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed

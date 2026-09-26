@@ -343,7 +343,9 @@ class DecoderLimits:
 
     Attributes:
         max_decoder_memory: Largest archive-declared working set a single
-            decoder may allocate. The default is 2 GiB.
+            decoder may allocate. The default is 2 GiB. A 7z BCJ2 folder runs its
+            LZMA decoders at once (``main``, ``call`` and ``jump``), so their
+            dictionaries count together against it.
 
             That number is a policy choice, not a limit of the format, so here
             is what it was chosen against. Measured on 7-Zip 23.01, a writer

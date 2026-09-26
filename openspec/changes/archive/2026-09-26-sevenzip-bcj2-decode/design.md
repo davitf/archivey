@@ -326,3 +326,46 @@ in the pack direction is the same ordering it restores for linear chains.
    fits under a cap (a `DecoderLimits` field, or the existing 2 GiB decoder cap), and
    adding a dependency with no Linux wheel. The recommendation is not now: first ship the
    pure-Python stream, then decide on measured demand.
+
+## Implementation notes (2026-09-26)
+
+What changed from the design while implementing it, measured on CPython 3.11 in the
+same container setup as above.
+
+**Speed (D3).** The prototype's cost was mostly its candidate search, not its byte
+reader. `re` scans a character-class pattern (`[\xe8\xe9]|\x0f[\x80-\x8f]`) one position
+at a time: on `git`'s 3.6 MB `main` stream the scan alone took about 100 ms, as much
+as the rest of the loop. A single-literal search over the same bytes took 8 ms. The
+decoder now translates each `main` block once (`E9` → `E8`, `80`-`8F` → `80`) and finds
+candidates with two `bytes.find` calls. The `call`/`jump` reader (`_Bytes.take(4)` plus
+`int.from_bytes`, 325 ns per target) became `_Targets`, which unpacks a block into ints
+with one `struct` call (about 100 ns per target); removing the reader class entirely
+would save only about 25 ns more per target. Result, best of three:
+
+| Input | Prototype | Implementation |
+| --- | --- | --- |
+| `git` BCJ2 stage | 13.4 MB/s | 26 MB/s |
+| `python3.11` BCJ2 stage | 17.1 MB/s | 33 MB/s |
+| `git`, whole member through `open_archive` | 10.1 MB/s | 14.7 MB/s |
+| hostile: every `main` byte `E8` | 1.5 MB/s | 1.8 MB/s |
+| hostile: `main` all `0F 80` | 1.9 MB/s | 3.4 MB/s |
+
+**Branch sizes.** Each branch is wrapped in a slice of its declared unpack size. 7-Zip's
+`call` and `jump` LZMA streams have no end marker, and the decoder reads its inputs in
+blocks, so an uncapped LZMA1 decoder raised "Compressed file ended before the
+end-of-stream marker" past its data. The end-of-output check (D5) now reads that slice.
+
+**Open question 1, answered.** libarchive's nine `test_read_format_7zip_bcj2_*`
+fixtures, written by an older 7-Zip, leave no `rc` bytes and a final `code` of 0. But
+7-Zip 23.01 at `-mx9` on `python3.11` leaves **one** unused `rc` byte, because the
+decoder normalises lazily and never needs the encoder's last flush byte. So a strict
+"no `rc` bytes left" check would refuse good archives, and D5 stays as written: `rc`
+is not checked. A check on the final `code` alone was not added.
+
+**D6 memory.** `DecoderLimits.max_decoder_memory` now covers the LZMA dictionary, so
+the folder unit applies: `open_folder_pipeline` sums a BCJ2 folder's declared LZMA1 and
+LZMA2 dictionaries and checks the total against the cap before building any branch.
+
+**Linear folders in any list order.** The planner reads the graph, not the list order,
+so a linear chain whose coders are listed out of decode order now decodes instead of
+raising "non-linear wiring".

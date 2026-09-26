@@ -28,6 +28,12 @@ promise with that line; treat `0.2.0` as the first release of this library.
   it raises the new `SpoolLimitExceededError`, a `ResourceLimitError` subclass, before
   anything is written; `None` removes the limit. Before this the copy had no bound. Path
   sources are never copied.
+- **7z BCJ2 folders read.** BCJ2 is what 7-Zip writes for x86 executables at `-mx9`; it
+  was refused with `UnsupportedFeatureError` before. The decoder is pure Python on a core
+  install, works under 7z AES (including encrypted headers), and is forward-only: a BCJ2
+  member does not seek, and reads at about half the speed of the same file under BCJ.
+  A BCJ2 folder's LZMA dictionaries count together against
+  `DecoderLimits.max_decoder_memory`.
 - **`ArchiveReader.format_info`**: the `FormatInfo` that `open_archive`'s own detection
   produced (confidence, `detected_by`, `payload_offset`), or `None` under `format=`.
   `archivey info` prints it instead of detecting the file a second time.

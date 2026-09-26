@@ -400,7 +400,7 @@ Notes:
 7z and RAR are read with **native** parsers, not `py7zr` / `rarfile`:
 - 7z: native header parse + stdlib `lzma`/`bz2`/`zlib` for the common codecs
   (core, zero-dep). PPMd/Deflate64 and AES decryption via the `[recommended]` extra;
-  BCJ2 is detected and rejected. `py7zr` is a **dev oracle** only
+  BCJ2 decodes in pure Python. `py7zr` is a **dev oracle** only
 
 - RAR: native RAR3/RAR5 metadata parser (drops `rarfile`); the external `unrar`
   binary remains the decompressor for member data. Encrypted headers are decrypted

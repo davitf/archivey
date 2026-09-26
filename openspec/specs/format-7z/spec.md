@@ -197,7 +197,7 @@ verification stage as data is read.
 | PPMd (var.H) | `0x030401` | `pyppmd` | `[recommended]` |
 | Deflate64 | `0x040109` | `inflate64` | `[recommended]` |
 | AES-256 / SHA-256 | `0x06f10701` | crypto backend | `[recommended]` |
-| BCJ2 | `0x0303011B` | none | unsupported |
+| BCJ2 | `0x0303011B` | archivey's own decoder (pure Python) | core |
 
 The `[recommended]` extra SHALL provide PPMd, Deflate64, Zstd on Python versions without
 stdlib zstd, Brotli, LZ4, and AES support in one install.
@@ -207,6 +207,20 @@ filter chain: liblzma can silently truncate the final BCJ look-ahead bytes when
 LZMA1 lacks an end-of-stream marker. The reader MUST stage LZMA1 (and any non-BCJ
 `lzma` filters such as Delta) through stdlib `lzma`, then apply each BCJ stage
 separately. LZMA2+BCJ remains a single stdlib filter chain.
+
+A folder SHALL be decoded when its coder graph is a **tree**: exactly one coder
+output is left unbound (the folder's output), every other output feeds exactly one
+input, every input is either bound or a packed stream, and no coder feeds itself.
+Each input is decoded as its own branch — a linear chain planned by the rules
+above, ending at one packed stream — so a four-input BCJ2 coder over four
+branches, each with its own AES coder when the folder is encrypted, is one tree.
+Every packed stream SHALL be read through its own view of the archive, with its
+own position. A graph that cannot be a valid folder SHALL raise `CorruptionError`:
+an input that is neither bound nor packed, an output bound to two inputs, or a
+cycle. A valid graph the reader does not run SHALL raise `UnsupportedFeatureError`:
+more than one unbound output, or a multi-input coder other than BCJ2. A branch's
+coders SHALL be planned with that branch's own sizes, so a coder's input length is
+the output length of the coder before it in the same branch.
 
 #### Scenario: coder-chain matrix
 
@@ -219,11 +233,16 @@ separately. LZMA2+BCJ remains a single stdlib filter chain.
 | AES + LZMA2 folder | Crypto stage decrypts before LZMA2 decompression |
 | LZ4 folder (`0x04f71104`) with `lz4` installed | Shared `Codec.LZ4` returns original bytes |
 | LZ4 folder without `lz4` | `PackageNotInstalledError` names `lz4` and the `[recommended]` extra |
+| 7-Zip `-mx9` folder: `BCJ2` over `LZMA2`, `LZMA`, `LZMA` and one raw pack stream | Four branches over four packed streams return the original bytes |
+| Same folder, encrypted: an AES coder on each of the four branches | Each branch decrypts, then decodes; the original bytes return |
+| Coder output bound to two inputs, or a coder bound to itself | `CorruptionError`; no output bytes |
+| Same malformed graph in an encrypted folder | `CorruptionError` on the first attempt; not reported as a wrong password |
+| BCJ2 folder whose `main` branch is `AES` then `BZip2` | The BZip2 stage's input length is the AES coder's output, not a sibling branch's |
 
 ### Requirement: Reject unsupported codecs without fallback
 
 The system SHALL raise `UnsupportedFeatureError` naming the codec or method ID
-when a folder uses a coder with no available backend. This includes BCJ2, newer
+when a folder uses a coder with no available backend. This includes newer
 branch filters absent from installed liblzma, and unrecognized method IDs. The
 reader MUST NOT return garbage and MUST NOT fall back to `py7zr` or another
 third-party reader. PPMd and Deflate64 are optional-supported via
@@ -233,7 +252,8 @@ third-party reader. PPMd and Deflate64 are optional-supported via
 
 | Case | Expected |
 | --- | --- |
-| Folder uses BCJ2 | `UnsupportedFeatureError` names BCJ2; no output bytes |
+| Folder uses BCJ2 | Member is decoded, not rejected |
+| Folder uses a multi-input coder other than BCJ2 | `UnsupportedFeatureError` names the method ID |
 | Folder uses unknown method ID | `UnsupportedFeatureError` names the method ID |
 | Folder uses PPMd with `pyppmd` installed | Member is decoded, not rejected |
 | Folder uses LZMA1+BCJ | Member is decoded via a staged BCJ filter, not rejected |
@@ -438,7 +458,9 @@ LZMA1+BCJ folders SHALL still NOT be decoded via a single combined `lzma`
 `FORMAT_RAW` filter chain: liblzma can silently truncate the final BCJ look-ahead
 bytes when LZMA1 lacks an end-of-stream marker (BPO-21872). The reader MUST stage
 LZMA1 (and any non-BCJ `lzma` filters such as Delta) through stdlib `lzma`, then
-apply each BCJ stage separately. BCJ2 (`0x0303011B`) remains unsupported.
+apply each BCJ stage separately. BCJ2 (`0x0303011B`) is not a branch filter of
+this kind and does not go through liblzma; it is decoded by archivey's own
+decoder.
 
 #### Scenario: BCJ decode matrix
 
@@ -486,3 +508,50 @@ covered by the bullets below.
 | Non-solid 7z (`-ms=off`) with links | Each link's own folder decoded once, in both modes |
 | `read_link_targets=False`, `members()` then a pass reading no stream | No bytes decoded for link targets |
 | `read_link_targets=False`, `extract_all()` accepting every member, either mode | Each folder decoded once; accepted links resolved; no second decode for their targets |
+
+### Requirement: Decode BCJ2 folders
+
+The system SHALL decode the BCJ2 coder (`0x0303011B`) on a core install, with no
+optional package. The coder's four inputs, in coder order, are `main`, `call`, `jump`
+and the range-coder stream `rc`. Each input SHALL be decoded as its own branch of the
+folder's coder tree over its own packed stream.
+
+The decoder SHALL produce exactly the coder's declared unpack size. It SHALL copy
+`main` up to and including each branch candidate (`E8`, `E9`, or `0F 80`-`0F 8F`),
+decode one range-coded bit for it, and on a 1 replace the next four output bytes with
+the big-endian absolute target from `call` (for `E8`) or `jump` (otherwise),
+converted to the little-endian relative form `target - (position + 4)`. No bit SHALL
+be decoded for a candidate that is the last output byte.
+
+A BCJ2 member's `compression` SHALL list the BCJ2 coder, then the coders of its
+`main` branch, in the pack direction the `CompressionMethod` contract states. The
+coders of the `call`, `jump` and `rc` branches SHALL NOT be listed.
+
+The BCJ2 folder stream SHALL be forward-only. A random-access `open()` of a member
+decodes from the folder start, and a sequential `stream_members()` pass decodes each
+folder once.
+
+The decoder SHALL raise `TruncatedError` when any input ends before the declared
+output is produced, and `CorruptionError` when `main`, `call` or `jump` still holds
+bytes after the last output byte. That check SHALL read at most one byte from each
+input and SHALL NOT drain an input. It SHALL NOT allocate from a declared size: output
+is produced in bounded blocks, and each input is read in bounded blocks.
+
+The LZMA decoders of a BCJ2 folder's branches run at once, so the dictionary sizes they
+declare SHALL be checked together against `DecoderLimits.max_decoder_memory`, before any
+branch decoder is built, and exceeding it SHALL raise `ResourceLimitError`.
+
+#### Scenario: BCJ2 decode matrix
+
+| Case | Expected |
+| --- | --- |
+| 7-Zip `-mx9` archive of an x86-64 executable | Bytes match the original file; `member.compression` is `(BCJ2, LZMA2)`: the root, then its `main` branch in the pack direction, without the `call`, `jump` and `rc` side streams |
+| Solid `-mx9` folder of several executables | Every member's bytes match; `stream_members()` decodes the folder once |
+| Encrypted `-mx9` BCJ2 folder with the right password | Bytes match; the password check succeeds by folder decode and CRC |
+| Encrypted BCJ2 folder with a wrong password | Rejected by the password check; no bytes returned |
+| Output whose last byte is `E8`, or whose last byte is `0F` | Bytes match; no range-coder bit is read for the final opcode |
+| Forced BCJ2 over non-executable data | Bytes match |
+| `call` stream cut short | `TruncatedError` naming the stream |
+| `main` longer than the output consumes | `CorruptionError`, after reading one byte past the end, not the rest of `main` |
+| `open()` of the second member of a BCJ2 folder | Bytes match; decoded from the folder start |
+| BCJ2 folder whose branch dictionaries each fit `max_decoder_memory` but together do not | `ResourceLimitError`; no branch decoder is built |

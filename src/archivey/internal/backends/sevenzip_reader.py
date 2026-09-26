@@ -9,7 +9,8 @@ Module split:
 
 Open path: signature → ``parse_header_block`` → (one encoded-header layer) →
 ``materialize_archive`` → list members. Member open folds the folder's packed
-slice through :func:`open_folder_pipeline`; solid folders use
+slices (one view per pack stream; a BCJ2 folder has four) through
+:func:`open_folder_pipeline`; solid folders use
 :class:`~archivey.internal.streams.streamtools.solid.SolidBlockReader` so one
 decode serves consecutive files.
 
@@ -56,6 +57,7 @@ from archivey.internal.backends.sevenzip_parser import (
     EncodedHeader,
     PlainHeader,
     SevenZipArchive,
+    SevenZipCoder,
     SevenZipFileRecord,
     SevenZipFolder,
     compression_method_for_coder,
@@ -179,6 +181,35 @@ def _folder_codec_rejects(folder: SevenZipFolder) -> bool:
         if method is not None and method.codec in REJECTING_CODECS:
             return True
     return False
+
+
+def _compression_coders(folder: SevenZipFolder) -> list[SevenZipCoder]:
+    """The folder's coders from its output down each coder's first input.
+
+    Listing never validates the graph (only decoding does, in ``plan_folder``), so this
+    walk tolerates any wiring: it stops at a pack stream, an unbound input or a coder
+    it has already visited. A graph with no single output falls back to the coder
+    list reversed, which is the same order for a linear chain written in list order.
+    """
+    coders = folder.coders
+    bound = dict(folder.bind_pairs)
+    consumed = set(bound.values())
+    roots = [i for i in range(len(coders)) if i not in consumed]
+    if len(roots) != 1 or any(c.num_out_streams != 1 for c in coders):
+        return list(reversed(coders))
+    in_base: list[int] = []
+    total = 0
+    for coder in coders:
+        in_base.append(total)
+        total += coder.num_in_streams
+    walk: list[SevenZipCoder] = []
+    seen: set[int] = set()
+    index: int | None = roots[0]
+    while index is not None and index not in seen and 0 <= index < len(coders):
+        seen.add(index)
+        walk.append(coders[index])
+        index = bound.get(in_base[index])
+    return walk
 
 
 @dataclass(frozen=True)
@@ -408,16 +439,13 @@ class SevenZipReader(BaseArchiveReader):
     ) -> list[tuple[CompressionMethod, ...]]:
         """One public compression-chain tuple per folder (shared by its members).
 
-        ``ArchiveMember.compression`` is in compress order, and a linear chain —
-        one packed stream into the first coder, each coder's output bound to the
-        next one's input — lists its coders in decode order, so walk them
-        backwards. That is also the order 7-Zip lists a member's ``Method`` in:
-        ``-mf=BCJ`` reads ``BCJ LZMA2``. Listing does not check the wiring; only
-        decoding does (``_check_linear_coder_chain`` in ``plan_folder``). A folder
-        outside that shape gets the same reversal as a best effort: for BCJ2,
-        7-Zip writes the BCJ2 coder last, so it leads the tuple, but the three
-        coders on its side streams follow in no meaningful order, and whether they
-        belong in the tuple at all is not settled yet.
+        ``ArchiveMember.compression`` is in compress order: pre-filters first, the
+        packing codec last. :func:`_compression_coders` walks the coder graph from the
+        folder's output down each coder's first input, which is that order. For a
+        linear chain that is every coder (7-Zip's ``-mf=BCJ`` reads ``BCJ LZMA2``). For
+        BCJ2 it is BCJ2, then its ``main`` branch: ``(BCJ2, LZMA2)``. The ``call``,
+        ``jump`` and ``rc`` side streams are part of BCJ2, not codecs the member was
+        packed with, so they are not listed.
 
         A coder the registry does not know is listed as ``UNKNOWN`` rather than
         dropped, so the chain never looks shorter than it is. AES is left out: it
@@ -428,7 +456,7 @@ class SevenZipReader(BaseArchiveReader):
             out.append(
                 tuple(
                     compression_method_for_coder(coder)
-                    for coder in reversed(folder.coders)
+                    for coder in _compression_coders(folder)
                     if not is_aes(coder.method)
                 )
             )
@@ -813,19 +841,23 @@ class SevenZipReader(BaseArchiveReader):
         """What the entry is by everything except the reparse-point attribute bit."""
         return MemberType.DIRECTORY if record.is_directory else MemberType.FILE
 
-    def _folder_pack_view(self, folder_index: int) -> BinaryIO:
+    def _folder_pack_views(self, folder_index: int) -> list[BinaryIO]:
+        """One view per pack stream of the folder, in ``packed_indices`` order.
+
+        A BCJ2 folder has four; its decoder reads them all at once, so each needs its
+        own position on the shared source.
+        """
         folder = self._archive.folders[folder_index]
-        pack_count = len(folder.packed_indices)
-        if pack_count != 1:
-            raise UnsupportedFeatureError(
-                "7z folders with multiple packed streams are not supported"
+        first = self._folder_pack_starts[folder_index]
+        views: list[BinaryIO] = []
+        for pack_index in range(first, first + len(folder.packed_indices)):
+            if pack_index >= len(self._archive.pack_sizes):
+                raise CorruptionError("7z folder references a missing packed stream")
+            pack_offset = (
+                self._archive.pack_pos + self._archive.pack_positions[pack_index]
             )
-        pack_index = self._folder_pack_starts[folder_index]
-        if pack_index >= len(self._archive.pack_sizes):
-            raise CorruptionError("7z folder references a missing packed stream")
-        pack_offset = self._archive.pack_pos + self._archive.pack_positions[pack_index]
-        pack_size = self._archive.pack_sizes[pack_index]
-        return self._view(pack_offset, pack_size)
+            views.append(self._view(pack_offset, self._archive.pack_sizes[pack_index]))
+        return views
 
     def _open_folder_stream(
         self,
@@ -838,7 +870,7 @@ class SevenZipReader(BaseArchiveReader):
         folder = self._archive.folders[folder_index]
         password = self._password_for_folder(folder_index, member)
         stream = open_folder_pipeline(
-            self._folder_pack_view(folder_index),
+            self._folder_pack_views(folder_index),
             folder,
             password=password,
             key_cache=self._key_cache,
@@ -950,7 +982,7 @@ class SevenZipReader(BaseArchiveReader):
 
         Raises the wrong-password ``EncryptionError`` on ``REJECTED`` so
         ``_PasswordCandidates.attempt`` moves to the next candidate. A bounded plan
-        reads at most ``PASSWORD_CONFIRM_MAX_INPUT_BYTES`` of packed input: a block-transform
+        reads at most ``PASSWORD_CONFIRM_MAX_INPUT_BYTES`` of each packed stream: a block-transform
         codec can otherwise consume far more input than the plaintext prefix it
         produces. Running out of that capped input (a short read, or a decoder error,
         once the cap is spent) is not evidence about the key, so it is
@@ -958,22 +990,28 @@ class SevenZipReader(BaseArchiveReader):
         took to produce.
         """
         folder = self._archive.folders[folder_index]
-        pack = self._folder_pack_view(folder_index)
-        source: BinaryIO = pack
-        capped: SlicingStream | None = None
-        pack_size = self._archive.pack_sizes[self._folder_pack_starts[folder_index]]
-        if plan.bounded and pack_size > PASSWORD_CONFIRM_MAX_INPUT_BYTES:
-            # The cap is a whole number of AES blocks, so the cut never lands mid-block.
-            capped = SlicingStream(pack, length=PASSWORD_CONFIRM_MAX_INPUT_BYTES)
-            source = capped
+        sources: list[BinaryIO] = []
+        capped: list[SlicingStream] = []
+        first = self._folder_pack_starts[folder_index]
+        for k, pack in enumerate(self._folder_pack_views(folder_index)):
+            if (
+                plan.bounded
+                and self._archive.pack_sizes[first + k]
+                > PASSWORD_CONFIRM_MAX_INPUT_BYTES
+            ):
+                # The cap is a whole number of AES blocks, so the cut never lands
+                # mid-block. A BCJ2 folder caps each of its pack streams.
+                cap = SlicingStream(pack, length=PASSWORD_CONFIRM_MAX_INPUT_BYTES)
+                capped.append(cap)
+                sources.append(cap)
+            else:
+                sources.append(pack)
 
         def input_ran_out() -> bool:
-            return (
-                capped is not None and capped.tell() >= PASSWORD_CONFIRM_MAX_INPUT_BYTES
-            )
+            return any(cap.tell() >= PASSWORD_CONFIRM_MAX_INPUT_BYTES for cap in capped)
 
         stream = open_folder_pipeline(
-            source,
+            sources,
             folder,
             password=kdf_password,
             key_cache=self._key_cache,

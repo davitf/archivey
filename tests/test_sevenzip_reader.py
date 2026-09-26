@@ -11,6 +11,7 @@ import sys
 import types
 import zlib
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -574,15 +575,15 @@ def test_truncated_encrypted_folder_is_not_wrong_password(
     if result.returncode != 0:
         pytest.skip(f"7z CLI cannot build store+AES fixture: {result.stderr}")
 
-    original = SevenZipReader._folder_pack_view
+    original = SevenZipReader._folder_pack_views
 
-    def short_view(self: SevenZipReader, folder_index: int) -> io.BytesIO:
-        view = original(self, folder_index)
+    def short_view(self: SevenZipReader, folder_index: int) -> list[BinaryIO]:
+        (view,) = original(self, folder_index)
         data = view.read()
         assert len(data) >= 16
-        return io.BytesIO(data[:-5])
+        return [io.BytesIO(data[:-5])]
 
-    monkeypatch.setattr(SevenZipReader, "_folder_pack_view", short_view)
+    monkeypatch.setattr(SevenZipReader, "_folder_pack_views", short_view)
 
     with open_archive(archive, password="secret") as reader:
         member = next(m for m in reader.members() if m.is_file)
@@ -609,15 +610,15 @@ def test_truncated_aes_lzma2_folder_is_not_wrong_password(
         archive, {"blob.bin": bytes(range(256)) * 8}, password="secret"
     )
 
-    original = SevenZipReader._folder_pack_view
+    original = SevenZipReader._folder_pack_views
 
-    def short_view(self: SevenZipReader, folder_index: int) -> io.BytesIO:
-        view = original(self, folder_index)
+    def short_view(self: SevenZipReader, folder_index: int) -> list[BinaryIO]:
+        (view,) = original(self, folder_index)
         data = view.read()
         assert len(data) >= 16
-        return io.BytesIO(data[:-5])
+        return [io.BytesIO(data[:-5])]
 
-    monkeypatch.setattr(SevenZipReader, "_folder_pack_view", short_view)
+    monkeypatch.setattr(SevenZipReader, "_folder_pack_views", short_view)
 
     with open_archive(archive, password="secret") as reader:
         member = next(m for m in reader.members() if m.is_file)
@@ -998,8 +999,8 @@ def test_member_compression_is_in_compress_order(
 def test_bcj2_member_compression_starts_with_bcj2(tmp_path: Path) -> None:
     """BCJ2 is the last coder applied on decode, so it leads the compress-order tuple.
 
-    Only the head is pinned: which of BCJ2's side-branch coders belong in the tuple
-    is for BCJ2 decode support to settle, not this ordering fix.
+    The whole tuple, and why the side-branch coders are not in it, is pinned in
+    tests/test_sevenzip_bcj2.py.
     """
     src = tmp_path / "payload.bin"
     src.write_bytes(bytes(range(256)) * 64)
@@ -1301,7 +1302,7 @@ def _open_pipeline(
     what made a monkeypatch of it silently inert.
     """
     return open_folder_pipeline(
-        source,
+        [source],
         folder,
         password=password,
         key_cache=reader._key_cache,  # noqa: SLF001 - focused reader unit test
@@ -1354,13 +1355,15 @@ def test_first_stage_bcj_does_not_close_pack_source() -> None:
     assert not source.closed
 
 
-def test_bcj2_folder_is_rejected() -> None:
+def test_multi_input_coder_other_than_bcj2_is_rejected() -> None:
+    """BCJ2 is the only multi-input coder the planner runs (tests/test_sevenzip_bcj2.py)."""
     reader = _reader_for_unit_tests()
+    folder = _folder(b"\x03\x01\x01")
+    folder.coders[0].num_in_streams = 2
+    folder.packed_indices = [0, 1]
 
-    with pytest.raises(UnsupportedFeatureError, match="BCJ2"):
-        _open_pipeline(
-            reader, io.BytesIO(b""), _folder(b"\x03\x03\x01\x1b"), password=None
-        )
+    with pytest.raises(UnsupportedFeatureError, match="0x030101 with 2 inputs"):
+        _open_pipeline(reader, io.BytesIO(b""), folder, password=None)
 
 
 def test_unknown_folder_method_is_rejected() -> None:

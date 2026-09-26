@@ -1,11 +1,14 @@
-"""7z folder decode pipeline — registry-driven linear coder chains.
+"""7z folder decode pipeline — registry-driven trees of linear coder chains.
 
-A *folder* is a coder graph over one packed slice. This module only accepts a
-**linear** 1-in/1-out chain (``bind_pairs == (i+1 → i)``, ``packed_indices == [0]``).
+A *folder* is a coder graph over one or more packed streams. This module accepts a
+**tree of linear chains**: every coder has one output, every coder but BCJ2 has one
+input, and each input is either a pack stream or bound to one coder's output. A plain
+folder is a single chain over pack stream 0; a BCJ2 folder is a BCJ2 coder fed by four
+chains, one per pack stream.
 
-Decode order (packed → unpacked)::
+Decode order within a chain (packed → unpacked)::
 
-    AES? → (COPY skipped) → SINGLE codecs | LZMA-family run | BCJ2 rejected
+    AES? → (COPY skipped) → SINGLE codecs | LZMA-family run
 
 ``MethodKind.LZMA_FAMILY`` means “participates in a liblzma / BCJ staging run”,
 not “is LZMA”: Delta and BCJ are batched with LZMA1/2 here.
@@ -14,19 +17,21 @@ not “is LZMA”: Delta and BCJ are batched with LZMA1/2 here.
 - LZMA1 + BCJ → capped LZMA1 stages + separate BCJ stages (BPO-21872 truncation)
 - BCJ and/or Delta with no LZMA1/LZMA2 → one filter stage per coder (a liblzma raw
   chain must end in LZMA1/LZMA2, so a filter-only run cannot be one chain)
-- BCJ2 (``0x0303011B``) → ``UnsupportedFeatureError`` (never garbage output)
+- BCJ2 (``0x0303011B``) → the source of its chain: four branch chains, each capped at
+  its declared size, feed :class:`~archivey.internal.streams.bcj2.Bcj2DecoderStream`
 
 Two phases: :func:`plan_folder` resolves stages (pure — no I/O); then
 :func:`open_folder_pipeline` / :func:`_execute_stage` fold stages onto the packed
-source. Encoded-header decode and the convenience :func:`parse_sevenzip_archive`
-also live here (parser stays structure-only).
+sources. Encoded-header decode and the convenience :func:`parse_sevenzip_archive`
+also live here (parser stays structure-only). The encoded header stays linear-only:
+no writer puts BCJ2 there.
 """
 
 from __future__ import annotations
 
 import lzma
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -64,8 +69,13 @@ from archivey.internal.backends.sevenzip_parser import (
     parse_header_block,
     read_signature_and_next_header,
 )
-from archivey.internal.config import DEFAULT_STREAM_CONFIG, StreamConfig
+from archivey.internal.config import (
+    DEFAULT_STREAM_CONFIG,
+    StreamConfig,
+    check_decoder_memory,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams.bcj2 import Bcj2DecoderStream
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
 from archivey.internal.streams.crypto import open_aes_decrypt_stream
 from archivey.internal.streams.decompress import FilterStream
@@ -109,8 +119,9 @@ class _CodecStage:
     through for codecs that need a bound (PPMd7 has no end mark); other codecs ignore it.
 
     ``pack_size`` is the coder's *input* length — the output of the preceding coder in
-    the linear chain (or ``None`` when this coder consumes the packed slice directly,
-    whose length ``open_codec_stream`` recovers from the sized source). PPMd uses it
+    its chain, or a BCJ2 source's declared output (``None`` when this coder consumes
+    the packed slice directly, whose length ``open_codec_stream`` recovers from the
+    sized source). PPMd uses it
     to gate post-eof recovery on full pack delivery. Deflate/zlib/bzip2 rapidgzip
     uses it to bound the input so AES pad bytes are not a concatenated member or
     trailing-garbage stderr.
@@ -155,43 +166,167 @@ class _FilterStage:
 _Stage = _AesStage | _CodecStage | _LzmaChainStage | _FilterStage
 
 
-def plan_folder(folder: SevenZipFolder) -> list[_Stage]:
-    """Resolve a folder's coder chain into ordered decode stages, opening no streams.
+@dataclass
+class _Bcj2Stage:
+    """A BCJ2 coder: the source of a chain, fed by four chains of its own.
 
-    Runs all wiring validation (1-in/1-out, linear chain, BCJ2 reject) and groups the
-    coders; :func:`open_folder_pipeline` turns the returned plan into a stream.
+    ``branches`` are ``main``, ``call``, ``jump`` and ``rc``, in the coder's input order.
     """
-    if any(
-        coder.num_in_streams != 1 or coder.num_out_streams != 1
-        for coder in folder.coders
-    ):
-        raise UnsupportedFeatureError(
-            "7z folders with complex coder graphs are not supported"
-        )
-    _check_linear_coder_chain(folder)
 
-    stages: list[_Stage] = []
-    index = 0
+    branches: list[_Chain]
+    unpack_size: int
+
+
+@dataclass
+class _Chain:
+    """Linear stages over one source: a pack stream, or a BCJ2 coder's output.
+
+    ``source`` is the pack stream's position in the folder's ``packed_indices``
+    (0 for a linear folder), or the :class:`_Bcj2Stage` whose output the stages read.
+    ``stages`` are in decode order.
+    """
+
+    source: int | _Bcj2Stage
+    stages: list[_Stage]
+    # The declared size of the chain's output: its top coder's unpack size. ``None``
+    # for a bare pack stream, whose view is already sized.
+    unpack_size: int | None = None
+
+    def has_bcj2(self) -> bool:
+        return isinstance(self.source, _Bcj2Stage)
+
+    def pack_count(self) -> int:
+        """How many pack streams this chain reads, counting every BCJ2 branch."""
+        if isinstance(self.source, _Bcj2Stage):
+            return sum(branch.pack_count() for branch in self.source.branches)
+        return 1
+
+
+def plan_folder(folder: SevenZipFolder) -> _Chain:
+    """Resolve a folder's coder graph into decode stages, opening no streams.
+
+    The graph must be a tree of linear chains. Every coder has one output; the only
+    coder with more than one input is BCJ2, with four. Each input is either a pack
+    stream or bound to exactly one coder's output. The root is the coder whose output
+    no bind pair consumes, and the plan is read from the root down (design D1 of the
+    ``sevenzip-bcj2-decode`` change).
+
+    A graph that cannot be a valid folder (a cycle, an input that is neither packed nor
+    bound) is :class:`CorruptionError`. A valid shape this planner does not run (a
+    coder with several outputs, a multi-input coder other than BCJ2) is
+    :class:`UnsupportedFeatureError`. A linear folder plans to one chain over pack
+    stream 0, as it always has.
+    """
     coders = folder.coders
-    while index < len(coders):
+    for coder in coders:
+        if coder.num_out_streams != 1:
+            raise UnsupportedFeatureError(
+                "7z folders with multi-output coders are not supported"
+            )
+        method = lookup(coder.method)
+        is_bcj2 = method is not None and method.kind is MethodKind.BCJ2
+        if coder.num_in_streams != 1 and not (is_bcj2 and coder.num_in_streams == 4):
+            raise UnsupportedFeatureError(
+                f"7z coder {_method_hex(coder.method)} with "
+                f"{coder.num_in_streams} inputs is not supported"
+            )
+    # With one output per coder, out-stream ``i`` is coder ``i``'s output.
+    in_base: list[int] = []
+    total_in = 0
+    for coder in coders:
+        in_base.append(total_in)
+        total_in += coder.num_in_streams
+    bound: dict[int, int] = {}
+    for in_index, out_index in folder.bind_pairs:
+        if in_index in bound or not 0 <= out_index < len(coders):
+            raise CorruptionError("7z folder has an invalid coder bind pair")
+        bound[in_index] = out_index
+    if len(set(bound.values())) != len(bound):
+        raise CorruptionError("7z folder binds one coder output to two inputs")
+    roots = [i for i in range(len(coders)) if i not in set(bound.values())]
+    if not roots:
+        raise CorruptionError("7z folder coder graph has a cycle and no output")
+    if len(roots) > 1:
+        raise UnsupportedFeatureError(
+            "7z folders with several outputs are not supported"
+        )
+    if len(folder.unpack_sizes) < len(coders):
+        raise CorruptionError("7z folder has fewer unpack sizes than coders")
+
+    visited: set[int] = set()
+
+    def input_chain(in_index: int) -> _Chain:
+        if in_index in folder.packed_indices:
+            if in_index in bound:
+                raise CorruptionError("7z folder coder input is both packed and bound")
+            return _Chain(folder.packed_indices.index(in_index), [])
+        if in_index not in bound:
+            raise CorruptionError("7z folder coder input is neither packed nor bound")
+        return chain_ending_at(bound[in_index])
+
+    def chain_ending_at(top: int) -> _Chain:
+        run: list[int] = []  # top first; reversed into decode order below
+        coder_index = top
+        while True:
+            if coder_index in visited:
+                raise CorruptionError("7z folder coder graph has a cycle")
+            visited.add(coder_index)
+            if coders[coder_index].num_in_streams == 4:
+                base = in_base[coder_index]
+                source: int | _Bcj2Stage = _Bcj2Stage(
+                    [input_chain(base + k) for k in range(4)],
+                    folder.unpack_sizes[coder_index],
+                )
+                break
+            run.append(coder_index)
+            in_index = in_base[coder_index]
+            if in_index in folder.packed_indices or in_index not in bound:
+                source = input_chain(in_index).source
+                break
+            coder_index = bound[in_index]
+        run.reverse()
+        return _Chain(source, _plan_run(folder, run, source), folder.unpack_sizes[top])
+
+    chain = chain_ending_at(roots[0])
+    if len(visited) != len(coders):
+        # Every output but the root's is bound, so a coder the root never reaches
+        # feeds a loop of coders.
+        raise CorruptionError("7z folder coder graph has a cycle")
+    return chain
+
+
+def _plan_run(
+    folder: SevenZipFolder, run: list[int], source: int | _Bcj2Stage
+) -> list[_Stage]:
+    """Plan one linear run of 1-in coders, given as coder indices in decode order.
+
+    "The preceding coder" is the previous coder *in this run*, not in the folder's
+    coder list: in a BCJ2 folder the previous coder in the list is usually a sibling
+    branch's. The first coder's input is the source: a pack stream, whose length the
+    sized view carries, or a BCJ2 stage, whose output size the folder declares.
+    """
+    coders = folder.coders
+    source_size = source.unpack_size if isinstance(source, _Bcj2Stage) else None
+    stages: list[_Stage] = []
+    position = 0
+    while position < len(run):
+        index = run[position]
         method = require(coders[index].method)
         if method.kind is MethodKind.COPY:
-            index += 1
+            position += 1
             continue
         if method.kind is MethodKind.BCJ2:
-            raise UnsupportedFeatureError(
-                "BCJ2-compressed 7z folders are not supported"
-            )
+            # Only reachable with a BCJ2 coder declared with one input.
+            raise UnsupportedFeatureError("7z BCJ2 coder must have four inputs")
         if method.kind is MethodKind.AES:
             stages.append(_AesStage(coders[index]))
-            index += 1
+            position += 1
             continue
         if method.kind is MethodKind.SINGLE:
             assert method.codec is not None
-            # The coder's compressed input length is the preceding coder's output
-            # (linear chain); for the first coder it consumes the packed slice, whose
-            # length the sized source already carries, so leave it None there.
-            input_size = folder.unpack_sizes[index - 1] if index > 0 else None
+            input_size = (
+                folder.unpack_sizes[run[position - 1]] if position > 0 else source_size
+            )
             stages.append(
                 _CodecStage(
                     method.codec,
@@ -200,16 +335,16 @@ def plan_folder(folder: SevenZipFolder) -> list[_Stage]:
                     pack_size=input_size,
                 )
             )
-            index += 1
+            position += 1
             continue
         # LZMA_FAMILY (LZMA1/LZMA2/Delta/BCJ): batch the contiguous run, then plan it.
-        run: list[SevenZipCoder] = []
+        lzma_run: list[SevenZipCoder] = []
         sizes: list[int] = []
-        while index < len(coders) and is_lzma_family(coders[index].method):
-            run.append(coders[index])
-            sizes.append(folder.unpack_sizes[index])
-            index += 1
-        stages.extend(_plan_lzma_family(run, sizes))
+        while position < len(run) and is_lzma_family(coders[run[position]].method):
+            lzma_run.append(coders[run[position]])
+            sizes.append(folder.unpack_sizes[run[position]])
+            position += 1
+        stages.extend(_plan_lzma_family(lzma_run, sizes))
     return stages
 
 
@@ -265,15 +400,6 @@ def _plan_lzma_family(
 
     # LZMA2 (± Delta ± BCJ) or LZMA1 (± Delta) with no separate BCJ staging: one chain.
     return [_lzma_chain_stage(run, cap_size=None)]
-
-
-def _check_linear_coder_chain(folder: SevenZipFolder) -> None:
-    """Verify coders form a single linear chain in list order."""
-    expected_bind = {(i + 1, i) for i in range(len(folder.coders) - 1)}
-    if folder.packed_indices != [0] or set(folder.bind_pairs) != expected_bind:
-        raise UnsupportedFeatureError(
-            "7z folders with non-linear coder wiring are not supported"
-        )
 
 
 def _decode_lzma_properties(coder: SevenZipCoder, filter_id: int) -> dict:
@@ -396,12 +522,13 @@ def _execute_stage(
     stream_config: StreamConfig,
     collector: DiagnosticCollector | None,
     seekable: bool,
-    stage_index: int,
+    owns_input: bool,
 ) -> BinaryIO:
     """Open one planned stage on top of ``stream``. The only stream-opening code.
 
-    ``stage_index`` is consumed only by ``_FilterStage`` (``owns_inner=(stage_index > 0)``).
-    Other stages ignore it: stdlib ``LZMAFile`` does not close a passed-in
+    ``owns_input`` is consumed only by ``_FilterStage`` (``owns_inner``): True when
+    ``stream`` is a private earlier output rather than a borrowed pack view. Other
+    stages ignore it: stdlib ``LZMAFile`` does not close a passed-in
     fileobj, so ``[AES, LZMA]`` still leaves the AES decrypt stream to GC.
     ``AesDecryptStream`` borrows the pack view (``owns_inner`` default).
     """
@@ -439,12 +566,12 @@ def _execute_stage(
         lzma_filter=stage.lzma_filter,
         unpack_size=stage.unpack_size,
         seekable=seekable,
-        owns_inner=(stage_index > 0),
+        owns_inner=owns_input,
     )
 
 
 def open_folder_pipeline(
-    source: BinaryIO,
+    sources: Sequence[BinaryIO],
     folder: SevenZipFolder,
     *,
     password: bytes | None,
@@ -453,33 +580,111 @@ def open_folder_pipeline(
     collector: DiagnosticCollector | None = None,
     seekable: bool = False,
 ) -> BinaryIO:
-    """Compose a folder's coder chain into a single pull stream (plan, then fold).
+    """Compose a folder's coder graph into a single pull stream (plan, then fold).
 
-    ``source`` is a borrowed pack view. Each stage wraps the previous output.
-    Only a ``_FilterStage`` takes ``owns_inner``: True when it is not first
-    (``stage_index > 0``), so it closes the previous stage's output — the LZMA1
-    cap slice, or an ``AesDecryptStream`` on ``[AES, BCJ]``. Other follow-on
-    stages do not close their input: ``[AES, LZMA]`` (the common encrypted
-    shape) still leaves the AES stream unclosed, because stdlib ``LZMAFile``
-    does not close a passed-in fileobj. The AES stream borrows the pack view
-    (``owns_inner`` default) and holds no OS handle. Wiring codec stages to
-    close it is a follow-up; seek does not depend on it.
+    ``sources`` are borrowed pack views, one per pack stream, in the order of the
+    folder's ``packed_indices``. Each stage wraps the previous output.
+    Only a ``_FilterStage`` takes ``owns_inner``: True when it is not first in its
+    chain, so it closes the previous stage's output — the LZMA1 cap slice, or an
+    ``AesDecryptStream`` on ``[AES, BCJ]``. Other follow-on stages do not close
+    their input: ``[AES, LZMA]`` (the common encrypted shape) still leaves the AES
+    stream unclosed, because stdlib ``LZMAFile`` does not close a passed-in fileobj.
+    The AES stream borrows the pack view (``owns_inner`` default) and holds no OS
+    handle. Wiring codec stages to close it is a follow-up; seek does not depend on it.
+
+    A BCJ2 folder decodes forward only: every stage is opened non-seekable, and the
+    :class:`Bcj2DecoderStream` owns and closes its four branch outputs.
     """
     config = stream_config if stream_config is not None else DEFAULT_STREAM_CONFIG
-    stages = plan_folder(folder)
-    stream: BinaryIO = source
-    for i, stage in enumerate(stages):
-        stream = _execute_stage(
-            stream,
-            stage,
-            password=password,
-            key_cache=key_cache,
-            stream_config=config,
-            collector=collector,
-            seekable=seekable,
-            stage_index=i,
+    plan = plan_folder(folder)
+    if len(sources) != plan.pack_count():
+        raise CorruptionError(
+            f"7z folder reads {plan.pack_count()} packed streams, "
+            f"but {len(sources)} were given"
         )
-    return stream
+
+    if plan.has_bcj2():
+        # Three LZMA decoders run at once in a BCJ2 folder (main, call, jump), each
+        # with a dictionary the archive declares. Each is checked on its own when it
+        # opens; the folder's total is checked here, before any of them is built.
+        check_decoder_memory(
+            _declared_lzma_dictionaries(plan),
+            limits=config.decoder_limits,
+            what="BCJ2 folder's LZMA dictionary sizes, summed",
+        )
+
+    def open_chain(chain: _Chain, *, seekable: bool) -> BinaryIO:
+        stream: BinaryIO
+        if isinstance(chain.source, _Bcj2Stage):
+            branches: list[BinaryIO] = []
+            try:
+                for branch in chain.source.branches:
+                    branch_stream = open_chain(branch, seekable=False)
+                    if branch.unpack_size is not None:
+                        # A branch ends at its declared size. 7-Zip's LZMA branches
+                        # have no end marker, and BCJ2 reads its inputs in blocks,
+                        # so an uncapped LZMA1 decoder would read past its data.
+                        branch_stream = SlicingStream(
+                            branch_stream,
+                            length=branch.unpack_size,
+                            owns_inner=_opens_streams(branch),
+                        )
+                    branches.append(branch_stream)
+            except BaseException:
+                for opened, branch in zip(branches, chain.source.branches):
+                    if branch.unpack_size is not None:
+                        opened.close()
+                raise
+            main, call, jump, rc = branches
+            stream = Bcj2DecoderStream(
+                main,
+                call,
+                jump,
+                rc,
+                unpack_size=chain.source.unpack_size,
+                # A bare pack-stream branch is a borrowed view (``rc``, usually);
+                # every other branch is wrapped in a private slice.
+                owns_inputs=[b.unpack_size is not None for b in chain.source.branches],
+            )
+            owns_input = True
+        else:
+            stream = sources[chain.source]
+            owns_input = False
+        for stage in chain.stages:
+            stream = _execute_stage(
+                stream,
+                stage,
+                password=password,
+                key_cache=key_cache,
+                stream_config=config,
+                collector=collector,
+                seekable=seekable,
+                owns_input=owns_input,
+            )
+            owns_input = True
+        return stream
+
+    return open_chain(plan, seekable=seekable and not plan.has_bcj2())
+
+
+def _declared_lzma_dictionaries(chain: _Chain) -> int:
+    """The LZMA1/LZMA2 dictionary sizes a chain declares, over every BCJ2 branch."""
+    total = 0
+    if isinstance(chain.source, _Bcj2Stage):
+        total += sum(_declared_lzma_dictionaries(b) for b in chain.source.branches)
+    for stage in chain.stages:
+        if isinstance(stage, _LzmaChainStage):
+            total += sum(
+                spec.get("dict_size", 0)
+                for spec in stage.filters
+                if spec.get("id") in (lzma.FILTER_LZMA1, lzma.FILTER_LZMA2)
+            )
+    return total
+
+
+def _opens_streams(chain: _Chain) -> bool:
+    """Whether opening ``chain`` creates a stream, rather than returning a pack view."""
+    return bool(chain.stages) or chain.has_bcj2()
 
 
 def decode_folder_to_bytes(
@@ -495,7 +700,7 @@ def decode_folder_to_bytes(
 ) -> bytes:
     """Fully decode one folder's packed stream into memory and CRC-check it."""
     stream = open_folder_pipeline(
-        SlicingStream(source, 0, compressed_size),
+        [SlicingStream(source, 0, compressed_size)],
         folder,
         password=password,
         key_cache=key_cache,
