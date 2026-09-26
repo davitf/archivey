@@ -88,11 +88,15 @@ def _write(tmp_path: Path, name: str, data: bytes) -> Path:
 
 
 def _run(script: str, *args: str) -> subprocess.CompletedProcess[str]:
+    # faulthandler on, as CI runs and as a user may: the decoder child inherits it, and
+    # on SIGABRT it writes a stack dump (from 3.14 with the C stack, several KiB) after
+    # rapidgzip's abort message.
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script), *args],
         capture_output=True,
         text=True,
         timeout=120,
+        env={**os.environ, "PYTHONFAULTHANDLER": "1"},
     )
 
 
@@ -432,6 +436,27 @@ def test_a_child_death_is_reported_by_how_it_ended(
             stream.read(1)
         assert type(second.value) is expected
         assert str(second.value) == str(first.value)
+
+
+def test_the_abort_message_is_found_under_a_long_stack_dump(tmp_path: Path) -> None:
+    """A faulthandler dump after the abort message does not hide it.
+
+    With ``PYTHONFAULTHANDLER`` set, Python 3.14 wrote about 6.5 KiB of thread and C
+    stacks after rapidgzip's ``what():`` line, and a search of the last 4 KiB missed
+    it: every truncation read as ``CorruptionError``.
+    """
+    abort = (
+        b"terminate called after throwing an instance of 'std::logic_error'\n"
+        b"  what():  The bit buffer should not contain more data than have been read "
+        b"from the file!\nFatal Python error: Aborted\n\n"
+    )
+    dump = b'  Binary file "/lib/x86_64-linux-gnu/libc.so.6", at +0x9caa4\n' * 2000
+    with (tmp_path / "stderr").open("w+b") as stderr:
+        stderr.write(abort + dump)
+        tail = rapidgzip_child._stderr_tail(stderr)
+    assert len(dump) > 64 * 1024
+    assert rapidgzip_child._TRUNCATION_ABORT in tail
+    assert rapidgzip_child._abort_reason(tail).startswith(": The bit buffer")
 
 
 @pytest.mark.parametrize(

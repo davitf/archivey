@@ -199,10 +199,18 @@ def _reap(
         pass
 
 
+# The most of the child's stderr read to classify its death. The abort message comes
+# first and anything the dying process adds follows it: with faulthandler on
+# (``PYTHONFAULTHANDLER``, ``-X faulthandler``), Python dumps every thread's stack, and
+# from 3.14 the C stack too, several KiB after the ``what():`` line. So the search
+# covers everything the child wrote, up to this cap, not only the last few KiB.
+_STDERR_LIMIT = 1 << 20
+
+
 def _stderr_tail(stderr: IO[bytes]) -> bytes:
     try:
         stderr.seek(0, io.SEEK_END)
-        stderr.seek(max(0, stderr.tell() - 4096))
+        stderr.seek(max(0, stderr.tell() - _STDERR_LIMIT))
         return stderr.read()
     except (OSError, ValueError):
         return b""

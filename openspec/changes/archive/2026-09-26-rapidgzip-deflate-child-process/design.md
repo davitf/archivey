@@ -51,9 +51,12 @@ Through archivey (`open_codec_stream(GZIP)`, `use_rapidgzip=ON`), in-process aga
 - **Death classification** follows the PPMd child (`is_crash`): SIGSEGV/SIGABRT/SIGBUS/SIGILL/
   SIGFPE or the Windows NTSTATUS for them (and the MSVC `abort()` status 3, which the worker
   never uses itself) is a crash, SIGKILL is the OOM killer, anything else came from outside.
-  stderr goes to a temporary file, not a pipe (no drain thread, no deadlock), and its tail is
-  read after a death: rapidgzip's abort message on an early end makes it `TruncatedError`.
-  The helper is in `child_exit.py`; the PPMd child can share it.
+  stderr goes to a temporary file, not a pipe (no drain thread, no deadlock), and all of it
+  (up to 1 MiB) is searched after a death: rapidgzip's abort message on an early end makes it
+  `TruncatedError`. Not only the last few KiB: with faulthandler on (`PYTHONFAULTHANDLER`,
+  which the child inherits), Python 3.14 writes ~6.5 KiB of thread and C stacks after the
+  message, and a 4 KiB tail missed it on CI. The helpers are in `child_exit.py`, shared with
+  the PPMd child.
 - **Read-ahead in the parent.** Measured through a `.tar.gz`, whose reader reads in small
   pieces, a round trip per piece was the cost. After the first read that follows a seek, a
   read asks the child for at least 64 KiB, doubling to 1 MiB while reads stay sequential; a
