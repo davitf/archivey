@@ -188,9 +188,16 @@ there both lists grow for the whole pass.
 | `is_sparse` | `TarInfo.issparse()`, which is true for the old GNU `S` typeflag and for all three PAX sparse encodings |
 | `extra` | `tar.type` always; `tar.pax_headers` when there are any; `tar.devmajor` / `tar.devminor` for device members |
 
-`encoding=` reaches `tarfile.open`, where `None` means tarfile's UTF-8 default. It
-changes how ustar and GNU names decode and never changes a PAX name, which is UTF-8 by
-definition.
+`encoding=` reaches `tarfile.open`; without it the reader passes `"utf-8"`, not
+tarfile's own default (`tarfile.ENCODING`, the filesystem encoding on POSIX), so a
+listing does not depend on the process locale. tarfile's `surrogateescape` handler
+stays. `encoding=` changes how ustar and GNU names decode. A PAX record is decoded
+strictly as UTF-8 first and falls back to the archive codec (with `surrogateescape`)
+only when that fails, or outright for the member's own `hdrcharset=BINARY`; so
+`encoding=` changes a PAX name only when its bytes are not UTF-8. Because that fallback
+is the archive codec, the UTF-8 default reaches such PAX names too: without `encoding=`
+their undecodable bytes are surrogate escapes whatever the locale, and `raw_name` is the
+stored bytes.
 
 ### 2.3 Member data
 
@@ -328,6 +335,7 @@ extraction checks (§2.4).
 | `member_count` is `None`, even after listing | **format** | No index (§1). `len(reader.members())` after the walk is the count |
 | Listing a `.tar.gz` takes as long as extracting it | **format** | Headers are spread through the compressed stream, so finding them decodes everything (§1) |
 | Reading members of a `.tar.gz` by name is slow, and reports `STREAM_REWIND_REDECOMPRESSES` | **format** / **archivey** | Each backward seek decodes from the nearest resume point (§2.3). `stream_members()` decodes once. `[seekable]` adds resume points for gzip and bzip2 |
+| A seek past the end of a member returns the member size, not the target | **library** | stdlib `ExFileObject` clamps the position; reads agree either way ([`known-issues.md`](../known-issues.md)) |
 | A tar with no trailer warns `ARCHIVE_EOF_MARKER_MISSING` and still lists | **format** | Complete-without-trailer and truncated-at-a-boundary are the same bytes. Set the code to `RAISE` when completeness matters |
 | A corrupt last header raises in random access and only warns when streaming | **library** | tarfile's `_Stream` hides the block the walk stopped on. A native header walker would close it (open-issues **P3**, [`known-issues.md`](../known-issues.md)) |
 | Two tars joined with `cat` list as one archive's members plus `ARCHIVE_TRAILING_DATA` | **format** / **archivey** | The first trailer ends the walk. archivey does not read past it the way `tar -i` does (§6) |
@@ -337,7 +345,6 @@ extraction checks (§2.4).
 | A hardlink's `link_target` is `./d/b` while the member it names is `d/b` | **format** / **archivey** | `link_target` is documented as stored text. Use `link_target_member` |
 | Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with one byte of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. By design (§6); raise `max_ratio` for an archive known to hold sparse files |
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
-| `modified` is `None` for a pre-1970 member on Windows and correct on Linux and macOS | **archivey** | The conversion goes through `datetime.fromtimestamp`, which uses `gmtime()` on Windows. Shared with ZIP, RAR and gzip. Tracked internally |
 | A streaming pass over millions of members uses memory in proportion | **library** / **archivey** | tarfile appends every header to `TarFile.members`, and the pass keeps its own list for `scan_members()` |
 | `encoding=` has no effect on some names | **format** | PAX names are UTF-8 by definition; only ustar and GNU names use it (§2.2) |
 
@@ -385,6 +392,7 @@ extraction checks (§2.4).
 | Random access needs a seekable source; streaming works on a pipe, plain and compressed | `::test_non_seekable_tar_fails_fast`, `::test_non_seekable_tar_streaming_opens_without_scanning`, `::test_non_seekable_plain_tar_stream_members`, `::test_non_seekable_tar_gz_streaming` |
 | Metadata mapping, PAX `mtime`, PAX `atime` and `ctime`, libarchive birth time | `::test_member_metadata`, `::test_pax_mtime_override`, `::test_pax_atime_ctime`, `::test_pax_libarchive_creationtime_is_created` |
 | `raw_name` for PAX and ustar names under a non-UTF-8 `encoding` | `::test_pax_raw_name_is_the_stored_utf8_whatever_the_encoding`, `::test_ustar_raw_name_follows_the_archive_encoding`, `::test_pax_raw_name_with_undecodable_bytes_round_trips`, `::test_gnu_long_name_under_a_global_pax_path_keeps_the_archive_codec` |
+| ustar and GNU names, link targets, `uname` and `gname` are UTF-8 by default, not the locale's codec; `encoding=` overrides; a PAX record that is not UTF-8 falls back to that same codec | `::test_utf8_name_decodes_as_utf8_under_a_non_utf8_locale`, `::test_utf8_link_target_and_owner_decode_as_utf8_under_a_non_utf8_locale`, `::test_invalid_utf8_name_is_surrogate_escaped_under_a_non_utf8_locale`, `::test_caller_encoding_overrides_the_utf8_default`, `::test_pax_raw_name_with_undecodable_bytes_round_trips`, `::test_pax_path_that_is_not_utf8_falls_back_to_the_caller_encoding` |
 | Out-of-range `mtime` degrades | `::test_out_of_range_mtime_degrades_to_none` |
 | Old GNU and PAX 0.0, 0.1 and 1.0 sparse members list as sparse and read back logically | `::test_sparse_tar_eof_no_false_positive`, `::test_pax_sparse_member_is_reported_sparse` (one case per PAX encoding) |
 | End classification: good, minimal and padded trailers stay silent | `::test_valid_tar_eof_silent`, `::test_minimal_eof_trailer_silent`, `::test_padded_tar_eof_no_false_positive` |
@@ -405,7 +413,7 @@ extraction checks (§2.4).
 | Inner-TAR detection over each codec, and its budget | `tests/test_detection.py::test_inner_tar_over_gzip_is_tar_gz` and its siblings, `::test_inner_tar_probe_stays_inside_the_decode_budget` |
 | Passwords accepted and never consulted | `tests/test_tar.py::test_password_is_accepted_in_every_form` |
 | A sparse member's extraction and its ratio (holes count, §6) | **Nothing pins it.** The page's measurement is the reproduction below |
-| Pre-1970 times on Windows | **Nothing pins it.** `::test_out_of_range_mtime_degrades_to_none` covers an out-of-range value on every platform, not a valid negative one |
+| Pre-1970 times, on every platform | `tests/test_tar.py::test_pre_1970_mtime_lists_its_date` (PAX and GNU base-256, with a `fromtimestamp` that rejects negatives as Windows' does), `::test_pre_1970_pax_atime_lists_its_date`; `tests/test_timestamps.py` for the shared helper |
 
 **Building fixtures.** Most TAR tests build their archives with stdlib `tarfile` in
 memory, and corrupt them by hand: a header checksum byte, a truncation, a block of junk

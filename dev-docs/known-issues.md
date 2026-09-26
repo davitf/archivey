@@ -308,26 +308,14 @@ A caller that expects sparse files raises `max_ratio`. Revisit if extraction eve
 preserves holes, since the disk would then hold only the data. Handbook:
 [`formats/tar.md`](formats/tar.md) §6.
 
-## `max_metadata_bytes` weighs the values in `extra`, not the keys (open)
+## A TAR member's seek past its end returns the member size, not the target (open)
 
-`member_metadata_bytes` sums the string values of `extra`, one level of nested dicts
-included, and never counts a key. TAR keeps every PAX record as
-`extra["tar.pax_headers"]`, and a PAX keyword is a string of any length, so its bytes are
-retained unweighed. Measured: one member whose PAX record has a 100 000-byte keyword and a
-one-byte value weighs 4 bytes. 3 000 such members gzip to about 514 KiB and list under a
-1 MiB cap with about 300 MB of keywords held; only `max_members` ends that walk. Counting
-keys is a change to shared listing accounting, which moves the effective cap for every
-format that puts strings in `extra`.
-
-## Pre-1970 Unix timestamps list as invalid on Windows only (open)
-
-Unix-seconds fields are converted with `datetime.fromtimestamp(ts, tz=timezone.utc)` in
-the TAR, ZIP (UT extra field), RAR and gzip paths. On Windows that goes through
-`gmtime()`, which rejects negative values, so a member dated 1969 lists with
-`modified=None` plus `MEMBER_TIMESTAMP_INVALID` there and with the right date on Linux
-and macOS. The fix is one helper, `epoch + timedelta(seconds=ts)`, used at every site.
-Not reproduced on Windows here; the behaviour is the one the ZIP reader's UT-field
-comment already records.
+With `seekable_members=True`, `seek(10)` on a 3-byte TAR member returns 3 and leaves
+`tell()` at 3, where `io.BytesIO` and a real file return 10. The stream is stdlib
+`tarfile`'s `ExFileObject`, which clamps the position to the member size. Reads agree
+either way (both return `b""`), so only the returned position differs. Found while
+running the seek-before-start test over the corpus, which starts from `seek(5)` and
+so could not use an empty TAR member. Handbook: [`formats/tar.md`](formats/tar.md) §5.
 
 ## WinRAR 3.x SHA-1 KDF mutates its input buffer (emulated)
 
@@ -476,12 +464,59 @@ fixed: every rapidgzip decoder (gzip / zlib / deflate, and bzip2 since the 2026-
 review; before that the bzip2 path aborted) reads a caller-owned stream through
 `_TrappingSource` in `codecs.py`, which parks the callback's exception and returns an
 EOF-shaped value, and `_AcceleratorStream` re-raises it as an ordinary Python exception after
-the call. See `dev-docs/topics/exception-handlers.md` §C-boundary trap. Only an upstream fix
+the call. It is marked as the caller's, so the codec translators leave it as it is: an
+`EOFError` from a dropped network stream stays an `EOFError`, not `TruncatedError`. See `dev-docs/topics/exception-handlers.md` §C-boundary trap. Only an upstream fix
 removes the need for the shim. Path sources are unaffected (rapidgzip owns an independent
-handle) for the *Python-source-raises* trigger. Separately, some **path**-source truncations /
-CRC mismatches can still `std::terminate` during worker finalization after a Python exception —
-see `dev-docs/investigations/rapidgzip-upstream-report.md` §2. The stdlib codec fallbacks raise
-a normal `ValueError`, which the reader boundary translates to `UnsupportedOperationError`.
+handle) for the *Python-source-raises* trigger. The stdlib codec fallbacks raise a normal
+`ValueError`, which the reader boundary translates to `UnsupportedOperationError`.
+
+Since the next section, gzip / zlib / deflate no longer run rapidgzip in-process at all: the
+child process's source object never raises (a failed read is an end of input), and this
+process serves its reads from the caller's stream and raises the caller's exception itself.
+`_TrappingSource` now guards the in-process bzip2 decoder only.
+
+### Bug 4 — rapidgzip aborts on a truncated DEFLATE stream (contained: child process)
+
+**Status: open upstream defect, contained** (rapidgzip 0.16.0). rapidgzip calls
+`std::terminate` (SIGABRT) when it decodes a gzip, zlib or raw DEFLATE stream that ends early:
+
+```
+terminate called after throwing an instance of 'std::logic_error'
+  what():  The bit buffer should not contain more data than have been read from the file!
+```
+
+The throw comes from a destructor (`GzipChunk::determineUsedWindowSymbolsForLastSubchunk` →
+`BitReader::tell()`), so it fires for a path, a real file object and a `BytesIO` alike, on
+files from about 380 KB up; on an 8 MB gzip, 27 of 30 random cuts aborted. The macOS build
+raises `Unexpected end of file when getting block ...` on the same inputs instead. bzip2
+(`IndexedBzip2File`) never aborted in 110 tries. With `seekable_members=True` (or a ZIP
+deflate member read with the accelerator on), a cut file of 1 MiB or more killed the caller.
+
+**Containment:** gzip, zlib and deflate decode through rapidgzip in a child process
+(`rapidgzip_child.py`, which runs `rapidgzip_worker.py`). The abort ends the child, and the
+stream reports it by how it ended: an abort whose stderr names this truncation is
+`TruncatedError`, another crash `CorruptionError`, SIGKILL `ResourceLimitError`, anything else
+`ReadError`; every later call raises it again. The crash cases run in a child interpreter in
+`tests/test_accelerator_truncation_abort.py`, which also keeps a canary that raw rapidgzip still
+aborts on Linux. When that canary fails, rapidgzip may be safe in-process again.
+
+**What of a cut stream is still read:** a correct prefix, but a short one. rapidgzip decodes
+ahead in parallel, so it can reach the cut, and abort, while the parent is still waiting for
+data well before it. Measured through `ON` with 4 KiB and 1 MiB reads: a cut gzip or zlib of
+2 or 8 MB gave no data before the error; of 32 MB, 22–31 MB of 32.4 (the stdlib engine reads
+to within the last block of the cut). The prefix delivered is checked against the payload in
+`tests/test_accelerator_truncation_abort.py`. `use_rapidgzip=OFF` reads the most of a cut
+stream. Replaying the stdlib engine after a truncation abort, to deliver the rest of the
+prefix, is parked in `review/backlog.md`.
+
+The cost is a fixed ~25 ms to start the child (~45 ms with the open), plus ~70 µs per round
+trip (reduced by a read-ahead buffer in the parent). So `AUTO` uses rapidgzip only from
+16 MiB compressed, past the ~13 MB where the child starts to beat the stdlib; numbers in the
+OpenSpec change
+`rapidgzip-deflate-child-process` design. `use_rapidgzip=OFF` avoids the child. A draft that
+decoded with the stdlib engine first and handed rapidgzip only input proved complete was
+rejected: the proof pass decoded the whole member at the first backward seek, which is the cost
+the accelerator exists to avoid.
 
 ### Soft EOF on truncated gzip (by design — not a bug)
 
@@ -560,21 +595,51 @@ older `dev-docs/investigations/pyppmd-upstream-report.md` is folded into a point
 attributed the corruption to the model walk; §J corrects that to the output-buffer UAF).
 The deterministic valgrind gate is `scripts/ppmd_uaf_valgrind.py`.
 
-### Random input also corrupts, sized decode or not (found 2026-09-25)
+### Random input: decode after an early end segfaults (found 2026-09-25, mitigated 2026-09-26)
 
 The "not adversarial input" line above describes how the defect was found, not its
-reach. Feeding random bytes — which is what a wrong 7z AES key hands the PPMd coder, and
-what a hostile archive can hand it directly — through archivey's own bounded `Codec.PPMD`
-path (order 6, 16 MiB, `unpack_size` and `pack_size` set) makes
-`Ppmd7Decoder.decode` return `NULL` without setting an exception: every decode of
-`random.Random(1).randbytes(256 * 1024)` surfaces as `CorruptionError` wrapping
-`SystemError: ... returned NULL without setting an exception`. That is the C extension
-reporting failure with its state already inconsistent. In a run of a few hundred such
-decodes in one process, after other codecs had run, the process died with SIGSEGV
-inside `decode` (faulthandler: `decompress.py` `_decode` → `Ppmd7Decoder.decode`). Found
-while measuring codec rejection for `bounded-password-confirmation`; that change keeps PPMd
-non-rejecting and never feeds it random input in-process in tests. Password confirmation
-decoding a wrong key into PPMd predates the change. Tracked internally.
+reach. Random bytes — what a wrong 7z AES key hands the PPMd coder, and what a hostile
+archive can hand it directly — crash pyppmd by a second route.
+
+**Two separate symptoms.** A PPMd7 stream whose first byte is not 0 fails the range
+decoder's init, and pyppmd returns `NULL` without setting an exception (`SystemError`,
+mapped to `CorruptionError`; it also leaks a buffer export per call). Harmless. The crash
+is the other 1 in 256: with a zero first byte, the model decodes garbage until it
+returns its end result after a few hundred symbols, pyppmd raises `eof` and returns
+short, and the caller feeds it the rest of the member. The next `decode` starts a new
+worker thread on a model that has finished, and within one or two calls the process
+segfaults in `Ppmd7_DecodeSymbol` (gdb: `ThreadDecoder.c:124`). Deterministic: 64 KiB
+feeds of `random.Random(3011).randbytes(256 * 1024)` with a 512 KiB request crash on the
+third call. PPMd8 (ZIP method 98) crashes the same way. **pyppmd 1.2.0 crashes too**, so
+no version pin avoids it.
+
+**Why the caller cannot just stop at "short and `eof`".** pyppmd also raises `eof` when
+the range coder's `Code` is 0, and never clears it. That happens on valid streams: at a
+feed boundary inside a run of zero bytes in the compressed data (a 7z of a file with
+2 MB of zeros raised it on half its 64-byte feed boundaries), and one byte before the
+end of most 7-Zip-written streams. `needs_input` reads the same in both cases. A first
+fix that stopped there broke those valid files.
+
+**Mitigation (`PpmdDecoder`, 2026-09-26).** Handed the whole member in its first
+`decode`, pyppmd has no more input to wait for, so any short return is the end and
+nothing more is asked of it. `PpmdDecoder` holds compressed input until it has the
+whole member, or compressed EOF, or `DecoderLimits.max_ppmd_in_process_input` (default
+16 MiB). Past that, the member decodes in a child process
+(`internal/streams/ppmd_child.py`, running `ppmd_worker.py`), where the old chunked
+logic runs and a crash (SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE, or the Windows
+NTSTATUS for the same faults, or the C runtime's `abort()` status 3 there) becomes
+`CorruptionError`, with the child's signal or exit status in the message. A child killed
+by SIGKILL (usually the OOM killer), or one that
+dies constructing the decoder (pyppmd aborts when a memory cap refuses `mem_size`), is
+`ResourceLimitError` instead; any other death (SIGTERM, SIGHUP, a plain exit status) is
+`ReadError`, not a verdict on the data. A password check reads at most 1 MiB, so it stays
+in-process. Where no child can be started (a frozen app, an empty `sys.executable`, a
+spawn the OS refuses, or a child that cannot import pyppmd), a member past the limit
+raises `ResourceLimitError`; `None` holds any member in-process. Measured:
+0 crashes in 1200 hostile members across both paths (was 10 of 10 runs); 111 valid
+7-Zip-written members byte-exact on both paths. Regression tests:
+`tests/test_ppmd_crash_isolation.py`. A draft report for pyppmd (a flag for "the model
+ended", and an exception on init failure) is held back; tracked internally.
 
 ### Windows: `STATUS_HEAP_CORRUPTION` on fresh PPMd children
 
@@ -941,6 +1006,10 @@ Fatal logs list extension modules along the lines of:
 
 `backports.zstd`, `lz4`, `_brotli`, `pyppmd.c._ppmd`, **`rapidgzip`**, `bcj._bcj`, `_cffi_backend`
 
+`bcj._bcj` is in those logs because `pybcj` was a dependency when they were captured. It
+no longer is: BCJ filters decode through liblzma (see the BCJ section at the top of this
+page), so a current log does not list it.
+
 ### Where it does / does not show up
 
 | Environment | Observation |
@@ -992,11 +1061,12 @@ pytest tests/ \
 # 2) Accelerator stream tests — one subprocess each (coverage off; breadcrumbs)
 python scripts/ci_run_native_modules.py
 
-# 3) PPMd raw streams — own subprocess (coverage off). Formerly soft-passed
-#    exit-after-green; that abort is mitigated (capped NUL flush + subprocess
-#    unfinished-decoder tests). Hard-fail like other native modules.
+# 3) PPMd raw streams — own subprocess (coverage off). Still soft-passes an
+#    exit-after-green abort of the parent: the decode-time overshoot is mitigated,
+#    the Ppmd7T_Free teardown race is not (see the pyppmd section above).
 python scripts/ci_run_native_modules.py \
-  --modules tests/test_ppmd_raw_streams.py
+  --modules tests/test_ppmd_raw_streams.py \
+  --allow-exit-after-green
 
 # 4) Hypothesis property-safety
 pytest tests/test_property_safety.py -q

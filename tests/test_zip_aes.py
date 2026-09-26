@@ -29,6 +29,7 @@ from archivey.internal.backends.zip_aes import (
     open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
+from archivey.internal.streams import codecs
 from archivey.internal.streams.streamtools.binaryio import source_byte_size
 from archivey.types import CompressionAlgorithm, HashAlgorithm
 from tests.conftest import requires, requires_binary
@@ -260,8 +261,10 @@ def test_aes_hmac_survives_a_seekable_accelerator(
         return result
 
     monkeypatch.setattr(WinZipAesDecryptStream, "seek", spy_seek)
+    # The shipped AUTO threshold is 16 MiB; lowered so AUTO reaches rapidgzip here.
+    monkeypatch.setattr(codecs, "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE", 1 << 20)
     config = ArchiveyConfig(use_rapidgzip=mode)
-    # Incompressible and over the 1 MiB AUTO threshold, which sees the stage's size.
+    # Incompressible and over the lowered AUTO threshold, which sees the stage's size.
     payload = random.Random(480).randbytes(1_200_000)
     for tamper in (False, True):
         data = _build_aes_zip(

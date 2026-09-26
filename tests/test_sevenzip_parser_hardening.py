@@ -409,7 +409,7 @@ def test_filter_only_run_is_never_planned_as_an_lzma_chain() -> None:
         crc=None,
         digest_defined=False,
     )
-    (stage,) = plan_folder(folder)
+    (stage,) = plan_folder(folder).stages
     assert isinstance(stage, sevenzip_pipeline._FilterStage)  # noqa: SLF001
     assert stage.lzma_filter == {"id": lzma.FILTER_DELTA, "dist": 1}
     with pytest.raises(UnsupportedFeatureError, match="filter-only coder run"):
@@ -487,7 +487,7 @@ def test_misaligned_bcj_start_offset_is_refused_at_plan_time() -> None:
 
 
 def test_zero_bcj_start_offset_needs_no_option() -> None:
-    (stage,) = plan_folder(_bcj_folder(_BCJ_X86, bytes(4)))
+    (stage,) = plan_folder(_bcj_folder(_BCJ_X86, bytes(4))).stages
     assert isinstance(stage, sevenzip_pipeline._FilterStage)  # noqa: SLF001
     assert stage.lzma_filter == {"id": lzma.FILTER_X86}
 

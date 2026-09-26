@@ -37,8 +37,10 @@ from archivey.internal.streams.streamtools.base import DelegatingStream
 # (``tests/test_password_confirm.py`` re-measures every one). A unit whose decoder chain
 # holds one settles a wrong key inside the confirm prefix: this is ``codec_rejects`` for
 # both the 7z and the ZIP reader. Measured as non-rejecting and left out: Brotli (about
-# one random input in twenty decodes a full prefix) and PPMd (pyppmd can crash on random
-# input rather than raise). Filters never reject. A codec not listed is non-rejecting.
+# one random input in twenty decodes a full prefix) and PPMd (about one in a hundred;
+# archivey decodes it so that pyppmd's crash on random input cannot happen, see
+# ``DecoderLimits.max_ppmd_in_process_input``). Filters never reject. A codec not
+# listed is non-rejecting.
 REJECTING_CODECS = frozenset(
     {
         Codec.LZMA,

@@ -343,14 +343,15 @@ class _PackCounter:
 def _count_pack_reads(monkeypatch: pytest.MonkeyPatch) -> list[_PackCounter]:
     counters: list[_PackCounter] = []
     reader_cls = sevenzip_reader_mod.SevenZipReader
-    original = reader_cls._folder_pack_view
+    original = reader_cls._folder_pack_views
 
-    def counting(self: object, folder_index: int) -> _PackCounter:
-        counter = _PackCounter(original(self, folder_index))  # type: ignore[arg-type]
-        counters.append(counter)
-        return counter
+    def counting(self: object, folder_index: int) -> list[_PackCounter]:
+        views = original(self, folder_index)  # type: ignore[arg-type]
+        wrapped = [_PackCounter(view) for view in views]
+        counters.extend(wrapped)
+        return wrapped
 
-    monkeypatch.setattr(reader_cls, "_folder_pack_view", counting)
+    monkeypatch.setattr(reader_cls, "_folder_pack_views", counting)
     return counters
 
 

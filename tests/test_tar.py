@@ -19,8 +19,10 @@ from archivey import (
     ArchiveyConfig,
     CompressionAlgorithm,
     CompressionMethod,
+    ExtractionLimits,
     MemberType,
     UnsupportedOperationError,
+    extract,
     open_archive,
 )
 from archivey.cost import AccessCost, ListingCost, StreamCapability
@@ -33,6 +35,7 @@ from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
     ReadError,
+    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
 )
@@ -122,17 +125,17 @@ def _tar_content_end(data: bytes) -> int:
     return end
 
 
-def _tar_sparse_gnu() -> bytes:
+def _tar_sparse_gnu(logical: int = 1024 * 1024) -> bytes:
     """A hand-built old-GNU-format sparse tar whose logical size ≫ packed size.
 
     Constructed in pure Python (no system ``tar``, so it runs identically on every OS —
-    BSD/Windows ``tar`` reject ``--sparse``). One 3-byte sparse region carried by a 1 MiB
-    logical file: the physical next-header offset (``offset_data + roundup(3)``) is far
-    below ``offset_data + roundup(logical size)``, which is exactly the layout that used to
-    false-negative the RA EOF probe. Verified read back through stdlib ``tarfile``.
+    BSD/Windows ``tar`` reject ``--sparse``). One 3-byte sparse region carried by a
+    ``logical``-byte file (1 MiB by default): the physical next-header offset
+    (``offset_data + roundup(3)``) is far below ``offset_data + roundup(logical size)``,
+    which is exactly the layout that used to false-negative the RA EOF probe. Verified
+    read back through stdlib ``tarfile``.
     """
     physical = b"xyz"
-    logical = 1024 * 1024
 
     def octal(value: int, width: int) -> bytes:
         return ("%0*o" % (width - 1, value)).encode() + b"\x00"
@@ -808,6 +811,27 @@ def test_sparse_tar_eof_no_false_positive(caplog: pytest.LogCaptureFixture) -> N
     assert members
     assert members[0].is_sparse
     assert _eof_warnings(caplog) == []
+
+
+def test_sparse_member_extracts_dense_and_counts_toward_ratio(tmp_path: Path) -> None:
+    # docs/formats.md promises both halves: the holes are written as zeros, and those
+    # zeros count as output for the archive-wide ratio limit. 10 MiB of logical data in
+    # a 2 KiB tar is far past the default max_ratio of 1000, and past the 5 MiB
+    # activation threshold, so the default limits must refuse it.
+    logical = 10 * 1024 * 1024
+    archive = tmp_path / "sparse.tar"
+    archive.write_bytes(_tar_sparse_gnu(logical))
+
+    with pytest.raises(ResourceLimitError):
+        extract(archive, tmp_path / "default")
+
+    out = tmp_path / "unlimited"
+    extract(archive, out, limits=ExtractionLimits(max_ratio=None))
+    written = out / "sparse.bin"
+    assert written.stat().st_size == logical
+    with written.open("rb") as f:
+        assert f.read(3) == b"xyz"
+        assert f.read(1024 * 1024).count(0) == 1024 * 1024
 
 
 def _tar_sparse_pax_1_0() -> bytes:
@@ -1633,12 +1657,27 @@ def test_a_member_larger_than_the_read_step_still_reads_whole(tmp_path: Path) ->
             assert stream.read() == payload
 
 
-def _pax_tar(name: str) -> bytes:
+def _one_member_tar(
+    name: str,
+    codec: str,
+    fmt: int,
+    *,
+    linkname: str | None = None,
+    owner: str = "",
+) -> bytes:
+    """A one-member TAR whose header strings are stored in ``codec``: a regular file,
+    or a symlink to ``linkname``, with ``owner`` as both ``uname`` and ``gname``."""
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+    with tarfile.open(fileobj=buf, mode="w", format=fmt, encoding=codec) as t:
         info = tarfile.TarInfo(name)
-        info.size = 3
-        t.addfile(info, io.BytesIO(b"abc"))
+        info.uname = info.gname = owner
+        if linkname is None:
+            info.size = 1
+            t.addfile(info, io.BytesIO(b"x"))
+        else:
+            info.type = tarfile.SYMTYPE
+            info.linkname = linkname
+            t.addfile(info)
     return buf.getvalue()
 
 
@@ -1649,38 +1688,105 @@ def test_pax_raw_name_is_the_stored_utf8_whatever_the_encoding(
     """A PAX ``path`` record is UTF-8 whatever ``encoding=`` says; re-encoding it with
     the caller's codec either crashed the listing or fabricated bytes."""
     for name in ("日本語.txt", "café.txt"):
-        with open_archive(io.BytesIO(_pax_tar(name)), encoding=encoding) as ar:
+        data = _one_member_tar(name, "utf-8", tarfile.PAX_FORMAT)
+        with open_archive(io.BytesIO(data), encoding=encoding) as ar:
             (member,) = ar.members()
             assert member.name == name
             assert member.raw_name == name.encode("utf-8")
 
 
 def test_ustar_raw_name_follows_the_archive_encoding() -> None:
-    buf = io.BytesIO()
-    with tarfile.open(
-        fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT, encoding="latin-1"
-    ) as t:
-        info = tarfile.TarInfo("café.txt")
-        info.size = 1
-        t.addfile(info, io.BytesIO(b"x"))
-    with open_archive(io.BytesIO(buf.getvalue()), encoding="latin-1") as ar:
+    data = _one_member_tar("café.txt", "latin-1", tarfile.USTAR_FORMAT)
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
         (member,) = ar.members()
         assert member.name == "café.txt"
         assert member.raw_name == b"caf\xe9.txt"
 
 
-def test_pax_raw_name_with_undecodable_bytes_round_trips() -> None:
-    """Bytes that are not UTF-8 fall back to the archive codec with surrogateescape;
-    the surrogates send the name back through that codec, recovering the bytes."""
-    raw = b"caf\xe9\xe9.txt"
-    data = bytearray(_pax_tar("café.txt"))
+# tarfile's own default is TarFile.encoding (= tarfile.ENCODING, the filesystem
+# encoding on POSIX). Setting it to Latin-1 stands in for a process under a Latin-1
+# locale, where every byte decodes, so none of the tests below can pass by accident.
+_NON_UTF8_LOCALE = mock.patch.object(tarfile.TarFile, "encoding", "latin-1")
+
+
+@pytest.mark.parametrize(
+    "fmt",
+    [
+        pytest.param(tarfile.USTAR_FORMAT, id="ustar"),
+        # A name over 100 bytes goes into a GNU long-name record.
+        pytest.param(tarfile.GNU_FORMAT, id="gnu-longname"),
+    ],
+)
+def test_utf8_name_decodes_as_utf8_under_a_non_utf8_locale(fmt: int) -> None:
+    name = "café-" + "x" * (120 if fmt == tarfile.GNU_FORMAT else 0) + ".txt"
+    data = _one_member_tar(name, "utf-8", fmt)
+    assert (b"././@LongLink" in data) == (fmt == tarfile.GNU_FORMAT)
+    with _NON_UTF8_LOCALE, open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        assert member.name == name
+        assert member.raw_name == name.encode("utf-8")
+
+
+def test_utf8_link_target_and_owner_decode_as_utf8_under_a_non_utf8_locale() -> None:
+    target = "цель/café.txt"
+    data = _one_member_tar(
+        "link", "utf-8", tarfile.USTAR_FORMAT, linkname=target, owner="josé"
+    )
+    with _NON_UTF8_LOCALE, open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        assert member.link_target == target
+        assert member.uname == "josé"
+        assert member.gname == "josé"
+
+
+def test_invalid_utf8_name_is_surrogate_escaped_under_a_non_utf8_locale() -> None:
+    data = _one_member_tar("café.txt", "latin-1", tarfile.USTAR_FORMAT)
+    with _NON_UTF8_LOCALE, open_archive(io.BytesIO(data)) as ar:
+        (member,) = ar.members()
+        assert member.name == "caf\udce9.txt"
+        assert member.raw_name == b"caf\xe9.txt"
+
+
+def test_caller_encoding_overrides_the_utf8_default() -> None:
+    data = _one_member_tar("café.txt", "utf-8", tarfile.USTAR_FORMAT)
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+        (member,) = ar.members()
+        assert member.name == "cafÃ©.txt"
+        assert member.raw_name == "café.txt".encode("utf-8")
+
+
+def _pax_tar_with_non_utf8_path(raw: bytes) -> bytes:
+    """A PAX archive whose ``path`` record holds ``raw``, which is not UTF-8."""
+    data = bytearray(_one_member_tar("café.txt", "utf-8", tarfile.PAX_FORMAT))
     # Swap the PAX path value for non-UTF-8 bytes of the same length.
     stored = "path=café.txt\n".encode()
     at = data.index(stored)
     data[at + 5 : at + len(stored) - 1] = raw
-    with open_archive(io.BytesIO(bytes(data))) as ar:
+    return bytes(data)
+
+
+def test_pax_raw_name_with_undecodable_bytes_round_trips() -> None:
+    """Bytes that are not UTF-8 fall back to the archive codec with surrogateescape;
+    the surrogates send the name back through that codec, recovering the bytes. The
+    fallback codec is the UTF-8 default, not the locale's."""
+    raw = b"caf\xe9\xe9.txt"
+    with (
+        _NON_UTF8_LOCALE,
+        open_archive(io.BytesIO(_pax_tar_with_non_utf8_path(raw))) as ar,
+    ):
         (member,) = ar.members()
+        assert member.name == "caf\udce9\udce9.txt"
         assert member.raw_name == raw
+
+
+def test_pax_path_that_is_not_utf8_falls_back_to_the_caller_encoding() -> None:
+    raw = b"caf\xe9\xe9.txt"
+    data = _pax_tar_with_non_utf8_path(raw)
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+        (member,) = ar.members()
+        assert member.name == "caféé.txt"
+        # raw_name is not asserted: the UTF-8 bytes of "caféé.txt" decode to the same
+        # name, so which bytes were stored cannot be recovered from it.
 
 
 def test_close_releases_the_owned_stream_when_tarfile_close_raises(
@@ -1730,3 +1836,76 @@ def test_gnu_long_name_under_a_global_pax_path_keeps_the_archive_codec() -> None
     with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
         (member,) = [m for m in ar.members() if m.name == long_name]
         assert member.raw_name == long_name.encode("latin-1")
+
+
+def _tar_with_mtime(path: Path, mtime: float, tar_format: int) -> Path:
+    with tarfile.open(path, "w", format=tar_format) as tf:
+        info = tarfile.TarInfo("old.txt")
+        info.mtime = mtime  # type: ignore[assignment]  # tarfile accepts a float
+        tf.addfile(info, io.BytesIO(b""))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("tar_format", "mtime", "expected"),
+    [
+        # PAX writes a negative mtime as a "mtime" record; GNU as a base-256 field.
+        pytest.param(
+            tarfile.PAX_FORMAT,
+            -86_400.5,
+            datetime(1969, 12, 30, 23, 59, 59, 500_000, tzinfo=timezone.utc),
+            id="pax",
+        ),
+        pytest.param(
+            tarfile.GNU_FORMAT,
+            -86_400,
+            datetime(1969, 12, 31, tzinfo=timezone.utc),
+            id="gnu-base256",
+        ),
+    ],
+)
+def test_pre_1970_mtime_lists_its_date(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tar_format: int,
+    mtime: float,
+    expected: datetime,
+) -> None:
+    """A negative mtime is a 1969 date on every platform.
+
+    ``datetime.fromtimestamp`` goes through ``gmtime()`` on Windows, which rejects a
+    negative value, so this member used to list as invalid there only. A
+    ``fromtimestamp`` that raises the way Windows' does must not matter any more.
+    """
+    from archivey.internal import timestamps as timestamps_module
+
+    class _WindowsLikeDatetime(datetime):
+        @classmethod
+        def fromtimestamp(cls, ts: float, tz: Any = None) -> datetime:
+            if ts < 0:
+                raise OSError(22, "Invalid argument (simulated Windows gmtime)")
+            return datetime.fromtimestamp(ts, tz)
+
+    monkeypatch.setattr(tar_reader_module, "datetime", _WindowsLikeDatetime)
+    monkeypatch.setattr(timestamps_module, "datetime", _WindowsLikeDatetime)
+
+    path = _tar_with_mtime(tmp_path / "old.tar", mtime, tar_format)
+    if tar_format == tarfile.PAX_FORMAT:
+        with tarfile.open(path) as tf:
+            assert "mtime" in tf.getmembers()[0].pax_headers
+    with open_archive(path) as ar:
+        member = ar.get("old.txt")
+        assert member.modified == expected
+        assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in ar.diagnostics.counts
+
+
+def test_pre_1970_pax_atime_lists_its_date(tmp_path: Path) -> None:
+    path = tmp_path / "atime.tar"
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("old.txt")
+        info.pax_headers = {"atime": "-1.5"}
+        tf.addfile(info, io.BytesIO(b""))
+    with open_archive(path) as ar:
+        assert ar.get("old.txt").accessed == datetime(
+            1969, 12, 31, 23, 59, 58, 500_000, tzinfo=timezone.utc
+        )

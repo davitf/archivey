@@ -1666,9 +1666,7 @@ def test_encoding_inference_is_escalatable() -> None:
 
 
 def test_extended_timestamp_pre_epoch(tmp_path: Path) -> None:
-    # A signed pre-1970 Extended Timestamp is legitimate data. On POSIX it converts
-    # cleanly; on Windows the conversion raises OSError and must degrade to an issue
-    # (covered by the forced test below) — never crash the listing either way.
+    # A signed pre-1970 Extended Timestamp is legitimate data and lists as its date.
     extra = struct.pack("<HHBi", 0x5455, 5, 0x01, -1)
     path = tmp_path / "pre-epoch.zip"
     info = zipfile.ZipInfo("t.txt", date_time=(1990, 1, 1, 0, 0, 0))
@@ -1678,17 +1676,20 @@ def test_extended_timestamp_pre_epoch(tmp_path: Path) -> None:
     with open_archive(path) as ar:
         member = ar.get("t.txt")
         assert member is not None
-        expected = datetime.fromtimestamp(-1, tz=timezone.utc)
-        assert member.modified in (expected, None)  # None only where the OS rejects it
+        assert member.modified == datetime(
+            1969, 12, 31, 23, 59, 59, tzinfo=timezone.utc
+        )
 
 
-def test_extended_timestamp_out_of_range_degrades_to_diagnostic(
+def test_extended_timestamp_pre_epoch_does_not_depend_on_gmtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Simulate Windows, where even tz-aware fromtimestamp routes through gmtime() and
-    # raises OSError for pre-1970 values: the member must list with modified=None and a
-    # MEMBER_TIMESTAMP_INVALID diagnostic, not crash with a raw OSError.
+    # On Windows, even tz-aware fromtimestamp routes through gmtime() and raises
+    # OSError for pre-1970 values, so the oldest signed value used to list as invalid
+    # there only. The conversion no longer calls fromtimestamp: with one that raises
+    # like Windows', the member still lists its 1901 date and no diagnostic.
     from archivey.diagnostics import DiagnosticCode
+    from archivey.internal import timestamps as timestamps_module
     from archivey.internal.backends import zip_reader as zip_reader_module
 
     class _WindowsLikeDatetime(datetime):
@@ -1699,6 +1700,7 @@ def test_extended_timestamp_out_of_range_degrades_to_diagnostic(
             return datetime.fromtimestamp(ts, tz)  # type: ignore[arg-type]
 
     monkeypatch.setattr(zip_reader_module, "datetime", _WindowsLikeDatetime)
+    monkeypatch.setattr(timestamps_module, "datetime", _WindowsLikeDatetime)
 
     extra = struct.pack("<HHBi", 0x5455, 5, 0x01, -(2**31))
     path = tmp_path / "neg-ts.zip"
@@ -1709,11 +1711,10 @@ def test_extended_timestamp_out_of_range_degrades_to_diagnostic(
     with open_archive(path) as ar:
         member = ar.get("t.txt")
         assert member is not None
-        # DOS date survives; the bad extended field only loses its own override.
-        assert member.modified == datetime(1990, 1, 1, 0, 0, 0)
-        assert (
-            ar.diagnostics.counts.get(DiagnosticCode.MEMBER_TIMESTAMP_INVALID, 0) >= 1
+        assert member.modified == datetime(
+            1901, 12, 13, 20, 45, 52, tzinfo=timezone.utc
         )
+        assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in ar.diagnostics.counts
 
 
 # ---------------------------------------------------------------------------

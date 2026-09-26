@@ -91,7 +91,8 @@
   makes the *whole archive* unlistable (`UnicodeDecodeError` → `CorruptionError`; the
   adversarial string corpus pins that behavior). A native parser can decode such names
   with the same cp437/`surrogateescape` fallback used for unflagged names and keep the
-  archive readable — likely with a diagnostic once warnings-as-data lands.
+  archive readable — likely with a diagnostic (warnings-as-data has landed, so the
+  diagnostic has a home).
 
 - **libarchive backend** — `python-libarchive-c` as an **alternative / additional**
   backend for several formats (zip/tar/7z/iso/cpio/…), in the `[all]`/alternative tier
@@ -312,13 +313,6 @@
   arms stop overloading `tell()`; gathered source reads and a `cipher_tell()` on
   `AesDecryptStream`). `openspec/changes/fold-rar-header-decrypt-stream/` is then only the
   fold and its gate. Neither is scheduled.
-
-- **`stream_members()` seekability leak** — the intended rule is that a sequential pass
-  is never seekable (`seekable_members=True` only changes random `open()`). Enforced
-  today only where seeking is physically impossible (solid RAR ALL-pipe, solid 7z).
-  ZIP, TAR, TAR.GZ, and non-solid RAR `stream_members()` handles report `seekable()`
-  when the source is a file. Raised on #295 (F9); wants a `testing-contract` delta
-  and a behaviour change for callers who may lean on it. Not a RAR-only fix.
 
 - **Generalize "a refused `open()` leaves nothing behind" into a lifecycle rule** —
   #293 made the single-live-stream gate fire before the member is opened and specified
@@ -630,6 +624,15 @@
   numbers are, and reads correctly beside `UNLIMITED`. It also happens to be the answer
   for a host whose headroom is below the default cap, which the `DecoderLimits` docstring
   currently covers in prose only.
+  **It may want to be a mode, not only numbers** (davitf, 2026-09-26, on the PPMd crash
+  fix): a safety-first setting that gives up some decodes (smaller thresholds, refusing a
+  decode that could take the process down) beside a permissive one. The first concrete
+  knob is PPMd's: `DecoderLimits.max_ppmd_in_process_input` (16 MiB held in-process,
+  larger members in a child process), and what to do when no child process can be
+  started. Today that case raises `ResourceLimitError` past the limit, and `None` holds
+  any member in-process (crash-safe, but memory grows with the member's compressed
+  size); a mode would pick between those without the caller naming the knob.
+  "Maybe for later", in his words.
 
 - **Threat-model row for archive-declared decoder memory** — a codec that sizes its
   working set from a number in the archive's own header (7z PPMd var.H's 32-bit window,
@@ -648,7 +651,8 @@
   `threat-model.md` was owned by another open pull request each time, and an `O`-numbered
   row cannot be appended without knowing what numbers that one takes. Write it once that
   lands; the measurements are in the `DecoderLimits` docstring and
-  `tests/test_decoder_limits.py`.
+  `tests/test_decoder_limits.py`. The row's unit for LZMA is the 7z folder, not the
+  decoder: a BCJ2 folder's branch dictionaries (and PPMd sizes) are checked together (O20).
 
 - **Detection budget / receipt public surface** — deferred by `detection-prefix-workspace`
   Decision 3A. Types live in `archivey.detection_cost` but are omitted from
@@ -911,11 +915,15 @@
   data. Document the recipe; consider a helper that returns "best available digest +
   provenance (stored vs computed)" so an indexer can choose cheap-but-weak vs
   costly-but-strong uniformly.
-- **Benchmarks as a CI gate** — suite tracking open/list/read/extract wall time vs
-  stdlib (`zipfile`/`tarfile`) and py7zr/libarchive where comparable, plus
-  **bytes-decompressed and seek counts** (the real bottlenecks — re-decompression and
-  seek storms — hide in wall time on small corpora). Budget per `VISION.md`: ≤1.3×
-  stdlib common paths, ~2× when justified. Stand up before any perf-sensitive claim.
+- ~~**Benchmarks as a CI gate**~~ — **Done**
+  (`openspec/changes/archive/2026-07-15-benchmark-gate/`): the structural gate (seek
+  counts, solid decode-once) is a required job in `ci.yml`, and `benchmark-wall.yml`
+  tracks wall-time ratios off the PR path. Original note: suite tracking
+  open/list/read/extract wall time vs stdlib (`zipfile`/`tarfile`) and py7zr/libarchive
+  where comparable, plus **bytes-decompressed and seek counts** (the real bottlenecks —
+  re-decompression and seek storms — hide in wall time on small corpora). Budget per
+  `VISION.md`: ≤1.3× stdlib common paths, ~2× when justified. Stand up before any
+  perf-sensitive claim.
 - **Public backend API** — stabilize/export the `ReadBackend` ABC + registry so rare
   formats (CAB, CPIO, SquashFS, WIM, XAR, DMG…) can be third-party plugins instead of
   a solo compatibility treadmill. Decide pre-1.0 (it constrains how freely the backend
@@ -924,16 +932,21 @@
   (`ArchiveFileSystem`); big adoption channel (pandas/dask/HF datasets ecosystems) and
   a good stress test of the reader contract. Also the natural place for
   `open_archive("https://…")` stories rather than teaching core about URLs.
-- **Migration guide** — `zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` →
-  archivey, gotcha-by-gotcha ("`tarfile.extractall` without `filter=` does X; here it
-  cannot happen"). Cheap, high-leverage for the "default library" goal.
-- **Warnings-as-data sweep** — audit every `logger.warning` in the library: each should
-  (also) be queryable as data (member/info field, `FormatInfo`, `CostReceipt`,
-  `ExtractionResult`), since most applications never surface logging. See
-  `dev-docs/threat-model.md` C2.
-- **Extraction collision handling + `OverwritePolicy.RENAME`** — deterministic
-  cross-platform handling of casefold/normalization collisions (threat-model O2), plus
-  an opt-in RENAME policy (`name (1)`) for archives with intentional duplicates.
+- ~~**Migration guide**~~ — **Done**: `docs/migrating.md`. Original note:
+  `zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` → archivey, gotcha-by-gotcha
+  ("`tarfile.extractall` without `filter=` does X; here it cannot happen"). Cheap,
+  high-leverage for the "default library" goal.
+- ~~**Warnings-as-data sweep**~~ — **Done** (`diagnostics-warnings-as-data`, archived
+  2026-07-11; threat-model C2 "addressed"): advisories are `Diagnostic` values on
+  `FormatInfo`, the reader, members and `ExtractionReport`. Original note: audit every
+  `logger.warning` in the library: each should (also) be queryable as data (member/info
+  field, `FormatInfo`, `CostReceipt`, `ExtractionResult`), since most applications never
+  surface logging. See `dev-docs/threat-model.md` C2.
+- ~~**Extraction collision handling + `OverwritePolicy.RENAME`**~~ — **Done**
+  (`cross-platform-name-safety`, archived 2026-07-16; threat-model O2 "implemented").
+  Original note: deterministic cross-platform handling of casefold/normalization
+  collisions (threat-model O2), plus an opt-in RENAME policy (`name (1)`) for archives
+  with intentional duplicates.
 - **Writing, done properly, later** — writing is deliberately post-reading (possibly
   post-1.0). When specced, design in from the start: **reproducible output**
   (`SOURCE_DATE_EPOCH`, stable member ordering, normalized metadata — the build-tool

@@ -42,10 +42,16 @@ class FormatInfo:
     detected_by: Literal["magic", "extension", "content_probe", "sfx_scan", "directory"]
     payload_offset: int = 0
     diagnostics: DiagnosticSummary = DiagnosticSummary.empty()
+    cost_receipt: DetectionCostReceipt | None = None   # compare=False; see detection-cost
+    unavailable_tiers: tuple[TierSkip, ...] = ()       # compare=False; see detection-cost
 ```
 
 `config=None` → library default. `confidence` = magic / structural probe /
-extension-guess. `payload_offset > 0` marks an SFX payload start.
+extension-guess. `payload_offset > 0` marks an SFX payload start. `cost_receipt` and
+`unavailable_tiers` are part of this contract; `detection-cost` defines what they hold.
+`FormatInfo` also carries a provisional `corroborated: bool` for `open_archive`'s own use,
+which SHALL NOT be part of this contract: its `False` cannot tell an uncorroborated probe
+from a result that was not a probe.
 
 A **directory path** SHALL return `FormatInfo(format=DIRECTORY,
 confidence=CERTAIN, detected_by="directory")` without reading anything, the same

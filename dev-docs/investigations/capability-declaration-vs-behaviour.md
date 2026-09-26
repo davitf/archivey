@@ -10,6 +10,17 @@ The snippets below that read it are as run on 2026-09-17; the script now reads t
 reader's private `_member_streams` field, and the "UNTYPED" finding about the attribute
 being off the ABC is moot (there is no attribute).
 
+**Note (2026-09-26, `stream_members()` never seeks):** a `stream_members()` handle is
+now forward-only on every format, with or without `seekable_members=True`
+(`archive-reading` spec). The `stream_members_seekable` check enforces that: a pass
+handle that reports `seekable() True` or accepts `seek(0)` is `DELIVERED-NOT-DECLARED`.
+It used to record the flag and return `OK` whatever it saw. The snapshot was
+regenerated on 2026-09-26 and also takes in verdicts that had already moved on
+`main`: zip-aes `seekable_opt_in` is `OK` on all three rows (WinZip AES members seek
+since #480), and the single-file `listing_cost` rows other than gz are `OK`
+(listing now records `seeks=1 decomp=1`). The tables and the "Violations"
+section below are still the 2026-09-17 run; read the JSON for current verdicts.
+
 ## Re-run
 
 ```bash
@@ -61,8 +72,8 @@ That is one field. The sweep asks how many others lie the same way.
 The first run is not the current state. Between `0c0a71c` and this rebase:
 
 - `MemberStreams.SEEKABLE` is now a **guarantee**, not a request mask
-  (`types.py`). `stream_members()` yields stay single-pass; the flag does
-  not require those handles to seek.
+  (`types.py`). It covers `open()` only; since 2026-09-26 a
+  `stream_members()` yield never seeks (see the note at the top).
 - `#299` enrolled the corpus in `tests/test_member_stream_contract.py`,
   including RAR / encrypted 7z / zip-aes. WinZip AES members are
   `xfail(strict=True, reason="decrypting stream wrapper does not seek")`.
@@ -85,7 +96,9 @@ Still true: zip-aes `open()` streams under `seekable_members=True` report
 - `concurrent_members=True` → two overlapping `open()` calls both read.
 - Default → `seekable()` is False and `seek()` raises; a second live
   `open()` raises `ConcurrentAccessError`.
-- `stream_members()` seekability is recorded, not required.
+- `stream_members()` under `seekable_members=True` → every FILE handle has
+  `seekable() is False` and `seek(0)` raises (2026-09-26 rule; before, it was
+  recorded, not required).
 
 **B. `reader.cost` vs `reader.io_stats()`** (fresh open, `enable_measurement`,
 listing before any payload `open()`)
@@ -148,10 +161,10 @@ rows. `_wrap_member_stream` is still `declared ∧ is_seekable(inner)`. The
 WinZip AES decrypt wrapper is the inner that is not seekable. ZipCrypto
 uses a decryptor that is.
 
-`stream_members()` under the same flag: zip-aes AES members report
-`seekable() True` on the sequential yield (the flag does not apply there
-the same way). Encrypted 7z `stream_members()` reports False — that is the
-documented exemption, not a fail.
+`stream_members()` under the same flag, as run on 2026-09-17: zip-aes AES
+members reported `seekable() True` on the sequential yield and encrypted 7z
+reported False, because nothing then required either. Since 2026-09-26 every
+pass handle reports False, on every row, and the check fails on a True.
 
 ## Matrix — cost / info (numbers from this run)
 
@@ -285,9 +298,9 @@ zeros that do not mean "no work":
 - **No per-member stream capability.** zip-aes mixed still disagrees
   member-by-member with no diagnostic. The archive-level flag cannot be
   true when stored and piped members share one reader.
-- **`stream_members()` vs `open()` seekability** is now written down as an
-  exemption, but nothing on the handle tells you which contract you got
-  besides calling `seekable()` after the fact.
+- **`stream_members()` vs `open()` seekability** is settled as of 2026-09-26:
+  a pass handle never seeks, and only `open()` under `seekable_members=True`
+  does.
 
 No `DELIVERED-NOT-DECLARED` hits. No `ERROR`. No skipped corpus rows.
 

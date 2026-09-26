@@ -2539,7 +2539,9 @@ class BaseArchiveReader(ArchiveReader):
         """Yield (member, stream) pairs. members is a selector filter (no transform).
 
         The yielded stream is owned by the iterator: advancing closes/invalidates the
-        previous stream before the next pair is produced.
+        previous stream before the next pair is produced. It never seeks, on any
+        format and whatever ``seekable_members`` says (``_iter_stream_members`` makes
+        each handle forward-only); ``tell()`` works.
         """
         self._state.require_open("stream_members()")
         # Validate here rather than inside the generator: a generator body does not
@@ -2571,6 +2573,13 @@ class BaseArchiveReader(ArchiveReader):
                     current.close()
                     current = None
                 if selector is None or selector(m):
+                    if stream is not None:
+                        # One rule for every backend, here rather than in each
+                        # _iter_with_data: a pass handle never seeks. A seek would
+                        # re-decode behind the pass, and a handle that could seek on
+                        # some formats only is a per-format accident callers would
+                        # come to rely on. seekable_members=True is for open().
+                        stream._make_forward_only()
                     current = stream
                     # Suspended at the yield: this thread runs the caller's loop body,
                     # which is not re-entry (see OperationToken.suspended).
