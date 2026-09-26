@@ -41,6 +41,9 @@ threshold value is fixed by benchmark and recorded in design. When the input siz
 in advance, `AUTO` SHALL behave as it did before this threshold existed (select the accelerator
 when otherwise eligible). `ON` ignores the threshold; `OFF` never selects rapidgzip.
 
+Over a ZipCrypto decrypt stage `AUTO` SHALL resolve to `OFF` for the codec that reads
+it, because every backward seek restarts decryption from the member's start.
+
 #### Scenario: demand matrix
 
 | Case | Expected |

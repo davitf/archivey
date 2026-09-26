@@ -46,8 +46,7 @@ member is read to its end, and the verdict comes from `read()`, never from `clos
 missing codec package raises an error that names the extra to install. A stream declared
 seekable with `seekable_members=True` does seek, even when that means decompressing
 again from the start; where a codec allows better, the layer uses an index (xz, lzip) or
-the `[seekable]` accelerator (gzip, bzip2). WinZip AES members do not seek yet; that is a
-known gap, not a design choice
+the `[seekable]` accelerator (gzip, bzip2). Encrypted members seek too
 ([Seeking inside compressed members](access-and-cost.md#seeking-inside-compressed-members)).
 [`open_stream`][archivey.open_stream] exposes the layer for a bare compressed file.
 

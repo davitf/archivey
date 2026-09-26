@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import io
 import os
+import random
 import struct
 import subprocess
 import zipfile
@@ -14,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from archivey import open_archive
+from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
@@ -27,6 +29,7 @@ from archivey.internal.backends.zip_aes import (
     open_winzip_aes_member,
     parse_winzip_aes_extra,
 )
+from archivey.internal.streams.streamtools.binaryio import source_byte_size
 from archivey.types import CompressionAlgorithm, HashAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.zip_aes_fixture import aes_ctr_le_encrypt, build_aes_zip
@@ -231,6 +234,56 @@ def test_aes_tampered_hmac_raises_corruption(method: int) -> None:
     with open_archive(io.BytesIO(data), password=_PASSWORD) as ar:
         with pytest.raises(CorruptionError, match="HMAC"):
             ar.read(ar.members()[0])
+
+
+@pytest.mark.parametrize("mode", [AcceleratorMode.AUTO, AcceleratorMode.ON])
+@pytest.mark.parametrize("passwords", [[_PASSWORD], [b"other", _PASSWORD]])
+@requires("cryptography", "rapidgzip")
+def test_aes_hmac_survives_a_seekable_accelerator(
+    mode: AcceleratorMode, passwords: list[bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An accelerator that seeks its input does not void the HMAC.
+
+    With ``seekable_members=True`` the decrypt stage is seekable, and rapidgzip reads
+    its source out of order. The HMAC is the only check on an AE-2 member and the
+    confirmation for several candidates, so a caller who reads straight through gets
+    its verdict whatever the codec layer does underneath.
+    """
+    moving_seeks: list[int] = []
+    real_seek = WinZipAesDecryptStream.seek
+
+    def spy_seek(self: WinZipAesDecryptStream, offset: int, whence: int = 0) -> int:
+        before = self.tell()
+        result = real_seek(self, offset, whence)
+        if result != before:
+            moving_seeks.append(result)
+        return result
+
+    monkeypatch.setattr(WinZipAesDecryptStream, "seek", spy_seek)
+    config = ArchiveyConfig(use_rapidgzip=mode)
+    # Incompressible and over the 1 MiB AUTO threshold, which sees the stage's size.
+    payload = random.Random(480).randbytes(1_200_000)
+    for tamper in (False, True):
+        data = _build_aes_zip(
+            payload=payload,
+            password=_PASSWORD,
+            vendor_version=2,
+            strength=3,
+            method=8,
+            tamper_hmac=tamper,
+        )
+        with open_archive(
+            io.BytesIO(data), password=passwords, seekable_members=True, config=config
+        ) as ar:
+            member = ar.members()[0]
+            if tamper:
+                with pytest.raises((CorruptionError, EncryptionError)):
+                    ar.read(member)
+            else:
+                assert ar.read(member) == payload
+    # The accelerator did move the decrypt stage, so the HMAC above survived real
+    # out-of-order reads rather than a straight pass.
+    assert moving_seeks
 
 
 @pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
@@ -553,3 +606,199 @@ def test_aes_lone_colliding_password_fails_on_the_hmac(
     with open_archive(io.BytesIO(data), password=_COLLIDER) as ar:
         with pytest.raises(CorruptionError, match="HMAC"):
             ar.read(ar.members()[0])
+
+
+def _ctr_stream(payload: bytes, *, tamper_mac: bool = False) -> WinZipAesDecryptStream:
+    """A decrypt stream over ``payload`` encrypted as WinZip AES-256, MAC appended."""
+    enc_key, auth_key = os.urandom(32), os.urandom(32)
+    cipher = aes_ctr_le_encrypt(enc_key, payload)
+    mac = hmac.new(auth_key, cipher, hashlib.sha1).digest()[:10]
+    if tamper_mac:
+        mac = bytes([mac[0] ^ 1]) + mac[1:]
+    return WinZipAesDecryptStream(
+        io.BytesIO(cipher + mac),
+        enc_key=enc_key,
+        auth_key=auth_key,
+        cipher_len=len(cipher),
+    )
+
+
+@requires("cryptography")
+def test_aes_decrypt_stream_seeks_at_every_block_phase() -> None:
+    # The counter for byte p is 1 + p // 16 and the stage discards p % 16 keystream
+    # bytes; every phase of the first blocks, and backward after forward.
+    payload = os.urandom(100)
+    stream = _ctr_stream(payload)
+    for target in [*range(0, 50), 99, 100, 17, 0, 64, 3]:
+        assert stream.seek(target) == target
+        assert stream.tell() == target
+        assert stream.read(7) == payload[target : target + 7]
+        assert stream.tell() == min(target + 7, 100)
+    assert stream.seek(-10, io.SEEK_END) == 90
+    assert stream.read() == payload[90:]
+    assert stream.seek(-5, io.SEEK_CUR) == 95
+    assert stream.read() == payload[95:]
+
+
+@pytest.mark.parametrize(
+    "moves",
+    [
+        [(5, -1)],  # skip the start, read to the end
+        [(0, 30), (60, 10), (20, 50), (90, -1)],  # scattered, overlapping reads
+        [(0, 10), (50, -1)],  # a gap after a hashed prefix
+        [(90, 10)],  # read(n) that ends exactly at the end
+    ],
+)
+@requires("cryptography")
+def test_aes_decrypt_stream_seeks_keep_the_hmac(moves: list[tuple[int, int]]) -> None:
+    """The HMAC covers the ciphertext, so the read that reaches the end completes it
+    over what seeks skipped. A tampered MAC raises and an intact one reads clean,
+    whatever path the reads took."""
+    payload = os.urandom(100)
+    for tamper in (False, True):
+        stream = _ctr_stream(payload, tamper_mac=tamper)
+        *head, (last_at, last_n) = moves
+        for at, n in head:
+            stream.seek(at)
+            assert stream.read(n) == payload[at : at + n]
+        stream.seek(last_at)
+        if tamper:
+            with pytest.raises(CorruptionError, match="HMAC"):
+                stream.read(last_n)
+        else:
+            expected = payload[last_at:] if last_n < 0 else payload[last_at:][:last_n]
+            assert stream.read(last_n) == expected
+
+
+@pytest.mark.parametrize("tamper", ["none", "mac", "ciphertext"])
+@requires("cryptography")
+def test_aes_decrypt_stream_hmac_across_a_pull_that_straddles_the_frontier(
+    tamper: str,
+) -> None:
+    """A pull that starts behind the hashed prefix and ends past it hashes only the
+    part past it: no byte is hashed twice, and none is skipped.
+
+    Over one pull (64 KiB) of ciphertext, so the first read leaves the prefix inside
+    the member and the pull after the seek back straddles it.
+    """
+    enc_key, auth_key = os.urandom(32), os.urandom(32)
+    payload = os.urandom(200 * 1024)
+    cipher = bytearray(aes_ctr_le_encrypt(enc_key, payload))
+    mac = hmac.new(auth_key, bytes(cipher), hashlib.sha1).digest()[:10]
+    if tamper == "mac":
+        mac = bytes([mac[0] ^ 1]) + mac[1:]
+    elif tamper == "ciphertext":
+        cipher[150_000] ^= 1  # past every byte the reads below decrypt
+    stream = WinZipAesDecryptStream(
+        io.BytesIO(bytes(cipher) + mac),
+        enc_key=enc_key,
+        auth_key=auth_key,
+        cipher_len=len(cipher),
+    )
+    assert stream.read(70_000) == payload[:70_000]
+    assert stream._hashed == 2 * 65536  # two pulls: the prefix ends mid-member
+    stream.seek(1000)
+    if tamper == "none":
+        assert stream.read() == payload[1000:]
+    else:
+        with pytest.raises(CorruptionError, match="HMAC"):
+            stream.read()
+
+
+@requires("cryptography")
+def test_aes_decrypt_stream_reports_its_size() -> None:
+    """The codec layer's accelerator threshold reads the stage's exact size."""
+    payload = os.urandom(100)
+    assert source_byte_size(_ctr_stream(payload)) == 100
+
+
+@requires("cryptography")
+def test_aes_decrypt_stream_catches_tampered_ciphertext_a_seek_skipped() -> None:
+    """A byte the caller seeked over is still authenticated."""
+    enc_key = b"\x07" * 32
+    auth_key = b"\x09" * 20
+    payload = os.urandom(100)
+    cipher = bytearray(aes_ctr_le_encrypt(enc_key, payload))
+    mac = hmac.new(auth_key, bytes(cipher), hashlib.sha1).digest()[:10]
+    cipher[3] ^= 1  # inside the range the reads below never touch
+    stream = WinZipAesDecryptStream(
+        io.BytesIO(bytes(cipher) + mac),
+        enc_key=enc_key,
+        auth_key=auth_key,
+        cipher_len=len(cipher),
+    )
+    stream.seek(50)
+    with pytest.raises(CorruptionError, match="HMAC"):
+        stream.read()
+
+
+@requires("cryptography")
+def test_aes_decrypt_stream_partial_read_after_seek_has_no_verdict() -> None:
+    payload = os.urandom(100)
+    stream = _ctr_stream(payload, tamper_mac=True)
+    stream.seek(40)
+    assert stream.read(20) == payload[40:60]
+    stream.close()
+
+
+@requires("cryptography")
+def test_aes_decrypt_stream_seek_to_current_position_keeps_the_hmac() -> None:
+    payload = os.urandom(100)
+    stream = _ctr_stream(payload, tamper_mac=True)
+    assert stream.read(20) == payload[:20]
+    stream.seek(20)
+    with pytest.raises(CorruptionError, match="HMAC"):
+        stream.read()
+
+
+@pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
+@requires("cryptography")
+def test_aes_member_seeks(method: int) -> None:
+    payload = os.urandom(5000) + _PAYLOAD
+    data = _build_aes_zip(
+        payload=payload,
+        password=_PASSWORD,
+        vendor_version=1,
+        strength=3,
+        method=method,
+    )
+    with open_archive(
+        io.BytesIO(data), password=_PASSWORD, seekable_members=True
+    ) as ar:
+        with ar.open(ar.members()[0]) as stream:
+            assert stream.seekable()
+            stream.seek(4099)
+            assert stream.read(100) == payload[4099:4199]
+            stream.seek(17)
+            assert stream.read() == payload[17:]
+            stream.seek(0)
+            assert stream.read() == payload
+
+
+@requires("cryptography")
+def test_aes_stored_out_of_range_seeks_match_an_unencrypted_member() -> None:
+    """A STORED member's seek reaches the decrypt stage directly, and lands where the
+    same member unencrypted does: a relative underflow clamps to 0 and a past-end
+    seek keeps its position."""
+    payload = b"hello"
+    encrypted = _build_aes_zip(
+        payload=payload, password=_PASSWORD, vendor_version=2, strength=3, method=0
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("x.txt", payload)
+    results = []
+    for blob in (encrypted, buf.getvalue()):
+        with open_archive(
+            io.BytesIO(blob), password=_PASSWORD, seekable_members=True
+        ) as ar:
+            with ar.open(ar.members()[0]) as stream:
+                out: list[object] = []
+                for offset, whence in (
+                    (-10, io.SEEK_END),
+                    (-100, io.SEEK_CUR),
+                    (1000, io.SEEK_SET),
+                ):
+                    out += [stream.seek(offset, whence), stream.tell(), stream.read(2)]
+                results.append(out)
+    assert results[0] == results[1] == [0, 0, b"he", 0, 0, b"he", 1000, 1000, b""]

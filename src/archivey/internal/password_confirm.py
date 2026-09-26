@@ -268,13 +268,18 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
     on a check weaker than the member's digest (a weak cheap-key check, or a confirm
     that ran out of budget). If the caller closes the stream after reading some bytes
     but before the reads reach ``size``, ``on_unverified`` runs once: those bytes may
-    have decrypted under a wrong key, and nothing checked them. A stream closed before
-    any read delivered nothing to distrust, and a read that raised has already told the
-    caller something is wrong; neither reports. A seek that raised has not: the caller
-    can catch it and keep reading, so the report stays armed.
+    have decrypted under a wrong key, and nothing checked them. It receives the reason
+    the digest was not reached: ``"seek"`` when a seek forfeited it, else
+    ``"partial_read"``. A stream closed before any read delivered nothing to distrust,
+    and a read that raised has already told the caller something is wrong; neither
+    reports. A seek that raised has not: the caller can catch it and keep reading, so
+    the report stays armed.
 
-    The member's verifier forfeits the checksum on a seek off the read frontier (ADR
-    0014), so any position-changing seek means the digest can no longer be reached.
+    A member's verifier forfeits its checksum on a seek off the read frontier (ADR
+    0014), so by default any position-changing seek means the digest can no longer be
+    reached. Pass ``seek_forfeits=False`` for a digest that survives seeks (the
+    WinZip AES HMAC, which the decrypt stage completes over the ciphertext at the
+    end): only a read that reaches ``size`` counts there, wherever it started.
     """
 
     readinto_passthrough = False
@@ -284,16 +289,18 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         inner: BinaryIO,
         *,
         size: int,
-        on_unverified: Callable[[], None],
+        on_unverified: Callable[[str], None],
+        seek_forfeits: bool = True,
     ) -> None:
         # Set before the base constructor, which ``close()`` must survive: IOBase's
         # finalizer calls ``close()`` on an instance whose ``__init__`` raised.
         self._watch_size = size
-        self._on_unverified: Callable[[], None] | None = on_unverified
+        self._on_unverified: Callable[[str], None] | None = on_unverified
         self._watch_pos = 0
         self._delivered = False
         self._reached = size <= 0
         self._forfeited = False
+        self._seek_forfeits = seek_forfeits
         super().__init__(inner)
 
     def _note_position(self) -> None:
@@ -333,7 +340,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             self._note_failed_seek()
             raise
         if position != self._watch_pos:
-            self._forfeited = True
+            self._forfeited = self._seek_forfeits
         self._watch_pos = position
         return position
 
@@ -343,7 +350,8 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
         A refused seek (a negative position) moves nothing, and the digest is intact.
         A seek can also raise after it moved (``ArchiveStream._note_raised_seek``), and
         then it counts as a seek. When the position cannot be read, the stream may
-        have moved, so the digest counts as forfeited.
+        have moved and no later read can be placed, so the digest counts as forfeited
+        even where seeks do not forfeit it.
         """
         try:
             position = self.tell()
@@ -352,7 +360,7 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             return
         if position == self._watch_pos:
             return
-        self._forfeited = True
+        self._forfeited = self._seek_forfeits
         self._watch_pos = position
 
     def close(self) -> None:
@@ -364,4 +372,4 @@ class UnverifiedPasswordReadWatch(DelegatingStream):
             super().close()
         finally:
             if callback is not None and self._delivered and not self._reached:
-                callback()
+                callback("seek" if self._forfeited else "partial_read")

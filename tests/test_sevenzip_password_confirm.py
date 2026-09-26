@@ -21,7 +21,7 @@ import pytest
 
 import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
 from archivey import open_archive
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import DiagnosticCode, EncryptedVerificationContext
 from archivey.exceptions import ArchiveyError, EncryptionError
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_PREFIX_BYTES,
@@ -224,6 +224,27 @@ def test_lzma2_late_crc_full_read_after_a_refused_seek_is_not_reported(
         assert (
             DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED not in reader.diagnostics.counts
         )
+
+
+def test_lzma2_late_crc_seek_then_full_read_is_reported_as_a_seek(
+    tmp_path: Path,
+) -> None:
+    # A seek that moves forfeits the CRC, so reading on to EOF after it is still
+    # unverified, and the report names the seek rather than a partial read.
+    big = _payload(_BIG, 3)
+    archive = _build(tmp_path, "lzma2", {"big.bin": big}, method="LZMA2", solid=True)
+    with open_archive(archive, password=_PASSWORD, seekable_members=True) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with reader.open(member) as stream:
+            stream.seek(1)
+            assert stream.read() == big[1:]
+        (context,) = [
+            d.context
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED
+        ]
+        assert isinstance(context, EncryptedVerificationContext)
+        assert context.reason == "seek"
 
 
 def test_copy_late_crc_is_walked_and_confirms(

@@ -72,7 +72,12 @@ shared translation. Traditional ZipCrypto and WinZip AES (method 99) members SHA
 decrypt natively (see below) and then feed the codec layer; stdlib `zipfile`
 decodes no member data. A ZipCrypto member SHALL seek under `seekable_members=True`:
 a backward seek restarts decryption from the member's start, a forward seek decrypts
-what it skips, and `AUTO` accelerators stay off over the decrypt stage.
+what it skips, and `AUTO` accelerators stay off over the decrypt stage. A WinZip AES
+member SHALL seek too: CTR restarts at the target's block (counter `1 + offset // 16`).
+A seek SHALL NOT give up the HMAC, whether the caller or an accelerator made it: the
+HMAC covers the ciphertext, so the read that returns the member's last byte SHALL
+complete it by reading, without decrypting, the ciphertext the seeks skipped, and raise
+`CorruptionError` on a mismatch. A read that stops short of the end gives no verdict.
 
 #### Scenario: ZIP codec-layer decoding
 
@@ -84,7 +89,7 @@ what it skips, and `AUTO` accelerators stay off over the decrypt stage.
 | Unsupported/unknown method id | `UnsupportedFeatureError`; no guessed output |
 | Corrupt member body | `CorruptionError` / `TruncatedError` |
 | Encrypted ZipCrypto member, any of the methods above | Decrypts natively, decodes via the codec layer; CRC verified through the fused verifier |
-| ZipCrypto member, `seekable_members=True` | Seeks backward and forward; content matches a sequential read |
+| ZipCrypto or WinZip AES member, `seekable_members=True` | Seeks backward and forward; content matches a sequential read |
 
 ### Requirement: Read WinZip AES-encrypted members
 

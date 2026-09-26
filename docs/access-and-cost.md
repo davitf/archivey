@@ -107,12 +107,12 @@ With `seekable_members=True`, every member stream from random `open()` reports
   re-decodes from the start, including members before the one you opened
 - otherwise a backward seek may **re-decompress from the start**
 
-WinZip AES members do not seek yet: `seekable()` stays false and `seek()`
-raises. HMAC covers the whole ciphertext, so a random seek would skip MAC
-updates or force a second full pass. Encrypted 7z members seek when
-`seekable_members=True` — the decrypt layer no longer blocks seeking; the
-cost is still the codec's. That used to fail because the decrypt wrapper had no
-`seek`; it was a bug, not an exception to the contract.
+Encrypted members seek like any other when `seekable_members=True`; the cost is the
+codec's. ZipCrypto restarts decryption from the member's start on a backward seek.
+WinZip AES and encrypted 7z restart at the target's cipher block. A seek that moves
+the position gives up a CRC check, but not WinZip AES's HMAC: the HMAC covers the
+ciphertext, so the read that reaches the member's end first reads, without decrypting,
+whatever ciphertext your seeks skipped, and then checks it.
 
 Whether that gets a diagnostic is decided by **what the seek actually costs**, not by the
 codec's name: `STREAM_REWIND_REDECOMPRESSES` fires when the rewind discards more than
