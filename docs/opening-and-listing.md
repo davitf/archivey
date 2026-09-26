@@ -219,6 +219,48 @@ to the damage and then raises.
 [Errors and diagnostics](errors-and-diagnostics.md#listing-a-damaged-archive) has the
 recipe and what each failure means.
 
+## Names that do not decode
+
+A TAR stores member names as bytes. Unless you pass `encoding=`, a ustar or GNU name
+is decoded with Python's `tarfile` default: UTF-8 on Windows, and on other systems the
+process filesystem encoding, which is usually UTF-8. A PAX `path` record is decoded as
+UTF-8 whatever the locale.
+
+A name written in a legacy encoding, such as Latin-1 `caf\xe9.txt`, is not valid
+UTF-8. Archivey keeps such a name rather than failing: each byte that does not decode
+becomes a surrogate escape, a code point in the range U+DC80 to U+DCFF, so under a
+UTF-8 locale `member.name` is `'caf\udce9.txt'`.
+
+Because the default follows the locale, the same ustar or GNU archive can list
+differently on another machine. Under a Latin-1 locale that name decodes to
+`'café.txt'` with no escapes; under an ASCII one, even a valid UTF-8 name such as
+`café.txt` comes back escaped. Pass `encoding=` when you need the same names
+everywhere.
+
+That string cannot be encoded as UTF-8, so `print(member.name)` can raise
+`UnicodeEncodeError`, and so can writing it to a UTF-8 log or JSON file. Three ways to
+handle it:
+
+- **Show it.** `archivey.terminal.escape_control_chars(member.name)` renders each
+  escaped byte as `\xe9`, and the result is safe to print.
+- **Keep the original bytes.** `member.raw_name` holds the name as stored in the
+  archive, here `b'caf\xe9.txt'`.
+- **Name the encoding.** If you know which encoding the archive uses, pass it:
+  `open_archive(path, encoding="latin-1")` gives `'café.txt'`. Only ZIP and TAR read
+  `encoding=`; the other formats decode names their own way, and passing it to them
+  emits `ENCODING_ARGUMENT_UNUSED`.
+
+A ZIP name without the UTF-8 flag is decoded as UTF-8 when its bytes are valid UTF-8,
+and otherwise with `ArchiveyConfig.zip_unflagged_fallback_encoding` (see
+[ZIP](formats.md#zip)). The default fallback, `cp437`, decodes every byte, so such a
+name is not escaped, though it can come back as the wrong characters. If you set the
+fallback to another encoding, bytes it cannot decode are escaped in the same way.
+
+On extraction, `STRICT` (the default) and `STANDARD` write each escaped byte
+percent-encoded, as `caf%E9.txt`; only `TRUSTED` writes the stored bytes.
+`ExtractionResult.presented_name` holds the name before the rewrite, which also tells
+a rewritten `%E9` apart from one that was stored that way.
+
 ## Duplicate names and is_current
 
 Appending to a tarball, or updating a 7z, can leave **the same member name in the

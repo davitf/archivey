@@ -99,7 +99,10 @@ Without `seekable_members=True`, member streams report `seekable() is False` and
 accelerators are not built until you ask.
 
 With `seekable_members=True`, every member stream from random `open()` reports
-`seekable() is True` and `seek()` works. How the backend does it varies:
+`seekable() is True` and `seek()` works. A stream from `stream_members()` never seeks,
+with or without the flag, on every format: the pass owns the position, and a seek would
+decode again behind it. To seek inside a member, open it with `open()`. How the backend
+does it varies:
 
 - XZ / lzip can seek via native indexes
 - gzip / zlib / raw deflate / bzip2 can use `[seekable]` (`rapidgzip`) when installed

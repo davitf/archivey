@@ -18,9 +18,17 @@ Who does what:
   several are possible (a shared CRC pass for STORED ZipCrypto).
 - PKWARE Strong Encryption — refused (``UnsupportedFeatureError``).
 
-Split/spanned multi-volume sets are rejected — rejoin first (see ``format-zip``):
-Info-ZIP ``.zNN`` / final ``.zip`` (EOCD disk fields), 7-Zip ``.zip.NNN``, and
-ZIP64 locator ``disks > 1``.
+Multi-volume sets:
+
+- 7-Zip ``.zip.NNN`` split sets are byte slices of one ordinary ZIP. ``open_archive``
+  joins the parts before this backend sees them (``source.volume_count > 1``).
+- A lone ``.zip.NNN`` segment whose sibling parts are missing is an incomplete set,
+  not a spanned one: ``open_archive`` raises ``TruncatedError`` naming the missing
+  parts. The ``UnsupportedFeatureError`` in ``ZipReader.__init__`` is only the
+  backstop for a segment that did not pass through that check.
+- Spanned sets are rejected with ``UnsupportedFeatureError``; rejoin them with the
+  tool that made them (see ``format-zip``): Info-ZIP ``.zNN`` / final ``.zip`` (EOCD
+  disk fields) and ZIP64 locator ``disks > 1``.
 """
 
 from __future__ import annotations

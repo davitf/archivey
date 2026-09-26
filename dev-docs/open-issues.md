@@ -14,6 +14,8 @@
 > [#130](https://github.com/davitf/archivey/pull/130) (PPMd bound decode),
 > [#120](https://github.com/davitf/archivey/pull/120) (CLI). This triage PR is #129.
 > **D4 refresh 2026-07-25:** P1 (TAR EOF Option F) moved to Closed; archive path fixed.
+> **Pre-release refresh 2026-09-26** against `main` @ `436037c`: P14 and P18 moved to
+> Closed, P5 and P6 brought up to date, the "Suggested first cuts" section removed.
 
 ## How to use this list
 
@@ -73,10 +75,13 @@ same change when relevant.
 
 - **Today:** Upstream rapidgzip 0.16 can `terminate()` if the Python source raises
   under a live accelerator stream. Archivey avoids closing *its* SharedSource under
-  the stream; **caller-owned** sources remain exposed.
-- **Why partially fixable:** Keep mitigating in-tree; full fix is upstream. Product
-  work: document loudly (Gotchas); optionally refuse accelerator on non-path /
-  non-owned sources; hang sandbox for untrusted input (threat-model O5 follow-up).
+  the stream, and every rapidgzip decoder reads a **caller-owned** source through
+  `_TrappingSource` (`internal/streams/codecs.py`), which parks the callback's exception
+  and re-raises it in Python after the call. What remains open is upstream: the abort
+  paths that do not start in a Python callback (`known-issues.md` Bug 3).
+- **Why partially fixable:** The Python-callback trigger is contained in-tree; a full
+  fix is upstream. Remaining product work: hang sandbox for untrusted input
+  (threat-model O5 follow-up).
 - **Refs:** `known-issues.md` Bug 3; `access-and-cost.md`; Gotchas; threat-model accelerator hang.
 
 ### P7. An unclosed member stream is never reclaimed — **CLOSED**
@@ -466,23 +471,6 @@ re-verified failing against the unfixed code). Original write-up below.
 - **Refs:** `src/archivey/internal/registry.py` `extension_map()`; census via
   `scripts/exploration/probe_residual_census.py`.
 
-### P14. Several exported names are documented nowhere
-
-- **What:** `docs/api.md` opens with "Everything documented here is re-exported from the
-  top-level `archivey` package and listed in `archivey.__all__`" — true, but not the
-  converse. 31 of the 87 names in `__all__` have no mkdocstrings page anywhere in `docs/`,
-  including `FormatInfo`, `DetectionConfidence`, `FormatAvailability`, `FormatSupport`,
-  `MissingComponent`, `ExtractionProgress`, `DiagnosticContext`,
-  `ARCHIVE_INTEGRITY_CODES`, and every exception class.
-- **Why it matters now:** `FormatInfo` is the return type of the public `detect_format`,
-  and PR #263 proposes adding an evidence ledger to it. A type users are expected to read
-  fields off, with no rendered reference, is where an "internal" field quietly becomes
-  public — which is exactly what happened with `FormatInfo.corroborated` in #267 (held
-  back with `compare=False, repr=False` in the follow-up).
-- **Note:** the exceptions may be deliberate — they are described narratively in
-  `docs/errors-and-diagnostics.md`. The data types are the gap.
-- **Check:** compare `archivey.__all__` against `^::: archivey\.(\S+)` across `docs/*.md`.
-
 ### P15. `SingleFileReader`'s eager open-time validation is a no-op — **CLOSED**
 
 **Fixed** in `single-file-open-time-validation`: `open_archive` now decodes one byte of a
@@ -630,11 +618,11 @@ same shape as the gzip empty→stdlib fallback. Original write-up below.
   kinds are all pinned: a kind whose emission `is_payload_file()` gets wrong
   still shifts every later member. There is no RAR 1.5/2.x solid-symlink
   fixture.
-- **Why fixable:** Spec’d hardening / shared emission table; called out in the
-  unrar-piping investigation as a future change (same class as mixed-password
-  ALL-pipe forbid).
-- **Refs:** PR #101 (still open) / `dev-docs/investigations/rar-unrar-piping-investigation.md`
-  (when merged); `format-rar`; handbook `formats/rar.md` §4 / §8.
+- **Why fixable:** Spec’d hardening / shared emission table, as a future change (same
+  class as mixed-password ALL-pipe forbid).
+- **Refs:** `format-rar`; handbook `formats/rar.md` §4 / §8. The emission-policy
+  finding came from PR #101, an unrar-piping investigation that closed unmerged; what
+  it measured about link emission is recorded above.
 
 ### P17. Old-scheme SFX first volumes (`name.exe` + `.r00`) are undiscovered — **CLOSED**
 
@@ -661,36 +649,6 @@ same shape as the gzip empty→stdlib fallback. Original write-up below.
 
 - **Refs:** `volumes.py`; handbook `formats/rar.md` §2.2;
   `topics/prefixed-archives.md` §6. Closed in #309.
-
-### P18. `detected_by="sfx_scan"` names a motive the tier cannot know
-
-- **Resolved 2026-09-25: kept, not renamed.** `detected_by` is documented as an open set
-  and `sfx_scan` as covering every prefixed hit (a `#!` script or Mach-O stub included),
-  in `docs/formats.md` and the `FormatInfo` docstring. The rename's home,
-  `detection-result-surface`, was cut to the `detection=` handoff. The analysis below is
-  kept as the record.
-
-- **Today:** the prefix-scanning detection tier reports `detected_by="sfx_scan"`
-  (`src/archivey/internal/detection.py:478`, plus two skip sites and a comment). The tier
-  finds an archive behind arbitrary leading bytes; *self-extracting* is one reason those
-  bytes exist. The others it finds are a `zipapp` (meant to be run, not extracted), a
-  polyglot, and junk prepended to a tar — so the name is right for roughly one case in
-  four and asserts an intent nothing in the scan establishes.
-- **Fix:** rename to `prefixed_scan`. Already specced as task 4.3 of
-  [`detection-result-surface`](../openspec/changes/detection-result-surface/tasks.md),
-  rationale in its [`design.md`](../openspec/changes/detection-result-surface/design.md)
-  §4. Registered here as well because that change is large, gated behind
-  `detection-evidence-ledger`, and neither is implemented — while the rename is a
-  mechanical substitution that does not depend on either.
-- **Blast radius (2026-09-03):** 5 in `src/`, 17 in `tests/` (all `test_sfx.py`, all
-  `assert detected_by == "sfx_scan"`), 7 in `dev-docs/`, 15 in in-flight
-  `openspec/changes/`, **0 in `docs/`**.
-- **Why now rather than later:** `detected_by` is a public string. `pyproject.toml` is at
-  `0.2.0.dev0` and the repo carries no git tags, so there is no released version and no
-  user to migrate — the window closes at first publish, not at 1.0. Doing it after that
-  turns a substitution into a deprecation.
-- **Not blocking anything.** Deliberately deferred out of the current stack; take it as a
-  standalone PR.
 
 ---
 
@@ -742,7 +700,7 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
   also uses pycdlib directly.
 - **`.Z` truncation:** only nonzero leftover bits are loud.
 - **Bare `.gz` / `open_stream` + rapidgzip:** truncation detection is best-effort (empty→stdlib
-  + single-member ISIZE on path sources); use `use_rapidgzip=OFF` when you need certainty.
+  + single-member ISIZE on any seekable source); use `use_rapidgzip=OFF` when you need certainty.
   ZIP/7z/… **members** are a different story (container CRC/`VerifyingStream`) — see Gotchas.
 - **Metadata fidelity** (xattrs/ACLs/forks) not claimed on extract.
 - **Concurrent hostile modification** of the destination during extract — out of scope.
@@ -772,6 +730,8 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 | Item | Closed by |
 | --- | --- |
 | **P11** A RAR stream source's disk copy for `unrar` is reported at open and bounded by `ArchiveyConfig.spool_limits` (1 GiB default) | `openspec/changes/archive/2026-09-26-rar-stream-spool-limit/` |
+| **P18** `detected_by="sfx_scan"` kept, not renamed: documented as an open set covering every prefixed hit (`docs/formats.md`, the `FormatInfo` docstring); the rename's home, `detection-result-surface`, was cut to the `detection=` handoff | Resolved 2026-09-25 |
+| **P14** Exported names documented nowhere: every name in `archivey.__all__` now renders on `docs/api.md`, and `tests/test_public_api.py` keeps it that way | #465 |
 | **P15** Single-file open-time validation decodes one byte; **P16** a corrupt `.bz2` raises under the accelerator | `openspec/changes/archive/2026-09-25-single-file-open-time-validation/` |
 | **P17** Old-scheme SFX first volumes (`name.exe` + `.r00`) discovered; lone numbered parts name missing siblings | #309 |
 | Three false negatives from the detection-algorithm analysis §5: a zstd stream behind skippable frames, a zlib stream at any window below 32 KiB, an LZMA Alone stream with a zero dictionary size — all decoded by their own decoders, none detected. Plus the bootable ISO claimed by the Brotli probe, which the far-magic hoist that ships with them closes | `openspec/changes/detection-format-gaps/` |
@@ -784,11 +744,3 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 | Cross-platform name safety implementation + threat-model prose sync | #109 / #123 + docs sweep |
 | `format-7z` “never silent bytes” vs F2 diagnostic (P7) | docs sweep |
 | `formats.md` RAR `-ver` / crypto notes | docs sweep |
-
----
-
-## Suggested first cuts
-
-1. **Why Archivey page** (next narrative doc): hardenings / why not wrap / why “large.”
-2. Optional polish: `opening-and-listing.md` duplicate-name / hardlink pointers; fuller nested-archive
-   recipe; one line in `extracting.md` on symlink-hostile FS.

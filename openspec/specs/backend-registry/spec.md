@@ -31,7 +31,9 @@ Each backend SHALL declare dependency metadata as data. Availability SHALL be
 derived centrally from the module-or-`None` sentinel idiom (`_optional("pycdlib")`
 returns module or `None`), not per-backend booleans. 7z and RAR reading are
 native and known; RAR data reads additionally require the external `unrar` binary
-at read time, making RAR partial rather than import-unavailable.
+at read time. That binary SHALL NOT be counted in support: RAR reports FULL whether or
+not `unrar` is on `PATH`, and a member read that needs it raises
+`PackageNotInstalledError`.
 
 ```python
 pycdlib = _optional("pycdlib")
@@ -226,8 +228,11 @@ Support SHALL be computed across the format backend and codecs/tools:
 - FULL for an available multi-codec container only when every optional codec/tool
   it can use is present.
 - PARTIAL for available multi-codec containers with missing optional codecs/tools.
-- ZIP SHALL remain PARTIAL until Phase 6 routes member decompression through the
-  shared codec layer, even if all optional member-codec packages are installed.
+- ZIP follows the same rule: FULL with every optional member-codec package (Deflate64,
+  Zstd, PPMd) installed, PARTIAL when any is missing.
+- Requirements a format needs only for some members or at read time — `cryptography`
+  for encrypted members, the `unrar` binary for RAR member data — SHALL NOT lower
+  support.
 - By-design unsupported features such as 7z BCJ2 and unknown 7z method IDs SHALL
   not lower support; members using them raise `UnsupportedFeatureError`.
 
@@ -268,7 +273,7 @@ conservative answer.
 | ZSTD availability before Python 3.14 without zstd backend | NONE with `backports.zstd` / `pip install archivey[recommended]` hint |
 | GZIP availability | FULL; no missing components |
 | 7z with the optional 7z packages installed | FULL even though BCJ2 still raises `UnsupportedFeatureError` |
-| ZIP with every optional member codec installed | PARTIAL with empty missing list until Phase 6 |
+| ZIP with every optional member codec installed | FULL; no missing components |
 | ZIP missing deflate64 and/or zstd packages | PARTIAL; missing names absent codec packages; stored/deflate members still list/read |
 | `format_availability(StreamFormat.ZSTD)` | `ArchiveyUsageError`; no `FormatAvailability` returned |
 | `format_availability(ArchiveFormat.UNKNOWN)` | `NONE` with an empty `missing` — a hintless NONE is an answer, not a fabrication |

@@ -275,7 +275,8 @@ def open_archive(
     - ``seekable_members=True`` — ``seek()`` on a member stream from random
       ``open()`` works. Without it, ``seek()`` raises
       ``io.UnsupportedOperation``. A backward seek may re-decompress from the
-      start when there is no index or accelerator.
+      start when there is no index or accelerator. A ``stream_members()``
+      stream never seeks, with or without this flag.
     - ``concurrent_members=True`` — multiple member streams may be open at once
       (coordinated first-touch materialization, then worker fan-out; draining close).
       Without it, a second overlapping ``open()`` raises ``ConcurrentAccessError``.
