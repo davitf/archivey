@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import random
+import signal
 import struct
 import subprocess
 import sys
@@ -22,7 +23,13 @@ from pathlib import Path
 import pytest
 
 from archivey.config import DecoderLimits
-from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
+from archivey.exceptions import (
+    ArchiveyUsageError,
+    CorruptionError,
+    ReadError,
+    ResourceLimitError,
+    TruncatedError,
+)
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams import decompress as decompress_module
 from archivey.internal.streams import ppmd_child as ppmd_child_module
@@ -347,8 +354,8 @@ def test_child_crash_surfaces_as_corruption_error(
         assert self._proc is not None
         self._proc.kill()
         self._proc.wait()
-        self._dead = True
-        raise PpmdChildError("PPMd decoder process exited unexpectedly")
+        self.close()
+        raise PpmdChildError("PPMd decoder process exited unexpectedly", -11)
 
     monkeypatch.setattr(PpmdChildDecoder, "decode", die)
     packed = _encode_ppmd7(_ZERO_RUN)
@@ -453,8 +460,12 @@ def test_a_memory_cap_below_mem_size_is_a_resource_limit_on_the_child_path() -> 
 @pytest.mark.parametrize(
     ("sig", "expected", "match"),
     [
-        ("SIGSEGV", CorruptionError, "killed by SIGSEGV"),
+        ("SIGSEGV", CorruptionError, "crashed.*killed by SIGSEGV"),
+        ("SIGABRT", CorruptionError, "crashed.*killed by SIGABRT"),
+        ("SIGBUS", CorruptionError, "crashed.*killed by SIGBUS"),
         ("SIGKILL", ResourceLimitError, "killed by SIGKILL.*out-of-memory"),
+        ("SIGTERM", ReadError, "killed by SIGTERM.*did not crash"),
+        ("SIGHUP", ReadError, "killed by SIGHUP.*did not crash"),
     ],
 )
 def test_a_child_death_names_its_signal(
@@ -464,18 +475,71 @@ def test_a_child_death_names_its_signal(
     expected: type[Exception],
     match: str,
 ) -> None:
-    """A crash signal is corruption; SIGKILL comes from outside and is not."""
+    """A crash signal is corruption; a signal from outside the decoder is not."""
     body = f"reply()\nreply()\ninp.read(8)\nos.kill(os.getpid(), signal.{sig})\n"
-    with pytest.raises(expected, match=match):
+    with pytest.raises(expected, match=match) as caught:
         _read_child_member(monkeypatch, tmp_path, body)
+    assert type(caught.value) is expected
 
 
 def test_a_child_death_names_its_exit_status(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """A plain non-zero exit is not a crash, so not a verdict on the data."""
     body = "reply()\nreply()\ninp.read(8)\nos._exit(7)\n"
-    with pytest.raises(CorruptionError, match="exit status 7"):
+    with pytest.raises(ReadError, match="exit status 7.*did not crash") as caught:
         _read_child_member(monkeypatch, tmp_path, body)
+    assert not isinstance(caught.value, CorruptionError)
+
+
+def test_is_crash_reads_fault_signals_and_ntstatus_as_crashes() -> None:
+    assert ppmd_child_module.is_crash(0xC0000005)  # Windows access violation
+    assert not ppmd_child_module.is_crash(7)
+    assert not ppmd_child_module.is_crash(None)
+    if sys.platform != "win32":
+        assert ppmd_child_module.is_crash(-signal.SIGSEGV)
+        assert not ppmd_child_module.is_crash(-signal.SIGTERM)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.parametrize(
+    ("body", "expected", "returncode"),
+    [
+        ("os.kill(os.getpid(), signal.SIGKILL)", ResourceLimitError, -9),
+        ("os._exit(7)", ReadError, 7),
+        ("os.kill(os.getpid(), signal.SIGSEGV)", PpmdChildError, -11),
+    ],
+)
+def test_a_decode_after_a_child_death_raises_the_same_error_again(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    body: str,
+    expected: type[Exception],
+    returncode: int,
+) -> None:
+    """Every later ``decode`` repeats the first death's verdict and return code."""
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        _FAKE_WORKER_HEAD + f"reply()\nreply()\ninp.read(8)\n{body}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ppmd_child_module, "_WORKER", worker)
+    child = PpmdChildDecoder(variant=7, order=_ORDER, mem_size=_MEM)
+    try:
+        errors = []
+        for _ in range(2):
+            with pytest.raises(expected) as caught:
+                child.decode(b"\x00" * 16, 10)
+            errors.append(caught.value)
+    finally:
+        child.close()
+    codes = [
+        getattr(e if isinstance(e, PpmdChildError) else e.__cause__, "returncode", None)
+        for e in errors
+    ]
+    assert codes == [returncode, returncode]
+    assert type(errors[0]) is type(errors[1])
+    assert str(errors[0]) == str(errors[1])
 
 
 def test_without_sys_executable_a_large_member_is_refused(
@@ -527,7 +591,7 @@ def test_an_interrupted_reply_leaves_the_decoder_unusable(
         with pytest.raises(KeyboardInterrupt):
             child.decode(packed, len(data))
         monkeypatch.setattr(ppmd_child_module, "_read_exact", real_read_exact)
-        with pytest.raises(RuntimeError, match="not running"):
+        with pytest.raises(ArchiveyUsageError, match="not running"):
             child.decode(packed, len(data))
     finally:
         child.close()

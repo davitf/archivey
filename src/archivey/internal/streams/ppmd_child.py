@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import IO
 
-from archivey.exceptions import ResourceLimitError
+from archivey.exceptions import ArchiveyUsageError, ReadError, ResourceLimitError
 
 _OPEN = struct.Struct("<BBIB")
 _REQUEST = struct.Struct("<iI")
@@ -34,6 +34,25 @@ _WORKER = Path(__file__).with_name("ppmd_worker.py")
 # How a dead child's exit reads when the system killed it: the kernel's out-of-memory
 # killer, or an operator or supervisor, sends SIGKILL. Windows has no such signal.
 _SIGKILL: int | None = getattr(signal, "SIGKILL", None)
+
+# The deaths that read as a crash of the decoder itself, and so as a verdict on the
+# data it was decoding: the POSIX signals a native fault raises, and the Windows
+# NTSTATUS codes for the same faults. Any other death (SIGTERM, SIGHUP, SIGINT,
+# SIGKILL, a plain non-zero exit status) came from outside the decoder.
+_CRASH_SIGNALS = frozenset(
+    -int(sig)
+    for name in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE")
+    if (sig := getattr(signal, name, None)) is not None
+)
+_CRASH_NTSTATUS = frozenset(
+    {
+        0xC0000005,  # access violation
+        0xC000001D,  # illegal instruction
+        0xC0000094,  # integer divide by zero
+        0xC00000FD,  # stack overflow
+        0xC0000409,  # stack buffer overrun / fail-fast (the C runtime's abort path)
+    }
+)
 
 
 class _PpmdError(ValueError):
@@ -63,11 +82,11 @@ _KNOWN_ERRORS: dict[str, type[Exception]] = {
 class PpmdChildError(RuntimeError):
     """The PPMd child process died while decoding.
 
-    ``PpmdCodec.translate`` maps it to ``CorruptionError``: pyppmd crashes on data it
-    cannot decode safely. The message carries the child's exit status or signal, since
-    a crash on the data (SIGSEGV, SIGABRT) is not the only way a child can die. A
-    child killed by SIGKILL is reported as ``ResourceLimitError`` instead (see
-    :meth:`PpmdChildDecoder.decode`).
+    The message carries the child's exit status or signal. ``PpmdChildDecoder.decode``
+    lets it through only for a crash (see :func:`is_crash`), which
+    ``PpmdCodec.translate`` maps to ``CorruptionError``: pyppmd crashes on data it
+    cannot decode safely. Any other death came from outside the decoder and is
+    reported as ``ResourceLimitError`` (SIGKILL) or ``ReadError`` instead.
     """
 
     def __init__(self, message: str, returncode: int | None = None) -> None:
@@ -131,6 +150,17 @@ def _describe_exit(returncode: int | None) -> str:
     return f"exit status {returncode}"
 
 
+def is_crash(returncode: int | None) -> bool:
+    """Whether a child that ended with ``returncode`` crashed, rather than was ended.
+
+    A crash (a native fault signal, or its Windows NTSTATUS) is what pyppmd does on
+    data it cannot decode. Every other end is not a verdict on the data.
+    """
+    return returncode is not None and (
+        returncode in _CRASH_SIGNALS or returncode in _CRASH_NTSTATUS
+    )
+
+
 def _read_exact(stream: IO[bytes], size: int) -> bytes:
     parts: list[bytes] = []
     while size:
@@ -156,11 +186,10 @@ class PpmdChildDecoder:
     ) -> None:
         self.eof = False
         self.needs_input = True
-        self._dead = False
         # Set when a reply was cut short (see ``_receive``).
         self._interrupted = False
         # Set when the child died: what every later ``decode`` raises again.
-        self._death: PpmdChildError | None = None
+        self._child_death: PpmdChildError | None = None
         # Assigned before the spawn, so ``close`` (and ``__del__``) work on an object
         # whose ``Popen`` raised.
         self._proc: subprocess.Popen[bytes] | None = None
@@ -217,23 +246,25 @@ class PpmdChildDecoder:
         proc = self._proc
         self.close()
         returncode = proc.returncode if proc is not None else None
-        self._death = PpmdChildError(
+        self._child_death = PpmdChildError(
             f"PPMd decoder process exited unexpectedly ({_describe_exit(returncode)})",
             returncode,
         )
-        return self._death
+        return self._child_death
 
     def _send(self, *parts: bytes) -> None:
-        if self._death is not None:
-            raise PpmdChildError(str(self._death), self._death.returncode)
+        death = self._child_death
+        if death is not None:
+            raise PpmdChildError(str(death), death.returncode)
         if self._interrupted:
-            # Not ``PpmdChildError``: nothing is known about the data.
-            raise RuntimeError(
+            # Not ``PpmdChildError``: nothing is known about the data. Resuming a
+            # decode after an interrupt was let through is the caller's mistake.
+            raise ArchiveyUsageError(
                 "PPMd decoder process is not running: a reply from it was "
                 "interrupted, and this decoder cannot continue"
             )
         proc = self._proc
-        if proc is None or self._dead:
+        if proc is None:
             raise PpmdChildError("PPMd decoder process is not running")
         assert proc.stdin is not None
         try:
@@ -274,22 +305,27 @@ class PpmdChildDecoder:
             self._send(_REQUEST.pack(length, len(data)), bytes(data))
             return self._receive()
         except PpmdChildError as exc:
+            if exc.returncode is None or is_crash(exc.returncode):
+                # A crash, left for ``PpmdCodec.translate`` to call corruption; or
+                # a decode after ``close``, which never started a child death.
+                raise
+            # Not a crash on the data: something outside the decoder ended the child.
             if _SIGKILL is not None and exc.returncode == -_SIGKILL:
-                # Not a crash on the data: the system's out-of-memory killer, an
-                # operator or a supervisor ended the child.
                 raise ResourceLimitError(
                     f"{exc}. SIGKILL comes from outside the decoder, most often the "
                     "system's out-of-memory killer, so the archive may be valid; "
                     "decode it with more memory available."
                 ) from exc
-            raise
+            raise ReadError(
+                f"{exc}. The decoder did not crash: something outside it ended the "
+                "process, so the archive may be valid; try reading it again."
+            ) from exc
 
     def close(self) -> None:
         """End the child and wait for it. Idempotent; never raises."""
         proc, self._proc = getattr(self, "_proc", None), None
         if proc is None:
             return
-        self._dead = True
         # Both pipes before the wait: a child blocked writing a reply nobody will read
         # gets EPIPE and exits, where it would otherwise never see stdin close.
         for pipe in (proc.stdin, proc.stdout):

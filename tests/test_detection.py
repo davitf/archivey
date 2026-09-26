@@ -1502,5 +1502,8 @@ def test_mutable_receipt_freezes_every_public_counter() -> None:
         if name != "self"
     ]
     assert charged == [name for name in public if name != "passes"]
-    after = DetectionCostReceipt().charge(**dict.fromkeys(charged, 7))
-    assert all(getattr(after, name) == 7 for name in charged)
+    sevens = dict.fromkeys(charged, 7)
+    after = DetectionCostReceipt().charge(**sevens).charge(**sevens)
+    assert {name: getattr(after, name) for name in charged} == dict.fromkeys(
+        charged, 14
+    )

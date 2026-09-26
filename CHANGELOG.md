@@ -86,7 +86,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   archivey now hands pyppmd a member of up to 16 MiB of compressed data in one piece,
   so it never makes that call, and decodes larger members in a child process, where a
   crash becomes `CorruptionError`; a child killed by SIGKILL (usually the out-of-memory
-  killer) or unable to allocate the member's model raises `ResourceLimitError`. Output
+  killer) or unable to allocate the member's model raises `ResourceLimitError`, and one
+  ended any other way (SIGTERM, a plain exit status) raises `ReadError`. Output
   still streams. The new `DecoderLimits.max_ppmd_in_process_input` sets the size; where
   no child process can be started (a frozen app, an interpreter that does not know its
   own path, a spawn the OS refuses, or a child that cannot import pyppmd), a larger

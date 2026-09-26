@@ -253,13 +253,15 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` on `Archive
   98), can crash the whole process on corrupt input unless it is handed a member in one
   piece. archivey holds a member's compressed bytes up to
   `DecoderLimits.max_ppmd_in_process_input` (default 16 MiB) and decodes larger ones
-  in a child Python process, where a crash becomes `CorruptionError`. Output streams
-  either way. A child killed by SIGKILL (usually the out-of-memory killer), or one that
-  dies allocating the member's model under a memory cap, raises `ResourceLimitError`.
-  So does a larger member where no child process can be started (a frozen application,
-  an interpreter that does not know its own path, a spawn the operating system refuses,
-  or a child that cannot import pyppmd); `None` decodes every member in-process,
-  holding its whole compressed size in memory.
+  in a child Python process, where a crash (a fault signal such as SIGSEGV) becomes
+  `CorruptionError`. Output streams either way. A child killed by SIGKILL (usually the
+  out-of-memory killer), or one that dies allocating the member's model under a memory
+  cap, raises `ResourceLimitError`. So does a larger member where no child process can
+  be started (a frozen application, an interpreter that does not know its own path, a
+  spawn the operating system refuses, or a child that cannot import pyppmd); `None`
+  decodes every member in-process, holding its whole compressed size in memory. A
+  child ended any other way (SIGTERM, a plain exit status) raises `ReadError`, which is
+  not a verdict on the data.
 
 Loosen per call with `limits=` (extraction only), raise `listing_limits` or
 `decoder_limits` at `open_archive(config=…)`, or use `ExtractionLimits.UNLIMITED` /
