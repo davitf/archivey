@@ -665,8 +665,10 @@ class _ZisofsStream(io.RawIOBase):
             packed = self._inner.read(end - start)
             if len(packed) < end - start:
                 raise TruncatedError(f"zisofs block {index} is cut short")
+            # One byte past the block size, so a block that inflates further is seen
+            # rather than cut to fit.
             try:
-                data = zlib.decompressobj().decompress(packed, expected)
+                data = zlib.decompressobj().decompress(packed, expected + 1)
             except zlib.error as exc:
                 raise CorruptionError(f"zisofs block {index}: {exc}") from exc
             if len(data) != expected:
@@ -1083,14 +1085,20 @@ class IsoReader(BaseArchiveReader):
             # Rock Ridge transparent compression: the extent holds zisofs blocks of
             # zlib data, and the ZF entry declares the size they decode to.
             size = zisofs.uncompressed_size
-            compression = (CompressionMethod(algo=CompressionAlgorithm.DEFLATE),)
+            # A variant this reader refuses to decode is not reported as deflate.
+            algo = (
+                CompressionAlgorithm.DEFLATE
+                if _zisofs_refusal(zisofs) is None
+                else CompressionAlgorithm.UNKNOWN
+            )
+            compression = (CompressionMethod(algo=algo),)
 
         member = ArchiveMember(
             type=member_type,
             name=name,
             raw_name=raw_name,
             size=size,
-            # Stored as is, but for zisofs members.
+            # The stored length; for a zisofs member ``size`` is the decoded one.
             compressed_size=compressed_size,
             modified=modified,
             accessed=accessed,
@@ -1163,7 +1171,8 @@ class IsoReader(BaseArchiveReader):
                 archive_name=self._archive_name,
                 member_name=member.name,
                 member_id=index,
-                record="rock_ridge",
+                # The entry list was cut short, so no one record is named.
+                record="",
                 reason=reason,
                 list_truncated=True,
             ),

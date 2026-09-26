@@ -260,8 +260,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - zisofs (Rock Ridge transparent compression, `mkzftree` + `genisoimage -z`, `xorriso
   -zisofs`) reads: the member lists the size its data decodes to, with
   `compression=(CompressionMethod(algo=DEFLATE),)`, and reads decoded, seeking by block.
-  zisofs2 (`xorriso -zisofs version_2=on`) lists but refuses to read, with
-  `UnsupportedFeatureError`.
+  zisofs2 (`xorriso -zisofs version_2=on`) lists with `CompressionAlgorithm.UNKNOWN`
+  and refuses to read, with `UnsupportedFeatureError`.
 - Rock Ridge and plain ISO 9660 names, and Rock Ridge link targets, decode as UTF-8
   first. Bytes that are not valid UTF-8 decode with `encoding=` when you pass one, and
   are escaped otherwise (see [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)).

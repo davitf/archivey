@@ -1273,6 +1273,9 @@ def test_a_zisofs_member_this_reader_cannot_decode_is_refused_alone(
 
     data = _zisofs_image(_ZISOFS_PLAIN, **zf)
     with open_archive(io.BytesIO(data)) as ar:
+        assert ar.get("zzz").compression == (
+            CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),
+        )
         assert ar.read("bbb") == b"BBBB"
         with pytest.raises(UnsupportedFeatureError, match="zisofs"):
             ar.read("zzz")
@@ -1286,6 +1289,51 @@ def test_a_damaged_zisofs_block_is_corruption() -> None:
     data[first_block : first_block + 8] = b"\xff" * 8
     with open_archive(io.BytesIO(bytes(data))) as ar:
         with pytest.raises(CorruptionError):
+            ar.read("zzz")
+
+
+@pytest.mark.parametrize(
+    ("cut", "match"),
+    [(10, "header"), (20, "pointer"), (100, "block 0")],
+    ids=["header", "pointer-table", "block-data"],
+)
+def test_a_zisofs_member_cut_by_the_image_end_is_truncated(
+    cut: int, match: str
+) -> None:
+    """The declared-length check is off for zisofs members; the decoder raises
+    ``TruncatedError`` where the stored data runs out instead. The member before it
+    still reads."""
+    from archivey.exceptions import TruncatedError
+
+    data = _zisofs_image(_ZISOFS_PLAIN)
+    at = data.index(_zisofs(_ZISOFS_PLAIN))
+    assert data.index(b"BBBB") < at
+    with open_archive(io.BytesIO(data[: at + cut])) as ar:
+        assert ar.get("zzz").size == len(_ZISOFS_PLAIN)
+        assert ar.read("bbb") == b"BBBB"
+        with pytest.raises(TruncatedError, match=match):
+            ar.read("zzz")
+
+
+def test_a_zisofs_block_that_inflates_past_the_block_size_is_corruption() -> None:
+    """The decoded length is capped one byte past the block, so an over-long block
+    raises rather than being cut to fit."""
+    import zlib
+
+    good = _zisofs(bytes(range(256)) * 128)  # one full 32 KiB block
+    header, pointers = good[:16], good[16:24]
+    packed = zlib.compress(bytes(range(256)) * 128 + b"!")
+    stored = header + struct.pack("<II", 24, 24 + len(packed)) + packed
+
+    def populate(iso: Any) -> None:
+        iso.add_fp(io.BytesIO(stored), len(stored), "/ZZZ.;1", rr_name="zzz")
+
+    data = _replace_tf(
+        _build_rr_iso(populate), b"zzz", _zf_entry(32 * 1024) + _UNKNOWN_ENTRY
+    )
+    assert pointers == struct.pack("<II", 24, len(good))
+    with open_archive(io.BytesIO(data)) as ar:
+        with pytest.raises(CorruptionError, match="block 0"):
             ar.read("zzz")
 
 
@@ -1321,6 +1369,7 @@ def test_a_malformed_rock_ridge_entry_costs_its_own_member_only() -> None:
         [diagnostic] = aaa.diagnostics
         assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
         assert diagnostic.context.list_truncated
+        assert diagnostic.context.record == ""
         assert "version 99" in diagnostic.context.reason
         assert by_name["bbb"].diagnostics == ()
 
