@@ -219,6 +219,31 @@ to the damage and then raises.
 [Errors and diagnostics](errors-and-diagnostics.md#listing-a-damaged-archive) has the
 recipe and what each failure means.
 
+## Names that do not decode
+
+A TAR stores member names as bytes, and a name written in a legacy encoding, such as
+Latin-1 `caf\xe9.txt`, is not valid UTF-8. Archivey keeps such a name rather than
+failing: each byte that does not decode becomes a surrogate escape, a code point in
+the range U+DC80 to U+DCFF, so `member.name` is `'caf\udce9.txt'`.
+
+That string cannot be encoded as UTF-8, so `print(member.name)` can raise
+`UnicodeEncodeError`, and so can writing it to a UTF-8 log or JSON file. Three ways to
+handle it:
+
+- **Show it.** `archivey.terminal.escape_control_chars(member.name)` renders each
+  escaped byte as `\xe9`, and the result is safe to print.
+- **Keep the original bytes.** `member.raw_name` holds the name as stored in the
+  archive, here `b'caf\xe9.txt'`.
+- **Name the encoding.** If you know which encoding the archive uses, pass it:
+  `open_archive(path, encoding="latin-1")` gives `'café.txt'`. Only ZIP and TAR read
+  `encoding=`; the other formats decode names their own way, and passing it to them
+  emits `ENCODING_ARGUMENT_UNUSED`.
+
+A ZIP name without the UTF-8 flag falls back to `cp437` by default, which decodes every
+byte, so it is not escaped this way; it can come back as the wrong characters instead
+(see [ZIP](formats.md#zip)). On extraction, the default `STRICT` policy writes each
+escaped byte percent-encoded, as `caf%E9.txt`.
+
 ## Duplicate names and is_current
 
 Appending to a tarball, or updating a 7z, can leave **the same member name in the
