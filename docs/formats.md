@@ -256,6 +256,12 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
   list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
   is given the first candidate, so put the right password first for those.
+- **Partial reads of RAR3/4 encrypted data** emit `ENCRYPTED_MEMBER_UNVERIFIED`. With no
+  password check, only the member's CRC at EOF catches a wrong password, and `unrar`
+  can return the wrong key's bytes before that: a stored member always, a compressed
+  one for some wrong passwords. Closing the stream before EOF, or after a seek, skips
+  the CRC. RAR5 members and header-encrypted archives have checked the password already
+  and never emit it.
 - **File-version history (`-ver`):** revision rows appear in `members()` as names like
   `path;1` with `extra["rar.file_version"]` and `is_current=False`; the live path stays
   `is_current=True`. Default extract **skips** non-current rows.

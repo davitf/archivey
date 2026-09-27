@@ -133,6 +133,14 @@ promise with that line; treat `0.2.0` as the first release of this library.
   default, rounded down to a power of two), and a window over it raises
   `ResourceLimitError`. This covers `.zst`, `.tar.zst`, ZIP method 93 and 7z zstd.
 
+- **A partial read of RAR3/4 encrypted data now emits `ENCRYPTED_MEMBER_UNVERIFIED`.**
+  RAR3/4 data has no password check, so only the member's CRC at EOF catches a wrong
+  password, and `unrar` streams the wrong key's bytes before that: always for a stored
+  member, and for about three wrong passwords in ten on a compressed one (unrar 7.00).
+  Reading a prefix and closing returned those bytes with no diagnostic. The code now
+  fires as it does for ZipCrypto (`check="no_password_check"`). RAR5 members and
+  header-encrypted archives, whose password is checked before decoding, do not emit it.
+
 - **One malformed Rock Ridge record no longer costs a whole ISO image.** A System Use
   entry pycdlib does not know is skipped, as SUSP specifies, and a malformed one ends
   that record's Rock Ridge data with a `MEMBER_HEADER_RECORD_SKIPPED` diagnostic on the

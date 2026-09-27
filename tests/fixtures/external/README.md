@@ -124,3 +124,18 @@ committed here:
 
 See [`dev-docs/formats/zip.md`](../../../dev-docs/formats/zip.md) for how the reader
 uses this.
+
+## `rar4_solid_encrypted_libarchive.rar`
+
+libarchive's `test_read_format_rar4_solid_encrypted.rar` (from the `.uu` in
+`libarchive/test/`, commit `9dc6678c`, BSD-2-Clause), decoded and committed 2026-09-27.
+A solid RAR 2.9 (`-ma4`) archive, `-m3`, of four 18-byte members `a.txt`..`d.txt`
+("This is from a.txt" and so on), every one encrypted with the password `password`.
+`rar` 7 cannot write RAR4, and it is the only solid RAR3/4 encrypted archive in the
+tree.
+
+Under the wrong password `wrong0`, `unrar` 7.00 decodes `a.txt` into 18 garbage bytes
+and streams them before its CRC fails (exit 3): the shape
+`tests/test_encrypted_member_unverified.py` needs for the solid pass. About one wrong
+password in four does that on this member; the rest emit nothing. See
+[`dev-docs/formats/rar.md`](../../../dev-docs/formats/rar.md) §2.2.

@@ -44,6 +44,7 @@ from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     DiagnosticCode,
     DigestContext,
+    EncryptedVerificationContext,
     MemberHeaderRecordContext,
 )
 from archivey.exceptions import (
@@ -111,6 +112,7 @@ from archivey.internal.password import (
     _PasswordCandidatesExhausted,
     wrong_password_error,
 )
+from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
@@ -1747,7 +1749,9 @@ class RarReader(BaseArchiveReader):
             return self._wrap_member_stream(
                 None,
                 member.name,
-                open_fn=lambda: _pipe().open_member(member_offset, size, lazy=True),
+                open_fn=lambda: self._watch_unverified(
+                    _pipe().open_member(member_offset, size, lazy=True), member
+                ),
                 size=member.size,
                 track_output=False,
                 seekable=False,
@@ -2448,6 +2452,7 @@ class RarReader(BaseArchiveReader):
                     suggest_install=False,
                     min_redecode_bytes=self._solid_prefix(member),
                 )
+            inner = self._watch_unverified(inner, member)
             # Folder/pipe output already counted; avoid double-counting at the member wrap.
             # Fused verify in _wrap_payload_stream bounds/checks declared size + digests.
             return self._wrap_payload_stream(
@@ -2456,6 +2461,54 @@ class RarReader(BaseArchiveReader):
         except BaseException:
             inner.close()
             raise
+
+    def _watch_unverified(self, stream: BinaryIO, member: ArchiveMember) -> BinaryIO:
+        """Wrap ``stream`` to report an abandoned read of a member no check vouched for.
+
+        RAR3/4 file data has no password check value, so ``unrar`` decodes with
+        whatever password it is given, and only the CRC at the member's end tells a
+        wrong key. Before that it can stream the wrong key's bytes: always for a stored
+        member, and for about three wrong passwords in ten on a compressed one
+        (unrar 7.00, dev-docs/formats/rar.md §2.2). A caller who reads a prefix and
+        closes never reaches the CRC, so the close reports it. A RAR5 record's 64-bit
+        PswCheck vouches for the password, and so does a header-encrypted archive's
+        header decryption, which the password passed CRC by CRC; neither is watched.
+        """
+        raw = member._raw
+        assert isinstance(raw, RarMemberInfo)
+        if not raw.is_encrypted or self._archive.has_header_encryption:
+            return stream
+        enc = raw.file_encryption
+        if enc is not None and _psw_check_usable(enc):
+            return stream
+
+        def report(reason: str) -> None:
+            missed = (
+                "gave up its checksum by seeking"
+                if reason == "seek"
+                else "was closed before its checksum was reached"
+            )
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
+                message=(
+                    f"Encrypted RAR member {quoted(member.name)} {missed}, and it "
+                    f"carries no password check: the bytes read may have been "
+                    f"decrypted with a wrong password."
+                ),
+                context=EncryptedVerificationContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member._member_id,
+                    check="no_password_check",
+                    reason=reason,
+                ),
+                member=member,
+                logger=integrity_logger,
+            )
+
+        return UnverifiedPasswordReadWatch(
+            stream, size=_member_stream_size(member), on_unverified=report
+        )
 
     def _unar_password(
         self, member: ArchiveMember | None, password: str | None
@@ -2597,7 +2650,9 @@ class RarReader(BaseArchiveReader):
                 open_fn = lambda: _refuse(member, refusal)  # noqa: E731
             else:
                 offset = policy.solid_pass_offset(raw)
-                open_fn = lambda: _pipe().open_member(offset, size, lazy=True)  # noqa: E731
+                open_fn = lambda: self._watch_unverified(  # noqa: E731
+                    _pipe().open_member(offset, size, lazy=True), member
+                )
             hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
             return self._wrap_member_stream(
                 None,

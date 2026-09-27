@@ -227,8 +227,9 @@ one expensive case left is **store/copy+AES** (or PPMd) with its only CRC at the
 a large folder: nothing rejects a wrong key before that CRC, so each candidate reads to
 it. Prefer a single known password there.
 
-A password that only a weak check accepted leaves the member's own checksum as the real
-test, and that runs at EOF. Closing such a stream part way through emits
+A password that only a weak check accepted, or that no check tested at all (RAR3/4
+encrypted data has none), leaves the member's own checksum as the real test, and that
+runs at EOF. Closing such a stream part way through emits
 `ENCRYPTED_MEMBER_UNVERIFIED`: the bytes you read may have decrypted with a wrong
 password. Read to EOF, or pass the one password you know, when that matters.
 
