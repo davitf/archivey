@@ -26,7 +26,6 @@ from typing import (
 if TYPE_CHECKING:
     from archivey.internal.password import _PasswordCandidates
     from archivey.internal.registry import ContentProbe
-    from archivey.measurement import IoStats
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
@@ -70,6 +69,7 @@ from archivey.internal.listing_limits import ListingLimitTracker
 from archivey.internal.logs import backends as logger
 from archivey.internal.measurement import (
     ByteCounter,
+    IoStats,
     SeekCounter,
     measurement_enabled,
 )
@@ -825,7 +825,7 @@ class BaseArchiveReader(ArchiveReader):
         """Total decoded/output bytes counted while measurement was enabled, else 0.
 
         Distinct from :attr:`compressed_bytes_consumed` (compressed *input* pressure for
-        the live ratio guard). Internal / harness-facing — not on the public ABC.
+        the live ratio guard). Internal / harness-facing.
         """
         c = self._decompressed_counter
         return c.total if c is not None else 0
@@ -2788,17 +2788,15 @@ class BaseArchiveReader(ArchiveReader):
         elif provenance.chosen_by == "extension":
             self._mark_format_unconfirmed(exc, "extension")
 
-    def io_stats(self) -> "IoStats | None":
+    def io_stats(self) -> IoStats | None:
         """Return I/O counters if measurement is enabled, else ``None``.
 
-        Enable measurement via :func:`archivey.measurement.enable_measurement` around
-        the :func:`archivey.open_archive` call. Returns ``None`` when the reader was not
-        opened inside an ``enable_measurement()`` context.
+        Enable measurement with :func:`archivey.internal.measurement.enable_measurement`
+        around the :func:`archivey.open_archive` call. Returns ``None`` when the reader
+        was not opened inside an ``enable_measurement()`` context.
         """
         if not self._measure:
             return None
-        from archivey.measurement import IoStats
-
         c_bytes = self._compressed_input_counter
         return IoStats(
             bytes_decompressed=self.bytes_decompressed,

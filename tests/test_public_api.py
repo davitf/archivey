@@ -47,6 +47,24 @@ def test_member_streams_is_demoted_from_the_surface(tmp_path) -> None:
         assert not hasattr(ar, "member_streams")
 
 
+def test_io_measurement_is_not_public() -> None:
+    """IO counters serve the benchmark harness and the CLI's ``--track-io`` only.
+
+    Not in ``__all__``, not on the package, not on the ``ArchiveReader`` ABC, and no
+    public ``archivey.measurement`` module. The internal reader still answers.
+    """
+    import importlib.util
+
+    from archivey.internal.base_reader import BaseArchiveReader
+
+    for name in ("IoStats", "enable_measurement"):
+        assert name not in archivey.__all__
+        assert not hasattr(archivey, name)
+    assert importlib.util.find_spec("archivey.measurement") is None
+    assert "io_stats" not in vars(archivey.ArchiveReader)
+    assert "io_stats" in vars(BaseArchiveReader)
+
+
 def test_public_interface_hides_internal_hooks() -> None:
     """The public ``ArchiveReader`` surface must not expose backend-internal hooks.
 

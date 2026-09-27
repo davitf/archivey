@@ -439,6 +439,10 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **IO measurement is no longer public API.** `IoStats`, `enable_measurement`, the
+  `archivey.measurement` module and `ArchiveReader.io_stats()` are removed from the
+  public surface. The counters stay for the benchmark harness and the CLI, whose
+  `--track-io` prints them as before.
 - **`ArchiveMember.archive_id` and `HashAlgorithm.ADLER32` are removed.** No caller
   used `archive_id`; `member in reader` is how to ask whether a member came from a
   reader. No backend ever listed an Adler-32 digest in `member.hashes`: a zlib stream's

@@ -14,6 +14,21 @@ from pathlib import Path
 
 CLI_DIR = Path(__file__).resolve().parents[1] / "src" / "archivey" / "cli"
 
+# The one deliberate exception. ``--track-io`` reads the IO counters, which are not
+# public API: the CLI is also a debugging tool for the library, so it may see what a
+# caller cannot. Keyed by the hit text ``_internal_imports`` reports, minus the line
+# number, so the entry names exactly one import statement and nothing else.
+ALLOWED_INTERNAL_IMPORTS = frozenset(
+    {
+        "common.py: from archivey.internal.measurement import enable_measurement, io_stats",
+    }
+)
+
+
+def _without_line(hit: str) -> str:
+    location, _, statement = hit.partition(" ")
+    return f"{location.rsplit(':', 1)[0]}: {statement}"
+
 
 def _internal_imports(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -39,11 +54,17 @@ def _internal_imports(path: Path) -> list[str]:
 def test_cli_imports_nothing_from_internal() -> None:
     files = sorted(CLI_DIR.rglob("*.py"))
     assert files, f"no CLI sources under {CLI_DIR}"
-    offending = [hit for path in files for hit in _internal_imports(path)]
+    hits = [hit for path in files for hit in _internal_imports(path)]
+    offending = [
+        hit for hit in hits if _without_line(hit) not in ALLOWED_INTERNAL_IMPORTS
+    ]
     assert offending == [], (
         "archivey.cli must use only public API; move what it needs to a public module "
         f"(archivey.terminal for display helpers): {offending}"
     )
+    # An allowlist entry whose import is gone would admit the next one silently.
+    stale = ALLOWED_INTERNAL_IMPORTS - {_without_line(hit) for hit in hits}
+    assert not stale, f"allowlisted CLI imports no longer present: {sorted(stale)}"
 
 
 def test_the_guard_sees_an_internal_import(tmp_path: Path) -> None:

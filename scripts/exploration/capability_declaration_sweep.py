@@ -59,7 +59,7 @@ from archivey import (  # noqa: E402
 )
 from archivey.config import PasswordInput  # noqa: E402
 from archivey.cost import AccessCost, ListingCost, StreamCapability  # noqa: E402
-from archivey.measurement import enable_measurement  # noqa: E402
+from archivey.internal.measurement import enable_measurement  # noqa: E402
 from archivey.types import (  # noqa: E402
     ArchiveFormat,
     CompressionAlgorithm,

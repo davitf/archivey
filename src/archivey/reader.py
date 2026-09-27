@@ -28,7 +28,6 @@ from archivey.types import (
 
 if TYPE_CHECKING:
     from archivey.internal.streams.archive_stream import ArchiveStream
-    from archivey.measurement import IoStats
 
 # Type alias for the member selector passed to stream_members() and extract_all().
 # Accepts a predicate, a collection of names / ArchiveMember objects, or None (all).
@@ -228,16 +227,6 @@ class ArchiveReader(ABC):
         ``abort_on`` names events that end the whole call the first time they occur —
         raising instead of returning a report. It is independent of ``on_error``: see
         :class:`~archivey.AbortOn`.
-        """
-        ...
-
-    @abstractmethod
-    def io_stats(self) -> "IoStats | None":
-        """Return I/O counters if measurement was enabled at open time, else ``None``.
-
-        Enable via :func:`archivey.measurement.enable_measurement` around the
-        :func:`archivey.open_archive` call. Counters cover bytes decompressed, compressed
-        bytes consumed from the outer source, and source seek calls.
         """
         ...
 

@@ -12,7 +12,10 @@ from archivey import open_archive
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_USAGE
 from archivey.config import PasswordInput
-from archivey.measurement import enable_measurement
+
+# The one internal import in the CLI, allowlisted in tests/test_cli_uses_public_api.py:
+# --track-io is a debugging aid for the library, and IO measurement is not public API.
+from archivey.internal.measurement import enable_measurement, io_stats
 from archivey.reader import ArchiveReader
 
 
@@ -53,7 +56,7 @@ def open_for_cli(
 
 
 def _report_track_io(reader: ArchiveReader, err: TextIO) -> None:
-    stats = reader.io_stats()
+    stats = io_stats(reader)
     if stats is None:
         print("track-io: counters unavailable for this reader", file=err)
         return
