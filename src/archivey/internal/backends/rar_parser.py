@@ -1417,7 +1417,7 @@ def _parse_rar3(
                 hdata = buf + rest
             else:
                 hdata = buf
-        except (CorruptionError, TruncatedError) as exc:
+        except CorruptionError as exc:
             if block_encrypted:
                 raise wrong_password_error(
                     "Failed to decrypt RAR3 headers (wrong password?)"
@@ -1872,7 +1872,7 @@ def _parse_rar5_qo_payload(
         bio = io.BytesIO(cached)
         try:
             parsed = _read_rar5_block(bio)
-        except (CorruptionError, TruncatedError):
+        except CorruptionError:
             return None
         if parsed is None:
             return None
@@ -1901,7 +1901,7 @@ def _parse_rar5_qo_payload(
                 add_size=add_size,
                 volume_index=volume_index,
             )
-        except (CorruptionError, TruncatedError):
+        except CorruptionError:
             return None
         _append_member(members, member, max_members=max_members)
     if not members:
@@ -1998,7 +1998,7 @@ def _try_list_via_rar5_qo(
         _seek_after_packed(source, data_offset, add_size)
         return qo_members, source.tell()
     # ResourceLimitError must propagate: an over-limit QO is not "unusable".
-    except (CorruptionError, TruncatedError, OSError, OverflowError):
+    except (CorruptionError, OSError, OverflowError):
         return None
 
 
@@ -2134,7 +2134,7 @@ def _parse_rar5(
         if hdr_enc is not None and not password_verified:
             try:
                 parsed = _read_rar5_block(header_fd)
-            except (CorruptionError, TruncatedError) as exc:
+            except CorruptionError as exc:
                 raise wrong_password_error(
                     "Failed to decrypt RAR5 headers (wrong password?)"
                 ) from exc

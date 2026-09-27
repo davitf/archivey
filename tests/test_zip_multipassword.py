@@ -34,7 +34,7 @@ from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
 from tests.conftest import requires_zstd, zstd_backend
-from tests.corruption_util import raises_corruption
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.zipcrypto import (
     build_zipcrypto_zip,
     corrupt_zipcrypto_payload,
@@ -322,7 +322,7 @@ def test_structural_bad_zip_is_corruption_not_password_ambiguity() -> None:
     blob[30] ^= 0x01  # local-header name no longer matches the central directory
 
     with open_archive(io.BytesIO(blob), password=[RIGHT, b"also-wrong"]) as ar:
-        with raises_corruption(match="Error reading ZIP archive"):
+        with raises_corruption_not_truncation(match="Error reading ZIP archive"):
             ar.open(NAME)
 
 
@@ -347,7 +347,7 @@ def test_stored_confirm_reads_through_the_validated_local_header(
 
     monkeypatch.setattr(zip_reader, "parallel_plaintext_crc32", counting)
     with open_archive(io.BytesIO(blob), password=[b"also-wrong", RIGHT]) as ar:
-        with raises_corruption(match="differ"):
+        with raises_corruption_not_truncation(match="differ"):
             ar.open(NAME)
     assert passes == []
 
@@ -372,7 +372,7 @@ def test_stored_confirm_refuses_an_overlapped_member_before_any_pass(
 
     monkeypatch.setattr(zip_reader, "parallel_plaintext_crc32", counting)
     with open_archive(io.BytesIO(blob), password=[b"also-wrong", RIGHT]) as ar:
-        with raises_corruption(match="Overlapped entries"):
+        with raises_corruption_not_truncation(match="Overlapped entries"):
             ar.open(NAME)
     assert passes == []
 
@@ -661,7 +661,7 @@ def test_stored_crc_match_ties_resolve_by_candidate_order(
         stream = ar.open(NAME)
         # Earliest CRC "match" wins confirmation and is recorded known-good.
         assert cast(Any, ar)._passwords._known_good[0] == colliders[0]
-        with stream, raises_corruption():
+        with stream, raises_corruption_not_truncation():
             stream.read()
 
 
@@ -713,7 +713,7 @@ def test_corruption_beyond_prefix_fails_caller_read_as_corruption(
 
     with open_archive(io.BytesIO(bytes(blob)), password=[RIGHT, b"also-wrong"]) as ar:
         stream = ar.open(NAME)
-        with stream, pytest.raises((CorruptionError, TruncatedError)):
+        with stream, pytest.raises(CorruptionError):
             stream.read()
 
 

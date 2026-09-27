@@ -31,7 +31,6 @@ from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
-    TruncatedError,
 )
 from archivey.internal.diagnostics_collector import resolve_collector
 from archivey.internal.logs import streams as logger
@@ -705,7 +704,7 @@ def _is_content_verdict(error: BaseException) -> bool:
     seen: set[int] = set()
     current: BaseException | None = error
     while current is not None and id(current) not in seen:
-        if isinstance(current, (CorruptionError, TruncatedError)):
+        if isinstance(current, CorruptionError):
             return True
         seen.add(id(current))
         current = current.__cause__

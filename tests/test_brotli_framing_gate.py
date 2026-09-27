@@ -19,7 +19,6 @@ from archivey.diagnostics import Diagnostic, DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
-    TruncatedError,
 )
 from archivey.internal.streams.brotli_framing import (
     BrotliBlock,
@@ -40,7 +39,7 @@ def test_partial_output_then_error_on_fitting_uncompressed_prefix() -> None:
         stream = reader.open(member)
         chunk = stream.read(65536)
         assert len(chunk) == 65536
-        with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        with pytest.raises(CorruptionError) as caught:
             while stream.read(65536):
                 pass
         assert caught.value.format_unconfirmed is True
@@ -214,7 +213,7 @@ def test_guess_decode_failure_sets_format_unconfirmed() -> None:
     blob = _chain_surviving_guess_residual()
     with open_archive(io.BytesIO(blob)) as reader:
         member = next(iter(reader))
-        with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        with pytest.raises(CorruptionError) as caught:
             reader.open(member).read()
         exc = caught.value
         assert exc.format_unconfirmed is True
@@ -239,7 +238,7 @@ def test_br_cut_above_completion_window_does_not_set_unconfirmed(
     diagnostics: list[Diagnostic] = []
     config = ArchiveyConfig(on_diagnostic=diagnostics.append)
     # The failure may come from open_archive's one-byte probe or from the read.
-    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+    with pytest.raises(CorruptionError) as caught:
         with open_archive(path, config=config) as reader:
             reader.open(next(iter(reader))).read()
     assert caught.value.format_unconfirmed is False
@@ -258,7 +257,7 @@ def test_br_cut_below_completion_window_is_extension_only(tmp_path: Path) -> Non
     path.write_bytes(full[: len(full) // 3])
     diagnostics: list[Diagnostic] = []
     config = ArchiveyConfig(on_diagnostic=diagnostics.append)
-    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+    with pytest.raises(CorruptionError) as caught:
         with open_archive(path, config=config) as reader:
             reader.open(next(iter(reader))).read()
     assert caught.value.format_unconfirmed is True
@@ -300,7 +299,7 @@ def test_pedantic_keeps_typed_error_on_probe_unconfirmed() -> None:
     cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic())
     with open_archive(io.BytesIO(blob), config=cfg) as reader:
         member = next(iter(reader))
-        with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        with pytest.raises(CorruptionError) as caught:
             reader.open(member).read()
         assert not isinstance(caught.value, DiagnosticRaisedError)
         assert caught.value.format_unconfirmed is True
@@ -315,7 +314,7 @@ def test_probe_unconfirmed_diagnostic_emitted_once_across_retries() -> None:
     with open_archive(io.BytesIO(blob)) as reader:
         stream = reader.open(next(iter(reader)))
         for _ in range(3):
-            with pytest.raises((TruncatedError, CorruptionError)) as caught:
+            with pytest.raises(CorruptionError) as caught:
                 stream.read()
             assert caught.value.format_unconfirmed is True
         assert reader.diagnostics.counts[DiagnosticCode.PROBE_FORMAT_UNCONFIRMED] == 1
@@ -334,7 +333,7 @@ def test_probe_unconfirmed_dedup_holds_under_a_raising_policy() -> None:
     with open_archive(io.BytesIO(blob), config=cfg) as reader:
         stream = reader.open(next(iter(reader)))
         for _ in range(3):
-            with pytest.raises((TruncatedError, CorruptionError)) as caught:
+            with pytest.raises(CorruptionError) as caught:
                 stream.read()
             assert not isinstance(caught.value, DiagnosticRaisedError)
             assert caught.value.format_unconfirmed is True
@@ -355,7 +354,7 @@ def test_probe_unconfirmed_dedup_holds_under_a_raising_policy() -> None:
 def test_probe_unconfirmed_context_carries_detected_format() -> None:
     blob = _chain_surviving_guess_residual()
     with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises((TruncatedError, CorruptionError)):
+        with pytest.raises(CorruptionError):
             reader.open(next(iter(reader))).read()
         probe_diags = [
             d

@@ -35,7 +35,7 @@ from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
 from archivey.types import FormatSupport
 from tests.conftest import requires
-from tests.corruption_util import raises_corruption
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (
     FactSizedReadRecorder,
     NonSeekableBytesIO,
@@ -372,7 +372,7 @@ def test_corrupt_iso_raises() -> None:
     # CD001 is present (so detection still picks ISO) but the volume descriptor is cut off,
     # so pycdlib cannot parse it -> CorruptionError.
     truncated = _build_iso(rock_ridge=True, joliet=False)[:32780]
-    with raises_corruption():
+    with raises_corruption_not_truncation():
         open_archive(io.BytesIO(truncated), format=ArchiveFormat.ISO)
 
 
@@ -503,7 +503,7 @@ def test_directory_data_length_does_not_drive_the_allocation(length: str) -> Non
         else ReadSizeRecorder(data, advertise_size=length == "hint")
     )
 
-    with raises_corruption():
+    with raises_corruption_not_truncation():
         open_archive(source, format=ArchiveFormat.ISO)
 
     assert source.requested, "the source was never read"
@@ -545,7 +545,7 @@ def test_a_path_source_refuses_the_same_image(tmp_path: Path) -> None:
     path = tmp_path / "bomb.iso"
     path.write_bytes(_iso_with_oversized_root_directory(0xFFFFFF00))
 
-    with raises_corruption():
+    with raises_corruption_not_truncation():
         open_archive(path)
 
 
@@ -599,7 +599,7 @@ def test_a_refused_path_source_does_not_hold_its_handle(
     path.write_bytes(_iso_with_oversized_root_directory(0xFFFFFF00))
 
     with _recording_opens(path, monkeypatch) as opened:
-        with raises_corruption() as excinfo:
+        with raises_corruption_not_truncation() as excinfo:
             open_archive(path, format=ArchiveFormat.ISO)
         # The traceback is what pinned the handle; assert it is still here, so this
         # test cannot pass by the exception having been collected instead.
@@ -633,7 +633,7 @@ def test_a_failure_after_open_fp_is_translated_and_releases(
     monkeypatch.setattr("pycdlib.PyCdlib.has_rock_ridge", boom)
 
     with _recording_opens(rock_ridge_iso, monkeypatch) as opened:
-        with raises_corruption() as excinfo:
+        with raises_corruption_not_truncation() as excinfo:
             open_archive(rock_ridge_iso, format=ArchiveFormat.ISO)
         assert excinfo.value.__traceback__ is not None
         assert opened, "the reader did not open the path itself"
@@ -1320,7 +1320,7 @@ def test_a_damaged_zisofs_block_is_corruption() -> None:
     first_block = at + 16 + 4 * 4  # three blocks, four pointers
     data[first_block : first_block + 8] = b"\xff" * 8
     with open_archive(io.BytesIO(bytes(data))) as ar:
-        with raises_corruption():
+        with raises_corruption_not_truncation():
             ar.read("zzz")
 
 
@@ -1342,7 +1342,7 @@ def test_a_zisofs_block_that_does_not_end_at_its_pointer_is_corruption(
     data = _zisofs_image(_ZISOFS_PLAIN, mangle=mangle)
     with open_archive(io.BytesIO(data)) as ar:
         assert ar.read("bbb") == b"BBBB"
-        with raises_corruption(match=match):
+        with raises_corruption_not_truncation(match=match):
             ar.read("zzz")
 
 
@@ -1387,7 +1387,7 @@ def test_a_zisofs_block_that_inflates_past_the_block_size_is_corruption() -> Non
     )
     assert pointers == struct.pack("<II", 24, len(good))
     with open_archive(io.BytesIO(data)) as ar:
-        with raises_corruption(match="block 0"):
+        with raises_corruption_not_truncation(match="block 0"):
             ar.read("zzz")
 
 

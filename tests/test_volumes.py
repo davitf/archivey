@@ -36,7 +36,7 @@ from archivey.internal.volumes import (
 )
 from archivey.types import ArchiveFormat
 from tests.conftest import requires_binary
-from tests.corruption_util import raises_corruption
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import ShortReadBytesIO, ShortReadNonSeekable
 
 _7Z_MAGIC = bytes.fromhex("377abcaf271c")
@@ -349,7 +349,7 @@ def test_multi_volume_rar_opens_volume_set_or_rejects_stub(tmp_path: Path) -> No
         ) as archive:
             assert archive.info.is_multivolume is True
             assert archive.info.extra.get("rar.volume_count") == 2
-    except (CorruptionError, UnsupportedFeatureError, TruncatedError):
+    except (CorruptionError, UnsupportedFeatureError):
         pass
 
 
@@ -668,7 +668,7 @@ def test_stub_only_exe_format_conflicts_with_sibling_container(tmp_path: Path) -
 def test_stub_only_exe_format_without_volumes_uses_backend(tmp_path: Path) -> None:
     stub = tmp_path / "vol.exe"
     stub.write_bytes(_mz_stub())
-    with raises_corruption():
+    with raises_corruption_not_truncation():
         open_archive(stub, format=ArchiveFormat.ZIP)
 
 
@@ -1292,7 +1292,7 @@ def test_numbered_part_number_too_long_to_parse_is_not_a_volume_name(
     zip_bytes = b"PK\x03\x04" + b"\x00" * 60
     stream = io.BytesIO(zip_bytes)
     stream.name = f"x.7z.{digits}"
-    with raises_corruption(match="Could not open ZIP archive"):
+    with raises_corruption_not_truncation(match="Could not open ZIP archive"):
         open_archive(stream)
     stream = io.BytesIO(zip_bytes)
     stream.name = f"x.zip.{digits}"

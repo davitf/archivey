@@ -36,7 +36,7 @@ from archivey.exceptions import (
 from archivey.internal.backends import rar_reader, rar_unar
 from archivey.internal.external import cli, unar
 from tests.conftest import requires_binary
-from tests.corruption_util import raises_corruption
+from tests.corruption_util import raises_corruption_not_truncation
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 _CORPUS = Path(__file__).parent / "fixtures" / "corpus" / "rar"
@@ -551,7 +551,7 @@ def _child(script: str) -> tuple[subprocess.Popen[bytes], unar.UnarOutputStream]
 def test_failure_exit_raises_on_the_completing_read() -> None:
     _proc, stream = _child("import sys; sys.stdout.write('abc'); sys.exit(1)")
     assert stream.read(3) == b"abc"
-    with raises_corruption(match="exit 1"):
+    with raises_corruption_not_truncation(match="exit 1"):
         stream.read()
     stream.close()
 
@@ -561,7 +561,7 @@ def test_a_zero_length_read_is_not_end_of_file() -> None:
     proc.wait()
     assert stream.read(0) == b""
     assert stream.readinto(bytearray()) == 0
-    with raises_corruption(match="exit 1"):
+    with raises_corruption_not_truncation(match="exit 1"):
         stream.read()
     stream.close()
 
