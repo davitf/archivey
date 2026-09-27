@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import logging
 import os
@@ -760,6 +761,13 @@ def _hardlinked_pair(root: Path) -> None:
     os.link(root / "a.txt", root / "b.txt")
 
 
+def _zero_inode(path: str) -> os.stat_result:
+    """An lstat with st_ino 0, as a filesystem with no file identity reports it."""
+    fields = list(os.stat(path, follow_symlinks=False))
+    fields[stat.ST_INO] = 0
+    return os.stat_result(fields)
+
+
 def test_zero_inode_is_no_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -769,13 +777,8 @@ def test_zero_inode_is_no_identity(
 
     _hardlinked_pair(tmp_path)
 
-    def zero_inode(path: str) -> os.stat_result:
-        fields = list(os.stat(path, follow_symlinks=False))
-        fields[stat.ST_INO] = 0
-        return os.stat_result(fields)
-
     monkeypatch.setattr(directory_reader, "_STAT_LACKS_IDENTITY", True)
-    monkeypatch.setattr(directory_reader, "_identity_stat", zero_inode)
+    monkeypatch.setattr(directory_reader, "_identity_stat", _zero_inode)
     with open_archive(tmp_path) as reader:
         types = {m.name: m.type for m in reader.members()}
     assert types == {"a.txt": MemberType.FILE, "b.txt": MemberType.FILE}
@@ -837,25 +840,61 @@ def test_streaming_extract_with_first_name_filtered_out_fails_the_link(
 
 
 # ---------------------------------------------------------------------------
-# The tree changing between listing and reading. These pin today's behaviour, which is
-# documented rather than desired: dev-docs/formats/directory.md §2.3 and §5, and
-# threat-model.md O21. A fix that opens members with O_NOFOLLOW and checks them against
-# the listing is expected to make them fail, and should rewrite them.
+# The tree changing between listing and reading (threat-model.md O21,
+# dev-docs/formats/directory.md §2.3). Opening a member follows nothing and must find the
+# file the walk listed; anything else is refused with OSError.
 # ---------------------------------------------------------------------------
 
 
-def test_a_file_grown_after_listing_reads_at_its_new_length(tmp_path: Path) -> None:
+def test_a_file_resized_after_listing_is_refused(tmp_path: Path) -> None:
+    # Same file, new length: the listed size no longer describes it, so it is refused
+    # rather than read at a length the listing never reported (directory.md §2.3).
+    (tmp_path / "g.txt").write_bytes(b"12345")
+    (tmp_path / "h.txt").write_bytes(b"12345")
+    with open_archive(tmp_path) as reader:
+        grown = reader.get("g.txt")
+        shrunk = reader.get("h.txt")
+        (tmp_path / "g.txt").write_bytes(b"1234567890ABC")
+        (tmp_path / "h.txt").write_bytes(b"12")
+        for member in (grown, shrunk):
+            with pytest.raises(OSError, match="changed size") as excinfo:
+                reader.read(member)
+            assert excinfo.value.errno == errno.ESTALE
+
+
+def test_a_file_rewritten_at_the_same_size_reads_its_new_content(
+    tmp_path: Path,
+) -> None:
+    # Documented, not desired: nothing checksums a directory member, so same-size new
+    # content is indistinguishable from the listed file.
     (tmp_path / "g.txt").write_bytes(b"12345")
     with open_archive(tmp_path) as reader:
         member = reader.get("g.txt")
-        (tmp_path / "g.txt").write_bytes(b"1234567890ABC")
-        with reader.open(member) as stream:
-            assert stream.read() == b"1234567890ABC"
-            assert stream.size == 5
-    assert member.size == 5
+        (tmp_path / "g.txt").write_bytes(b"ABCDE")
+        assert reader.read(member) == b"ABCDE"
 
 
-def test_a_file_swapped_for_a_symlink_after_listing_is_followed(tmp_path: Path) -> None:
+def test_a_file_listed_empty_reads_whatever_it_holds_at_open(tmp_path: Path) -> None:
+    # A listed size of 0 is exempt from the size check: procfs and sysfs list 0 for
+    # files with content, and an empty file has nothing a stale listing could hide.
+    (tmp_path / "e.txt").write_bytes(b"")
+    with open_archive(tmp_path) as reader:
+        member = reader.get("e.txt")
+        (tmp_path / "e.txt").write_bytes(b"now filled")
+        assert reader.read(member) == b"now filled"
+
+
+def _swap_in_symlink(path: Path, target: Path) -> None:
+    if path.is_dir():
+        for child in path.iterdir():
+            child.unlink()
+        path.rmdir()
+    else:
+        path.unlink()
+    path.symlink_to(target, target_is_directory=target.is_dir())
+
+
+def test_a_file_swapped_for_a_symlink_after_listing_is_refused(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
     (root / "a.txt").write_bytes(b"inside")
@@ -863,12 +902,132 @@ def test_a_file_swapped_for_a_symlink_after_listing_is_followed(tmp_path: Path) 
     outside.write_bytes(b"outside the root")
     with open_archive(root) as reader:
         member = reader.get("a.txt")
-        (root / "a.txt").unlink()
-        (root / "a.txt").symlink_to(outside)
-        assert reader.read(member) == b"outside the root"
+        _swap_in_symlink(root / "a.txt", outside)
+        with pytest.raises(OSError):
+            reader.read(member)
+
+
+def test_a_directory_swapped_for_a_symlink_after_listing_is_refused(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub" / "b.txt").write_bytes(b"inside")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "b.txt").write_bytes(b"outside the root")
+    with open_archive(root) as reader:
+        member = reader.get("sub/b.txt")
+        _swap_in_symlink(root / "sub", outside)
+        with pytest.raises(OSError):
+            reader.read(member)
+
+
+def test_a_file_replaced_after_listing_is_refused(tmp_path: Path) -> None:
+    # Same length as the listed file, so only the (st_dev, st_ino) comparison can
+    # catch it; removing that comparison turns this test red.
+    (tmp_path / "a.txt").write_bytes(b"listed")
+    with open_archive(tmp_path) as reader:
+        member = reader.get("a.txt")
+        replacement = tmp_path / "new.tmp"
+        replacement.write_bytes(b"edited")
+        os.replace(replacement, tmp_path / "a.txt")
+        with pytest.raises(OSError, match="was replaced") as excinfo:
+            reader.read(member)
+    assert excinfo.value.errno == errno.ESTALE
+
+
+def _identityless_open(monkeypatch: pytest.MonkeyPatch, attributes: int) -> None:
+    """Simulate Windows for the open: no O_NOFOLLOW, st_ino 0 in the listing."""
+    from archivey.internal.backends import directory_reader
+
+    monkeypatch.setattr(directory_reader, "_STAT_LACKS_IDENTITY", True)
+    monkeypatch.setattr(directory_reader, "_identity_stat", _zero_inode)
+    monkeypatch.setattr(directory_reader, "_HAS_NOFOLLOW", False)
+    monkeypatch.setattr(directory_reader, "_file_attributes", lambda path: attributes)
+
+
+def test_an_identityless_member_that_is_now_a_reparse_point_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
+
+    _identityless_open(monkeypatch, FILE_ATTRIBUTE_REPARSE_POINT)
+    (tmp_path / "a.txt").write_bytes(b"listed")
+    with open_archive(tmp_path) as reader:
+        member = reader.get("a.txt")
+        with pytest.raises(OSError, match="is now a reparse point") as excinfo:
+            reader.read(member)
+    assert excinfo.value.errno == errno.ESTALE
+
+
+def test_an_identityless_member_is_checked_on_type_and_size_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With no identity from the listing, a same-size replacement reads (directory.md
+    # §2.3); a resize is still refused.
+    _identityless_open(monkeypatch, 0)
+    (tmp_path / "a.txt").write_bytes(b"listed")
+    (tmp_path / "b.txt").write_bytes(b"listed")
+    with open_archive(tmp_path) as reader:
+        a = reader.get("a.txt")
+        b = reader.get("b.txt")
+        replacement = tmp_path / "new.tmp"
+        replacement.write_bytes(b"edited")
+        os.replace(replacement, tmp_path / "a.txt")
+        (tmp_path / "b.txt").write_bytes(b"longer now")
+        assert reader.read(a) == b"edited"
+        with pytest.raises(OSError, match="changed size"):
+            reader.read(b)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_a_file_swapped_for_a_fifo_after_listing_is_refused_without_blocking(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "a.txt").write_bytes(b"listed")
+    with open_archive(tmp_path) as reader:
+        member = reader.get("a.txt")
+        (tmp_path / "a.txt").unlink()
+        os.mkfifo(tmp_path / "a.txt")
+        # With no writer on the FIFO, a blocking open would hang the test here.
+        with pytest.raises(OSError, match="no longer a regular file"):
+            reader.read(member)
+
+
+def test_hardlinks_and_symlinks_still_read_through_the_checked_open(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "a.txt").write_bytes(b"data")
+    os.link(tmp_path / "a.txt", tmp_path / "b.txt")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "c.txt").write_bytes(b"nested")
+    os.symlink("a.txt", tmp_path / "link")
+    with open_archive(tmp_path) as reader:
+        assert reader.read("b.txt") == b"data"
+        assert reader.read("link") == b"data"
+        assert reader.read("sub/c.txt") == b"nested"
+
+
+def test_a_link_to_a_replaced_file_is_refused(tmp_path: Path) -> None:
+    # The listing identity reaches the open through link resolution: a hardlink and a
+    # symlink to a file replaced at the same length are both refused.
+    (tmp_path / "a.txt").write_bytes(b"listed")
+    os.link(tmp_path / "a.txt", tmp_path / "b.txt")
+    os.symlink("a.txt", tmp_path / "link")
+    with open_archive(tmp_path) as reader:
+        reader.members()
+        replacement = tmp_path / "new.tmp"
+        replacement.write_bytes(b"edited")
+        os.replace(replacement, tmp_path / "a.txt")
+        for name in ("b.txt", "link"):
+            with pytest.raises(OSError, match="was replaced"):
+                reader.read(name)
 
 
 def test_extracting_into_the_root_lists_the_destination(tmp_path: Path) -> None:
+    # Documented, not desired (directory.md §5): the walk reads the live tree, so the
+    # destination the extraction created is listed as a member.
     (tmp_path / "a").write_bytes(b"x")
     dest = tmp_path / "out"
     with open_archive(tmp_path) as reader:
