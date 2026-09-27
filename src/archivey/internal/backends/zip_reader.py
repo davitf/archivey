@@ -1621,8 +1621,10 @@ class ZipReader(BaseArchiveReader):
             elif isinstance(cause, TruncatedError) and not isinstance(
                 ambiguous_holder[0].__cause__, TruncatedError
             ):
-                # Data that ends early is the member's, whatever key read it: a
-                # truncation any candidate met is the verdict, not the first failure.
+                # Prefer a truncation any candidate met over the first failure, so the
+                # verdict does not follow key order. For a STORED member the length is
+                # the ciphertext's and settles it; for a compressed one the decoded
+                # length depends on the key, so this is a heuristic there.
                 ambiguous_holder[0] = failure
             return failure
 
@@ -1894,9 +1896,10 @@ class ZipReader(BaseArchiveReader):
         already passed the 16-bit ``pw_verify``, which a wrong password passes once in
         65 536, so a member every such candidate fails on is far more likely damaged.
         It raises the damage the member has, as the one-password path does:
-        ``TruncatedError`` when any candidate found the data ending early (a short
-        payload is the member's, whatever key read it), ``CorruptionError`` for
-        anything else (an HMAC mismatch, a codec rejection). ZipCrypto's 8-bit check
+        ``TruncatedError`` when any candidate found the data ending early (exact for
+        a STORED member, whose length no key changes; a heuristic for a compressed
+        one), ``CorruptionError`` for anything else (an HMAC mismatch, a codec
+        rejection). ZipCrypto's 8-bit check
         leaves the ambiguous ``EncryptionError``.
         """
         try:

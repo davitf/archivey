@@ -84,18 +84,18 @@ carrying it SHALL say so inline. The unsized path (no declared size, no cap)
 MAY delegate to `inner.read(-1)` and then run the EOF verdict.
 
 Once the public `ArchiveStream` has raised a content verdict (`CorruptionError` or
-`TruncatedError`, or an error raised from one, such as ZipCrypto's
-password-or-damage `EncryptionError`), every later `read` / `readinto` SHALL raise the
-same error object again until the caller seeks, with the traceback it was first raised
-with rather than one that grows per call. A seek SHALL succeed and restart the decode,
-so the prefix reads again, as a truncated `DecompressorStream` does; the read that then
-reaches the end SHALL raise the verdict again and return no bytes, although the seek
-forfeited the digest check. A read reaches the end when it returns short or empty, is
-`read(-1)`, or leaves the stream at or past the member's declared size; a full-length
-`read(member.size)` after `seek(0)` is one. A caller who
-catches the verdict and seeks back SHALL NOT read the damaged member as complete, clean
-data. `tell()`, `seekable()` and `close()` are not gated, and `close()` still does not
-raise the verdict. Opening the member again gives a fresh stream.
+`TruncatedError`, or an error raised from one, such as ZipCrypto's password-or-damage
+`EncryptionError`), every later `read` / `readinto` SHALL raise the same error object
+again until the caller seeks, with the traceback it was first raised with rather than
+one that grows per call. A seek SHALL succeed and restart the decode, so the prefix
+reads again, as a truncated `DecompressorStream` does; the read that then reaches the
+end SHALL raise the verdict again and return no bytes, although the seek forfeited the
+digest check. A read reaches the end when it returns short or empty, is `read(-1)`, or
+leaves the stream at or past the member's declared size; a full-length
+`read(member.size)` after `seek(0)` is one. A caller who catches the verdict and seeks
+back SHALL NOT read the damaged member as complete, clean data. `tell()`, `seekable()`
+and `close()` are not gated, and `close()` still does not raise the verdict. Opening
+the member again gives a fresh stream.
 
 #### Scenario: close vs read matrix
 
