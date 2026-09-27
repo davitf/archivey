@@ -290,6 +290,20 @@ unbounded into memory. This is why the sized path MUST NOT delegate to
 carrying it SHALL say so inline. The unsized path (no declared size, no cap)
 MAY delegate to `inner.read(-1)` and then run the EOF verdict.
 
+Once the public `ArchiveStream` has raised a content verdict (`CorruptionError` or
+`TruncatedError`, or an error raised from one, such as ZipCrypto's password-or-damage
+`EncryptionError`), every later `read` / `readinto` SHALL raise the same error object
+again until the caller seeks, with the traceback it was first raised with rather than
+one that grows per call. A seek SHALL succeed and restart the decode, so the prefix
+reads again, as a truncated `DecompressorStream` does; the read that then reaches the
+end SHALL raise the verdict again and return no bytes, although the seek forfeited the
+digest check. A read reaches the end when it returns short or empty, is `read(-1)`, or
+leaves the stream at or past the member's declared size; a full-length
+`read(member.size)` after `seek(0)` is one. A caller who catches the verdict and seeks
+back SHALL NOT read the damaged member as complete, clean data. `tell()`, `seekable()`
+and `close()` are not gated, and `close()` still does not raise the verdict. Opening
+the member again gives a fresh stream.
+
 #### Scenario: close vs read matrix
 
 | Case | Expected |
@@ -312,6 +326,11 @@ MAY delegate to `inner.read(-1)` and then run the EOF verdict.
 | Seek to/past declared size on an **over-long** member, then `read` | Concluding reads the gap and probes past the declared size; `CorruptionError` (over-run), not a silent `b""` |
 | Partial read then `close` before clean EOF (verify) | No digest/length verdict |
 | Inner teardown fails on `close` | Teardown error may propagate |
+| `ArchiveStream` raised a content verdict; caller catches it, then `read()` | Raises the same error object again; no bytes returned |
+| Same, then `seek(0)` and a bounded `read(n)` inside the member | Seek succeeds; the prefix bytes are returned |
+| Same, then `seek(0)` and a read that reaches the end | Raises the same error object again; that call returns no bytes |
+| Same, retried many times | Traceback stays the first one; it does not grow per call |
+| Same, `tell()` or `close()` | Not gated; `close()` does not raise the verdict |
 
 ### Requirement: Decompressed output digests are verified at clean EOF
 

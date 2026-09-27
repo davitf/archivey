@@ -24,6 +24,16 @@ asked for a verdict at all.
   **withholding** the reaching chunk; a truncation-shaped end delivers the
   best-effort prefix and raises `TruncatedError` on the read past it.
 - Stopping early is not verification, and is quiet.
+- **A verdict sticks to its stream.** Once a read has raised a content verdict
+  (`CorruptionError`, `TruncatedError`, or an error raised from one), every later read
+  raises it again until the caller seeks. A seek restarts the decode, so the prefix
+  reads again, and the read that reaches the end raises the verdict again although the
+  seek forfeited the digest check. Reaching the end is a position, not a short return:
+  a full `read(member.size)` reaches it too. Without this, a caller who caught the
+  verdict and seeked back re-read the damaged member with no error, because a verifier
+  checks a member once. The maintainer chose to keep raising on 2026-09-26 (sweep
+  finding S28-K1); letting the seek through matches the rewind rule for truncated
+  streams (#491). It lives in `ArchiveStream`, so it holds for every format.
 - `close()` never raises a content error (target contract; best-effort on a few
   backends today).
 
