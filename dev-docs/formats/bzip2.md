@@ -98,7 +98,7 @@ default:
 | Mode | bzip2 |
 | --- | --- |
 | `OFF` | The standard library, always |
-| `ON` | `rapidgzip.IndexedBzip2File`, or `PackageNotInstalledError` without `rapidgzip` |
+| `ON` | `rapidgzip.IndexedBzip2File`, or `PackageNotInstalledError` without `rapidgzip`, or `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`) |
 | `AUTO` | The accelerator when seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), the source is seekable and `rapidgzip` is installed. Otherwise the standard library, silently |
 
 There is no size threshold and no child process, unlike the DEFLATE family

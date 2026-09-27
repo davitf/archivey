@@ -118,7 +118,7 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
-- **Nested archives: three failures found by reading archives from member streams.**
+- **Nested archives: four failures found by reading archives from member streams.**
   `use_rapidgzip=ON` or `use_indexed_bzip2=ON` over a source that cannot seek (a pipe, or
   a `stream_members()` stream) raised a bare `io.UnsupportedOperation("tell")`; it now
   raises `StreamNotSeekableError` naming the setting. `AUTO` chose the bzip2 accelerator

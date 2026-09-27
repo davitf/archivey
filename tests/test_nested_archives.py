@@ -51,7 +51,13 @@ from typing import BinaryIO
 import pytest
 
 import archivey
-from archivey import AcceleratorMode, ArchiveyConfig, DecoderLimits
+from archivey import (
+    AcceleratorMode,
+    ArchiveReader,
+    ArchiveStream,
+    ArchiveyConfig,
+    DecoderLimits,
+)
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -212,6 +218,40 @@ def _check_stream(stream: BinaryIO, expected: bytes, *, seek: bool) -> None:
             assert stream.read(3000) == expected[offset : offset + 3000]
 
 
+# Levels an accelerator set to ON decodes, by the config field that selects it.
+_RAPIDGZIP_FORMATS = frozenset({"gz", "zz", "tar.gz", "tar.zz"})
+_BZIP2_FORMATS = frozenset({"bz2", "tar.bz2"})
+
+
+def _must_refuse_forward_only(fmt: str, config: ArchiveyConfig) -> bool:
+    """Whether a level of ``fmt`` must raise ``StreamNotSeekableError`` when its source
+    cannot seek: the format needs to seek, or an accelerator set to ON decodes it."""
+    if fmt in _NEEDS_SEEK:
+        return True
+    if fmt in _RAPIDGZIP_FORMATS:
+        return config.use_rapidgzip is AcceleratorMode.ON
+    if fmt in _BZIP2_FORMATS:
+        return config.use_indexed_bzip2 is AcceleratorMode.ON
+    return False
+
+
+def _open_level(
+    source: Path | BinaryIO,
+    fmt: str,
+    *,
+    seek: bool,
+    streaming: bool,
+    config: ArchiveyConfig,
+) -> ArchiveStream | ArchiveReader:
+    if fmt in STREAMS:
+        return archivey.open_stream(
+            source, format=StreamFormat(fmt), seekable=seek, config=config
+        )
+    return archivey.open_archive(
+        source, seekable_members=seek, streaming=streaming, config=config
+    )
+
+
 def _walk(
     source: Path | BinaryIO,
     chain: tuple[str, ...],
@@ -225,19 +265,17 @@ def _walk(
     # Seek demand on a forward-only source is refused outright by open_stream; a
     # caller asks for what the source can give.
     seek = seekable and not forward_only
-    try:
-        if fmt in STREAMS:
-            stream = archivey.open_stream(
-                source, format=StreamFormat(fmt), seekable=seek, config=config
-            )
-        else:
-            reader = archivey.open_archive(
-                source, seekable_members=seek, streaming=forward_only, config=config
-            )
-    except StreamNotSeekableError:
-        if forward_only:
-            return  # a refusal the format or the ON accelerator requires
-        raise
+    if forward_only and _must_refuse_forward_only(fmt, config):
+        with pytest.raises(StreamNotSeekableError):
+            _open_level(source, fmt, seek=False, streaming=True, config=config)
+        return
+    opened = _open_level(source, fmt, seek=seek, streaming=forward_only, config=config)
+    if fmt in STREAMS:
+        assert isinstance(opened, ArchiveStream)
+        stream = opened
+    else:
+        assert isinstance(opened, ArchiveReader)
+        reader = opened
 
     if fmt in STREAMS:
         with stream:
@@ -425,9 +463,10 @@ def test_accelerator_on_over_a_forward_only_member_is_refused_cleanly() -> None:
     payload = random.Random(1).randbytes(30000)
     outer = _tar_of({"inner.gz": gzip.compress(payload, mtime=0)})
     with archivey.open_archive(io.BytesIO(outer), streaming=True) as reader:
-        for _member, stream in reader.stream_members():
-            with pytest.raises(StreamNotSeekableError, match="use_rapidgzip"):
-                archivey.open_stream(stream, format="gz", config=_config("on"))
+        _member, stream = next(iter(reader.stream_members()))
+        assert stream is not None
+        with pytest.raises(StreamNotSeekableError, match="use_rapidgzip"):
+            archivey.open_stream(stream, format="gz", config=_config("on"))
 
 
 def test_auto_ignores_seek_demand_on_a_forward_only_compressed_tar() -> None:
@@ -654,7 +693,9 @@ _ZLIB_ON_UNCHECKED = pytest.mark.xfail(
 )
 
 
-@pytest.mark.parametrize("mode", ["off", "on"])
+# AUTO is here for the zlib rows: it must never hand a bare zlib stream to rapidgzip,
+# which is what keeps the unchecked Adler-32 behind an explicit ON.
+@pytest.mark.parametrize("mode", ["off", "auto", "on"])
 @pytest.mark.parametrize("how", ["truncated", "flipped"])
 @pytest.mark.parametrize(
     "inner", ["tar.gz", "tar.bz2", "tar.zz", "gz", "bz2", "zz", "zip", "7z"]
@@ -697,13 +738,21 @@ def test_committed_rar_fixtures_hold_the_current_leaf() -> None:
     for chain in RAR_FIXTURE_CHAINS:
         fixture = _rar_fixture(chain)
         assert fixture.exists(), f"missing {fixture.name}; regenerate the fixtures"
+    stale = (
+        "is stale; run python -m tests.test_nested_archives --write-rar-fixtures on a "
+        "machine with RARLAB rar"
+    )
     leaf = _rar_fixture(("rar",))
     with archivey.open_archive(leaf) as reader:
         got = {m.name: reader.read(m) for m in reader.members() if m.is_file}
-    assert got == {m.name: m.contents for m in LEAF}, (
-        f"{leaf.name} is stale; run python -m tests.test_nested_archives "
-        "--write-rar-fixtures on a machine with RARLAB rar"
-    )
+    assert got == {m.name: m.contents for m in LEAF}, f"{leaf.name} {stale}"
+    # The stream-format chains carry SINGLE_LEAF instead; check one of them too.
+    stream_leaf = _rar_fixture(("rar", "gz"))
+    with archivey.open_archive(stream_leaf) as reader:
+        with reader.open("inner.gz") as member:
+            with archivey.open_stream(member, format="gz") as stream:
+                payload = stream.read()
+    assert payload == SINGLE_LEAF[0].contents, f"{stream_leaf.name} {stale}"
 
 
 def _write_rar_fixtures() -> None:

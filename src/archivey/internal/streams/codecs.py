@@ -671,9 +671,12 @@ def _refuse_forward_only_accelerator(
 
     Both accelerators ask their source for ``tell`` and ``seek`` when they open. A
     forward-only stream (a pipe, or a member stream of an outer archive opened without
-    ``seekable_members``) cannot answer, and the raw ``io.UnsupportedOperation`` said
-    nothing about the setting that caused it. ``AUTO`` never gets here for such a
-    source: :func:`open_codec_stream` clears its seek demand.
+    ``seekable_members``) cannot answer. This check covers the open, before a child
+    process starts or a byte is read, and names the setting. The two translators
+    (``_translate_rapidgzip`` and ``Bzip2Codec.translate``) cover the late case, a
+    source that refuses ``seek`` or ``tell`` after it said it could seek; keep both.
+    ``AUTO`` never gets here for such a source: :func:`open_codec_stream` clears its
+    seek demand.
     """
     if isinstance(source, (str, os.PathLike)) or is_seekable(source):
         return
@@ -767,8 +770,8 @@ def _accelerator_backstop_source(
       accelerator coordinate on one lock (a background rapidgzip worker reads the source).
     - **raw seekable stream** given directly — wrap once in a private ``SharedSource`` so the
       accelerator and the factory's views share one lock; caller-owned, so never closed.
-    - **non-seekable** — no factory (``None``); rapidgzip needs a seekable source anyway, so
-      this path is not reached for the backstop.
+    - **non-seekable** — no factory (``None``). The accelerated codecs never pass one:
+      :func:`_refuse_forward_only_accelerator` refuses it first.
     """
     if isinstance(source, (str, os.PathLike)):
         # os.fspath narrows to the concrete path for the reopen closure (the same tolerated
@@ -829,7 +832,7 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
         return TruncatedError(f"{label} stream is truncated (rapidgzip): {exc!r}")
     if isinstance(exc, ValueError) and "has no valid fileno" in text:
         return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
-    if isinstance(exc, io.UnsupportedOperation) and "seek" in text:
+    if isinstance(exc, io.UnsupportedOperation) and ("seek" in text or "tell" in text):
         return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
     if isinstance(exc, RuntimeError) and (
         "std::exception" in text or text == "Unknown exception"
@@ -1483,8 +1486,8 @@ class GzipCodec(StreamCodec):
             stream = _open_rapidgzip(accel_source, "gzip", config)
             if stream is None:
                 return GzipDecompressorStream(source)
-            if reopen is None:
-                return stream  # non-seekable: rapidgzip needs a seekable source anyway
+            # _refuse_forward_only_accelerator has refused a source that cannot seek.
+            assert reopen is not None
             return _GzipTruncationCheckStream(
                 stream,
                 reopen=reopen,
@@ -1603,8 +1606,8 @@ class Bzip2Codec(StreamCodec):
                 _bound_rapidgzip_source(source, params, config)
             )
             stream = _open_accelerator(_rapidgzip_bzip2, accel_source)
-            if reopen is None:
-                return stream  # non-seekable: rapidgzip needs a seekable source anyway
+            # _refuse_forward_only_accelerator has refused a source that cannot seek.
+            assert reopen is not None
             # The decoder reads garbage as an empty stream; see _Bzip2EmptyStreamCheck.
             return _Bzip2EmptyStreamCheck(
                 stream,
@@ -1680,7 +1683,9 @@ class Bzip2Codec(StreamCodec):
             return StreamNotSeekableError(
                 "indexed_bzip2 does not support non-seekable streams"
             )
-        if isinstance(exc, io.UnsupportedOperation) and "seek" in text:
+        if isinstance(exc, io.UnsupportedOperation) and (
+            "seek" in text or "tell" in text
+        ):
             return StreamNotSeekableError(
                 "indexed_bzip2 does not support non-seekable streams"
             )

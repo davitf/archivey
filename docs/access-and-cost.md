@@ -151,6 +151,8 @@ takes about 45 ms to start and open, and it saves about 3.4 ms per MB of compres
 over the stdlib, so it is only faster from about 13 MB. Smaller members stay on stdlib
 `zlib`/`gzip`. Set
 `use_rapidgzip=ON` to force the accelerator regardless of size, or `OFF` to disable it.
+`ON` needs a source that can seek: on a pipe, or on a member stream of an outer archive
+opened without `seekable_members=True`, it raises `StreamNotSeekableError`.
 
 The two settings differ when `rapidgzip` is not installed. `ON` is a request, so it
 raises `PackageNotInstalledError` naming `[seekable]` — even without
