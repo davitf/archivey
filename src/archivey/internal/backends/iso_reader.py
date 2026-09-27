@@ -238,13 +238,15 @@ _PYCDLIB_SUSP_TAGS = frozenset(
 
 
 class _ZisofsEntry(NamedTuple):
-    """A Rock Ridge ``ZF`` entry: the file's data is zisofs-compressed."""
+    """A Rock Ridge ``ZF`` or ``Z2`` entry: the file's data is zisofs-compressed."""
 
+    tag: bytes
     version: int
     algorithm: bytes
     header_size: int
     log2_block_size: int
-    uncompressed_size: int
+    # ``None`` when the entry is too short to hold the fields; it is then refused.
+    uncompressed_size: int | None
 
 
 class _SystemUseNotes:
@@ -264,7 +266,9 @@ class _SystemUseNotes:
 
         An entry of a type pycdlib does not know is left out, whatever its version, as
         SUSP has a reader ignore it; a ``ZF`` entry (zisofs, or zisofs2 at version 2)
-        is kept here first. The first entry whose own header is malformed (a length
+        or a ``Z2`` entry (zisofs2 under the tag libisofs offers for kernels that
+        misread a version 2 ``ZF``) is kept here first, even when it is too short to
+        parse, so the file is refused rather than read as its compressed bytes. The first entry whose own header is malformed (a length
         under 4 or past the area, or a version other than 1 on a type pycdlib parses) ends
         the area there, and the reason is kept for a diagnostic: everything after it is
         read at an offset that cannot be trusted. genisoimage writes such an area for a
@@ -303,10 +307,16 @@ class _SystemUseNotes:
             entry = record[offset : offset + length]
             if tag in _PYCDLIB_SUSP_TAGS:
                 out += entry
-            elif tag == b"ZF" and length >= 16:
+            elif tag in (b"ZF", b"Z2") and length < 16:
+                self.zisofs[id(rock_ridge)] = (
+                    rock_ridge,
+                    _ZisofsEntry(tag, version, b"", 0, 0, uncompressed_size=None),
+                )
+            elif tag in (b"ZF", b"Z2"):
                 self.zisofs[id(rock_ridge)] = (
                     rock_ridge,
                     _ZisofsEntry(
+                        tag=tag,
                         version=version,
                         algorithm=bytes(entry[4:6]),
                         header_size=entry[6] * 4,
@@ -585,7 +595,11 @@ _ZISOFS_LOG2_BLOCK_SIZES = range(15, 18)
 
 
 def _zisofs_refusal(entry: _ZisofsEntry) -> str | None:
-    """Why a ``ZF`` entry describes data this reader does not decode, or ``None``."""
+    """Why a zisofs entry describes data this reader does not decode, or ``None``."""
+    if entry.uncompressed_size is None:
+        return f"a zisofs {entry.tag.decode('ascii')} entry too short to parse"
+    if entry.tag != b"ZF":
+        return f"zisofs2 under the {entry.tag.decode('ascii')} tag"
     if entry.version != 1:
         return f"zisofs version {entry.version} (only version 1 is read)"
     if entry.algorithm != b"pz":

@@ -60,9 +60,9 @@ A file whose Rock Ridge area carries a `ZF` entry SHALL list `size` from that en
 it SHALL return the decoded bytes, seekable by block, inflating one block at a time and
 never past the block size. A block that inflates past its size, a damaged block, or a
 header that disagrees with the `ZF` entry SHALL raise `CorruptionError`; data cut by the
-end of the image SHALL raise `TruncatedError`. A `ZF` entry of version 2 (zisofs2), an
-algorithm other than `pz`, a header size other than 16 bytes, or a block size outside 32
-to 128 KiB SHALL list with `CompressionAlgorithm.UNKNOWN` and raise
+end of the image SHALL raise `TruncatedError`. A `ZF` entry of version 2 or a `Z2` entry
+(zisofs2), a `ZF` or `Z2` entry too short to hold its fields, an algorithm other than
+`pz`, a header size other than 16 bytes, or a block size outside 32 to 128 KiB SHALL list with `CompressionAlgorithm.UNKNOWN` and raise
 `UnsupportedFeatureError` when read, without affecting other members.
 
 #### Scenario: zisofs
@@ -73,4 +73,4 @@ to 128 KiB SHALL list with `CompressionAlgorithm.UNKNOWN` and raise
 | Seek to several offsets across blocks | Each read matches the source |
 | A block compressed from one byte more than the block size | `CorruptionError` naming the block |
 | Image cut inside the header, the pointer table, or a block | `TruncatedError`; the member before it reads |
-| zisofs2 member | Lists with `UNKNOWN`; read raises `UnsupportedFeatureError`; the member beside it reads |
+| zisofs2 member, under `ZF` or `Z2`, or a `ZF` entry too short to parse | Lists with `UNKNOWN`; read raises `UnsupportedFeatureError`; the member beside it reads |

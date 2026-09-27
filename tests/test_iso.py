@@ -1194,13 +1194,15 @@ def _zisofs(data: bytes, *, log2_block_size: int = 15) -> bytes:
 def _zf_entry(
     size: int,
     *,
+    tag: bytes = b"ZF",
     version: int = 1,
     algorithm: bytes = b"pz",
     header_size: int = 16,
     log2_block_size: int = 15,
 ) -> bytes:
     return (
-        b"ZF\x10"
+        tag
+        + b"\x10"
         + bytes([version])
         + algorithm
         + bytes([header_size // 4, log2_block_size])
@@ -1221,7 +1223,9 @@ def _replace_tf(data: bytes, name: bytes, entries: bytes) -> bytes:
 _UNKNOWN_ENTRY = b"XX\x0a\x01" + b"\x00" * 6
 
 
-def _zisofs_image(plain: bytes, **zf: Any) -> bytes:
+def _zisofs_image(plain: bytes, *, short: bool = False, **zf: Any) -> bytes:
+    """``plain`` stored as zisofs, with a ``ZF`` entry built from ``zf``; ``short``
+    cuts the entry to 12 bytes, which cannot hold the fields."""
     stored = _zisofs(plain)
 
     def populate(iso: Any) -> None:
@@ -1229,7 +1233,10 @@ def _zisofs_image(plain: bytes, **zf: Any) -> bytes:
         iso.add_fp(io.BytesIO(b"BBBB"), 4, "/BBB.;1", rr_name="bbb")
 
     data = _build_rr_iso(populate)
-    return _replace_tf(data, b"zzz", _zf_entry(len(plain), **zf) + _UNKNOWN_ENTRY)
+    entry = _zf_entry(len(plain), **zf)
+    if short:
+        entry = entry[:2] + b"\x0c" + entry[3:12] + b"XX\x04\x01"
+    return _replace_tf(data, b"zzz", entry + _UNKNOWN_ENTRY)
 
 
 _ZISOFS_PLAIN = (b"zisofs block data " * 3000) + bytes(40_000) + b"tail"
@@ -1273,8 +1280,10 @@ def test_a_zisofs_member_seeks_across_blocks() -> None:
         {"algorithm": b"xz"},
         {"header_size": 20},
         {"log2_block_size": 20},
+        {"tag": b"Z2", "version": 2},
+        {"short": True},
     ],
-    ids=["zisofs2", "algorithm", "header-size", "block-size"],
+    ids=["zisofs2", "algorithm", "header-size", "block-size", "z2-tag", "short"],
 )
 def test_a_zisofs_member_this_reader_cannot_decode_is_refused_alone(
     zf: dict[str, Any],

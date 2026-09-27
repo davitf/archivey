@@ -191,8 +191,9 @@ What is ISO-specific in turning a record into a member:
   the `ZF` entry, `compressed_size` from its extents, and one `DEFLATE` entry in
   `compression`. `_ZisofsStream` reads it decoded and seeks by block, inflating one block
   at a time and never past the block size, so a crafted block cannot inflate further. The
-  header must agree with the `ZF` entry. zisofs2 (`ZF` version 2, `xorriso -zisofs
-  version_2=on`), another algorithm, a header size other than 16 bytes, or a block size
+  header must agree with the `ZF` entry. zisofs2 (`ZF` version 2, or the `Z2` tag
+  libisofs offers for kernels that misread it; `xorriso -zisofs version_2=on`), a
+  `ZF` or `Z2` entry too short to parse, another algorithm, a header size other than 16 bytes, or a block size
   outside 32 to 128 KiB lists with `UNKNOWN` in `compression` and refuses to read with
   `UnsupportedFeatureError`; the member beside it reads. A block that inflates past the
   block size is `CorruptionError`, and a file cut by the end of the image raises

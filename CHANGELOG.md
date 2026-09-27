@@ -24,8 +24,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 - **ISO reads zisofs.** A file stored with Rock Ridge transparent compression (`ZF`)
   lists the size it decodes to and reads decoded. pycdlib refused such an image
-  outright, and archivey reported the whole image as `CorruptionError`. zisofs2 lists
-  and refuses to read with `UnsupportedFeatureError`.
+  outright, and archivey reported the whole image as `CorruptionError`. zisofs2 (under
+  `ZF` or `Z2`) and a zisofs entry too short to parse list and refuse to read with
+  `UnsupportedFeatureError`.
 - **ISO takes `encoding=`** for Rock Ridge and plain ISO 9660 names, and Rock Ridge link
   targets, whose bytes are not valid UTF-8, the way TAR takes it for a PAX `path`.
   Without it, a Rock Ridge name takes the Joliet name of the same file or directory
