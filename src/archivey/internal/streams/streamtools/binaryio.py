@@ -869,8 +869,12 @@ class _NonClosingBufferedReader(io.BufferedReader):
         # exist yet.
         if getattr(self, "_detached", False):
             return
-        if self.raw is not None:
+        if self.raw is not None and not self.raw.closed:
             self.detach()
+        # A raw that its owner closed first cannot be detached (detach() flushes, and
+        # a flush on a closed raw raises ValueError), and nothing is left to protect:
+        # the buffer only has to stop answering. This happens when a nested archive is
+        # read from a member stream and the outer reader closes that stream first.
         self._detached = True
 
     @property

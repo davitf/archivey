@@ -210,7 +210,8 @@ when it is absent.
 
 **Accelerators.** `ArchiveyConfig.use_rapidgzip` (gzip, zlib, raw DEFLATE) and
 `use_indexed_bzip2` (bzip2) are `AcceleratorMode`s. `OFF` never uses `rapidgzip`; `ON`
-always does, and raises `PackageNotInstalledError` without it; `AUTO` uses it only when
+always does, and raises `PackageNotInstalledError` without it and
+`StreamNotSeekableError` on a source that cannot seek; `AUTO` uses it only when
 seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`) and it is
 installed. For the DEFLATE family `AUTO` adds two conditions, a compressed input of at
 least 16 MiB and a way to check the decoded length, and `rapidgzip` runs there in a

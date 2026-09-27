@@ -151,6 +151,13 @@ takes about 45 ms to start and open, and it saves about 3.4 ms per MB of compres
 over the stdlib, so it is only faster from about 13 MB. Smaller members stay on stdlib
 `zlib`/`gzip`. Set
 `use_rapidgzip=ON` to force the accelerator regardless of size, or `OFF` to disable it.
+`ON` needs a source that can seek: on a pipe, or on a member stream of an outer archive
+opened without `seekable_members=True`, it raises `StreamNotSeekableError`. For a zlib
+stream (`.zz`, `.tar.zz`), `ON` also checks the Adler-32, which rapidgzip does not, and
+that check needs every byte from the start: a seek forward moves the skipped bytes out of
+the child process. Listing a `.tar.zz` under `ON` therefore transfers the whole
+decompressed archive once, even when no member is read, and a single far seek transfers
+everything before it. `AUTO` never gives a bare zlib stream to rapidgzip.
 
 The two settings differ when `rapidgzip` is not installed. `ON` is a request, so it
 raises `PackageNotInstalledError` naming `[seekable]` — even without

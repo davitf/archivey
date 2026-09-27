@@ -130,6 +130,20 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A damaged zlib stream under `use_rapidgzip=ON` now raises `CorruptionError`.** rapidgzip
+  does not check a zlib stream's Adler-32, so a damaged `.zz` or `.tar.zz` read back wrong
+  or short bytes with no error. archivey now checks the Adler-32 once the stream is read
+  to its end, including after seeks and in a `.tar.zz` listing.
+- **Nested archives: four failures found by reading archives from member streams.**
+  `use_rapidgzip=ON` or `use_indexed_bzip2=ON` over a source that cannot seek (a pipe, or
+  a `stream_members()` stream) raised a bare `io.UnsupportedOperation("tell")`; it now
+  raises `StreamNotSeekableError` naming the setting. `AUTO` chose the bzip2 accelerator
+  for a compressed TAR read `streaming=True` with `seekable_members=True` from such a
+  source, and failed the same way; it now uses the standard library there. Closing a
+  nested reader after the outer reader had closed its member stream raised `ValueError`.
+  And a compressed TAR that failed to open under an accelerator left its rapidgzip child
+  process running until garbage collection.
+
 - **One malformed Rock Ridge record no longer costs a whole ISO image.** A System Use
   entry pycdlib does not know is skipped, as SUSP specifies, and a malformed one ends
   that record's Rock Ridge data with a `MEMBER_HEADER_RECORD_SKIPPED` diagnostic on the
