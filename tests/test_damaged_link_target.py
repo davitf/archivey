@@ -181,6 +181,7 @@ def test_damaged_rar4_link_target_in_a_streaming_pass() -> None:
         assert [c.reason for c in _link_diagnostics(ar)] == ["target_data_damaged"]
 
 
+@requires_binary("unrar")  # file1.txt is RAR member data, which needs a data program
 def test_damaged_rar4_link_target_fails_only_that_link_at_extraction(
     tmp_path: Path,
 ) -> None:
