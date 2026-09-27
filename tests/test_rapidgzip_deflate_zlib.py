@@ -13,9 +13,11 @@ import gzip
 import io
 import os
 import zlib
+from pathlib import Path
 
 import pytest
 
+from archivey import open_archive
 from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
@@ -207,6 +209,42 @@ def test_auto_without_decompressed_size_uses_stdlib_even_when_large() -> None:
     with open_codec_stream(Codec.ZLIB, io.BytesIO(compressed), config=auto) as stream:
         _assert_stdlib_zlib(stream)
         assert stream.read() == _LARGE
+
+
+def _uses_rapidgzip_child(stream: object) -> bool:
+    """Whether a member stream's wrapper chain reaches a ``RapidgzipChildStream``."""
+    seen: set[int] = set()
+    pending = [stream]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, RapidgzipChildStream):
+            return True
+        pending.extend(
+            getattr(current, name, None) for name in ("_inner", "_stream", "raw")
+        )
+    return False
+
+
+@pytest.mark.usefixtures("_low_auto_threshold")
+@pytest.mark.parametrize("declared", [False, True])
+def test_auto_on_a_large_gz_file_follows_declared_seeking(
+    tmp_path: Path, declared: bool
+) -> None:
+    """End to end through ``open_archive``: AUTO keys on ``seekable_members``, not on the
+    source being seekable, so a plain open of a large ``.gz`` read front to back stays
+    on the stdlib and the declared open gets rapidgzip."""
+    pytest.importorskip("rapidgzip")
+    path = tmp_path / "large.gz"
+    path.write_bytes(gzip.compress(_LARGE))
+    assert path.stat().st_size >= _TEST_THRESHOLD
+    with open_archive(path, seekable_members=declared) as archive:
+        member = archive.members()[0]
+        with archive.open(member) as stream:
+            assert _uses_rapidgzip_child(stream) is declared
+            assert stream.read() == _LARGE
 
 
 # --- 4.3 Error translation + truncation limitation -----------------------------------
