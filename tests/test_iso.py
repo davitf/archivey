@@ -1167,10 +1167,16 @@ def test_format_version_is_not_pycdlibs_guess(rock_ridge_iso: Path) -> None:
 # --- System Use entries pycdlib refuses: zisofs, unknown entries, a malformed tail ----
 
 
-def _zisofs(data: bytes, *, log2_block_size: int = 15) -> bytes:
+def _zisofs(
+    data: bytes,
+    *,
+    log2_block_size: int = 15,
+    mangle: Callable[[bytes], bytes] = lambda chunk: chunk,
+) -> bytes:
     """``data`` as ``mkzftree`` stores it: a header, block pointers, zlib blocks.
 
     A block of zeros is stored as two equal pointers, as ``mkzftree`` writes it.
+    ``mangle`` rewrites each stored zlib block, and the pointers follow it.
     """
     import zlib
 
@@ -1185,7 +1191,7 @@ def _zisofs(data: bytes, *, log2_block_size: int = 15) -> bytes:
     pointers = [offset]
     packed = b""
     for block in blocks:
-        chunk = b"" if block == bytes(len(block)) else zlib.compress(block)
+        chunk = b"" if block == bytes(len(block)) else mangle(zlib.compress(block))
         packed += chunk
         pointers.append(pointers[-1] + len(chunk))
     return header + b"".join(struct.pack("<I", p) for p in pointers) + packed
@@ -1223,10 +1229,17 @@ def _replace_tf(data: bytes, name: bytes, entries: bytes) -> bytes:
 _UNKNOWN_ENTRY = b"XX\x0a\x01" + b"\x00" * 6
 
 
-def _zisofs_image(plain: bytes, *, short: bool = False, **zf: Any) -> bytes:
+def _zisofs_image(
+    plain: bytes,
+    *,
+    short: bool = False,
+    mangle: Callable[[bytes], bytes] = lambda chunk: chunk,
+    **zf: Any,
+) -> bytes:
     """``plain`` stored as zisofs, with a ``ZF`` entry built from ``zf``; ``short``
-    cuts the entry to 12 bytes, which cannot hold the fields."""
-    stored = _zisofs(plain)
+    cuts the entry to 12 bytes, which cannot hold the fields. ``mangle`` as for
+    ``_zisofs``."""
+    stored = _zisofs(plain, mangle=mangle)
 
     def populate(iso: Any) -> None:
         iso.add_fp(io.BytesIO(stored), len(stored), "/ZZZ.;1", rr_name="zzz")
@@ -1312,6 +1325,28 @@ def test_a_damaged_zisofs_block_is_corruption() -> None:
 
 
 @pytest.mark.parametrize(
+    ("mangle", "match"),
+    [
+        (lambda chunk: chunk[:-4], "does not end"),
+        (lambda chunk: chunk + b"junk" * 10, "does not end"),
+        (lambda chunk: chunk + bytes(40_000), "spans"),
+    ],
+    ids=["checksum-cut", "trailing-bytes", "span-past-bound"],
+)
+def test_a_zisofs_block_that_does_not_end_at_its_pointer_is_corruption(
+    mangle: Callable[[bytes], bytes], match: str
+) -> None:
+    """A block is accepted only when its zlib stream, checksum included, ends exactly
+    where the next pointer says. A span longer than any deflated block of the block
+    size is refused before it is read, so a pointer cannot size an allocation."""
+    data = _zisofs_image(_ZISOFS_PLAIN, mangle=mangle)
+    with open_archive(io.BytesIO(data)) as ar:
+        assert ar.read("bbb") == b"BBBB"
+        with pytest.raises(CorruptionError, match=match):
+            ar.read("zzz")
+
+
+@pytest.mark.parametrize(
     ("cut", "match"),
     [(10, "header"), (20, "pointer"), (100, "block 0")],
     ids=["header", "pointer-table", "block-data"],
@@ -1391,6 +1426,26 @@ def test_a_malformed_rock_ridge_entry_costs_its_own_member_only() -> None:
         assert diagnostic.context.record == ""
         assert "version 99" in diagnostic.context.reason
         assert by_name["bbb"].diagnostics == ()
+
+
+def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:
+    """With no ``NM`` entry pycdlib names the record by its ISO 9660 identifier,
+    ``;1`` included; the member lists under the identifier with that removed, as a
+    record with no Rock Ridge entries at all does."""
+    from archivey import DiagnosticCode
+
+    data = bytearray(_build_rr_iso(_two_rr_files))
+    nm = data.index(b"NM\x08\x01\x00aaa")
+    rr = data.rindex(b"RR\x05\x01", 0, nm)
+    data[rr + 3] = 99
+    with open_archive(io.BytesIO(bytes(data))) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert set(by_name) == {"AAA", "bbb"}
+        assert by_name["AAA"].raw_name == b"AAA"
+        assert ar.read("AAA") == b"AAAA"
+        assert [d.code for d in by_name["AAA"].diagnostics] == [
+            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        ]
 
 
 def test_a_symlink_whose_entries_are_cut_withholds_its_target() -> None:
@@ -1614,6 +1669,47 @@ def test_following_link_targets_reads_each_directory_once(
         }
         walks.append(calls)
     assert walks[0] == walks[1], walks
+
+
+def test_empty_files_sharing_an_extent_are_matched_in_linear_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every empty file can share one extent, so a Joliet name is looked up by extent
+    and name together; matching each Rock Ridge name against every file at the extent
+    made listing N empty Latin-1 files quadratic."""
+    import pycdlib
+
+    from archivey.internal.backends import iso_reader
+
+    real = iso_reader._ascii_runs_match
+    calls = 0
+
+    def counting(raw: bytes, name: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return real(raw, name)
+
+    monkeypatch.setattr(iso_reader, "_ascii_runs_match", counting)
+    for count in (4, 40):
+        iso = pycdlib.PyCdlib()
+        iso.new(interchange_level=3, rock_ridge="1.09", joliet=3)
+        for i in range(count):
+            iso.add_fp(
+                io.BytesIO(b""),
+                0,
+                f"/E{i}.;1",
+                rr_name=f"e#{i:03d}",
+                joliet_path=f"/eé{i:03d}",
+            )
+        out = io.BytesIO()
+        iso.write_fp(out)
+        iso.close()
+        calls = 0
+        data = out.getvalue().replace(b"e#", b"e\xe9")
+        with open_archive(io.BytesIO(data)) as ar:
+            names = {m.name for m in ar.members()}
+        assert names == {f"eé{i:03d}" for i in range(count)}
+        assert calls <= count, (count, calls)
 
 
 def test_encoding_wins_over_the_joliet_name() -> None:

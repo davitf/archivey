@@ -272,7 +272,7 @@ class _SystemUseNotes:
         under 4 or past the area, or a version other than 1 on a type pycdlib parses) ends
         the area there, and the reason is kept for a diagnostic: everything after it is
         read at an offset that cannot be trusted. genisoimage writes such an area for a
-        symlink target of more than 250 bytes: the ``SL`` length wraps past 255, and the
+        long symlink target (from about 400 bytes with 1.1.11): the ``SL`` length wraps past 255, and the
         next entry is read from inside the target text. ``isoinfo`` and ``xorriso`` stop
         at the same place. Entries after ``ST`` are not entries and are left out.
 
@@ -425,6 +425,40 @@ _VERSION_SUFFIX_BYTES = re.compile(rb";(\d+)$")
 _JOLIET_SEARCH_RECORDS = 64
 
 
+def _nm_name(record: DirectoryRecord) -> bytes | None:
+    """The name a record's Rock Ridge ``NM`` entries spell, or ``None`` without any.
+
+    ``RockRidge.name()`` alone does not tell: with no ``NM`` entry, which RRIP allows and
+    which a System Use area cut before its ``NM`` leaves, pycdlib hands back the ISO
+    9660 identifier, version suffix and all.
+    """
+    rr = record.rock_ridge
+    if rr is None or not (rr.dr_entries.nm_records or rr.ce_entries.nm_records):
+        return None
+    return bytes(rr.name())
+
+
+def _iso_ident_name(record: DirectoryRecord) -> bytes:
+    """A record's ISO 9660 identifier, version and empty-extension dot removed."""
+    ident = bytes(record.file_identifier())
+    match = _VERSION_SUFFIX_BYTES.search(ident)
+    if match is not None and match.start() > 0:
+        ident = ident[: match.start()]
+        if ident.endswith(b".") and len(ident) > 1:
+            ident = ident[:-1]
+    return ident
+
+
+def _byte_ascii_runs(raw: bytes) -> tuple[str, ...]:
+    """The ASCII text of a byte name, split where non-ASCII bytes are."""
+    return tuple(run.decode("ascii") for run in re.split(rb"[\x80-\xff]+", raw))
+
+
+def _text_ascii_runs(name: str) -> tuple[str, ...]:
+    """The ASCII text of a decoded name, split where non-ASCII characters are."""
+    return tuple(re.split(r"[^\x00-\x7f]+", name))
+
+
 def _ascii_runs_match(raw: bytes, name: str) -> bool:
     """Whether a byte name and a decoded name have the same ASCII text between the rest.
 
@@ -433,9 +467,7 @@ def _ascii_runs_match(raw: bytes, name: str) -> bool:
     read ``caf``, something, ``.txt``. A Joliet name cut at 64 characters, or the name of
     some other file, does not line up.
     """
-    return [run.decode("ascii") for run in re.split(rb"[\x80-\xff]+", raw)] == re.split(
-        r"[^\x00-\x7f]+", name
-    )
+    return _byte_ascii_runs(raw) == _text_ascii_runs(name)
 
 
 def _is_long_form_date(date: object) -> TypeGuard[VolumeDescriptorDate]:
@@ -616,7 +648,9 @@ class _ZisofsStream(io.RawIOBase):
 
     ``inner`` is the file's data as stored. Each read inflates the block it lands in,
     capped one byte past the block size, so a crafted block that inflates further is
-    detected as corruption rather than cut to fit.
+    detected as corruption rather than cut to fit. The zlib stream must also end,
+    checksum included, exactly at the next pointer, and a span longer than any deflated
+    block of the block size is refused before it is read.
     """
 
     def __init__(
@@ -642,6 +676,10 @@ class _ZisofsStream(io.RawIOBase):
         self._size = size
         self._log2 = entry.log2_block_size
         self._block_size = 1 << self._log2
+        # zlib's ``compressBound``: no block of this size deflates to more, so a
+        # longer span is corruption and is never read into memory.
+        n = self._block_size
+        self._max_packed = n + (n >> 12) + (n >> 14) + (n >> 25) + 13
         self._position = 0
         self._cached_index = -1
         self._cached = b""
@@ -691,7 +729,11 @@ class _ZisofsStream(io.RawIOBase):
             raise TruncatedError(f"zisofs block pointer {index} is cut short")
         start = int.from_bytes(pointers[:4], "little")
         end = int.from_bytes(pointers[4:], "little")
-        if end < start or (self._stored_size is not None and end > self._stored_size):
+        if (
+            end < start
+            or end - start > self._max_packed
+            or (self._stored_size is not None and end > self._stored_size)
+        ):
             raise CorruptionError(
                 f"zisofs block {index} spans {start}..{end} in {self._stored_size} "
                 "stored bytes"
@@ -705,13 +747,20 @@ class _ZisofsStream(io.RawIOBase):
                 raise TruncatedError(f"zisofs block {index} is cut short")
             # One byte past the block size, so a block that inflates further is seen
             # rather than cut to fit.
+            decompressor = zlib.decompressobj()
             try:
-                data = zlib.decompressobj().decompress(packed, expected + 1)
+                data = decompressor.decompress(packed, expected + 1)
             except zlib.error as exc:
                 raise CorruptionError(f"zisofs block {index}: {exc}") from exc
             if len(data) != expected:
                 raise CorruptionError(
                     f"zisofs block {index} holds {len(data)} bytes, not {expected}"
+                )
+            # The stream has to end, checksum included, where the pointers say: a
+            # block cut before its Adler-32 or followed by other bytes is not verified.
+            if not decompressor.eof or decompressor.unused_data:
+                raise CorruptionError(
+                    f"zisofs block {index} does not end where its pointers say"
                 )
         self._cached_index, self._cached = index, data
         return data
@@ -812,12 +861,16 @@ class IsoReader(BaseArchiveReader):
         # What the System Use filter kept aside while ``open_fp`` parsed the Rock Ridge
         # areas: zisofs entries, and the areas it cut short.
         self._system_use = _SystemUseNotes()
-        # The Joliet tree's files by extent, built the first time a Rock Ridge name is
-        # not UTF-8 and ``encoding=`` does not decode it; and the records whose name was
-        # taken from their Joliet counterpart, by ``id()``, to report on the member.
-        # Unlike ``_SystemUseNotes`` no anchor is kept: the keys are pycdlib's parsed
-        # records, which ``self._iso`` holds for the reader's whole life.
+        # The Joliet tree's files by extent, and by extent and the ASCII runs of their
+        # name, built the first time a Rock Ridge name is not UTF-8 and ``encoding=``
+        # does not decode it; and the records whose name was taken from their Joliet
+        # counterpart, by ``id()``, to report on the member. Unlike ``_SystemUseNotes``
+        # no anchor is kept: the keys are pycdlib's parsed records, which ``self._iso``
+        # holds for the reader's whole life.
         self._joliet_files: dict[int, list[DirectoryRecord]] | None = None
+        self._joliet_files_by_runs: dict[
+            tuple[int, tuple[str, ...]], list[DirectoryRecord]
+        ] = {}
         self._joliet_named: dict[int, DirectoryRecord] = {}
         # Each Rock Ridge directory's children by stored name, per directory extent,
         # built the first time a link target is followed through it, so following
@@ -980,7 +1033,7 @@ class IsoReader(BaseArchiveReader):
         if not self._iso.has_joliet():
             return None
         if self._joliet_files is None:
-            self._joliet_files = self._index_joliet_files()
+            self._index_joliet_files()
         counterpart = (
             self._joliet_directory(record)
             if record.is_dir()
@@ -1000,9 +1053,15 @@ class IsoReader(BaseArchiveReader):
         self._joliet_named[id(record)] = counterpart
         return name
 
-    def _index_joliet_files(self) -> dict[int, list[DirectoryRecord]]:
-        """Every file record of the Joliet tree, by extent; each directory read once."""
+    def _index_joliet_files(self) -> None:
+        """Index every file record of the Joliet tree; each directory read once.
+
+        Every empty file of a genisoimage image shares one extent, so the files are
+        also indexed by the ASCII runs of their name: finding the one a Rock Ridge name
+        lines up with is then one lookup, not a match against each file at the extent.
+        """
         files: dict[int, list[DirectoryRecord]] = {}
+        by_runs = self._joliet_files_by_runs
         root = self._iso.get_record(joliet_path="/")
         seen = {root.extent_location()}
         stack = [root]
@@ -1013,10 +1072,12 @@ class IsoReader(BaseArchiveReader):
                 extent = child.extent_location()
                 if not child.is_dir():
                     files.setdefault(extent, []).append(child)
+                    runs = _text_ascii_runs(self._joliet_text(child))
+                    by_runs.setdefault((extent, runs), []).append(child)
                 elif extent not in seen:
                     seen.add(extent)
                     stack.append(child)
-        return files
+        self._joliet_files = files
 
     def _joliet_file(
         self, record: DirectoryRecord, raw: bytes
@@ -1025,12 +1086,9 @@ class IsoReader(BaseArchiveReader):
 
         Empty files and hard links share an extent, so the name has to single one out.
         """
-        assert self._joliet_files is not None
-        candidates = [
-            joliet
-            for joliet in self._joliet_files.get(record.extent_location(), ())
-            if _ascii_runs_match(raw, self._joliet_text(joliet))
-        ]
+        candidates = self._joliet_files_by_runs.get(
+            (record.extent_location(), _byte_ascii_runs(raw)), ()
+        )
         return candidates[0] if len(candidates) == 1 else None
 
     def _joliet_directory(self, record: DirectoryRecord) -> DirectoryRecord | None:
@@ -1077,24 +1135,18 @@ class IsoReader(BaseArchiveReader):
         rather than costing the listing. The bytes are the name as stored for the byte
         namespaces, and the UTF-8 of the decoded name for Joliet, as before.
         """
-        if self._namespace == "rock_ridge" and record.rock_ridge is not None:
-            raw = bytes(record.rock_ridge.name())
-            name = self._decode_known(raw)
-            if name is None:
-                name = self._joliet_name(record, raw)
-            if name is None:
-                name = raw.decode("utf-8", errors="surrogateescape")
-            return name, raw
-        ident = bytes(record.file_identifier())
         if self._namespace == "rock_ridge":
-            # No Rock Ridge entries on this one record: fall back to its ISO 9660
-            # identifier, version and empty-extension dot removed.
-            match = _VERSION_SUFFIX_BYTES.search(ident)
-            if match is not None and match.start() > 0:
-                ident = ident[: match.start()]
-                if ident.endswith(b".") and len(ident) > 1:
-                    ident = ident[:-1]
+            nm = _nm_name(record)
+            if nm is not None:
+                name = self._decode_known(nm)
+                if name is None:
+                    name = self._joliet_name(record, nm)
+                if name is None:
+                    name = nm.decode("utf-8", errors="surrogateescape")
+                return name, nm
+            ident = _iso_ident_name(record)
             return self._decode_bytes_name(ident), ident
+        ident = bytes(record.file_identifier())
         if self._namespace == "joliet":
             name = ident.decode("utf-16_be", errors="replace")
             return name, name.encode("utf-8", errors="surrogateescape")
@@ -1194,9 +1246,10 @@ class IsoReader(BaseArchiveReader):
         # descriptor, ``get_record(joliet_path="/")`` looks among parsed records, and
         # ``_yield_children`` on the Joliet tree walks them. Following a link target
         # (``_rock_ridge_child``) is the walk's own ``_yield_children`` over Rock Ridge
-        # records already parsed. Any other image read added to listing needs the same
-        # guard. If a future pycdlib version gains handle access in the walk, lock the
-        # complete call.
+        # records already parsed, and ``_nm_name`` reads the parsed ``NM`` records
+        # (``dr_entries``/``ce_entries``). Any other image read added to listing needs
+        # the same guard. If a future pycdlib version gains handle access in the walk,
+        # lock the complete call.
         with self._translated_errors():
             # ``index`` is each member's position in the walk, the id registration
             # stamps, so a diagnostic raised while typing can name it.
@@ -1517,10 +1570,12 @@ class IsoReader(BaseArchiveReader):
             for child in _yield_children(directory, True):
                 if child is None or child.is_dot() or child.is_dotdot():
                     continue
-                rr = child.rock_ridge
-                if rr is not None:
-                    # The first of several records sharing a name, as a scan finds.
-                    children.setdefault(bytes(rr.name()), child)
+                # The name the member lists under; the first of several records
+                # sharing it, as a scan finds.
+                nm = _nm_name(child)
+                children.setdefault(
+                    nm if nm is not None else _iso_ident_name(child), child
+                )
             self._rock_ridge_children[extent] = children
         return children.get(component)
 

@@ -256,13 +256,14 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   record's Rock Ridge data: the member lists from the entries before it, with a
   `MEMBER_HEADER_RECORD_SKIPPED` diagnostic, and a symlink cut this way lists with
   `link_target` unset and a `SYMLINK_TARGET_UNAVAILABLE` diagnostic. genisoimage writes
-  such an entry for a symlink target over 250 bytes.
+  such an entry for a long symlink target (from about 400 bytes with genisoimage
+  1.1.11).
 - zisofs (Rock Ridge transparent compression, `mkzftree` + `genisoimage -z`, `xorriso
-  -zisofs`) reads: the member lists the size its data decodes to, with
+  -set_filter_r --zisofs`) reads: the member lists the size its data decodes to, with
   `compression=(CompressionMethod(algo=DEFLATE),)`, and reads decoded, seeking by block.
-  zisofs2 (`xorriso -zisofs version_2=on`, under the `ZF` or the `Z2` tag), and a
-  zisofs entry too short to parse, list with `CompressionAlgorithm.UNKNOWN` and refuse
-  to read, with `UnsupportedFeatureError`.
+  zisofs2 (`xorriso -zisofs version_2=on -set_filter_r --zisofs /`, under the `ZF` or
+  the `Z2` tag), and a zisofs entry too short to parse, list with
+  `CompressionAlgorithm.UNKNOWN` and refuse to read, with `UnsupportedFeatureError`.
 - Rock Ridge and plain ISO 9660 names, and Rock Ridge link targets, decode as UTF-8
   first. Bytes that are not valid UTF-8 decode with `encoding=` when you pass one.
   Without it, a Rock Ridge name takes the Joliet name of the same file or directory

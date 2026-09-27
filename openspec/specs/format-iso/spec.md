@@ -222,7 +222,7 @@ The other members of the image MUST NOT be affected.
 | Case | Expected |
 | --- | --- |
 | A file whose `TF` entry has version 99 | Lists with its `PX` mode, reads, one `MEMBER_HEADER_RECORD_SKIPPED`; the other members carry nothing |
-| A symlink cut the same way (genisoimage writes this for a target over 250 bytes) | `link_target is None`; `MEMBER_HEADER_RECORD_SKIPPED` then `SYMLINK_TARGET_UNAVAILABLE` |
+| A symlink cut the same way (genisoimage 1.1.11 writes this for a target of about 400 bytes or more) | `link_target is None`; `MEMBER_HEADER_RECORD_SKIPPED` then `SYMLINK_TARGET_UNAVAILABLE` |
 | The same image under `DiagnosticPolicy.strict()` | Refused |
 | `pycdlib.PyCdlib().open_fp` on a zisofs image, outside archivey | `pycdlib`'s own `Unknown SUSP record` |
 
@@ -242,7 +242,7 @@ end of the image SHALL raise `TruncatedError`. A `ZF` entry of version 2 or a `Z
 
 | Case | Expected |
 | --- | --- |
-| `mkzftree` + `genisoimage -R -z`, or `xorriso -zisofs default` | Every member reads byte-for-byte as the source |
+| `mkzftree` + `genisoimage -R -z`, or `xorriso -zisofs default -set_filter_r --zisofs /` | Every member reads byte-for-byte as the source |
 | Seek to several offsets across blocks | Each read matches the source |
 | A block compressed from one byte more than the block size | `CorruptionError` naming the block |
 | Image cut inside the header, the pointer table, or a block | `TruncatedError`; the member before it reads |

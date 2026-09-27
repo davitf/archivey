@@ -148,6 +148,12 @@ What is ISO-specific in turning a record into a member:
   non-empty file found in the first 64 records under it. The Joliet name is used only when
   its ASCII runs equal the stored bytes' (`_ascii_runs_match`), which rejects a Joliet
   name cut at 64 characters and singles out one of several empty files sharing an extent.
+  Joliet files are indexed by extent and ASCII runs together, because every empty file of
+  a genisoimage image shares one extent: matching each name against all of them made
+  listing quadratic. A record with Rock Ridge entries but no `NM` (RRIP allows it, and an
+  area cut before its `NM` leaves one) lists under its ISO 9660 identifier, `;1` and an
+  empty extension's dot removed (`_nm_name`); pycdlib's `name()` alone would return the
+  identifier with its version.
   A directory with no such file under it, or a multi-byte legacy name whose trail bytes
   are ASCII (Shift-JIS), stays escaped. A relative link target that falls through is
   followed from the symlink's directory (`_decode_link_target`), and each component that
@@ -191,10 +197,13 @@ What is ISO-specific in turning a record into a member:
   the `ZF` entry, `compressed_size` from its extents, and one `DEFLATE` entry in
   `compression`. `_ZisofsStream` reads it decoded and seeks by block, inflating one block
   at a time and never past the block size, so a crafted block cannot inflate further. The
-  header must agree with the `ZF` entry. zisofs2 (`ZF` version 2, or the `Z2` tag
-  libisofs offers for kernels that misread it; `xorriso -zisofs version_2=on`), a
-  `ZF` or `Z2` entry too short to parse, another algorithm, a header size other than 16 bytes, or a block size
-  outside 32 to 128 KiB lists with `UNKNOWN` in `compression` and refuses to read with
+  header must agree with the `ZF` entry, and each block's zlib stream must end,
+  checksum included, exactly at the next pointer; a pointer span longer than zlib's
+  bound for the block size is refused before it is read. zisofs2 (`ZF` version 2, or
+  the `Z2` tag libisofs offers for kernels that misread it; `xorriso -zisofs
+  version_2=on -set_filter_r --zisofs /`), a `ZF` or `Z2` entry too short to parse,
+  another algorithm, a header size other than 16 bytes, or a block size outside 32 to
+  128 KiB lists with `UNKNOWN` in `compression` and refuses to read with
   `UnsupportedFeatureError`; the member beside it reads. A block that inflates past the
   block size is `CorruptionError`, and a file cut by the end of the image raises
   `TruncatedError` where its stored data runs out, so the declared-length check other
@@ -288,8 +297,8 @@ directory:
 | A 4 400 MiB file, `xorriso -as mkisofs -iso-level 3` | Reads all of it, in two extents (§2.3) |
 | libarchive `test_read_format_iso_multi_extent` | Reads 262 280 bytes from three extents |
 | libarchive Joliet, Rock Ridge, `rr_moved`, `CE`, Nero Joliet, xorriso images | Read |
-| zisofs: `mkzftree` + `genisoimage -R -z`, `xorriso -zisofs default`, libarchive `test_read_format_iso_zisofs` | Reads, decoded. A file `mkzftree` could not shrink is stored plain and has no `ZF` |
-| zisofs2: `xorriso -zisofs version_2=on` | Lists with the decoded sizes; reading a compressed member raises `UnsupportedFeatureError` |
+| zisofs: `mkzftree` + `genisoimage -R -z`, `xorriso -zisofs default -set_filter_r --zisofs /`, libarchive `test_read_format_iso_zisofs` | Reads, decoded. A file `mkzftree` could not shrink is stored plain and has no `ZF` |
+| zisofs2: `xorriso -zisofs version_2=on -set_filter_r --zisofs /`, with `:susp_z2=on` for the `Z2` tag | Lists with the decoded sizes; reading a compressed member raises `UnsupportedFeatureError` |
 | genisoimage `-R`, a symlink target of 12 × 30-character components | Opens. genisoimage writes the continuation area's `SL` entry with its length wrapped past 255 (293 bytes stored as 37), so the next "entry" starts inside the target text. The link lists with `link_target` unset and two diagnostics. `isoinfo` and `xorriso` show the target cut to four components |
 | libarchive's crafted `ce_loop`, `ce_overflow`, `cl_re_*`, `utf16be_overflow`, `zf_overflow` images | `CorruptionError`, each at open |
 
@@ -402,10 +411,10 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Detection by far magic; a bootable image is not taken by a probe; a short source falls through | `tests/test_detection.py::test_iso_detected_via_extended_window`, `::test_bootable_iso_is_not_claimed_by_the_content_probe`, `::test_zeroed_system_area_iso_still_detected`, `::test_stream_too_short_for_iso_falls_through`; `tests/test_iso.py::test_iso_detected_by_extended_window` |
 | Raw sector images refused by name, without `pycdlib` | `tests/test_iso_raw_sectors.py` |
 | Cost, seekable-only, write refused, password unused | `tests/test_iso.py::test_iso_cost`, `::test_non_seekable_iso_rejected`, `::test_write_rejected`, `::test_password_is_accepted_and_recorded` |
-| Unknown System Use entries skipped; zisofs lists and reads decoded, seeks, refuses zisofs2 (listing `UNKNOWN`) and damaged or over-long blocks, and a member cut by the image end raises `TruncatedError`; a malformed entry costs its own member only, a cut symlink withholds its target, strict refuses; the filter is inert outside archivey | `::test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded`, `::test_a_zisofs_member_seeks_across_blocks`, `::test_a_zisofs_member_this_reader_cannot_decode_is_refused_alone`, `::test_a_damaged_zisofs_block_is_corruption`, `::test_a_zisofs_block_that_inflates_past_the_block_size_is_corruption`, `::test_a_zisofs_member_cut_by_the_image_end_is_truncated`, `::test_a_malformed_rock_ridge_entry_costs_its_own_member_only`, `::test_a_symlink_whose_entries_are_cut_withholds_its_target`, `::test_a_strict_policy_refuses_a_cut_rock_ridge_area`, `::test_pycdlib_used_directly_is_not_filtered`, `::test_the_filter_knows_every_entry_pycdlib_parses` |
-| Names that are not UTF-8 take `encoding=`, else their Joliet name when it lines up, and a relative link target follows the members it names; UTF-8 names ignore it; `raw_name` is the stored bytes | `::test_a_latin1_rock_ridge_name_decodes_with_encoding`, `::test_a_utf8_rock_ridge_name_ignores_encoding`, `::test_an_encoding_that_cannot_decode_the_name_falls_back_to_escapes`, `::test_a_latin1_rock_ridge_name_takes_its_joliet_name`, `::test_encoding_wins_over_the_joliet_name`, `::test_following_link_targets_reads_each_directory_once`; `tests/test_review_simplicity_consistency.py::test_usable_encoding_argument_is_not_recorded` |
+| Unknown System Use entries skipped; zisofs lists and reads decoded, seeks, refuses zisofs2 under `ZF` or `Z2` and a too-short entry (listing `UNKNOWN`) and damaged, over-long or unterminated blocks, and a member cut by the image end raises `TruncatedError`; a malformed entry costs its own member only, a cut symlink withholds its target, strict refuses; the filter is inert outside archivey | `::test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded`, `::test_a_zisofs_member_seeks_across_blocks`, `::test_a_zisofs_member_this_reader_cannot_decode_is_refused_alone`, `::test_a_damaged_zisofs_block_is_corruption`, `::test_a_zisofs_block_that_inflates_past_the_block_size_is_corruption`, `::test_a_zisofs_block_that_does_not_end_at_its_pointer_is_corruption`, `::test_a_zisofs_member_cut_by_the_image_end_is_truncated`, `::test_a_malformed_rock_ridge_entry_costs_its_own_member_only`, `::test_a_symlink_whose_entries_are_cut_withholds_its_target`, `::test_a_strict_policy_refuses_a_cut_rock_ridge_area`, `::test_pycdlib_used_directly_is_not_filtered`, `::test_the_filter_knows_every_entry_pycdlib_parses` |
+| Names that are not UTF-8 take `encoding=`, else their Joliet name when it lines up, and a relative link target follows the members it names; UTF-8 names ignore it; `raw_name` is the stored bytes | `::test_a_latin1_rock_ridge_name_decodes_with_encoding`, `::test_a_utf8_rock_ridge_name_ignores_encoding`, `::test_an_encoding_that_cannot_decode_the_name_falls_back_to_escapes`, `::test_a_latin1_rock_ridge_name_takes_its_joliet_name`, `::test_encoding_wins_over_the_joliet_name`, `::test_following_link_targets_reads_each_directory_once`, `::test_empty_files_sharing_an_extent_are_matched_in_linear_time`; `tests/test_review_simplicity_consistency.py::test_usable_encoding_argument_is_not_recorded` |
 | Namespace selection and metadata per namespace | `::test_rock_ridge_namespace_and_fidelity`, `::test_joliet_namespace_and_fidelity`, `::test_plain_iso_namespace_and_fidelity` |
-| Record walk: `/` in a name, duplicate names, cycles, `rr_moved`, a record without Rock Ridge | `::test_a_rock_ridge_name_holding_a_slash_costs_no_sibling`, `::test_duplicate_rock_ridge_names_all_list`, `::test_the_record_walk_descends_each_directory_extent_once`, `::test_rock_ridge_relocation_directory_is_not_listed`, `::test_a_rock_ridge_record_without_entries_lists_under_its_iso_name` |
+| Record walk: `/` in a name, duplicate names, cycles, `rr_moved`, a record without Rock Ridge or without `NM` | `::test_a_rock_ridge_name_holding_a_slash_costs_no_sibling`, `::test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name`, `::test_duplicate_rock_ridge_names_all_list`, `::test_the_record_walk_descends_each_directory_extent_once`, `::test_rock_ridge_relocation_directory_is_not_listed`, `::test_a_rock_ridge_record_without_entries_lists_under_its_iso_name` |
 | Device node is `OTHER`; plain versions keep the newest current | `::test_a_rock_ridge_device_node_is_other_not_file`, `::test_plain_iso_versions_keep_the_newest_current` |
 | `TF` long-form dates; `TF` wins over the record date | `::test_rock_ridge_long_form_tf_time_is_read`, `::test_rock_ridge_tf_modification_time_wins_over_record_date` |
 | Boot catalog reads and extracts, and one declared past the image end reads short | `::test_the_el_torito_boot_catalog_reads_and_extracts`, `::test_a_boot_catalog_declared_past_the_image_end_reads_short` |

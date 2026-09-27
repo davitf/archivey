@@ -3,7 +3,7 @@
 ## Why
 
 `pycdlib` refuses a whole image over any System Use entry it cannot parse. A zisofs
-image (`ZF`, a valid image) and a genisoimage symlink with a target over 250 bytes (its
+image (`ZF`, a valid image) and a genisoimage symlink with a long target (from about 400 bytes; its
 `SL` length wraps past 255) therefore failed as `CorruptionError` for every member. Rock
 Ridge names carry no charset, and ISO ignored `encoding=`, so a Latin-1 name could only
 list escaped.
