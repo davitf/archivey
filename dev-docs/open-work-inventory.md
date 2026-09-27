@@ -787,9 +787,9 @@ remaining pages are writing, not design.
 **The handbook is how a format's to-fix register gets created**, which is the argument for continuing it:
 writing `rar.md` produced 21 tracked code changes, 19 of which have shipped, and `7z.md`
 surfaced two of its own (a refusal that names the wrong coder, and the folder decode that
-listing a solid archive with a symlink in it pays for), `tar.md` four, `iso.md` six and `directory.md` four. That is the
-highest-yield documentation work in the repo, and it is also why each new page should be
-expected to *add* open items rather than only close them.
+listing a solid archive with a symlink in it pays for), `tar.md` four, `iso.md` six and
+`directory.md` four. That is the highest-yield documentation work in the repo, and it is
+also why each new page should be expected to *add* open items rather than only close them.
 
 ### 2. The user guide — `docs/`
 
