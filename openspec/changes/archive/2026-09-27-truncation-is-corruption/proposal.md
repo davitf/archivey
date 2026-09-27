@@ -17,6 +17,9 @@ The maintainer, 2026-09-27: "no need to delay until after release", in a new PR.
 - No library catch site changes meaning. The 21 sites that catch `CorruptionError` alone
   guard in-memory parsing or backward index scans that never raise `TruncatedError`, and
   no `try` catches `CorruptionError` before `TruncatedError`.
+- Every `(CorruptionError, TruncatedError)` pair in `src/` and `tests/` collapses to
+  `CorruptionError`. The two sites that test `TruncatedError` before `CorruptionError` say
+  that the order now matters.
 - Tests that mean "damaged, not short" keep that meaning through a helper that fails on
   a `TruncatedError`.
 

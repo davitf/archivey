@@ -28,7 +28,10 @@ from archivey.types import (
     ArchiveMember,
     MemberType,
 )
-from tests.corruption_util import is_corruption, raises_corruption
+from tests.corruption_util import (
+    is_corruption_not_truncation,
+    raises_corruption_not_truncation,
+)
 
 
 def _info(
@@ -342,23 +345,23 @@ def test_random_access_terminal_damage_report_and_yield_then_raise() -> None:
 
     report = reader.members_report()
     assert [m.name for m in report] == ["a.txt"]
-    assert is_corruption(report.error)
+    assert is_corruption_not_truncation(report.error)
     assert reader.members_report() is report
 
-    with raises_corruption():
+    with raises_corruption_not_truncation():
         reader.members()
-    with raises_corruption():
+    with raises_corruption_not_truncation():
         reader.scan_members()
 
     it = iter(reader)
     member = next(it)
     assert member.name == "a.txt"
     assert reader.read(member) == b"x"
-    with raises_corruption():
+    with raises_corruption_not_truncation():
         next(it)
 
     assert reader.get("a.txt") is member
-    with raises_corruption():
+    with raises_corruption_not_truncation():
         reader.get("missing.txt")
 
 
@@ -368,27 +371,27 @@ def test_failed_streaming_pass_publishes_incomplete_report() -> None:
     reader = _FailingScanReader(ArchiveFormat.TAR, True, "x.tar")
     it = iter(reader)
     assert next(it).name == "a.txt"
-    with raises_corruption():
+    with raises_corruption_not_truncation():
         next(it)
     # Complete-list methods must fail loud, not serve the partial scan as complete.
-    with raises_corruption():
+    with raises_corruption_not_truncation():
         reader.scan_members()
     report = reader.members_report_if_available()
     assert report is not None
-    assert is_corruption(report.error)
+    assert is_corruption_not_truncation(report.error)
     assert [m.name for m in report] == ["a.txt"]
 
 
 def test_failed_streaming_pass_replays_incomplete_report() -> None:
     reader = _FailingScanReader(ArchiveFormat.TAR, True, "x.tar")
-    with raises_corruption():
+    with raises_corruption_not_truncation():
         list(reader)
     for _ in range(2):
-        with raises_corruption():
+        with raises_corruption_not_truncation():
             reader.scan_members()
         report = reader.members_report()
         assert [m.name for m in report] == ["a.txt"]
-        assert is_corruption(report.error)
+        assert is_corruption_not_truncation(report.error)
 
 
 # --- Incomplete listing must survive a secondary link-finalize fault (double-fault) ---
@@ -426,11 +429,11 @@ def test_ra_incomplete_listing_survives_link_finalize_double_fault() -> None:
 
     report = reader.members_report()
     assert [m.name for m in report] == ["link"]
-    assert is_corruption(report.error)
+    assert is_corruption_not_truncation(report.error)
     assert "listing damaged" in str(report.error)
     # Secondary TruncatedError must not replace the listing error or clear the report.
     assert reader.members_report() is report
-    with raises_corruption(match="listing damaged"):
+    with raises_corruption_not_truncation(match="listing damaged"):
         reader.members()
 
 
@@ -439,11 +442,11 @@ def test_streaming_incomplete_listing_survives_link_finalize_double_fault() -> N
 
     it = iter(reader)
     assert next(it).name == "link"
-    with raises_corruption(match="listing damaged"):
+    with raises_corruption_not_truncation(match="listing damaged"):
         next(it)
 
     report = reader.members_report_if_available()
     assert report is not None
     assert [m.name for m in report] == ["link"]
-    assert is_corruption(report.error)
+    assert is_corruption_not_truncation(report.error)
     assert "listing damaged" in str(report.error)

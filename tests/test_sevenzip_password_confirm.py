@@ -31,7 +31,7 @@ from archivey.internal.password_confirm import (
     plan_password_confirm,
 )
 from tests.conftest import requires, requires_binary
-from tests.corruption_util import raises_corruption
+from tests.corruption_util import raises_corruption_not_truncation
 
 pytestmark = [requires("cryptography"), requires_binary("7z")]
 
@@ -298,7 +298,7 @@ def test_damage_past_the_confirm_prefix_is_corruption(tmp_path: Path) -> None:
     _flip_packed_byte(archive, _BIG - 4096)
     with open_archive(archive, password=_PASSWORD) as reader:
         member = next(m for m in reader.members() if m.is_file)
-        with raises_corruption():
+        with raises_corruption_not_truncation():
             reader.read(member)
 
 

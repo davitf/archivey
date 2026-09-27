@@ -47,7 +47,7 @@ from archivey.internal.streams.ppmd_child import (
     child_decoding_available,
 )
 from tests.conftest import requires
-from tests.corruption_util import raises_corruption
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_ppmd_raw_streams import (
     _MEM,
     _ORDER,
@@ -374,7 +374,7 @@ def test_child_crash_surfaces_as_corruption_error(
     with open_codec_stream(
         Codec.PPMD, io.BytesIO(packed), params=params, config=_config("child")
     ) as stream:
-        with raises_corruption(match="crashed"):
+        with raises_corruption_not_truncation(match="crashed"):
             stream.read()
 
 

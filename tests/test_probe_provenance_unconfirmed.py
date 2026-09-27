@@ -28,13 +28,12 @@ from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
     ResourceLimitError,
-    TruncatedError,
 )
 from archivey.internal.detection import _extension_corroborates
 from archivey.internal.streams.brotli_framing import BrotliBlock, parse_metablock
 from archivey.types import ContainerFormat, StreamFormat
 from tests.conftest import requires
-from tests.corruption_util import raises_corruption
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import truncated_brotli
 
 TAR_BROTLI = ArchiveFormat(ContainerFormat.TAR, StreamFormat.BROTLI)
@@ -98,7 +97,7 @@ def test_compressed_first_probable_failure_sets_format_unconfirmed() -> None:
     assert info.corroborated is False
 
     diagnostics: list[Diagnostic] = []
-    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+    with pytest.raises(CorruptionError) as caught:
         _open_and_read(io.BytesIO(blob), diagnostics)
     exc = caught.value
     assert exc.format_unconfirmed is True
@@ -122,7 +121,7 @@ def test_lzma_alone_probable_failure_sets_format_unconfirmed() -> None:
     # this case lifts the cap to reach the decode failure, and the next one keeps it.
     config = ArchiveyConfig(decoder_limits=DecoderLimits.UNLIMITED)
     diagnostics: list[Diagnostic] = []
-    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+    with pytest.raises(CorruptionError) as caught:
         _open_and_read(io.BytesIO(blob), diagnostics, config=config)
     assert caught.value.format_unconfirmed is True
     codes = {d.code for d in diagnostics}
@@ -172,7 +171,7 @@ def test_br_extension_failure_does_not_stamp(tmp_path: Path) -> None:
     assert info.detected_by == "content_probe"
     assert info.corroborated is True
     diagnostics: list[Diagnostic] = []
-    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+    with pytest.raises(CorruptionError) as caught:
         _open_and_read(path, diagnostics)
     assert caught.value.format_unconfirmed is False
     assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in {d.code for d in diagnostics}
@@ -192,7 +191,7 @@ def test_deferred_tar_br_extension_corroborates(tmp_path: Path) -> None:
     assert info.detected_by == "content_probe"
     assert info.corroborated is True
 
-    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+    with pytest.raises(CorruptionError) as caught:
         _open_and_read(path)
     assert caught.value.format_unconfirmed is False
 
@@ -214,7 +213,7 @@ def test_disagreeing_extension_does_not_corroborate(tmp_path: Path, name: str) -
     assert info.detected_by == "content_probe"
     assert info.corroborated is False
 
-    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+    with pytest.raises(CorruptionError) as caught:
         _open_and_read(path)
     assert caught.value.format_unconfirmed is True
 
@@ -283,7 +282,7 @@ def test_inner_tar_decode_failure_does_not_stamp() -> None:
     assert info.format == TAR_BROTLI
     assert info.corroborated is True
     with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises((TruncatedError, CorruptionError)) as caught:
+        with pytest.raises(CorruptionError) as caught:
             list(reader)
         assert caught.value.format_unconfirmed is False
         assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in {
@@ -310,7 +309,7 @@ def test_pedantic_probable_probe_keeps_typed_error() -> None:
     blob = _probable_brotli_probe_only_residual()
     cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.pedantic())
     diagnostics: list[Diagnostic] = []
-    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+    with pytest.raises(CorruptionError) as caught:
         _open_and_read(io.BytesIO(blob), diagnostics, config=cfg)
     assert not isinstance(caught.value, DiagnosticRaisedError)
     assert caught.value.format_unconfirmed is True
@@ -344,7 +343,7 @@ def test_exact_magic_failure_untouched_by_probe_channel(tmp_path: Path) -> None:
     assert info.detected_by == "magic"
     assert info.corroborated is False
     diagnostics: list[Diagnostic] = []
-    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+    with pytest.raises(CorruptionError) as caught:
         _open_and_read(path, diagnostics)
     assert caught.value.format_unconfirmed is False
     assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in {d.code for d in diagnostics}
@@ -404,7 +403,7 @@ def test_extension_only_failure_sets_format_unconfirmed(tmp_path: Path) -> None:
     assert info.detected_by == "extension"
 
     diagnostics: list[Diagnostic] = []
-    with raises_corruption() as caught:
+    with raises_corruption_not_truncation() as caught:
         _open_and_read(path, diagnostics)
     exc = caught.value
     assert exc.format_unconfirmed is True
@@ -426,7 +425,7 @@ def test_strict_extension_only_failure_keeps_typed_error(tmp_path: Path) -> None
     path = tmp_path / "backup.gz"
     path.write_bytes(b"\x00" * 40_000)
     cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
-    with raises_corruption() as caught:
+    with raises_corruption_not_truncation() as caught:
         _open_and_read(path, config=cfg)
     assert not isinstance(caught.value, DiagnosticRaisedError)
     assert caught.value.format_unconfirmed is True
@@ -440,7 +439,7 @@ def test_magic_confirmed_failure_is_not_stamped_as_extension_only(
     path = tmp_path / "x.gz"
     path.write_bytes(gzip.compress(b"hello world" * 100)[:30])
     diagnostics: list[Diagnostic] = []
-    with pytest.raises((TruncatedError, CorruptionError)) as caught:
+    with pytest.raises(CorruptionError) as caught:
         _open_and_read(path, diagnostics)
     assert caught.value.format_unconfirmed is False
     assert DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED not in {

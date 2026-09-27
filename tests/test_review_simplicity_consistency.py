@@ -43,7 +43,7 @@ from archivey import (
     open_stream,
 )
 from archivey.types import HashAlgorithm, MemberType
-from tests.corruption_util import raises_corruption
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.sample_archives import (
     CORPUS,
     CorpusEntry,
@@ -599,7 +599,7 @@ def test_zip_corrupt_member_offset_is_still_corruption(tmp_path: Path) -> None:
 
     with open_archive(io.BytesIO(bytes(data))) as reader:
         member = next(m for m in reader.members() if m.type is _FILE)
-        with raises_corruption():
+        with raises_corruption_not_truncation():
             reader.open(member)
 
 

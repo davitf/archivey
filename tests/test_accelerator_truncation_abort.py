@@ -46,7 +46,7 @@ from archivey.internal.streams.rapidgzip_child import (
     RapidgzipChildStream,
 )
 from tests.conftest import requires
-from tests.corruption_util import is_corruption
+from tests.corruption_util import is_corruption_not_truncation
 
 pytestmark = requires("rapidgzip")
 
@@ -314,7 +314,7 @@ def test_what_a_cut_stream_delivers_before_the_abort_is_a_correct_prefix(
     path = _write(tmp_path, f"cut.{codec.value}", _compress(codec, payload)[:-cut])
     got = bytearray()
     with open_codec_stream(codec, str(path), config=_ON) as stream:
-        with pytest.raises((TruncatedError, CorruptionError)):
+        with pytest.raises(CorruptionError):
             while block := stream.read(chunk):
                 got += block
     assert len(got) < len(payload)
@@ -332,7 +332,7 @@ def test_a_large_cut_stream_delivers_a_correct_prefix_before_the_abort(
     path = _write(tmp_path, f"cut.{codec.value}", _compress(codec, payload)[:-500])
     got = bytearray()
     with open_codec_stream(codec, str(path), config=_ON) as stream:
-        with pytest.raises((TruncatedError, CorruptionError)):
+        with pytest.raises(CorruptionError):
             while block := stream.read(4096 if codec is Codec.GZIP else 10_000):
                 got += block
     assert got
@@ -445,7 +445,7 @@ def test_an_exception_from_the_callers_source_reaches_the_caller_unchanged(
         with pytest.raises((error, ReadError)) as later:
             while stream.read(1 << 16):
                 pass
-        assert not isinstance(later.value, (CorruptionError, TruncatedError))
+        assert not isinstance(later.value, CorruptionError)
 
 
 class _OverReadingSource(io.BytesIO):
@@ -592,7 +592,7 @@ def test_any_runtime_error_rapidgzip_raised_is_translated(message: str) -> None:
         reported = rapidgzip_child._reported_error(
             f"RuntimeError\n\n{message}".encode()
         )
-        assert is_corruption(codec._translate_accelerator(reported))
+        assert is_corruption_not_truncation(codec._translate_accelerator(reported))
         assert codec._translate_accelerator(RuntimeError(message)) is None
 
 

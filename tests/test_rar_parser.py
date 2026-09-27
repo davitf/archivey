@@ -19,7 +19,7 @@ from archivey.internal.backends.rar_parser import (
 )
 from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
 from tests.conftest import requires, requires_binary
-from tests.corruption_util import raises_corruption
+from tests.corruption_util import raises_corruption_not_truncation
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -78,7 +78,7 @@ def test_header_decrypt_read_is_bounded_by_caller_not_8kib() -> None:
     got = stream.read(len(plaintext))
     assert got == plaintext
 
-    with raises_corruption(match="Unbounded read"):
+    with raises_corruption_not_truncation(match="Unbounded read"):
         stream.read(-1)
 
 
@@ -113,7 +113,7 @@ def test_short_header_salt_or_iv_is_corruption_not_a_wrong_password(
     password, even with the right one.
     """
     data = _fixture(name).read_bytes()[:cut]
-    with raises_corruption(match=what) as info:
+    with raises_corruption_not_truncation(match=what) as info:
         parse_rar_archive(io.BytesIO(data), password="header_password")
     assert not isinstance(info.value, EncryptionError)
 

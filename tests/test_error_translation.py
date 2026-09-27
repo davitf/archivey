@@ -27,7 +27,7 @@ from archivey.types import (
     ArchiveMember,
     MemberType,
 )
-from tests.corruption_util import raises_corruption
+from tests.corruption_util import raises_corruption_not_truncation
 
 
 class _RawDecodeError(Exception):
@@ -80,7 +80,7 @@ class _TranslatingReader(BaseArchiveReader):
 
 def test_raw_decode_error_surfaces_as_stamped_archiveyerror() -> None:
     reader = _TranslatingReader(ArchiveFormat.ZIP, False, "archive.zip")
-    with raises_corruption() as excinfo:
+    with raises_corruption_not_truncation() as excinfo:
         reader.read("member.bin")
 
     err = excinfo.value
@@ -120,7 +120,7 @@ def test_archive_stream_close_failure_still_closes_wrapper() -> None:
         return None
 
     stream = ArchiveStream(lambda: _FailingClose(b"data"), translate=_translate)
-    with raises_corruption():
+    with raises_corruption_not_truncation():
         stream.close()
     # The wrapper is closed despite the inner failure: reads are refused and a retried
     # close() is a no-op instead of failing again.
