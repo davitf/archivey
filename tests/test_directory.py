@@ -760,6 +760,13 @@ def _hardlinked_pair(root: Path) -> None:
     os.link(root / "a.txt", root / "b.txt")
 
 
+def _zero_inode(path: str) -> os.stat_result:
+    """An lstat with st_ino 0, as a filesystem with no file identity reports it."""
+    fields = list(os.stat(path, follow_symlinks=False))
+    fields[stat.ST_INO] = 0
+    return os.stat_result(fields)
+
+
 def test_zero_inode_is_no_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -769,13 +776,8 @@ def test_zero_inode_is_no_identity(
 
     _hardlinked_pair(tmp_path)
 
-    def zero_inode(path: str) -> os.stat_result:
-        fields = list(os.stat(path, follow_symlinks=False))
-        fields[stat.ST_INO] = 0
-        return os.stat_result(fields)
-
     monkeypatch.setattr(directory_reader, "_STAT_LACKS_IDENTITY", True)
-    monkeypatch.setattr(directory_reader, "_identity_stat", zero_inode)
+    monkeypatch.setattr(directory_reader, "_identity_stat", _zero_inode)
     with open_archive(tmp_path) as reader:
         types = {m.name: m.type for m in reader.members()}
     assert types == {"a.txt": MemberType.FILE, "b.txt": MemberType.FILE}
@@ -938,13 +940,8 @@ def _identityless_open(monkeypatch: pytest.MonkeyPatch, attributes: int) -> None
     """Simulate Windows for the open: no O_NOFOLLOW, st_ino 0 in the listing."""
     from archivey.internal.backends import directory_reader
 
-    def zero_inode(path: str) -> os.stat_result:
-        fields = list(os.stat(path, follow_symlinks=False))
-        fields[stat.ST_INO] = 0
-        return os.stat_result(fields)
-
     monkeypatch.setattr(directory_reader, "_STAT_LACKS_IDENTITY", True)
-    monkeypatch.setattr(directory_reader, "_identity_stat", zero_inode)
+    monkeypatch.setattr(directory_reader, "_identity_stat", _zero_inode)
     monkeypatch.setattr(directory_reader, "_HAS_NOFOLLOW", False)
     monkeypatch.setattr(directory_reader, "_file_attributes", lambda path: attributes)
 
@@ -1009,6 +1006,22 @@ def test_hardlinks_and_symlinks_still_read_through_the_checked_open(
         assert reader.read("b.txt") == b"data"
         assert reader.read("link") == b"data"
         assert reader.read("sub/c.txt") == b"nested"
+
+
+def test_a_link_to_a_replaced_file_is_refused(tmp_path: Path) -> None:
+    # The listing identity reaches the open through link resolution: a hardlink and a
+    # symlink to a file replaced at the same length are both refused.
+    (tmp_path / "a.txt").write_bytes(b"listed")
+    os.link(tmp_path / "a.txt", tmp_path / "b.txt")
+    os.symlink("a.txt", tmp_path / "link")
+    with open_archive(tmp_path) as reader:
+        reader.members()
+        replacement = tmp_path / "new.tmp"
+        replacement.write_bytes(b"edited")
+        os.replace(replacement, tmp_path / "a.txt")
+        for name in ("b.txt", "link"):
+            with pytest.raises(OSError, match="was replaced"):
+                reader.read(name)
 
 
 def test_extracting_into_the_root_lists_the_destination(tmp_path: Path) -> None:

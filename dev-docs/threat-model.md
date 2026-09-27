@@ -808,13 +808,21 @@ parent's descriptor and the file with `O_NOFOLLOW | O_NONBLOCK`, so a symlink an
 the path fails with `ELOOP` and a FIFO does not block. It then `fstat`s the handle and
 refuses, with `OSError(ESTALE)`, anything that is not a regular file with the listing's
 `(st_dev, st_ino)` and listed size (a listed size of 0 is exempt, for procfs and sysfs).
-Windows has no `O_NOFOLLOW`; the identity check carries it there, plus a reparse-point
-check for a member listed without an identity. A member listed with no identity
-(`st_ino` 0, on some FUSE and network mounts) is checked on type and size alone on every
-platform. What remains is a same-size rewrite in place, a change after the open, and a
-same-size replacement of an identity-less member. The first two read the listed file,
-inside the root; the third could read a same-size hardlink to a file elsewhere on that
-mount, on a filesystem that has hard links but no stable inode numbers.
+Windows has no `O_NOFOLLOW`; the identity check carries it there. A member listed with
+no identity (`st_ino` 0: some FUSE and network mounts, or a Windows path the identity
+stat could not reach) is checked on type and size alone, plus, on Windows, a
+reparse-point check on its final path component.
+
+What remains:
+- a same-size rewrite in place, and a change after the open. Both read the listed file,
+  inside the root.
+- a same-size replacement of an identity-less member. On POSIX the path still follows
+  no link, so this could only read a same-size hardlink to a file elsewhere on that
+  mount, on a filesystem that has hard links but no stable inode numbers.
+- on Windows, an identity-less member whose path is resolved with no `O_NOFOLLOW`. The
+  reparse check covers the leaf only and runs after the open, so a directory above it
+  swapped for a junction out of the root, or a swap that races the check, reads a
+  same-size file outside the root. Inferred from the code, not measured.
 
 Pinned by `tests/test_directory.py::test_a_file_swapped_for_a_symlink_after_listing_is_refused`,
 `::test_a_directory_swapped_for_a_symlink_after_listing_is_refused`,

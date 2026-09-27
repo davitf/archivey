@@ -429,9 +429,10 @@ class DirectoryReader(BaseArchiveReader):
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         # Wrapped like every backend's member stream (the uniform-handle contract): the
         # directory backend has no translator (a genuine OSError propagates unchanged,
-        # and the refusals below for a member that no longer matches the listing are
-        # OSError too: a backend serving raw bytes through no decoding library does not
-        # wrap OSError, per the error-handling spec), but the caller still gets the same ArchiveStream handle type — with its `size`
+        # and the refusals `_open_listed_file` raises for a member that no longer
+        # matches the listing are OSError too: a backend serving raw bytes through no
+        # decoding library does not wrap OSError, per the error-handling spec), but the
+        # caller still gets the same ArchiveStream handle type — with its `size`
         # advertisement — as for any other format.
         identity = member._raw if isinstance(member._raw, _Identity) else None
         raw = os.fdopen(
