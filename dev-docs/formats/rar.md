@@ -201,6 +201,7 @@ the reader is version-conditional almost everywhere:
 | Symlink target | stored as the **member's data** | a **header redirect**, no data stream |
 | Symlink digest | a genuine CRC32 of the target string | **none surfaced** — the field covers zero bytes (§2.2) |
 | Names | dual fields: a compressed UTF-16 name plus an 8-bit name | one UTF-8 field |
+| Data encryption | AES-128-CBC from RAR 3.x on, keyed by 2¹⁸ rounds of WinRAR's variant of SHA-1 (§3); RAR 1.5 and 2.x members use older proprietary ciphers. Only `unrar` decrypts member data. No check value | AES-256-CBC, keyed by PBKDF2-HMAC-SHA256 at `1 << kdf_count` rounds (a `kdf_count` above 24 is refused as corrupt). The encryption record usually carries a 64-bit password check |
 | Header encryption | no check value — a wrong password is only visible as a structural failure | `ENCRYPTION` block usually carries a check value |
 | Encrypted-member digests | plain | key-**tweaked** MACs when `XENC_TWEAKED` is set (§2.2) |
 
@@ -328,7 +329,15 @@ member defeats the cache; `DecoderLimits.max_key_derivation_rounds` bounds the t
 same winner. A pass (`stream_members`, one `unrar p` for the whole archive) and a plain
 member of a solid archive use the first RAR5 member's winner. **RAR3/4 data has no check value**, so there is nothing to test a
 candidate against short of decoding: `unrar` gets the first candidate, and a list whose
-right password is not first still fails there.
+right password is not first still fails there. A RAR5 member whose record has no check
+value, or whose check fails its own SHA-256 checksum, is handled the same way in a
+non-solid archive. In a solid one it takes the solid rule above: the winner of the first
+member whose check can judge a candidate, and the first candidate only when no member
+has one. RAR emits
+no `ENCRYPTED_MEMBER_UNVERIFIED`. A RAR5 check is 64 bits, strong enough to accept a
+password on. RAR3/4 data has no check to accept a password on at all: a wrong one shows
+up only as `unrar`'s exit code or a digest mismatch (table below), and what a partial
+read returns before either is an open question (§7).
 
 Each encrypted header is its own AES-CBC message (RAR3: 8-byte salt; RAR5: 16-byte IV)
 padded to a 16-byte block. `_HeaderDecryptStream.tell()` is the **ciphertext** cursor,
@@ -897,6 +906,16 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   whether the early-fail gate predicate is under-inclusive — it is generalized from one
   fixture family, and ANTI members and packed-nonzero/unpacked-zero empties are untested.
   None of that is answerable by reading code.
+- **What does a partial read of a RAR3/4 member return under a wrong password?** Nothing
+  checks a RAR3/4 password before `unrar` runs, and `unrar` checks the CRC only at the end
+  of the member. If it streams the bytes it decrypted before that, a caller who reads a
+  prefix and closes gets output from the wrong key and no diagnostic, which is what
+  `ENCRYPTED_MEMBER_UNVERIFIED` reports for ZIP and 7z. A STORED member is the likely case,
+  since a compressed one usually trips the decompressor before any output. If it does, RAR
+  needs the same close-time report. What would answer it: a `-m0 -p` RAR4 member built
+  with the pinned RAR 6.24 (§3), read for a few bytes with a wrong password. The committed
+  `encryption__rar4.rar` members are compressed and 14 and 19 bytes long, so they cannot.
+  Tracked internally.
 - **Is the wrong-password-versus-corruption bias measurable, or only plausible?** The exit-2/3
   mapping for an encrypted member that emits nothing assumes wrong passwords vastly outnumber
   corrupt encrypted members. That is a reasonable prior and it is untested: no archive has

@@ -1,10 +1,11 @@
 """End-to-end: the 7z password-confirmation ladder decodes only what it must.
 
-Each test asserts *bytes decoded by the confirm pipeline*, not wall time, and each
+The budget tests assert *bytes decoded by the confirm pipeline*, not wall time, and each
 carries its own mutation check: the same measurement taken with the ladder forced onto
 the path the test exists to rule out, so a measurement that could not tell the two
 apart fails here instead of passing quietly (design §5 preamble of the
-bounded-password-confirmation change).
+bounded-password-confirmation change). The behaviour tests pin an error type or a
+diagnostic instead, and need no counter-measurement.
 
 Fixtures are written into ``tmp_path`` by the ``7z`` CLI, a few MiB each; the property
 they pin (confirm stops at the first member's CRC, or at the prefix) does not depend on
@@ -13,6 +14,7 @@ the folder being 200 MiB.
 
 from __future__ import annotations
 
+import random
 import subprocess
 from pathlib import Path
 from typing import BinaryIO
@@ -22,7 +24,7 @@ import pytest
 import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
 from archivey import open_archive
 from archivey.diagnostics import DiagnosticCode, EncryptedVerificationContext
-from archivey.exceptions import ArchiveyError, EncryptionError
+from archivey.exceptions import ArchiveyError, CorruptionError, EncryptionError
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_PREFIX_BYTES,
     PasswordConfirmPlan,
@@ -263,6 +265,40 @@ def test_copy_late_crc_is_walked_and_confirms(
     monkeypatch.undo()
     with pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"):
         _first_member_read(archive, "wrong")
+
+
+def _flip_packed_byte(archive: Path, offset: int) -> None:
+    """Flip one byte of the packed data, ``offset`` bytes past the 32-byte signature header."""
+    blob = bytearray(archive.read_bytes())
+    blob[32 + offset] ^= 0xFF
+    archive.write_bytes(bytes(blob))
+
+
+def test_damage_the_confirm_decodes_reads_as_a_wrong_password(tmp_path: Path) -> None:
+    """7z has no password check value, so the confirm cannot tell damage from a wrong key.
+
+    Copy rejects nothing, so the confirm walks to the CRC at the end of the member, and
+    damage anywhere in it rejects the right password as it would a wrong one.
+    """
+    big = _payload(_BIG, 6)
+    archive = _build(tmp_path, "copy", {"big.bin": big}, method="Copy", solid=True)
+    _flip_packed_byte(archive, _BIG // 2)
+    with pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"):
+        _first_member_read(archive, _PASSWORD)
+
+
+def test_damage_past_the_confirm_prefix_is_corruption(tmp_path: Path) -> None:
+    """LZMA2 settles a wrong key inside the prefix; damage past it reaches the read."""
+    # Random, so LZMA2 stores it in raw chunks and the packed data is about as long as
+    # the payload: the offset below is inside it, far past the 64 KiB prefix.
+    big = random.Random(7).randbytes(_BIG)
+    archive = _build(tmp_path, "lzma2", {"big.bin": big}, method="LZMA2", solid=True)
+    assert archive.stat().st_size > 32 + _BIG
+    _flip_packed_byte(archive, _BIG - 4096)
+    with open_archive(archive, password=_PASSWORD) as reader:
+        member = next(m for m in reader.members() if m.is_file)
+        with pytest.raises(CorruptionError):
+            reader.read(member)
 
 
 def test_store_aes_ambiguous_candidates_the_crc_picks_the_right_one(
