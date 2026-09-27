@@ -4,9 +4,6 @@
 
 Python library for reading, streaming, and safely extracting archives (ZIP, TAR, RAR, 7z, ISO, and more) through a unified interface.
 
-This is the **v2** clean-slate implementation. The previous (v1) codebase is archived at
-[`davitf/archivey-old`](https://github.com/davitf/archivey-old).
-
 ## Features
 
 - **One interface for every format:** ZIP, TAR (plain or compressed with gzip, bzip2, xz,
@@ -21,14 +18,16 @@ This is the **v2** clean-slate implementation. The previous (v1) codebase is arc
   exhausting the machine.
 - **Verified reads:** a member that fails its checksum or ends short raises, never
   returns short data.
-- **Streaming from pipes:** TAR and the single-file formats read from a non-seekable
-  source in one forward pass.
+- **Built for streaming:** `stream_members()` hands out each member as a stream, in
+  archive order and in one pass, so a solid 7z or RAR is decoded once and a large member
+  is read in chunks rather than held in memory. TAR and the single-file formats also
+  read straight from a pipe.
 - **Encrypted archives:** ZipCrypto and WinZip AES in ZIP, AES in 7z, and RAR encryption.
 - **Native 7z and RAR metadata readers.** 7z data decodes in-process; RAR data needs
   RARLAB `unrar` or `rar`, or `unar`.
 - **Zero-dependency core** for ZIP, TAR, directories and the standard-library codecs,
   plus an `archivey` command for listing, testing and extracting from the shell.
-- Python 3.11 to 3.14 on Linux, macOS and Windows.
+- Tested on Python 3.11 to 3.14 on Linux, macOS and Windows.
 
 The API is not frozen until 1.0, but no major changes are expected.
 

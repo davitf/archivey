@@ -44,8 +44,10 @@ and each change will be listed here. No major changes are expected.
 - **Resource limits beyond extraction:** caps on listing size, decoder memory,
   password key-derivation work and temporary spool files, all on `ArchiveyConfig`, and
   all raising `ResourceLimitError`.
-- **Streaming from pipes.** TAR and the single-file formats read from a non-seekable
-  source in one forward pass. The documented access costs say which operations re-read
+- **Built for streaming.** `stream_members()` hands out each member as a stream, in
+  archive order and in one pass, so a solid 7z or RAR is decoded once and a large member
+  is read in chunks rather than held in memory. TAR and the single-file formats also read
+  from a non-seekable source. The documented access costs say which operations re-read
   or re-decompress.
 - **Verified reads.** A member whose CRC or other checksum fails, or that ends short,
   raises from `read()`. Codec errors map to one `ArchiveyError` hierarchy, and
@@ -56,7 +58,8 @@ and each change will be listed here. No major changes are expected.
   `[seekable]` adds the rapidgzip accelerator; `[free-threaded]` is the GIL-safe set.
 - **The `archivey` command:** list, test, extract (with the same safety defaults) and
   inspect archives from the shell.
-- Python 3.11 to 3.14 on Linux, macOS and Windows, plus free-threaded 3.13t on Linux.
+- Tested on Python 3.11 to 3.14 on Linux, macOS and Windows, plus free-threaded 3.13t on
+  Linux.
 
 ### Security
 
