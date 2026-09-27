@@ -125,6 +125,14 @@ promise with that line; treat `0.2.0` as the first release of this library.
   handle a damaged target: the link lists with `link_target` unset and
   `SYMLINK_TARGET_UNAVAILABLE` (`reason="target_data_damaged"`), and opening or
   extracting it raises `CorruptionError`.
+
+- **A zstd frame whose window is over 128 MiB reads.** `zstd --long=31` reading standard
+  input declares a 2 GiB window, and archivey raised `CorruptionError: … Frame requires
+  too much memory for decoding` from libzstd's own default limit, which no setting could
+  lift. The decoder's window limit is now `DecoderLimits.max_decoder_memory` (2 GiB by
+  default, rounded down to a power of two), and a window over it raises
+  `ResourceLimitError`. This covers `.zst`, `.tar.zst`, ZIP method 93 and 7z zstd.
+
 - **One malformed Rock Ridge record no longer costs a whole ISO image.** A System Use
   entry pycdlib does not know is skipped, as SUSP specifies, and a malformed one ends
   that record's Rock Ridge data with a `MEMBER_HEADER_RECORD_SKIPPED` diagnostic on the

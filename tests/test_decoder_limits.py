@@ -43,7 +43,7 @@ from archivey.internal.config import (
 from archivey.internal.streams.codecs import Codec, CodecParams, open_codec_stream
 from archivey.internal.streams.xz import XzDecompressorStream
 from archivey.types import CompressionAlgorithm
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.streams_util import (
     NonSeekableBytesIO,
     make_lzip_member,
@@ -850,3 +850,139 @@ def test_xz_flush_drain_does_not_swallow_a_memlimit_refusal(
     else:
         assert state.flush() == (b"", [])
         assert state.truncated is True
+
+
+# --- zstd: the frame header's window -------------------------------------------------
+#
+# A zstd frame declares its window in the frame header, and the decoder keeps that much
+# of the output. libzstd refuses a window over 128 MiB (a window log of 27) unless the
+# caller raises its ``window_log_max``. That default is libzstd's, not the caller's, so
+# archivey passes ``max_decoder_memory`` in its place.
+
+_ZSTD_MEMBER = b"zstd window test payload\n" * 40
+
+
+def _zstd_frame_with_window_log(window_log: int) -> bytes:
+    """A small frame whose header declares a window of ``2**window_log`` bytes.
+
+    Streaming compression does not know the content size, so the frame carries a window
+    descriptor rather than a single-segment content size, as ``zstd --long`` reading
+    standard input writes it. The payload stays small; only the header is large.
+    """
+    zstd = zstd_backend()
+    compressor = zstd.ZstdCompressor(
+        options={zstd.CompressionParameter.window_log: window_log}
+    )
+    frame = compressor.compress(_ZSTD_MEMBER) + compressor.flush()
+    # Frame header descriptor 0x00 (no single-segment flag), then the window descriptor:
+    # exponent in the top five bits, over a base of 2**10, and a zero mantissa.
+    assert frame[4] == 0x00
+    assert frame[5] == (window_log - 10) << 3
+    return frame
+
+
+def _stream_config(cap: int | None) -> Any:
+    return dataclasses.replace(
+        DEFAULT_STREAM_CONFIG, decoder_limits=DecoderLimits(max_decoder_memory=cap)
+    )
+
+
+@requires_zstd()
+def test_zstd_window_over_libzstd_default_reads_under_the_cap(tmp_path: Path) -> None:
+    """A 256 MiB window is over libzstd's default and under the 2 GiB default cap."""
+    zstd = zstd_backend()
+    frame = _zstd_frame_with_window_log(28)
+    # libzstd's own default refuses it, which is what archivey used to report.
+    with pytest.raises(zstd.ZstdError, match="too much memory"):
+        zstd.decompress(frame)
+
+    archive = tmp_path / "a.txt.zst"
+    archive.write_bytes(frame)
+    assert _read_only_member(archive) == _ZSTD_MEMBER
+    with open_codec_stream(Codec.ZSTD, io.BytesIO(frame)) as stream:
+        assert stream.read() == _ZSTD_MEMBER
+
+
+@requires_zstd()
+@pytest.mark.parametrize(
+    ("cap", "refused"),
+    [
+        (2**28, False),  # exactly the declared window
+        (2**28 - 1, True),
+        (2**27, True),  # libzstd's own default, now as the caller's cap
+        (2**20, True),
+    ],
+)
+def test_zstd_window_against_the_cap(tmp_path: Path, cap: int, refused: bool) -> None:
+    frame = _zstd_frame_with_window_log(28)
+    archive = tmp_path / "a.txt.zst"
+    archive.write_bytes(frame)
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=cap))
+    if not refused:
+        assert _read_only_member(archive, config) == _ZSTD_MEMBER
+        return
+    with pytest.raises(ResourceLimitError, match=f"max_decoder_memory={cap}"):
+        _read_only_member(archive, config)
+
+
+@requires_zstd()
+def test_zstd_window_cap_on_the_codec_stream() -> None:
+    frame = _zstd_frame_with_window_log(28)
+    with pytest.raises(ResourceLimitError, match="max_decoder_memory"):
+        with open_codec_stream(
+            Codec.ZSTD, io.BytesIO(frame), config=_stream_config(2**27)
+        ) as stream:
+            stream.read()
+    for cap in (None, 2**40):
+        with open_codec_stream(
+            Codec.ZSTD, io.BytesIO(frame), config=_stream_config(cap)
+        ) as stream:
+            assert stream.read() == _ZSTD_MEMBER
+
+
+@requires_zstd()
+def test_zstd_cap_below_libzstd_s_smallest_limit_acts_as_one_kib() -> None:
+    """libzstd's ``window_log_max`` cannot go under 10, so a smaller cap acts as 1 KiB.
+
+    Handing the cap over unclamped raised ``ValueError`` from the decoder's options.
+    """
+    frame = _zstd_frame_with_window_log(11)
+    with pytest.raises(ResourceLimitError, match="max_decoder_memory=512 .*over 1024"):
+        with open_codec_stream(
+            Codec.ZSTD, io.BytesIO(frame), config=_stream_config(512)
+        ) as stream:
+            stream.read()
+
+
+@requires_zstd()
+def test_zip_zstd_member_window_is_capped(tmp_path: Path) -> None:
+    """ZIP method 93 decodes through the same codec, so the same cap applies."""
+    from tests.test_zip_native_codecs import _build_minimal_zip
+
+    frame = _zstd_frame_with_window_log(28)
+    archive = tmp_path / "a.zip"
+    archive.write_bytes(_build_minimal_zip(b"a.txt", frame, _ZSTD_MEMBER, 93))
+    assert _read_only_member(archive) == _ZSTD_MEMBER
+
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=2**27))
+    with pytest.raises(ResourceLimitError, match="max_decoder_memory"):
+        _read_only_member(archive, config)
+
+
+@requires_zstd()
+def test_zstd_window_over_libzstd_s_ceiling() -> None:
+    """A 4 GiB window is over the default cap and over what libzstd can decode at all.
+
+    The header is rewritten; libzstd refuses it from the header, before allocating.
+    """
+    frame = bytearray(_zstd_frame_with_window_log(28))
+    frame[5] = (32 - 10) << 3
+    with pytest.raises(ResourceLimitError, match=f"max_decoder_memory={2 * 2**30}"):
+        with open_codec_stream(Codec.ZSTD, io.BytesIO(bytes(frame))) as stream:
+            stream.read()
+    # With no cap, raising one would not help: the refusal is libzstd's own.
+    with pytest.raises(UnsupportedFeatureError, match="largest window"):
+        with open_codec_stream(
+            Codec.ZSTD, io.BytesIO(bytes(frame)), config=_stream_config(None)
+        ) as stream:
+            stream.read()

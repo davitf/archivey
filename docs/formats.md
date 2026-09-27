@@ -404,9 +404,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   stream. When it yields nothing, Archivey decodes the source again with the standard
   library, so a corrupt `.bz2` raises the same error whether or not
   `seekable_members=True` engaged the accelerator.
-- A `.zst` frame whose window is over 128 MiB (for example `zstd --long=31` reading
-  standard input) fails with `CorruptionError: … Frame requires too much memory for
-  decoding`. The limit is zstd's own default, not `DecoderLimits`.
+- A `.zst` frame declares its window, and the decoder keeps that much memory.
+  `DecoderLimits.max_decoder_memory` (2 GiB by default) caps it, so the 2 GiB window of
+  `zstd --long=31` reading standard input reads. A window over the cap raises
+  `ResourceLimitError`. The cap is rounded down to a power of two for zstd.
 - The legacy LZ4 format (`lz4 -l`, used for Linux kernel images) is not supported: it is
   not detected, and a `.lz4` file in that format fails to read.
 - `archivey.open_stream(...)` matches the archive rule: non-seekable unless
