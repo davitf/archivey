@@ -28,8 +28,10 @@ in `member.hashes`, even for a one-member file: proving there is one member mean
 the whole file (§6). `member.size` is `None` although the trailer holds a size, for the
 same reason. With `rapidgzip`, a truncated stream is reported with the same certainty as
 without it only for a one-member gzip; a truncated zlib stream read alone through
-`rapidgzip` under `ON` can come back short with no error (§5). And `rapidgzip` does not
-make a first read faster below 16 MiB of input: under `AUTO` it is not used there at all.
+`rapidgzip` under `ON` can come back short with no error (§5). And under `AUTO`,
+`rapidgzip` never speeds up a plain front-to-back read, whatever the size: it is used only
+when the caller declared seeking (§2.3). Its parallel decode is available to a sequential
+read through `ON`.
 
 ## 1. Shape
 
@@ -126,6 +128,16 @@ open, and saves about 3.4 ms per MB of compressed input on a full read, so below
 13 MB the standard library is faster (`scripts/bench_rapidgzip_child.py`). The last `AUTO`
 condition keeps a bare zlib or raw DEFLATE stream on the standard library, because nothing
 could catch `rapidgzip` ending one early (below).
+
+**A sequential read never gets `rapidgzip` under `AUTO`.** `AUTO` resolves against declared
+seek demand, the rule every indexed codec follows (xz and lzip parse no index without it
+either), so an undeclared stream builds no seek machinery. `rapidgzip` is that machinery
+here, although it is also a faster decoder: it decodes in parallel on all cores, about 2×
+the standard library on a full read (a 40 MB `.gz` on 4 cores: 0.45 s through the standard library,
+0.20 s through the child, under `AUTO` with `seekable=True` or under `ON`). A caller who
+reads front to back and wants that speed sets `use_rapidgzip=ON`, which uses it for
+declared and undeclared streams alike, and pays the child's start on every stream,
+small ones included.
 
 **Why a child process.** `rapidgzip` 0.16 calls `std::terminate` when it decodes a DEFLATE
 stream that ends early. The throw comes from a destructor, so it happens for a path, a
@@ -254,6 +266,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Trailing junk after a `.gz` is `CorruptionError`, and `TruncatedError` under `rapidgzip` | **archivey** | The standard library engine follows `GzipFile`; the cross-codec picture is [`single-file.md`](single-file.md) §3 |
 | One warning on `archivey.streams` that `rapidgzip` cannot run | **archivey** | No child process can start here; `AUTO` used the standard library. `use_rapidgzip=OFF` silences it |
 | A zlib stream with a preset dictionary is not detected, and fails when opened by name | **format** | archivey holds no dictionary |
+| A large `.gz` read front to back is no faster with `[seekable]` installed | **archivey** | `AUTO` uses `rapidgzip` only on declared seeking (§2.3). Set `use_rapidgzip=ON` for its parallel decode |
 | A cold backward seek under `rapidgzip` still re-decodes megabytes, and the log says so | **library** | Its index is sparse: three points over 5 MB of `gzip.compress` output |
 
 ## 6. Decisions
@@ -266,6 +279,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | One accelerator library, `rapidgzip`, for gzip, zlib, raw DEFLATE and bzip2 (ADR 0008) | `indexed_gzip` or `indexed_bzip2` next to it corrupt the heap on macOS | Several accelerator packages |
 | Run `rapidgzip` in a child process for the DEFLATE family (PR #493) | Its abort on a cut stream is uncatchable in-process | In-process with guards, which cannot catch `std::terminate`; decoding with the standard library first and handing `rapidgzip` only proven input, which decoded the whole member at the first backward seek |
 | `AUTO` needs 16 MiB of input and a checkable size | Below that the child costs more than it saves; without a size, a soft end would pass silently | 1 MiB, the in-process threshold; `AUTO` on any declared seek |
+| `AUTO` uses `rapidgzip` only for declared-seekable streams (the concurrent-member-streams change, PR #59) | Seek machinery, indexes and accelerators alike, is built only on declared demand, for every codec | `AUTO` keyed on the `streaming` access mode. `AUTO` for large sequential reads has not been weighed, although the 16 MiB break-even above is measured on a full read |
 | `AUTO` falls back to the standard library with one log warning where no child can start | The accelerator is an enhancement; a frozen application must still read `.gz` | Raising, which `ON` does |
 | Report `FNAME` decoded as Latin-1, keep the bytes in `raw_name` | RFC 1952 says so, and the bytes are there for a caller who knows better | Guessing UTF-8 |
 
@@ -297,6 +311,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | No size, no CRC, no scan at open | `::test_gz_size_is_always_none`, `::test_gzip_never_reports_a_crc32`, `::test_gzip_open_does_not_scan_for_a_second_member` |
 | zlib Adler-32 checked, not listed | `::test_zlib_omits_hashes_but_verifies_adler_on_read` |
 | zlib header grammar and probe | `tests/test_detection.py::test_zlib_detected_at_every_legal_window_size`, `::test_zlib_grammar_admits_exactly_66_header_pairs`, `::test_zlib_grammar_accepts_a_preset_dictionary_header` |
+| `AUTO` needs declared seeking; `ON` does not | `tests/test_seekable_streams.py::test_accelerator_mode_auto_resolution` |
 | `AUTO` threshold and size condition; `ON` below it | `tests/test_rapidgzip_deflate_zlib.py::test_the_auto_threshold_is_past_the_child_break_even`, `::test_auto_selects_rapidgzip_above_threshold`, `::test_auto_without_decompressed_size_uses_stdlib_even_when_large`, `::test_on_forces_rapidgzip_below_threshold` |
 | The abort happens in-process, and not through archivey | `tests/test_accelerator_truncation_abort.py::test_raw_rapidgzip_aborts_on_truncated_gzip` (canary), `::test_truncated_gzip_with_seekable_members_raises_truncated`, `::test_what_a_cut_stream_delivers_before_the_abort_is_a_correct_prefix` |
 | How the child's death is reported; no child → fallback and one warning | `::test_a_child_death_is_reported_by_how_it_ended`, `::test_without_a_child_auto_uses_stdlib_and_on_refuses`, `::test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto`, `::test_an_auto_fallback_warns_once_per_process` |
