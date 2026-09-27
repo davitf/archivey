@@ -686,8 +686,8 @@ def _read_everything(stream: BinaryIO, fmt: str, config: ArchiveyConfig) -> None
                 reader.read(member)
 
 
-# ON is here for the zlib rows: rapidgzip does not check the Adler-32, so archivey's own
-# check after it is what makes a damaged zz or tar.zz raise.
+# For the zlib rows: auto pins that a bare zlib stream never reaches rapidgzip, so it
+# raises as off does; on pins archivey's own Adler-32 check after rapidgzip.
 @pytest.mark.parametrize("mode", ["off", "auto", "on"])
 @pytest.mark.parametrize("how", ["truncated", "flipped"])
 @pytest.mark.parametrize(

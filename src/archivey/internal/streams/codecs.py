@@ -1229,7 +1229,7 @@ def _zlib_adler_trailer(source: CodecSource) -> int | None:
         return None
 
 
-class StreamChecksumError(CorruptionError):
+class _StreamChecksumError(CorruptionError):
     """A whole-stream checksum failed after the stream's bytes were delivered.
 
     Internal: callers see a :class:`CorruptionError`. A reader that tolerates a decode
@@ -1251,16 +1251,21 @@ class _ZlibAdlerCheckStream(DelegatingStream):
     A seek does not forfeit the check. A seek back stays behind the frontier; a seek
     forward past it reads the bytes in between, so the Adler-32 still covers them. A
     reader that skips member data by seeking (the TAR reader over ``tar.zz``) therefore
-    still gets the check when it reaches the end. The read-through costs the transfer
-    from the child and one ``zlib.adler32`` pass; rapidgzip decodes those bytes to seek
-    past them anyway. Nothing is checked on a stream that is never read to its end.
+    still gets the check when it reaches the end. rapidgzip decodes the skipped bytes to
+    seek past them anyway; what the read-through adds is their transfer from the child
+    and one ``zlib.adler32`` pass. For a reader that only skips, such as a listing, that
+    transfer is the whole cost: the full decompressed stream, once, where a plain seek
+    moved no output. It is paid at most once per stream, and only under an explicit
+    ``ON``. Nothing is checked on a stream that is never read to its end, and neither
+    does the standard library check one: it verifies the trailer only when it consumes
+    the end of the stream, so the parity holds at both ends.
 
     A mismatch has two causes: damage, or several zlib streams one after another
     (rapidgzip decodes all of them, so the trailer is only the last stream's). The
     wrapper tells them apart by decoding the source again with the standard library,
     one zlib stream after another, until it has as many bytes as rapidgzip delivered.
     That decode must succeed and reproduce the delivered length and Adler-32; otherwise
-    the read or seek that reached the end raises :class:`StreamChecksumError`. The
+    the read or seek that reached the end raises :class:`_StreamChecksumError`. The
     second decode runs only on a mismatch.
 
     As in :class:`_GzipTruncationCheckStream`, the check runs on the call that reaches
@@ -1285,7 +1290,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         self._frontier = 0
         self._adler = 1  # Adler-32 of the empty string
         self._checked = False
-        self._verdict: StreamChecksumError | None = None
+        self._verdict: _StreamChecksumError | None = None
 
     def read(self, size: int = -1, /) -> bytes:
         if size == 0:
@@ -1352,7 +1357,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
             return
         try:
             self._confirm_with_stdlib()
-        except StreamChecksumError as exc:
+        except _StreamChecksumError as exc:
             self._verdict = exc
             raise
 
@@ -1373,7 +1378,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                     if not pending:
                         pending = f.read(1 << 16)
                         if not pending:
-                            raise StreamChecksumError(
+                            raise _StreamChecksumError(
                                 "zlib stream is truncated: the source ends before the "
                                 "data the rapidgzip accelerator returned"
                             )
@@ -1383,9 +1388,9 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                     produced += len(out)
                     adler = zlib.adler32(out, adler)
         except zlib.error as exc:
-            raise StreamChecksumError(f"Error reading zlib stream: {exc!r}") from exc
+            raise _StreamChecksumError(f"Error reading zlib stream: {exc!r}") from exc
         if produced != self._frontier or adler != self._adler:
-            raise StreamChecksumError(
+            raise _StreamChecksumError(
                 "zlib stream is damaged: the data does not match its Adler-32 "
                 "(the rapidgzip accelerator does not check it)"
             )

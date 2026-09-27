@@ -192,14 +192,17 @@ body or trailer decodes with no error, sometimes short. `_ZlibAdlerCheckStream` 
 Adler-32 of the output from offset 0 up to a frontier and compares it with the source's last
 four bytes when the frontier reaches the end. A seek back stays behind the frontier, and a
 seek forward past it reads the bytes in between, so the check survives the TAR reader, which
-skips member data by seeking. The read-through costs the transfer from the child; the child
-decodes those bytes to seek past them anyway. A mismatch is either damage or several zlib
+skips member data by seeking. The child decodes those bytes to seek past them anyway; the
+read-through adds their transfer out of it. For a reader that only skips, that transfer is
+the whole cost: listing a `.tar.zz` under `ON` moves the full decompressed archive out of
+the child once, where the seeks alone moved nothing. `docs/access-and-cost.md` states it. A mismatch is either damage or several zlib
 streams one after another (`rapidgzip` reads all of them; the trailer is the last one's), so
 the standard library then decodes the source again up to the delivered length and must
 reproduce it. Failing that, the read or seek that reached the end raises
-`StreamChecksumError`, a `CorruptionError`. The TAR end-of-archive scan, which otherwise
+`_StreamChecksumError`, a `CorruptionError`. The TAR end-of-archive scan, which otherwise
 ignores a tail that fails to decode, re-raises it, because the checksum covers members it
-already handed out. A stream never read to its end is not checked.
+already handed out. A stream never read to its end is not checked, and the standard library
+does not check one either: it verifies the trailer only when it consumes the end.
 
 **What of a cut stream a caller gets back.** The standard library engine delivers
 everything up to the last complete block before the cut. `rapidgzip` decodes ahead in

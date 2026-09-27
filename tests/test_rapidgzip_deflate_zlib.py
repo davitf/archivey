@@ -444,7 +444,7 @@ def test_rapidgzip_zlib_damage_raises_from_the_adler_check(where: str) -> None:
         bad = _flip(good, len(good) - 1)
     else:
         bad = _body_flip_the_stdlib_rejects(good)
-    expected = codecs.StreamChecksumError if where == "trailer" else ReadError
+    expected = codecs._StreamChecksumError if where == "trailer" else ReadError
     with _on_zlib(bad) as stream:
         with pytest.raises(expected):
             stream.read()
@@ -464,7 +464,7 @@ def test_rapidgzip_zlib_adler_check_survives_seeks() -> None:
         stream.seek(400_000)  # forward: read through
         assert stream.tell() == 400_000
         assert stream.read(10) == _ADLER_PAYLOAD[400_000:400_010]
-        with pytest.raises(codecs.StreamChecksumError):
+        with pytest.raises(codecs._StreamChecksumError):
             stream.seek(0, io.SEEK_END)
 
 
