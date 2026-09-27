@@ -1555,6 +1555,58 @@ def test_a_latin1_rock_ridge_name_takes_its_joliet_name() -> None:
         assert ar.read("répertoire/naïve.txt") == b"naive"
 
 
+def _wide_latin1_links_image(count: int) -> bytes:
+    """One directory of ``count`` Latin-1 files and ``count`` symlinks naming them,
+    beside a Joliet tree, so every link target takes the Joliet walk."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3, rock_ridge="1.09", joliet=3)
+    iso.add_directory("/W", rr_name="w", joliet_path="/w")
+    for i in range(count):
+        iso.add_fp(
+            io.BytesIO(b"x"),
+            1,
+            f"/W/F{i}.;1",
+            rr_name=f"f#{i:03d}",
+            joliet_path=f"/w/fé{i:03d}",
+        )
+        iso.add_symlink(f"/W/L{i}.;1", rr_symlink_name=f"l{i}", rr_path=f"f#{i:03d}")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue().replace(b"f#", b"f\xe9")
+
+
+def test_following_link_targets_reads_each_directory_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Link targets are looked up through a per-directory index, so the number of
+    directory walks does not grow with the number of links in a directory; a scan
+    per target component made listing one wide directory quadratic."""
+    from archivey.internal.backends import iso_reader
+
+    real = iso_reader._yield_children
+    calls = 0
+
+    def counting(record: Any, rock_ridge: bool) -> Any:
+        nonlocal calls
+        calls += 1
+        return real(record, rock_ridge)
+
+    monkeypatch.setattr(iso_reader, "_yield_children", counting)
+    walks = []
+    for count in (4, 40):
+        calls = 0
+        with open_archive(io.BytesIO(_wide_latin1_links_image(count))) as ar:
+            members = list(ar.members())
+        assert {m.link_target for m in members if m.link_target} == {
+            f"fé{i:03d}" for i in range(count)
+        }
+        walks.append(calls)
+    assert walks[0] == walks[1], walks
+
+
 def test_encoding_wins_over_the_joliet_name() -> None:
     with open_archive(
         io.BytesIO(_latin1_names_with_joliet_image()), encoding="cp1252"
