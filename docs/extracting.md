@@ -23,9 +23,11 @@ archivey.extract("archive.zip", "out/")
   attacker racing us) is out of scope; if that ever changes, `O_NOFOLLOW`/`openat`-style
   extraction is the direction.
 - **A directory opened as a source is the exception.** Another process may change a tree
-  while archivey reads it, and reading a member must not leave the tree. Today it can: a
-  listed file replaced by a symlink after listing is followed when the member is opened.
-  This is an open gap, to be fixed before release.
+  while archivey reads it. Reading a member follows no symlink and checks that the file is
+  still the one listed, at the listed size; if not, the read fails with `OSError`. A file
+  rewritten in place at the same size reads its new content. On a filesystem that reports
+  no file identity (some FUSE and network mounts), only the file type and size are
+  checked.
 - **Optional dependencies and external tools** (`pycdlib`, codec packages, the `unrar`
   binary) are trusted code but *not* trusted to be robust: their failures must surface
   as translated archivey errors, never silently wrong data.

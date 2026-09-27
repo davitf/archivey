@@ -23,12 +23,9 @@ class MutableDetectionCostReceipt:
     prefix_bytes: int = 0
     unique_bytes_read: int = 0
     far_bytes: int = 0
-    tail_bytes: int = 0
     scanned_bytes: int = 0
-    seeks: int = 0
     decode_input: int = 0
     decode_output: int = 0
-    spooled_bytes: int = 0
     passes: int = 1
     skips: list[TierSkip] = field(default_factory=list)
 
@@ -37,18 +34,15 @@ class MutableDetectionCostReceipt:
             prefix_bytes=self.prefix_bytes,
             unique_bytes_read=self.unique_bytes_read,
             far_bytes=self.far_bytes,
-            tail_bytes=self.tail_bytes,
             scanned_bytes=self.scanned_bytes,
-            seeks=self.seeks,
             decode_input=self.decode_input,
             decode_output=self.decode_output,
-            spooled_bytes=self.spooled_bytes,
             passes=self.passes,
         )
 
     def record_skip(self, tier: str, reason: TierSkipReason) -> None:
-        # A second pass records the same policy skips again (``zip_tail`` on every
-        # pass); a repeat carries no information, so the list keeps one of each.
+        # A second pass can record a skip the first pass already recorded; a repeat
+        # carries no information, so the list keeps one of each.
         skip = TierSkip(tier=tier, reason=reason)
         if skip not in self.skips:
             self.skips.append(skip)

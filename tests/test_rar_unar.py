@@ -556,6 +556,16 @@ def test_failure_exit_raises_on_the_completing_read() -> None:
     stream.close()
 
 
+def test_a_zero_length_read_is_not_end_of_file() -> None:
+    proc, stream = _child("import sys; sys.exit(1)")
+    proc.wait()
+    assert stream.read(0) == b""
+    assert stream.readinto(bytearray()) == 0
+    with pytest.raises(CorruptionError, match="exit 1"):
+        stream.read()
+    stream.close()
+
+
 @_posix_only
 def test_crash_raises_on_the_completing_read() -> None:
     _proc, stream = _child("import os, signal; os.kill(os.getpid(), signal.SIGSEGV)")
@@ -569,6 +579,42 @@ def test_close_before_end_of_file_is_not_an_error() -> None:
     assert stream.read(10) == b"x" * 10
     stream.close()
     assert proc.returncode is not None
+
+
+def test_a_stream_that_cannot_be_built_stops_its_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stream owns the process from its constructor: a raise there reaps it.
+
+    The raise itself must reap, not the collection of the half-built stream
+    (``IOBase.__del__`` calls ``close()`` on it too). Binding ``refused`` keeps its
+    traceback, and with it the half-built stream, alive past the assertion.
+    """
+
+    def refuse(self: object, inner: object) -> None:
+        raise RuntimeError("wrapper refused")
+
+    # Patches the shared base class; nothing else constructs a DelegatingStream in
+    # this block.
+    monkeypatch.setattr(cli.DelegatingStream, "__init__", refuse)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import sys\nwhile True: sys.stdout.write('x' * 65536)"],
+        stdout=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.stdout is not None
+    try:
+        with pytest.raises(RuntimeError, match="wrapper refused") as refused:
+            unar.UnarOutputStream(
+                proc.stdout,  # type: ignore[arg-type]
+                proc,
+                has_verifiable_digest=False,
+            )
+        assert proc.returncode is not None
+        del refused
+    finally:
+        proc.stdout.close()
+        cli.terminate_process(proc)
 
 
 def test_digest_checked_pipe_ignores_the_exit_status() -> None:

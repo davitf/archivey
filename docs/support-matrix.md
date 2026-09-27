@@ -144,7 +144,8 @@ another thread that might still be reading it when the owner closes the reader.
 | --- | --- |
 | `open()` + reading **different** member streams | Yes, with `concurrent_members=True`, after materialization |
 | Reading the **same** member stream object | No — one owner per stream |
-| `members()` / `__iter__` / `scan_members()` | No — single-owner; materialize once, then share the result |
+| `members()` / `members_report()` / `scan_members()` | With `concurrent_members=True`, yes: one thread builds the list and the others wait for it. Otherwise no — single-owner; materialize once, then share the result |
+| `__iter__` | No — single-owner |
 | `extract_all()` / `stream_members()` | No — single-owner passes |
 | `close()` | Safe to call twice; not safe to race against in-flight opens |
 | Separate `ArchiveReader` objects | Yes — independent readers share no mutable state |

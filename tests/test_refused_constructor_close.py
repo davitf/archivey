@@ -245,6 +245,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.codecs._Bzip2EmptyStreamCheck": (
         "plain assignments only"
     ),
+    "archivey.internal.streams.codecs._ZlibAdlerCheckStream": (
+        "plain assignments only"
+    ),
     "archivey.internal.streams.codecs._StdlibOnAcceleratorError": (
         "plain assignments only"
     ),
@@ -264,7 +267,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.password_confirm.UnverifiedPasswordReadWatch": (
         "assigns every field close() reads before DelegatingStream.__init__"
     ),
-    "archivey.internal.backends.rar_reader._UnrarOwnedStream": "plain assignments only",
+    "archivey.internal.backends.rar_reader._UnrarOwnedStream": (
+        "assigns every field close() reads before DelegatingStream.__init__"
+    ),
     "archivey.internal.backends.rar_reader._RespawnStream": "plain assignments only",
     "archivey.internal.external.unar.UnarOutputStream": (
         "assigns every field close() reads before DelegatingStream.__init__"

@@ -88,7 +88,7 @@ class FormatInfo:
         default=None, compare=False, repr=False
     )
     """The work detection did, as a
-    :class:`~archivey.detection_cost.DetectionCostReceipt`: bytes read, seeks, decode
+    :class:`~archivey.detection_cost.DetectionCostReceipt`: bytes read and scanned, decode
     input and output, and the number of passes. It covers the whole call, both passes
     when :func:`~archivey.detect_format` followed a stub to its split volume.
 

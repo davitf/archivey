@@ -103,11 +103,6 @@ spec for lifecycle, retention, and policy.
 ::: archivey.AccessCost
 ::: archivey.StreamCapability
 
-## Measurement
-
-::: archivey.IoStats
-::: archivey.enable_measurement
-
 ## Errors
 
 archivey's exceptions have two roots. `ArchiveyError` covers problems with the archive
@@ -169,7 +164,6 @@ are stable under the same rule as the rest of this page.
 ::: archivey.detection_cost.DetectionCostReceipt
 ::: archivey.detection_cost.TierSkip
 ::: archivey.detection_cost.TierSkipReason
-::: archivey.detection_cost.DetectionCapability
 
 ## Front-end helpers
 

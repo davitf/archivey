@@ -684,6 +684,30 @@ def _bound_rapidgzip_source(
     return SlicingStream(source, start=0, length=bound, owns_inner=False)
 
 
+def _refuse_forward_only_accelerator(
+    source: CodecSource, field_name: str, label: str
+) -> None:
+    """Refuse ``ON`` for an accelerator over a source that cannot seek.
+
+    Both accelerators ask their source for ``tell`` and ``seek`` when they open. A
+    forward-only stream (a pipe, or a member stream of an outer archive opened without
+    ``seekable_members``) cannot answer. This check covers the open, before a child
+    process starts or a byte is read, and names the setting. The two translators
+    (``_translate_rapidgzip`` and ``Bzip2Codec.translate``) cover the late case, a
+    source that refuses ``seek`` or ``tell`` after it said it could seek; keep both.
+    ``AUTO`` never gets here for such a source: :func:`open_codec_stream` clears its
+    seek demand.
+    """
+    if isinstance(source, (str, os.PathLike)) or is_seekable(source):
+        return
+    raise StreamNotSeekableError(
+        f"{field_name}=AcceleratorMode.ON needs a seekable source, and this {label} "
+        f"stream is forward-only. Set {field_name} to AUTO or OFF to decode it with the "
+        "standard library, or open the source seekable (for a member of an outer "
+        "archive, open that archive with seekable_members=True)."
+    )
+
+
 def _open_rapidgzip(
     source: CodecSource, label: str, config: StreamConfig
 ) -> BinaryIO | None:
@@ -766,8 +790,8 @@ def _accelerator_backstop_source(
       accelerator coordinate on one lock (a background rapidgzip worker reads the source).
     - **raw seekable stream** given directly — wrap once in a private ``SharedSource`` so the
       accelerator and the factory's views share one lock; caller-owned, so never closed.
-    - **non-seekable** — no factory (``None``); rapidgzip needs a seekable source anyway, so
-      this path is not reached for the backstop.
+    - **non-seekable** — no factory (``None``). The accelerated codecs never pass one:
+      :func:`_refuse_forward_only_accelerator` refuses it first.
     """
     if isinstance(source, (str, os.PathLike)):
         # os.fspath narrows to the concrete path for the reopen closure (the same tolerated
@@ -828,7 +852,7 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
         return TruncatedError(f"{label} stream is truncated (rapidgzip): {exc!r}")
     if isinstance(exc, ValueError) and "has no valid fileno" in text:
         return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
-    if isinstance(exc, io.UnsupportedOperation) and "seek" in text:
+    if isinstance(exc, io.UnsupportedOperation) and ("seek" in text or "tell" in text):
         return StreamNotSeekableError("rapidgzip does not support non-seekable streams")
     if isinstance(exc, RuntimeError) and (
         "std::exception" in text or text == "Unknown exception"
@@ -1177,6 +1201,199 @@ class _GzipTruncationCheckStream(DelegatingStream):
                 return gzip_has_additional_member(f)
         except OSError:
             return True  # cannot rule out a second member -> do not raise
+
+
+def _zlib_adler_trailer(source: CodecSource) -> int | None:
+    """The last four bytes of a zlib ``source`` as its Adler-32 trailer, or ``None``.
+
+    ``None`` when the source is shorter than a complete zlib stream (a two-byte header and
+    the four-byte trailer) or cannot be read; :class:`_ZlibAdlerCheckStream` then goes
+    straight to its standard-library confirmation. Restores a stream source's position.
+    """
+    try:
+        if isinstance(source, (str, os.PathLike)):
+            with open(os.fspath(source), "rb") as f:
+                if f.seek(0, io.SEEK_END) < 6:
+                    return None
+                f.seek(-4, io.SEEK_END)
+                return int.from_bytes(f.read(4), "big")
+        pos = source.tell()
+        try:
+            if source.seek(0, io.SEEK_END) < 6:
+                return None
+            source.seek(-4, io.SEEK_END)
+            return int.from_bytes(source.read(4), "big")
+        finally:
+            source.seek(pos)
+    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
+        return None
+
+
+class _StreamChecksumError(CorruptionError):
+    """A whole-stream checksum failed after the stream's bytes were delivered.
+
+    Internal: callers see a :class:`CorruptionError`. A reader that tolerates a decode
+    failure past the end of its own data (the TAR end-of-archive scan) re-raises this
+    one, because the checksum covers bytes it has already handed out.
+    """
+
+
+class _ZlibAdlerCheckStream(DelegatingStream):
+    """Check a zlib stream's Adler-32 after rapidgzip, which does not check it.
+
+    rapidgzip decodes a zlib stream with a damaged body or a wrong Adler-32 without an
+    error: it can return the whole stream, or a shorter one, as good data. The standard
+    library raises on the same input, and an accelerator must not change whether a
+    damaged source raises. This wrapper keeps an Adler-32 of the output from offset 0 up
+    to a frontier, and when the frontier reaches the end compares it to the trailer (the
+    last four bytes of the compressed source, read before the child starts).
+
+    A seek does not forfeit the check. A seek back stays behind the frontier; a seek
+    forward past it reads the bytes in between, so the Adler-32 still covers them. A
+    reader that skips member data by seeking (the TAR reader over ``tar.zz``) therefore
+    still gets the check when it reaches the end. rapidgzip decodes the skipped bytes to
+    seek past them anyway; what the read-through adds is their transfer from the child
+    and one ``zlib.adler32`` pass. For a reader that only skips, such as a listing, that
+    transfer is the whole cost: the full decompressed stream, once, where a plain seek
+    moved no output. It is paid at most once per stream, and only under an explicit
+    ``ON``. Nothing is checked on a stream that is never read to its end, and neither
+    does the standard library check one: it verifies the trailer only when it consumes
+    the end of the stream, so the parity holds at both ends.
+
+    A mismatch has two causes: damage, or several zlib streams one after another
+    (rapidgzip decodes all of them, so the trailer is only the last stream's). The
+    wrapper tells them apart by decoding the source again with the standard library,
+    one zlib stream after another, until it has as many bytes as rapidgzip delivered.
+    That decode must succeed and reproduce the delivered length and Adler-32; otherwise
+    the read or seek that reached the end raises :class:`_StreamChecksumError`. The
+    second decode runs only on a mismatch.
+
+    As in :class:`_GzipTruncationCheckStream`, the check runs on the call that reaches
+    the end (ADR 0014: never from ``close()``), and a verdict once raised is raised again
+    at every later end of data.
+    """
+
+    readinto_passthrough = False
+
+    def __init__(
+        self,
+        inner: BinaryIO,
+        *,
+        reopen: Callable[[], BinaryIO],
+        trailer: int | None,
+    ) -> None:
+        super().__init__(inner)
+        self._reopen = reopen
+        self._trailer = trailer
+        self._pos = 0
+        # Output bytes [0, _frontier) are covered by _adler.
+        self._frontier = 0
+        self._adler = 1  # Adler-32 of the empty string
+        self._checked = False
+        self._verdict: _StreamChecksumError | None = None
+
+    def read(self, size: int = -1, /) -> bytes:
+        if size == 0:
+            return b""
+        data = self._inner.read(size)
+        if data:
+            self._count(data)
+            if size < 0:
+                # A completing read: reach the end now, so the check raises from this
+                # read rather than leave the caller to find it on a later one.
+                while more := self._inner.read(1 << 20):
+                    self._count(more)
+                    data += more
+                self._at_end()
+            return data
+        self._at_end()
+        return data
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if whence == io.SEEK_CUR:
+            # Absolute before any read-through moves the position it is relative to.
+            offset, whence = self._pos + offset, io.SEEK_SET
+        if not self._checked:
+            if whence == io.SEEK_END:
+                self._read_through(None)
+            elif offset > self._frontier:
+                self._read_through(offset)
+        self._pos = self._inner.seek(offset, whence)
+        return self._pos
+
+    def tell(self, /) -> int:
+        return self._pos
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        return ask_resume_offset(self._inner, target)
+
+    def _count(self, data: bytes) -> None:
+        end = self._pos + len(data)
+        if not self._checked and self._pos <= self._frontier < end:
+            self._adler = zlib.adler32(
+                memoryview(data)[self._frontier - self._pos :], self._adler
+            )
+            self._frontier = end
+        self._pos = end
+
+    def _read_through(self, target: int | None) -> None:
+        """Advance the frontier to ``target`` (``None``: the end) by reading."""
+        self._pos = self._inner.seek(self._frontier)
+        while target is None or self._pos < target:
+            want = 1 << 20 if target is None else min(1 << 20, target - self._pos)
+            data = self._inner.read(want)
+            if not data:
+                self._at_end()
+                return
+            self._count(data)
+
+    def _at_end(self) -> None:
+        if self._verdict is not None:
+            raise self._verdict.with_traceback(None)
+        if self._checked or self._pos < self._frontier:
+            return
+        self._checked = True
+        if self._trailer == self._adler:
+            return
+        try:
+            self._confirm_with_stdlib()
+        except _StreamChecksumError as exc:
+            self._verdict = exc
+            raise
+
+    def _confirm_with_stdlib(self) -> None:
+        produced = 0
+        adler = 1
+        decoder = zlib.decompressobj()
+        pending = b""
+        try:
+            with self._reopen() as f:
+                while produced <= self._frontier:
+                    if decoder.eof:
+                        if produced == self._frontier:
+                            break
+                        # The next of several zlib streams one after another.
+                        pending, decoder = decoder.unused_data, zlib.decompressobj()
+                        continue
+                    if not pending:
+                        pending = f.read(1 << 16)
+                        if not pending:
+                            raise _StreamChecksumError(
+                                "zlib stream is truncated: the source ends before the "
+                                "data the rapidgzip accelerator returned"
+                            )
+                    # Bounded output per call: a damaged body can expand without limit.
+                    out = decoder.decompress(pending, 1 << 20)
+                    pending = decoder.unconsumed_tail
+                    produced += len(out)
+                    adler = zlib.adler32(out, adler)
+        except zlib.error as exc:
+            raise _StreamChecksumError(f"Error reading zlib stream: {exc!r}") from exc
+        if produced != self._frontier or adler != self._adler:
+            raise _StreamChecksumError(
+                "zlib stream is damaged: the data does not match its Adler-32 "
+                "(the rapidgzip accelerator does not check it)"
+            )
 
 
 class _Bzip2EmptyStreamCheck(DelegatingStream):
@@ -1653,6 +1870,7 @@ class GzipCodec(StreamCodec):
                 raise PackageNotInstalledError(
                     _RAPIDGZIP_REQUIREMENT.message("gzip random access")
                 )
+            _refuse_forward_only_accelerator(source, "use_rapidgzip", "gzip")
             if config.expected_decompressed_size is not None:
                 # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
                 stream = _open_rapidgzip(source, "gzip", config)
@@ -1669,8 +1887,8 @@ class GzipCodec(StreamCodec):
             stream = _open_rapidgzip(accel_source, "gzip", config)
             if stream is None:
                 return _stdlib_gzip(source, config)
-            if reopen is None:
-                return stream  # non-seekable: rapidgzip needs a seekable source anyway
+            # _refuse_forward_only_accelerator has refused a source that cannot seek.
+            assert reopen is not None
             fallback_path = (
                 os.fspath(source) if isinstance(source, (str, os.PathLike)) else None
             )
@@ -1786,6 +2004,7 @@ class Bzip2Codec(StreamCodec):
                 raise PackageNotInstalledError(
                     _RAPIDGZIP_REQUIREMENT.message("bzip2 random access")
                 )
+            _refuse_forward_only_accelerator(source, "use_indexed_bzip2", "bzip2")
             # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package (see the
             # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
             # Bound the input: AES pad after EOS is trailing garbage that rapidgzip
@@ -1794,8 +2013,8 @@ class Bzip2Codec(StreamCodec):
                 _bound_rapidgzip_source(source, params, config)
             )
             stream = _open_accelerator(_rapidgzip_bzip2, accel_source)
-            if reopen is None:
-                return stream  # non-seekable: rapidgzip needs a seekable source anyway
+            # _refuse_forward_only_accelerator has refused a source that cannot seek.
+            assert reopen is not None
             # The decoder reads garbage as an empty stream; see _Bzip2EmptyStreamCheck.
             return _Bzip2EmptyStreamCheck(
                 stream,
@@ -1835,26 +2054,26 @@ class Bzip2Codec(StreamCodec):
         )
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
-        """Translate the indexed_bzip2 accelerator's exceptions to the library's error types."""
+        """Translate the rapidgzip bzip2 accelerator's exceptions to the library's error types."""
         if from_callers_source(exc):
             return None  # the caller's source raised it, through _TrappingSource
         text = str(exc)
         if isinstance(exc, RuntimeError) and "Calculated CRC" in text:
             return CorruptionError(
-                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
         if isinstance(exc, RuntimeError) and text in (
             "std::exception",
             "Unknown exception",
         ):
             return CorruptionError(
-                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
         if "[BZip2 block" in text:
             # Corrupt block data or block header (e.g. "[BZip2 block header] Invalid Huffman
             # coding group count"); surfaced as ValueError or RuntimeError depending on where.
             return CorruptionError(
-                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
         if isinstance(exc, (ValueError, RuntimeError)) and (
             "Huffman" in text
@@ -1866,15 +2085,17 @@ class Bzip2Codec(StreamCodec):
             # "[BZip2 block]"-tagged context (e.g. "Constructing a Huffman coding … failed!"
             # or "bad optional access") — all found by the corpus mutation harness.
             return CorruptionError(
-                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
         if isinstance(exc, ValueError) and "has no valid fileno" in text:
             return StreamNotSeekableError(
-                "indexed_bzip2 does not support non-seekable streams"
+                "the rapidgzip bzip2 accelerator does not support non-seekable streams"
             )
-        if isinstance(exc, io.UnsupportedOperation) and "seek" in text:
+        if isinstance(exc, io.UnsupportedOperation) and (
+            "seek" in text or "tell" in text
+        ):
             return StreamNotSeekableError(
-                "indexed_bzip2 does not support non-seekable streams"
+                "the rapidgzip bzip2 accelerator does not support non-seekable streams"
             )
         if isinstance(exc, (EOFError, OSError)):
             # The stdlib engine that _Bzip2EmptyStreamCheck falls back to raises these.
@@ -2222,6 +2443,7 @@ class DeflateCodec(_ZlibErrorCodec):
                 raise PackageNotInstalledError(
                     _RAPIDGZIP_REQUIREMENT.message("deflate random access")
                 )
+            _refuse_forward_only_accelerator(source, "use_rapidgzip", "deflate")
             # rapidgzip auto-detects raw DEFLATE. Bound the input: it over-reads
             # past EOS looking for a concatenated member (AES pad would look
             # like a second member).
@@ -2290,25 +2512,38 @@ class ZlibCodec(_ZlibErrorCodec):
                 raise PackageNotInstalledError(
                     _RAPIDGZIP_REQUIREMENT.message("zlib random access")
                 )
+            _refuse_forward_only_accelerator(source, "use_rapidgzip", "zlib")
             # rapidgzip auto-detects zlib-wrapped DEFLATE; no synthetic gzip wrapper.
             accel_source, reopen = _accelerator_backstop_source(
                 _bound_rapidgzip_source(source, params, config)
             )
+            # _refuse_forward_only_accelerator has refused a source that cannot seek.
+            assert reopen is not None
+            # Read through the view, which can move the caller's stream under it; put
+            # that back, since an AUTO open whose child cannot start decodes from it.
+            if isinstance(source, (str, os.PathLike)):
+                trailer = _zlib_adler_trailer(accel_source)
+            else:
+                start = source.tell()
+                trailer = _zlib_adler_trailer(accel_source)
+                source.seek(start)
             stream = _open_rapidgzip(accel_source, "zlib", config)
             if stream is not None:
-                if reopen is not None:
-                    stream = _StdlibOnAcceleratorError(
-                        stream,
-                        reopen=reopen,
-                        fallback_path=(
-                            os.fspath(accel_source)
-                            if isinstance(accel_source, (str, os.PathLike))
-                            else None
-                        ),
-                        open_stdlib=lambda fallback: _stdlib_zlib(fallback, config),
-                        label="zlib",
-                    )
-                return _wrap_accelerated_length(stream, config)
+                stream = _StdlibOnAcceleratorError(
+                    stream,
+                    reopen=reopen,
+                    fallback_path=(
+                        os.fspath(accel_source)
+                        if isinstance(accel_source, (str, os.PathLike))
+                        else None
+                    ),
+                    open_stdlib=lambda fallback: _stdlib_zlib(fallback, config),
+                    label="zlib",
+                )
+                return _wrap_accelerated_length(
+                    _ZlibAdlerCheckStream(stream, reopen=reopen, trailer=trailer),
+                    config,
+                )
         # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).
         return _stdlib_zlib(source, config)
 
@@ -2772,6 +3007,12 @@ def open_codec_stream(
         # readers hand in views that start at 0. It stays for a direct caller that does
         # not.
         source = fix_stream_start_position(source)
+        if config.seekable and not is_seekable(source):
+            # Seek demand on a source that cannot seek cannot be met, and it would make
+            # accelerator AUTO pick a decoder that fails at open when it asks the
+            # source for ``tell``. A compressed TAR opened ``streaming=True`` with
+            # ``seekable_members=True`` over a forward-only stream arrives here so.
+            config = replace(config, seekable=False)
     # Fill the AUTO size gate when the caller did not already supply a known length
     # (path ``stat``, ``SlicingStream.size``, ``BytesIO``, …). Unknown stays ``None``.
     if config.compressed_input_size is None:

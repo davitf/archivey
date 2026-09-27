@@ -320,9 +320,10 @@ raw DEFLATE and zlib natively (auto-detected; no synthetic gzip wrapper) as of 0
 Selection matches gzip (`use_rapidgzip` × declared seekability × availability), plus the
 `AUTO` minimum compressed-size gate (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`, 16 MiB: below
 about 13 MB the child process's start costs more than rapidgzip saves). Without the
-accelerator, a rewind re-decodes from the start (warning naming `[seekable]`). Standalone
-accelerated zlib/deflate has no Adler-32 / ISIZE-style truncation backstop (accepted
-limitation; container CRC covers ZIP/7z members).
+accelerator, a rewind re-decodes from the start (warning naming `[seekable]`). rapidgzip does not
+check a zlib stream's Adler-32, so archivey checks it after rapidgzip once the stream is read
+to its end (`dev-docs/formats/gzip.md` §2.3). Standalone accelerated raw DEFLATE has no
+checksum or size to check against (accepted limitation; container CRC covers ZIP/7z members).
 
 ### lz4 — `lz4`
 

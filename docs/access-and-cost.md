@@ -151,6 +151,13 @@ takes about 45 ms to start and open, and it saves about 3.4 ms per MB of compres
 over the stdlib, so it is only faster from about 13 MB. Smaller members stay on stdlib
 `zlib`/`gzip`. Set
 `use_rapidgzip=ON` to force the accelerator regardless of size, or `OFF` to disable it.
+`ON` needs a source that can seek: on a pipe, or on a member stream of an outer archive
+opened without `seekable_members=True`, it raises `StreamNotSeekableError`. For a zlib
+stream (`.zz`, `.tar.zz`), `ON` also checks the Adler-32, which rapidgzip does not, and
+that check needs every byte from the start: a seek forward moves the skipped bytes out of
+the child process. Listing a `.tar.zz` under `ON` therefore transfers the whole
+decompressed archive once, even when no member is read, and a single far seek transfers
+everything before it. `AUTO` never gives a bare zlib stream to rapidgzip.
 
 The two settings differ when `rapidgzip` is not installed. `ON` is a request, so it
 raises `PackageNotInstalledError` naming `[seekable]` — even without
@@ -267,27 +274,6 @@ bzip2 runs in your process. It did not abort on cut or damaged input in the test
 this page (cuts, bit flips, CRC damage, as path and as file object), but that is testing,
 not a guarantee: an input that aborts the bzip2 decoder would end your process. Details:
 [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
-
-## Measuring what a read cost
-
-`reader.cost` predicts; `reader.io_stats()` counts. Counting is off by default and costs
-nothing then. It is decided when the reader is opened, so open inside
-`enable_measurement()`:
-
-```python
-from archivey import enable_measurement, open_archive
-
-with enable_measurement():
-    reader = open_archive("data.zip")
-
-with reader:
-    reader.read("file.txt")
-    stats = reader.io_stats()   # None if the reader was opened outside the block
-```
-
-The reader keeps counting after the `with` block ends. `io_stats()` returns `None` for
-a reader opened outside it. The fields are listed on
-[`IoStats`][archivey.IoStats]. The CLI's `--track-io` prints the same counters.
 
 ## Checklist
 

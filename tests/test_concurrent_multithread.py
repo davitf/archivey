@@ -687,3 +687,46 @@ def test_members_report_if_available_concurrent_on_upfront_index(
             raise errors[0]
         assert len(results) == 8
         assert all(names == expected for names in results)
+
+
+@pytest.mark.concurrent_reader
+def test_scan_members_shares_the_worker_slot_with_open(tmp_path: Path) -> None:
+    """Under CONCURRENT, scan_members() admits alongside another thread's open().
+
+    It takes the same worker slot as members() and members_report(), so an open() in
+    flight on another thread does not block it; an exclusive pass would raise
+    ArchiveyUsageError.
+    """
+    path = _make_zip(tmp_path / "a.zip", n=4)
+    with open_archive(path, concurrent_members=True) as reader:
+        expected = [m.name for m in reader.members()]
+        entered = threading.Event()
+        release = threading.Event()
+        original_open_member = reader._open_member
+
+        def blocking_open_member(member):  # noqa: ANN001
+            entered.set()
+            assert release.wait(timeout=5)
+            return original_open_member(member)
+
+        reader._open_member = blocking_open_member  # type: ignore[method-assign]
+        stream_box: dict[str, object] = {}
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                stream_box["s"] = reader.open("f0.txt")
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        try:
+            assert entered.wait(timeout=5)
+            assert [m.name for m in reader.scan_members()] == expected
+            assert [m.name for m in reader.members()] == expected
+        finally:
+            release.set()
+            t.join(timeout=10)
+        assert not errors
+        stream_box["s"].close()  # type: ignore[union-attr]

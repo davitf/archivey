@@ -560,7 +560,7 @@ truthiness are not covered, there being no wrong type to find.
 | `extract_all(dest, members="notes.txt")` | `ArchiveyUsageError` naming the list spelling; not a clean extraction of nothing |
 | `extract_all(dest, members=0)` | `ArchiveyUsageError` at the call, before `dest` is created |
 | `stream_members(members=0)` | `ArchiveyUsageError` at the call, not on first `next()` |
-| `detect_format(src, budget=0)` | `ArchiveyUsageError` naming `budget`; never `AttributeError: 'int' object has no attribute 'max_tail_bytes'` |
+| `detect_format(src, budget=0)` | `ArchiveyUsageError` naming `budget`; never `AttributeError: 'int' object has no attribute 'max_prefix_bytes'` |
 | `reader.open(0)` | `ArchiveyUsageError`; never a message naming `_archive_id` |
 | `reader.open("absent.txt")` | `KeyError` — unchanged, and specified by `archive-reading` |
 | `open_archive(0)` | `TypeError: unsupported source type` — unchanged |

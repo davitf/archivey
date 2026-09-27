@@ -28,7 +28,6 @@ from archivey.types import (
 
 if TYPE_CHECKING:
     from archivey.internal.streams.archive_stream import ArchiveStream
-    from archivey.measurement import IoStats
 
 # Type alias for the member selector passed to stream_members() and extract_all().
 # Accepts a predicate, a collection of names / ArchiveMember objects, or None (all).
@@ -49,9 +48,9 @@ class ArchiveReader(ABC):
     - :meth:`members` — complete list or raise; random-access only (fails on streaming).
     - :meth:`members_report` — always returns a report; check ``error is None`` for
       completeness (preferred for damaged archives).
-    - :meth:`scan_members` — random-access: same as ``members``; streaming: start or
-      finish the forward pass and return the resolved list (also OK after a completed
-      pass).
+    - :meth:`scan_members` — :meth:`members_report` that raises the report's error:
+      random-access, same as ``members``; streaming, start or finish the forward pass
+      and return the resolved list (also OK after a completed pass).
     - :meth:`members_report_if_available` — never scans; ``None`` if not yet cached.
     """
 
@@ -120,11 +119,13 @@ class ArchiveReader(ABC):
     def scan_members(self) -> list[ArchiveMember]:
         """Return the fully-resolved member list in either access mode.
 
-        In random-access mode this is equivalent to :meth:`members` and does not
-        consume the reader. On a streaming reader it finishes the single forward pass
-        (running it from the start, or completing an interrupted one) and returns the
-        resolved list; it may also be called after a completed pass to return the
-        cached list."""
+        It is :meth:`members_report`, raising ``report.error`` when the listing is
+        incomplete and otherwise returning ``report.members`` as a list. In
+        random-access mode this is equivalent to :meth:`members` and does not consume
+        the reader. On a streaming reader it finishes the single forward pass (running
+        it from the start, or completing an interrupted one) and returns the resolved
+        list; it may also be called after a completed pass to return the cached
+        list."""
         ...
 
     @abstractmethod
@@ -226,16 +227,6 @@ class ArchiveReader(ABC):
         ``abort_on`` names events that end the whole call the first time they occur —
         raising instead of returning a report. It is independent of ``on_error``: see
         :class:`~archivey.AbortOn`.
-        """
-        ...
-
-    @abstractmethod
-    def io_stats(self) -> "IoStats | None":
-        """Return I/O counters if measurement was enabled at open time, else ``None``.
-
-        Enable via :func:`archivey.measurement.enable_measurement` around the
-        :func:`archivey.open_archive` call. Counters cover bytes decompressed, compressed
-        bytes consumed from the outer source, and source seek calls.
         """
         ...
 

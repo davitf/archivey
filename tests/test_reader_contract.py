@@ -229,7 +229,7 @@ def test_streaming_iteration_registers_member_ids() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
     (member,) = list(reader)
     assert member.member_id == 0
-    assert member.archive_id == reader._archive_id
+    assert member in reader
 
 
 def test_streaming_second_iter_raises() -> None:
@@ -252,6 +252,21 @@ def test_scan_members_equals_members_in_random_mode() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, False, "x.zip")
     assert reader.scan_members() == reader.members()
     assert [m.name for m in reader] == ["a.txt"]
+
+
+def test_scan_members_usage_errors_name_scan_members() -> None:
+    """scan_members() runs members_report()'s body, but its errors name the call made."""
+    closed = _IndexedReader(ArchiveFormat.ZIP, False, "x.zip")
+    closed.close()
+    with pytest.raises(ArchiveyUsageError, match=r"^scan_members\(\) is not available"):
+        closed.scan_members()
+
+    streaming = _ForwardOnlyReader(ArchiveFormat.TAR, True, "x.tar")
+    pass_ = streaming.stream_members()
+    next(pass_)
+    with pytest.raises(ArchiveyUsageError, match="Cannot start 'scan_members'"):
+        streaming.scan_members()
+    pass_.close()
 
 
 # --- BaseException during materialization must not wedge the reader (review C1/Q1) --

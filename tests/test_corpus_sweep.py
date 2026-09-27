@@ -118,7 +118,6 @@ def _assert_stored_digest_parity(member, key: str) -> None:
     digest_keys = keys & {
         HashAlgorithm.CRC32,
         HashAlgorithm.BLAKE2SP,
-        HashAlgorithm.ADLER32,
     }
     if _base(key) == "zip":
         if member.type in (MemberType.FILE, MemberType.SYMLINK):
@@ -292,7 +291,6 @@ def _check_single_file(entry: CorpusEntry, key: str, source: Path) -> None:
         else:
             assert HashAlgorithm.CRC32 not in member.hashes
             assert HashAlgorithm.BLAKE2SP not in member.hashes
-            assert HashAlgorithm.ADLER32 not in member.hashes
     if key == "lz":
         # And the value is the same whether or not the caller declares seek demand.
         for kwargs in ({}, {"seekable_members": True}):

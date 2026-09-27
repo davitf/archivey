@@ -41,7 +41,7 @@ class CollectionSelector:
         self._record = record
         # member name -> indexes of the str entries that select that name.
         self._names: dict[str, list[int]] = {}
-        # (archive_id, member_id) -> indexes of the ArchiveMember entries with that id.
+        # (_archive_id, member_id) -> indexes of the ArchiveMember entries with that id.
         self._identities: dict[tuple[str, int], list[int]] = {}
         self._matched: set[int] = set()
         # Entries that name a directory without its trailing "/", seen on the way past
@@ -50,7 +50,7 @@ class CollectionSelector:
         for index, entry in enumerate(entries):
             if isinstance(entry, str):
                 self._names.setdefault(entry, []).append(index)
-            # Match by (archive_id, member_id) identity. A member that carries no ids
+            # Match by (_archive_id, member_id) identity. A member that carries no ids
             # (never registered by a reader, for example built by hand) cannot
             # correspond to any real member, so it matches nothing and is reported
             # as unmatched.
