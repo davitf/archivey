@@ -45,7 +45,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `SCAN_DIRECTORY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="directory"` |
 | `SCAN_ENTRY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="entry"` |
 | `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker`, `expected_bytes`, `observed_bytes`, `observed_kind` |
-| `ARCHIVE_TRAILING_DATA` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker="zeros_to_eof"`, `expected_bytes=0`, `observed_bytes`, `observed_kind="nonzero"` |
+| `ARCHIVE_TRAILING_DATA` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"zeros_to_eof","end_of_stream"}`, `expected_bytes=0`, `observed_bytes`, `observed_kind="nonzero"` |
 | `MEMBER_TIMESTAMP_INVALID` | `MemberTimestampContext`: `kind="member_timestamp"`, `archive_name`, `member_name`, `member_id`, `field`, `source`, `value_repr` |
 | `MEMBER_HEADER_RECORD_SKIPPED` | `MemberHeaderRecordContext`: `kind="member_header_record"`, `archive_name`, `member_name`, `member_id`, `record`, `record_id`, `reason`, `list_truncated` |
 | `SYMLINK_TARGET_UNAVAILABLE` | `SymlinkTargetContext`: `kind="symlink_target"`, `archive_name`, `member_name`, `member_id`, `reason` |
@@ -58,7 +58,10 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 exactly this union — no backend-defined variants. `observed_kind` ∈
 `{"absent","short","nonzero"}`. `expected_marker` is symbolic (`"two_zero_blocks"` for the trailer check,
 `"zeros_to_eof"` for the trailing-bytes check, whose `observed_bytes` is the
-offset of the first non-zero byte past the trailer). `member_id` MAY be `None` only before registration.
+offset of the first non-zero byte past the trailer; `"end_of_stream"` for bytes after
+a compressed stream's end, whose `format` is the codec name, such as `"gzip"`, and
+whose `observed_bytes` is the offset of the first non-zero byte after that end).
+`member_id` MAY be `None` only before registration.
 `controls` SHALL be the comma-joined `U+XXXX` spellings of the bidi codepoints
 found, in the order they occur, so a caller can tell an override from a mark
 without re-scanning the name. `chosen_by` ∈ `{"argument","extension","content_probe"}`;
@@ -116,6 +119,7 @@ returned bytes, since nothing unchecked was delivered.
 | Member blocked by a universal/policy check | No diagnostic; a `BLOCKED` `ExtractionResult` is the whole record |
 | `password=["a","b"]` on a format with no encryption | `PASSWORD_ARGUMENT_UNUSED`; context carries no candidate value and no count |
 | Non-zero byte within 1 MiB past a complete TAR trailer | `ARCHIVE_TRAILING_DATA` sharing `ArchiveEofContext`; distinguished by `expected_marker` |
+| Non-zero bytes after a single-file codec's stream | `ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"` and the codec name as `format` |
 | Probe-only single-file read raises, uncorroborated `GUESS` | `PROBE_FORMAT_UNCONFIRMED` with `chosen_by="content_probe"` |
 | Probe-only single-file read raises, uncorroborated **`PROBABLE`** (compressed-first Brotli) | `PROBE_FORMAT_UNCONFIRMED` too — **changed**; confidence is not the trigger |
 | Probe-only **LZMA Alone** read raises (always `PROBABLE`) | `PROBE_FORMAT_UNCONFIRMED` — **changed**; previously unsignalled |

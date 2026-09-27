@@ -1547,9 +1547,11 @@ def _make_gzip_check_stream(inner, path):
     ``inner`` stands in for the accelerator's decompressed output; the backstop reads ISIZE
     and scans the real gzip file at ``path`` via a fresh independent handle.
     """
+    from archivey.internal.config import DEFAULT_STREAM_CONFIG
     from archivey.internal.streams.codecs import (
         _gzip_isize_and_length,
         _GzipTruncationCheckStream,
+        _stdlib_gzip,
     )
 
     source_len, isize = _gzip_isize_and_length(str(path))
@@ -1559,6 +1561,7 @@ def _make_gzip_check_stream(inner, path):
         isize=isize,
         source_len=source_len,
         fallback_path=str(path),
+        open_stdlib=lambda fallback: _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG),
     )
 
 
@@ -1604,7 +1607,7 @@ def test_gzip_truncation_fallback_recaches_seekable(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(
         codecs_module,
         "GzipDecompressorStream",
-        lambda source: NonSeekableBytesIO(payload),
+        lambda source, **_kwargs: NonSeekableBytesIO(payload),
     )
     stream = _make_gzip_check_stream(io.BytesIO(b""), path)
     assert stream.seekable() is True
@@ -1766,44 +1769,53 @@ def test_gzip_multi_member_and_padding_parity() -> None:
         assert stream.read() == b"first"
 
 
-def test_gzip_trailing_junk_delivers_member_then_corruption() -> None:
-    """Trailing junk after a valid member: deliver every member byte, then raise.
+_REPORTING_GZIP = dataclasses.replace(_STDLIB_GZIP, report_trailing_data=True)
 
-    Matches GzipFile read(1) oracle / deliver-then-raise (F1). ``readall`` still
-    raises without returning the prefix (complete-stream contract).
+
+def _trailing_reports(collector: DiagnosticCollector) -> list[tuple[str, int]]:
+    return [
+        (d.context.format, d.context.observed_bytes)  # type: ignore[union-attr]
+        for d in collector.snapshot().retained
+        if d.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+    ]
+
+
+def test_gzip_trailing_junk_delivers_member_then_reports() -> None:
+    """Trailing junk after a valid member: deliver every member byte, then report once.
+
+    ``gzip.GzipFile`` raises on the same bytes; archivey reads the data and reports
+    what follows it as ``ARCHIVE_TRAILING_DATA`` (read and report), with the offset of
+    the first junk byte. Every read shape gets the whole member and a clean end.
     """
     payload = b"hello world " * 10
     member = gzip.compress(payload)
     junked = member + b"NOTGZIP!"
 
-    # Large bounded read recovers the full member, then empty read raises.
-    with open_codec_stream(
-        Codec.GZIP, io.BytesIO(junked), config=_STDLIB_GZIP
-    ) as stream:
-        assert stream.read(65536) == payload
-        with pytest.raises(CorruptionError, match="Trailing non-gzip"):
-            stream.read(1)
-        stream.close()
+    def read_with(read: object) -> list[tuple[str, int]]:
+        collector = DiagnosticCollector()
+        with open_codec_stream(
+            Codec.GZIP, io.BytesIO(junked), config=_REPORTING_GZIP, collector=collector
+        ) as stream:
+            assert read(stream) == payload  # type: ignore[operator]
+            assert stream.read(1) == b""
+        return _trailing_reports(collector)
 
-    # Chunked reads deliver every byte before the verdict.
-    with open_codec_stream(
-        Codec.GZIP, io.BytesIO(junked), config=_STDLIB_GZIP
-    ) as stream:
+    def chunked(stream: io.RawIOBase) -> bytes:
         collected = bytearray()
-        with pytest.raises(CorruptionError, match="Trailing non-gzip"):
-            while True:
-                chunk = stream.read(7)
-                if not chunk:
-                    break
-                collected.extend(chunk)
-        assert bytes(collected) == payload
+        while chunk := stream.read(7):
+            collected.extend(chunk)
+        return bytes(collected)
 
-    # Slurping readall raises (no silent lossy success).
+    for read in (lambda s: s.read(65536), chunked, lambda s: s.read()):
+        assert read_with(read) == [("gzip", len(member))]
+
+    # Inside a container the codec stops at its end without a report.
+    collector = DiagnosticCollector()
     with open_codec_stream(
-        Codec.GZIP, io.BytesIO(junked), config=_STDLIB_GZIP
+        Codec.GZIP, io.BytesIO(junked), config=_STDLIB_GZIP, collector=collector
     ) as stream:
-        with pytest.raises(CorruptionError, match="Trailing non-gzip"):
-            stream.read()
+        assert stream.read() == payload
+    assert _trailing_reports(collector) == []
 
 
 def test_gzip_multi_member_cross_feed_edges() -> None:
@@ -1821,13 +1833,17 @@ def test_gzip_multi_member_cross_feed_edges() -> None:
                 break
             buf.extend(c)
         assert bytes(buf) == b"aabb"
-    # Lone trailing partial magic at EOF → deliver member, then CorruptionError.
+    # Lone trailing partial magic at EOF → deliver member, then report it.
+    collector = DiagnosticCollector()
     with open_codec_stream(
-        Codec.GZIP, io.BytesIO(m1 + b"\x1f"), config=_STDLIB_GZIP
+        Codec.GZIP,
+        io.BytesIO(m1 + b"\x1f"),
+        config=_REPORTING_GZIP,
+        collector=collector,
     ) as stream:
         assert stream.read(65536) == b"aa"
-        with pytest.raises(CorruptionError, match="Trailing non-gzip"):
-            stream.read(1)
+        assert stream.read(1) == b""
+    assert _trailing_reports(collector) == [("gzip", len(m1))]
 
 
 def test_gzip_empty_and_empty_payload_member() -> None:

@@ -117,6 +117,7 @@ Three things about this path are worth knowing before you debug it:
 | RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) · `rar_unar.py` + `internal/external/unar.py` (the opt-in `unar` data path) · `rar_detect.py` (scan-hit validator); handbook [`formats/rar.md`](formats/rar.md) |
 | TAR internals | `tar_reader.py` (stdlib `tarfile` over the source or archivey's own decompressor; the end-of-archive checks) · `detection.py` `_probe_inner_tar` (a tar inside a compressor); handbook [`formats/tar.md`](formats/tar.md) |
 | ISO internals | `iso_reader.py` (`pycdlib` boundary, record walk, raw-sector refusal, the `pycdlib` cycle guard); handbook [`formats/iso.md`](formats/iso.md) |
+| Directory pseudo-archive | `directory_reader.py` (the `scandir` walk, scan-race diagnostics, hardlink grouping, open-by-path); handbook [`formats/directory.md`](formats/directory.md) |
 | A codec, or adding one | `streams/codecs.py` + `streams/decompress.py`; `xz.py` / `lzip.py` / `unix_compress.py` for the hand-written ones; `rapidgzip_child.py` for the accelerator's child process; handbook [`formats/single-file.md`](formats/single-file.md) and the codec's own page |
 | Seeking inside a compressed stream | `streams/decompressor_stream.py`; spec `seekable-decompressor-streams` |
 | Stream wrapping / slicing / locking | `streams/streamtools/`; handbook [`topics/stream-ownership.md`](topics/stream-ownership.md); archived review `review/archive/2026-07-19-stream-layering/` |

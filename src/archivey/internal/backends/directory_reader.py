@@ -327,7 +327,7 @@ class DirectoryReader(BaseArchiveReader):
         modified = _stat_datetime(st.st_mtime)
         accessed = _stat_datetime(st.st_atime)
         # st_birthtime is the true creation time but only exists on some platforms
-        # (macOS/BSD, Windows, recent Linux); st_ctime is metadata-change time on
+        # (macOS/BSD, Windows; never Linux); st_ctime is metadata-change time on
         # Unix, NOT creation, so we never use it for `created`. Hence the getattr.
         birthtime = getattr(st, "st_birthtime", None)
         created = _stat_datetime(birthtime) if birthtime is not None else None

@@ -12,6 +12,7 @@ capability gates (password / seekability) → normalize stream origin →
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Collection
 
@@ -749,10 +750,14 @@ def _open_stream_from_source(
         )
 
     codec = codec_for_stream_format(stream_format)
-    stream_config = stream_config_from_archivey(
-        effective_config,
-        streaming=False,
-        seekable=seekable and source_is_seekable,
+    # The codec stream is the whole source, so bytes after its end are reported.
+    stream_config = replace(
+        stream_config_from_archivey(
+            effective_config,
+            streaming=False,
+            seekable=seekable and source_is_seekable,
+        ),
+        report_trailing_data=True,
     )
     # A path goes to the codec as a path: it opens its own handles and can use
     # path-only accelerator features, and the source then never opens one.

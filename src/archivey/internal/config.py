@@ -63,6 +63,12 @@ class StreamConfig:
     policy and into ``reader.diagnostics``; ``None`` falls back to
     :func:`~archivey.internal.diagnostics_collector.resolve_collector`'s throwaway. It
     is left out of equality: it says where reports go, not how the stream decodes.
+    ``report_trailing_data`` is set where the codec stream *is* the file — a bare
+    compressed file, a compressed TAR, ``open_stream`` — so bytes after the stream's
+    end are something the caller was given and not told about, and the stream codecs
+    report them as ``ARCHIVE_TRAILING_DATA``. Inside a ZIP or 7z the container bounds
+    the coder's input, and what follows a coder's end there (a 7z AES stage's block
+    padding) is the container's business, so the codec stops at its end silently.
     """
 
     streaming: bool = False
@@ -74,6 +80,7 @@ class StreamConfig:
     gzip_isize_backstop: bool = False
     decoder_limits: DecoderLimits = DecoderLimits()
     collector: DiagnosticCollector | None = field(default=None, compare=False)
+    report_trailing_data: bool = False
 
 
 def stream_config_from_archivey(

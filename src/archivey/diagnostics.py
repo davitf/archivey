@@ -215,7 +215,7 @@ class ScanRaceContext(_JsonSafeContext):
 class ArchiveEofContext(_JsonSafeContext):
     """The end of the archive did not look the way the format says it should.
 
-    Two checks share this shape, told apart by ``expected_marker``:
+    Three checks share this shape, told apart by ``expected_marker``:
 
     - ``"two_zero_blocks"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the TAR trailer itself is
       missing, short, or a non-null block.
@@ -223,6 +223,10 @@ class ArchiveEofContext(_JsonSafeContext):
       non-zero byte follows it within the first MiB past it, so the file carries
       something the listing did not account for. ``observed_bytes`` is that byte's
       offset past the trailer.
+    - ``"end_of_stream"`` (``ARCHIVE_TRAILING_DATA``) — a compressed stream (gzip, xz,
+      zstd and the other stream codecs) decoded to its end, and bytes follow that end
+      which are neither another stream nor padding the format allows. ``format`` names
+      the codec and ``observed_bytes`` is the compressed offset where those bytes start.
     """
 
     kind: Literal["archive_eof"] = "archive_eof"
@@ -480,21 +484,45 @@ and the reasons are part of the contract rather than an oversight:
 # them apart. The kind alone cannot reject a mismatched pairing for these, so
 # ``validate_code_context`` checks the field too. A code added to a shared kind needs a
 # row here; ``test_every_shared_kind_code_has_a_discriminator`` fails until it has one.
-_SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, str]] = (
+# A code may accept several values of its field (``ARCHIVE_TRAILING_DATA`` is reported
+# after a TAR trailer and after a compressed stream's end); the sets never overlap, so
+# the field still tells the codes apart.
+_SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]] = (
     MappingProxyType(
         {
-            DiagnosticCode.SCAN_DIRECTORY_VANISHED: ("entry_kind", "directory"),
-            DiagnosticCode.SCAN_ENTRY_VANISHED: ("entry_kind", "entry"),
-            DiagnosticCode.ENCODING_ARGUMENT_UNUSED: ("argument", "encoding"),
-            DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: ("argument", "password"),
-            DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY: ("chosen_by", "argument"),
-            DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED: ("chosen_by", "extension"),
-            DiagnosticCode.PROBE_FORMAT_UNCONFIRMED: ("chosen_by", "content_probe"),
+            DiagnosticCode.SCAN_DIRECTORY_VANISHED: (
+                "entry_kind",
+                frozenset({"directory"}),
+            ),
+            DiagnosticCode.SCAN_ENTRY_VANISHED: ("entry_kind", frozenset({"entry"})),
+            DiagnosticCode.ENCODING_ARGUMENT_UNUSED: (
+                "argument",
+                frozenset({"encoding"}),
+            ),
+            DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: (
+                "argument",
+                frozenset({"password"}),
+            ),
+            DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY: (
+                "chosen_by",
+                frozenset({"argument"}),
+            ),
+            DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED: (
+                "chosen_by",
+                frozenset({"extension"}),
+            ),
+            DiagnosticCode.PROBE_FORMAT_UNCONFIRMED: (
+                "chosen_by",
+                frozenset({"content_probe"}),
+            ),
             DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: (
                 "expected_marker",
-                "two_zero_blocks",
+                frozenset({"two_zero_blocks"}),
             ),
-            DiagnosticCode.ARCHIVE_TRAILING_DATA: ("expected_marker", "zeros_to_eof"),
+            DiagnosticCode.ARCHIVE_TRAILING_DATA: (
+                "expected_marker",
+                frozenset({"zeros_to_eof", "end_of_stream"}),
+            ),
         }
     )
 )
@@ -518,11 +546,12 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
         )
     discriminator = _SHARED_KIND_DISCRIMINATORS.get(code)
     if discriminator is not None:
-        field_name, required = discriminator
+        field_name, allowed = discriminator
         actual = getattr(context, field_name, None)
-        if actual != required:
+        if actual not in allowed:
+            required = " or ".join(repr(value) for value in sorted(allowed))
             raise ValueError(
-                f"{code.name} requires {field_name}={required!r}, got {actual!r}"
+                f"{code.name} requires {field_name}={required}, got {actual!r}"
             )
 
 

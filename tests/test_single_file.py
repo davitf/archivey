@@ -876,9 +876,26 @@ def test_undecodable_source_raises_at_open(
 ) -> None:
     path = tmp_path / f"backup{suffix}"
     path.write_bytes(_NOT_A_STREAM[contents])
+    if (suffix, contents) == (".lzma", "zeros"):
+        _assert_zeros_read_as_empty_lzma(path, seekable_members=seekable_members)
+        return
     # The raise must come from open_archive itself, not from a read after it.
     with pytest.raises((CorruptionError, TruncatedError)):
         open_archive(path, seekable_members=seekable_members)
+
+
+def _assert_zeros_read_as_empty_lzma(
+    source: Path | io.BytesIO, **kwargs: object
+) -> None:
+    """Zeros are the one undecodable-looking source that is a valid stream.
+
+    Eighteen zero bytes are a complete, empty LZMA Alone stream, and the zeros after it
+    are padding, as after any codec's end. So the file reads as one empty member with
+    nothing to report, the way a zero-filled file reads as an empty TAR (ADR 0015).
+    """
+    with open_archive(source, **kwargs) as ar:  # type: ignore[arg-type]
+        assert ar.read(ar.members()[0]) == b""
+        assert not ar.diagnostics.counts
 
 
 @pytest.mark.parametrize("suffix", _codec_params())
@@ -887,6 +904,9 @@ def test_undecodable_bytesio_raises_at_open(suffix: str) -> None:
     compress, _marks = _SINGLE_FILE_CODECS[suffix]
     with open_archive(io.BytesIO(compress(b"probe"))) as ar:
         fmt = ar.format
+    if suffix == ".lzma":
+        _assert_zeros_read_as_empty_lzma(io.BytesIO(b"\x00" * 40_000), format=fmt)
+        return
     with pytest.raises((CorruptionError, TruncatedError)):
         open_archive(io.BytesIO(b"\x00" * 40_000), format=fmt)
 

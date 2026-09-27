@@ -33,6 +33,7 @@ from __future__ import annotations
 import stat
 import tarfile
 import threading
+from dataclasses import replace
 from datetime import datetime
 from io import BytesIO
 from typing import BinaryIO, Iterator, Literal, Mapping, cast
@@ -428,10 +429,15 @@ class TarReader(BaseArchiveReader):
             stream = open_codec_stream(
                 codec,
                 codec_source,
-                config=stream_config_from_archivey(
-                    self._config,
-                    streaming=streaming,
-                    seekable=MemberStreams.SEEKABLE in member_streams,
+                # The codec stream is the whole file, so bytes after its end are
+                # reported, as bytes after the TAR trailer are.
+                config=replace(
+                    stream_config_from_archivey(
+                        self._config,
+                        streaming=streaming,
+                        seekable=MemberStreams.SEEKABLE in member_streams,
+                    ),
+                    report_trailing_data=True,
                 ),
                 stamp=lambda exc: self._stamp_error_context(exc),
                 collector=self._diagnostics_collector,

@@ -113,6 +113,27 @@ decompressor simply never reports that it finished, so the engine arms a `Trunca
 at the end of input ([`single-file.md`](single-file.md) §2.3). A backward seek decodes again
 from the start, and the rewind report says so.
 
+**Bytes after the end.** The library does not say where a stream ends. A `process()`
+call whose input runs past the end fails with the same "decoder failed" as damage,
+returns none of that call's output, and leaves the decompressor unusable. So
+`BrotliDecoder` replays on any `brotli.error`. It keeps the input offset of the last
+point where everything handed over had been decoded and returned. That point needs a
+call that returned nothing: the library holds output back even from a call with no
+limit, so input is handed over in 64 KiB pieces and each is drained until it settles. It
+builds a fresh decompressor, brings it to that point by decoding the source from offset
+0 with the output thrown away, and then hands over the bytes up to the failure one at a
+time, draining output before each byte. If the stream finishes on one of them, the rest
+is trailing data: the output lost with the failed call is delivered, skipping what the
+caller already had, and the bytes after the end are reported as `ARCHIVE_TRAILING_DATA`
+unless they are zeros. If not, the original error stands and is raised as
+`CorruptionError`.
+
+The replay reads the source a second time, so it needs a seekable source. From a pipe the
+error is raised unchanged, and a Brotli stream with bytes after it is a `CorruptionError`
+there. A file with no bytes after it never replays. One with them pays one more decode up to
+the failure, fed one byte at a time over at most one piece: measured on a 14 MB `.br`,
+0.29 s against 0.13 s for the clean file.
+
 ### 2.4 Extract
 
 Nothing here is Brotli-specific ([`single-file.md`](single-file.md) §2.4).
@@ -130,7 +151,7 @@ detection census in the investigation linked in §9.
 | --- | --- |
 | `brotli` output, any size | Detected by the probe and read. A compressed first block is `PROBABLE` without an extension |
 | A Brotli file named `.brotli` | Detected by content alone; uncorroborated, so a read error is stamped `format_unconfirmed` |
-| A Brotli file followed by `junk` | `CorruptionError` |
+| A Brotli file followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`; from a pipe, `CorruptionError` |
 | A cut Brotli file | `TruncatedError` |
 | A `/usr` tree of 150 623 files, none of them Brotli | 29 claimed as Brotli (0.019%), measured with the 256-byte sample before the 4 KiB window; each claim's read error is stamped `format_unconfirmed` |
 | OLE (`.msi`, old `.doc`) and COFF files | Usually claimed first by the LZMA Alone probe ([`xz.md`](xz.md) §3) |
@@ -165,6 +186,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `member.size` is `None` | **format** | No size field |
 | Damaged data reads with no error | **format** | No checksum |
 | A backward seek re-decodes from the start | **format** | No restart points |
+| From a pipe, bytes after a Brotli stream are `CorruptionError` | **library** / **archivey** | Telling them from damage needs a second read of the source (§2.3) |
+| A flip near the end can read as a shorter stream plus trailing data | **format** | No checksum, and the damaged bytes may form a valid end (§2.3) |
 | No Brotli support without `[recommended]`, and no detection either | **archivey** | The probe needs the decoder |
 
 ## 6. Decisions
@@ -178,6 +201,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Decode the whole 4 KiB window, and a small source whole (PR #466) | The 256-byte sample let text through | 256 bytes |
 | Far magic before content probes (PR #270) | A bootable ISO's system area decoded as Brotli | Probes first |
 | Require `brotli` 1.2.0 | `output_buffer_limit` bounds one call's output (CVE-2025-6176) | Older versions, which decoded a whole meta-block per call |
+| Replay from the start to tell bytes after the end from damage | The library gives the same error for both and loses the call's output; a replay costs nothing on a clean file | Feeding one byte at a time always, which is slow on every file; refusing bytes after the end, unlike every other codec |
 | `brotli`, not `brotlicffi` | `brotli` is the reference binding; `brotlicffi` helps only on PyPy | Supporting both |
 
 ## 7. Open questions

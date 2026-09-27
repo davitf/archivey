@@ -85,12 +85,14 @@ read.
 
 ### 2.3 Member data
 
-**The standard library engine.** `bz2.open` reads every stream in sequence, checks each
-block's CRC and each stream's combined CRC, and ignores bytes after the last stream that
-do not start with `BZh`. A stream that ends before its end marker raises `EOFError`, which
-archivey reports as `TruncatedError`. An `OSError` saying "Invalid data stream" is
-`CorruptionError`. It can seek, but a backward seek decodes again from the start, and the
-rewind report says so ([`single-file.md`](single-file.md) §2.3).
+**The standard library engine.** `FramedDecompressorStream` runs one `bz2.BZ2Decompressor`
+per stream, which checks each block's CRC and the stream's combined CRC, and starts
+another when the bytes after a stream are `BZh` and a block size digit. Anything else
+after the last stream is reported as `ARCHIVE_TRAILING_DATA` unless it is zeros
+([`single-file.md`](single-file.md) §2.3); `bz2.open`, which this replaces, ignored it
+without a word. A stream that ends before its end marker is `TruncatedError`. An `OSError`
+saying "Invalid data stream" is `CorruptionError`. It can seek, but a backward seek
+decodes again from the start, and the rewind report says so.
 
 **When the accelerator is used.** `use_indexed_bzip2` is an `AcceleratorMode`, `AUTO` by
 default:
@@ -115,6 +117,12 @@ Python exceptions only. So it runs in the caller's process, with three guards ar
   raises for garbage and reads a genuinely empty stream as `b""`. A seek away from 0 before
   the first read disarms the check, but the decoder clamps every seek to 0 on such input, so
   garbage cannot slip past that way.
+- **Bytes after the last stream must be reported the same way.** The decoder skips them
+  and prints a warning to standard error, which archivey cannot catch. At the end of data,
+  `_Bzip2EmptyStreamCheck` asks the decoder for its compressed position
+  (`tell_compressed()`, in bits, rounded up to a byte; exact after the end, measured with
+  `parallelization=0`), scans a fresh view of the source from there for the first non-zero
+  byte, and reports it at the offset the standard library engine would.
 - **An exception from the caller's source must not abort the process.** `rapidgzip` calls
   `std::terminate` when a Python file object it reads from raises. The source is wrapped in
   `_TrappingSource`, which parks the exception, hands the decoder an end of data, and lets
@@ -155,7 +163,7 @@ accelerator `OFF` and `ON`.
 | `bzip2` | Reads |
 | `pbzip2`, `lbzip2` | Reads, as a run of streams |
 | Two `bzip2` files concatenated | Reads both payloads |
-| A stream followed by `junk` | Reads; the junk is ignored. With the accelerator, "[Warning] Trailing garbage after EOF ignored!" is printed to standard error. `bzip2 -t` ignores it too and exits 0 |
+| A stream followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` at the same offset with the accelerator off and on. With it on, "[Warning] Trailing garbage after EOF ignored!" is also printed to standard error. `bzip2 -t` warns and exits 0 |
 | A stream cut at any of 20 points | `TruncatedError` with the accelerator off, `CorruptionError` with it on. Never a short read with no error |
 
 ## 4. Threat surface
@@ -187,7 +195,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | "[Warning] Trailing garbage after EOF ignored!" on standard error | **library** | The accelerator prints it for bytes after the last stream in a standalone file; archivey cannot route it into diagnostics. Tracked internally |
 | A backward seek re-decodes from the start | **format** | Install `[seekable]` and pass `seekable_members=True` |
 | A cold backward seek with the accelerator still re-decodes up to a block, and may log it | **format** | Blocks are the unit of random access |
-| Trailing junk after the last stream is ignored, silently with the accelerator off | **archivey** | Follows the standard library and `bzip2 -t`; the cross-codec picture is [`single-file.md`](single-file.md) §3 |
+| Trailing junk after the last stream is a warning | **archivey** | The rule every codec shares ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
 
 ## 6. Decisions
 
@@ -199,6 +207,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Trap the caller's source exception (PR #462) | `rapidgzip` terminates the process when a Python source raises | Letting the exception cross the native boundary |
 | No size threshold for `AUTO` | The in-process decoder costs no child start; seeking was asked for | Reusing the 16 MiB DEFLATE gate |
 | Let the inner-TAR probe read up to 1 MiB of compressed input, for every codec (PR #32) | bzip2's first output comes only after a whole block; one bound for all codecs needs no per-codec branch | Probing only the detection prefix, which called a `.tar.bz2` with a large first block plain `BZ2` |
+| Find the accelerator's end from its compressed position and scan the source | Its warning goes to standard error, and the offset must match the standard library engine's | Clipping the source to the end, which is found only by decoding |
 | Translate the accelerator's errors by message text | They carry no distinct type; each string was seen on a real corrupt file | Treating every `RuntimeError` as corruption, which would hide archivey's own bugs |
 
 ## 7. Open questions
