@@ -169,7 +169,6 @@ are stable under the same rule as the rest of this page.
 ::: archivey.detection_cost.DetectionCostReceipt
 ::: archivey.detection_cost.TierSkip
 ::: archivey.detection_cost.TierSkipReason
-::: archivey.detection_cost.DetectionCapability
 
 ## Front-end helpers
 

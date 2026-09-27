@@ -22,6 +22,7 @@ from archivey.exceptions import FormatDetectionError
 from archivey.internal.streams import codecs as codecs_module
 from archivey.types import MagicSignature
 from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.detection_cost_util import within_budget
 from tests.streams_util import NonSeekableBytesIO
 
 
@@ -1084,11 +1085,15 @@ def test_stub_volume_fallback_keeps_the_stub_pass_cost(tmp_path: Path) -> None:
     # Two passes, said as data, and each within its budget: the sum passes the
     # two-budget check and would fail a single-pass one.
     assert receipt.passes == 2
-    assert receipt.within_budget(BALANCED_BUDGET)
-    assert not replace(receipt, passes=1).within_budget(BALANCED_BUDGET)
-    # The volume pass records the same policy skip again; it is kept once.
-    zip_tail = TierSkip("zip_tail", TierSkipReason.NOT_ENABLED_BY_POLICY)
-    assert info.unavailable_tiers.count(zip_tail) == 1
+    assert within_budget(receipt, BALANCED_BUDGET)
+    assert not within_budget(replace(receipt, passes=1), BALANCED_BUDGET)
+    # A prefix budget below the near-magic span makes each pass record the same
+    # ``near_magic`` skip; the receipt keeps it once.
+    short_prefix = replace(BALANCED_BUDGET, max_prefix_bytes=64)
+    info = detect_format(stub, config=ArchiveyConfig(detection_budget=short_prefix))
+    assert info.format == ArchiveFormat.SEVEN_Z
+    near_magic = TierSkip("near_magic", TierSkipReason.BUDGET_EXHAUSTED)
+    assert info.unavailable_tiers.count(near_magic) == 1
 
 
 def _incompressible_tar_bz2(first_member: int) -> bytes:
@@ -1121,7 +1126,7 @@ def test_inner_tar_probe_stays_inside_the_decode_budget() -> None:
     assert fast.format == ArchiveFormat.BZ2
     assert fast.cost_receipt is not None
     assert fast.cost_receipt.decode_input <= FAST_BUDGET.max_decode_input
-    assert fast.cost_receipt.within_budget(FAST_BUDGET), fast.cost_receipt
+    assert within_budget(fast.cost_receipt, FAST_BUDGET), fast.cost_receipt
     assert any(
         s.tier == "inner_tar" and s.reason is TierSkipReason.BUDGET_EXHAUSTED
         for s in fast.unavailable_tiers
@@ -1168,7 +1173,7 @@ def test_inner_tar_probe_is_skipped_when_the_output_budget_is_below_one_header()
     assert info.cost_receipt is not None
     assert info.cost_receipt.decode_input == 0
     assert info.cost_receipt.decode_output == 0
-    assert info.cost_receipt.within_budget(budget)
+    assert within_budget(info.cost_receipt, budget)
     assert any(
         s.tier == "inner_tar" and s.reason is TierSkipReason.BUDGET_EXHAUSTED
         for s in info.unavailable_tiers
@@ -1484,13 +1489,12 @@ def test_empty_source_says_it_is_empty(tmp_path: Path) -> None:
 
 
 def test_mutable_receipt_freezes_every_public_counter() -> None:
-    """The mutable receipt, ``freeze()`` and ``charge()`` agree on the counters.
+    """The mutable receipt and ``freeze()`` agree with the public receipt's counters.
 
-    The three write the field list out by hand. A counter added to the public
-    receipt and missed in one of the others would read 0 on every
-    ``FormatInfo.cost_receipt``; this fails instead.
+    Both write the field list out by hand. A counter added to the public receipt and
+    missed in one of them would read 0 on every ``FormatInfo.cost_receipt``; this
+    fails instead.
     """
-    import inspect
     from dataclasses import fields
 
     from archivey.detection_cost import DetectionCostReceipt
@@ -1509,16 +1513,3 @@ def test_mutable_receipt_freezes_every_public_counter() -> None:
     assert {name: getattr(frozen, name) for name in public} == {
         name: 1000 + i for i, name in enumerate(public)
     }
-
-    # ``charge`` adds to every counter but ``passes``, which is set per pass.
-    charged = [
-        name
-        for name in inspect.signature(DetectionCostReceipt.charge).parameters
-        if name != "self"
-    ]
-    assert charged == [name for name in public if name != "passes"]
-    sevens = dict.fromkeys(charged, 7)
-    after = DetectionCostReceipt().charge(**sevens).charge(**sevens)
-    assert {name: getattr(after, name) for name in charged} == dict.fromkeys(
-        charged, 14
-    )

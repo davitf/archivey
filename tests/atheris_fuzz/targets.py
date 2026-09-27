@@ -50,6 +50,7 @@ from tests.atheris_fuzz.seeds import (
     zlib_seeds,
     zstd_seeds,
 )
+from tests.detection_cost_util import within_budget
 
 _FUZZ_CONFIG = ArchiveyConfig(
     use_rapidgzip=AcceleratorMode.OFF, use_indexed_bzip2=AcceleratorMode.OFF
@@ -106,7 +107,7 @@ def detect_format_one(data: bytes) -> None:
     # Aggregate cost must stay inside the declared budget — pins the invariant whether
     # limits are later resolved as per-detection or per-candidate.
     if info.cost_receipt is not None:
-        assert info.cost_receipt.within_budget(BALANCED_BUDGET), info.cost_receipt
+        assert within_budget(info.cost_receipt, BALANCED_BUDGET), info.cost_receipt
 
 
 def zip_open_one(data: bytes) -> None:

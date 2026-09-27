@@ -9,10 +9,9 @@ Measured on ``main`` before this change (seekable stream through ``detect_format
 | ZIP, TAR | 1 | 0 | 1 |
 
 The workspace makes the shape normative for the **prefix tiers**: zero backward seeks
-for growing peeks, at most one seek towards the end when a tail tier is enabled, and
-each source byte fetched at most once. Content-probe ``read_at`` on cheap random-access
-sources may seek and restore the handle (bounded by the Brotli chain-walk link cap);
-those restores are not "re-fetch rewinds" and are not charged on the receipt's ``seeks``.
+for growing peeks, and each source byte fetched at most once. Content-probe ``read_at``
+on cheap random-access sources may seek and restore the handle (bounded by the Brotli
+chain-walk link cap); those restores are not "re-fetch rewinds".
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ from archivey.detection_cost import (
     BALANCED_BUDGET,
     THOROUGH_BUDGET,
     DetectionBudget,
-    DetectionCapability,
     TierSkipReason,
 )
 from archivey.internal.detection_workspace import PrefixWorkspace
@@ -43,6 +41,7 @@ from archivey.internal.sfx import (
 )
 from archivey.internal.source import ArchiveSource
 from archivey.types import ArchiveFormat
+from tests.detection_cost_util import within_budget
 from tests.streams_util import NonSeekableBytesIO
 
 
@@ -52,7 +51,7 @@ class InstrumentedBytesIO(io.RawIOBase):
     def __init__(self, data: bytes) -> None:
         super().__init__()
         self._inner = io.BytesIO(data)
-        self.size = len(data)  # cheap size for source_byte_size / REMAINING_KNOWN
+        self.size = len(data)  # cheap size for source_byte_size / remaining_known()
         self.read_calls = 0
         self.forward_seeks = 0
         self.backward_seeks = 0
@@ -159,8 +158,8 @@ def test_seekable_detection_has_zero_backward_seeks(
         f"(reads={src.read_calls}, forward={src.forward_seeks})"
     )
     assert src.tell() == 0  # non-consuming
-    # At most one seek towards the end (tail tier); BALANCED enables none.
-    # Forward seeks may also include reposition-after-tail; under BALANCED: 0.
+    # No tier seeks towards the end. The bound leaves room for one content-probe
+    # ``read_at``, which restores the position afterwards.
     assert src.forward_seeks <= 1
     assert src.tell() == 0
 
@@ -171,7 +170,6 @@ def test_path_detection_access_shape(tmp_path: Path) -> None:
     info = detect_format(path)
     assert info.format == ArchiveFormat.GZ
     assert info.cost_receipt is not None
-    assert info.cost_receipt.seeks == 0
     # Growing peeks must not re-count the same bytes.
     assert info.cost_receipt.unique_bytes_read <= max(
         info.cost_receipt.prefix_bytes, 4096
@@ -183,20 +181,16 @@ def test_peekable_pipe_detection_access_shape() -> None:
     info = detect_format(stream)
     assert info.format == ArchiveFormat.GZ
     assert info.cost_receipt is not None
-    assert info.cost_receipt.seeks == 0
-    # ZIP tail is not enabled under BALANCED — distinct from capability-unavailable.
-    assert any(
-        s.tier == "zip_tail" and s.reason is TierSkipReason.NOT_ENABLED_BY_POLICY
-        for s in info.unavailable_tiers
-    )
+    # Every tier ran: a pipe under BALANCED skips nothing.
+    assert info.unavailable_tiers == ()
 
 
 def test_a_hint_sized_archive_source_still_knows_its_size() -> None:
-    """Detection takes a caller's ``size`` hint through the source, as it did before.
+    """Detection takes a caller's ``size`` hint through the source.
 
     ``ArchiveSource.size`` is the fact alone, so reading the workspace's total through
-    ``source_byte_size`` would drop ``SIZE_KNOWN`` and ``remaining_known()`` for a stream
-    whose only cheap size is an fsspec ``size`` attribute. Fails against that.
+    ``source_byte_size`` would drop ``remaining_known()`` for a stream whose only cheap
+    size is an fsspec ``size`` attribute. Fails against that.
     """
     from archivey.internal.volumes import resolve_source
     from tests.streams_util import ReadSizeRecorder
@@ -207,7 +201,6 @@ def test_a_hint_sized_archive_source_still_knows_its_size() -> None:
         assert resolved.source.size is None
         with PrefixWorkspace(resolved.source, BALANCED_BUDGET) as ws:
             assert ws.remaining_known() == 5004
-            assert DetectionCapability.SIZE_KNOWN in ws.capabilities()
     finally:
         resolved.source.close()
 
@@ -299,58 +292,13 @@ def test_negative_candidate_origin_is_discarded() -> None:
     assert hit.needle == b"ustar"
 
 
-def test_zero_seek_budget_withdraws_seek_from_a_file(tmp_path: Path) -> None:
-    path = tmp_path / "a.zip"
-    path.write_bytes(_zip_bytes())
-    budget = DetectionBudget(
-        max_prefix_bytes=4096,
-        max_far_bytes=0,
-        max_tail_bytes=65_557,
-        max_seeks=0,  # withdraws SEEK even though the file is seekable
-        max_scan_bytes=0,
-        max_decode_input=0,
-        max_decode_output=0,
-        completion_window_bytes=0,
-        max_probe_links=0,
-        spool_non_seekable_up_to=0,
-    )
-    with PrefixWorkspace(path, budget) as ws:
-        caps = ws.capabilities()
-    assert DetectionCapability.SEEK not in caps
-    assert DetectionCapability.TAIL not in caps
-    assert DetectionCapability.PREFIX in caps
-
-
-def test_spool_policy_grants_tail_to_a_pipe() -> None:
-    payload = _zip_bytes()
-    budget = DetectionBudget(
-        max_prefix_bytes=4096,
-        max_far_bytes=0,
-        max_tail_bytes=65_557,
-        max_seeks=1,
-        max_scan_bytes=0,
-        max_decode_input=0,
-        max_decode_output=0,
-        completion_window_bytes=0,
-        max_probe_links=0,
-        spool_non_seekable_up_to=len(payload) + 64,
-    )
-    with PrefixWorkspace(NonSeekableBytesIO(payload), budget) as ws:
-        caps = ws.capabilities()
-        assert DetectionCapability.TAIL in caps
-        assert ws.receipt.spooled_bytes == len(payload)
-
-
-def test_pipe_without_spool_records_tail_unavailable() -> None:
+def test_pipe_under_thorough_skips_no_tier() -> None:
     stream = ArchiveSource.for_stream(NonSeekableBytesIO(_zip_bytes()))
     info = detect_format(
         stream, config=ArchiveyConfig(detection_budget=THOROUGH_BUDGET)
     )
-    # Every shipping preset leaves ZIP tail off (Decision 1B) — policy, not capability.
-    assert any(
-        s.tier == "zip_tail" and s.reason is TierSkipReason.NOT_ENABLED_BY_POLICY
-        for s in info.unavailable_tiers
-    )
+    assert info.format == ArchiveFormat.ZIP
+    assert info.unavailable_tiers == ()
 
 
 def test_seekable_stream_restored_on_error_path() -> None:
@@ -371,10 +319,9 @@ def test_remaining_known_from_entry_position() -> None:
     src = InstrumentedBytesIO(payload)
     src.seek(1000)
     with PrefixWorkspace(src, BALANCED_BUDGET) as ws:
-        assert ws.remaining_known() == 9000
         # An overestimated total cannot prove a later offset reachable — we only report
         # what is measured from the entry position.
-        assert DetectionCapability.REMAINING_KNOWN in ws.capabilities()
+        assert ws.remaining_known() == 9000
 
 
 def test_fast_sfx_scan_respects_max_scan_bytes(tmp_path: Path) -> None:
@@ -407,7 +354,7 @@ def test_sfx_miss_charges_scanned_bytes(tmp_path: Path) -> None:
 
 
 def test_sfx_miss_extension_guess_stays_within_budget(tmp_path: Path) -> None:
-    # F18: full-scan SFX miss + any later probe seeks must still satisfy within_budget.
+    # F18: full-scan SFX miss + any later probe seeks must still stay within budget.
     from archivey.detection_cost import FAST_BUDGET
 
     mz = b"MZ" + b"\x00" * 62
@@ -417,99 +364,27 @@ def test_sfx_miss_extension_guess_stays_within_budget(tmp_path: Path) -> None:
         info = detect_format(path, config=ArchiveyConfig(detection_budget=budget))
         assert info.detected_by == "extension"
         assert info.cost_receipt is not None
-        assert info.cost_receipt.within_budget(budget), info.cost_receipt
+        assert within_budget(info.cost_receipt, budget), info.cost_receipt
 
 
 def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     # Seek-based read_at charges unique_bytes without a scan-window home; the allowance
-    # is max_probe_links * 24 (CHAIN_HEADER_READ).
-    from archivey.detection_cost import _PROBE_HEADER_READ_BYTES, DetectionCostReceipt
+    # is max_probe_links * CHAIN_HEADER_READ.
+    from archivey.detection_cost import DetectionCostReceipt
     from archivey.internal.streams.brotli_framing import CHAIN_HEADER_READ
 
-    assert _PROBE_HEADER_READ_BYTES == CHAIN_HEADER_READ
     scan = BALANCED_BUDGET.max_scan_bytes
-    allowance = BALANCED_BUDGET.max_probe_links * _PROBE_HEADER_READ_BYTES
+    allowance = BALANCED_BUDGET.max_probe_links * CHAIN_HEADER_READ
     at_cap = DetectionCostReceipt(
         unique_bytes_read=scan + allowance,
         scanned_bytes=scan,
     )
-    assert at_cap.within_budget(BALANCED_BUDGET)
+    assert within_budget(at_cap, BALANCED_BUDGET)
     over = DetectionCostReceipt(
         unique_bytes_read=scan + allowance + 1,
         scanned_bytes=scan,
     )
-    assert not over.within_budget(BALANCED_BUDGET)
-
-
-def test_abandoned_spool_keeps_lookahead_byte_and_unknown_remaining() -> None:
-    # F6: the one-byte "is there more?" peek must not be discarded, and the truncated
-    # buffer length must not be reported as a proven remaining size.
-    data = b"ABCDEFGHIJ" * 1024  # 10 240 bytes
-    budget = DetectionBudget(
-        max_prefix_bytes=4096,
-        max_far_bytes=0,
-        max_tail_bytes=100,
-        max_seeks=1,
-        max_scan_bytes=0,
-        max_decode_input=0,
-        max_decode_output=0,
-        completion_window_bytes=0,
-        max_probe_links=0,
-        spool_non_seekable_up_to=100,
-    )
-    with PrefixWorkspace(NonSeekableBytesIO(data), budget) as ws:
-        assert ws.buffered_length == 101  # 100 spooled + 1 lookahead
-        assert ws.buffer[:10].tobytes() == b"ABCDEFGHIJ"
-        assert ws.buffer[100:101].tobytes() == b"A"  # first byte of the second hundred
-        peeked = ws.peek_prefix(200)
-        assert len(peeked) == 101
-        assert ws.remaining_known() is None  # more bytes exist on the pipe
-
-
-def test_successful_spool_is_closed_and_reports_size_known() -> None:
-    # F7 + F8(SIZE_KNOWN): close() must close the spool; a full spool grants SIZE_KNOWN.
-    data = b"x" * 4096
-    budget = DetectionBudget(
-        max_prefix_bytes=4096,
-        max_far_bytes=0,
-        max_tail_bytes=100,
-        max_seeks=1,
-        max_scan_bytes=0,
-        max_decode_input=0,
-        max_decode_output=0,
-        completion_window_bytes=0,
-        max_probe_links=0,
-        spool_non_seekable_up_to=len(data) + 64,
-    )
-    ws = PrefixWorkspace(NonSeekableBytesIO(data), budget)
-    spool = ws._spool
-    assert spool is not None
-    assert DetectionCapability.SIZE_KNOWN in ws.capabilities()
-    assert DetectionCapability.TAIL in ws.capabilities()
-    assert DetectionCapability.SEEK in ws.capabilities()
-    ws.close()
-    assert spool.closed
-
-
-def test_zero_seek_budget_does_not_advertise_tail_on_spool() -> None:
-    # F8: TAIL without SEEK is a lie — capability derivation withdraws both together.
-    data = b"x" * 100
-    budget = DetectionBudget(
-        max_prefix_bytes=4096,
-        max_far_bytes=0,
-        max_tail_bytes=65_557,
-        max_seeks=0,
-        max_scan_bytes=0,
-        max_decode_input=0,
-        max_decode_output=0,
-        completion_window_bytes=0,
-        max_probe_links=0,
-        spool_non_seekable_up_to=len(data) + 64,
-    )
-    with PrefixWorkspace(NonSeekableBytesIO(data), budget) as ws:
-        caps = ws.capabilities()
-        assert DetectionCapability.SEEK not in caps
-        assert DetectionCapability.TAIL not in caps
+    assert not within_budget(over, BALANCED_BUDGET)
 
 
 def test_read_at_on_path_seeks_without_buffering_prefix(tmp_path: Path) -> None:
@@ -557,7 +432,7 @@ def test_large_brotli_detection_does_not_read_most_of_file(tmp_path: Path) -> No
     assert info.cost_receipt is not None
     # Seek-based probes: unique bytes stay near the near-prefix + small chain walks.
     assert info.cost_receipt.unique_bytes_read < 512 * 1024
-    assert info.cost_receipt.within_budget(BALANCED_BUDGET)
+    assert within_budget(info.cost_receipt, BALANCED_BUDGET)
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +458,7 @@ def test_read_at_buffered_fallback_stays_inside_the_budget(
     with PrefixWorkspace(payload, FAST_BUDGET) as ws:
         assert ws.read_at(PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE - 24, 24) is None
         assert ws.receipt.unique_bytes_read <= FAST_BUDGET.max_scan_bytes
-        assert ws.receipt.within_budget(FAST_BUDGET)
+        assert within_budget(ws.receipt, FAST_BUDGET)
         assert any(
             s.tier == "content_probe_read_at"
             and s.reason is TierSkipReason.BUDGET_EXHAUSTED
@@ -598,8 +473,8 @@ def test_within_budget_checks_far_bytes() -> None:
     from archivey.detection_cost import DetectionCostReceipt
 
     limit = BALANCED_BUDGET.max_far_bytes
-    assert DetectionCostReceipt(far_bytes=limit).within_budget(BALANCED_BUDGET)
-    assert not DetectionCostReceipt(far_bytes=limit + 1).within_budget(BALANCED_BUDGET)
+    assert within_budget(DetectionCostReceipt(far_bytes=limit), BALANCED_BUDGET)
+    assert not within_budget(DetectionCostReceipt(far_bytes=limit + 1), BALANCED_BUDGET)
 
 
 def _mz_stub_bytes() -> bytes:
@@ -688,7 +563,7 @@ def test_over_budget_receipt_always_names_a_cut_short_tier(
         TierSkipReason.BUDGET_EXHAUSTED,
         TierSkipReason.CAPABILITY_UNAVAILABLE,
     }
-    assert receipt.within_budget(budget) or any(
+    assert within_budget(receipt, budget) or any(
         s.reason in incomplete for s in info.unavailable_tiers
     ), (receipt, info.unavailable_tiers)
 
@@ -720,6 +595,6 @@ def test_two_pass_receipt_over_budget_also_names_a_cut_short_tier(
         TierSkipReason.BUDGET_EXHAUSTED,
         TierSkipReason.CAPABILITY_UNAVAILABLE,
     }
-    assert receipt.within_budget(budget) or any(
+    assert within_budget(receipt, budget) or any(
         s.reason in incomplete for s in info.unavailable_tiers
     ), (receipt, info.unavailable_tiers)

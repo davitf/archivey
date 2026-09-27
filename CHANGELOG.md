@@ -430,16 +430,21 @@ promise with that line; treat `0.2.0` as the first release of this library.
   extraction wrote, as every other name collision already treated the two.
 - **Detection's cost receipt now reports what detection did.** Under a smaller
   `DetectionBudget` the inner-TAR probe still decoded up to 1 MiB, and a content probe
-  on an `ArchiveStream` could buffer 1 MiB, so the receipt failed its own
-  `within_budget` check with no skipped tier to explain it. Both now stay inside the
+  on an `ArchiveStream` could buffer 1 MiB, so the receipt showed more work than the
+  budget allowed, with no skipped tier to explain it. Both now stay inside the
   budget and record the tier as budget-exhausted when they are cut short, as do a far
   signature past `max_far_bytes` and an SFX scan that misses in a window the budget
-  shortened. A failed inner-TAR decode is now charged, `within_budget` also checks
-  `far_bytes`, and a stub `.exe` followed to its split volume reports both passes' cost
-  with `passes=2`, judged against two budgets.
+  shortened. A failed inner-TAR decode is now charged, and a stub `.exe` followed to its
+  split volume reports both passes' cost with `passes=2`, judged against two budgets.
 
 ### Changed
 
+- **`archivey.detection_cost` keeps only what detection uses.** `DetectionCapability`
+  is removed. `DetectionBudget` loses `max_tail_bytes` and `max_seeks`, which no tier
+  read, and `spool_non_seekable_up_to`: detection no longer spools a pipe to a temporary
+  file. `DetectionCostReceipt` loses `tail_bytes`, `seeks` and `spooled_bytes`, and its
+  `charge()` and `within_budget()` methods. `FormatInfo.unavailable_tiers` no longer
+  lists a `zip_tail` skip on every result, so it is empty when every tier ran.
 - **TAR names decode as UTF-8 whatever the locale.** Without `encoding=`, ustar and GNU
   names (and `uname`, `gname`, link targets) used to follow Python's `tarfile` default,
   the process filesystem encoding on POSIX, so the same archive listed differently under

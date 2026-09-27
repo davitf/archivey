@@ -55,11 +55,7 @@ from typing import TYPE_CHECKING, BinaryIO, Callable
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, AcceleratorMode
 from archivey.detection import DetectedBy, DetectionConfidence, FormatInfo
-from archivey.detection_cost import (
-    DetectionBudget,
-    DetectionCapability,
-    TierSkipReason,
-)
+from archivey.detection_cost import DetectionBudget, TierSkipReason
 from archivey.diagnostics import (
     DiagnosticCode,
     FormatConflictContext,
@@ -631,8 +627,8 @@ def detect_format(
     — the default, so ``detect_format("vol.exe")`` agrees with ``open_archive``.
     ``open_archive`` probes with this flag off, then switches the source itself.
     The returned ``cost_receipt`` and ``unavailable_tiers`` then cover both passes, the
-    stub's and the volume's. Each pass runs under the full ``budget``; the receipt's
-    ``passes`` is 2 and ``within_budget`` judges it against two budgets.
+    stub's and the volume's. Each pass runs under the full ``budget``, and the receipt's
+    ``passes`` is 2.
 
     A directory path returns :attr:`ArchiveFormat.DIRECTORY` with ``CERTAIN``
     confidence and ``detected_by="directory"``, matching ``open_archive``, which reads
@@ -739,13 +735,6 @@ def _detect_format_body(
     ext_fmt = ext_match[0] if ext_match is not None else None
 
     with PrefixWorkspace(source, budget, receipt) as workspace:
-        # Record ZIP-tail policy up front so BALANCED leaves an explicit trace that the
-        # tier was not enabled (distinct from capability-unavailable on a pipe).
-        if budget.max_tail_bytes <= 0:
-            workspace.record_skip("zip_tail", TierSkipReason.NOT_ENABLED_BY_POLICY)
-        elif DetectionCapability.TAIL not in workspace.capabilities():
-            workspace.record_skip("zip_tail", TierSkipReason.CAPABILITY_UNAVAILABLE)
-
         # Magic signals split by where they live: "near" ones fit in the default window;
         # "far" ones (ISO's CD001 at 32 769) need an extended peek taken on demand.
         near = [e for e in magic_entries if e.offset + len(e.magic) <= DETECTION_LIMIT]
