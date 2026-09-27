@@ -499,7 +499,11 @@ def _psw_check_usable(enc: RarEncryptionInfo) -> bool:
 
 @contextmanager
 def _close_on_error(owned: BinaryIO) -> Iterator[None]:
-    """Close ``owned`` (a stream that owns its process) if the block raises."""
+    """Close ``owned`` if the block raises.
+
+    ``owned`` is the stream built before the block; what the block builds on top of it
+    is not closed, so wrap each new outermost stream in its own block.
+    """
     try:
         yield
     except BaseException:
@@ -556,7 +560,7 @@ class _UnrarOwnedStream(ProcessOutputStream):
     def read(self, n: int = -1, /) -> bytes:
         data = super().read(n)
         self._bytes_read += len(data)
-        if not data:
+        if not data and n != 0:
             # Completing / EOF read: reap and map exit here so content faults raise on
             # read (not only on close).
             self._check_exit(wait_timeout=self._EOF_EXIT_WAIT)
@@ -1672,7 +1676,9 @@ class RarReader(BaseArchiveReader):
                 # avoid legacy-format false positives; wrong-password (11) still maps.
                 owned = _UnrarOwnedStream(stdout, proc, has_verifiable_hash=True)
                 with _close_on_error(owned):
-                    solid = SolidBlockReader(self._track_decompressed(owned))
+                    tracked = self._track_decompressed(owned)
+                with _close_on_error(tracked):
+                    solid = SolidBlockReader(tracked)
             return solid
 
         pipe_offset = 0
@@ -2491,7 +2497,9 @@ class RarReader(BaseArchiveReader):
                     ),
                 )
                 with _close_on_error(owned):
-                    solid = SolidBlockReader(self._track_decompressed(owned))
+                    tracked = self._track_decompressed(owned)
+                with _close_on_error(tracked):
+                    solid = SolidBlockReader(tracked)
             return solid
 
         def _refuse(member: ArchiveMember, reason: str) -> BinaryIO:

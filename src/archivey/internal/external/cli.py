@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import IO, BinaryIO, cast
 
 from archivey.exceptions import PackageNotInstalledError, ReadError
-from archivey.internal.streams.child_exit import spawn, wait_or_kill
+from archivey.internal.streams.child_process import spawn, wait_or_kill
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.terminal import display_path
 
@@ -221,8 +221,8 @@ def spawn_for_stdout(
     """Start ``cmd`` with stdout on a pipe and stderr discarded; return ``(proc, stdout)``.
 
     A program that cannot start raises ``PackageNotInstalledError(not_started)``. The
-    caller owns the process: wrap ``stdout`` in a :class:`ProcessOutputStream` at once,
-    or call :func:`terminate_process` on failure.
+    caller owns the process until a :class:`ProcessOutputStream` takes it: nothing
+    reaps it if the caller raises before that constructor's ``try`` is reached.
     """
     proc = spawn(
         cmd,
@@ -246,7 +246,9 @@ class ProcessOutputStream(DelegatingStream):
 
     ``_raise_for_returncode`` maps the exit status once: on the read at end of file
     (the subclass's ``read`` calls ``_check_exit``) if the program has exited by then,
-    else on close. A constructor that raises stops the program first.
+    else on close. The stream owns the program from the ``try`` in ``__init__`` on: a
+    raise from there stops the program first. A subclass's own assignments before
+    ``super().__init__`` run before that, so they must not raise.
     """
 
     _SUBCLASS_CLOSES_INNER = True

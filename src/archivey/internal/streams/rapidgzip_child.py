@@ -44,7 +44,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
 )
-from archivey.internal.streams.child_exit import (
+from archivey.internal.streams.child_process import (
     REAP_TIMEOUT,
     describe_exit,
     is_crash,

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import IO
 
 from archivey.exceptions import ArchiveyUsageError, ReadError, ResourceLimitError
-from archivey.internal.streams.child_exit import (
+from archivey.internal.streams.child_process import (
     describe_exit,
     is_crash,
     is_system_kill,
@@ -39,7 +39,7 @@ _REPLY = struct.Struct("<BBBI")
 _WORKER = Path(__file__).with_name("ppmd_worker.py")
 
 # Starting and ending the child, and how its death is read, are shared with the
-# rapidgzip child, in ``child_exit``.
+# rapidgzip child, in ``child_process``.
 
 
 class _PpmdError(ValueError):
