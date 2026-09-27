@@ -29,9 +29,8 @@ the whole file (§6). `member.size` is `None` although the trailer holds a size,
 same reason. With `rapidgzip`, a truncated stream is reported with the same certainty as
 without it only for a one-member gzip; a truncated zlib stream read alone through
 `rapidgzip` under `ON` can come back short with no error (§5). And under `AUTO`,
-`rapidgzip` never speeds up a plain front-to-back read, whatever the size: it is used only
-when the caller declared seeking (§2.3). Its parallel decode is available to a sequential
-read through `ON`.
+`rapidgzip` never decodes a stream opened without declared seeking, whatever its size
+(§2.3), so a plain open read front to back gets the standard library.
 
 ## 1. Shape
 
@@ -129,15 +128,15 @@ open, and saves about 3.4 ms per MB of compressed input on a full read, so below
 condition keeps a bare zlib or raw DEFLATE stream on the standard library, because nothing
 could catch `rapidgzip` ending one early (below).
 
-**A sequential read never gets `rapidgzip` under `AUTO`.** `AUTO` resolves against declared
-seek demand, the rule every indexed codec follows (xz and lzip parse no index without it
-either), so an undeclared stream builds no seek machinery. `rapidgzip` is that machinery
-here, although it is also a faster decoder: it decodes in parallel on all cores, about 2×
-the standard library on a full read (a 40 MB `.gz` on 4 cores: 0.45 s through the standard library,
-0.20 s through the child, under `AUTO` with `seekable=True` or under `ON`). A caller who
-reads front to back and wants that speed sets `use_rapidgzip=ON`, which uses it for
-declared and undeclared streams alike, and pays the child's start on every stream,
-small ones included.
+**Without declared seeking, `AUTO` never uses `rapidgzip`.** `AUTO` resolves against
+declared seek demand, not against how the caller then reads: a member stream's seek
+machinery is built only on that declaration (xz and lzip build their member-stream seek
+index the same way), and `rapidgzip` is that machinery here. It is also a faster decoder,
+since it decodes in parallel, so the 3.4 ms per MB above applies to a full front-to-back
+read too. A caller who reads large streams front to back and wants that speed declares
+seeking (`seekable_members=True`, `open_stream(seekable=True)`), which keeps the 16 MiB
+gate, or sets `use_rapidgzip=ON`, which pays the child's start on every stream, small ones
+included.
 
 **Why a child process.** `rapidgzip` 0.16 calls `std::terminate` when it decodes a DEFLATE
 stream that ends early. The throw comes from a destructor, so it happens for a path, a
@@ -266,7 +265,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Trailing junk after a `.gz` is `CorruptionError`, and `TruncatedError` under `rapidgzip` | **archivey** | The standard library engine follows `GzipFile`; the cross-codec picture is [`single-file.md`](single-file.md) §3 |
 | One warning on `archivey.streams` that `rapidgzip` cannot run | **archivey** | No child process can start here; `AUTO` used the standard library. `use_rapidgzip=OFF` silences it |
 | A zlib stream with a preset dictionary is not detected, and fails when opened by name | **format** | archivey holds no dictionary |
-| A large `.gz` read front to back is no faster with `[seekable]` installed | **archivey** | `AUTO` uses `rapidgzip` only on declared seeking (§2.3). Set `use_rapidgzip=ON` for its parallel decode |
+| A large `.gz` opened without `seekable_members=True` is no faster with `[seekable]` installed | **archivey** | `AUTO` uses `rapidgzip` only on declared seeking (§2.3). Declare seeking, or set `use_rapidgzip=ON` |
 | A cold backward seek under `rapidgzip` still re-decodes megabytes, and the log says so | **library** | Its index is sparse: three points over 5 MB of `gzip.compress` output |
 
 ## 6. Decisions
