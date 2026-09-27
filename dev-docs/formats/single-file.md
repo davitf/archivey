@@ -79,7 +79,7 @@ never reports it as the file's size.
 reaches offset N by decoding everything before it, unless the stream has places where
 decoding can restart: xz blocks and streams, lzip members, `.Z` CLEAR codes, and the
 index `rapidgzip` builds as it reads gzip or bzip2. Where there are none, and for most
-files there are none (default `xz` writes one block, `lzip` one member), a backward seek
+files there are none (default `xz` writes one block, `lzip` one member, and `plzip` one member for a small file), a backward seek
 decodes again from byte zero. The decode engine (§2.3) keeps the points it finds and
 reports a backward seek that costs more than a megabyte.
 
@@ -196,7 +196,7 @@ Where resume points come from, per codec:
 | Codec | Resume points |
 | --- | --- |
 | xz | Every block, and every stream in a multi-stream file. Default `xz` writes one block; `xz -T0` and `--block-size` write many |
-| lzip | Every member. Default `lzip` writes one; `plzip` writes many |
+| lzip | Every member. Default `lzip` writes one; `plzip` one per data block, many with a small `-B` |
 | `.Z` | Every CLEAR code, which `compress` emits when the dictionary stops paying |
 | gzip, zlib, raw DEFLATE, bzip2 | None natively. With `rapidgzip` engaged, its own index, built as it decodes |
 | LZMA Alone, zstd, LZ4, Brotli | None |
@@ -256,7 +256,7 @@ Not shipped, for any format.
 **Measured producers.** Each file below was built from the same 4 MB text payload with
 the tool named, then listed and read through `open_archive`, plainly and with
 `seekable_members=True`, on the development container (gzip 1.12, pigz 2.8, bgzip from
-htslib 1.19, bzip2 1.0.8, pbzip2 1.1.13, lbzip2 2.5, xz 5.4.5, plzip 1.11 (installed there as both `lzip` and `plzip`),
+htslib 1.19, bzip2 1.0.8, pbzip2 1.1.13, lbzip2 2.5, xz 5.4.5, plzip 1.11 (the container's `lzip` command is plzip too, so every lzip row is plzip output),
 zstd 1.5.5, lz4 1.9.4, brotli 1.1.0, ncompress 5.0). Every one read back correctly, except
 where the table says otherwise; the per-codec pages carry the details.
 
@@ -266,7 +266,7 @@ where the table says otherwise; the per-codec pages carry the details.
 | `bzip2`, `pbzip2`, `lbzip2`, two streams concatenated | Read |
 | `xz`, `xz -T4 --block-size`, `-C none`, `-C sha256`, two streams with zero padding | Read; `size` from the index |
 | `xz --format=lzma` | Detected by the probe (`PROBABLE`), read; `size=None` because `xz` writes the "unknown size" marker |
-| `lzip`, `plzip -B` | Read; `size` and the combined CRC-32 from the trailers |
+| `plzip`, `plzip -B` | Read; `size` and the combined CRC-32 from the trailers |
 | `zstd`, `zstd --no-check`, `pzstd`, two frames concatenated, `zstd --long=31` from a file | Read |
 | `zstd --long=31` from standard input (frame declares a 2 GiB window) | **`CorruptionError: … Frame requires too much memory for decoding`** ([`zstd-lz4.md`](zstd-lz4.md) §5) |
 | `lz4`, `lz4 -BD`, `lz4 --content-size`, two frames concatenated | Read; `size=None` even with `--content-size` |
@@ -327,7 +327,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
-| `member.size` is `None` for gzip, bzip2, zlib, zstd, LZ4, Brotli and `.Z`, and on a pipe for every codec | **format** / **archivey** | Most of those formats store no reliable total (§1). zstd and LZ4 frames can declare a content size, which archivey does not read ([`zstd-lz4.md`](zstd-lz4.md) §5) |
+| `member.size` is `None` for gzip, bzip2, zlib, zstd, LZ4, Brotli and `.Z`, and on a pipe for every codec but LZMA Alone | **format** / **archivey** | Most of those formats store no reliable total (§1). zstd and LZ4 frames can declare a content size, which archivey does not read ([`zstd-lz4.md`](zstd-lz4.md) §5) |
 | Bytes after the last stream fail one codec and pass another | **archivey** | The per-codec table in §3; a policy question (§7) |
 | A backward seek is slow, and the log says so | **format** | No resume point before the target (§2.3). Use `stream_members()` or read forward once; for gzip and bzip2, `rapidgzip` |
 | The rewind warning says the codec "has no random-access index" on an `.xz` or `.lz` that has one | **archivey** | The message is chosen by codec, not by whether a resume point was found; on a multi-block `.xz` it is wrong. Tracked internally |

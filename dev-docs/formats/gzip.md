@@ -78,9 +78,9 @@ zlib has no magic and is found by a content probe, the second of the three after
 It first checks the two header bytes against the RFC 1950 grammar
 (`_zlib_header_plausible`): compression method 8, a window of at most 32 KiB (`CINFO <= 7`),
 and `(CMF * 256 + FLG) % 31 == 0`. The grammar is stated rather than listed, because a list
-of header values is easy to get wrong: the common four leave out six of the seven legal
-window sizes. `FDICT`
-passes the gate; a stream needing a preset dictionary then fails the decode and falls
+of header values is easy to get wrong: the common four leave out six of the seven window
+sizes `zlib` will write. The grammar also admits `CINFO = 0`, which `zlib` cannot write.
+`FDICT` passes the gate; a stream needing a preset dictionary then fails the decode and falls
 through. Only then does the probe decode the sample ([`single-file.md`](single-file.md)
 §2.1). A zlib match is `PROBABLE`.
 
