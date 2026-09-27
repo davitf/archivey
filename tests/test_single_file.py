@@ -700,6 +700,17 @@ def test_truncated_gzip_raises_truncated() -> None:
             _read_single_streamed_member(ar)
 
 
+def test_truncation_is_caught_as_corruption() -> None:
+    # The error-handling spec's row: data that ends early raises TruncatedError, and
+    # ``except CorruptionError`` catches it.
+    assert issubclass(TruncatedError, CorruptionError)
+    full = gzip.compress(b"streamed payload" * 1000)
+    with open_archive(NonSeekableBytesIO(full[: len(full) // 2]), streaming=True) as ar:
+        with pytest.raises(CorruptionError) as caught:
+            _read_single_streamed_member(ar)
+    assert isinstance(caught.value, TruncatedError)
+
+
 def test_corrupt_gzip_raises_corruption() -> None:
     data = bytearray(gzip.compress(b"streamed payload" * 100))
     data[15:35] = b"\x00" * 20  # clobber the deflate body (past the 10-byte header)
