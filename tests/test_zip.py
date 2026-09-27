@@ -32,6 +32,7 @@ from archivey.exceptions import (
 )
 from archivey.types import CreateSystem, HashAlgorithm, crc32_digest
 from tests.conftest import requires_binary
+from tests.corruption_util import raises_corruption
 from tests.streams_util import NonSeekableBytesIO
 from tests.zipcrypto import build_zipcrypto_zip, zip_with_truncated_zipcrypto_header
 
@@ -951,7 +952,7 @@ def test_truncated_zip_raises_corruption() -> None:
         z.writestr("hello.txt", b"hello world" * 100)
     truncated = buf.getvalue()[: len(buf.getvalue()) // 2]
 
-    with pytest.raises(CorruptionError) as excinfo:
+    with raises_corruption() as excinfo:
         open_archive(io.BytesIO(truncated))
     assert isinstance(excinfo.value.__cause__, zipfile.BadZipFile)
 
@@ -968,7 +969,7 @@ def test_corrupt_member_data_raises_corruption_on_read() -> None:
 
     with open_archive(io.BytesIO(bytes(raw))) as ar:
         assert ar.members()[0].name == "data.txt"  # listing is unaffected
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             ar.read("data.txt")
 
 
@@ -1054,7 +1055,7 @@ def test_overlapping_entries_bomb_translated_to_corruption() -> None:
         overlapping = [m for m in ar.members() if m.name != "f7"]  # last entry is valid
         assert overlapping, "expected the crafted archive to list overlapping members"
         for member in overlapping:
-            with pytest.raises(CorruptionError) as excinfo:
+            with raises_corruption() as excinfo:
                 ar.read(member)
             assert "Overlapped entries" in str(excinfo.value)
             assert isinstance(excinfo.value.__cause__, zipfile.BadZipFile)
@@ -1203,7 +1204,7 @@ def test_record_at_the_stale_declared_offset_is_not_read_as_encryption() -> None
     raw[cd : cd + 4] = b"XXXX"
     stub = bytearray(max(cd + 4, 64))
     stub[cd : cd + 4] = b"PK\x06\x08"
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         open_archive(io.BytesIO(bytes(stub) + bytes(raw)), format=ArchiveFormat.ZIP)
 
 
@@ -1214,7 +1215,7 @@ def test_damaged_central_directory_stays_corruption() -> None:
     raw = bytearray(buf.getvalue())
     cd = raw.index(b"PK\x01\x02")
     raw[cd : cd + 4] = b"XXXX"
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         open_archive(io.BytesIO(bytes(raw)))
 
 

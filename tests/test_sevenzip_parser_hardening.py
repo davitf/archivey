@@ -23,7 +23,6 @@ import pytest
 from archivey import open_archive
 from archivey.config import ListingLimits
 from archivey.exceptions import (
-    CorruptionError,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -43,6 +42,7 @@ from archivey.internal.backends.sevenzip_pipeline import (
     plan_folder,
 )
 from tests.conftest import requires_binary
+from tests.corruption_util import raises_corruption
 
 _COPY = b"\x00"
 _DELTA = b"\x03"
@@ -236,7 +236,7 @@ def _one_folder_header(folder: bytes, sizes: list[int]) -> bytes:
 def test_malformed_coder_graph_is_corruption_at_parse(
     folder: bytes, sizes: list[int], match: str
 ) -> None:
-    with pytest.raises(CorruptionError, match=match):
+    with raises_corruption(match=match):
         parse_header_block(_one_folder_header(folder, sizes))
 
 
@@ -246,7 +246,7 @@ def test_bind_pair_reusing_an_out_stream_is_corruption() -> None:
     folder = _folder(
         [_coder(_COPY), _coder(_COPY), _coder(_COPY)], bind_pairs=[(1, 0), (2, 0)]
     )
-    with pytest.raises(CorruptionError, match="invalid coder bind pair"):
+    with raises_corruption(match="invalid coder bind pair"):
         parse_header_block(_one_folder_header(folder, [1, 1, 1]))
 
 
@@ -275,7 +275,7 @@ def test_leftover_substream_is_corruption() -> None:
         names=["a"],
         substreams=b"\x0d" + _num(2) + b"\x09" + _num(3),
     )
-    with pytest.raises(CorruptionError, match="declares 2 unpack streams .* only 1"):
+    with raises_corruption(match="declares 2 unpack streams .* only 1"):
         _materialize(header)
 
 
@@ -287,7 +287,7 @@ def test_multi_stream_folder_without_sizes_is_corruption() -> None:
         names=["a", "b"],
         substreams=b"\x0d" + _num(2),
     )
-    with pytest.raises(CorruptionError, match="2 unpack streams but no substream"):
+    with raises_corruption(match="2 unpack streams but no substream"):
         parse_header_block(header)
 
 
@@ -320,7 +320,7 @@ def test_folder_overrunning_pack_sizes_is_corruption() -> None:
         pack_sizes=None,
         names=["a"],
     )
-    with pytest.raises(CorruptionError, match="missing pack stream"):
+    with raises_corruption(match="missing pack stream"):
         _materialize(header)
 
 
@@ -343,7 +343,7 @@ def test_short_signature_header_is_truncation() -> None:
 def test_full_next_header_with_bad_crc_stays_corruption() -> None:
     header = b"\x01\x00"
     data = _signature(next_offset=0, next_size=len(header), next_crc=0) + header
-    with pytest.raises(CorruptionError, match="next header CRC mismatch"):
+    with raises_corruption(match="next header CRC mismatch"):
         read_signature_and_next_header(io.BytesIO(data))
 
 
@@ -477,7 +477,7 @@ def _bcj_folder(method: bytes, props: bytes) -> sevenzip_parser.SevenZipFolder:
 
 
 def test_bcj_properties_of_the_wrong_length_are_corruption() -> None:
-    with pytest.raises(CorruptionError, match="Malformed 7z BCJ coder properties"):
+    with raises_corruption(match="Malformed 7z BCJ coder properties"):
         plan_folder(_bcj_folder(_BCJ_X86, b"\x00\x10\x00"))
 
 

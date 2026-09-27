@@ -33,6 +33,7 @@ from archivey.internal.streams import codecs
 from archivey.internal.streams.streamtools.binaryio import source_byte_size
 from archivey.types import CompressionAlgorithm, HashAlgorithm
 from tests.conftest import requires, requires_binary
+from tests.corruption_util import raises_corruption
 from tests.zip_aes_fixture import aes_ctr_le_encrypt, build_aes_zip
 
 _PASSWORD = b"secret"
@@ -233,7 +234,7 @@ def test_aes_tampered_hmac_raises_corruption(method: int) -> None:
         tamper_hmac=True,
     )
     with open_archive(io.BytesIO(data), password=_PASSWORD) as ar:
-        with pytest.raises(CorruptionError, match="HMAC"):
+        with raises_corruption(match="HMAC"):
             ar.read(ar.members()[0])
 
 
@@ -253,14 +254,14 @@ def test_aes_hmac_mismatch_keeps_raising_after_a_seek_back(method: int) -> None:
         io.BytesIO(data), password=_PASSWORD, seekable_members=True
     ) as ar:
         with ar.open(ar.members()[0]) as stream:
-            with pytest.raises(CorruptionError, match="HMAC"):
+            with raises_corruption(match="HMAC"):
                 stream.read()
             stream.seek(0)
-            with pytest.raises(CorruptionError, match="HMAC"):
+            with raises_corruption(match="HMAC"):
                 stream.read()
             # Asking for exactly the member returns in full, and still raises.
             stream.seek(0)
-            with pytest.raises(CorruptionError, match="HMAC"):
+            with raises_corruption(match="HMAC"):
                 stream.read(len(_PAYLOAD))
 
 
@@ -285,7 +286,7 @@ def test_aes_stage_read_none_reads_to_the_hmac() -> None:
     stream = open_winzip_aes_member(
         raw, aes=aes, password=_PASSWORD, compress_size=info.compress_size
     )
-    with pytest.raises(CorruptionError, match="HMAC"):
+    with raises_corruption(match="HMAC"):
         stream.read(None)
 
 
@@ -468,7 +469,7 @@ def test_aes_member_short_envelope_raises_truncated(keep: int, match: str) -> No
 @requires("cryptography")
 def test_aes_member_impossible_declared_size_stays_corruption() -> None:
     """A declared size too small to hold the envelope is a bad header, not a short read."""
-    with pytest.raises(CorruptionError, match="too short") as exc:
+    with raises_corruption(match="too short") as exc:
         open_winzip_aes_member(
             io.BytesIO(b"\x00" * 64),
             aes=WinZipAesInfo(vendor_version=2, strength=3, actual_method=0),
@@ -648,7 +649,7 @@ def test_aes_only_colliding_candidates_report_damage(
     )
     _collide_pw_verify(monkeypatch)
     with open_archive(io.BytesIO(data), password=[_COLLIDER, b"plain-wrong"]) as ar:
-        with pytest.raises(CorruptionError, match="most likely damaged"):
+        with raises_corruption(match="most likely damaged"):
             ar.read(ar.members()[0])
 
 
@@ -662,7 +663,7 @@ def test_aes_lone_colliding_password_fails_on_the_hmac(
     )
     _collide_pw_verify(monkeypatch)
     with open_archive(io.BytesIO(data), password=_COLLIDER) as ar:
-        with pytest.raises(CorruptionError, match="HMAC"):
+        with raises_corruption(match="HMAC"):
             ar.read(ar.members()[0])
 
 
@@ -721,7 +722,7 @@ def test_aes_decrypt_stream_seeks_keep_the_hmac(moves: list[tuple[int, int]]) ->
             assert stream.read(n) == payload[at : at + n]
         stream.seek(last_at)
         if tamper:
-            with pytest.raises(CorruptionError, match="HMAC"):
+            with raises_corruption(match="HMAC"):
                 stream.read(last_n)
         else:
             expected = payload[last_at:] if last_n < 0 else payload[last_at:][:last_n]
@@ -759,7 +760,7 @@ def test_aes_decrypt_stream_hmac_across_a_pull_that_straddles_the_frontier(
     if tamper == "none":
         assert stream.read() == payload[1000:]
     else:
-        with pytest.raises(CorruptionError, match="HMAC"):
+        with raises_corruption(match="HMAC"):
             stream.read()
 
 
@@ -786,7 +787,7 @@ def test_aes_decrypt_stream_catches_tampered_ciphertext_a_seek_skipped() -> None
         cipher_len=len(cipher),
     )
     stream.seek(50)
-    with pytest.raises(CorruptionError, match="HMAC"):
+    with raises_corruption(match="HMAC"):
         stream.read()
 
 
@@ -805,7 +806,7 @@ def test_aes_decrypt_stream_seek_to_current_position_keeps_the_hmac() -> None:
     stream = _ctr_stream(payload, tamper_mac=True)
     assert stream.read(20) == payload[:20]
     stream.seek(20)
-    with pytest.raises(CorruptionError, match="HMAC"):
+    with raises_corruption(match="HMAC"):
         stream.read()
 
 
@@ -880,7 +881,7 @@ def test_aes_tampered_hmac_with_candidates_raises_corruption(method: int) -> Non
         tamper_hmac=True,
     )
     with open_archive(io.BytesIO(data), password=[b"nope", _PASSWORD]) as ar:
-        with pytest.raises(CorruptionError, match="most likely damaged"):
+        with raises_corruption(match="most likely damaged"):
             ar.read(ar.members()[0])
 
 

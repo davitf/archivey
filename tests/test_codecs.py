@@ -19,7 +19,6 @@ import pytest
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
-    CorruptionError,
     PackageNotInstalledError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -43,6 +42,7 @@ from archivey.internal.streams.codecs import (
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, StreamFormat, crc32_digest
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
+from tests.corruption_util import is_corruption, raises_corruption
 from tests.streams_util import (
     NonSeekableBytesIO,
     compress_lzma2_raw,
@@ -128,7 +128,7 @@ def test_resolve_backend_without_opening() -> None:
     assert backend.codec is Codec.GZIP
     # The translator is returned and maps the library's own corruption exception.
     translated = backend.translate(gzip.BadGzipFile("bad"))
-    assert isinstance(translated, CorruptionError)
+    assert is_corruption(translated)
     # And the open function is callable on demand (nothing was opened yet).
     with backend.open(io.BytesIO(gzip.compress(b"hi"))) as stream:
         assert stream.read() == b"hi"
@@ -352,7 +352,7 @@ def test_corrupt_gzip_translates_to_corruption_with_cause() -> None:
     with open_codec_stream(
         Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP
     ) as stream:
-        with pytest.raises(CorruptionError) as excinfo:
+        with raises_corruption() as excinfo:
             stream.read()
     # Stdlib path uses zlib's gzip window (not GzipFile); bad magic → zlib.error.
     assert isinstance(excinfo.value.__cause__, zlib.error)
@@ -367,7 +367,7 @@ def test_mid_stream_corrupt_gzip_translates_to_corruption_with_cause() -> None:
     with open_codec_stream(
         Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP
     ) as stream:
-        with pytest.raises(CorruptionError) as excinfo:
+        with raises_corruption() as excinfo:
             stream.read()
     assert isinstance(excinfo.value.__cause__, zlib.error)
 
@@ -403,7 +403,7 @@ def test_corrupt_lzma2_translates_to_corruption() -> None:
     with open_codec_stream(
         Codec.LZMA2, io.BytesIO(bytes(corrupt)), params=params
     ) as stream:
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             stream.read()
 
 
@@ -414,7 +414,7 @@ def test_corrupt_brotli_translates_to_corruption_with_cause() -> None:
     corrupt = bytearray(brotli.compress(CONTENT))
     corrupt[len(corrupt) // 2] ^= 0xFF
     with open_codec_stream(Codec.BROTLI, io.BytesIO(bytes(corrupt))) as stream:
-        with pytest.raises(CorruptionError) as excinfo:
+        with raises_corruption() as excinfo:
             stream.read()
     assert isinstance(excinfo.value.__cause__, brotli.error)
 
@@ -445,7 +445,7 @@ def test_corrupt_unix_compress_translates_to_corruption() -> None:
     corrupt = bytearray(make_unix_compress(CONTENT))
     corrupt[10] ^= 0xFF  # break the LZW bitstream
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(bytes(corrupt))) as stream:
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             stream.read()
 
 
@@ -460,7 +460,7 @@ def test_unix_compress_source_cut_inside_the_header_is_truncated(data: bytes) ->
 @pytest.mark.parametrize("data", [b"a", b"ab", b"\x1fa"])
 def test_unix_compress_short_source_that_is_not_z_is_corrupt(data: bytes) -> None:
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(data)) as stream:
-        with pytest.raises(CorruptionError, match="missing header"):
+        with raises_corruption(match="missing header"):
             stream.read()
 
 
@@ -739,7 +739,7 @@ def test_unix_compress_maxbits_above_16_rejected() -> None:
     for maxbits in (17, 24, 31):
         header = bytes([0x1F, 0x9D, 0x80 | maxbits])
         with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(header)) as stream:
-            with pytest.raises(CorruptionError, match="ceiling of 16"):
+            with raises_corruption(match="ceiling of 16"):
                 stream.read()
 
 
@@ -974,7 +974,7 @@ def test_translated_error_is_stamped() -> None:
     stream = open_codec_stream(
         Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_STDLIB_GZIP, stamp=stamp
     )
-    with pytest.raises(CorruptionError) as excinfo:
+    with raises_corruption() as excinfo:
         stream.read()
     assert excinfo.value.archive_name == "a.gz"
     assert excinfo.value.member_name == "<stream>"
@@ -1009,7 +1009,7 @@ def test_verify_mismatch_raises_at_eof_without_losing_final_chunk() -> None:
     bad = crc32_digest(zlib.crc32(CONTENT) ^ 0xFFFF)
     stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.CRC32: bad})
     collected = bytearray()
-    with pytest.raises(CorruptionError, match="crc32"):
+    with raises_corruption(match="crc32"):
         while True:
             chunk = stream.read(7)
             if not chunk:
@@ -1026,7 +1026,7 @@ def test_verify_sized_mismatch_withholds_on_reaching_read() -> None:
         {HashAlgorithm.CRC32: bad},
         expected_size=len(CONTENT),
     )
-    with pytest.raises(CorruptionError, match="crc32"):
+    with raises_corruption(match="crc32"):
         stream.read(len(CONTENT))
 
 
@@ -1038,7 +1038,7 @@ def test_verify_sized_mismatch_chunked_withholds_final_chunk() -> None:
         expected_size=len(CONTENT),
     )
     collected = bytearray()
-    with pytest.raises(CorruptionError, match="crc32"):
+    with raises_corruption(match="crc32"):
         while True:
             chunk = stream.read(7)
             if not chunk:
@@ -1060,7 +1060,7 @@ def test_verify_slurp_raises_on_mismatch_not_close() -> None:
     """Complete-stream read() must raise on bad CRC so read(); close() cannot succeed."""
     bad = crc32_digest(zlib.crc32(CONTENT) ^ 0xFFFF)
     stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.CRC32: bad})
-    with pytest.raises(CorruptionError, match="crc32"):
+    with raises_corruption(match="crc32"):
         stream.read()
     stream.close()  # teardown-only; must not raise the digest fault again
 
@@ -1068,7 +1068,7 @@ def test_verify_slurp_raises_on_mismatch_not_close() -> None:
 def test_verify_read_then_close_anti_footgun() -> None:
     bad = crc32_digest(zlib.crc32(CONTENT) ^ 0xFFFF)
     stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.CRC32: bad})
-    with pytest.raises(CorruptionError, match="crc32"):
+    with raises_corruption(match="crc32"):
         data = stream.read()
         stream.close()
         del data
@@ -1107,7 +1107,7 @@ def test_verify_expected_size_overlong_stops_at_declared_size() -> None:
     declared = len(CONTENT) - 200
     stream = VerifyingStream(inner, {}, expected_size=declared)
     out = bytearray()
-    with pytest.raises(CorruptionError, match="exceeds"):
+    with raises_corruption(match="exceeds"):
         while True:
             chunk = stream.read(64)
             if not chunk:
@@ -1128,7 +1128,7 @@ def test_verify_hashed_overlong_with_matching_crc_still_capped() -> None:
         expected_size=declared,
     )
     out = bytearray()
-    with pytest.raises(CorruptionError, match="exceeds"):
+    with raises_corruption(match="exceeds"):
         while True:
             chunk = stream.read(64)
             if not chunk:
@@ -1190,7 +1190,7 @@ def test_verify_sized_readall_overlong_stops_at_cap() -> None:
     inner = io.BytesIO(CONTENT)
     declared = len(CONTENT) - 200
     stream = VerifyingStream(inner, {}, expected_size=declared)
-    with pytest.raises(CorruptionError, match="exceeds"):
+    with raises_corruption(match="exceeds"):
         stream.read(-1)
     assert inner.tell() <= declared + 1
 
@@ -1337,14 +1337,14 @@ def test_verify_seek_to_declared_size_cannot_silence_overrun() -> None:
     # seek exactly to the declared size (the completeness-test boundary).
     stream = VerifyingStream(io.BytesIO(overlong), {}, expected_size=declared)
     stream.seek(declared)
-    with pytest.raises(CorruptionError, match="exceeds its declared size"):
+    with raises_corruption(match="exceeds its declared size"):
         stream.read(1)
     stream.close()
 
     # seek well past the declared size.
     stream = VerifyingStream(io.BytesIO(overlong), {}, expected_size=declared)
     stream.seek(declared + 100)
-    with pytest.raises(CorruptionError, match="exceeds its declared size"):
+    with raises_corruption(match="exceeds its declared size"):
         stream.read(-1)
     stream.close()
 
@@ -1494,7 +1494,7 @@ def test_verify_blake2sp_mismatch_raises() -> None:
     stream = VerifyingStream(
         io.BytesIO(CONTENT), {HashAlgorithm.BLAKE2SP: b"\x00" * 32}
     )
-    with pytest.raises(CorruptionError, match="blake2sp"):
+    with raises_corruption(match="blake2sp"):
         while stream.read(64):
             pass
 
@@ -1514,7 +1514,7 @@ def test_verify_wrong_width_digest_mismatches_not_raises() -> None:
     """
     wrong_width = _crc32(CONTENT) + b"\x00\x00"  # 6 bytes vs CRC-32's 4
     stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.CRC32: wrong_width})
-    with pytest.raises(CorruptionError, match="crc32"):
+    with raises_corruption(match="crc32"):
         while stream.read(64):  # read to EOF; the terminal read verifies
             pass
 
@@ -1887,7 +1887,7 @@ def test_verify_fused_archive_stream_slurp_raises() -> None:
         translate=lambda _exc: None,
         expected_hashes={HashAlgorithm.CRC32: bad},
     )
-    with pytest.raises(CorruptionError, match="crc32"):
+    with raises_corruption(match="crc32"):
         stream.read()
     stream.close()
 

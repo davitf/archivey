@@ -46,6 +46,7 @@ from archivey.internal.streams.rapidgzip_child import (
     RapidgzipChildStream,
 )
 from tests.conftest import requires
+from tests.corruption_util import is_corruption
 
 pytestmark = requires("rapidgzip")
 
@@ -591,7 +592,7 @@ def test_any_runtime_error_rapidgzip_raised_is_translated(message: str) -> None:
         reported = rapidgzip_child._reported_error(
             f"RuntimeError\n\n{message}".encode()
         )
-        assert isinstance(codec._translate_accelerator(reported), CorruptionError)
+        assert is_corruption(codec._translate_accelerator(reported))
         assert codec._translate_accelerator(RuntimeError(message)) is None
 
 

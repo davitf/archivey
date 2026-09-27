@@ -17,11 +17,12 @@ from typing import TYPE_CHECKING, NoReturn
 import pytest
 
 import archivey
-from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.exceptions import TruncatedError
 from archivey.internal.reader_state import LifecycleState
 from archivey.internal.streams.codecs import _AcceleratorStream, _TrappingSource
 from archivey.internal.streams.verify import VerifyingStream
 from tests.conftest import requires
+from tests.corruption_util import raises_corruption
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -50,7 +51,7 @@ def test_corrupt_member_reads_as_corrupt_through_either_read(how: str) -> None:
     with (
         archivey.open_archive(io.BytesIO(blob)) as reader,
         reader.open(reader.get("a.txt")) as stream,
-        pytest.raises(CorruptionError) as info,
+        raises_corruption() as info,
     ):
         if how == "read()":
             stream.read()

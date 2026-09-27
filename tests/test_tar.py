@@ -32,7 +32,6 @@ from archivey.diagnostics import (
     DiagnosticPolicy,
 )
 from archivey.exceptions import (
-    CorruptionError,
     DiagnosticRaisedError,
     ReadError,
     ResourceLimitError,
@@ -42,6 +41,7 @@ from archivey.exceptions import (
 from archivey.internal.backends import tar_reader as tar_reader_module
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
 from tests.conftest import requires_zstd, zstd_backend
+from tests.corruption_util import is_corruption, raises_corruption
 from tests.streams_util import (
     FactSizedReadRecorder,
     NonSeekableBytesIO,
@@ -598,14 +598,14 @@ def test_members_report_recovers_prefix_on_corrupt_header() -> None:
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         report = ar.members_report()
         assert report.error is not None
-        assert isinstance(report.error, CorruptionError)
+        assert is_corruption(report.error)
         names = [m.name for m in report.members]
         assert names == ["a.txt"]
         assert ar.members_report_if_available() is report
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             ar.members()
         yielded: list[str] = []
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             for member in ar:
                 yielded.append(member.name)
         assert yielded == names
@@ -644,12 +644,12 @@ def test_members_report_streaming_corrupt_header_yield_then_raise() -> None:
         streaming=True,
     ) as ar:
         yielded: list[str] = []
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             for member, _stream in ar.stream_members():
                 yielded.append(member.name)
         assert yielded == ["a.txt"]
         report = ar.members_report()
-        assert isinstance(report.error, CorruptionError)
+        assert is_corruption(report.error)
         assert [m.name for m in report.members] == yielded
 
 
@@ -739,7 +739,7 @@ def test_corrupt_final_header_raises_corruption_by_default() -> None:
     # the block tarfile stopped on and raises CorruptionError — even under the default
     # (non-strict) config, because a non-null block there is unambiguous corruption.
     data = _tar_corrupt_final_header()
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.members()
 
@@ -748,7 +748,7 @@ def test_corrupt_mid_header_raises_corruption_by_default() -> None:
     # A rejected non-first header with valid data still following: caught by default in
     # both access modes.
     data = _tar_corrupt_mid_header()
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.members()
 
@@ -757,7 +757,7 @@ def test_corrupt_mid_header_streaming_raises_corruption() -> None:
     # Streaming has no probe, but a rejected mid-archive header leaves valid bytes after
     # the stop, so the trailing-block heuristic still surfaces it as corruption.
     data = _tar_corrupt_mid_header()
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         with open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
         ) as ar:
@@ -786,7 +786,7 @@ def test_corrupt_final_header_extract_raises(tmp_path: Path) -> None:
     # partial output on disk.
     data = _tar_corrupt_final_header()
     dest = tmp_path / "out"
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.extract_all(dest)
     assert not (dest / "hello.txt").exists()
@@ -797,7 +797,7 @@ def test_corrupt_final_header_sparse_raises_corruption() -> None:
     # offset_data+roundup(size) check miss the stop block, so a rejected final header
     # after a GNU sparse member warned as absent instead of raising CorruptionError.
     data = _tar_corrupt_final_header_sparse()
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.members()
 
@@ -935,7 +935,7 @@ def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:
 
     path = tmp_path / "bad.tar.gz"
     path.write_bytes(gzip.compress(_tar_corrupt_final_header()))
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         with open_archive(path) as ar:
             ar.members()
 
@@ -944,7 +944,7 @@ def test_corrupt_mid_header_raise_disposition_still_corruption() -> None:
     # A RAISE disposition does not change the type for a rejected header: the nonzero
     # case escalates as CorruptionError, which outranks DiagnosticRaisedError.
     data = _tar_corrupt_mid_header()
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         with open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
@@ -967,7 +967,7 @@ def test_corrupt_final_header_ignore_disposition_still_raises() -> None:
             DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.IGNORE
         }
     )
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         with open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
@@ -982,7 +982,7 @@ def test_corrupt_mid_header_streaming_extract_writes_then_raises(
     # Streaming extract writes salvageable members, then raises at end-of-pass.
     data = _tar_corrupt_mid_header()
     dest = tmp_path / "out"
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         with open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
         ) as ar:
@@ -1022,7 +1022,7 @@ def test_corrupt_tar_header_raises() -> None:
     raw = bytearray(_build_tar())
     # Corrupt the checksum field (offset 148, 8 bytes) of the first header.
     raw[148:156] = b"\xff\xff\xff\xff\xff\xff\xff\xff"
-    with pytest.raises(CorruptionError) as excinfo:
+    with raises_corruption() as excinfo:
         with open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.TAR) as ar:
             ar.members()
     assert isinstance(excinfo.value.__cause__, tarfile.ReadError)
@@ -1063,7 +1063,7 @@ def test_corrupt_path_open_releases_owned_handle(
 
     monkeypatch.setattr(builtins, "open", tracking_open)
     kept: list[Exception] = []
-    with pytest.raises(CorruptionError) as excinfo:
+    with raises_corruption() as excinfo:
         open_archive(path, format=ArchiveFormat.TAR)
     kept.append(
         excinfo.value
@@ -1079,7 +1079,7 @@ def test_corrupt_compressed_tar_surfaces_codec_corruption(tmp_path: Path) -> Non
     raw = bytearray(_build_tar("w:gz"))
     raw[len(raw) // 2] ^= 0xFF  # flip a byte inside the deflate stream
     path.write_bytes(bytes(raw))
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         with open_archive(path) as ar:
             for _member, stream in ar.stream_members():
                 if stream is not None:
@@ -1614,7 +1614,7 @@ def test_extended_header_size_does_not_drive_the_allocation(
         else ReadSizeRecorder(data, advertise_size=length == "hint")
     )
 
-    with pytest.raises(CorruptionError):
+    with raises_corruption():
         with open_archive(source, format=ArchiveFormat.TAR) as reader:
             reader.members()
 

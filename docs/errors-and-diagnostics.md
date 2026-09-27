@@ -25,7 +25,7 @@ React to specific cases with the subtypes:
 | [`OpenError`][archivey.OpenError] | reading could not start — `FormatDetectionError` (not a format archivey recognizes, or not a compressed stream under `open_stream()`), `StreamNotSeekableError` (a pipe, where the format or the access mode needs seek), or a volume file that cannot be opened |
 | [`ReadError`][archivey.ReadError] | the archive's data is bad or cannot be read, whether at open (a damaged header) or later; the parent of the next three rows, and the thing to catch when you do not care which. A damaged header raises one of these from `open_archive()`, not `OpenError` |
 | [`EncryptionError`][archivey.EncryptionError] | a password is required, missing, or wrong; for a ZipCrypto member, also when its data fails its integrity check after the password passed the format's one-byte check, which a damaged member can cause too (see [Gotchas](gotchas.md)) |
-| [`CorruptionError`][archivey.CorruptionError] / [`TruncatedError`][archivey.TruncatedError] | the archive is malformed or cut short |
+| [`CorruptionError`][archivey.CorruptionError] | the archive's bytes are damaged: a checksum mismatch, a malformed header or data block, or data cut short. [`TruncatedError`][archivey.TruncatedError], its subclass, is the cut-short case; catch it first if you handle a short file differently |
 | [`LinkTargetNotFoundError`][archivey.LinkTargetNotFoundError] | a symlink or hardlink member points at a target the archive does not contain |
 | [`PackageNotInstalledError`][archivey.PackageNotInstalledError] | an optional package or tool is absent — for the whole format at open (ISO without `pycdlib`) or for one member when you read it (PPMd without `pyppmd`) — or RARLAB `unrar`/`rar` is older than 6.0 (see [Install](install.md#getting-rarlab-unrar-or-rar)) |
 | [`ExtractionError`][archivey.ExtractionError] | writing a member to disk failed; the parent of the next two rows |
@@ -284,7 +284,7 @@ What that does and does not promise:
   perfectly valid.
 - **`CorruptionError` vs `TruncatedError` is a best-effort guess, not a diagnosis.**
   Damage that happens to decode into a shorter stream is indistinguishable from a
-  genuine truncation. Don't branch on which one you got — `except archivey.ReadError`
+  genuine truncation. Don't branch on which one you got — `except archivey.CorruptionError`
   catches both.
 - **Bytes delivered before the error are of unknown quality.** When a compressed
   member fails mid-stream, some of what you already read is probably fine — but we

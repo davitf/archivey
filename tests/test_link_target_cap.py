@@ -32,7 +32,6 @@ from archivey import ExtractionStatus, open_archive
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
 from archivey.exceptions import (
-    CorruptionError,
     DiagnosticRaisedError,
     LinkTargetNotFoundError,
     ResourceLimitError,
@@ -42,6 +41,7 @@ from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveMember, MemberType, OnError
 from tests.conftest import requires_binary
+from tests.corruption_util import raises_corruption
 
 _MODES = [pytest.param(False, id="random-access"), pytest.param(True, id="streaming")]
 
@@ -281,7 +281,7 @@ def test_a_zip_target_longer_than_its_declared_size_is_corruption(
         assert "declared size of 10 bytes" in diagnostic.message
         assert not _too_long(reader)
         if not streaming:
-            with pytest.raises(CorruptionError, match="declared size of 10 bytes"):
+            with raises_corruption(match="declared size of 10 bytes"):
                 reader.open(link)
 
 
