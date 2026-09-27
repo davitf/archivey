@@ -49,9 +49,9 @@ class ArchiveReader(ABC):
     - :meth:`members` — complete list or raise; random-access only (fails on streaming).
     - :meth:`members_report` — always returns a report; check ``error is None`` for
       completeness (preferred for damaged archives).
-    - :meth:`scan_members` — random-access: same as ``members``; streaming: start or
-      finish the forward pass and return the resolved list (also OK after a completed
-      pass).
+    - :meth:`scan_members` — :meth:`members_report` that raises the report's error:
+      random-access, same as ``members``; streaming, start or finish the forward pass
+      and return the resolved list (also OK after a completed pass).
     - :meth:`members_report_if_available` — never scans; ``None`` if not yet cached.
     """
 
@@ -120,11 +120,13 @@ class ArchiveReader(ABC):
     def scan_members(self) -> list[ArchiveMember]:
         """Return the fully-resolved member list in either access mode.
 
-        In random-access mode this is equivalent to :meth:`members` and does not
-        consume the reader. On a streaming reader it finishes the single forward pass
-        (running it from the start, or completing an interrupted one) and returns the
-        resolved list; it may also be called after a completed pass to return the
-        cached list."""
+        It is :meth:`members_report`, raising ``report.error`` when the listing is
+        incomplete and otherwise returning ``report.members`` as a list. In
+        random-access mode this is equivalent to :meth:`members` and does not consume
+        the reader. On a streaming reader it finishes the single forward pass (running
+        it from the start, or completing an interrupted one) and returns the resolved
+        list; it may also be called after a completed pass to return the cached
+        list."""
         ...
 
     @abstractmethod

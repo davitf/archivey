@@ -439,6 +439,10 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **`scan_members()` is `members_report()` that raises the report's error.** Under
+  `concurrent_members=True` it now shares first-touch materialization with `members()`
+  and `members_report()`, so it no longer raises `ArchiveyUsageError` when another
+  thread is inside `open()`.
 - **`archivey.detection_cost` keeps only what detection uses.** `DetectionCapability`
   is removed. `DetectionBudget` loses `max_tail_bytes` and `max_seeks`, which no tier
   read, and `spool_non_seekable_up_to`: detection no longer spools a pipe to a temporary

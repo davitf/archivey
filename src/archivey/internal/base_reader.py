@@ -479,7 +479,7 @@ class BaseArchiveReader(ArchiveReader):
         self._unconfirmed_failure_emitted: bool = False
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
         self._forward_pass_started: bool = False
-        # When true, progressive registration enforces ListingLimits (scan_members).
+        # When true, progressive registration enforces ListingLimits (members_report).
         # stream_members leaves this false so iteration stays the unguarded escape hatch.
         self._progressive_enforce_listing_limits: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
@@ -2034,7 +2034,7 @@ class BaseArchiveReader(ArchiveReader):
         """Resolve all links after a streaming forward pass reaches EOF or terminal damage."""
         if self._materialized is not None:
             return
-        # scan_members drains with enforcement: refuse to publish an over-limit report.
+        # members_report drains with enforcement: refuse to publish an over-limit report.
         if self._progressive_enforce_listing_limits:
             self._listing_tracker.assert_within_limits()
         self._finalize_links(
@@ -2316,38 +2316,10 @@ class BaseArchiveReader(ArchiveReader):
             self._state.release_pass(token)
 
     def scan_members(self) -> list[ArchiveMember]:
-        self._state.require_open("scan_members()")
-        token = self._state.acquire_pass("scan_members")
-        try:
-            if not self._streaming:
-                report = self._materialize_members().report
-                if report.error is not None:
-                    raise report.error
-                return list(report.members)
-            if self._materialized is not None:
-                self._listing_tracker.assert_within_limits()
-                report = self._materialized.report
-                if report.error is not None:
-                    raise report.error
-                return list(report.members)
-            # Enforce ListingLimits while draining; stream_members leaves this false.
-            self._progressive_enforce_listing_limits = True
-            try:
-                if not self._forward_pass_started:
-                    self._forward_pass_started = True
-                gen = self._begin_forward_pass()
-                for _ in gen:
-                    pass
-                assert self._materialized is not None
-                self._listing_tracker.assert_within_limits()
-                report = self._materialized.report
-                if report.error is not None:
-                    raise report.error
-                return list(report.members)
-            finally:
-                self._progressive_enforce_listing_limits = False
-        finally:
-            self._state.release_pass(token)
+        report = self.members_report()
+        if report.error is not None:
+            raise report.error
+        return list(report.members)
 
     def members_report_if_available(self) -> MemberListReport | None:
         """Return the member-list report if it is available **without scanning**, else
