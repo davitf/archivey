@@ -264,7 +264,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- | --- | --- |
 | A read returns a file from outside the root | **archivey** | A listed path replaced by a symlink after the walk is followed at open (§2.3, §4). Accepted under the published trust boundary; opening with `O_NOFOLLOW` and checking the identity against the listing would refuse it ([`threat-model.md`](../threat-model.md) O21) |
 | A read returns a different length from `member.size`, with no error | **archivey** | The open is by path and nothing compares the file with its listing (§2.3, [`threat-model.md`](../threat-model.md) O21). What it should do is open (§7) |
-| Extracting a file that grew since listing fails with "Decompression ratio … exceeds limit" | **archivey** | `compressed_size` is the listed size, so growth reads as a ratio. The error does not say the file changed. Tracked internally |
+| Extracting a file that grew since listing fails with "Decompression ratio … exceeds limit" | **archivey** | `compressed_size` is the listed size, so growth reads as a ratio. The error does not say the file changed ([`threat-model.md`](../threat-model.md) O21) |
 | Extracting into a folder inside the root adds that folder to the output (`out/out/`); with `streaming=True` it nests `out/out/out/…` until the path is too long | **archivey** | The walk reads the live tree, including what the extraction writes. Tracked internally |
 | `open()` on a listed file hangs | **archivey** | The file was replaced by a FIFO after the walk (§2.3). Same fix as the symlink row ([`threat-model.md`](../threat-model.md) O21) |
 | A symlink whose target exists on disk raises `LinkTargetNotFoundError` | **archivey** | By design: targets resolve inside the listed tree, as in an archive (§6) |
@@ -359,7 +359,8 @@ the `_identity_stat` seam rather than by timing. A junction needs Windows: `cmd 
   contract)
 - Code: `internal/backends/directory_reader.py` · `internal/source.py` (`for_path`) ·
   `internal/detection.py` (`directory_format_info`) · `core.py` (the `format=` refusal)
-- Registers: [`threat-model.md`](../threat-model.md) (the shared extraction filter) ·
+- Registers: [`threat-model.md`](../threat-model.md) O21 (the tree changing between listing
+  and reading) and the shared extraction filter ·
   [`open-issues.md`](../open-issues.md) P8 (the `format=` refusal, closed)
 - Handbook: [`tar.md`](tar.md) (the hardlink shape this reader copies, and the other
   `REQUIRES_SCANNING` backend) ·
