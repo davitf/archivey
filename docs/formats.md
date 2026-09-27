@@ -3,8 +3,17 @@
 What each format can do, what optional packages or tools it needs, and the quirks that
 most often surprise callers. For more depth, the maintainer handbook has pages on
 [7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md),
-[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md) and
-[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md).
+[ISO](https://github.com/davitf/archivey/blob/main/dev-docs/formats/iso.md),
+[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md),
+[TAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/tar.md) and
+[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file compressors: what they share in
+[single-file.md](https://github.com/davitf/archivey/blob/main/dev-docs/formats/single-file.md), then
+[gzip](https://github.com/davitf/archivey/blob/main/dev-docs/formats/gzip.md),
+[bzip2](https://github.com/davitf/archivey/blob/main/dev-docs/formats/bzip2.md),
+[xz, lzip and LZMA Alone](https://github.com/davitf/archivey/blob/main/dev-docs/formats/xz.md),
+[zstd and LZ4](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zstd-lz4.md),
+[Brotli](https://github.com/davitf/archivey/blob/main/dev-docs/formats/brotli.md) and
+[`.Z`](https://github.com/davitf/archivey/blob/main/dev-docs/formats/unix-compress.md).
 
 ## Quick matrix
 
@@ -327,6 +336,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   stream. When it yields nothing, Archivey decodes the source again with the standard
   library, so a corrupt `.bz2` raises the same error whether or not
   `seekable_members=True` engaged the accelerator.
+- A `.zst` frame whose window is over 128 MiB (for example `zstd --long=31` reading
+  standard input) fails with `CorruptionError: … Frame requires too much memory for
+  decoding`. The limit is zstd's own default, not `DecoderLimits`.
+- The legacy LZ4 format (`lz4 -l`, used for Linux kernel images) is not supported: it is
+  not detected, and a `.lz4` file in that format fails to read.
 - `archivey.open_stream(...)` matches the archive rule: non-seekable unless
   `seekable=True`.
 
@@ -344,9 +358,8 @@ a full `read()` still verifies through the normal path.
 | ZIP | FILE / SYMLINK (central directory) | `crc32` |
 | 7z | FILE | `crc32` |
 | RAR5 | FILE with CRC32 and/or Blake2sp | `crc32` and/or `blake2sp` |
-| single-file `.gz` | single member, seekable/path | `crc32` |
 | single-file `.lz` | seekable source (one or many members; multi-member value is combined) | `crc32` |
-| `.bz2` / `.xz` / zlib / brotli / `.Z`, TAR, directory | — | none |
+| `.gz` / `.bz2` / `.xz` / zlib / `.zst` / `.lz4` / brotli / `.Z`, TAR, directory | — | none |
 
 ### Cheap dedupe with stored hashes
 

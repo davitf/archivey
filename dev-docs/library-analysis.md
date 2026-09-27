@@ -63,7 +63,7 @@ Two recurring notes:
 prefix, then `TruncatedError` on the next empty `read`; `read()` / `readall` raises and returns
 nothing (a silent lossy success is worse than not salvaging — recover the prefix only via a
 chunked loop). The `rapidgzip` accelerator often soft-EOFs by design (empty or short/full with
-no exception); Archivey backstops **path** gzip by switching to the same stdlib engine on
+no exception); Archivey backstops gzip from any seekable source by switching to the same stdlib engine on
 silent empty EOF, plus a single-member ISIZE compare on non-empty soft EOF
 (`seekable-decompressor-streams`; see `rapidgzip-upstream-report.md`). Multi-member ISIZE
 summing is deferred. Container members still rely on container CRC/`VerifyingStream`.
@@ -163,7 +163,7 @@ rewinding seek"). The candidates were:
   `indexed_bzip2`" that statically bundles a C++ core, carrying the *same class* of macOS
   dual-load symbol-collision risk that forced Archivey onto a single accelerator library
   (`known-issues.md`). And frame-granularity seeking is *exactly* what Archivey's own
-  `_SegmentedDecompressorStream` already provides for xz and lzip — so a small **native zstd
+  `DecompressorStream` already provides for xz and lzip — so a small **native zstd
   frame-index reader** reusing that infrastructure would likely give the same seeking with no
   heavy dependency and no macOS risk. The note is no help for the common **single-frame** `.zst`
   either way (one frame → one seek point). This is registered in `IDEAS.md` (Performance &
@@ -229,7 +229,7 @@ which is why both share one framework.
   logged and skipped rather than failing the read.
 - **`file_size` is read from the stream** (via the backward scan on open) rather than a separate
   metadata pass, so XZ and lzip populate size uniformly with no per-format code.
-- **Architectural uniformity**: shares the `_SegmentedDecompressorStream` framework with
+- **Architectural uniformity**: shares the `DecompressorStream` + `Decoder` framework with
   `LzipDecompressorStream`.
 
 Out of scope (matching the original decision): XZ *writing*, parallel/threaded decode, and a
@@ -259,7 +259,7 @@ for why the standalone `indexed_gzip`/`indexed_bzip2` are not used.
 **Truncation trade-off:** on a truncated stream, `data = f.read()` / `readall` **raises
 `TruncatedError` and returns nothing** — a silent lossy success is worse than not salvaging.
 The recoverable prefix is reachable only via a chunked `read(n)` loop (large `read(n)` is
-safe; no byte-at-a-time requirement). On **path** sources, a silent empty rapidgzip EOF
+safe; no byte-at-a-time requirement). On a seekable source, a silent empty rapidgzip EOF
 fully switches to this same engine; non-empty soft EOF uses the single-member ISIZE
 backstop (`seekable-decompressor-streams`, `rapidgzip-upstream-report.md`).
 
@@ -381,6 +381,6 @@ only (7z writing is not shipped as a user-facing extra).
 The decisions above that imply further work are tracked separately:
 
 - **Efficient seekable zstd** — optional; **evaluate a native frame-index reader first**
-  (reusing the xz/lzip `_SegmentedDecompressorStream`), since `indexed_zstd` only seeks at frame
+  (reusing the xz/lzip `DecompressorStream` engine), since `indexed_zstd` only seeks at frame
   granularity, which that infrastructure already provides — avoiding the heavy C++ dependency and
   its macOS coexistence risk. Tracked in `IDEAS.md`.

@@ -62,7 +62,7 @@ names.
 | [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
 | **Linear** (`Archivey` team) | seeded 2026-09-17, added to continuously | **The state layer.** Labels: `sweep`, `decision`, `openspec`, `docs`, `review`, `pr-315`, `pr-open`. Not a replacement for any register below |
 | **The #315 sweep** — *the `SWEPT` markers on #315* | First pass complete 2026-09-20; **94 of 97 files on 2026-09-23** | 40 178 of 40 662 lines, **98.8%**. Three files arrived after the pass: `internal/enum_args.py` (#380), `internal/arg_checks.py` (#382) and `internal/windows_reparse.py` (#386). Since then [#448](https://github.com/davitf/archivey/pull/448) added `terminal.py` (the former `escaping.py`, already swept, under a new name) and `detection.py` (moved classes). What is open now is draining the threads, not reading. Count it from the markers, not from this row |
-| **`dev-docs/formats/`** — *no register* | 4 of ~7 handbook pages written | ZIP, RAR, 7z and ISO done. `rar.md` alone produced the 21-item `§10` register |
+| **`dev-docs/formats/`** — *no register* | Every format with a backend has a page | ZIP, RAR, 7z, TAR, ISO, and the stream codecs (`single-file.md` plus six codec pages). `rar.md` alone produced the 21-item `§10` register |
 | **`docs/`** — *tracked in `review/docs-content/`* | ~174 lines of prose + `how-it-works.md` | Skeleton, scope and verified claim inventory all done; the writing is not |
 
 **[`IDEAS.md`](IDEAS.md) is not backlog.** 55 entries across six sections, and its job is to
@@ -764,11 +764,15 @@ it tracks.
 
 ### 1. The format handbook — `dev-docs/formats/`
 
-Five of the intended set exist: [`rar.md`](formats/rar.md), [`zip.md`](formats/zip.md),
-[`7z.md`](formats/7z.md), [`tar.md`](formats/tar.md) and [`iso.md`](formats/iso.md).
+The container pages exist: [`rar.md`](formats/rar.md), [`zip.md`](formats/zip.md),
+[`7z.md`](formats/7z.md), [`tar.md`](formats/tar.md) and [`iso.md`](formats/iso.md). So do
+the stream codecs: [`single-file.md`](formats/single-file.md) for what they share, and one
+page each for [gzip](formats/gzip.md), [bzip2](formats/bzip2.md), [the xz
+family](formats/xz.md), [zstd and LZ4](formats/zstd-lz4.md), [Brotli](formats/brotli.md) and
+[`.Z`](formats/unix-compress.md).
 `rar.md` is the longest by some way. (Byte counts used to be written out here and were
 wrong twice, because any edit to a page invalidates the number describing it — `wc -c`
-the files if you need the exact figures.) All five follow the same nine-section shape —
+the files if you need the exact figures.) All of them follow the same nine-section shape —
 At a glance, Shape, The pipeline here, In the wild, Threat surface, Sharp edges,
 Decisions, Open questions, Verify, References — so the template is settled and the
 remaining pages are writing, not design.
@@ -780,13 +784,13 @@ remaining pages are writing, not design.
 | `7z.md` | **Written.** `§7` has 3 open questions. The file is `7z.md`, not the `sevenzip.md` this row used to name — the format is spelled `7z` everywhere else that faces a reader (`format-7z`, `docs/formats.md`, `review/backlog.md`). Thirteen open #315 findings still sit against the backend: six on `sevenzip_parser.py` (bind-pair arithmetic, pack-size overrun, substream mapping, the `kComment` external flag), three on the reader, two on the pipeline, one each on `sevenzip_methods.py` and `sevenzip_detect.py` |
 | `tar.md` | **Written.** `§7` has 2 open questions: the native header walker (`open-issues.md` **P3**) and v7 detection. Sparse holes counting against `max_ratio` is decided (§6). Writing it found four bugs, all tracked internally; the listing cap and the PAX sparse flag are fixed in #472 |
 | `iso.md` | **Written.** `§7` has 2 open questions. Writing it against genisoimage, xorriso and libarchive's images, rather than the `pycdlib`-built corpus, found six bugs: four fixed with it (the El Torito boot catalog failed every bootable image, a file over 4 GiB was cut to its first extent, `format_version` was `pycdlib`'s guess, a truncated image listed clamped or negative sizes and read short silently), two tracked (Rock Ridge name charset, `pycdlib` refusing zisofs and some genisoimage symlinks as corrupt) |
-| `single-file.md` | **Missing.** gzip, bzip2, xz, lzip, zstd, lz4, brotli, `.Z`: the seek-point and truncation behaviour is spread across `codecs.py`, `xz.py`, `lzip.py` and `unix_compress.py` with no single page |
+| `single-file.md` and the codec pages | **Written.** `single-file.md` holds the one-member reader, the seek table and the truncation contract; `gzip.md`, `bzip2.md`, `xz.md`, `zstd-lz4.md`, `brotli.md` and `unix-compress.md` hold each codec. Measuring 14 producers found five gaps, all tracked internally: the legacy LZ4 frame is not detected, a zstd window over 128 MiB fails as corruption outside `DecoderLimits`, trailing data is handled differently by every codec, the rewind warning misdescribes multi-block xz and lzip, and the bzip2 accelerator prints to standard error |
 | `directory.md` | **Missing.** Thinnest of all; may not earn a page |
 
 **The handbook is how a format's to-fix register gets created**, which is the argument for continuing it:
 writing `rar.md` produced 21 tracked code changes, 19 of which have shipped, and `7z.md`
 surfaced two of its own (a refusal that names the wrong coder, and the folder decode that
-listing a solid archive with a symlink in it pays for), `tar.md` four and `iso.md` six. That is the
+listing a solid archive with a symlink in it pays for), `tar.md` four, `iso.md` six and the stream pages five. That is the
 highest-yield documentation work in the repo, and it is also why each new page should be
 expected to *add* open items rather than only close them.
 
@@ -971,7 +975,6 @@ sweep S0..S25 ──> 209 #315 threads, 111 open ──> new parcels, new change
         │              (first pass over src/ complete 2026-09-20; draining is what is left)
         └── a second pass waits on those threads being drained, not on a decision
 
-formats/single-file.md ──> more §10-style registers
 docs/ prose + how-it-works.md ──> (nothing; skeleton, scope and claims all done)
 ```
 
@@ -1226,8 +1229,8 @@ against on 2026-09-25; `detection-result-surface` is cut to the `detection=` han
 
 **Wave 6 — the docs, continuously and in parallel with everything above.** Not a wave in the
 sense the others are: a long-running programme that should have one page in flight at a time
-rather than a slot in the order. `7z.md`, `tar.md` and `iso.md` are written (see §1
-above); `single-file.md` is next. The user guide's remaining prose is the one item here
+rather than a slot in the order. `7z.md`, `tar.md`, `iso.md` and the stream pages are
+written (see §1 above). The user guide's remaining prose is the one item here
 with no agent-shaped unit of work defined for it yet. **The sweep half of this wave is
 spent**: the reading is done, and the second pass davi gated on it also waits on the
 drain, so there is no batch to schedule.
