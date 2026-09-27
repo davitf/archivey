@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import gzip
 import io
+import os
 import tarfile
+import traceback
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +32,7 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import StreamCapability
+from archivey.exceptions import CorruptionError
 from archivey.types import (
     ArchiveFormat,
     CompressionAlgorithm,
@@ -158,6 +161,123 @@ def test_read_at_eof_returns_empty(member: tuple[Path, str]) -> None:
         assert f.read() == CONTENT
         assert f.read() == b""
         assert f.read(64) == b""
+
+
+def test_read_none_reads_to_eof(member: tuple[Path, str]) -> None:
+    # ``None`` means "to EOF" on every ``io`` stream (S28-K3); it used to raise TypeError.
+    source, name = member
+    with open_archive(source) as ar, ar.open(name) as f:
+        assert f.read(None) == CONTENT
+        assert f.read(None) == b""
+
+
+@pytest.mark.parametrize(
+    "compression",
+    [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED],
+    ids=["stored", "deflated"],
+)
+def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> None:
+    """A stream that raised a content verdict raises it again until the caller seeks,
+    and after a seek the read that reaches the end raises it again.
+
+    It used to raise once: a caller who caught the CRC mismatch and seeked back read
+    the whole damaged member with no error (S28-K1). A seek still restarts the decode,
+    so the prefix reads again, as for a truncated stream.
+    """
+    payload = os.urandom(3000)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression) as zf:
+        zf.writestr("a.bin", payload)
+    blob = bytearray(buf.getvalue())
+    # Flip the stored CRC (central directory and local header), so the data decodes
+    # cleanly and only the digest at the end objects.
+    for sig, off in ((b"PK\x01\x02", 16), (b"PK\x03\x04", 14)):
+        at = blob.index(sig) + off
+        blob[at] ^= 0x01
+    with open_archive(io.BytesIO(bytes(blob)), seekable_members=True) as ar:
+        stream = ar.open("a.bin")
+        with pytest.raises(CorruptionError) as first:
+            stream.read()
+        with pytest.raises(CorruptionError) as again:
+            stream.read(10)
+        assert again.value is first.value
+        stream.seek(0)
+        assert stream.read(10) == payload[:10]
+        with pytest.raises(CorruptionError) as after:
+            stream.read()
+        assert after.value is first.value
+        stream.seek(0)
+        with pytest.raises(CorruptionError):
+            while stream.read(1000):
+                pass
+        # A read that asks for exactly what is left returns in full, and still reaches
+        # the damage: the seek gave up the digest check, so this gate is all there is.
+        stream.seek(0)
+        with pytest.raises(CorruptionError) as whole:
+            stream.read(len(payload))
+        assert whole.value is first.value
+        stream.seek(0)
+        with pytest.raises(CorruptionError):
+            stream.readinto(bytearray(len(payload)))
+        # Each raise resets the traceback to where the damage was found, so a retry
+        # loop does not grow it (and the frames it keeps alive) without bound.
+        depths = []
+        for _ in range(20):
+            with pytest.raises(CorruptionError) as retry:
+                stream.read()
+            depths.append(len(traceback.extract_tb(retry.value.__traceback__)))
+        assert len(set(depths)) == 1
+        stream.close()
+
+
+@pytest.mark.parametrize("first_read", ["read", "read-size", "readinto-size"])
+def test_a_kept_verdict_does_not_keep_the_withheld_member_alive(
+    first_read: str,
+) -> None:
+    """The verdict keeps its first traceback, and that must not pin the member's bytes.
+
+    Every read shape that reaches the end holds the member in a local when the digest
+    check raises; the frame it raised from stays reachable from the kept traceback
+    (S28-K17, S28-K21).
+    """
+    payload = os.urandom(1 << 20)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("a.bin", payload)
+    blob = bytearray(buf.getvalue())
+    for sig, off in ((b"PK\x01\x02", 16), (b"PK\x03\x04", 14)):
+        blob[blob.index(sig) + off] ^= 0x01
+    with open_archive(io.BytesIO(bytes(blob)), seekable_members=True) as ar:
+        stream = ar.open("a.bin")
+        # The caller's own readinto buffer is in the frames as an argument, as in any
+        # traceback; it is theirs, not the withheld member.
+        buffer = bytearray(len(payload))
+        with pytest.raises(CorruptionError) as caught:
+            if first_read == "read":
+                stream.read()
+            elif first_read == "read-size":
+                stream.read(len(payload))
+            else:
+                stream.readinto(buffer)
+        tb = caught.value.__traceback__
+        biggest = 0
+        while tb is not None:
+            if "tests" in Path(tb.tb_frame.f_code.co_filename).parts:
+                tb = tb.tb_next  # this test's own frame holds the payload, rightly
+                continue
+            for value in tb.tb_frame.f_locals.values():
+                if value is buffer:
+                    continue
+                if isinstance(value, (bytes, bytearray)):
+                    biggest = max(biggest, len(value))
+                elif isinstance(value, list):
+                    biggest = max(
+                        biggest,
+                        sum(len(v) for v in value if isinstance(v, (bytes, bytearray))),
+                    )
+            tb = tb.tb_next
+        assert biggest < len(payload) // 2
+        stream.close()
 
 
 def test_readinto_oversized_buffer_truncates_at_eof(member: tuple[Path, str]) -> None:

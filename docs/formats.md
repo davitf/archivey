@@ -3,8 +3,17 @@
 What each format can do, what optional packages or tools it needs, and the quirks that
 most often surprise callers. For more depth, the maintainer handbook has pages on
 [7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md),
-[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md) and
-[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md).
+[ISO](https://github.com/davitf/archivey/blob/main/dev-docs/formats/iso.md),
+[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md),
+[TAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/tar.md) and
+[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file compressors: what they share in
+[single-file.md](https://github.com/davitf/archivey/blob/main/dev-docs/formats/single-file.md), then
+[gzip](https://github.com/davitf/archivey/blob/main/dev-docs/formats/gzip.md),
+[bzip2](https://github.com/davitf/archivey/blob/main/dev-docs/formats/bzip2.md),
+[xz, lzip and LZMA Alone](https://github.com/davitf/archivey/blob/main/dev-docs/formats/xz.md),
+[zstd and LZ4](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zstd-lz4.md),
+[Brotli](https://github.com/davitf/archivey/blob/main/dev-docs/formats/brotli.md) and
+[`.Z`](https://github.com/davitf/archivey/blob/main/dev-docs/formats/unix-compress.md).
 
 ## Quick matrix
 
@@ -22,10 +31,13 @@ most often surprise callers. For more depth, the maintainer handbook has pages o
 | `.lz4` / `.tar.lz4` | no | `[recommended]` | — | rewind seek | |
 | `.Z` / `.tar.Z` | yes | — | — | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
 
-**RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`.** No pip extra
-can supply it — listing and metadata work without it, reading bytes does not.
-`rarfile` will use `unar` or `7z` if that is what is on `PATH`; archivey will not.
-How to get the binary: [Install and extras](install.md#getting-rarlab-unrar-or-rar).
+**RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`, or `unar`.**
+No pip extra can supply either — listing and metadata work without them, reading bytes
+does not. When no usable RARLAB program is found, archivey uses `unar` 1.10 or later,
+with the limits listed under [RAR](#rar), including a password passed on its command
+line; set `ArchiveyConfig(rar_decompressor="unrar")` to never use it. `7z` is never
+used. How to get the binary:
+[Install and extras](install.md#getting-rarlab-unrar-or-rar).
 
 Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
 rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
@@ -100,7 +112,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   [access costs](access-and-cost.md). **WinZip AES** (method 99 / AE-1 and AE-2) decrypts via the
   `[recommended]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
   (integrity is the HMAC). Without it, an AES member raises
-  `PackageNotInstalledError` but is still listed as encrypted.
+  `PackageNotInstalledError` but is still listed as encrypted. A failing HMAC raises
+  `CorruptionError`, with one password or several: a wrong password gets past the
+  two-byte check only once in 65 536 tries, so damage is by far the likelier cause.
 - **PKWARE Strong Encryption** is not supported. Such members list as encrypted, and
   opening one raises `UnsupportedFeatureError`. An archive whose central directory is
   itself encrypted this way cannot be listed; Archivey raises `UnsupportedFeatureError`
@@ -189,11 +203,52 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 
 ## RAR
 
-- Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`).
-- Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`,
-  `unar`, or `7z` — `rarfile` accepts those last two; archivey does not). `unrar` is
-  preferred when both exist. Passwords are passed as bare `-p` with the secret on stdin
-  (not in argv). Install: [Getting RARLAB unrar or rar](install.md#getting-rarlab-unrar-or-rar).
+- Metadata / listing: native RAR 1.5–RAR5 parser (works without `unrar`). The one
+  exception is a compressed RAR 1.5 / 2.x comment, which the selected program
+  (`unrar` or `unar`) decodes; without it, or when the decoded text fails its CRC16,
+  `comment` is `None`.
+- Member **data**: RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free`
+  or `7z`). `unrar` is preferred when both exist. By default, when neither is found,
+  archivey uses `unar` 1.10 or later if it is installed; see the next item. `unrar` gets
+  passwords as bare `-p` with the secret on stdin (not in argv). Install:
+  [Getting RARLAB unrar or rar](install.md#getting-rarlab-unrar-or-rar).
+- **`unar` instead of `unrar`:** `ArchiveyConfig.rar_decompressor` chooses the program.
+  The default, `"auto"`, uses `unrar` when a usable one is on `PATH` and `unar`
+  otherwise; the choice is made once, when the archive is opened, and a read `unar`
+  refuses is not retried with `unrar`. When `"auto"` picks `unar`, `ar.cost.notes` says
+  so at open. `"unrar"` and `"unar"` use only that program.
+  `unar` 1.10 or later (`brew install unar`, `apt install unar`) is free software and
+  easy to install on macOS, but it reads less than `unrar`. Archivey refuses these reads with
+  `UnsupportedFeatureError` before `unar` runs, because `unar` gets them wrong,
+  sometimes with a success exit:
+  - encrypted data in a RAR 2.x-4.x archive, and every member of a solid one that has
+    it (RAR5 encryption is read);
+  - a password that is not ASCII;
+  - a multi-volume RAR5 set with encrypted headers (Homebrew's `unar` 1.10.8 returns
+    nothing for it);
+  - in a RAR5 solid archive, a member that comes after an empty file, a directory or a
+    link;
+  - a member compressed with the RAR 1.5 algorithm;
+  - a multi-volume set with a prefix before the first volume (an SFX stub). A single
+    prefixed file is copied to a temporary file first.
+  - in `stream_members()` over a solid archive that has one of the members above, any
+    readable member past the 4000th: that pass names each member it reads on the `unar`
+    command line, which has a size limit. Such a member still opens on its own.
+
+  **The password is visible to other local users.** `unar` accepts a password only on
+  its command line (`-p <password>`), so while it runs, any user on the same machine can
+  read the password from the process list (`ps`, `/proc/<pid>/cmdline`). `unrar` reads
+  it from stdin instead. On a shared machine, install `unrar`, or set
+  `rar_decompressor="unrar"` so that `unar` is never used. A
+  wrong password makes `unar` write nothing and report success; archivey reports that
+  as `EncryptionError`, and a RAR5 password check usually rejects a wrong password
+  before `unar` runs at all.
+
+  Stored members still need neither program. A member whose stored name contains `*` or
+  `?` needs no `rar_allow_glob_member_concatenation`: `unar` selects members by index,
+  not by name. With `"unrar"` or `"unar"` selected, archivey never switches between the
+  two programs; with `unar` selected and missing, a read raises
+  `PackageNotInstalledError`.
 - `[recommended]`: header-encrypted RAR5. BLAKE2sp verification needs **no** package —
   it is implemented natively on stdlib `hashlib`. RAR5 members with the HASHMAC flag
   verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a password is available;
@@ -251,6 +306,28 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   queued. That stops pycdlib looping forever on a directory tree that points back at an
   ancestor. Other code using pycdlib in the same process gets the patch too. A valid tree
   never revisits an extent, so its results do not change.
+- `import archivey` also wraps pycdlib's Rock Ridge parser, but the wrapper acts only
+  while archivey itself opens an image, so other code using pycdlib sees no change. Inside
+  archivey, a System Use entry of a type pycdlib does not know is skipped, as the SUSP
+  specification says, instead of failing the whole image. A malformed entry ends that
+  record's Rock Ridge data: the member lists from the entries before it, with a
+  `MEMBER_HEADER_RECORD_SKIPPED` diagnostic, and a symlink cut this way lists with
+  `link_target` unset and a `SYMLINK_TARGET_UNAVAILABLE` diagnostic. genisoimage writes
+  such an entry for a long symlink target (from about 400 bytes with genisoimage
+  1.1.11).
+- zisofs (Rock Ridge transparent compression, `mkzftree` + `genisoimage -z`, `xorriso
+  -set_filter_r --zisofs`) reads: the member lists the size its data decodes to, with
+  `compression=(CompressionMethod(algo=DEFLATE),)`, and reads decoded, seeking by block.
+  zisofs2 (`xorriso -zisofs version_2=on -set_filter_r --zisofs /`, under the `ZF` or
+  the `Z2` tag), and a zisofs entry too short to parse, list with
+  `CompressionAlgorithm.UNKNOWN` and refuse to read, with `UnsupportedFeatureError`.
+- Rock Ridge and plain ISO 9660 names, and Rock Ridge link targets, decode as UTF-8
+  first. Bytes that are not valid UTF-8 decode with `encoding=` when you pass one.
+  Without it, a Rock Ridge name takes the Joliet name of the same file or directory
+  when the image has a Joliet tree and the two line up, with a
+  `member_name_encoding_inferred` diagnostic, and is escaped otherwise (see
+  [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)). Joliet
+  names are UTF-16 and ignore `encoding=`.
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
 - Plain ISO 9660 names lose their `;N` version suffix (and the `.` of an empty
@@ -327,6 +404,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   stream. When it yields nothing, Archivey decodes the source again with the standard
   library, so a corrupt `.bz2` raises the same error whether or not
   `seekable_members=True` engaged the accelerator.
+- A `.zst` frame whose window is over 128 MiB (for example `zstd --long=31` reading
+  standard input) fails with `CorruptionError: … Frame requires too much memory for
+  decoding`. The limit is zstd's own default, not `DecoderLimits`.
+- The legacy LZ4 format (`lz4 -l`, used for Linux kernel images) is not supported: it is
+  not detected, and a `.lz4` file in that format fails to read.
 - `archivey.open_stream(...)` matches the archive rule: non-seekable unless
   `seekable=True`.
 
@@ -344,9 +426,8 @@ a full `read()` still verifies through the normal path.
 | ZIP | FILE / SYMLINK (central directory) | `crc32` |
 | 7z | FILE | `crc32` |
 | RAR5 | FILE with CRC32 and/or Blake2sp | `crc32` and/or `blake2sp` |
-| single-file `.gz` | single member, seekable/path | `crc32` |
 | single-file `.lz` | seekable source (one or many members; multi-member value is combined) | `crc32` |
-| `.bz2` / `.xz` / zlib / brotli / `.Z`, TAR, directory | — | none |
+| `.gz` / `.bz2` / `.xz` / zlib / `.zst` / `.lz4` / brotli / `.Z`, TAR, directory | — | none |
 
 ### Cheap dedupe with stored hashes
 

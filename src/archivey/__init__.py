@@ -35,6 +35,7 @@ from archivey.config import (
     PasswordInput,
     PasswordProvider,
     PasswordRequest,
+    RarDecompressor,
     SpoolLimits,
 )
 from archivey.core import (
@@ -154,6 +155,7 @@ __all__ = [
     "ListingLimits",
     "SpoolLimits",
     "AcceleratorMode",
+    "RarDecompressor",
     "PasswordInput",
     "PasswordRequest",
     "PasswordProvider",

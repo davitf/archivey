@@ -41,7 +41,7 @@ from archivey import (
 from archivey.cli.choices import cli_choices, from_cli_choice
 from archivey.cli.errors import CliError
 from archivey.cli.main import build_parser
-from archivey.config import AcceleratorMode, ArchiveyConfig
+from archivey.config import AcceleratorMode, ArchiveyConfig, RarDecompressor
 from archivey.detection_cost import DetectionBudgetPreset
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.enum_args import (
@@ -65,6 +65,7 @@ PUBLIC_ENUMS: tuple[type[Enum], ...] = (
     OnError,
     AbortOn,
     AcceleratorMode,
+    RarDecompressor,
     DetectionBudgetPreset,
     ContainerFormat,
     StreamFormat,
@@ -349,6 +350,11 @@ ALIASES_NOT_WANTED = {
         "a member, and the union would describe the constructor's input on the "
         "attribute every consumer reads, obliging each of them to handle a string that "
         "cannot arrive. See the archived coerce-public-enum-arguments design note."
+    ),
+    "RarDecompressor": (
+        "ArchiveyConfig.rar_decompressor stays annotated RarDecompressor, for the same "
+        "reason as AcceleratorMode: __post_init__ converts the name, so the field always "
+        "holds a member."
     ),
     "ContainerFormat": (
         "ArchiveFormat's container field, for the same reason as AcceleratorMode: "

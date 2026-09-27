@@ -399,37 +399,44 @@ class MemberVerifier:
         """
         assert self._expected_size is not None
         chunks: list[bytes] = []
-        while self._pos < self._expected_size:
-            remaining = self._expected_size - self._pos
-            want = min(_SIZED_DRAIN_CHUNK, remaining)
-            try:
-                piece = inner.read(want)
-            except BaseException:
-                # The decoder's own error is the verdict, as on the bounded path in
-                # read(): the translator above this verifier classifies it. Relabelling
-                # every raw error as TruncatedError here made a corrupt deflate body
-                # read as truncated through read() and as corrupt through read(n).
-                self._abandon()
-                raise
-            if not piece:
-                break
-            self._record_read(piece)
-            chunks.append(piece)
-        # EOF verdict in this complete-stream call — raise withholds the body.
-        if not self._abandoned and not self._verified:
-            if (
-                self._pos >= self._expected_size
-                and self._furthest_read_pos < self._expected_size
-            ):
-                # The drain loop never ran: a seek put ``_pos`` at/past the declared
-                # size without reading there. Verify completeness (reading the skipped
-                # gap) rather than trusting the seek.
-                self._finish_after_seek(inner)
-            else:
-                self._finish(inner)
+        try:
+            while self._pos < self._expected_size:
+                remaining = self._expected_size - self._pos
+                want = min(_SIZED_DRAIN_CHUNK, remaining)
+                try:
+                    piece = inner.read(want)
+                except BaseException:
+                    # The decoder's own error is the verdict, as on the bounded path
+                    # in read(): the translator above this verifier classifies it.
+                    # Relabelling every raw error as TruncatedError here made a
+                    # corrupt deflate body read as truncated through read() and as
+                    # corrupt through read(n).
+                    self._abandon()
+                    raise
+                if not piece:
+                    break
+                self._record_read(piece)
+                chunks.append(piece)
+            # EOF verdict in this complete-stream call — raise withholds the body.
+            if not self._abandoned and not self._verified:
+                if (
+                    self._pos >= self._expected_size
+                    and self._furthest_read_pos < self._expected_size
+                ):
+                    # The drain loop never ran: a seek put ``_pos`` at/past the
+                    # declared size without reading there. Verify completeness
+                    # (reading the skipped gap) rather than trusting the seek.
+                    self._finish_after_seek(inner)
+                else:
+                    self._finish(inner)
+        except BaseException:
+            # The raise withholds these bytes, and its traceback keeps this frame
+            # alive for as long as the caller keeps the error: let the body go.
+            chunks.clear()
+            raise
         return b"".join(chunks)
 
-    def read(self, inner: BinaryIO, n: int = -1) -> bytes:
+    def read(self, inner: BinaryIO, n: int | None = -1) -> bytes:
         """Read from ``inner``, update digests/bounds, and verify on clean EOF.
 
         Bounded ``read(n)`` is full-count by way of one ``inner.read`` — the inner is
@@ -437,6 +444,9 @@ class MemberVerifier:
         rather than retry (ADR 0014). A size-declared reaching read that fails
         digest / over-run raises and returns no bytes for that call.
         """
+        # ``None`` reads to EOF, as on any ``io`` stream.
+        if n is None:
+            n = -1
         # read(0) is a no-op — never treat it as EOF (stdlib file / BytesIO contract).
         if n == 0:
             return b""
@@ -456,7 +466,11 @@ class MemberVerifier:
             if data:
                 self._record_read(data)
             if not self._abandoned and not self._verified:
-                self._finish(inner)
+                try:
+                    self._finish(inner)
+                except BaseException:
+                    del data  # withheld: the kept traceback must not pin it
+                    raise
             return data
 
         # Bounded full-count read.
@@ -495,7 +509,11 @@ class MemberVerifier:
                 and self._furthest_read_pos >= self._expected_size
             ):
                 # Size-declared verifying event: withhold this chunk on fault.
-                self._finish(inner)
+                try:
+                    self._finish(inner)
+                except BaseException:
+                    del data  # withheld: the kept traceback must not pin it
+                    raise
             return data
 
         # Empty: size-unknown digest / truncation-shaped terminal read.
@@ -613,7 +631,7 @@ class VerifyingStream(ReadOnlyIOStream):
     def _expected_size(self) -> int | None:
         return self._verifier._expected_size
 
-    def read(self, n: int = -1, /) -> bytes:
+    def read(self, n: int | None = -1, /) -> bytes:
         return self._verifier.read(self._inner, n)
 
     def seekable(self) -> bool:

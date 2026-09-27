@@ -1,0 +1,309 @@
+# xz, lzip and LZMA Alone
+
+Current maintainer truth for the three single-file formats built on LZMA: xz (`.xz`), lzip
+(`.lz`) and LZMA Alone (`.lzma`), and their TAR forms. All three decode through the
+standard library's `lzma` (liblzma). For xz and lzip archivey parses the framing itself,
+which is what gives them a size, a seek index and, for lzip, a digest; LZMA Alone goes
+through `lzma.LZMAFile`. Raw LZMA and LZMA2 as 7z coders are on [`7z.md`](7z.md). What these
+formats share with the other codecs, the one-member reader, the seek table and the
+truncation contract, is on [`single-file.md`](single-file.md). Registers keep the status;
+this page states the behaviour and links the row.
+
+## At a glance
+
+| | |
+| --- | --- |
+| Read | xz, lzip and LZMA Alone as one-member archives; `.tar.xz`, `.tar.lz`, `.tar.lzma` |
+| Write | **Not shipped** |
+| Backends | The standard library's `lzma`, always available. `streams/xz.py` and `streams/lzip.py` are archivey's own framing parsers over it |
+| Seeking | xz: from the nearest block or stream. lzip: from the nearest member. LZMA Alone: a backward seek decodes again from the start |
+| Size | xz: from the index. lzip: from the member trailers. LZMA Alone: from the header, unless it holds the "unknown" marker. xz and lzip need a seekable source |
+| Digests | lzip only: the CRC-32 of the whole content, combined from each member's trailer. xz checks (CRC-32, CRC-64, SHA-256) are verified on read, not listed |
+| Metadata | None beyond the shared fields |
+| Truncation | Always raised, as `TruncatedError` |
+| Refuses | A declared dictionary over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`); an xz filter or check liblzma cannot decode (`UnsupportedFeatureError`) |
+
+**Four things a reader might expect and will not find.** Seeking in a file from default
+`xz` or `lzip` re-decodes from the start: each writes one block or one member, so the index
+has one entry. Bytes after the last xz stream are ignored rather than refused, although
+`xz -t` refuses them, and they cost the index (§3). An xz file's own check value is not in
+`member.hashes`. And a seek trusts the file's index: a crafted index that is consistent
+with itself can make a seek return the wrong bytes with no error (§4).
+
+## 1. Shape
+
+Four properties generate most of this page.
+
+```
+xz stream:    magic(6) flags(2) CRC32(4)            ← header
+              block: header, LZMA2 data, padding, check
+              block: …
+              index: 0x00, count, (unpadded size, uncompressed size) per block, CRC32
+              footer: CRC32 backward_size(4) flags(2) "YZ"
+              [00 00 00 00 …]                       ← stream padding, multiple of 4
+xz stream:    …                                     ← a following stream is legal
+
+lzip member:  "LZIP" version(1) dict_exp(1)  LZMA1 data (lc=3 lp=0 pb=2, end marker)
+              CRC32(4) data_size(8) member_size(8)   ← trailer
+lzip member:  …
+              [trailing data]                        ← allowed by the lzip manual
+
+LZMA Alone:   props(1) dict_size(4) uncompressed_size(8, or all ones)  LZMA1 data
+```
+
+**xz and lzip carry their index at the end.** An xz footer gives the size of the index
+before it, and the index lists every block's compressed and uncompressed size. An lzip
+trailer gives its member's size, so the members can be walked from the end. So on a
+seekable source the size and every restart point are known without decoding, by reading
+backwards from the last byte. On a pipe they are not reachable until the end.
+
+**Restart points exist only where the writer made them.** An LZMA stream can only be decoded
+from its start, but an xz block and an lzip member each start a fresh decoder. How many
+there are is the writer's choice: default `xz` 5.4 writes one block, `xz -T` or
+`--block-size` many; `lzip` writes one member unless told otherwise (`-b`), and `plzip`
+writes one per data block, so a small file is one member unless `-B` sets smaller blocks. The file format decides that
+restarting is possible; the producer decides whether it is useful.
+
+**LZMA Alone has no magic and no trailer.** Its 13-byte header is a properties byte, a
+dictionary size and an uncompressed size. The properties byte has 225 legal values out of
+256, the dictionary size may be anything, and liblzma writes all ones for the size. So a
+large share of random data parses as a header, and detection must decode to decide (§2.1).
+There is no integrity check at all: a corrupt Alone stream decodes to wrong bytes unless
+the corruption breaks the range coder.
+
+**Every one declares a dictionary, and the decoder allocates it.** An xz block header
+names its LZMA2 dictionary, up to 4 GiB; an lzip header names an exponent from 12 to 29,
+up to 512 MiB; an Alone header any 32-bit value, up to 4 GiB. The decoder allocates that
+before it decodes a byte, so the number is attacker-chosen memory (§4).
+
+## 2. The pipeline here
+
+### 2.1 Identify
+
+xz is the magic `fd 37 7a 58 5a 00` at offset 0 and lzip `LZIP`, each `CERTAIN`. The
+inner-TAR probe then decodes 512 bytes and upgrades a match to `TAR_XZ`, or
+to TAR over lzip ([`single-file.md`](single-file.md) §2.1).
+
+LZMA Alone is found by the first of the three content probes. `_alone_header_plausible`
+checks that the properties byte encodes a legal `(lc, lp, pb)` and that the declared size
+is not exactly zero. The dictionary size is not checked: every value is legal, and the
+specification rounds one below 4 KiB up. The zero-size rule is there because 18 zero bytes
+are a valid, complete, empty Alone stream, so without it a run of zero padding would be
+claimed. A source of 13 bytes or fewer is refused, since it has no data after the header.
+Then the probe decodes the sample and requires at least one byte of output
+([`single-file.md`](single-file.md) §2.1). A match is `PROBABLE`, and an error from a
+probe-only match is stamped `format_unconfirmed`.
+
+`.tlz` is an lzip extension. An LZMA Alone file named `.tlz` is identified by content as
+TAR over LZMA Alone, with an extension-conflict warning.
+
+### 2.2 Open and list
+
+**Size and digest from the end.** On a seekable source the reader reads the xz index or the
+lzip trailers backwards from the end at open, whether or not seeking was declared
+(`SingleFileReader._probe_lzip_index` and the xz equivalent). For xz that gives the size;
+for lzip, the size and the CRC-32 of the whole content, combined from each member's
+trailer CRC with `crc32_combine`, in one walk that holds no per-member state. On a pipe,
+neither is known before the read ends.
+
+**LZMA Alone** gives its size from the header when the header is not the all-ones
+"unknown" marker. `xz --format=lzma` always writes the marker; the LZMA SDK writes the real
+size.
+
+### 2.3 Member data
+
+**xz.** `XzDecompressorStream` is `DecompressorStream` over `XzDecoder`. It feeds each
+stream to a fresh `lzma.LZMADecompressor(FORMAT_XZ)` and handles what liblzma does not:
+stream padding in runs of four zero bytes, and the next stream's header. After the first
+stream, bytes that are not a stream header end the data silently (§3).
+
+Seek points come from the index. On a seekable source, as each stream finishes, its index
+is read backwards and each block with content becomes a seek point; a seek to the end
+(`SEEK_END`, `try_get_size`) reads every stream's index at once. To resume at a block,
+`_XzBlockResume` decodes from that block to the end of the stream's blocks behind one
+synthetic stream header, checks the decoded size against the index, and hands off to the
+stream state machine at the next stream. Blocks of zero decoded size are skipped, because
+they share an offset with the next block.
+
+The index parser follows liblzma: the index must fill its declared length exactly, its
+variable-length integers must be minimally encoded, its CRC-32 must match, and the header
+and footer must name the same check. Stream padding is found by scanning backwards in
+chunks that grow from 4 bytes to 64 KiB. If a stream's index cannot be read, the read
+continues without its seek points and `SEEK_INDEX_DEGRADED` is reported; a stream with more
+blocks than the seek table holds keeps a spaced subset and reports the same code
+([`single-file.md`](single-file.md) §2.3).
+
+**lzip.** `LzipDecompressorStream` is `DecompressorStream` over `LzipDecoder`. For each
+member it checks the version (1) and the dictionary exponent (12 to 29), synthesises an
+LZMA Alone header with lzip's fixed properties, and feeds the member to liblzma. At the
+trailer it checks the CRC-32, the data size and the member size against what it decoded.
+After the first member, bytes that do not start with `LZIP` end the data, as the lzip
+manual allows. A source of 1 to 5 bytes with no whole header is `TruncatedError` when it
+is empty or a prefix of the magic, and `CorruptionError` otherwise.
+
+Seek points are the member starts, from the trailer walk. A backward seek resumes at the
+nearest member.
+
+**LZMA Alone.** `lzma.LZMAFile(FORMAT_ALONE)`. A backward seek decodes again from the start.
+
+**Dictionary caps.** Each format's declared dictionary is compared with
+`DecoderLimits.max_decoder_memory` before a decoder is built:
+
+- **xz**: each block header declares its own, and liblzma reads it, so the decompressor is
+  built with `memlimit` set to the cap plus a 128 KiB allowance for liblzma's own
+  overhead. liblzma checks it after reading a block header and before allocating. The
+  allowance is small because it is also slack: a cap set within 128 KiB below a size an xz
+  header can declare admits that size on xz.
+- **lzip**: the exponent in the member header, before the decoder is built. The format's
+  own ceiling, 512 MiB, is below the default cap.
+- **LZMA Alone**: `LZMAFile` takes no `memlimit`, so the header is peeked first
+  (`_peek_alone_header`, replaying it on a non-seekable source). An over-cap stream opens
+  as `_RefusedAloneStream`, which refuses on the first read, not at open. The refusal has
+  to come on read because a probe-only claim's read errors are stamped
+  `format_unconfirmed`, and that stamp is attached after open: an OLE file whose header
+  bytes read as a 2.7 GiB dictionary would otherwise tell the caller to raise the cap for
+  a file that is not LZMA at all.
+
+**Errors by cause.** CPython raises every liblzma failure as `LZMAError` and tells them
+apart only by text, the same on 3.10 to 3.14. `lzma_error_to_archivey` maps "Invalid or
+unsupported options" and "Unsupported integrity check" to `UnsupportedFeatureError`,
+"Memory usage limit" to `ResourceLimitError`, and everything else to `CorruptionError`. A
+valid block naming a filter this liblzma lacks is therefore unsupported, not damaged; in a
+`.tar.xz` it ends the listing there. Canary tests pin the liblzma wording.
+
+### 2.4 Extract
+
+Nothing here is specific to these formats ([`single-file.md`](single-file.md) §2.4).
+
+### 2.5 Write
+
+Not shipped.
+
+## 3. In the wild
+
+Measured with the tools listed on [`single-file.md`](single-file.md) §3.
+
+| Producer | archivey |
+| --- | --- |
+| `xz` | Reads; `size` from the index; one block, so no seek points but the start |
+| `xz -T4 --block-size=…` | Reads; one seek point per block |
+| `xz -C none`, `xz -C sha256` | Reads. With `-C none` only a broken LZMA2 stream reveals damage |
+| Two `xz` streams with zero padding between them | Reads both |
+| A stream followed by `junk` | Reads the payload and ignores the junk; the index scan fails, so `size=None` and `SEEK_INDEX_DEGRADED`. `xz -t` refuses the file |
+| `xz --format=lzma` | Detected by the probe, `PROBABLE`; `size=None` (the "unknown" marker) |
+| LZMA Alone followed by `junk` | Reads; the junk is ignored |
+| `plzip`, `plzip -B` with a small block | Reads; `size` and the combined CRC-32 from the trailers. The 4 MB payload is one member by default and nine with the small block, one seek point per member |
+| An lzip member followed by `junk` | Reads the payload; the trailer walk fails, so `size` and the CRC-32 are not reported. The lzip manual allows trailing data |
+| OLE (`.msi`, old `.doc`) and COFF object files | Can be claimed by the LZMA Alone probe, `PROBABLE`; the read then fails, stamped `format_unconfirmed` |
+
+## 4. Threat surface
+
+Specific to these formats; the shared items are [`single-file.md`](single-file.md) §4.
+
+- **A declared dictionary is an allocation.** Capped per format as in §2.3, before any
+  allocation; the default cap is 2 GiB.
+- **A seek trusts the index (threat-model O17, accepted).** A cold seek goes where the xz
+  index or the lzip trailer chain says. A crafted file whose index agrees with itself but
+  not with its data can return another block's bytes for the offset asked, with no error.
+  A forward read always verifies: xz checks each block against its index record and lzip
+  each member against its trailer. Callers who need certainty read forward.
+- **An index can declare millions of units.** The seek table is capped and thinned; the xz
+  index is walked record by record and never reserved at its declared count, and the lzip
+  trailer walk keeps no per-member state. A 16.8 MB lzip file of 645 277 empty members is
+  listed in bounded memory.
+- **Padding and the backward scan.** The padding scan reads in growing chunks, so a file of
+  megabytes of zeros costs a few reads, not one per four bytes.
+- **LZMA Alone has no check.** Corrupt data that the range coder accepts decodes to wrong
+  bytes with no error. That is the format.
+- **The Alone probe claims foreign files.** OLE and COFF headers pass its gate. The claim is
+  `PROBABLE`, and every error from it is stamped `format_unconfirmed`, so a caller can tell
+  a misread file from a damaged one (threat-model O10).
+
+## 5. Sharp edges
+
+*Where it lives*: **format** — inherent, no implementation fixes it · **library** — an
+upstream library's behaviour, fixable only there or by replacing it · **archivey** — ours.
+
+| What you see | Where it lives | More |
+| --- | --- | --- |
+| A backward seek in a default `xz` or `lzip` file re-decodes from the start | **format** | One block or one member (§1). Write with `xz -T` / `--block-size`, or `plzip -B` |
+| The rewind warning says "this codec has no random-access index" for a multi-block xz or lzip file | **archivey** | The message is shared by every codec; the seek did re-decode, from the nearest point. Tracked internally |
+| Bytes after the last xz stream are ignored, and `size` becomes `None` | **archivey** | `xz -t` refuses them; the cross-codec picture is [`single-file.md`](single-file.md) §3, §7 |
+| An lzip file with trailing data reports no `size` or CRC-32 | **archivey** | The backward trailer walk starts from the last byte, which is not a trailer |
+| `size` is `None` on a pipe | **format** | The index is at the end |
+| An `xz` block with a filter this liblzma lacks raises `UnsupportedFeatureError` | **library** | Not damage (§2.3) |
+| `ResourceLimitError` naming `max_decoder_memory` | **archivey** | The file declared a dictionary over the cap. Raise it if the file is trusted |
+| A `.lzma` file that fails reports `format_unconfirmed` | **format** | No magic; the probe's claim is uncorroborated |
+| `size=None` for `xz --format=lzma` output | **format** | liblzma writes the "unknown" marker |
+| A crafted xz or lzip file can make a seek return wrong bytes | **format** / **archivey** | O17 (§4) |
+
+## 6. Decisions
+
+| Choice | Why | Rejected |
+| --- | --- | --- |
+| Parse xz framing natively over stdlib `lzma` (PR #7) | The index gives size and block seeks without decoding; `lzma.open` reports the last stream's size for a multi-stream file | `python-xz`, a dependency that needs a seekable source and scans the whole file up front; removed from every extra |
+| Parse lzip natively over stdlib `lzma` (PR #7) | lzip is LZMA1 with a fixed header; its trailers give size, seeks and a CRC | A dependency |
+| Combine the lzip trailer CRCs into one whole-content CRC-32 (PR #160) | It is a real digest of the content, known from one backward walk | Listing it only for single-member files |
+| Read the xz index and lzip trailers whenever the source is seekable (PR #232) | Size must not depend on a flag about member-stream seeking | Gating them on `seekable_members` |
+| Cold seeks trust a self-consistent index (O17) | Verifying a seek means decoding from the start, which removes the reason to have an index; a forward read still verifies | Verifying every seek |
+| Check lzip `member_size` on the forward read (PR #407) | An unchecked member size let a seek serve another member's bytes | Trusting it |
+| Cap every declared dictionary before allocation (PR #413) | The number is the attacker's | Letting liblzma allocate what the header asks |
+| Refuse an over-cap `.lzma` on read, not open | Keeps the `format_unconfirmed` stamp on a probe-only claim | Refusing at open |
+| Map liblzma errors by cause (PR #432) | A missing filter or a cap refusal is not damage, and callers act differently on each | Everything as `CorruptionError` |
+| The Alone probe accepts any dictionary size and refuses a declared size of zero (PR #270) | Every dictionary size is legal and real streams use zero; zero padding is a valid empty stream | Gating on the dictionary size, which missed real files |
+| Ignore data after the last xz stream | Matches the lzip rule and `lzma.open`'s handling of trailing bytes | Refusing, as `xz -t` does; open (§7) |
+
+## 7. Open questions
+
+- **Trailing data after xz.** The xz specification makes it an error and `xz -t` refuses it;
+  archivey ignores it and loses the index. The same policy question covers every codec
+  ([`single-file.md`](single-file.md) §7).
+- **Reading the xz index through trailing data.** Scanning back for the footer magic `YZ`
+  would recover the size and seek points; not done. Tracked internally.
+- **Distinguishing a multi-point rewind in the warning text.** Tracked internally.
+
+## 8. Verify
+
+```bash
+./scripts/test.sh tests/test_seekable_streams.py tests/test_single_file.py \
+    tests/test_decoder_limits.py tests/test_lzma_error_causes.py tests/test_detection.py \
+    tests/test_probe_provenance_unconfirmed.py -k "xz or lzip or lzma"
+```
+
+| Claim | Pinned by |
+| --- | --- |
+| Size from the index and trailers; not on a pipe | `tests/test_single_file.py::test_xz_size_from_header`, `::test_lzip_size_from_trailer`, `tests/test_seekable_streams.py::test_xz_try_get_size_uses_index_not_full_decode` |
+| The combined lzip CRC-32 | `tests/test_single_file.py::test_lzip_exposes_stored_crc32`, `::test_multi_member_lzip_exposes_combined_crc32`, `tests/test_review_simplicity_consistency.py::test_lzip_surfaces_crc32_without_declaring_seekable_members` |
+| Block and member seeks read the right bytes | `tests/test_seekable_streams.py::test_xz_backward_seek_uses_block_index`, `::test_xz_multiblock_seek_serves_the_right_bytes_across_feed_chunks`, `::test_xz_multistream_block_resume_crosses_a_stream_gap`, `::test_lzip_multi_member_seek_after_forward_read_serves_the_right_bytes` |
+| Seeks trust a self-consistent index; forward reads verify | `::test_xz_cold_seek_trusts_a_self_consistent_block_index`, `::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`, `::test_xz_block_resume_refuses_blocks_that_disagree_with_the_index`, `::test_lzip_trailer_member_size_mismatch_raises_on_forward_read` |
+| Index grammar | `::test_xz_index_with_room_for_more_records_is_rejected`, `::test_xz_index_rejects_a_non_minimal_multibyte_integer`, `::test_xz_index_crc_mismatch_raises_on_backwards_scan`, `::test_xz_index_with_a_huge_declared_count_fails_without_reserving` |
+| Padding | `::test_xz_stream_padding_between_streams`, `::test_xz_padding_scan_reads_in_chunks` |
+| Thinning | `::test_xz_stream_with_more_blocks_than_the_cap_keeps_spaced_blocks`, `::test_lzip_index_over_the_cap_is_thinned_and_seeks_read_right`, `::test_lzip_peek_index_summary_holds_no_per_member_state` |
+| Truncation and short sources | `::test_xz_truncated_large_read_recovers_prefix`, `::test_lzip_truncated_large_read_recovers_prefix`, `::test_xz_source_cut_inside_the_first_header_is_truncated`, `::test_lzip_source_cut_inside_the_first_header_is_truncated`, `::test_lzip_short_source_that_is_not_lzip_is_corrupt` |
+| lzip trailing data is allowed | `::test_lzip_short_trailing_data_after_a_member_is_allowed` |
+| Dictionary caps | `tests/test_decoder_limits.py::test_xz_block_declaring_four_gib_is_refused`, `::test_xz_block_resume_after_a_seek_is_capped_too`, `::test_lzip_member_dictionary_is_capped`, `::test_lzma_alone_declaring_four_gib_is_refused`, `::test_lzma_alone_non_seekable_source_is_checked_and_replayed` |
+| liblzma errors by cause | `tests/test_lzma_error_causes.py::test_xz_with_an_unknown_filter_is_unsupported_not_corrupt`, `::test_an_unknown_filter_mid_tar_xz_aborts_the_listing`, `::test_corrupt_xz_data_is_still_corruption` |
+| The Alone probe | `tests/test_detection.py::test_lzma_alone_detected_by_content_probe`, `::test_lzma_alone_declaring_zero_output_is_not_claimed`, `::test_lzma_alone_with_zero_dictionary_size_is_detected`, `::test_lzma_alone_probe_does_not_claim_lzip`, `::test_tlz_alone_content_wins_with_extension_conflict` |
+| Alone size from the header; `format_unconfirmed` on a probe-only failure | `tests/test_single_file.py::test_lzma_alone_size_from_header_when_known`, `::test_lzma_alone_size_none_when_unknown_marker`, `tests/test_probe_provenance_unconfirmed.py::test_lzma_alone_probable_failure_sets_format_unconfirmed`, `::test_lzma_alone_probable_limit_refusal_sets_format_unconfirmed` |
+
+**Building fixtures.** The standard library writes single-block xz and LZMA Alone
+(`lzma.compress`). `tests/streams_util.py` builds multi-block xz and multi-member lzip.
+`xz`, `lzip` and `plzip` install from the distribution.
+
+## 9. References
+
+- The xz file format, version 1.1.0 (tukaani.org/xz/xz-file-format.txt): §2.1 stream
+  header and footer, §2.2 stream padding, §3 blocks, §4 index, §1.2 multi-byte integers
+- The lzip manual (nongnu.org/lzip/manual/lzip_manual.html), §File format and §Trailing
+  data
+- The LZMA SDK's `lzma.txt` for the Alone header
+- Registers: [`threat-model.md`](../threat-model.md) O10, O17 ·
+  [`known-issues.md`](../known-issues.md)
+- Decisions: [`library-analysis.md`](../library-analysis.md) §xz, §lzip ·
+  [ADR 0014](../decisions/0014-integrity-verdicts-from-reads-not-close.md)
+- Code: `internal/streams/xz.py` (`XzDecoder`, `_XzState`, `_XzBlockResume`,
+  `_read_xz_index_backwards`, `lzma_error_to_archivey`) · `internal/streams/lzip.py`
+  (`LzipDecoder`, `peek_index_summary`) · `internal/streams/codecs.py` (`XzCodec`,
+  `LzipCodec`, `LzmaAloneCodec`, `_alone_header_plausible`, `_RefusedAloneStream`)
+- Handbook: [`single-file.md`](single-file.md) · [`7z.md`](7z.md) (raw LZMA and LZMA2
+  coders) · [`tar.md`](tar.md)

@@ -6,8 +6,10 @@ is still a perfectly good archive. This page covers the machinery shared by ever
 that can be found that way, and the places where a format's own structure changes the
 answer.
 
-Format pages keep their own half: [`formats/zip.md`](../formats/zip.md) §3 has ZIP's two
-offset conventions, which are ZIP's and nobody else's.
+The detector as a whole, with its step order, budget and tie rule, is on
+[`detection.md`](detection.md); this page is the SFX step in depth. Format pages keep
+their own half: [`formats/zip.md`](../formats/zip.md) §3 has ZIP's two offset
+conventions, which are ZIP's and nobody else's.
 
 ## 1. Shapes in the wild
 

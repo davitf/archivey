@@ -22,6 +22,19 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Added
 
+- **ISO reads zisofs.** A file stored with Rock Ridge transparent compression (`ZF`)
+  lists the size it decodes to and reads decoded. pycdlib refused such an image
+  outright, and archivey reported the whole image as `CorruptionError`. zisofs2 (under
+  `ZF` or `Z2`) and a zisofs entry too short to parse list and refuse to read with
+  `UnsupportedFeatureError`.
+- **ISO takes `encoding=`** for Rock Ridge and plain ISO 9660 names, and Rock Ridge link
+  targets, whose bytes are not valid UTF-8, the way TAR takes it for a PAX `path`.
+  Without it, a Rock Ridge name takes the Joliet name of the same file or directory
+  when the image has a Joliet tree and the names line up, and reports
+  `MEMBER_NAME_ENCODING_INFERRED`; otherwise it lists with surrogate escapes, as before.
+  A relative link target spells each component the way the member it names is named;
+  an absolute one stays escaped.
+  `raw_name` is now the stored bytes rather than the UTF-8 of the decoded name.
 - **`ArchiveyConfig.spool_limits`** (`SpoolLimits`, with a `SpoolLimits.UNLIMITED`
   preset): bounds the temp copy a RAR opened from a stream needs so `unrar` can read it.
   `SpoolLimits.max_bytes` defaults to 1 GiB, counted across a volume set. An archive over
@@ -90,8 +103,27 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `DetectionBudget` from `archivey.detection_cost` (`BALANCED_BUDGET`, the default,
   `FAST_BUDGET` or `THOROUGH_BUDGET`). It governs `detect_format` and every detection
   `open_archive` and `open_stream` run, which before this always used the default.
+- `ArchiveyConfig.rar_decompressor` chooses the program that reads RAR member data:
+  `RarDecompressor.AUTO`, the default (RARLAB `unrar` or `rar` when it is installed,
+  `unar` otherwise, chosen once when the archive opens), `RarDecompressor.UNRAR` (RARLAB
+  only, the behaviour before this release) or `RarDecompressor.UNAR` (`unar` 1.10 or
+  later, which `brew install unar` provides on macOS). A machine with `unar` and no
+  RARLAB program now reads RAR member data instead of raising
+  `PackageNotInstalledError`. `unar` reads less than `unrar`: encrypted RAR
+  2.x-4.x data, non-ASCII passwords, header-encrypted RAR5 volume sets, RAR 1.5
+  compression, some RAR5 solid layouts and prefixed multi-volume sets are refused with
+  `UnsupportedFeatureError` before it runs.
+  `unar` takes the password on its command line, so other local users can read it in
+  the process list. See `docs/formats.md`.
 
 ### Fixed
+
+- **One malformed Rock Ridge record no longer costs a whole ISO image.** A System Use
+  entry pycdlib does not know is skipped, as SUSP specifies, and a malformed one ends
+  that record's Rock Ridge data with a `MEMBER_HEADER_RECORD_SKIPPED` diagnostic on the
+  member (a symlink cut this way lists with `link_target` unset and
+  `SYMLINK_TARGET_UNAVAILABLE`). genisoimage writes such a record for a long symlink
+  target (from about 400 bytes with genisoimage 1.1.11), and every member of the image failed with `CorruptionError`.
 
 - **A truncated gzip, zlib or deflate stream no longer kills the process through
   rapidgzip.** rapidgzip 0.16 aborts (`std::terminate`) on such a stream, whatever the
@@ -524,7 +556,7 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED`, and
   `MEMBER_NAME_BIDI_CONTROL` — which promotes the library's last log-only advisory to
   queryable, escalatable data.
-- `encoding=` passed to a backend that decodes names another way (7z, RAR, ISO,
+- `encoding=` passed to a backend that decodes names another way (7z, RAR,
   directory, single-file) is still accepted, but the discard is now recorded rather
   than silent.
 - Four refusals that crossed the API untyped or mistyped now match the spelling the

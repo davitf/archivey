@@ -155,8 +155,11 @@ archivey.extract("a.7z", "out/")
 The reason to switch is memory safety and uniformity: Archivey parses 7z and RAR metadata
 in pure Python rather than delegating to a third-party parser, and the same reader
 interface covers every other format you handle. One RAR difference: `rarfile` will use
-`unar` or `7z` for member data if that is what is on `PATH`; archivey requires RARLAB
-`unrar` or `rar` and will not fall back to those lookalikes.
+`unar` or `7z` for member data if that is what is on `PATH`; archivey uses RARLAB
+`unrar` or `rar`, then `unar` when no RARLAB program is installed, and never `7z`.
+Under `unar` it refuses the reads `unar` gets wrong, and the password goes on `unar`'s
+command line ([Formats and extras](formats.md#rar)). Set
+`ArchiveyConfig(rar_decompressor="unrar")` to never use `unar`.
 
 ## Things that will bite you
 

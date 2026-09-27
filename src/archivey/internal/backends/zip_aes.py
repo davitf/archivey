@@ -152,8 +152,6 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
         self.size = cipher_len
         self._cipher_remaining = cipher_len
         self._origin = source.tell() if source.seekable() else 0
-        self._mac = b""
-        self._mac_needed = _HMAC_LEN
         self._buf = bytearray()
         self._overshoot = 0  # how far a seek put the position past the ciphertext end
 
@@ -202,19 +200,19 @@ class WinZipAesDecryptStream(ReadOnlyIOStream):
                     raise TruncatedError("Truncated WinZip AES ciphertext before HMAC")
                 self._hmac.update(chunk)
                 self._hashed += len(chunk)
-        mac = read_exact(self._source, self._mac_needed)
-        if len(mac) != self._mac_needed:
+        mac = read_exact(self._source, _HMAC_LEN)
+        if len(mac) != _HMAC_LEN:
             raise TruncatedError("Truncated WinZip AES HMAC")
-        self._mac += mac
-        self._mac_needed = 0
         self._authenticated = True
         expected = self._hmac.digest()[:_HMAC_LEN]
-        if not hmac.compare_digest(self._mac, expected):
+        if not hmac.compare_digest(mac, expected):
             raise CorruptionError(
                 "WinZip AES HMAC mismatch (wrong password or tampered ciphertext)"
             )
 
-    def read(self, size: int = -1) -> bytes:
+    def read(self, size: int | None = -1) -> bytes:
+        if size is None:  # read to EOF, as on any ``io`` stream
+            size = -1
         # Past the end nothing is left to read, and a position the caller seeked
         # past the end is not a read that reached it: no verdict there.
         if size == 0 or self._overshoot:

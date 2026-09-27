@@ -18,6 +18,7 @@ import sys
 import threading
 import weakref
 from dataclasses import dataclass
+from types import TracebackType
 from typing import TYPE_CHECKING, BinaryIO, Callable, Mapping, NoReturn
 
 from archivey.config import REWIND_REDECODE_WARN_BYTES
@@ -26,7 +27,12 @@ from archivey.diagnostics import (
     DiagnosticSummary,
     StreamRewindContext,
 )
-from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.exceptions import (
+    ArchiveyError,
+    ArchiveyUsageError,
+    CorruptionError,
+    TruncatedError,
+)
 from archivey.internal.diagnostics_collector import resolve_collector
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.resume import ask_resume_offset
@@ -138,6 +144,14 @@ class ArchiveStream(ReadOnlyIOStream):
         # still calls ``close()`` on an instance whose ``__init__`` raised.
         self._finalizer: weakref.finalize | None = None
         self._verifier: MemberVerifier | None = verifier
+        # The content verdict this stream raised, if any. Every later read and seek
+        # raises it again (see ``_fail``).
+        self._verdict: ArchiveyError | None = None
+        # Its traceback as first raised: where the damage was found.
+        self._verdict_tb: TracebackType | None = None
+        # Whether the caller has seeked since the verdict last raised. A seek restarts
+        # the decode, so the prefix reads again; the read that reaches the end raises.
+        self._verdict_rewound = False
         # A stream's diagnostics are everything emitted from its open onward: capture the
         # collector position here and difference against "now" on each query. No per-stream
         # bookkeeping is retained collector-side.
@@ -363,6 +377,55 @@ class ArchiveStream(ReadOnlyIOStream):
         )
 
     def _fail(self, e: Exception) -> NoReturn:
+        """Translate + stamp ``e`` and raise it, remembering a content verdict.
+
+        A content verdict is an error that says the member's data is damaged: a
+        ``CorruptionError`` or ``TruncatedError``, or an error raised from one (a
+        ZipCrypto member's password-or-damage ``EncryptionError``). Until a seek, every
+        later read raises it again. A seek restarts the decode, so the prefix reads
+        again, and the read that reaches the end raises the verdict again although the
+        seek forfeited the digest check: a caller who catches it and seeks back cannot
+        re-read the damaged member as complete, clean data.
+        """
+        try:
+            self._raise_translated(e)
+        except ArchiveyError as raised:
+            if _is_content_verdict(raised):
+                if self._verdict is None:
+                    self._verdict = raised
+                    self._verdict_tb = raised.__traceback__
+                self._verdict_rewound = False
+            raise
+
+    def _reached_end(self, n: int, data: bytes) -> bool:
+        """Whether a rewound read reached the end, where the damage was found.
+
+        A short or empty return is the end. So is a full return that lands at the
+        declared size: ``read(member.size)`` after ``seek(0)`` returns every byte and
+        would otherwise hand the member over whole. The position the verdict was
+        raised at is no guide: a read that withheld its bytes may not have moved it.
+        """
+        if n < 0 or len(data) < n:
+            return True
+        if self._size is None or self._inner is None:
+            return False
+        try:
+            return self._inner.tell() >= self._size
+        except Exception:  # noqa: BLE001 - an unknown position leaves the short rule
+            return False
+
+    def _raise_verdict(self) -> None:
+        """Raise the content verdict this stream already raised, if there is one.
+
+        Each ``raise`` adds the caller's frames to the exception's traceback, and the
+        object lives as long as the stream. Resetting it to the first traceback keeps
+        a retry loop from growing it without bound, and keeps it pointing at where the
+        damage was found.
+        """
+        if self._verdict is not None:
+            raise self._verdict.with_traceback(self._verdict_tb)
+
+    def _raise_translated(self, e: Exception) -> NoReturn:
         """Translate + stamp ``e`` and raise, or re-raise it unchanged."""
         if isinstance(e, ArchiveyError):
             self._stamp(e)
@@ -386,7 +449,10 @@ class ArchiveStream(ReadOnlyIOStream):
             raise translated from e
         raise e
 
-    def read(self, n: int = -1, /) -> bytes:
+    def read(self, n: int | None = -1, /) -> bytes:
+        # ``None`` reads to EOF, as on any ``io`` stream.
+        if n is None:
+            n = -1
         # _ensure_open is outside the try: its read-after-close ValueError is the
         # wrapper's own (plain file semantics, not translated), and a lazy open failure
         # is already routed through _fail inside it.
@@ -402,15 +468,26 @@ class ArchiveStream(ReadOnlyIOStream):
         # mid-stream needs a full-count layer in front (the ``ArchiveSource`` at the
         # boundary is one), not a loop here.
         inner = self._ensure_open()
+        verdict = self._verdict
+        if verdict is not None and not self._verdict_rewound:
+            self._raise_verdict()
         verifier = self._verifier
         try:
             if verifier is not None:
-                return verifier.read(inner, n)
-            if n == 0:
+                data = verifier.read(inner, n)
+            elif n == 0:
                 return b""
-            return inner.read(n)
+            else:
+                data = inner.read(n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail(e)
+        if verdict is not None and n != 0 and self._reached_end(n, data):
+            # A rewound stream reached its end: the damage is still there, and the
+            # seek gave up the check that found it. Withhold the bytes, as the
+            # verifier does with the chunk that fails.
+            self._verdict_rewound = False
+            self._raise_verdict()
+        return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
         # Always route through read() so the one-read / stop-on-short policy above
@@ -438,6 +515,8 @@ class ArchiveStream(ReadOnlyIOStream):
         verifier = self._verifier
         if verifier is not None:
             verifier.note_seek(result)
+        if self._verdict is not None:
+            self._verdict_rewound = True
         self._maybe_warn_rewind(before, result)
         return result
 
@@ -619,3 +698,15 @@ class ArchiveStream(ReadOnlyIOStream):
 
     def __repr__(self) -> str:
         return f"<ArchiveStream inner={self._inner!r}>"
+
+
+def _is_content_verdict(error: BaseException) -> bool:
+    """Whether ``error``, or an error it was raised from, says the data is damaged."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if isinstance(current, (CorruptionError, TruncatedError)):
+            return True
+        seen.add(id(current))
+        current = current.__cause__
+    return False

@@ -362,14 +362,14 @@ def test_encoding_argument_is_applied(key: str, tmp_path: Path) -> None:
     assert base != alt
 
 
-@pytest.mark.parametrize("key", ["iso", "7z", "dir"])
+@pytest.mark.parametrize("key", ["7z", "dir"])
 def test_encoding_argument_is_silently_discarded(key: str, tmp_path: Path) -> None:
     """F2 (pin): these backends accept ``encoding=`` and ignore it, with no signal."""
     base, alt = _names_with_and_without_encoding(_archive("basic", key, tmp_path))
     assert base == alt
 
 
-@pytest.mark.parametrize("key", ["iso", "7z", "dir"])
+@pytest.mark.parametrize("key", ["7z", "dir"])
 def test_unusable_encoding_argument_is_recorded(key: str, tmp_path: Path) -> None:
     """F2 (fixed): the discard is queryable — but the entry point stays permissive.
 
@@ -386,7 +386,7 @@ def test_unusable_encoding_argument_is_recorded(key: str, tmp_path: Path) -> Non
         assert reader.diagnostics.counts[DiagnosticCode.ENCODING_ARGUMENT_UNUSED] == 1
 
 
-@pytest.mark.parametrize("key", ["zip", "tar"])
+@pytest.mark.parametrize("key", ["zip", "tar", "iso"])
 def test_usable_encoding_argument_is_not_recorded(key: str, tmp_path: Path) -> None:
     """F2 (guardrail): a backend that consumes `encoding=` must stay silent about it."""
     from archivey.diagnostics import DiagnosticCode

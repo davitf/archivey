@@ -70,6 +70,11 @@ PASSWORD_CONFIRM_PREFIX_BYTES = 64 * 1024
 # number is the part they share.
 PASSWORD_CONFIRM_MAX_INPUT_BYTES = 1 << 20
 
+# How many bytes a CRC must cover before a match confirms a password: a CRC over
+# fewer carries less than 32 bits of evidence, so it can reject a candidate but never
+# confirm one.
+PASSWORD_CONFIRM_MIN_VERIFIED_BYTES = 4
+
 # Read size for the confirm walk. Peak extra memory is one chunk, whatever the unit size.
 PASSWORD_CONFIRM_CHUNK_BYTES = 64 * 1024
 
@@ -118,7 +123,7 @@ def plan_password_confirm(
     *,
     budget: int,
     codec_rejects: bool,
-    min_verified_bytes: int = 4,
+    min_verified_bytes: int = PASSWORD_CONFIRM_MIN_VERIFIED_BYTES,
 ) -> PasswordConfirmPlan:
     """Plan the cheapest decode that can judge one candidate password.
 

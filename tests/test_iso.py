@@ -1162,3 +1162,599 @@ def test_format_version_is_not_pycdlibs_guess(rock_ridge_iso: Path) -> None:
     every image, a level-1 genisoimage default included."""
     with open_archive(rock_ridge_iso) as ar:
         assert ar.info.format_version is None
+
+
+# --- System Use entries pycdlib refuses: zisofs, unknown entries, a malformed tail ----
+
+
+def _zisofs(
+    data: bytes,
+    *,
+    log2_block_size: int = 15,
+    mangle: Callable[[bytes], bytes] = lambda chunk: chunk,
+) -> bytes:
+    """``data`` as ``mkzftree`` stores it: a header, block pointers, zlib blocks.
+
+    A block of zeros is stored as two equal pointers, as ``mkzftree`` writes it.
+    ``mangle`` rewrites each stored zlib block, and the pointers follow it.
+    """
+    import zlib
+
+    block_size = 1 << log2_block_size
+    blocks = [data[i : i + block_size] for i in range(0, len(data), block_size)]
+    header = (
+        b"\x37\xe4\x53\x96\xc9\xdb\xd6\x07"
+        + struct.pack("<I", len(data))
+        + bytes([4, log2_block_size, 0, 0])
+    )
+    offset = len(header) + 4 * (len(blocks) + 1)
+    pointers = [offset]
+    packed = b""
+    for block in blocks:
+        chunk = b"" if block == bytes(len(block)) else mangle(zlib.compress(block))
+        packed += chunk
+        pointers.append(pointers[-1] + len(chunk))
+    return header + b"".join(struct.pack("<I", p) for p in pointers) + packed
+
+
+def _zf_entry(
+    size: int,
+    *,
+    tag: bytes = b"ZF",
+    version: int = 1,
+    algorithm: bytes = b"pz",
+    header_size: int = 16,
+    log2_block_size: int = 15,
+) -> bytes:
+    return (
+        tag
+        + b"\x10"
+        + bytes([version])
+        + algorithm
+        + bytes([header_size // 4, log2_block_size])
+        + struct.pack("<I", size)
+        + struct.pack(">I", size)
+    )
+
+
+def _replace_tf(data: bytes, name: bytes, entries: bytes) -> bytes:
+    """Replace the 26-byte ``TF`` entry after Rock Ridge name ``name`` by ``entries``."""
+    at = data.index(b"NM" + bytes([5 + len(name)]) + b"\x01\x00" + name)
+    tf = data.index(b"TF\x1a\x01", at)
+    assert len(entries) == 26
+    return data[:tf] + entries + data[tf + 26 :]
+
+
+# A SUSP entry of a type nobody defines, which SUSP has a reader skip.
+_UNKNOWN_ENTRY = b"XX\x0a\x01" + b"\x00" * 6
+
+
+def _zisofs_image(
+    plain: bytes,
+    *,
+    short: bool = False,
+    mangle: Callable[[bytes], bytes] = lambda chunk: chunk,
+    **zf: Any,
+) -> bytes:
+    """``plain`` stored as zisofs, with a ``ZF`` entry built from ``zf``; ``short``
+    cuts the entry to 12 bytes, which cannot hold the fields. ``mangle`` as for
+    ``_zisofs``."""
+    stored = _zisofs(plain, mangle=mangle)
+
+    def populate(iso: Any) -> None:
+        iso.add_fp(io.BytesIO(stored), len(stored), "/ZZZ.;1", rr_name="zzz")
+        iso.add_fp(io.BytesIO(b"BBBB"), 4, "/BBB.;1", rr_name="bbb")
+
+    data = _build_rr_iso(populate)
+    entry = _zf_entry(len(plain), **zf)
+    if short:
+        entry = entry[:2] + b"\x0c" + entry[3:12] + b"XX\x04\x01"
+    return _replace_tf(data, b"zzz", entry + _UNKNOWN_ENTRY)
+
+
+_ZISOFS_PLAIN = (b"zisofs block data " * 3000) + bytes(40_000) + b"tail"
+
+
+def test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded(
+    tmp_path: Path,
+) -> None:
+    """pycdlib refuses a ``ZF`` entry, which cost the whole image. The member lists
+    with the size the entry declares and reads the bytes ``mkzftree`` compressed,
+    including a block of zeros stored as no data; its neighbour is untouched."""
+    data = _zisofs_image(_ZISOFS_PLAIN)
+    with open_archive(io.BytesIO(data)) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        zzz = by_name["zzz"]
+        assert zzz.size == len(_ZISOFS_PLAIN)
+        assert zzz.compressed_size == len(_zisofs(_ZISOFS_PLAIN))
+        assert zzz.compression == (
+            CompressionMethod(algo=CompressionAlgorithm.DEFLATE),
+        )
+        assert zzz.diagnostics == ()
+        assert ar.read("zzz") == _ZISOFS_PLAIN
+        assert ar.read("bbb") == b"BBBB"
+        ar.extract_all(tmp_path / "out")
+    assert (tmp_path / "out" / "zzz").read_bytes() == _ZISOFS_PLAIN
+
+
+def test_a_zisofs_member_seeks_across_blocks() -> None:
+    data = _zisofs_image(_ZISOFS_PLAIN)
+    with open_archive(io.BytesIO(data), seekable_members=True) as ar:
+        with ar.open("zzz") as stream:
+            for offset in (70_000, 5, 54_000, len(_ZISOFS_PLAIN) - 3):
+                stream.seek(offset)
+                assert stream.read(10) == _ZISOFS_PLAIN[offset : offset + 10]
+
+
+@pytest.mark.parametrize(
+    "zf",
+    [
+        {"version": 2},
+        {"algorithm": b"xz"},
+        {"header_size": 20},
+        {"log2_block_size": 20},
+        {"tag": b"Z2", "version": 2},
+        {"short": True},
+    ],
+    ids=["zisofs2", "algorithm", "header-size", "block-size", "z2-tag", "short"],
+)
+def test_a_zisofs_member_this_reader_cannot_decode_is_refused_alone(
+    zf: dict[str, Any],
+) -> None:
+    from archivey.exceptions import UnsupportedFeatureError
+
+    data = _zisofs_image(_ZISOFS_PLAIN, **zf)
+    with open_archive(io.BytesIO(data)) as ar:
+        assert ar.get("zzz").compression == (
+            CompressionMethod(algo=CompressionAlgorithm.UNKNOWN),
+        )
+        assert ar.read("bbb") == b"BBBB"
+        with pytest.raises(UnsupportedFeatureError, match="zisofs"):
+            ar.read("zzz")
+
+
+def test_a_damaged_zisofs_block_is_corruption() -> None:
+    data = bytearray(_zisofs_image(_ZISOFS_PLAIN))
+    stored = _zisofs(_ZISOFS_PLAIN)
+    at = data.index(stored)
+    first_block = at + 16 + 4 * 4  # three blocks, four pointers
+    data[first_block : first_block + 8] = b"\xff" * 8
+    with open_archive(io.BytesIO(bytes(data))) as ar:
+        with pytest.raises(CorruptionError):
+            ar.read("zzz")
+
+
+@pytest.mark.parametrize(
+    ("mangle", "match"),
+    [
+        (lambda chunk: chunk[:-4], "does not end"),
+        (lambda chunk: chunk + b"junk" * 10, "does not end"),
+        (lambda chunk: chunk + bytes(40_000), "spans"),
+    ],
+    ids=["checksum-cut", "trailing-bytes", "span-past-bound"],
+)
+def test_a_zisofs_block_that_does_not_end_at_its_pointer_is_corruption(
+    mangle: Callable[[bytes], bytes], match: str
+) -> None:
+    """A block is accepted only when its zlib stream, checksum included, ends exactly
+    where the next pointer says. A span longer than any deflated block of the block
+    size is refused before it is read, so a pointer cannot size an allocation."""
+    data = _zisofs_image(_ZISOFS_PLAIN, mangle=mangle)
+    with open_archive(io.BytesIO(data)) as ar:
+        assert ar.read("bbb") == b"BBBB"
+        with pytest.raises(CorruptionError, match=match):
+            ar.read("zzz")
+
+
+@pytest.mark.parametrize(
+    ("cut", "match"),
+    [(10, "header"), (20, "pointer"), (100, "block 0")],
+    ids=["header", "pointer-table", "block-data"],
+)
+def test_a_zisofs_member_cut_by_the_image_end_is_truncated(
+    cut: int, match: str
+) -> None:
+    """The declared-length check is off for zisofs members; the decoder raises
+    ``TruncatedError`` where the stored data runs out instead. The member before it
+    still reads."""
+    from archivey.exceptions import TruncatedError
+
+    data = _zisofs_image(_ZISOFS_PLAIN)
+    at = data.index(_zisofs(_ZISOFS_PLAIN))
+    assert data.index(b"BBBB") < at
+    with open_archive(io.BytesIO(data[: at + cut])) as ar:
+        assert ar.get("zzz").size == len(_ZISOFS_PLAIN)
+        assert ar.read("bbb") == b"BBBB"
+        with pytest.raises(TruncatedError, match=match):
+            ar.read("zzz")
+
+
+def test_a_zisofs_block_that_inflates_past_the_block_size_is_corruption() -> None:
+    """The decoded length is capped one byte past the block, so an over-long block
+    raises rather than being cut to fit."""
+    import zlib
+
+    good = _zisofs(bytes(range(256)) * 128)  # one full 32 KiB block
+    header, pointers = good[:16], good[16:24]
+    packed = zlib.compress(bytes(range(256)) * 128 + b"!")
+    stored = header + struct.pack("<II", 24, 24 + len(packed)) + packed
+
+    def populate(iso: Any) -> None:
+        iso.add_fp(io.BytesIO(stored), len(stored), "/ZZZ.;1", rr_name="zzz")
+
+    data = _replace_tf(
+        _build_rr_iso(populate), b"zzz", _zf_entry(32 * 1024) + _UNKNOWN_ENTRY
+    )
+    assert pointers == struct.pack("<II", 24, len(good))
+    with open_archive(io.BytesIO(data)) as ar:
+        with pytest.raises(CorruptionError, match="block 0"):
+            ar.read("zzz")
+
+
+def test_pycdlib_used_directly_is_not_filtered() -> None:
+    """The filter runs only inside archivey's own ``open_fp``."""
+    import pycdlib
+    from pycdlib.pycdlibexception import PyCdlibInvalidISO
+
+    iso = pycdlib.PyCdlib()
+    with pytest.raises(PyCdlibInvalidISO, match="Unknown SUSP record"):
+        iso.open_fp(io.BytesIO(_zisofs_image(_ZISOFS_PLAIN)))
+
+
+def _cut_after(data: bytes, name: bytes) -> bytes:
+    """Give the ``TF`` entry after Rock Ridge name ``name`` a version of 99."""
+    at = data.index(b"NM" + bytes([5 + len(name)]) + b"\x01\x00" + name)
+    tf = data.index(b"TF\x1a\x01", at)
+    return data[: tf + 3] + b"\x63" + data[tf + 4 :]
+
+
+def test_a_malformed_rock_ridge_entry_costs_its_own_member_only() -> None:
+    """genisoimage wraps an ``SL`` length past 255 for a long symlink target, and pycdlib
+    then refused the whole image. The area is read up to the malformed entry; the member
+    keeps what came before it and says the rest was dropped."""
+    from archivey import DiagnosticCode
+
+    data = _cut_after(_build_rr_iso(_two_rr_files), b"aaa")
+    with open_archive(io.BytesIO(data)) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        aaa = by_name["aaa"]
+        assert aaa.mode == 0o444  # from PX, which came before the cut
+        assert ar.read("aaa") == b"AAAA"
+        [diagnostic] = aaa.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.list_truncated
+        assert diagnostic.context.record == ""
+        assert "version 99" in diagnostic.context.reason
+        assert by_name["bbb"].diagnostics == ()
+
+
+def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:
+    """With no ``NM`` entry pycdlib names the record by its ISO 9660 identifier,
+    ``;1`` included; the member lists under the identifier with that removed, as a
+    record with no Rock Ridge entries at all does."""
+    from archivey import DiagnosticCode
+
+    data = bytearray(_build_rr_iso(_two_rr_files))
+    nm = data.index(b"NM\x08\x01\x00aaa")
+    rr = data.rindex(b"RR\x05\x01", 0, nm)
+    data[rr + 3] = 99
+    with open_archive(io.BytesIO(bytes(data))) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert set(by_name) == {"AAA", "bbb"}
+        assert by_name["AAA"].raw_name == b"AAA"
+        assert ar.read("AAA") == b"AAAA"
+        assert [d.code for d in by_name["AAA"].diagnostics] == [
+            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        ]
+
+
+def test_a_symlink_whose_entries_are_cut_withholds_its_target() -> None:
+    """The target may have run on past the malformed entry (genisoimage's long
+    targets do), so it is not reported cut short."""
+    from archivey import DiagnosticCode
+
+    def populate(iso: Any) -> None:
+        iso.add_fp(io.BytesIO(b"AAAA"), 4, "/AAA.;1", rr_name="aaa")
+        iso.add_symlink("/LNK.;1", rr_symlink_name="lnk", rr_path="a/b/c")
+
+    data = _cut_after(_build_rr_iso(populate), b"lnk")
+    with open_archive(io.BytesIO(data)) as ar:
+        lnk = {m.name: m for m in ar.members()}["lnk"]
+        assert lnk.type is MemberType.SYMLINK
+        assert lnk.link_target is None
+        assert [d.code for d in lnk.diagnostics] == [
+            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+            DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
+        ]
+
+
+def test_a_strict_policy_refuses_a_cut_rock_ridge_area() -> None:
+    from archivey import ArchiveyConfig, DiagnosticPolicy
+    from archivey.exceptions import ArchiveyError
+
+    data = _cut_after(_build_rr_iso(_two_rr_files), b"aaa")
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with pytest.raises(ArchiveyError):
+        with open_archive(io.BytesIO(data), config=strict) as ar:
+            ar.members()
+
+
+# --- names that are not UTF-8 ----------------------------------------------------------
+
+
+def _latin1_name_image() -> bytes:
+    """A Rock Ridge name written in Latin-1, as ``genisoimage -input-charset
+    iso8859-1`` stores ``caféé.txt``, beside a symlink pointing at it."""
+
+    def populate(iso: Any) -> None:
+        iso.add_fp(io.BytesIO(b"x"), 1, "/CAF.TXT;1", rr_name="cafXY.txt")
+        iso.add_symlink("/LNK.;1", rr_symlink_name="lnk", rr_path="cafXY.txt")
+
+    return _build_rr_iso(populate).replace(b"cafXY", b"caf\xe9\xe9")
+
+
+def test_a_latin1_rock_ridge_name_decodes_with_encoding() -> None:
+    """UTF-8 first, then ``encoding=`` for bytes that are not UTF-8, as TAR does;
+    ``raw_name`` is the stored bytes either way."""
+    from archivey import DiagnosticCode
+
+    data = _latin1_name_image()
+    with open_archive(io.BytesIO(data)) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert set(by_name) == {"caf\udce9\udce9.txt", "lnk"}
+        assert by_name["caf\udce9\udce9.txt"].raw_name == b"caf\xe9\xe9.txt"
+    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+        by_name = {m.name: m for m in ar.members()}
+        member = by_name["caféé.txt"]
+        assert member.raw_name == b"caf\xe9\xe9.txt"
+        assert by_name["lnk"].link_target == "caféé.txt"
+        assert ar.read("caféé.txt") == b"x"
+        assert DiagnosticCode.ENCODING_ARGUMENT_UNUSED not in ar.diagnostics.counts
+
+
+def _latin1_names_with_joliet_image() -> bytes:
+    """Rock Ridge names in Latin-1 beside a Joliet tree that has them right, as
+    ``genisoimage -R -J -input-charset iso8859-1`` writes. ``#`` stands for the
+    Latin-1 byte in each Rock Ridge name, swapped in after pycdlib writes the image."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3, rock_ridge="1.09", joliet=3)
+    iso.add_directory("/REP", rr_name="r#pertoire", joliet_path="/répertoire")
+    iso.add_fp(
+        io.BytesIO(b"naive"),
+        5,
+        "/REP/NAIVE.TXT;1",
+        rr_name="na#ve.txt",
+        joliet_path="/répertoire/naïve.txt",
+    )
+    iso.add_directory("/ONLY", rr_name="only#", joliet_path="/onlyé")
+    iso.add_directory("/ONLY/INNER", rr_name="inner", joliet_path="/onlyé/inner")
+    iso.add_fp(
+        io.BytesIO(b"f"),
+        1,
+        "/ONLY/INNER/F.TXT;1",
+        rr_name="f.txt",
+        joliet_path="/onlyé/inner/f.txt",
+    )
+    iso.add_fp(
+        io.BytesIO(b"cafe"),
+        4,
+        "/CAFE.TXT;1",
+        rr_name="caf#.txt",
+        joliet_path="/café.txt",
+    )
+    iso.add_fp(io.BytesIO(b""), 0, "/EMPTY.;1", rr_name="empty#", joliet_path="/emptyé")
+    iso.add_fp(io.BytesIO(b""), 0, "/OTHER.;1", rr_name="other", joliet_path="/other")
+    iso.add_symlink("/LNK.;1", rr_symlink_name="lnk", rr_path="caf#.txt")
+    iso.add_symlink("/REP/UP.;1", rr_symlink_name="up", rr_path="../caf#.txt")
+    iso.add_symlink("/DOWN.;1", rr_symlink_name="down", rr_path="r#pertoire/na#ve.txt")
+    iso.add_symlink("/ABS.;1", rr_symlink_name="abs", rr_path="/caf#.txt")
+    # A Joliet name cut short, as writers cut them at 64 characters.
+    iso.add_fp(
+        io.BytesIO(b"long"),
+        4,
+        "/LONG.TXT;1",
+        rr_name="long#name.txt",
+        joliet_path="/longé",
+    )
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    data = out.getvalue()
+    for name in (b"r#pertoire", b"only#", b"caf#.txt", b"empty#", b"long#name"):
+        data = data.replace(name, name.replace(b"#", b"\xe9"))
+    return data.replace(b"na#ve.txt", b"na\xefve.txt")
+
+
+def test_a_latin1_rock_ridge_name_takes_its_joliet_name() -> None:
+    """Without ``encoding=``, a Rock Ridge name that is not UTF-8 takes the Joliet name
+    of the same file or directory, and says so; ``raw_name`` stays the stored bytes."""
+    from archivey import DiagnosticCode
+
+    with open_archive(io.BytesIO(_latin1_names_with_joliet_image())) as ar:
+        by_name = {m.name: m for m in ar.members()}
+        assert set(by_name) == {
+            "répertoire/",
+            "répertoire/naïve.txt",
+            "onlyé/",
+            "onlyé/inner/",
+            "onlyé/inner/f.txt",
+            "café.txt",
+            "emptyé",
+            "other",
+            "long\udce9name.txt",
+            "lnk",
+            "répertoire/up",
+            "down",
+            "abs",
+        }
+        inferred = {
+            name
+            for name, member in by_name.items()
+            if any(
+                d.code == DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+                for d in member.diagnostics
+            )
+        }
+        assert inferred == {
+            "répertoire/",
+            "répertoire/naïve.txt",
+            "onlyé/",
+            "café.txt",
+            "emptyé",
+        }
+        assert by_name["café.txt"].raw_name == b"caf\xe9.txt"
+        # A link names its target the way the target's member is named; an absolute
+        # target points outside the image and stays escaped.
+        assert by_name["lnk"].link_target == "café.txt"
+        assert by_name["répertoire/up"].link_target == "../café.txt"
+        assert by_name["down"].link_target == "répertoire/naïve.txt"
+        assert by_name["abs"].link_target == "/caf\udce9.txt"
+        # No decode of the stored bytes made the name, so no encoding is claimed.
+        (diagnostic,) = by_name["café.txt"].diagnostics
+        assert diagnostic.context.inferred_encoding == ""
+        assert diagnostic.context.declared_encoding == ""
+        assert by_name["répertoire/naïve.txt"].raw_name == b"r\xe9pertoire/na\xefve.txt"
+        assert ar.read("répertoire/naïve.txt") == b"naive"
+
+
+def _wide_latin1_links_image(count: int) -> bytes:
+    """One directory of ``count`` Latin-1 files and ``count`` symlinks naming them,
+    beside a Joliet tree, so every link target takes the Joliet walk."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3, rock_ridge="1.09", joliet=3)
+    iso.add_directory("/W", rr_name="w", joliet_path="/w")
+    for i in range(count):
+        iso.add_fp(
+            io.BytesIO(b"x"),
+            1,
+            f"/W/F{i}.;1",
+            rr_name=f"f#{i:03d}",
+            joliet_path=f"/w/fé{i:03d}",
+        )
+        iso.add_symlink(f"/W/L{i}.;1", rr_symlink_name=f"l{i}", rr_path=f"f#{i:03d}")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue().replace(b"f#", b"f\xe9")
+
+
+def test_following_link_targets_reads_each_directory_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Link targets are looked up through a per-directory index, so the number of
+    directory walks does not grow with the number of links in a directory; a scan
+    per target component made listing one wide directory quadratic."""
+    from archivey.internal.backends import iso_reader
+
+    real = iso_reader._yield_children
+    calls = 0
+
+    def counting(record: Any, rock_ridge: bool) -> Any:
+        nonlocal calls
+        calls += 1
+        return real(record, rock_ridge)
+
+    monkeypatch.setattr(iso_reader, "_yield_children", counting)
+    walks = []
+    for count in (4, 40):
+        calls = 0
+        with open_archive(io.BytesIO(_wide_latin1_links_image(count))) as ar:
+            members = list(ar.members())
+        assert {m.link_target for m in members if m.link_target} == {
+            f"fé{i:03d}" for i in range(count)
+        }
+        walks.append(calls)
+    assert walks[0] == walks[1], walks
+
+
+def test_empty_files_sharing_an_extent_are_matched_in_linear_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every empty file can share one extent, so a Joliet name is looked up by extent
+    and name together; matching each Rock Ridge name against every file at the extent
+    made listing N empty Latin-1 files quadratic."""
+    import pycdlib
+
+    from archivey.internal.backends import iso_reader
+
+    real = iso_reader._ascii_runs_match
+    calls = 0
+
+    def counting(raw: bytes, name: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return real(raw, name)
+
+    monkeypatch.setattr(iso_reader, "_ascii_runs_match", counting)
+    for count in (4, 40):
+        iso = pycdlib.PyCdlib()
+        iso.new(interchange_level=3, rock_ridge="1.09", joliet=3)
+        for i in range(count):
+            iso.add_fp(
+                io.BytesIO(b""),
+                0,
+                f"/E{i}.;1",
+                rr_name=f"e#{i:03d}",
+                joliet_path=f"/eé{i:03d}",
+            )
+        out = io.BytesIO()
+        iso.write_fp(out)
+        iso.close()
+        calls = 0
+        data = out.getvalue().replace(b"e#", b"e\xe9")
+        with open_archive(io.BytesIO(data)) as ar:
+            names = {m.name for m in ar.members()}
+        assert names == {f"eé{i:03d}" for i in range(count)}
+        assert calls <= count, (count, calls)
+
+
+def test_encoding_wins_over_the_joliet_name() -> None:
+    with open_archive(
+        io.BytesIO(_latin1_names_with_joliet_image()), encoding="cp1252"
+    ) as ar:
+        members = list(ar.members())
+    assert {m.name for m in members} >= {"café.txt", "longéname.txt"}
+    assert all(not m.diagnostics for m in members)
+
+
+@pytest.mark.parametrize("encoding", ["utf-32", "idna"])
+def test_an_encoding_that_cannot_decode_the_name_falls_back_to_escapes(
+    encoding: str,
+) -> None:
+    """A text codec that fails on the bytes, or has no ``surrogateescape``, costs
+    neither the listing nor the name: it decodes as with no ``encoding=``."""
+    with open_archive(io.BytesIO(_latin1_name_image()), encoding=encoding) as ar:
+        names = {m.name for m in ar.members()}
+    assert "caf\udce9\udce9.txt" in names
+
+
+def test_the_filter_knows_every_entry_pycdlib_parses() -> None:
+    """``_PYCDLIB_SUSP_TAGS`` mirrors pycdlib's dispatch by hand. pycdlib names one
+    ``RR<TAG>Record`` class per tag it parses, so a release that adds one fails here
+    rather than having archivey drop the new entry before pycdlib sees it."""
+    import re
+
+    from pycdlib import rockridge
+
+    from archivey.internal.backends.iso_reader import _PYCDLIB_SUSP_TAGS
+
+    tags = {
+        name[2:4].encode()
+        for name in dir(rockridge)
+        if re.fullmatch(r"RR[A-Z]{2}Record", name)
+    }
+    assert tags == _PYCDLIB_SUSP_TAGS
+
+
+def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
+    def populate(iso: Any) -> None:
+        iso.add_fp(io.BytesIO(b"x"), 1, "/CAF.TXT;1", rr_name="café.txt")
+
+    with open_archive(io.BytesIO(_build_rr_iso(populate)), encoding="latin-1") as ar:
+        [member] = ar.members()
+        assert member.name == "café.txt"
+        assert member.raw_name == "café.txt".encode()

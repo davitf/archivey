@@ -34,6 +34,7 @@ src/archivey/
     ├── registry.py      ArchiveFormat → backend; format_availability()
     ├── reader_state.py  operation ownership, live-stream gate, lifecycle leases
     ├── backends/        one self-registering reader module per format
+    ├── external/        format-agnostic external decompressor programs (unar)
     └── streams/         the codec and stream-plumbing layer
         └── streamtools/ generic BinaryIO plumbing (slice, lock, share, count)
 ```
@@ -113,11 +114,11 @@ Three things about this path are worth knowing before you debug it:
 | A format's parsing or metadata | `internal/backends/<fmt>_{reader,parser}.py`; spec `openspec/specs/format-<fmt>/` |
 | ZIP internals | `zip_reader.py` (stdlib central directory + archivey member data) · `zip_detect.py` (scan-hit validator) · `zipcrypto.py` · `zip_aes.py`; handbook [`formats/zip.md`](formats/zip.md) |
 | 7z internals | `sevenzip_parser.py` (headers) · `sevenzip_pipeline.py` (coder graph) · `sevenzip_reader.py` · `sevenzip_methods.py` · `sevenzip_aes.py` (KDF, AES properties, key cache) · `sevenzip_detect.py` (scan-hit validator); handbook [`formats/7z.md`](formats/7z.md) |
-| RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) · `rar_detect.py` (scan-hit validator); handbook [`formats/rar.md`](formats/rar.md) |
+| RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) · `rar_unar.py` + `internal/external/unar.py` (the opt-in `unar` data path) · `rar_detect.py` (scan-hit validator); handbook [`formats/rar.md`](formats/rar.md) |
 | TAR internals | `tar_reader.py` (stdlib `tarfile` over the source or archivey's own decompressor; the end-of-archive checks) · `detection.py` `_probe_inner_tar` (a tar inside a compressor); handbook [`formats/tar.md`](formats/tar.md) |
 | ISO internals | `iso_reader.py` (`pycdlib` boundary, record walk, raw-sector refusal, the `pycdlib` cycle guard); handbook [`formats/iso.md`](formats/iso.md) |
 | Directory pseudo-archive | `directory_reader.py` (the `scandir` walk, scan-race diagnostics, hardlink grouping, open-by-path); handbook [`formats/directory.md`](formats/directory.md) |
-| A codec, or adding one | `streams/codecs.py` + `streams/decompress.py`; `xz.py` / `lzip.py` / `unix_compress.py` for the hand-written ones |
+| A codec, or adding one | `streams/codecs.py` + `streams/decompress.py`; `xz.py` / `lzip.py` / `unix_compress.py` for the hand-written ones; `rapidgzip_child.py` for the accelerator's child process; handbook [`formats/single-file.md`](formats/single-file.md) and the codec's own page |
 | Seeking inside a compressed stream | `streams/decompressor_stream.py`; spec `seekable-decompressor-streams` |
 | Stream wrapping / slicing / locking | `streams/streamtools/`; handbook [`topics/stream-ownership.md`](topics/stream-ownership.md); archived review `review/archive/2026-07-19-stream-layering/` |
 | Extraction safety, path traversal, symlinks | `internal/filters.py` + `internal/extraction.py`; `dev-docs/threat-model.md` |
@@ -127,7 +128,7 @@ Three things about this path are worth knowing before you debug it:
 | Warnings-as-data | `diagnostics.py` (public types) + `internal/diagnostics_collector.py` (emission) |
 | Cost or IO accounting | `cost.py` · `measurement.py` · `internal/measurement.py` · `streams/counting.py` |
 | Concurrency, locking, `MemberStreams` | `internal/reader_state.py` + `streams/streamtools/locked.py`; spec `reader-concurrency` |
-| Format detection or a magic number | `internal/detection.py`; prefixed/SFX payloads: `internal/sfx.py` + `<fmt>_detect.py` validators, handbook [`topics/prefixed-archives.md`](topics/prefixed-archives.md) |
+| Format detection or a magic number | `internal/detection.py`, handbook [`topics/detection.md`](topics/detection.md); prefixed/SFX payloads: `internal/sfx.py` + `<fmt>_detect.py` validators, handbook [`topics/prefixed-archives.md`](topics/prefixed-archives.md) |
 | Adding a backend | `internal/registry.py` + a self-registering module in `backends/` |
 | The CLI | `cli/main.py` dispatches; one module per subcommand |
 | Terminal-safe output of hostile text | `terminal.py`; threat-model O9 |
