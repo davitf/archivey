@@ -96,8 +96,8 @@ zstd also matches behind a run of skippable frames ([`zstd-lz4.md`](zstd-lz4.md)
 The other three have none that is safe to trust, and are found by a **content probe**
 that decodes a bounded sample: LZMA Alone, then zlib, then Brotli, in that order. The
 steps run strongest signal first — near magic, the SFX scan, far magic, content probes,
-extension — so a probe only sees what nothing stronger claimed. The module docstring of
-`internal/detection.py` has the order and why.
+extension — so a probe only sees what nothing stronger claimed.
+[`topics/detection.md`](../topics/detection.md) has the order and why.
 
 A probe decodes the 4 KiB detection window, or the whole source when that is no longer
 than the window. When the source is longer but no more than 64 KiB (`BALANCED`'s
