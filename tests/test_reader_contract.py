@@ -98,9 +98,9 @@ class _ForwardOnlyReader(BaseArchiveReader):
 def test_open_raises_without_random_access_capability() -> None:
     # streaming=False isolates the *capability* gate from the access-mode gate.
     reader = _ForwardOnlyReader(ArchiveFormat.TAR, False, "x.tar")
-    with pytest.raises(archivey.ArchiveyUsageError):
+    with pytest.raises(archivey.UnsupportedFeatureError):
         reader.open("a.txt")
-    with pytest.raises(archivey.ArchiveyUsageError):
+    with pytest.raises(archivey.UnsupportedFeatureError):
         reader.read("a.txt")
 
 
