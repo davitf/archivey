@@ -96,27 +96,22 @@ zstd also matches behind a run of skippable frames ([`zstd-lz4.md`](zstd-lz4.md)
 The other three have none that is safe to trust, and are found by a **content probe**
 that decodes a bounded sample: LZMA Alone, then zlib, then Brotli, in that order. The
 steps run strongest signal first — near magic, the SFX scan, far magic, content probes,
-extension — so a probe only sees what nothing stronger claimed. The module docstring of
-`internal/detection.py` has the order and why.
+extension — so a probe only sees what nothing stronger claimed.
+[`topics/detection.md`](../topics/detection.md) has the order and why.
 
-A probe decodes the 4 KiB detection window, or the whole source when that is no longer
-than the window. When the source is longer but no more than 64 KiB (`BALANCED`'s
-`completion_window_bytes`), a hit is checked again against all of it, because text that
-decodes for 4 KiB may stop decoding at 5. Probes run with accelerators off and decoder
-memory limits lifted: a probe decodes a bounded sample, and a capped probe would call a
+What is codec-specific about a probe: it runs with accelerators off and decoder memory
+limits lifted, because a probe decodes a bounded sample and a capped probe would call a
 stream with a large dictionary "not this format" for a caller who opened it with
 `DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG`). The open that follows applies the
-caller's limits. A result found by a probe alone, with no matching extension, is stamped:
-if reading it fails, the error carries `format_unconfirmed=True` and
-`PROBE_FORMAT_UNCONFIRMED` is emitted, since the bytes may never have been that codec
-(threat-model O10).
+caller's limits. The shared machinery around the probes (the sample size, the
+whole-source re-check, the decode allowance, and the `format_unconfirmed` stamp on a
+probe-only result) is on [`topics/detection.md`](../topics/detection.md) §2.4 and §4.1.
 
-Every match is then offered to the **inner-TAR probe** (`_probe_inner_tar`), which decodes
-512 bytes and looks for `ustar` at offset 257. A hit reports `TAR_GZ` and the like, as
-`PROBABLE` / `content_probe`. It reads at most 1 MiB of compressed input, which covers
-bzip2's worst case (no output until a whole block of up to 900 kB is read), and draws on
-the same decode allowance as the content probes. A pre-POSIX tar has no `ustar`, so a v7
-tar inside gzip is reported as `GZ` even when named `.tar.gz` ([`tar.md`](tar.md) §2.1).
+Every match is then offered to the **inner-TAR probe** (`_probe_inner_tar`; its bounds are
+on [`topics/detection.md`](../topics/detection.md) §2). Its 1 MiB input bound is sized for
+bzip2, which emits no output until a whole block of up to 900 kB has been read. A pre-POSIX
+tar has no `ustar`, so a v7 tar inside gzip is reported as `GZ` even when named `.tar.gz`
+([`tar.md`](tar.md) §2.1).
 
 The extension is the last resort (`GUESS`): `.gz`, `.zz`, `.bz2`, `.xz`, `.lz`, `.lzma`,
 `.zst`, `.lz4`, `.br`, `.Z`, compared case-insensitively.
