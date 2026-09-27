@@ -2,10 +2,11 @@
 
 ZIP and 7z store a symlink's target as the member's data, so listing has to read and
 verify it. (RAR3/4 stores it as data too, but reads it with no check, so a damaged
-RAR3/4 target is returned as stored: there is nothing here to fail.) When that read fails its integrity check, only the link is wrong: the
-listing keeps every member, the link has no ``link_target``, and
-``SYMLINK_TARGET_UNAVAILABLE`` (``reason="target_data_damaged"``) says why. The fault
-itself is raised where the caller touches the link: opening it, or extracting it.
+RAR3/4 target is returned as stored: there is nothing here to fail.) When that read
+fails its integrity check, only the link is wrong: the listing keeps every member, the
+link has no ``link_target``, and ``SYMLINK_TARGET_UNAVAILABLE``
+(``reason="target_data_damaged"``) says why. The fault itself is raised where the
+caller touches the link: opening it, or extracting it.
 """
 
 from __future__ import annotations
@@ -62,13 +63,14 @@ def _damaged_aes_symlink() -> bytes:
 
 
 def _damaged_7z_symlink(tmp_path: Path) -> bytes:
-    """A stored 7z holding ``link``, a symlink whose data fails its CRC.
+    """A stored 7z holding ``target.txt`` and ``link``, a symlink failing its CRC.
 
     Built as a regular file re-flagged as a link (`_sevenzip_with_link`) rather than
     with ``7z -snl``, which stores a Windows reparse buffer on Windows and exits 1 on
     macOS. 7z stores names as UTF-16, so the ASCII target occurs once, in the data.
     """
-    return _flip_byte(_sevenzip_with_link(tmp_path, _TARGET, store=True), _TARGET)
+    blob = _sevenzip_with_link(tmp_path, _TARGET, store=True, sibling=b"payload")
+    return _flip_byte(blob, _TARGET)
 
 
 def _link_diagnostics(ar: ArchiveReader) -> list[SymlinkTargetContext]:
@@ -115,6 +117,7 @@ def test_damaged_aes_link_target_keeps_the_listing(
 def test_damaged_7z_link_target_keeps_the_listing(tmp_path: Path) -> None:
     with open_archive(io.BytesIO(_damaged_7z_symlink(tmp_path))) as ar:
         _assert_listed_targetless(ar)
+        assert ar.read(ar.get("target.txt")) == b"payload"
         with pytest.raises(CorruptionError):
             ar.open(ar.get("link"))
 

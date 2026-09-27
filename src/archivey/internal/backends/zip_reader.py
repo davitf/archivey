@@ -1614,10 +1614,16 @@ class ZipReader(BaseArchiveReader):
             failure = EncryptionError(
                 "Password candidate failed integrity validation for this ZIP member"
             )
-            if not ambiguous_holder:
-                ambiguous_holder.append(failure)
             if cause is not None:
                 failure.__cause__ = cause
+            if not ambiguous_holder:
+                ambiguous_holder.append(failure)
+            elif isinstance(cause, TruncatedError) and not isinstance(
+                ambiguous_holder[0].__cause__, TruncatedError
+            ):
+                # Data that ends early is the member's, whatever key read it: a
+                # truncation any candidate met is the verdict, not the first failure.
+                ambiguous_holder[0] = failure
             return failure
 
         def decrypt(password: bytes) -> tuple[ArchiveStream, PasswordConfirmVerdict]:
@@ -1887,10 +1893,11 @@ class ZipReader(BaseArchiveReader):
         ``failure_is_damage`` is for WinZip AES: a candidate that failed integrity had
         already passed the 16-bit ``pw_verify``, which a wrong password passes once in
         65 536, so a member every such candidate fails on is far more likely damaged.
-        It raises the damage the candidate met, as the one-password path does:
-        ``TruncatedError`` for data that ended early, ``CorruptionError`` for anything
-        else (an HMAC mismatch, a codec rejection). ZipCrypto's 8-bit check leaves the
-        ambiguous ``EncryptionError``.
+        It raises the damage the member has, as the one-password path does:
+        ``TruncatedError`` when any candidate found the data ending early (a short
+        payload is the member's, whatever key read it), ``CorruptionError`` for
+        anything else (an HMAC mismatch, a codec rejection). ZipCrypto's 8-bit check
+        leaves the ambiguous ``EncryptionError``.
         """
         try:
             return self._passwords.attempt(member, decrypt, promote=promote)

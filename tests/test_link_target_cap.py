@@ -68,8 +68,14 @@ def _zip_with_links(*targets: bytes) -> bytes:
     return buf.getvalue()
 
 
-def _sevenzip_with_link(tmp_path: Path, target: bytes, *, store: bool = False) -> bytes:
-    """A 7z holding one symlink, ``link``, whose stored target is ``target``.
+def _sevenzip_with_link(
+    tmp_path: Path,
+    target: bytes,
+    *,
+    store: bool = False,
+    sibling: bytes | None = None,
+) -> bytes:
+    """A 7z holding a symlink, ``link``, whose stored target is ``target``.
 
     A real symlink cannot be longer than ``PATH_MAX``, so ``7z -snl`` cannot write the
     over-long one this needs. The member is written as a regular file holding the
@@ -77,14 +83,19 @@ def _sevenzip_with_link(tmp_path: Path, target: bytes, *, store: bool = False) -
     a regular file to ``S_IFLNK``, which is the only thing that differs between the two
     in a 7z archive. Both header CRCs are recomputed so the archive stays valid.
     ``store`` writes the data uncompressed (``-mx0``), so a test can find and damage it.
+    ``sibling`` adds a regular file, ``target.txt``, holding those bytes.
     """
     tree = tmp_path / "tree"
     tree.mkdir()
     (tree / "link").write_bytes(target)
     os.chmod(tree / "link", 0o644)
+    names = ["link"]
+    if sibling is not None:
+        (tree / "target.txt").write_bytes(sibling)
+        names.append("target.txt")
     archive = tmp_path / "link.7z"
     subprocess.run(
-        ["7z", "a", "-mhc=off", *(["-mx0"] if store else []), str(archive), "link"],
+        ["7z", "a", "-mhc=off", *(["-mx0"] if store else []), str(archive), *names],
         cwd=tree,
         check=True,
         capture_output=True,
@@ -95,13 +106,15 @@ def _sevenzip_with_link(tmp_path: Path, target: bytes, *, store: bool = False) -
     offset, size, _crc = struct.unpack_from("<QQI", data, 12)
     start = 32 + offset
     header = bytearray(data[start : start + size])
-    # kAttributes (0x15), property size 6, all-defined 1, external 0, then the one
-    # member's UInt32. Its value depends on the host 7-Zip ran on (a Windows writer
-    # records no Unix mode at all), so it is overwritten rather than matched.
+    # kAttributes (0x15), property size, all-defined 1, external 0, then one UInt32 per
+    # member, in the order the names are stored (UTF-16, NUL-terminated). The values
+    # depend on the host 7-Zip ran on (a Windows writer records no Unix mode at all),
+    # so the link's is overwritten rather than matched.
     # 7-Zip's Unix extension: 0x8000 flags a mode in the high word; 0x20 is ARCHIVE.
-    attributes = b"\x15\x06\x01\x00"
+    attributes = bytes([0x15, 2 + 4 * len(names), 1, 0])
     assert header.count(attributes) == 1, "expected one kAttributes property"
-    at = header.index(attributes) + len(attributes)
+    stored = sorted(names, key=lambda n: header.index(f"{n}\0".encode("utf-16-le")))
+    at = header.index(attributes) + len(attributes) + 4 * stored.index("link")
     struct.pack_into("<I", header, at, (0o120777 << 16) | 0x8020)
     data[start : start + size] = header
     struct.pack_into("<I", data, 28, zlib.crc32(bytes(header)))

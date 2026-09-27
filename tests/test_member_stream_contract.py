@@ -210,6 +210,15 @@ def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> No
         with pytest.raises(CorruptionError):
             while stream.read(1000):
                 pass
+        # A read that asks for exactly what is left returns in full, and still reaches
+        # the damage: the seek gave up the digest check, so this gate is all there is.
+        stream.seek(0)
+        with pytest.raises(CorruptionError) as whole:
+            stream.read(len(payload))
+        assert whole.value is first.value
+        stream.seek(0)
+        with pytest.raises(CorruptionError):
+            stream.readinto(bytearray(len(payload)))
         # Each raise resets the traceback to where the damage was found, so a retry
         # loop does not grow it (and the frames it keeps alive) without bound.
         depths = []
@@ -218,6 +227,42 @@ def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> No
                 stream.read()
             depths.append(len(traceback.extract_tb(retry.value.__traceback__)))
         assert len(set(depths)) == 1
+        stream.close()
+
+
+def test_a_kept_verdict_does_not_keep_the_withheld_member_alive() -> None:
+    """The verdict keeps its first traceback, and that must not pin the member's bytes.
+
+    The sized drain accumulates the whole member before the digest check raises; the
+    frame it raised from stays reachable from the kept traceback (S28-K17).
+    """
+    payload = os.urandom(1 << 20)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("a.bin", payload)
+    blob = bytearray(buf.getvalue())
+    for sig, off in ((b"PK\x01\x02", 16), (b"PK\x03\x04", 14)):
+        blob[blob.index(sig) + off] ^= 0x01
+    with open_archive(io.BytesIO(bytes(blob)), seekable_members=True) as ar:
+        stream = ar.open("a.bin")
+        with pytest.raises(CorruptionError) as caught:
+            stream.read()
+        tb = caught.value.__traceback__
+        biggest = 0
+        while tb is not None:
+            if "tests" in Path(tb.tb_frame.f_code.co_filename).parts:
+                tb = tb.tb_next  # this test's own frame holds the payload, rightly
+                continue
+            for value in tb.tb_frame.f_locals.values():
+                if isinstance(value, (bytes, bytearray)):
+                    biggest = max(biggest, len(value))
+                elif isinstance(value, list):
+                    biggest = max(
+                        biggest,
+                        sum(len(v) for v in value if isinstance(v, (bytes, bytearray))),
+                    )
+            tb = tb.tb_next
+        assert biggest < len(payload) // 2
         stream.close()
 
 

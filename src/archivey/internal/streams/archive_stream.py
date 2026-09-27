@@ -397,6 +397,23 @@ class ArchiveStream(ReadOnlyIOStream):
                 self._verdict_rewound = False
             raise
 
+    def _reached_end(self, n: int, data: bytes) -> bool:
+        """Whether a rewound read reached the end, where the damage was found.
+
+        A short or empty return is the end. So is a full return that lands at the
+        declared size: ``read(member.size)`` after ``seek(0)`` returns every byte and
+        would otherwise hand the member over whole. The position the verdict was
+        raised at is no guide: a read that withheld its bytes may not have moved it.
+        """
+        if n < 0 or len(data) < n:
+            return True
+        if self._size is None or self._inner is None:
+            return False
+        try:
+            return self._inner.tell() >= self._size
+        except Exception:  # noqa: BLE001 - an unknown position leaves the short rule
+            return False
+
     def _raise_verdict(self) -> None:
         """Raise the content verdict this stream already raised, if there is one.
 
@@ -464,7 +481,7 @@ class ArchiveStream(ReadOnlyIOStream):
                 data = inner.read(n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail(e)
-        if verdict is not None and n != 0 and (n < 0 or len(data) < n):
+        if verdict is not None and n != 0 and self._reached_end(n, data):
             # A rewound stream reached its end: the damage is still there, and the
             # seek gave up the check that found it. Withhold the bytes, as the
             # verifier does with the chunk that fails.

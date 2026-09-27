@@ -65,9 +65,11 @@ archivey.extract("archive.zip", "out/")
   target the archive *does* carry but this read could not reach — encrypted, compressed,
   split across volumes, or damaged — is a per-member failure instead, because recording
   it as an outcome would drop a member the archive describes in full while reporting
-  success. A damaged target (its data fails the CRC or HMAC, or the decompressor) does
-  not fail the listing: the link is listed without a target, reported with
-  `reason="target_data_damaged"`, and opening or extracting it raises the damage.
+  success. In ZIP and 7z, a damaged target (its data fails the CRC or HMAC, or the
+  decompressor) does not fail the listing: the link is listed without a target,
+  reported with `reason="target_data_damaged"`, and opening or extracting it raises the
+  damage. RAR3/4 reads the target with no check, so a damaged one there comes back as
+  the stored bytes and is not detected.
 - **A link target longer than 4096 bytes** is treated as corrupt or malicious when it is
   stored as the member's data (ZIP, 7z, RAR4). No filesystem path that long exists on
   Linux or macOS, and the data can be compressed, so reading it whole would let a small

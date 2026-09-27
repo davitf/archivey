@@ -399,34 +399,41 @@ class MemberVerifier:
         """
         assert self._expected_size is not None
         chunks: list[bytes] = []
-        while self._pos < self._expected_size:
-            remaining = self._expected_size - self._pos
-            want = min(_SIZED_DRAIN_CHUNK, remaining)
-            try:
-                piece = inner.read(want)
-            except BaseException:
-                # The decoder's own error is the verdict, as on the bounded path in
-                # read(): the translator above this verifier classifies it. Relabelling
-                # every raw error as TruncatedError here made a corrupt deflate body
-                # read as truncated through read() and as corrupt through read(n).
-                self._abandon()
-                raise
-            if not piece:
-                break
-            self._record_read(piece)
-            chunks.append(piece)
-        # EOF verdict in this complete-stream call — raise withholds the body.
-        if not self._abandoned and not self._verified:
-            if (
-                self._pos >= self._expected_size
-                and self._furthest_read_pos < self._expected_size
-            ):
-                # The drain loop never ran: a seek put ``_pos`` at/past the declared
-                # size without reading there. Verify completeness (reading the skipped
-                # gap) rather than trusting the seek.
-                self._finish_after_seek(inner)
-            else:
-                self._finish(inner)
+        try:
+            while self._pos < self._expected_size:
+                remaining = self._expected_size - self._pos
+                want = min(_SIZED_DRAIN_CHUNK, remaining)
+                try:
+                    piece = inner.read(want)
+                except BaseException:
+                    # The decoder's own error is the verdict, as on the bounded path
+                    # in read(): the translator above this verifier classifies it.
+                    # Relabelling every raw error as TruncatedError here made a
+                    # corrupt deflate body read as truncated through read() and as
+                    # corrupt through read(n).
+                    self._abandon()
+                    raise
+                if not piece:
+                    break
+                self._record_read(piece)
+                chunks.append(piece)
+            # EOF verdict in this complete-stream call — raise withholds the body.
+            if not self._abandoned and not self._verified:
+                if (
+                    self._pos >= self._expected_size
+                    and self._furthest_read_pos < self._expected_size
+                ):
+                    # The drain loop never ran: a seek put ``_pos`` at/past the
+                    # declared size without reading there. Verify completeness
+                    # (reading the skipped gap) rather than trusting the seek.
+                    self._finish_after_seek(inner)
+                else:
+                    self._finish(inner)
+        except BaseException:
+            # The raise withholds these bytes, and its traceback keeps this frame
+            # alive for as long as the caller keeps the error: let the body go.
+            chunks.clear()
+            raise
         return b"".join(chunks)
 
     def read(self, inner: BinaryIO, n: int | None = -1) -> bytes:

@@ -258,6 +258,10 @@ def test_aes_hmac_mismatch_keeps_raising_after_a_seek_back(method: int) -> None:
             stream.seek(0)
             with pytest.raises(CorruptionError, match="HMAC"):
                 stream.read()
+            # Asking for exactly the member returns in full, and still raises.
+            stream.seek(0)
+            with pytest.raises(CorruptionError, match="HMAC"):
+                stream.read(len(_PAYLOAD))
 
 
 @requires("cryptography")
@@ -904,6 +908,36 @@ def test_aes_short_payload_is_truncated_on_both_password_paths(
     )
     for signature, size_at in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
         struct.pack_into("<I", data, data.index(signature) + size_at, 100)
+    with open_archive(io.BytesIO(bytes(data)), password=passwords) as ar:
+        with pytest.raises(TruncatedError):
+            ar.read(ar.members()[0])
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+@pytest.mark.parametrize("collider_first", [True, False], ids=["collider", "right"])
+@requires("cryptography")
+def test_aes_short_payload_is_truncated_whichever_candidate_fails_first(
+    method: int, collider_first: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A short payload is the member's, so the verdict does not depend on key order.
+
+    A wrong password that collides on ``pw_verify`` fails differently from the right
+    one; taking the first failure made the type follow the list order (S28-K16).
+    """
+    data = bytearray(
+        _build_aes_zip(
+            payload=b"hello world" * 40,
+            password=_PASSWORD,
+            vendor_version=2,
+            strength=3,
+            method=method,
+            name=b"a.bin",
+        )
+    )
+    for signature, size_at in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
+        struct.pack_into("<I", data, data.index(signature) + size_at, 100_000)
+    _collide_pw_verify(monkeypatch)
+    passwords = [_COLLIDER, _PASSWORD] if collider_first else [_PASSWORD, _COLLIDER]
     with open_archive(io.BytesIO(bytes(data)), password=passwords) as ar:
         with pytest.raises(TruncatedError):
             ar.read(ar.members()[0])

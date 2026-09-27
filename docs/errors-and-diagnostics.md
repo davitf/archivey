@@ -295,7 +295,8 @@ What that does and does not promise:
 - **Once a stream has raised, it keeps raising.** Every later `read()` raises the same
   error. A seek back works and the bytes before the damage read again, but the read
   that reaches the end raises the error again, so seeking back cannot hand you the
-  damaged member as complete, clean data.
+  damaged member as complete, clean data. That includes a `read(member.size)` that
+  would return every byte. Open the member again if you want to retry.
 - **A short return with no exception does not mean "complete".** `read(member.size)`
   on a truncated member hands back what it has and stays quiet. Check the length — or
   just read again, because the *next* read raises.
