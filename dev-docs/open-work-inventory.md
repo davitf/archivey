@@ -62,7 +62,7 @@ names.
 | [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
 | **Linear** (`Archivey` team) | seeded 2026-09-17, added to continuously | **The state layer.** Labels: `sweep`, `decision`, `openspec`, `docs`, `review`, `pr-315`, `pr-open`. Not a replacement for any register below |
 | **The #315 sweep** — *the `SWEPT` markers on #315* | First pass complete 2026-09-20; **94 of 97 files on 2026-09-23** | 40 178 of 40 662 lines, **98.8%**. Three files arrived after the pass: `internal/enum_args.py` (#380), `internal/arg_checks.py` (#382) and `internal/windows_reparse.py` (#386). Since then [#448](https://github.com/davitf/archivey/pull/448) added `terminal.py` (the former `escaping.py`, already swept, under a new name) and `detection.py` (moved classes). What is open now is draining the threads, not reading. Count it from the markers, not from this row |
-| **`dev-docs/formats/`** — *no register* | Every container format plus the stream codecs; `directory.md` still open (§1) | ZIP, RAR, 7z, TAR, ISO, and the stream codecs (`single-file.md` plus six codec pages). `rar.md` alone produced the 21-item `§10` register |
+| **`dev-docs/formats/`** — *no register* | Every container format, the directory source, and the stream codecs | ZIP, RAR, 7z, TAR, ISO, directory, and the stream codecs (`single-file.md` plus six codec pages). `rar.md` alone produced the 21-item `§10` register |
 | **`docs/`** — *tracked in `review/docs-content/`* | ~174 lines of prose + `how-it-works.md` | Skeleton, scope and verified claim inventory all done; the writing is not |
 
 **[`IDEAS.md`](IDEAS.md) is not backlog.** 55 entries across six sections, and its job is to
@@ -765,7 +765,8 @@ it tracks.
 ### 1. The format handbook — `dev-docs/formats/`
 
 The container pages exist: [`rar.md`](formats/rar.md), [`zip.md`](formats/zip.md),
-[`7z.md`](formats/7z.md), [`tar.md`](formats/tar.md) and [`iso.md`](formats/iso.md). So do
+[`7z.md`](formats/7z.md), [`tar.md`](formats/tar.md), [`iso.md`](formats/iso.md) and
+[`directory.md`](formats/directory.md). So do
 the stream codecs: [`single-file.md`](formats/single-file.md) for what they share, and one
 page each for [gzip](formats/gzip.md), [bzip2](formats/bzip2.md), [the xz
 family](formats/xz.md), [zstd and LZ4](formats/zstd-lz4.md), [Brotli](formats/brotli.md) and
@@ -785,14 +786,15 @@ remaining pages are writing, not design.
 | `tar.md` | **Written.** `§7` has 2 open questions: the native header walker (`open-issues.md` **P3**) and v7 detection. Sparse holes counting against `max_ratio` is decided (§6). Writing it found four bugs, all tracked internally; the listing cap and the PAX sparse flag are fixed in #472 |
 | `iso.md` | **Written.** `§7` has 2 open questions. Writing it against genisoimage, xorriso and libarchive's images, rather than the `pycdlib`-built corpus, found six bugs: four fixed with it (the El Torito boot catalog failed every bootable image, a file over 4 GiB was cut to its first extent, `format_version` was `pycdlib`'s guess, a truncated image listed clamped or negative sizes and read short silently), two tracked (Rock Ridge name charset, `pycdlib` refusing zisofs and some genisoimage symlinks as corrupt) |
 | `single-file.md` and the codec pages | **Written.** `single-file.md` holds the one-member reader, the seek table and the truncation contract; `gzip.md`, `bzip2.md`, `xz.md`, `zstd-lz4.md`, `brotli.md` and `unix-compress.md` hold each codec. Measuring a dozen producers found five gaps, all tracked internally: the legacy LZ4 frame is not detected, a zstd window over 128 MiB fails as corruption outside `DecoderLimits`, trailing data is handled differently by every codec, the rewind warning misdescribes multi-block xz and lzip, and the bzip2 accelerator prints to standard error |
-| `directory.md` | **Missing.** Thinnest of all; may not earn a page |
+| `directory.md` | **Written.** `§7` has 2 open questions: whether a junction is walked on Windows with Python 3.11, and what a size that changed since listing should do. Writing it found four issues, all tracked internally: the junction question, a listed path swapped for a symlink is followed at open and reads outside the root, a changed file reads at its new length with no check, and extracting into a folder inside the root lists that folder (with `streaming=True`, recursively) |
 
 **The handbook is how a format's to-fix register gets created**, which is the argument for continuing it:
 writing `rar.md` produced 21 tracked code changes, 19 of which have shipped, and `7z.md`
 surfaced two of its own (a refusal that names the wrong coder, and the folder decode that
-listing a solid archive with a symlink in it pays for), `tar.md` four, `iso.md` six and the stream pages five. That is the
-highest-yield documentation work in the repo, and it is also why each new page should be
-expected to *add* open items rather than only close them.
+listing a solid archive with a symlink in it pays for), `tar.md` four, `iso.md` six,
+`directory.md` four and the stream pages five. That is the highest-yield documentation
+work in the repo, and it is also why each new page should be expected to *add* open
+items rather than only close them.
 
 ### 2. The user guide — `docs/`
 
