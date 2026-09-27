@@ -15,6 +15,7 @@ import pytest
 
 from archivey import (
     DiagnosticCode,
+    EncryptedVerificationContext,
     MemberType,
     PasswordRequest,
     SymlinkTargetContext,
@@ -174,8 +175,14 @@ def test_single_colliding_password_stored_seek_reports_unverified() -> None:
         with ar.open(NAME) as stream:
             stream.seek(len(DATA) - 4)
             assert len(stream.read()) == 4
-        codes = [d.code for d in ar.diagnostics.retained]
-    assert DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED in codes
+        contexts = [
+            d.context
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED
+        ]
+    (context,) = contexts
+    assert isinstance(context, EncryptedVerificationContext)
+    assert context.reason == "seek"
 
 
 @pytest.mark.parametrize("compression", COMPRESSION_METHODS)

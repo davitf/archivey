@@ -1,10 +1,11 @@
 """End-to-end: the 7z password-confirmation ladder decodes only what it must.
 
-Each test asserts *bytes decoded by the confirm pipeline*, not wall time, and each
+The budget tests assert *bytes decoded by the confirm pipeline*, not wall time, and each
 carries its own mutation check: the same measurement taken with the ladder forced onto
 the path the test exists to rule out, so a measurement that could not tell the two
 apart fails here instead of passing quietly (design §5 preamble of the
-bounded-password-confirmation change).
+bounded-password-confirmation change). The behaviour tests pin an error type or a
+diagnostic instead, and need no counter-measurement.
 
 Fixtures are written into ``tmp_path`` by the ``7z`` CLI, a few MiB each; the property
 they pin (confirm stops at the first member's CRC, or at the prefix) does not depend on
@@ -288,8 +289,11 @@ def test_damage_the_confirm_decodes_reads_as_a_wrong_password(tmp_path: Path) ->
 
 def test_damage_past_the_confirm_prefix_is_corruption(tmp_path: Path) -> None:
     """LZMA2 settles a wrong key inside the prefix; damage past it reaches the read."""
+    # Random, so LZMA2 stores it in raw chunks and the packed data is about as long as
+    # the payload: the offset below is inside it, far past the 64 KiB prefix.
     big = random.Random(7).randbytes(_BIG)
     archive = _build(tmp_path, "lzma2", {"big.bin": big}, method="LZMA2", solid=True)
+    assert archive.stat().st_size > 32 + _BIG
     _flip_packed_byte(archive, _BIG - 4096)
     with open_archive(archive, password=_PASSWORD) as reader:
         member = next(m for m in reader.members() if m.is_file)

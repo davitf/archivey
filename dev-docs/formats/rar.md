@@ -330,7 +330,10 @@ same winner. A pass (`stream_members`, one `unrar p` for the whole archive) and 
 member of a solid archive use the first RAR5 member's winner. **RAR3/4 data has no check value**, so there is nothing to test a
 candidate against short of decoding: `unrar` gets the first candidate, and a list whose
 right password is not first still fails there. A RAR5 member whose record has no check
-value, or whose check fails its own SHA-256 checksum, is handled the same way. RAR emits
+value, or whose check fails its own SHA-256 checksum, is handled the same way in a
+non-solid archive. In a solid one it takes the solid rule above: the winner of the first
+member whose check can judge a candidate, and the first candidate only when no member
+has one. RAR emits
 no `ENCRYPTED_MEMBER_UNVERIFIED`. A RAR5 check is 64 bits, strong enough to accept a
 password on. RAR3/4 data has no check to accept a password on at all: a wrong one shows
 up only as `unrar`'s exit code or a digest mismatch (table below), and what a partial
