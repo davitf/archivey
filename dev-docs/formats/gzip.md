@@ -18,7 +18,7 @@ behaviour and links the row.
 | Backends | The standard library's `zlib` under `DecompressorStream`, always available. `rapidgzip` from `[seekable]`, used when `use_rapidgzip` selects it (§2.3) |
 | Seeking | Without `rapidgzip`, a backward seek decodes again from the start. With it, from the nearest point of the index it builds while decoding |
 | Size | `None`, for both. gzip's ISIZE is the last member's size mod 2³²; zlib has no size field |
-| Digests | None listed. Every gzip member's CRC-32 and a zlib stream's Adler-32 are checked on read |
+| Digests | None listed. Every gzip member's CRC-32 is checked on read, and a zlib stream's Adler-32 too except under `rapidgzip` (§5) |
 | Metadata | gzip only: `MTIME` → `modified`, `FNAME` → `raw_name` and `extra["gzip.original_filename"]` |
 | Truncation | Always raised by the standard library engine. Through `rapidgzip`, raised by a backstop that is sure for a one-member gzip and best-effort otherwise (§2.3) |
 | Refuses | Nothing gzip-specific. A zlib stream with a preset dictionary fails to decode, since archivey holds no dictionary |
@@ -119,7 +119,7 @@ trailer arms a `TruncatedError` at the end of input.
 | Mode | gzip, zlib, raw DEFLATE |
 | --- | --- |
 | `OFF` | The standard library engine, always |
-| `ON` | `rapidgzip`, whatever the size; `PackageNotInstalledError` without it, `ResourceLimitError` if no child process can start |
+| `ON` | `rapidgzip`, whatever the size; `PackageNotInstalledError` without it, `ResourceLimitError` if no child process can start, `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`) |
 | `AUTO` | `rapidgzip` only when all hold: seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`); the source is seekable; `rapidgzip` is installed; the compressed input is known to be at least 16 MiB (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`); and the decoded length can be checked, either because the container declared it or because a gzip trailer is readable. Otherwise the standard library engine, silently |
 
 The 16 MiB gate is the break-even of the child process: it costs about 45 ms to start and
@@ -261,6 +261,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | The same truncated `.gz` raises `TruncatedError` on Linux and `CorruptionError` on Windows under `rapidgzip` | **library** | Windows loses the message detail (§2.3). Catch `ReadError` for both |
 | A truncated multi-member `.gz` read through `rapidgzip` can end short with no error | **library** / **archivey** | `rapidgzip` ends softly; the backstop stands down when a second member may exist. Summing each member's ISIZE is deferred (§7) |
 | A truncated bare zlib or raw DEFLATE stream under `use_rapidgzip=ON` can end short with no error | **library** | No size to check it against (§2.3). `AUTO` never does this |
+| A damaged bare zlib stream under `use_rapidgzip=ON` reads back wrong bytes with no error | **library** / **archivey** | `rapidgzip` does not check the Adler-32, and archivey does not check it after `rapidgzip`. `AUTO` never gives a bare zlib stream to `rapidgzip`. Found by `tests/test_nested_archives.py`; fix undecided |
 | A cut `.gz` delivers less before the error under `rapidgzip` than without it | **library** | It decodes ahead and aborts early (§2.3). Use `OFF` to salvage the most |
 | Trailing junk after a `.gz` is `CorruptionError`, and `TruncatedError` under `rapidgzip` | **archivey** | The standard library engine follows `GzipFile`; the cross-codec picture is [`single-file.md`](single-file.md) §3 |
 | One warning on `archivey.streams` that `rapidgzip` cannot run | **archivey** | No child process can start here; `AUTO` used the standard library. `use_rapidgzip=OFF` silences it |

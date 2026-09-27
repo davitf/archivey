@@ -664,6 +664,27 @@ def _bound_rapidgzip_source(
     return SlicingStream(source, start=0, length=bound, owns_inner=False)
 
 
+def _refuse_forward_only_accelerator(
+    source: CodecSource, field_name: str, label: str
+) -> None:
+    """Refuse ``ON`` for an accelerator over a source that cannot seek.
+
+    Both accelerators ask their source for ``tell`` and ``seek`` when they open. A
+    forward-only stream (a pipe, or a member stream of an outer archive opened without
+    ``seekable_members``) cannot answer, and the raw ``io.UnsupportedOperation`` said
+    nothing about the setting that caused it. ``AUTO`` never gets here for such a
+    source: :func:`open_codec_stream` clears its seek demand.
+    """
+    if isinstance(source, (str, os.PathLike)) or is_seekable(source):
+        return
+    raise StreamNotSeekableError(
+        f"{field_name}=AcceleratorMode.ON needs a seekable source, and this {label} "
+        f"stream is forward-only. Set {field_name} to AUTO or OFF to decode it with the "
+        "standard library, or open the source seekable (for a member of an outer "
+        "archive, open that archive with seekable_members=True)."
+    )
+
+
 def _open_rapidgzip(
     source: CodecSource, label: str, config: StreamConfig
 ) -> BinaryIO | None:
@@ -1445,6 +1466,7 @@ class GzipCodec(StreamCodec):
                 raise PackageNotInstalledError(
                     _RAPIDGZIP_REQUIREMENT.message("gzip random access")
                 )
+            _refuse_forward_only_accelerator(source, "use_rapidgzip", "gzip")
             if config.expected_decompressed_size is not None:
                 # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
                 stream = _open_rapidgzip(source, "gzip", config)
@@ -1572,6 +1594,7 @@ class Bzip2Codec(StreamCodec):
                 raise PackageNotInstalledError(
                     _RAPIDGZIP_REQUIREMENT.message("bzip2 random access")
                 )
+            _refuse_forward_only_accelerator(source, "use_indexed_bzip2", "bzip2")
             # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package (see the
             # _rapidgzip_bzip2 note above): keeps a single accelerator library in the process.
             # Bound the input: AES pad after EOS is trailing garbage that rapidgzip
@@ -1967,6 +1990,7 @@ class DeflateCodec(_ZlibErrorCodec):
                 raise PackageNotInstalledError(
                     _RAPIDGZIP_REQUIREMENT.message("deflate random access")
                 )
+            _refuse_forward_only_accelerator(source, "use_rapidgzip", "deflate")
             # rapidgzip auto-detects raw DEFLATE. Bound the input: it over-reads
             # past EOS looking for a concatenated member (AES pad would look
             # like a second member).
@@ -2035,6 +2059,7 @@ class ZlibCodec(_ZlibErrorCodec):
                 raise PackageNotInstalledError(
                     _RAPIDGZIP_REQUIREMENT.message("zlib random access")
                 )
+            _refuse_forward_only_accelerator(source, "use_rapidgzip", "zlib")
             # rapidgzip auto-detects zlib-wrapped DEFLATE; no synthetic gzip wrapper.
             stream = _open_rapidgzip(
                 _bound_rapidgzip_source(source, params, config),
@@ -2486,6 +2511,12 @@ def open_codec_stream(
         # readers hand in views that start at 0. It stays for a direct caller that does
         # not.
         source = fix_stream_start_position(source)
+        if config.seekable and not is_seekable(source):
+            # Seek demand on a source that cannot seek cannot be met, and it would make
+            # accelerator AUTO pick a decoder that fails at open when it asks the
+            # source for ``tell``. A compressed TAR opened ``streaming=True`` with
+            # ``seekable_members=True`` over a forward-only stream arrives here so.
+            config = replace(config, seekable=False)
     # Fill the AUTO size gate when the caller did not already supply a known length
     # (path ``stat``, ``SlicingStream.size``, ``BytesIO``, …). Unknown stays ``None``.
     if config.compressed_input_size is None:

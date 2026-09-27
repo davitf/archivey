@@ -358,6 +358,11 @@ class TarReader(BaseArchiveReader):
         # must close. tarfile is always handed ``fileobj=``, so it never owns what it
         # reads; the source itself closes with the reader.
         self._owned_stream: BinaryIO | None = None
+        # The codec stream under ``_owned_stream``. ``ensure_bufferedio`` wraps it in a
+        # buffer that detaches on close rather than closing it, so it is closed here
+        # explicitly: left to the garbage collector, a stream held by a failed open's
+        # traceback kept its rapidgzip child process running.
+        self._owned_codec_stream: BinaryIO | None = None
         # Shared-handle lock: CONCURRENT readers serialize every shared-fileobj op;
         # streaming readers also take a lock (exclusive / normally uncontended) so the
         # same critical-section shape covers init, progressive walk, extractfile, EOF,
@@ -388,9 +393,14 @@ class TarReader(BaseArchiveReader):
 
     def _release_owned_stream(self) -> None:
         """Close a stream this reader opened, if any. Safe to call more than once."""
-        if self._owned_stream is not None:
-            self._owned_stream.close()
-            self._owned_stream = None
+        try:
+            if self._owned_stream is not None:
+                self._owned_stream.close()
+                self._owned_stream = None
+        finally:
+            if self._owned_codec_stream is not None:
+                self._owned_codec_stream.close()
+                self._owned_codec_stream = None
 
     def _open_tarfile(
         self,
@@ -428,6 +438,7 @@ class TarReader(BaseArchiveReader):
             # tarfile can mis-handle a short read() (fewer bytes than requested) from a
             # decompressor; a BufferedReader in front guarantees full-sized reads. The cast
             # is typeshed's split: BufferedIOBase is not BinaryIO there, but is at runtime.
+            self._owned_codec_stream = stream
             self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
             return self._tarfile_open(
                 fileobj=self._wrap_eof_probe(self._owned_stream, streaming),
