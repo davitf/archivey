@@ -32,6 +32,7 @@ from archivey.internal.config import DecoderLimits, check_decoder_memory
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
 from archivey.internal.streams.decompressor_stream import (
+    TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
     BaseDecoder,
     DecodeOut,
@@ -99,8 +100,9 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     last member the same way: the latest trailer, within the final
     :data:`TRAILING_DATA_SEARCH` bytes, whose member size leads back to a member
     header. A member size is below the file size, so its high bytes are zero; only
-    ends behind such a run are tried, which keeps the search to C-speed scans. The
-    forward decoder reports the appended bytes when a read reaches them.
+    ends behind such a run are tried, at most :data:`TRAILING_DATA_CANDIDATES` of
+    them, since inside a long run of zeros every offset is one. The forward decoder
+    reports the appended bytes when a read reaches them.
     """
     if _member_ends_at(stream, file_size, stop_at):
         return file_size
@@ -111,14 +113,18 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     # A trailer ends at most 8 bytes past its last non-zero byte (the high bytes of its
     # member size), so a run of zero padding at the end is skipped in one step.
     at = min(len(window), len(window.rstrip(b"\x00")) + 8)
-    while (at := window.rfind(zeros, 0, at)) >= 0:
+    for _ in range(TRAILING_DATA_CANDIDATES):
+        at = window.rfind(zeros, 0, at)
+        if at < 0:
+            break
         end = base + at + len(zeros)
         if _member_ends_at(stream, end, stop_at, window, base):
             return end
         at += len(zeros) - 1
     raise CorruptionError(
         "Lzip trailer not found at the end of the file or in the "
-        f"{len(window)} bytes before it"
+        f"{len(window)} bytes before it (at most {TRAILING_DATA_CANDIDATES} "
+        "candidates tried)"
     )
 
 

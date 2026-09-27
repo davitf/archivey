@@ -31,8 +31,8 @@ promise with that line; treat `0.2.0` as the first release of this library.
   bytes without a word; `.xz` and `.lz` also lost their size and seeks, which they now
   keep when the bytes are within 1 MiB. From a pipe, Brotli still raises
   `CorruptionError`, because telling the bytes from damage needs a second read. A file
-  of zero bytes named `.lzma` now reads as empty, since 13 zeros are a valid empty
-  stream. `.Z` is unchanged: it has no end marker.
+  of zero bytes named `.lzma` now reads as empty, since 18 zero bytes are a complete
+  empty stream. `.Z` is unchanged: it has no end marker.
 - **ISO reads zisofs.** A file stored with Rock Ridge transparent compression (`ZF`)
   lists the size it decodes to and reads decoded. pycdlib refused such an image
   outright, and archivey reported the whole image as `CorruptionError`. zisofs2 (under

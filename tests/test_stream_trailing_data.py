@@ -366,6 +366,48 @@ def test_the_index_search_reaches_its_bound_and_no_further(
         assert len(_reports(reader)) == 1
 
 
+@pytest.mark.parametrize(
+    ("suffix", "module", "check", "tail"),
+    [
+        pytest.param(
+            ".xz", "xz", "_parse_xz_footer", b"\x00\x00YZ" * (1 << 18), id="xz"
+        ),
+        pytest.param(
+            ".lz", "lzip", "_member_ends_at", b"\x00" * (1 << 20) + b"J", id="lz"
+        ),
+    ],
+)
+def test_the_index_search_checks_a_bounded_number_of_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+    module: str,
+    check: str,
+    tail: bytes,
+) -> None:
+    """A tail made of candidate ends (every ``YZ`` 4-aligned, or a run of zeros where
+    every offset is one) is given up on after a fixed number, not checked per byte."""
+    import importlib
+
+    target = importlib.import_module(f"archivey.internal.streams.{module}")
+    original = getattr(target, check)
+    calls = 0
+
+    def counting(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, check, counting)
+    _name, compress, _marks = _CODECS[suffix]
+    path = _write(tmp_path, suffix, compress(_PAYLOAD) + tail)
+    with open_archive(path) as reader:
+        assert reader.members()[0].size is None
+        assert reader.read(reader.members()[0]) == _PAYLOAD
+    # Per candidate the tail holds 262 144 (xz) or a million (lzip).
+    assert calls <= len(tail) // 64
+
+
 def test_compressed_tar_reports_bytes_after_the_codec(tmp_path: Path) -> None:
     import tarfile
 
@@ -408,22 +450,29 @@ def test_the_bzip2_accelerator_reports_the_same_offset(tmp_path: Path) -> None:
     assert report.observed_bytes == len(compressed) + 3
 
 
-def test_inside_a_container_the_codec_stops_silently() -> None:
-    """A ZIP or 7z bounds the coder's input; what follows its end is theirs."""
+@pytest.mark.parametrize(("report", "expected"), [(False, 0), (True, 1)])
+def test_inside_a_container_the_codec_stops_silently(
+    report: bool, expected: int
+) -> None:
+    """A ZIP or 7z bounds the coder's input; what follows its end is theirs.
+
+    Containers open their coders with ``report_trailing_data`` off: the same bytes
+    that report on a bare stream stop the coder without a diagnostic.
+    """
     from archivey.internal.config import StreamConfig
     from archivey.internal.diagnostics_collector import DiagnosticCollector
     from archivey.internal.streams.codecs import Codec, open_codec_stream
 
     collector = DiagnosticCollector()
-    config = dataclasses.replace(StreamConfig(), report_trailing_data=False)
+    config = dataclasses.replace(StreamConfig(), report_trailing_data=report)
     with open_codec_stream(
         Codec.BZIP2,
-        io.BytesIO(bz2.compress(b"data") + b"\x00" * 15),
+        io.BytesIO(bz2.compress(b"data") + b"junk"),
         config=config,
         collector=collector,
     ) as stream:
         assert stream.read() == b"data"
-    assert collector.snapshot().total_count == 0
+    assert collector.snapshot().total_count == expected
 
 
 def _format(suffix: str):  # noqa: ANN202 - an ArchiveFormat

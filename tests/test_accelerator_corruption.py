@@ -20,12 +20,14 @@ import pytest
 
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.config import (
+    DEFAULT_STREAM_CONFIG,
     AcceleratorMode,
     StreamConfig,
 )
 from archivey.internal.streams.codecs import (
     Codec,
     _GzipTruncationCheckStream,
+    _stdlib_gzip,
     open_codec_stream,
 )
 
@@ -453,6 +455,7 @@ def _soft_short_backstop() -> tuple[_GzipTruncationCheckStream, bytes]:
         isize=len(payload),
         source_len=len(whole),
         fallback_path=None,
+        open_stdlib=lambda fallback: _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG),
     )
     return stream, prefix
 

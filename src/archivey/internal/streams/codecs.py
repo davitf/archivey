@@ -1022,16 +1022,14 @@ class _GzipTruncationCheckStream(DelegatingStream):
         isize: int | None,
         source_len: int | None,
         fallback_path: str | None,
-        open_stdlib: Callable[[CodecSource], BinaryIO] | None = None,
+        open_stdlib: Callable[[CodecSource], BinaryIO],
     ) -> None:
         super().__init__(inner)
         self._reopen = reopen
         self._isize = isize
         self._source_len = source_len
         self._fallback_path = fallback_path
-        self._open_stdlib = open_stdlib or (
-            lambda fallback: GzipDecompressorStream(fallback)
-        )
+        self._open_stdlib = open_stdlib
         self._total = 0
         self._checked = False
         self._verify = True
@@ -1216,7 +1214,7 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         *,
         reopen: Callable[[], BinaryIO],
         fallback_path: str | None,
-        config: StreamConfig = DEFAULT_STREAM_CONFIG,
+        config: StreamConfig,
     ) -> None:
         super().__init__(inner)
         self._reopen = reopen

@@ -396,9 +396,8 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   delivering available bytes; zero-leftover cuts remain silent. Forward decode works on
   non-seekable sources; CLEAR boundaries provide seek points when seekability is declared.
 - **Bytes after the compressed stream** (a signature or checksum appended to a
-  download, a tool that pads its output) do not stop the read. For gzip, zlib, raw
-  deflate, bzip2, xz, lzip, LZMA Alone, zstd, LZ4 and Brotli, archivey returns the whole
-  payload, then emits one `ARCHIVE_TRAILING_DATA` whose `observed_bytes` is the offset of
+  download, a tool that pads its output) do not stop the read. For gzip, zlib, bzip2,
+  xz, lzip, LZMA Alone, zstd, LZ4 and Brotli, archivey returns the whole payload, then emits one `ARCHIVE_TRAILING_DATA` whose `observed_bytes` is the offset of
   the first appended byte. It is a warning under the default policy; under
   `DiagnosticPolicy.strict()` the read that reaches it raises `DiagnosticRaisedError`.
   Zero bytes after the end are padding and report nothing, as for TAR. A second stream

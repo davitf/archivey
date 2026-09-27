@@ -1547,9 +1547,11 @@ def _make_gzip_check_stream(inner, path):
     ``inner`` stands in for the accelerator's decompressed output; the backstop reads ISIZE
     and scans the real gzip file at ``path`` via a fresh independent handle.
     """
+    from archivey.internal.config import DEFAULT_STREAM_CONFIG
     from archivey.internal.streams.codecs import (
         _gzip_isize_and_length,
         _GzipTruncationCheckStream,
+        _stdlib_gzip,
     )
 
     source_len, isize = _gzip_isize_and_length(str(path))
@@ -1559,6 +1561,7 @@ def _make_gzip_check_stream(inner, path):
         isize=isize,
         source_len=source_len,
         fallback_path=str(path),
+        open_stdlib=lambda fallback: _stdlib_gzip(fallback, DEFAULT_STREAM_CONFIG),
     )
 
 
@@ -1604,7 +1607,7 @@ def test_gzip_truncation_fallback_recaches_seekable(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(
         codecs_module,
         "GzipDecompressorStream",
-        lambda source: NonSeekableBytesIO(payload),
+        lambda source, **_kwargs: NonSeekableBytesIO(payload),
     )
     stream = _make_gzip_check_stream(io.BytesIO(b""), path)
     assert stream.seekable() is True

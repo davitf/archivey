@@ -112,11 +112,13 @@ then looks back for a footer that checks out: `YZ` at a 4-aligned end and a vali
 over its fields. For lzip, `_data_end()` in `lzip.py` looks for a trailer whose
 `member_size` leads back to an `LZIP` header; a candidate must end in the zero high bytes
 that any real `member_size` has, which rules out most offsets without a read. Both look
-back at most `TRAILING_DATA_SEARCH` (1 MiB). Further out the index is reported unreadable,
-as before this search existed: `size=None`, and a seek falls back to decoding forward with
+back at most `TRAILING_DATA_SEARCH` (1 MiB) and check at most `TRAILING_DATA_CANDIDATES`
+(4096) candidate ends there: a tail can be crafted so that every `YZ` is 4-aligned, and
+a run of zeros puts a candidate at every offset. Past either bound the index is reported
+unreadable: `size=None`, and a seek falls back to decoding forward with
 `SEEK_INDEX_DEGRADED`. The forward read then reports the bytes as `ARCHIVE_TRAILING_DATA`
-([`single-file.md`](single-file.md) §2.3). The bound keeps the cost of a file of junk to
-1 MiB of reading at open.
+([`single-file.md`](single-file.md) §2.3). The two bounds keep the cost of a file of junk
+to 1 MiB of reading and 4096 checks at open, a few milliseconds.
 
 **LZMA Alone** gives its size from the header when the header is not the all-ones
 "unknown" marker. `xz --format=lzma` always writes the marker; the LZMA SDK writes the real
@@ -205,7 +207,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `xz --format=lzma` | Detected by the probe, `PROBABLE`; `size=None` (the "unknown" marker) |
 | LZMA Alone followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` |
 | Two LZMA Alone streams concatenated | Reads both, as `lzma.LZMAFile` does; the second is recognised by its header (§2.3 of [`single-file.md`](single-file.md)) |
-| 40 000 zero bytes named `.lzma` | Reads as empty: 13 zero bytes are a valid header for an empty payload, and the rest is padding |
+| 40 000 zero bytes named `.lzma` | Reads as empty: 18 zero bytes are a complete empty stream (a 13-byte header and 5 bytes of range coder), and the rest is padding |
 | `plzip`, `plzip -B` with a small block | Reads; `size` and the combined CRC-32 from the trailers. The 4 MB payload is one member by default and nine with the small block, one seek point per member |
 | An lzip member followed by `junk` | Reads the payload, then `ARCHIVE_TRAILING_DATA`; `size` and the CRC-32 from the trailers. The lzip manual allows trailing data |
 | OLE (`.msi`, old `.doc`) and COFF object files | Can be claimed by the LZMA Alone probe, `PROBABLE`; the read then fails, stamped `format_unconfirmed` |

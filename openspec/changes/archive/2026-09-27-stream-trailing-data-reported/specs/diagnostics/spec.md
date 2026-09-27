@@ -41,7 +41,8 @@ exactly this union — no backend-defined variants. `observed_kind` ∈
 `"zeros_to_eof"` for the trailing-bytes check, whose `observed_bytes` is the
 offset of the first non-zero byte past the trailer; `"end_of_stream"` for bytes after
 a compressed stream's end, whose `format` is the codec name, such as `"gzip"`, and
-whose `observed_bytes` is the offset of the first non-zero byte after that end). `member_id` MAY be `None` only before registration.
+whose `observed_bytes` is the offset of the first non-zero byte after that end).
+`member_id` MAY be `None` only before registration.
 `controls` SHALL be the comma-joined `U+XXXX` spellings of the bidi codepoints
 found, in the order they occur, so a caller can tell an override from a mark
 without re-scanning the name. `chosen_by` ∈ `{"argument","extension","content_probe"}`;

@@ -111,9 +111,9 @@ truncated file discards the prefix it decoded and it validates only on read. Aft
 member the decoder follows `GzipFile`'s rules for what comes next: NUL bytes are skipped
 (tape padding) and `1f 8b` starts the next member. Anything else ends the stream there:
 every member before it is delivered and the bytes are reported as `ARCHIVE_TRAILING_DATA`
-([`single-file.md`](single-file.md) §2.3), where `GzipFile` would raise. zlib and raw DEFLATE use `ZlibDecoder` with
-`wbits=15` and `-15`. Truncation is certain on this path: a member that did not reach its
-trailer arms a `TruncatedError` at the end of input.
+([`single-file.md`](single-file.md) §2.3), where `GzipFile` would raise. zlib and raw
+DEFLATE use `ZlibDecoder` with `wbits=15` and `-15`. Truncation is certain on this path:
+a member that did not reach its trailer arms a `TruncatedError` at the end of input.
 
 **When `rapidgzip` is used.** `use_rapidgzip` is an `AcceleratorMode`, `AUTO` by default:
 

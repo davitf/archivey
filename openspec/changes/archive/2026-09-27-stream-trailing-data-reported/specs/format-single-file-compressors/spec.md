@@ -2,7 +2,7 @@
 
 ### Requirement: Bytes after a compressed stream are read past and reported
 
-For gzip, zlib, raw deflate, bzip2, xz, lzip, LZMA Alone, zstd, LZ4 and Brotli, a
+For gzip, zlib, bzip2, xz, lzip, LZMA Alone, zstd, LZ4 and Brotli, a
 member read SHALL deliver the whole payload of every stream before the end, and SHALL
 then stop reading the source. Bytes after the end SHALL be classified this way:
 
@@ -24,8 +24,9 @@ and `open_stream`. A codec opened inside a ZIP or 7z member, or for detection or
 metadata probe, SHALL stop at the end without reporting.
 
 xz and lzip SHALL find their index when non-zero trailing bytes follow it, by
-searching back from the end of the source at most `TRAILING_DATA_SEARCH` (1 MiB). A
-footer further out is not searched for: the index is reported unreadable
+searching back from the end of the source at most `TRAILING_DATA_SEARCH` (1 MiB) and
+checking at most `TRAILING_DATA_CANDIDATES` (4096) candidate ends there. A footer
+further out, or behind more candidates, is not found: the index is reported unreadable
 (`SEEK_INDEX_DEGRADED` on a seek) and the size is unknown, while a forward read still
 delivers the payload and reports the trailing data.
 
@@ -50,6 +51,7 @@ after the data decode as more codes.
 | `.zst` with a skippable frame between two frames | Both payloads; no report |
 | `.xz` / `.lz` + junk within 1 MiB | Size known, seek works, full payload, one report |
 | `.xz` / `.lz` + more than 1 MiB of junk | Size unknown; seeking reports `SEEK_INDEX_DEGRADED`; payload and one report |
+| `.xz` + 1 MiB of `00 00 59 5A`, `.lz` + 1 MiB of zeros and one byte | Same, after at most 4096 candidates checked |
 | `.tar.xz` with junk after the xz stream | Members read; one report with `format="xz"` |
 | Brotli + junk from a pipe | `CorruptionError` |
 | Brotli damaged mid-stream | `CorruptionError` |
@@ -91,7 +93,7 @@ obligation applies to seekable sources, and the reader SHALL say so where it is 
 | --- | --- |
 | Valid stream | Opens; member reads its content |
 | Valid **empty** stream | Opens; member reads `b""` |
-| 40 000 zero bytes | `open_archive` raises `CorruptionError`, except LZMA Alone, whose first 13 zero bytes are a valid empty stream: it opens, reads `b""`, and the rest is padding with no diagnostic |
+| 40 000 zero bytes | `open_archive` raises `CorruptionError`, except LZMA Alone, whose first 18 zero bytes are a complete empty stream: it opens, reads `b""`, and the rest is padding with no diagnostic |
 | Zero-byte source, codec whose decoder rejects it | `open_archive` raises the translated error |
 | Zero-byte source, `unix-compress` | `open_archive` raises `TruncatedError` (the decoder rejects a source shorter than its header) |
 | Non-seekable source | Validation deferred to the first read |

@@ -18,7 +18,7 @@ silently hides a file that is not what it claims.
   more data. xz and lzip find their index within 1 MiB of trailing bytes. Brotli tells
   trailing bytes from damage by decoding again, so a pipe keeps `CorruptionError`.
 - `format-single-file-compressors`: zero bytes read as an empty LZMA Alone stream, since
-  13 zero bytes are a valid empty header and the rest is padding.
+  18 zero bytes are a complete empty stream and the rest is padding.
 - `diagnostics`: `ARCHIVE_TRAILING_DATA` takes `expected_marker="end_of_stream"`, with
   the codec name as `format`.
 

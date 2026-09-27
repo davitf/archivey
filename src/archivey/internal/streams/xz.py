@@ -46,6 +46,7 @@ from archivey.internal.diagnostics_collector import (
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.decompressor_stream import (
     SEEK_TABLE_THINNED,
+    TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
     BaseDecoder,
     DecodeOut,
@@ -268,9 +269,10 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
 
     A file with something appended does not end with a footer. The footer's magic,
     its CRC-32 and the 4-byte alignment every stream keeps (XZ spec §2.1) find the last
-    one in the final :data:`TRAILING_DATA_SEARCH` bytes; the walk then checks every
-    index and header as usual. The forward decoder reports the appended bytes when a
-    read reaches them.
+    one in the final :data:`TRAILING_DATA_SEARCH` bytes, trying at most
+    :data:`TRAILING_DATA_CANDIDATES` occurrences of the magic; the walk then checks
+    every index and header as usual. The forward decoder reports the appended bytes
+    when a read reaches them.
     """
     if _ends_with_footer(stream, file_size, stop_at):
         return file_size
@@ -278,7 +280,10 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     stream.seek(start)
     window = stream.read(file_size - start)
     at = len(window)
-    while (at := window.rfind(_XZ_FOOTER_MAGIC, 0, at + 1)) >= 0:
+    for _ in range(TRAILING_DATA_CANDIDATES):
+        at = window.rfind(_XZ_FOOTER_MAGIC, 0, at + 1)
+        if at < 0:
+            break
         end = start + at + len(_XZ_FOOTER_MAGIC)
         if end % 4 == 0 and at + 2 >= _STREAM_FOOTER_SIZE:
             try:
@@ -292,7 +297,8 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
             break
     raise CorruptionError(
         "XZ stream footer not found at the end of the file or in the "
-        f"{len(window)} bytes before it"
+        f"{len(window)} bytes before it (at most {TRAILING_DATA_CANDIDATES} "
+        "candidates tried)"
     )
 
 
