@@ -83,7 +83,7 @@ Two more own, but close themselves and tell the base to skip the second call:
 
 | Class | Why `_SUBCLASS_CLOSES_INNER = True` |
 | --- | --- |
-| `_UnrarOwnedStream` | close the pipe, then reap the process, then mark closed |
+| `ProcessOutputStream` (`_UnrarOwnedStream`, `UnarOutputStream`) | close the pipe, then reap the process, then mark closed |
 | `_AcceleratorStream` | `weakref.finalize` closes the raw object once |
 
 Those seven would need `owns_inner=True` after a flip. A missed one leaks a

@@ -571,6 +571,34 @@ def test_close_before_end_of_file_is_not_an_error() -> None:
     assert proc.returncode is not None
 
 
+def test_a_stream_that_cannot_be_built_stops_its_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stream owns the process from its constructor: a raise there reaps it."""
+
+    def refuse(self: object, inner: object) -> None:
+        raise RuntimeError("wrapper refused")
+
+    monkeypatch.setattr(cli.DelegatingStream, "__init__", refuse)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import sys\nwhile True: sys.stdout.write('x' * 65536)"],
+        stdout=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+    )
+    assert proc.stdout is not None
+    try:
+        with pytest.raises(RuntimeError, match="wrapper refused"):
+            unar.UnarOutputStream(
+                proc.stdout,  # type: ignore[arg-type]
+                proc,
+                has_verifiable_digest=False,
+            )
+        assert proc.returncode is not None
+    finally:
+        proc.stdout.close()
+        cli.terminate_process(proc)
+
+
 def test_digest_checked_pipe_ignores_the_exit_status() -> None:
     proc = subprocess.Popen(
         [sys.executable, "-c", "import sys; sys.exit(2)"],

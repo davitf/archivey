@@ -35,6 +35,7 @@ import tempfile
 import threading
 import zlib
 from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Literal
@@ -94,7 +95,7 @@ from archivey.internal.base_reader import (
 )
 from archivey.internal.config import KeyDerivationBudget
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.external.cli import terminate_process
+from archivey.internal.external.cli import ProcessOutputStream
 from archivey.internal.external.unar import (
     UnarOutputStream,
     find_unar,
@@ -116,7 +117,6 @@ from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
 from archivey.internal.streams.archive_stream import ArchiveStream, RewindWarning
 from archivey.internal.streams.streamtools import (
-    DelegatingStream,
     ReadOnlyIOStream,
     SharedSource,
     SlicingStream,
@@ -497,7 +497,17 @@ def _psw_check_usable(enc: RarEncryptionInfo) -> bool:
     )
 
 
-class _UnrarOwnedStream(DelegatingStream):
+@contextmanager
+def _close_on_error(owned: BinaryIO) -> Iterator[None]:
+    """Close ``owned`` (a stream that owns its process) if the block raises."""
+    try:
+        yield
+    except BaseException:
+        owned.close()
+        raise
+
+
+class _UnrarOwnedStream(ProcessOutputStream):
     """Stdout wrapper that terminates the owning ``unrar`` process on close.
 
     On close it maps ``unrar``'s exit code (RARLAB) to a typed error so a corrupt,
@@ -528,7 +538,6 @@ class _UnrarOwnedStream(DelegatingStream):
 
     # Side-effecting read(); disable passthrough so counting still runs on readinto.
     readinto_passthrough = False
-    _SUBCLASS_CLOSES_INNER = True
 
     def __init__(
         self,
@@ -539,13 +548,10 @@ class _UnrarOwnedStream(DelegatingStream):
         has_verifiable_hash: bool = False,
         encrypted: bool = False,
     ) -> None:
-        super().__init__(stdout)
-        self._proc = proc
         self._named_member = named_member
         self._has_verifiable_hash = has_verifiable_hash
         self._encrypted = encrypted
-        self._bytes_read = 0
-        self._exit_mapped = False
+        super().__init__(stdout, proc)
 
     def read(self, n: int = -1, /) -> bytes:
         data = super().read(n)
@@ -553,7 +559,7 @@ class _UnrarOwnedStream(DelegatingStream):
         if not data:
             # Completing / EOF read: reap and map exit here so content faults raise on
             # read (not only on close).
-            self._map_exit_if_reaped(wait_timeout=1.0)
+            self._check_exit(wait_timeout=self._EOF_EXIT_WAIT)
         return data
 
     def tell(self, /) -> int:
@@ -592,50 +598,6 @@ class _UnrarOwnedStream(DelegatingStream):
             raise CorruptionError(
                 "unrar found no matching member (exit 10); the member could not be read"
             )
-
-    def _map_exit_if_reaped(self, *, wait_timeout: float | None) -> None:
-        """If unrar has exited (or exits within ``wait_timeout``), map its status once."""
-        if self._exit_mapped:
-            return
-        if self._proc.poll() is None:
-            if wait_timeout is None:
-                return
-            try:
-                self._proc.wait(timeout=wait_timeout)
-            except subprocess.TimeoutExpired:
-                return
-        self._exit_mapped = True
-        self._raise_for_returncode(self._proc.returncode)
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        close_error: BaseException | None = None
-        try:
-            self._inner.close()
-        except BaseException as exc:  # noqa: BLE001 - close must reap unrar even on KeyboardInterrupt
-            close_error = exc
-        if self._proc.poll() is None:
-            terminate_process(self._proc)
-        else:
-            # Drain wait status if the process already exited on EOF.
-            try:
-                self._proc.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                terminate_process(self._proc)
-        # Mark closed without DelegatingStream closing inner a second time.
-        super().close()
-        # Early-stop close: map now if the completing-read path never did.
-        # (If read already mapped, ``_exit_mapped`` skips a second raise.)
-        # Do not let that mapped error replace an exception from inner.close().
-        try:
-            self._map_exit_if_reaped(wait_timeout=None)
-        except BaseException as mapped:  # noqa: BLE001 - chain onto inner.close(), do not replace it
-            if close_error is not None:
-                raise close_error from mapped
-            raise
-        if close_error is not None:
-            raise close_error
 
 
 class _RespawnStream(ReadOnlyIOStream):
@@ -1704,26 +1666,13 @@ class RarReader(BaseArchiveReader):
                     password=password,
                     version_control=version_control,
                 )
-                # Between Popen and the wrapper taking ownership, a raise would
-                # leave the process unowned. Terminate before the wrapper exists;
-                # after that, owned.close() reaps the process and the stdout pipe.
-                try:
-                    owned: BinaryIO = _UnrarOwnedStream(
-                        stdout, proc, has_verifiable_hash=True
-                    )
-                except BaseException:
-                    terminate_process(proc)
-                    raise
-                try:
-                    # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
-                    # and declared length via fused ArchiveStream verify), so the pipe-level
-                    # unrar exit code is redundant for corruption and is suppressed here to
-                    # avoid legacy-format false positives; wrong-password (11) still maps.
-                    owned = self._track_decompressed(owned)
-                    solid = SolidBlockReader(owned)
-                except BaseException:
-                    owned.close()
-                    raise
+                # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
+                # and declared length via fused ArchiveStream verify), so the pipe-level
+                # unrar exit code is redundant for corruption and is suppressed here to
+                # avoid legacy-format false positives; wrong-password (11) still maps.
+                owned = _UnrarOwnedStream(stdout, proc, has_verifiable_hash=True)
+                with _close_on_error(owned):
+                    solid = SolidBlockReader(self._track_decompressed(owned))
             return solid
 
         pipe_offset = 0
@@ -2383,18 +2332,16 @@ class RarReader(BaseArchiveReader):
                 member=presented,
                 version_control=version_control,
             )
-            try:
-                owned: BinaryIO = _UnrarOwnedStream(
-                    stdout,
-                    proc,
-                    named_member=True,
-                    has_verifiable_hash=has_hash,
-                    encrypted=raw.is_encrypted,
-                )
-            except BaseException:
-                terminate_process(proc)
-                raise
-            try:
+            owned = _UnrarOwnedStream(
+                stdout,
+                proc,
+                named_member=True,
+                has_verifiable_hash=has_hash,
+                encrypted=raw.is_encrypted,
+            )
+            # _bounded_member_pipe already closed ``tracked`` (and so ``owned``) if the
+            # prefix skip failed; close is idempotent.
+            with _close_on_error(owned):
                 tracked = self._track_decompressed(owned)
                 if glob_mask:
                     return _bounded_member_pipe(
@@ -2403,11 +2350,6 @@ class RarReader(BaseArchiveReader):
                         size=_member_stream_size(member),
                     )
                 return tracked
-            except BaseException:
-                # _bounded_member_pipe already closed ``tracked`` (and so ``owned``)
-                # if the prefix skip failed; close is idempotent.
-                owned.close()
-                raise
 
         return self._open_spawned_member(member, _spawn)
 
@@ -2499,21 +2441,14 @@ class RarReader(BaseArchiveReader):
             proc, stdout = open_unar_stdout(
                 path, [index], purpose=UNAR_PURPOSE, password=data_password
             )
-            try:
-                owned: BinaryIO = UnarOutputStream(
-                    stdout,
-                    proc,
-                    has_verifiable_digest=has_digest,
-                    empty_means_wrong_password=empty_means_wrong_password,
-                )
-            except BaseException:
-                terminate_process(proc)
-                raise
-            try:
+            owned = UnarOutputStream(
+                stdout,
+                proc,
+                has_verifiable_digest=has_digest,
+                empty_means_wrong_password=empty_means_wrong_password,
+            )
+            with _close_on_error(owned):
                 return self._track_decompressed(owned)
-            except BaseException:
-                owned.close()
-                raise
 
         return self._open_spawned_member(member, _spawn)
 
@@ -2542,31 +2477,21 @@ class RarReader(BaseArchiveReader):
                     purpose=UNAR_PURPOSE,
                     password=password,
                 )
-                try:
-                    # Every member read from this pipe is checked against its declared
-                    # size, and against its stored CRC32 or BLAKE2sp when it has one.
-                    # unar's failures are short or missing output, which the size
-                    # check catches, so its exit status adds nothing. A wrong password
-                    # gives no output at all, reported as such when a password was
-                    # needed.
-                    owned: BinaryIO = UnarOutputStream(
-                        stdout,
-                        proc,
-                        has_verifiable_digest=True,
-                        empty_means_wrong_password=(
-                            self._archive_has_encryption
-                            and policy.solid_pass_emits_data()
-                        ),
-                    )
-                except BaseException:
-                    terminate_process(proc)
-                    raise
-                try:
-                    owned = self._track_decompressed(owned)
-                    solid = SolidBlockReader(owned)
-                except BaseException:
-                    owned.close()
-                    raise
+                # Every member read from this pipe is checked against its declared
+                # size, and against its stored CRC32 or BLAKE2sp when it has one.
+                # unar's failures are short or missing output, which the size check
+                # catches, so its exit status adds nothing. A wrong password gives no
+                # output at all, reported as such when a password was needed.
+                owned = UnarOutputStream(
+                    stdout,
+                    proc,
+                    has_verifiable_digest=True,
+                    empty_means_wrong_password=(
+                        self._archive_has_encryption and policy.solid_pass_emits_data()
+                    ),
+                )
+                with _close_on_error(owned):
+                    solid = SolidBlockReader(self._track_decompressed(owned))
             return solid
 
         def _refuse(member: ArchiveMember, reason: str) -> BinaryIO:

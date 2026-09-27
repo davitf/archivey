@@ -27,7 +27,7 @@ shape.
 | Shape | Catches | What leaves | Example |
 |---|---|---|---|
 | **Cleanup and re-raise** | `BaseException` | the original | `core.open_archive`, `TarReader.__init__`, `_bounded_member_pipe` |
-| **Error combination** | `Exception` (or `BaseException` when an interrupt must not skip the mandatory step) | the first error, or an `ExceptionGroup`; never nothing | `ArchiveStream.close`, `_maybe_teardown`, `_UnrarOwnedStream.close` |
+| **Error combination** | `Exception` (or `BaseException` when an interrupt must not skip the mandatory step) | the first error, or an `ExceptionGroup`; never nothing | `ArchiveStream.close`, `_maybe_teardown`, `ProcessOutputStream.close` |
 | **Primary error wins** | `Exception` | the error already in flight; the cleanup failure is attached as a note or dropped | `BaseArchiveReader.open`, `ArchiveStream._note_raised_seek` |
 | **Translator handoff** | `Exception` | a translated `ArchiveyError` `from` the original, or the original unchanged | `ArchiveStream._fail`, `_TranslatedErrorBoundary` |
 | **Teardown hygiene** | `Exception` | nothing | finalizers, `_AcceleratorStream._close_inner`, `PpmdDecoder._quiesce_worker` |
@@ -98,7 +98,7 @@ must not break the read it serves. Narrow it: let `ArchiveyError`, `OSError` and
 
 A handler reaches past `Exception` only when an interrupt must not skip what it does:
 releasing a resource (cleanup and re-raise), reaping a process or marking an object closed
-before raising (error combination, e.g. `_UnrarOwnedStream.close`), or keeping the
+before raising (error combination, e.g. `ProcessOutputStream.close`), or keeping the
 exception out of C++ (the trap). All three hand the interrupt back. None swallows
 `KeyboardInterrupt`, `SystemExit` or `MemoryError`, and a new `BaseException` handler that
 would needs its reason stated in the code.

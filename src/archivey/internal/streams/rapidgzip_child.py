@@ -45,9 +45,13 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.streams.child_exit import (
+    REAP_TIMEOUT,
     describe_exit,
     is_crash,
     is_system_kill,
+    python_argv,
+    reap,
+    spawn,
 )
 from archivey.internal.streams.rapidgzip_worker import (
     ERR,
@@ -115,6 +119,12 @@ class RapidgzipChildReportedError(Exception):
     No translator maps it, so it propagates: an unknown exception is a bug or an
     environment fault to map on purpose, not a verdict on the data.
     """
+
+
+def _start_error(reason: str) -> RapidgzipChildStartError:
+    return RapidgzipChildStartError(
+        f"cannot start the rapidgzip decoder process: {reason}"
+    )
 
 
 def rapidgzip_child_unavailable_reason() -> str | None:
@@ -198,25 +208,8 @@ def _reported_error(payload: bytes) -> Exception:
 def _reap(
     proc: subprocess.Popen[bytes], stderr: IO[bytes], *, kill: bool = False
 ) -> None:
-    """End the child and wait for it. Never raises."""
-    if kill:
-        try:
-            proc.kill()
-        except OSError:
-            pass
-    # Both pipes before the wait: a child blocked writing to a pipe nobody reads gets
-    # EPIPE and exits, where it would otherwise never see stdin close.
-    for pipe in (proc.stdin, proc.stdout):
-        try:
-            if pipe is not None:
-                pipe.close()
-        except OSError:
-            pass
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
+    """End the child and wait for it, then close its stderr file. Never raises."""
+    reap(proc, kill=kill)
     try:
         stderr.close()
     except OSError:
@@ -304,32 +297,17 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             self._source = source
             open_kind, open_payload = OPEN_STREAM, b""
         super().__init__()
-        if not sys.executable:
-            # ``Popen([None, ...])`` raises ``TypeError``, not ``OSError``.
-            raise RapidgzipChildStartError(
-                "cannot start the rapidgzip decoder process: sys.executable is not set"
-            )
+        argv = python_argv(_WORKER, _start_error)
         try:
             stderr = tempfile.TemporaryFile()
         except OSError as exc:
-            raise RapidgzipChildStartError(
-                f"cannot start the rapidgzip decoder process: {exc}"
-            ) from exc
+            raise _start_error(str(exc)) from exc
         self._stderr = stderr
         try:
-            self._proc = subprocess.Popen(
-                # -P: the worker's own directory is not put on sys.path, so its
-                # sibling modules (``codecs.py``) cannot shadow the standard library.
-                [sys.executable, "-P", str(_WORKER)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=stderr,
-            )
-        except OSError as exc:
+            self._proc = spawn(argv, _start_error, stdin=subprocess.PIPE, stderr=stderr)
+        except RapidgzipChildStartError:
             stderr.close()
-            raise RapidgzipChildStartError(
-                f"cannot start the rapidgzip decoder process: {exc}"
-            ) from exc
+            raise
         self._finalizer = weakref.finalize(self, _reap, self._proc, stderr)
         try:
             self._call(OPEN, open_kind, open_payload)
@@ -488,7 +466,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         proc = self._proc
         assert proc is not None and self._stderr is not None
         try:
-            returncode = proc.wait(timeout=5)
+            returncode = proc.wait(timeout=REAP_TIMEOUT)
         except subprocess.TimeoutExpired:
             returncode = None  # it closed its pipes and did not exit; ended below
         truncated, reason = _scan_stderr(self._stderr)

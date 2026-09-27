@@ -37,16 +37,15 @@ import re
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
-from typing import BinaryIO, cast
+from typing import BinaryIO
 
-from archivey.exceptions import (
-    CorruptionError,
-    EncryptionError,
-    PackageNotInstalledError,
-    ReadError,
+from archivey.exceptions import CorruptionError, EncryptionError, ReadError
+from archivey.internal.external.cli import (
+    Banner,
+    CliToolFinder,
+    ProcessOutputStream,
+    spawn_for_stdout,
 )
-from archivey.internal.external.cli import Banner, CliToolFinder, terminate_process
-from archivey.internal.streams.streamtools import DelegatingStream
 
 # Inclusive floor. Measured: Debian/Ubuntu ``unar`` 1.10.1 and MacPaw XADMaster v1.10.8
 # built from source (banner v1.10.7). Homebrew's formula builds the same v1.10.8.
@@ -150,28 +149,16 @@ def open_unar_stdout(
     archive legitimately produces no bytes while earlier entries decode.
     """
     unar = find_unar(purpose=purpose)
-    cmd = unar_argv(unar, archive_path, indexes, password=password)
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            # ``unar`` asks for a missing password on a terminal. With no stdin it
-            # reports the missing password and exits non-zero instead.
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            bufsize=1024 * 1024,
-        )
-    except OSError as exc:
-        raise PackageNotInstalledError(
-            f"unar could not be started {purpose}. {UNAR_INSTALL_HINT}"
-        ) from exc
-    if proc.stdout is None:
-        terminate_process(proc)
-        raise ReadError("unar produced no stdout pipe")
-    return proc, cast(BinaryIO, proc.stdout)
+    # ``unar`` asks for a missing password on a terminal. With stdin on DEVNULL (the
+    # default) it reports the missing password and exits non-zero instead.
+    return spawn_for_stdout(
+        unar_argv(unar, archive_path, indexes, password=password),
+        name="unar",
+        not_started=f"unar could not be started {purpose}. {UNAR_INSTALL_HINT}",
+    )
 
 
-class UnarOutputStream(DelegatingStream):
+class UnarOutputStream(ProcessOutputStream):
     """``unar`` stdout that owns the process: close stops and reaps it.
 
     The exit status is checked once the pipe reaches end of file: on that read, or on
@@ -194,7 +181,6 @@ class UnarOutputStream(DelegatingStream):
     """
 
     readinto_passthrough = False
-    _SUBCLASS_CLOSES_INNER = True
 
     def __init__(
         self,
@@ -204,15 +190,10 @@ class UnarOutputStream(DelegatingStream):
         has_verifiable_digest: bool,
         empty_means_wrong_password: bool = False,
     ) -> None:
-        # Everything close() reads is assigned before DelegatingStream.__init__,
-        # which can raise, so a half-built instance still reaps the child.
-        self._proc = proc
         self._has_verifiable_digest = has_verifiable_digest
         self._empty_means_wrong_password = empty_means_wrong_password
-        self._bytes_read = 0
         self._saw_eof = False
-        self._exit_checked = False
-        super().__init__(stdout)
+        super().__init__(stdout, proc)
 
     def read(self, n: int = -1, /) -> bytes:
         data = super().read(n)
@@ -227,52 +208,14 @@ class UnarOutputStream(DelegatingStream):
                     "unar produced no data for encrypted content: the password is "
                     "missing or wrong"
                 )
-            self._check_exit(wait_timeout=1.0)
+            self._check_exit(wait_timeout=self._EOF_EXIT_WAIT)
         return data
 
     def _raise_for_returncode(self, rc: int) -> None:
-        if rc == 0 or self._has_verifiable_digest:
+        # A status before end of file is archivey's doing: it closed the pipe on a
+        # program that was still writing.
+        if rc == 0 or self._has_verifiable_digest or not self._saw_eof:
             return
         if rc > 0:
             raise CorruptionError(f"unar reported a failure (exit {rc}) reading data")
         raise ReadError(f"unar stopped on signal {-rc} while reading data")
-
-    def _check_exit(self, *, wait_timeout: float | None) -> None:
-        if self._exit_checked or not self._saw_eof:
-            return
-        if self._proc.poll() is None:
-            if wait_timeout is None:
-                return
-            try:
-                self._proc.wait(timeout=wait_timeout)
-            except subprocess.TimeoutExpired:
-                return
-        self._exit_checked = True
-        self._raise_for_returncode(self._proc.returncode)
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        close_error: BaseException | None = None
-        try:
-            self._inner.close()
-        # BaseException: close must reap unar even on KeyboardInterrupt.
-        except BaseException as exc:  # noqa: BLE001
-            close_error = exc
-        if self._proc.poll() is None:
-            terminate_process(self._proc)
-        else:
-            try:
-                self._proc.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                terminate_process(self._proc)
-        super().close()
-        try:
-            self._check_exit(wait_timeout=None)
-        # BaseException: chain onto inner.close()'s error, do not replace it.
-        except BaseException as mapped:  # noqa: BLE001
-            if close_error is not None:
-                raise close_error from mapped
-            raise
-        if close_error is not None:
-            raise close_error

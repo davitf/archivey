@@ -23,7 +23,14 @@ from pathlib import Path
 from typing import IO
 
 from archivey.exceptions import ArchiveyUsageError, ReadError, ResourceLimitError
-from archivey.internal.streams.child_exit import describe_exit, is_crash, is_system_kill
+from archivey.internal.streams.child_exit import (
+    describe_exit,
+    is_crash,
+    is_system_kill,
+    python_argv,
+    reap,
+    spawn,
+)
 
 _OPEN = struct.Struct("<BBIB")
 _REQUEST = struct.Struct("<iI")
@@ -31,8 +38,8 @@ _REPLY = struct.Struct("<BBBI")
 
 _WORKER = Path(__file__).with_name("ppmd_worker.py")
 
-# How a child's death is read (``is_crash``, ``is_system_kill``, ``describe_exit``) is
-# shared with the rapidgzip child, in ``child_exit``.
+# Starting and ending the child, and how its death is read, are shared with the
+# rapidgzip child, in ``child_exit``.
 
 
 class _PpmdError(ValueError):
@@ -103,6 +110,10 @@ class PpmdChildReportedError(RuntimeError):
     """
 
 
+def _start_error(reason: str) -> PpmdChildStartError:
+    return PpmdChildStartError(f"cannot start the PPMd decoder process: {reason}")
+
+
 def child_decoding_available() -> bool:
     """Whether a Python child process can be started to run the worker script.
 
@@ -148,24 +159,12 @@ class PpmdChildDecoder:
         # Assigned before the spawn, so ``close`` (and ``__del__``) work on an object
         # whose ``Popen`` raised.
         self._proc: subprocess.Popen[bytes] | None = None
-        if not sys.executable:
-            # ``Popen([None, ...])`` raises ``TypeError``, not ``OSError``.
-            raise PpmdChildStartError(
-                "cannot start the PPMd decoder process: sys.executable is not set"
-            )
-        try:
-            self._proc = subprocess.Popen(
-                # -P: the worker's own directory is not put on sys.path, so its
-                # sibling modules (``codecs.py``) cannot shadow the standard library.
-                [sys.executable, "-P", str(_WORKER)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
-        except OSError as exc:
-            raise PpmdChildStartError(
-                f"cannot start the PPMd decoder process: {exc}"
-            ) from exc
+        self._proc = spawn(
+            python_argv(_WORKER, _start_error),
+            _start_error,
+            stdin=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
         # The child replies once after ``import pyppmd`` and once after constructing
         # the decoder (see ``ppmd_worker``); a death between the two is the
         # constructor's allocation of ``mem_size``.
@@ -279,21 +278,8 @@ class PpmdChildDecoder:
     def close(self) -> None:
         """End the child and wait for it. Idempotent; never raises."""
         proc, self._proc = getattr(self, "_proc", None), None
-        if proc is None:
-            return
-        # Both pipes before the wait: a child blocked writing a reply nobody will read
-        # gets EPIPE and exits, where it would otherwise never see stdin close.
-        for pipe in (proc.stdin, proc.stdout):
-            try:
-                if pipe is not None:
-                    pipe.close()
-            except OSError:
-                pass
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        if proc is not None:
+            reap(proc)
 
     def __del__(self) -> None:
         self.close()

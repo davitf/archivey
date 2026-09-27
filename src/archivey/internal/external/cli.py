@@ -7,9 +7,12 @@ probe again, and a binary replaced on disk is probed afresh.
 
 This is the policy :func:`archivey.internal.backends.rar_unrar.find_rarlab_unrar`
 applies to RARLAB ``unrar``, written once for any program. That finder shares
-:func:`stat_identity` with this module, whose :func:`terminate_process` the ``unrar``
-read paths also use, but it still runs its own loop and cache; moving it onto
-:class:`CliToolFinder` is recorded in ``dev-docs/IDEAS.md``.
+:func:`stat_identity` with this module, but it still runs its own loop and cache;
+moving it onto :class:`CliToolFinder` is recorded in ``dev-docs/IDEAS.md``.
+
+Once found, a program runs with its output on a pipe: :func:`spawn_for_stdout` starts
+it, and a :class:`ProcessOutputStream` subclass owns it until close. Both the ``unrar``
+and the ``unar`` read paths use them.
 """
 
 from __future__ import annotations
@@ -18,10 +21,14 @@ import os
 import shutil
 import subprocess
 import threading
+from abc import abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import IO, BinaryIO, cast
 
-from archivey.exceptions import PackageNotInstalledError
+from archivey.exceptions import PackageNotInstalledError, ReadError
+from archivey.internal.streams.child_exit import spawn, wait_or_kill
+from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.terminal import display_path
 
 # Seconds an identification probe may run. A binary that has not printed its banner by
@@ -201,8 +208,101 @@ def terminate_process(proc: subprocess.Popen[bytes] | None) -> None:
     if proc is None or proc.poll() is not None:
         return
     proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
+    wait_or_kill(proc)
+
+
+def spawn_for_stdout(
+    cmd: list[str],
+    *,
+    name: str,
+    not_started: str,
+    stdin: int | IO[bytes] = subprocess.DEVNULL,
+) -> tuple[subprocess.Popen[bytes], BinaryIO]:
+    """Start ``cmd`` with stdout on a pipe and stderr discarded; return ``(proc, stdout)``.
+
+    A program that cannot start raises ``PackageNotInstalledError(not_started)``. The
+    caller owns the process: wrap ``stdout`` in a :class:`ProcessOutputStream` at once,
+    or call :func:`terminate_process` on failure.
+    """
+    proc = spawn(
+        cmd,
+        lambda _: PackageNotInstalledError(not_started),
+        stdin=stdin,
+        stderr=subprocess.DEVNULL,
+        bufsize=1024 * 1024,
+    )
+    if proc.stdout is None:
+        terminate_process(proc)
+        # Defensive: stdout=PIPE was asked for, so this should be unreachable. Typed
+        # anyway, because every archive-read failure surfaces as an ArchiveyError.
+        raise ReadError(f"{name} produced no stdout pipe")
+    # typeshed types Popen[bytes].stdout as IO[bytes], not BinaryIO; the pipe is opened
+    # in binary mode, so it is one at runtime.
+    return proc, cast(BinaryIO, proc.stdout)
+
+
+class ProcessOutputStream(DelegatingStream):
+    """A program's stdout that owns the program: close stops and reaps it.
+
+    ``_raise_for_returncode`` maps the exit status once: on the read at end of file
+    (the subclass's ``read`` calls ``_check_exit``) if the program has exited by then,
+    else on close. A constructor that raises stops the program first.
+    """
+
+    _SUBCLASS_CLOSES_INNER = True
+    # Seconds the read at end of file waits for the program to exit. The program closed
+    # its stdout, so it is exiting; one that takes longer is checked on close.
+    _EOF_EXIT_WAIT = 1.0
+
+    def __init__(self, stdout: BinaryIO, proc: subprocess.Popen[bytes]) -> None:
+        # Everything close() reads is assigned before DelegatingStream.__init__, which
+        # can raise. A subclass assigns its own fields before it calls this.
+        self._proc = proc
+        self._bytes_read = 0
+        self._exit_checked = False
+        try:
+            super().__init__(stdout)
+        except BaseException:
+            terminate_process(proc)
+            raise
+
+    @abstractmethod
+    def _raise_for_returncode(self, rc: int) -> None:
+        """Raise the error that exit status ``rc`` reports, or return when it is none."""
+
+    def _check_exit(self, *, wait_timeout: float | None) -> None:
+        """Map the exit status once, if the program has exited or exits in ``wait_timeout``."""
+        if self._exit_checked:
+            return
+        if self._proc.poll() is None:
+            if wait_timeout is None:
+                return
+            try:
+                self._proc.wait(timeout=wait_timeout)
+            except subprocess.TimeoutExpired:
+                return
+        self._exit_checked = True
+        self._raise_for_returncode(self._proc.returncode)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        close_error: BaseException | None = None
+        try:
+            self._inner.close()
+        # BaseException: close must reap the program even on KeyboardInterrupt.
+        except BaseException as exc:  # noqa: BLE001
+            close_error = exc
+        terminate_process(self._proc)
+        # Marks this stream closed; _SUBCLASS_CLOSES_INNER keeps it from closing inner.
+        super().close()
+        # Map the status now if no read at end of file mapped it.
+        try:
+            self._check_exit(wait_timeout=None)
+        # BaseException: chain onto inner.close()'s error, do not replace it.
+        except BaseException as mapped:  # noqa: BLE001
+            if close_error is not None:
+                raise close_error from mapped
+            raise
+        if close_error is not None:
+            raise close_error
