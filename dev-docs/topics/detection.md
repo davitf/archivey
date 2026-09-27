@@ -22,11 +22,13 @@ Three other pages own parts of this, and this page links them rather than repeat
 - **Detection reads only the front of the source.** Nothing reads the tail today: the ZIP
   tail probe's budget fields are `0` on every preset. An archive that is found only from
   its end, such as a ZIP appended to a JPEG, is not detected. `format=ZIP` still opens it.
-- **Detection never consumes bytes.** A path gets its own handle. A seekable stream is put
-  back where the caller left it. A non-seekable stream is peeked through the replay prefix
-  that the backend then reads first.
-- **Every read and decode is bounded** by `ArchiveyConfig.detection_budget`, `BALANCED` by
-  default. The result carries a receipt of what was spent and a list of the steps that did
+- **Detection never consumes bytes the backend needs.** A path gets its own handle. A
+  seekable stream is put back where the caller left it. A non-seekable stream is peeked
+  through the replay prefix that the backend then reads first. A raw pipe handed straight
+  to `detect_format` is the exception (§4.3).
+- **Every read and decode is bounded**, almost entirely by
+  `ArchiveyConfig.detection_budget` (`BALANCED` by default). The probes' positioned reads
+  also have a fixed cap of their own (§4.1). The result carries a receipt of what was spent and a list of the steps that did
   not run, with the reason for each.
 - **A filename never overrules the bytes.** When they disagree, the bytes win and
   `FORMAT_EXTENSION_CONFLICT` is emitted.
@@ -36,9 +38,9 @@ Three other pages own parts of this, and this page links them rather than repeat
   - A graded evidence record: `FormatInfo` has one confidence and one `detected_by`, not a
     list of candidates.
   - An error on a polyglot: a file that is two formats gets one deterministic answer (§3.1).
-  - More formats found under `THOROUGH`. Today it differs from `BALANCED` only in how
-    large a source a probe hit is re-checked against (§4.1). It reads the same window and
-    no tail.
+  - More formats found under `THOROUGH`. It reads the same window as `BALANCED` and no
+    tail. What changes in behaviour is only how large a source a probe hit is re-checked
+    against (§4.1).
   - Any check that a magic hit is more than its bytes: two bytes `1f 8b` are `GZ` /
     `CERTAIN`, and the open fails.
 
@@ -82,7 +84,9 @@ extension is the last step, and it is used only when every content signal declin
 
 Any step 1 or step 4 match on a single-file compressor is then offered to the **inner-TAR
 probe**, which decodes up to 512 bytes and looks for `ustar` at offset 257. A hit reports the
-TAR combination (`TAR_GZ`, and so on) as `PROBABLE` / `content_probe`.
+TAR combination (`TAR_GZ`, and so on) as `PROBABLE` / `content_probe`. It reads at most 1
+MiB of compressed input and draws on the same decode allowance as the content probes
+(§4.1).
 
 The tables that drive steps 1, 2 and 4 come from the backends and the codec descriptors as
 data: `MAGIC`, `EXTENSIONS`, `SFX_MAGIC`, `SFX_HIT_VALIDATOR` and `CONTENT_PROBES`,
@@ -260,7 +264,12 @@ name common settings:
 | `max_scan_bytes` | 2 MiB | 256 KiB | 2 MiB |
 | `max_decode_input` / `max_decode_output` | 1 MiB | 64 KiB | 1 MiB |
 | `completion_window_bytes` | 64 KiB | off | 1 MiB |
+| `max_probe_links` | 8 | 2 | 32 |
 | `max_tail_bytes` / `max_seeks` | 0 | 0 | 0 |
+
+`max_probe_links` only widens what `within_budget()` allows for the probes' positioned
+reads. It does not stop the walk: the Brotli chain walk follows its own
+`CHAIN_MAX_LINKS` (8) on every preset.
 
 **The budget is set in one place, `ArchiveyConfig.detection_budget`.** `detect_format`,
 `open_archive` and `open_stream` read it from there. With a second way to set it, such as a
@@ -276,10 +285,22 @@ reachable yet. A step that does, such as compressor needles for makeself install
 draw on the same allowance. Decode output is charged only by the inner-TAR probe. A content
 probe's output is bounded by the codec's own drain.
 
-**Every clamp lives where the step is.** `PrefixWorkspace` meters reads and does not refuse
-them. Each step in `detection.py` sizes its own request from the budget fields. A limit
-held as a module constant somewhere else would shadow the field meant to bound it: a
-`FAST` detection would overrun its own preset, and nothing in the receipt would say why.
+**Steps size their reads from the budget fields.** Each step in `detection.py` computes
+its own request from the budget (`min(SFX_MAX, max_scan_bytes)`, the far window, what is
+left of the decode allowance), and `PrefixWorkspace` meters what they read. A limit held
+as a module constant somewhere else shadows the field meant to bound it: a `FAST`
+detection overruns its own preset, and nothing in the receipt says why.
+
+**Probe reads at an offset are the one path with fixed caps.** A content probe can ask for
+a few bytes deep in the source through `PrefixWorkspace.read_at`, which is how the Brotli
+chain walk checks later meta-block headers. On a path, a spool or a plain seekable stream,
+`read_at` seeks to the offset, reads, and seeks back, without growing the prefix. It is
+charged to `unique_bytes_read`, deliberately not to `max_seeks`, which is reserved for the
+tail tier. It is bounded by the walk's `CHAIN_MAX_LINKS` (8 links of 24 bytes), not by a
+budget field. On a pipe, or on an `ArchiveStream` whose rewind would re-decode, `read_at`
+grows the prefix instead, up to the smaller of `PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` (1
+MiB) and the workspace's read ceiling (the largest of the prefix, far and scan limits).
+Past that it returns nothing and records `content_probe_read_at` as `BUDGET_EXHAUSTED`.
 
 **The receipt says what was spent and what did not run.** `FormatInfo.cost_receipt` counts
 unique bytes read, far and scanned bytes, decode input and output, and passes.
@@ -307,11 +328,20 @@ runs before the reader, and a caller comparing sources wants each number on its 
 ### 4.2 One forward pass
 
 Every step reads the front of the source through one `PrefixWorkspace` that only grows.
-Extending the window reads only the new bytes. Near magic, then the far peek, then a 2 MiB
-scan fetch each source byte once. Detection makes one forward pass from the origin and
-seeks backward never. That rule is stated flatly and not derived from a cost model, because
-`StreamCapability` cannot tell a cheap seek from an expensive one. A network range reader
-or a member stream inside a solid 7z block would pay heavily for a rewind.
+Extending the window reads only the new bytes, so near magic, then a 2 MiB scan, then the
+far peek fetch each source byte once. Detection makes one forward pass from the origin and
+never seeks back to fetch bytes the workspace already has. That rule is stated flatly and
+not derived from a cost model, because `StreamCapability` cannot tell a cheap seek from an
+expensive one. A network range reader or a member stream inside a solid 7z block would pay
+heavily for a rewind.
+
+Two backward seeks are allowed, because neither re-reads anything:
+
+- On exit, a seekable stream is seeked back to the caller's entry position. That is the
+  non-consumption contract, and it happens once.
+- `read_at` on a cheap-seek source seeks back to the end of the prefix after its probe
+  read (§4.1), so the next forward fetch continues where the prefix ends. `read_at` never
+  takes that path on an `ArchiveStream`, where a rewind would re-decode.
 
 ### 4.3 Source kinds
 
@@ -379,7 +409,8 @@ every preset and is opt-in through `dataclasses.replace`.
 ```bash
 ./scripts/test.sh tests/test_detection.py tests/test_detection_workspace.py \
     tests/test_probe_completeness_gate.py tests/test_probe_provenance_unconfirmed.py \
-    tests/test_sfx.py tests/test_sfx_scan.py tests/test_brotli_framing_gate.py
+    tests/test_sfx.py tests/test_sfx_scan.py tests/test_brotli_framing_gate.py \
+    tests/test_cli.py::test_info_detects_once
 ```
 
 | Claim | Pinned by |
@@ -396,7 +427,7 @@ every preset and is opt-in through `dataclasses.replace`.
 | A receipt over budget always names a step cut short, for one pass and two (§4.1) | `tests/test_detection_workspace.py::test_over_budget_receipt_always_names_a_cut_short_tier`, `::test_two_pass_receipt_over_budget_also_names_a_cut_short_tier` |
 | A stub-volume detection's receipt keeps the stub pass (§2.6, §4.1) | `tests/test_detection.py::test_stub_volume_fallback_keeps_the_stub_pass_cost` |
 | The detection receipt is not merged into the reader's cost (§4.1) | `::test_detection_receipt_is_not_merged_into_archive_cost` |
-| One forward pass, each byte fetched once, no backward seek (§4.2) | `tests/test_detection_workspace.py::test_seekable_detection_has_zero_backward_seeks`, `::test_growing_prefix_fetches_each_byte_once`, `::test_seekable_stream_restored_on_error_path` |
+| One forward pass, each byte fetched once, at most the exit restore as a backward seek (§4.2) | `tests/test_detection_workspace.py::test_seekable_detection_has_zero_backward_seeks`, `::test_growing_prefix_fetches_each_byte_once`, `::test_seekable_stream_restored_on_error_path` |
 | Detection leaves a non-seekable stream readable by the backend (§4.3) | `tests/test_detection.py::test_peekable_stream_not_consumed` |
 | A directory is decided without reading, with the zero receipt (§2.6) | `::test_detect_format_reports_directory_for_a_directory_path`, `::test_detect_format_directory_carries_a_zero_receipt` |
 | A short 7z hit costs up to the scan window (§2.2) | `tests/test_sfx.py::test_short_7z_hit_scan_cost_is_bounded_by_the_window` |

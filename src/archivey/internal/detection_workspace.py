@@ -6,6 +6,8 @@ retrieved are never re-fetched. A seekable caller stream records its entry posit
 reads forward once, and restores once in an exception-safe exit. A non-seekable
 :class:`~archivey.internal.source.ArchiveSource` is peeked, so its replay prefix holds
 the bytes and the backend reads them from the same object.
+
+The access-shape rule and the seeks it allows: ``dev-docs/topics/detection.md`` §4.2.
 """
 
 from __future__ import annotations

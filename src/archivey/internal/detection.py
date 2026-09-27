@@ -1,5 +1,8 @@
 """Format detection: ``detect_format()``, which returns a :class:`~archivey.FormatInfo`.
 
+Why the steps are in this order, what each one guards against, and how the budget bounds
+them is in ``dev-docs/topics/detection.md``; this docstring covers the local path.
+
 Detection is **magic-first** (an exact magic-byte match at the expected offset →
 ``CERTAIN``) with an extension fallback (``GUESS``). The magic and extension tables are
 not hand-maintained here: each registered backend declares its ``MAGIC`` / ``EXTENSIONS``
