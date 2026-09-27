@@ -9,6 +9,7 @@ more permissive escape hatch.
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 from datetime import datetime
@@ -36,6 +37,7 @@ from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.timestamps import unix_to_datetime
+from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_JUNCTION,
@@ -88,6 +90,20 @@ def _identity_stat(path: str) -> os.stat_result:
     return os.stat(path, follow_symlinks=False)
 
 
+# POSIX platforms with `O_NOFOLLOW` and `dir_fd` support open members component by
+# component; Windows has neither and relies on the identity check.
+_HAS_NOFOLLOW = hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+
+
+def _changed_since_listing(name: str, what: str) -> OSError:
+    """The refusal for a member whose path no longer holds the file the walk listed."""
+    return OSError(
+        errno.ESTALE,
+        f"{quoted(name)} {what} since the directory was listed; not reading it",
+    )
+
+
 def _is_junction(entry: os.DirEntry[str]) -> bool:
     """True if a scandir entry is a Windows NTFS junction.
 
@@ -133,6 +149,10 @@ class DirectoryReader(BaseArchiveReader):
         # pwd/grp lookups hit the system database (nss) on every call, so we memoize.
         self._uname_cache: dict[int, str | None] = {}
         self._gname_cache: dict[int, str | None] = {}
+        # A FILE member's (st_dev, st_ino) from the listing, keyed by name, so opening it
+        # can refuse whatever was put at that path since (threat-model O21). Only files
+        # with a usable identity are recorded; st_ino 0 means "no identity".
+        self._identities: dict[str, tuple[int, int]] = {}
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         # An explicit stack rather than recursion: a tree deeper than the interpreter's
@@ -270,6 +290,8 @@ class DirectoryReader(BaseArchiveReader):
                         rel_path, st, MemberType.HARDLINK, first_name
                     )
                 else:
+                    if st.st_ino != 0:
+                        self._identities[rel_path] = (st.st_dev, st.st_ino)
                     yield self._make_member(rel_path, st, MemberType.FILE, None)
             else:
                 yield self._make_member(rel_path, st, MemberType.OTHER, None)
@@ -382,13 +404,73 @@ class DirectoryReader(BaseArchiveReader):
         return self._gname_cache[gid]
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
-        full_path = self._root / member.name
         # Wrapped like every backend's member stream (the uniform-handle contract): the
         # directory backend has no translator (a genuine OSError propagates unchanged),
         # but the caller still gets the same ArchiveStream handle type — with its `size`
         # advertisement — as for any other format.
-        raw = open(full_path, "rb")  # noqa: SIM115
+        raw = os.fdopen(self._open_listed_file(member.name, member.size), "rb")
         return self._wrap_member_stream(raw, member.name, size=member.size)
+
+    def _open_listed_file(self, name: str, listed_size: int | None) -> int:
+        """A read-only descriptor on the file the listing saw at ``name``, or ``OSError``.
+
+        Another process may change the tree between the walk and this open, and a read
+        must not leave the root (threat-model O21). So nothing on the way is followed:
+        on POSIX each directory component is opened with ``O_NOFOLLOW`` relative to its
+        parent, and the file itself with ``O_NOFOLLOW | O_NONBLOCK`` (a FIFO swapped in
+        must not block the open). The handle must then be a regular file, and the same
+        ``(st_dev, st_ino)`` the listing recorded when it had one. A symlink in the path
+        fails with ``ELOOP`` from the kernel; anything else that changed fails with
+        ``ESTALE``, as does a file whose size is no longer the listed one (a listed size
+        of 0 is exempt: procfs and sysfs list 0 for files that have content). Windows
+        has no ``O_NOFOLLOW``, so there the identity check carries
+        it, with a reparse-point check on the path when the listing had no identity.
+        """
+        path = os.path.join(self._root, name)
+        if _HAS_NOFOLLOW:
+            fd = self._open_nofollow(name)
+        else:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        try:
+            st = os.fstat(fd)
+            expected = self._identities.get(name)
+            if not stat.S_ISREG(st.st_mode):
+                raise _changed_since_listing(name, "is no longer a regular file")
+            if expected is not None and (st.st_dev, st.st_ino) != expected:
+                raise _changed_since_listing(name, "was replaced")
+            if listed_size and st.st_size != listed_size:
+                raise _changed_since_listing(
+                    name, f"changed size ({listed_size} to {st.st_size} bytes)"
+                )
+            if expected is None and not _HAS_NOFOLLOW:
+                attrs = getattr(os.lstat(path), "st_file_attributes", 0)
+                if attrs & FILE_ATTRIBUTE_REPARSE_POINT:
+                    raise _changed_since_listing(name, "is now a reparse point")
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def _open_nofollow(self, name: str) -> int:
+        """POSIX: open ``name`` under the root one component at a time, following nothing."""
+        *dirs, leaf = name.split("/")
+        fd = os.open(self._root, os.O_RDONLY | _O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            for component in dirs:
+                next_fd = os.open(
+                    component,
+                    os.O_RDONLY | _O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=fd,
+                )
+                os.close(fd)
+                fd = next_fd
+            return os.open(
+                leaf,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                dir_fd=fd,
+            )
+        finally:
+            os.close(fd)
 
     def _get_archive_info(self) -> ArchiveInfo:
         cost = CostReceipt(

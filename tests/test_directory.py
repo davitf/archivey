@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import logging
 import os
@@ -836,25 +837,61 @@ def test_streaming_extract_with_first_name_filtered_out_fails_the_link(
 
 
 # ---------------------------------------------------------------------------
-# The tree changing between listing and reading. These pin today's behaviour, which is
-# documented rather than desired: dev-docs/formats/directory.md §2.3 and §5, and
-# threat-model.md O21. A fix that opens members with O_NOFOLLOW and checks them against
-# the listing is expected to make them fail, and should rewrite them.
+# The tree changing between listing and reading (threat-model.md O21,
+# dev-docs/formats/directory.md §2.3). Opening a member follows nothing and must find the
+# file the walk listed; anything else is refused with OSError.
 # ---------------------------------------------------------------------------
 
 
-def test_a_file_grown_after_listing_reads_at_its_new_length(tmp_path: Path) -> None:
+def test_a_file_resized_after_listing_is_refused(tmp_path: Path) -> None:
+    # Same file, new length: the listed size no longer describes it, so it is refused
+    # rather than read at a length the listing never reported (directory.md §2.3).
+    (tmp_path / "g.txt").write_bytes(b"12345")
+    (tmp_path / "h.txt").write_bytes(b"12345")
+    with open_archive(tmp_path) as reader:
+        grown = reader.get("g.txt")
+        shrunk = reader.get("h.txt")
+        (tmp_path / "g.txt").write_bytes(b"1234567890ABC")
+        (tmp_path / "h.txt").write_bytes(b"12")
+        for member in (grown, shrunk):
+            with pytest.raises(OSError, match="changed size") as excinfo:
+                reader.read(member)
+            assert excinfo.value.errno == errno.ESTALE
+
+
+def test_a_file_rewritten_at_the_same_size_reads_its_new_content(
+    tmp_path: Path,
+) -> None:
+    # Documented, not desired: nothing checksums a directory member, so same-size new
+    # content is indistinguishable from the listed file.
     (tmp_path / "g.txt").write_bytes(b"12345")
     with open_archive(tmp_path) as reader:
         member = reader.get("g.txt")
-        (tmp_path / "g.txt").write_bytes(b"1234567890ABC")
-        with reader.open(member) as stream:
-            assert stream.read() == b"1234567890ABC"
-            assert stream.size == 5
-    assert member.size == 5
+        (tmp_path / "g.txt").write_bytes(b"ABCDE")
+        assert reader.read(member) == b"ABCDE"
 
 
-def test_a_file_swapped_for_a_symlink_after_listing_is_followed(tmp_path: Path) -> None:
+def test_a_file_listed_empty_reads_whatever_it_holds_at_open(tmp_path: Path) -> None:
+    # A listed size of 0 is exempt from the size check: procfs and sysfs list 0 for
+    # files with content, and an empty file has nothing a stale listing could hide.
+    (tmp_path / "e.txt").write_bytes(b"")
+    with open_archive(tmp_path) as reader:
+        member = reader.get("e.txt")
+        (tmp_path / "e.txt").write_bytes(b"now filled")
+        assert reader.read(member) == b"now filled"
+
+
+def _swap_in_symlink(path: Path, target: Path) -> None:
+    if path.is_dir():
+        for child in path.iterdir():
+            child.unlink()
+        path.rmdir()
+    else:
+        path.unlink()
+    path.symlink_to(target, target_is_directory=target.is_dir())
+
+
+def test_a_file_swapped_for_a_symlink_after_listing_is_refused(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
     (root / "a.txt").write_bytes(b"inside")
@@ -862,12 +899,73 @@ def test_a_file_swapped_for_a_symlink_after_listing_is_followed(tmp_path: Path) 
     outside.write_bytes(b"outside the root")
     with open_archive(root) as reader:
         member = reader.get("a.txt")
-        (root / "a.txt").unlink()
-        (root / "a.txt").symlink_to(outside)
-        assert reader.read(member) == b"outside the root"
+        _swap_in_symlink(root / "a.txt", outside)
+        with pytest.raises(OSError):
+            reader.read(member)
+
+
+def test_a_directory_swapped_for_a_symlink_after_listing_is_refused(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub" / "b.txt").write_bytes(b"inside")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "b.txt").write_bytes(b"outside the root")
+    with open_archive(root) as reader:
+        member = reader.get("sub/b.txt")
+        _swap_in_symlink(root / "sub", outside)
+        with pytest.raises(OSError):
+            reader.read(member)
+
+
+def test_a_file_replaced_after_listing_is_refused(tmp_path: Path) -> None:
+    import errno
+
+    (tmp_path / "a.txt").write_bytes(b"listed")
+    with open_archive(tmp_path) as reader:
+        member = reader.get("a.txt")
+        replacement = tmp_path / "new.tmp"
+        replacement.write_bytes(b"another file")
+        os.replace(replacement, tmp_path / "a.txt")
+        with pytest.raises(OSError) as excinfo:
+            reader.read(member)
+    assert excinfo.value.errno == errno.ESTALE
+    assert "since the directory was listed" in str(excinfo.value)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_a_file_swapped_for_a_fifo_after_listing_is_refused_without_blocking(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "a.txt").write_bytes(b"listed")
+    with open_archive(tmp_path) as reader:
+        member = reader.get("a.txt")
+        (tmp_path / "a.txt").unlink()
+        os.mkfifo(tmp_path / "a.txt")
+        # With no writer on the FIFO, a blocking open would hang the test here.
+        with pytest.raises(OSError, match="no longer a regular file"):
+            reader.read(member)
+
+
+def test_hardlinks_and_symlinks_still_read_through_the_checked_open(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "a.txt").write_bytes(b"data")
+    os.link(tmp_path / "a.txt", tmp_path / "b.txt")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "c.txt").write_bytes(b"nested")
+    os.symlink("a.txt", tmp_path / "link")
+    with open_archive(tmp_path) as reader:
+        assert reader.read("b.txt") == b"data"
+        assert reader.read("link") == b"data"
+        assert reader.read("sub/c.txt") == b"nested"
 
 
 def test_extracting_into_the_root_lists_the_destination(tmp_path: Path) -> None:
+    # Documented, not desired (directory.md §5): the walk reads the live tree, so the
+    # destination the extraction created is listed as a member.
     (tmp_path / "a").write_bytes(b"x")
     dest = tmp_path / "out"
     with open_archive(tmp_path) as reader:
