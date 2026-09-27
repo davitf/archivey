@@ -118,6 +118,10 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A damaged zlib stream under `use_rapidgzip=ON` now raises `CorruptionError`.** rapidgzip
+  does not check a zlib stream's Adler-32, so a damaged `.zz` or `.tar.zz` read back wrong
+  or short bytes with no error. archivey now checks the Adler-32 once the stream is read
+  to its end, including after seeks and in a `.tar.zz` listing.
 - **Nested archives: four failures found by reading archives from member streams.**
   `use_rapidgzip=ON` or `use_indexed_bzip2=ON` over a source that cannot seek (a pipe, or
   a `stream_members()` stream) raised a bare `io.UnsupportedOperation("tell")`; it now

@@ -1041,6 +1041,194 @@ class _GzipTruncationCheckStream(DelegatingStream):
             return True  # cannot rule out a second member -> do not raise
 
 
+def _zlib_adler_trailer(source: CodecSource) -> int | None:
+    """The last four bytes of a zlib ``source`` as its Adler-32 trailer, or ``None``.
+
+    ``None`` when the source is shorter than a complete zlib stream (a two-byte header and
+    the four-byte trailer) or cannot be read; :class:`_ZlibAdlerCheckStream` then goes
+    straight to its standard-library confirmation. Restores a stream source's position.
+    """
+    try:
+        if isinstance(source, (str, os.PathLike)):
+            with open(os.fspath(source), "rb") as f:
+                if f.seek(0, io.SEEK_END) < 6:
+                    return None
+                f.seek(-4, io.SEEK_END)
+                return int.from_bytes(f.read(4), "big")
+        pos = source.tell()
+        try:
+            if source.seek(0, io.SEEK_END) < 6:
+                return None
+            source.seek(-4, io.SEEK_END)
+            return int.from_bytes(source.read(4), "big")
+        finally:
+            source.seek(pos)
+    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
+        return None
+
+
+class StreamChecksumError(CorruptionError):
+    """A whole-stream checksum failed after the stream's bytes were delivered.
+
+    Internal: callers see a :class:`CorruptionError`. A reader that tolerates a decode
+    failure past the end of its own data (the TAR end-of-archive scan) re-raises this
+    one, because the checksum covers bytes it has already handed out.
+    """
+
+
+class _ZlibAdlerCheckStream(DelegatingStream):
+    """Check a zlib stream's Adler-32 after rapidgzip, which does not check it.
+
+    rapidgzip decodes a zlib stream with a damaged body or a wrong Adler-32 without an
+    error: it can return the whole stream, or a shorter one, as good data. The standard
+    library raises on the same input, and an accelerator must not change whether a
+    damaged source raises. This wrapper keeps an Adler-32 of the output from offset 0 up
+    to a frontier, and when the frontier reaches the end compares it to the trailer (the
+    last four bytes of the compressed source, read before the child starts).
+
+    A seek does not forfeit the check. A seek back stays behind the frontier; a seek
+    forward past it reads the bytes in between, so the Adler-32 still covers them. A
+    reader that skips member data by seeking (the TAR reader over ``tar.zz``) therefore
+    still gets the check when it reaches the end. The read-through costs the transfer
+    from the child and one ``zlib.adler32`` pass; rapidgzip decodes those bytes to seek
+    past them anyway. Nothing is checked on a stream that is never read to its end.
+
+    A mismatch has two causes: damage, or several zlib streams one after another
+    (rapidgzip decodes all of them, so the trailer is only the last stream's). The
+    wrapper tells them apart by decoding the source again with the standard library,
+    one zlib stream after another, until it has as many bytes as rapidgzip delivered.
+    That decode must succeed and reproduce the delivered length and Adler-32; otherwise
+    the read or seek that reached the end raises :class:`StreamChecksumError`. The
+    second decode runs only on a mismatch.
+
+    As in :class:`_GzipTruncationCheckStream`, the check runs on the call that reaches
+    the end (ADR 0014: never from ``close()``), and a verdict once raised is raised again
+    at every later end of data.
+    """
+
+    readinto_passthrough = False
+
+    def __init__(
+        self,
+        inner: BinaryIO,
+        *,
+        reopen: Callable[[], BinaryIO],
+        trailer: int | None,
+    ) -> None:
+        super().__init__(inner)
+        self._reopen = reopen
+        self._trailer = trailer
+        self._pos = 0
+        # Output bytes [0, _frontier) are covered by _adler.
+        self._frontier = 0
+        self._adler = 1  # Adler-32 of the empty string
+        self._checked = False
+        self._verdict: StreamChecksumError | None = None
+
+    def read(self, size: int = -1, /) -> bytes:
+        if size == 0:
+            return b""
+        data = self._inner.read(size)
+        if data:
+            self._count(data)
+            if size < 0:
+                # A completing read: reach the end now, so the check raises from this
+                # read rather than leave the caller to find it on a later one.
+                while more := self._inner.read(1 << 20):
+                    self._count(more)
+                    data += more
+                self._at_end()
+            return data
+        self._at_end()
+        return data
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if whence == io.SEEK_CUR:
+            # Absolute before any read-through moves the position it is relative to.
+            offset, whence = self._pos + offset, io.SEEK_SET
+        if not self._checked:
+            if whence == io.SEEK_END:
+                self._read_through(None)
+            elif offset > self._frontier:
+                self._read_through(offset)
+        self._pos = self._inner.seek(offset, whence)
+        return self._pos
+
+    def tell(self, /) -> int:
+        return self._pos
+
+    def nearest_resume_offset(self, target: int) -> int | None:
+        return ask_resume_offset(self._inner, target)
+
+    def _count(self, data: bytes) -> None:
+        end = self._pos + len(data)
+        if not self._checked and self._pos <= self._frontier < end:
+            self._adler = zlib.adler32(
+                memoryview(data)[self._frontier - self._pos :], self._adler
+            )
+            self._frontier = end
+        self._pos = end
+
+    def _read_through(self, target: int | None) -> None:
+        """Advance the frontier to ``target`` (``None``: the end) by reading."""
+        self._pos = self._inner.seek(self._frontier)
+        while target is None or self._pos < target:
+            want = 1 << 20 if target is None else min(1 << 20, target - self._pos)
+            data = self._inner.read(want)
+            if not data:
+                self._at_end()
+                return
+            self._count(data)
+
+    def _at_end(self) -> None:
+        if self._verdict is not None:
+            raise self._verdict.with_traceback(None)
+        if self._checked or self._pos < self._frontier:
+            return
+        self._checked = True
+        if self._trailer == self._adler:
+            return
+        try:
+            self._confirm_with_stdlib()
+        except StreamChecksumError as exc:
+            self._verdict = exc
+            raise
+
+    def _confirm_with_stdlib(self) -> None:
+        produced = 0
+        adler = 1
+        decoder = zlib.decompressobj()
+        pending = b""
+        try:
+            with self._reopen() as f:
+                while produced <= self._frontier:
+                    if decoder.eof:
+                        if produced == self._frontier:
+                            break
+                        # The next of several zlib streams one after another.
+                        pending, decoder = decoder.unused_data, zlib.decompressobj()
+                        continue
+                    if not pending:
+                        pending = f.read(1 << 16)
+                        if not pending:
+                            raise StreamChecksumError(
+                                "zlib stream is truncated: the source ends before the "
+                                "data the rapidgzip accelerator returned"
+                            )
+                    # Bounded output per call: a damaged body can expand without limit.
+                    out = decoder.decompress(pending, 1 << 20)
+                    pending = decoder.unconsumed_tail
+                    produced += len(out)
+                    adler = zlib.adler32(out, adler)
+        except zlib.error as exc:
+            raise StreamChecksumError(f"Error reading zlib stream: {exc!r}") from exc
+        if produced != self._frontier or adler != self._adler:
+            raise StreamChecksumError(
+                "zlib stream is damaged: the data does not match its Adler-32 "
+                "(the rapidgzip accelerator does not check it)"
+            )
+
+
 class _Bzip2EmptyStreamCheck(DelegatingStream):
     """Hand a silent empty result from rapidgzip's bzip2 decoder to the stdlib engine.
 
@@ -2065,14 +2253,25 @@ class ZlibCodec(_ZlibErrorCodec):
                     _RAPIDGZIP_REQUIREMENT.message("zlib random access")
                 )
             _refuse_forward_only_accelerator(source, "use_rapidgzip", "zlib")
+            accel_source, reopen = _accelerator_backstop_source(source)
+            # _refuse_forward_only_accelerator has refused a source that cannot seek.
+            assert reopen is not None
+            bounded = _bound_rapidgzip_source(accel_source, params, config)
+            # Read through the view, which can move the caller's stream under it; put
+            # that back, since an AUTO open whose child cannot start decodes from it.
+            if isinstance(source, (str, os.PathLike)):
+                trailer = _zlib_adler_trailer(bounded)
+            else:
+                start = source.tell()
+                trailer = _zlib_adler_trailer(bounded)
+                source.seek(start)
             # rapidgzip auto-detects zlib-wrapped DEFLATE; no synthetic gzip wrapper.
-            stream = _open_rapidgzip(
-                _bound_rapidgzip_source(source, params, config),
-                "zlib",
-                config,
-            )
+            stream = _open_rapidgzip(bounded, "zlib", config)
             if stream is not None:
-                return _wrap_accelerated_length(stream, config)
+                return _wrap_accelerated_length(
+                    _ZlibAdlerCheckStream(stream, reopen=reopen, trailer=trailer),
+                    config,
+                )
         # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=zlib.MAX_WBITS)
 

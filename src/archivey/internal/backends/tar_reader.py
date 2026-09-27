@@ -71,6 +71,7 @@ from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
+    StreamChecksumError,
     codec_for_stream_format,
     open_codec_stream,
 )
@@ -764,7 +765,10 @@ class TarReader(BaseArchiveReader):
         compressed stream, and the codec refuses both. Every member was already read
         whole, and before this scan ran unconditionally such an archive listed without
         complaint, so a decode failure out here must not turn a good listing into an
-        error. It is not trailing tar data either, so it is not reported as that.
+        error. It is not trailing tar data either, so it is not reported as that. The one
+        exception is a :class:`StreamChecksumError`: a codec checksum that covers the
+        whole decoded stream (zlib's Adler-32 under rapidgzip) failed, so the members
+        already read are damaged, and that raises.
         """
         fileobj = self._tar.fileobj
         if fileobj is None:
@@ -775,6 +779,10 @@ class TarReader(BaseArchiveReader):
             try:
                 with self._translated_errors(), self._handle_guard():
                     chunk = fileobj.read(want)
+            except StreamChecksumError:
+                # The codec's whole-stream checksum covers the members already read,
+                # so this is damage to them, not a tail that failed to decode.
+                raise
             except ReadError:
                 return
             if not chunk:

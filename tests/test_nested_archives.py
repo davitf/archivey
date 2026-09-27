@@ -686,33 +686,19 @@ def _read_everything(stream: BinaryIO, fmt: str, config: ArchiveyConfig) -> None
                 reader.read(member)
 
 
-_ZLIB_ON_UNCHECKED = pytest.mark.xfail(
-    strict=True,
-    reason="rapidgzip does not check a zlib stream's Adler-32, and nothing else "
-    "does under use_rapidgzip=ON: the damaged bytes are returned with no error",
-)
-
-
-# AUTO is here for the zlib rows: it must never hand a bare zlib stream to rapidgzip,
-# which is what keeps the unchecked Adler-32 behind an explicit ON.
+# ON is here for the zlib rows: rapidgzip does not check the Adler-32, so archivey's own
+# check after it is what makes a damaged zz or tar.zz raise.
 @pytest.mark.parametrize("mode", ["off", "auto", "on"])
 @pytest.mark.parametrize("how", ["truncated", "flipped"])
 @pytest.mark.parametrize(
     "inner", ["tar.gz", "tar.bz2", "tar.zz", "gz", "bz2", "zz", "zip", "7z"]
 )
 def test_damaged_inner_archive_raises_an_archivey_error(
-    request: pytest.FixtureRequest, tmp_path: Path, inner: str, how: str, mode: str
+    tmp_path: Path, inner: str, how: str, mode: str
 ) -> None:
     _skip_unless_runnable(("zip", inner))
     if mode == "on" and not _HAS_RAPIDGZIP:
         pytest.skip("accelerator ON needs rapidgzip")
-    if (inner, how, mode) == ("zz", "truncated", "on"):
-        pytest.skip(
-            "documented: a truncated bare zlib stream under ON can end short with no "
-            "error (dev-docs/formats/gzip.md, section 5)"
-        )
-    if mode == "on" and inner in ("zz", "tar.zz") and how == "flipped":
-        request.applymarker(_ZLIB_ON_UNCHECKED)
     inner_bytes = _damaged(_build(inner, _leaf_members(inner)), how)
     path = tmp_path / "outer.zip"
     path.write_bytes(_zip_of({f"inner.{inner}": inner_bytes}))

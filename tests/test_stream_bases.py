@@ -383,6 +383,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs._AcceleratorStream,  # owns rapidgzip available_block_offsets
         rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index
         codecs._GzipTruncationCheckStream,
+        codecs._ZlibAdlerCheckStream,
         codecs._Bzip2EmptyStreamCheck,
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
@@ -557,6 +558,7 @@ def test_delegating_stream_close_inventory() -> None:
         counting.SeekCountingStream,
         iso_reader._PyCdlibStream,
         codecs._GzipTruncationCheckStream,
+        codecs._ZlibAdlerCheckStream,
         codecs._Bzip2EmptyStreamCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,
