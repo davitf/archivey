@@ -535,6 +535,7 @@ def test_a_unc_symlink_is_blocked_at_extraction(tmp_path: Path) -> None:
     assert result.member.link_target == "//server/share/dir"
     assert result.status is ExtractionStatus.BLOCKED
     assert isinstance(result.error, FilterRejectionError)
+    assert result.error.message == "Symlink target escapes destination"
     assert not (dest / "link").is_symlink()
 
 

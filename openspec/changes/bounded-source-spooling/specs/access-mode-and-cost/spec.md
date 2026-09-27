@@ -8,9 +8,9 @@ The system SHALL write an archive source to temporary storage only when an opera
 requires it, and SHALL bound every such spool by the one configured limit,
 `ArchiveyConfig.spool_limits`. `archive-reading` defines that limit — its settings, its
 1 GiB default, and the refusal before or during the write — and `error-handling` defines
-`ResourceLimitError`, which it raises. This requirement adds the
-spool of a **non-seekable** source to what that limit governs, and the directory the
-spool is written to.
+`ResourceLimitError`, which it raises. This requirement adds the spool of a
+**non-seekable** source to what that limit governs, and the directory the spool is
+written to.
 
 The system SHALL NOT expose *why* a spool was needed as a configuration axis. Materializing
 a seekable source for an external binary that accepts only a filesystem path, and

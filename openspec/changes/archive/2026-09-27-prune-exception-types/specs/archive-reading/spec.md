@@ -297,9 +297,9 @@ always holds a budget.
 its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
 volume set and across attempts: a copy refused once SHALL stay refused for that reader
 without writing again. `None` SHALL disable the guard; `SpoolLimits.UNLIMITED` sets it to
-`None`. A copy over the limit SHALL raise `ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when the
-size is known, and otherwise before the written total passes the limit, with the partial
-copy removed. A path source is not copied and SHALL NOT be refused by it.
+`None`. A copy over the limit SHALL raise `ResourceLimitError`, naming
+`SpoolLimits.max_bytes`, before any byte is written when the size is known, and otherwise
+before the written total passes the limit, with the partial copy removed. A path source is not copied and SHALL NOT be refused by it.
 `read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
 the format stores as member data (see "Link targets stored as member data are read only
 when configured"); like `listing_limits`, it holds for the reader's lifetime.

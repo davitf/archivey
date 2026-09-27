@@ -154,7 +154,11 @@ class OpenError(ArchiveyError):
 
 
 class FormatDetectionError(OpenError):
-    """Could not detect archive format."""
+    """Could not detect an archive format, or detected one this call cannot use.
+
+    The second case is ``open_stream()`` on a container such as a ZIP: detection
+    succeeded, but the source is not a single-file compressed stream.
+    """
 
 
 class StreamNotSeekableError(OpenError):

@@ -38,7 +38,8 @@ Reading across:
   `streaming=True` still reports SEEKABLE, because the bytes can seek even though the
   reader will not. The `access-mode-and-cost` spec is explicit that the two are
   separate, and the streaming reader's refusals (`members()` raises
-  `UnsupportedOperationError` with a message naming the three alternatives) are loud.
+  `UnsupportedOperationError` with a message naming the three alternatives; since
+  2026-09-27, PR #506, `ArchiveyUsageError`) are loud.
 - **`format_info` has the same shape from every backend**, including the directory
   pseudo-archive (`directory` / `CERTAIN`), and the one probe-detected source says
   `content_probe` / `PROBABLE` rather than pretending to certainty.

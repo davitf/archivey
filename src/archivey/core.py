@@ -742,6 +742,8 @@ def _open_stream_from_source(
     stream_format = _resolve_stream_format(
         format, codec_input, collector, effective_config
     )
+    # Only an explicit format= can be UNCOMPRESSED: detection never returns a
+    # RAW_STREAM/UNCOMPRESSED pair, so this is the caller's mistake, not the input's.
     if stream_format is StreamFormat.UNCOMPRESSED:
         raise ArchiveyUsageError(
             "open_stream requires a compressed stream format "

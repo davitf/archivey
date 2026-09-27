@@ -620,6 +620,7 @@ def test_extraction_blocked_is_result_only(tmp_path: Path, on_error: OnError) ->
     blocked = [r for r in report.results if r.status is ExtractionStatus.BLOCKED]
     assert blocked
     assert isinstance(blocked[0].error, FilterRejectionError)
+    assert blocked[0].error.message.startswith("Path traversal")
     # No extraction-outcome code exists to be counted.
     assert not [
         code

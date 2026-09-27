@@ -204,12 +204,12 @@ The copy is of the whole archive (every volume, for a volume set), it happens on
 first member read that goes through `unrar` rather than at open, and it is removed when
 the reader closes. Listing never needs it. `ArchiveyConfig.spool_limits` bounds it:
 `SpoolLimits.max_bytes` defaults to 1 GiB, counted across a volume set. An archive over
-the limit raises `ResourceLimitError` before anything is
-written, and later reads on that reader are refused the same way. `None`
-(`SpoolLimits.UNLIMITED`) removes the limit, and `0` refuses every copy, which leaves only
-the members archivey reads without `unrar` (stored members of a non-solid archive). The
-copy goes to the platform temporary directory; where that is memory-backed (`tmpfs`), the
-limit bounds memory rather than disk.
+the limit raises `ResourceLimitError` before anything is written, and later reads on that
+reader are refused the same way. `None` (`SpoolLimits.UNLIMITED`) removes the limit, and
+`0` refuses every copy, which leaves only the members archivey reads without `unrar`
+(stored members of a non-solid archive). The copy goes to the platform temporary
+directory; where that is memory-backed (`tmpfs`), the limit bounds memory rather than
+disk.
 
 ## Streaming mode is one pass
 

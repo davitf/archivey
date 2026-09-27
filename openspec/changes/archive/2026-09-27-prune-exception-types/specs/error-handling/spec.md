@@ -65,9 +65,8 @@ type, and a `SpoolLimits` trip is a plain `ResourceLimitError`.
 The system SHALL define `ArchiveyUsageError(Exception)` outside `ArchiveyError`
 for detected caller-code bugs. `except ArchiveyError` MUST NOT swallow misuse.
 
-`ArchiveyUsageError` SHALL be raised when a second member
-stream opens while another is live on a reader opened without
-`concurrent_members=True`. Its message SHALL include the recorded `open_archive()` call
+`ArchiveyUsageError` SHALL be raised when a second member stream opens while another is
+live on a reader opened without `concurrent_members=True`. Its message SHALL include the recorded `open_archive()` call
 site (`file:line`) and SHALL name `concurrent_members=True` as the parameter that would
 have allowed the operation.
 

@@ -337,8 +337,8 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     normalize non-representable bytes (O7). Rewriting (not rejecting) a
     legitimate-but-awkward name keeps extraction working; refusal is reserved for
     structures that cannot be safely written. Raises :class:`FilterRejectionError` (so the
-    coordinator records ``BLOCKED``) on a rejected name; otherwise returns ``member`` or a rewritten
-    ``.replace()`` copy.
+    coordinator records ``BLOCKED``) on a rejected name; otherwise returns ``member`` or a
+    rewritten ``.replace()`` copy.
     """
     if policy is ExtractionPolicy.TRUSTED:
         return member

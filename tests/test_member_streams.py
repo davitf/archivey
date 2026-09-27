@@ -25,7 +25,7 @@ def _two_file_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_second_overlapping_open_raises_concurrent_access_error(tmp_path: Path) -> None:
+def test_second_overlapping_open_raises_usage_error(tmp_path: Path) -> None:
     root = _two_file_dir(tmp_path)
     with open_archive(root) as reader:
         s1 = reader.open("a.txt")
@@ -116,7 +116,6 @@ def test_usage_error_is_not_archivey_error(tmp_path: Path) -> None:
         finally:
             s1.close()
     assert not issubclass(ArchiveyUsageError, ArchiveyError)
-    assert issubclass(ArchiveyUsageError, ArchiveyUsageError)
 
 
 def test_concurrent_flag_allows_overlapping_opens(tmp_path: Path) -> None:

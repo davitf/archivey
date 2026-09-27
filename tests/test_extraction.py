@@ -1215,7 +1215,9 @@ def test_tar_symlink_escape_rejected(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     report = extract(src, dest)  # default STOP; blocks always continue
     assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert isinstance(report.results[0].error, FilterRejectionError)
+    error = report.results[0].error
+    assert isinstance(error, FilterRejectionError)
+    assert error.message == "Symlink target escapes destination"
     assert not (dest / "evil").exists()
 
 
@@ -1239,10 +1241,12 @@ def test_tar_symlink_escape_continue_records_rejected(tmp_path: Path) -> None:
 # extractor lands the payload outside dest. archivey blocks this on two layers, and both
 # the SYMLINK-payload and FILE-payload variants of member 2 must be neutralized:
 #   * the escaping parent symlink is rejected up front by the universal check
-#     (FilterRejectionError), so it is never planted, and
+#     ("Symlink target escapes destination"), so it is never planted, and
 #   * the universal check re-resolves each member's PARENT directory on the real
 #     filesystem, so a payload written through an already-planted hostile parent symlink
-#     is rejected (FilterRejectionError) before any bytes are written outside dest.
+#     is rejected ("Member resolves outside the destination root") before any bytes are
+#     written outside dest.
+# Both are FilterRejectionError; the message says which layer caught the member.
 # ---------------------------------------------------------------------------
 
 
@@ -1262,10 +1266,9 @@ def test_chained_symlink_attack_symlink_payload_rejected(tmp_path: Path) -> None
     report = extract(src, dest)  # default STOP; blocks always continue
     statuses = {r.member.name: r.status for r in report.results}
     assert statuses["sub"] is ExtractionStatus.BLOCKED
-    assert isinstance(
-        next(r.error for r in report.results if r.member.name == "sub"),
-        FilterRejectionError,
-    )
+    sub_error = next(r.error for r in report.results if r.member.name == "sub")
+    assert isinstance(sub_error, FilterRejectionError)
+    assert sub_error.message == "Symlink target escapes destination"
     # Parent escape never planted, so the payload symlink resolves inside dest.
     assert list(outside.iterdir()) == []  # nothing leaked outside the destination
     assert not (dest / "sub").is_symlink()
@@ -1312,7 +1315,9 @@ def test_file_payload_through_preexisting_parent_symlink_rejected(
     src.write_bytes(_tar_bytes([("file", "sub/leak.txt", b"pwned")]))
     report = extract(src, dest)  # default STOP; blocks always continue
     assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert isinstance(report.results[0].error, FilterRejectionError)
+    error = report.results[0].error
+    assert isinstance(error, FilterRejectionError)
+    assert error.message == "Member resolves outside the destination root"
     assert not (outside / "leak.txt").exists()
 
 
@@ -1332,7 +1337,9 @@ def test_symlink_payload_through_preexisting_parent_symlink_rejected(
     src.write_bytes(_tar_bytes([("sym", "sub/leak", "x")]))
     report = extract(src, dest)  # default STOP; blocks always continue
     assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert isinstance(report.results[0].error, FilterRejectionError)
+    error = report.results[0].error
+    assert isinstance(error, FilterRejectionError)
+    assert error.message == "Member resolves outside the destination root"
     assert not (outside / "leak").exists()
 
 
@@ -2400,7 +2407,9 @@ def test_o3_reserved_name_rejected(tmp_path: Path, name: str, policy) -> None:
         io.BytesIO(archive), dest, policy=policy, on_error=OnError.CONTINUE
     )
     assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert isinstance(report.results[0].error, FilterRejectionError)
+    error = report.results[0].error
+    assert isinstance(error, FilterRejectionError)
+    assert error.message.startswith("Windows-reserved device name in path")
 
 
 @pytest.mark.skipif(
@@ -2426,7 +2435,9 @@ def test_o4_colon_rejected_strict_and_standard(tmp_path: Path, policy) -> None:
         io.BytesIO(archive), dest, policy=policy, on_error=OnError.CONTINUE
     )
     assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert isinstance(report.results[0].error, FilterRejectionError)
+    error = report.results[0].error
+    assert isinstance(error, FilterRejectionError)
+    assert error.message.startswith("Colon in path segment")
 
 
 @pytest.mark.parametrize("name,portable", [("foo.", "foo"), ("bar ", "bar")])
@@ -2486,7 +2497,9 @@ def test_o3_all_dots_segment_rejected(tmp_path: Path) -> None:
         on_error=OnError.CONTINUE,
     )
     assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert isinstance(report.results[0].error, FilterRejectionError)
+    error = report.results[0].error
+    assert isinstance(error, FilterRejectionError)
+    assert error.message.startswith("Path segment is entirely dots/spaces")
 
 
 def test_o3_strip_passes_through_bare_dot_root(tmp_path: Path) -> None:
@@ -2856,9 +2869,7 @@ def test_bidi_override_name_extracts_under_trusted(name: str, tmp_path: Path) ->
 
 
 @pytest.mark.parametrize("name", ["invoice‮cod.exe", "a⁦b.txt"], ids=["rlo", "lri"])
-def test_apply_name_policy_raises_deceptive_name_error(
-    name: str, tmp_path: Path
-) -> None:
+def test_apply_name_policy_rejects_bidi_override(name: str, tmp_path: Path) -> None:
     """The typed error itself, at the boundary that produces it.
 
     `apply_name_policy`, not `check_universal`: the check is policy-keyed (ADR 0017), so
@@ -2870,7 +2881,7 @@ def test_apply_name_policy_raises_deceptive_name_error(
     from archivey.internal.filters import apply_name_policy
 
     check_universal(_member(name), tmp_path)  # not a universal violation
-    with pytest.raises(FilterRejectionError):
+    with pytest.raises(FilterRejectionError, match="^Bidirectional override"):
         apply_name_policy(_member(name), ExtractionPolicy.STRICT)
     assert (
         apply_name_policy(_member(name), ExtractionPolicy.TRUSTED).name == name

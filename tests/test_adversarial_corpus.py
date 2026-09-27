@@ -6,6 +6,7 @@ import errno
 import io
 import logging
 import os
+import re
 import struct
 import zipfile
 import zlib
@@ -173,6 +174,21 @@ def test_escape_check_detects_regular_file_outside_destination(tmp_path: Path) -
         _assert_extraction_stayed_in_tested_scope(dest, [], (escaped,), "self-check")
 
 
+# The checks behind each refusal outcome, told apart by message: a name that leaves
+# the destination (or cannot name a path) versus a link target that does.
+_REFUSAL_MESSAGE = {
+    "path_traversal": (
+        r"^(Null byte in member name|Member name cannot be encoded|Absolute path"
+        r"|Path traversal|Member name refers to the extraction root"
+        r"|Member resolves outside the destination root)"
+    ),
+    "symlink_escape": (
+        r"^(Null byte in link target|Link target cannot be encoded"
+        r"|(Symlink|Hardlink) target escapes destination)"
+    ),
+}
+
+
 @pytest.mark.parametrize(
     ("entry", "blob"),
     [case for case in _CASES if case[0].open_outcome == "success"],
@@ -192,20 +208,19 @@ def test_adversarial_extract_has_exact_outcome(
         members = archive.members()
         target = members[1] if entry.field == "link_target" else members[0]
 
-        if entry.extract_outcome == "path_traversal":
+        if entry.extract_outcome in _REFUSAL_MESSAGE:
             results = archive.extract_all(
                 dest, members=[target], policy=ExtractionPolicy.TRUSTED
             ).results
             assert len(results) == 1
             assert results[0].status is ExtractionStatus.BLOCKED
-            assert isinstance(results[0].error, FilterRejectionError)
-        elif entry.extract_outcome == "symlink_escape":
-            results = archive.extract_all(
-                dest, members=[target], policy=ExtractionPolicy.TRUSTED
-            ).results
-            assert len(results) == 1
-            assert results[0].status is ExtractionStatus.BLOCKED
-            assert isinstance(results[0].error, FilterRejectionError)
+            error = results[0].error
+            assert isinstance(error, FilterRejectionError)
+            # One exception type covers every safety check, so the message is what
+            # says which one refused the member.
+            assert re.search(_REFUSAL_MESSAGE[entry.extract_outcome], error.message), (
+                error.message
+            )
         elif entry.extract_outcome == "deceptive_name":
             # A bidi override/isolate in the name reorders the surrounding text, so the
             # extracted file would display as something it is not.
@@ -237,6 +252,7 @@ def test_adversarial_extract_has_exact_outcome(
                 assert len(blocked) == 1
                 assert blocked[0].status is ExtractionStatus.BLOCKED
                 assert isinstance(blocked[0].error, FilterRejectionError)
+                assert "Bidirectional override" in blocked[0].error.message
         elif entry.extract_outcome == "filesystem_name_refusal":
             # A UTF-8-enforcing filesystem (e.g. APFS) refuses the surrogateescape
             # name with EILSEQ; the coordinator translates that to ExtractionError

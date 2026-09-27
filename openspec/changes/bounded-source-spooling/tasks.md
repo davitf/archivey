@@ -3,7 +3,7 @@
 > **Split on 2026-09-26.** Tasks marked *(shipped)* landed in
 > `openspec/changes/archive/2026-09-26-rar-stream-spool-limit/`, which bounded RAR's
 > existing stream-source copy with `ArchiveyConfig.spool_limits` and raises
-> `SpoolLimitExceededError`. What is left is the non-seekable spool, `spool_dir` and the
+> `ResourceLimitError`. What is left is the non-seekable spool, `spool_dir` and the
 > pre-flight. `None` on `max_bytes` shipped as *no limit*; the "none" setting below is
 > `max_bytes=0`.
 
@@ -14,7 +14,10 @@
 > **The four design questions are settled** (`design.md` §Decisions the maintainer settled):
 > a 1 GiB default, a frozen `SpoolLimits` with an `UNLIMITED` classvar, a
 > `SpoolLimitExceededError` subclassing `ResourceLimitError`, and `streaming=True` reading
-> forward from the spooled file. They are inputs here, not implementation choices.
+> forward from the spooled file. They are inputs here, not implementation choices — except
+> the third: on 2026-09-27, before 0.2.0, `SpoolLimitExceededError` was folded into plain
+> `ResourceLimitError` (ADR 0012 amendment). Raise `ResourceLimitError`; do not re-add
+> the subclass.
 
 > **Re-derive the `archive-reading` "Explicit configuration object" block before archiving.**
 > `one-member-listing-per-reader` archived a version of that block adding
@@ -35,7 +38,7 @@
 ## 2. The spool primitive
 
 - [ ] 2.1 One internal helper performing a bounded spool: takes the limit, the directory, a
-      source and an optional known size; returns a path; raises `SpoolLimitExceededError` on
+      source and an optional known size; returns a path; raises `ResourceLimitError` on
       the limit; registers cleanup with the reader's close.
 - [x] 2.1a *(shipped)* Add `SpoolLimitExceededError` subclassing `ResourceLimitError`, and
       widen `ResourceLimitError`'s docstring to name `SpoolLimits`.

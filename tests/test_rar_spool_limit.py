@@ -248,7 +248,7 @@ def test_stream_over_the_limit_refuses_before_writing_or_spawning(
         assert "file1.txt" in [m.name for m in archive.members()]
         with pytest.raises(ResourceLimitError) as info:
             archive.read("file1.txt")
-    # Its own type, and still a ResourceLimitError for callers who catch that.
+    # The exact type, not the internal always-stop subclass.
     assert type(info.value) is ResourceLimitError
     message = str(info.value)
     assert "SpoolLimits.max_bytes" in message
