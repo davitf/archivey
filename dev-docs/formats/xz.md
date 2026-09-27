@@ -60,7 +60,8 @@ backwards from the last byte. On a pipe they are not reachable until the end.
 **Restart points exist only where the writer made them.** An LZMA stream can only be decoded
 from its start, but an xz block and an lzip member each start a fresh decoder. How many
 there are is the writer's choice: default `xz` 5.4 writes one block, `xz -T` or
-`--block-size` many; `lzip` writes one member, `plzip` many. The file format decides that
+`--block-size` many; `lzip` writes one member unless told otherwise (`-b`), and `plzip`
+writes one per data block, so a small file is one member unless `-B` sets smaller blocks. The file format decides that
 restarting is possible; the producer decides whether it is useful.
 
 **LZMA Alone has no magic and no trailer.** Its 13-byte header is a properties byte, a
@@ -191,7 +192,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | A stream followed by `junk` | Reads the payload and ignores the junk; the index scan fails, so `size=None` and `SEEK_INDEX_DEGRADED`. `xz -t` refuses the file |
 | `xz --format=lzma` | Detected by the probe, `PROBABLE`; `size=None` (the "unknown" marker) |
 | LZMA Alone followed by `junk` | Reads; the junk is ignored |
-| `lzip`, `plzip -B` | Reads; `size` and the combined CRC-32 from the trailers; `plzip` gives one seek point per member |
+| `plzip`, `plzip -B` with a small block | Reads; `size` and the combined CRC-32 from the trailers. The 4 MB payload is one member by default and nine with the small block, one seek point per member |
 | An lzip member followed by `junk` | Reads the payload; the trailer walk fails, so `size` and the CRC-32 are not reported. The lzip manual allows trailing data |
 | OLE (`.msi`, old `.doc`) and COFF object files | Can be claimed by the LZMA Alone probe, `PROBABLE`; the read then fails, stamped `format_unconfirmed` |
 
@@ -225,7 +226,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
-| A backward seek in a default `xz` or `lzip` file re-decodes from the start | **format** | One block or one member (§1). Write with `xz -T` / `--block-size`, or `plzip` |
+| A backward seek in a default `xz` or `lzip` file re-decodes from the start | **format** | One block or one member (§1). Write with `xz -T` / `--block-size`, or `plzip -B` |
 | The rewind warning says "this codec has no random-access index" for a multi-block xz or lzip file | **archivey** | The message is shared by every codec; the seek did re-decode, from the nearest point. Tracked internally |
 | Bytes after the last xz stream are ignored, and `size` becomes `None` | **archivey** | `xz -t` refuses them; the cross-codec picture is [`single-file.md`](single-file.md) §3, §7 |
 | An lzip file with trailing data reports no `size` or CRC-32 | **archivey** | The backward trailer walk starts from the last byte, which is not a trailer |

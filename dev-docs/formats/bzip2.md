@@ -64,9 +64,11 @@ exists without decoding everything.
 
 bzip2 is the magic `BZh` at offset 0, reported `CERTAIN`. The level digit is not checked.
 The inner-TAR probe then decodes 512 bytes to see whether a TAR header follows
-([`single-file.md`](single-file.md) §2.1). For bzip2 it is given up to 1 MiB of compressed
-input, not the 4 KiB the other codecs get, because a single block of level-9 input can be
-around 900 kB compressed and the first byte of output comes only at its end. A `.tar.bz2`
+([`single-file.md`](single-file.md) §2.1). That probe may read up to 1 MiB of compressed
+input for any codec, a bound sized for bzip2's worst case: a single block of level-9 input
+can be around 900 kB compressed, and the first byte of output comes only at its end. The
+other codecs produce the TAR header from the detection prefix, so in practice only bzip2
+reads that far. A `.tar.bz2`
 whose first block is that large is still found as `TAR_BZ2`, from a pipe too. `.bz2`,
 `.tbz`, `.tbz2` and `.tar.bz2` are the registered extensions.
 
@@ -196,7 +198,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Fall back to the standard library on a first empty read (PR #461) | The decoder's own state cannot tell garbage from an empty stream, and an accelerator must not change whether a corrupt source raises | Trusting the empty result; checking the magic by hand, which misses a valid header followed by garbage |
 | Trap the caller's source exception (PR #462) | `rapidgzip` terminates the process when a Python source raises | Letting the exception cross the native boundary |
 | No size threshold for `AUTO` | The in-process decoder costs no child start; seeking was asked for | Reusing the 16 MiB DEFLATE gate |
-| Give the inner-TAR probe up to 1 MiB of bzip2 input (PR #32) | The first output comes only after a whole block | The 4 KiB sample every other codec gets, which called a `.tar.bz2` with a large first block plain `BZ2` |
+| Let the inner-TAR probe read up to 1 MiB of compressed input, for every codec (PR #32) | bzip2's first output comes only after a whole block; one bound for all codecs needs no per-codec branch | Probing only the detection prefix, which called a `.tar.bz2` with a large first block plain `BZ2` |
 | Translate the accelerator's errors by message text | They carry no distinct type; each string was seen on a real corrupt file | Treating every `RuntimeError` as corruption, which would hide archivey's own bugs |
 
 ## 7. Open questions
