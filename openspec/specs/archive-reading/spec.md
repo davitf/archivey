@@ -1080,8 +1080,8 @@ normalized to a predicate at the API boundary:
   name carries a trailing `/`, so `"dir"` does not select `dir/`. `get(name)` and
   `open(name)` match the same way. The missing `/` is reported like any other
   unmatched entry.
-- `ArchiveMember` matches by **identity** (`archive_id` + `member_id`; members are
-  unhashable → id set, never member set)
+- `ArchiveMember` matches by **identity** (the reader that listed it + `member_id`;
+  members are unhashable → id set, never member set)
 - String and member entries MAY mix
 
 A collection entry that matches no member SHALL be reported as
@@ -1191,7 +1191,7 @@ A reader SHALL build one `ArchiveMember` object per archive member and hand out 
 object from every listing method and pass: `members_report_if_available()`,
 `members_report()`, `members()`, `scan_members()`, `get()`, `__iter__`,
 `stream_members()` and `extract_all()`. Each member SHALL be registered (its
-`member_id` and `archive_id` stamped, its presentation checks run and its listing-limit
+`member_id` and its reader's identity stamped, its presentation checks run and its listing-limit
 accounting done) exactly once, before any of those methods returns or yields it.
 Typing-time and presentation diagnostics for a member SHALL therefore be emitted once
 per reader, whichever methods are called and in whatever order, so

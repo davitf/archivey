@@ -995,25 +995,6 @@ def test_verify_matching_crc32_passes() -> None:
     assert stream.read() == b""  # terminal read verifies; no error
 
 
-def test_verify_matching_adler32_passes() -> None:
-    expected = (zlib.adler32(CONTENT) & 0xFFFFFFFF).to_bytes(4, "big")
-    stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.ADLER32: expected})
-    assert stream.read() == CONTENT
-
-
-def test_verify_adler32_mismatch_raises() -> None:
-    bad = ((zlib.adler32(CONTENT) & 0xFFFFFFFF) ^ 0xFFFF).to_bytes(4, "big")
-    stream = VerifyingStream(io.BytesIO(CONTENT), {HashAlgorithm.ADLER32: bad})
-    collected = bytearray()
-    with pytest.raises(CorruptionError, match="adler32"):
-        while True:
-            chunk = stream.read(7)
-            if not chunk:
-                break
-            collected.extend(chunk)
-    assert bytes(collected) == CONTENT
-
-
 def test_verify_multiple_algorithms() -> None:
     expected = {
         HashAlgorithm.CRC32: _crc32(CONTENT),

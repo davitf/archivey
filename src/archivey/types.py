@@ -338,7 +338,6 @@ class HashAlgorithm(str, Enum):
 
     CRC32 = "crc32"
     BLAKE2SP = "blake2sp"
-    ADLER32 = "adler32"
 
 
 def crc32_digest(value: int) -> bytes:
@@ -738,12 +737,6 @@ class ArchiveMember:
         if self._member_id is None:
             raise AttributeError("member_id not set; member not yet registered")
         return self._member_id
-
-    @property
-    def archive_id(self) -> str:
-        if self._archive_id is None:
-            raise AttributeError("archive_id not set; member not yet registered")
-        return self._archive_id
 
     def modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None:
         """The modification time as a timezone-aware UTC ``datetime``, or ``None``.

@@ -229,7 +229,7 @@ def test_streaming_iteration_registers_member_ids() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
     (member,) = list(reader)
     assert member.member_id == 0
-    assert member.archive_id == reader._archive_id
+    assert member in reader
 
 
 def test_streaming_second_iter_raises() -> None:

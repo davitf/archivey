@@ -439,6 +439,10 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Changed
 
+- **`ArchiveMember.archive_id` and `HashAlgorithm.ADLER32` are removed.** No caller
+  used `archive_id`; `member in reader` is how to ask whether a member came from a
+  reader. No backend ever listed an Adler-32 digest in `member.hashes`: a zlib stream's
+  Adler-32 trailer is still checked by the decompressor on read.
 - **`scan_members()` is `members_report()` that raises the report's error.** Under
   `concurrent_members=True` it now shares first-touch materialization with `members()`
   and `members_report()`, so it no longer raises `ArchiveyUsageError` when another
