@@ -833,3 +833,45 @@ def test_streaming_extract_with_first_name_filtered_out_fails_the_link(
     with open_archive(src, streaming=True) as reader:
         with pytest.raises(ExtractionError, match="forward-only"):
             reader.extract_all(dest, filter=lambda m: None if m.name == "a.txt" else m)
+
+
+# ---------------------------------------------------------------------------
+# The tree changing between listing and reading. These pin today's behaviour, which is
+# documented rather than desired: dev-docs/formats/directory.md §2.3 and §5, and
+# threat-model.md O21. A fix that opens members with O_NOFOLLOW and checks them against
+# the listing is expected to make them fail, and should rewrite them.
+# ---------------------------------------------------------------------------
+
+
+def test_a_file_grown_after_listing_reads_at_its_new_length(tmp_path: Path) -> None:
+    (tmp_path / "g.txt").write_bytes(b"12345")
+    with open_archive(tmp_path) as reader:
+        member = reader.get("g.txt")
+        (tmp_path / "g.txt").write_bytes(b"1234567890ABC")
+        with reader.open(member) as stream:
+            assert stream.read() == b"1234567890ABC"
+            assert stream.size == 5
+    assert member.size == 5
+
+
+def test_a_file_swapped_for_a_symlink_after_listing_is_followed(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"inside")
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"outside the root")
+    with open_archive(root) as reader:
+        member = reader.get("a.txt")
+        (root / "a.txt").unlink()
+        (root / "a.txt").symlink_to(outside)
+        assert reader.read(member) == b"outside the root"
+
+
+def test_extracting_into_the_root_lists_the_destination(tmp_path: Path) -> None:
+    (tmp_path / "a").write_bytes(b"x")
+    dest = tmp_path / "out"
+    with open_archive(tmp_path) as reader:
+        reader.extract_all(dest)
+    assert (dest / "a").read_bytes() == b"x"
+    assert (dest / "out").is_dir()
+    assert list((dest / "out").iterdir()) == []

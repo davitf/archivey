@@ -22,6 +22,10 @@ archivey.extract("archive.zip", "out/")
   modification of the destination *by another process* during extraction (a local
   attacker racing us) is out of scope; if that ever changes, `O_NOFOLLOW`/`openat`-style
   extraction is the direction.
+- **A directory opened as a source is the exception.** Another process may change a tree
+  while archivey reads it, and reading a member must not leave the tree. Today it can: a
+  listed file replaced by a symlink after listing is followed when the member is opened.
+  This is an open gap, to be fixed before release.
 - **Optional dependencies and external tools** (`pycdlib`, codec packages, the `unrar`
   binary) are trusted code but *not* trusted to be robust: their failures must surface
   as translated archivey errors, never silently wrong data.

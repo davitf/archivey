@@ -8,7 +8,7 @@ can supply. This page is the whole answer to "what do I have to install?"
 ```bash
 pip install archivey                 # zero-dep core: ZIP, TAR, gz/bz2/xz, directory, …
 pip install archivey[recommended]    # every format and codec that installs everywhere
-pip install archivey[seekable]       # + rapidgzip: gz/bz2 random access and speed
+pip install archivey[seekable]       # + rapidgzip: gz/bz2 random access (seekable_members=True)
 pip install archivey[all]            # both of the above
 ```
 
