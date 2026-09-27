@@ -106,6 +106,18 @@ for lzip, the size and the CRC-32 of the whole content, combined from each membe
 trailer CRC with `crc32_combine`, in one walk that holds no per-member state. On a pipe,
 neither is known before the read ends.
 
+**Through bytes after the end.** The walk has to start at the last stream's end, not at
+the file's. Zero bytes are skipped first. For xz, `_data_end()` in `internal/streams/xz.py`
+then looks back for a footer that checks out: `YZ` at a 4-aligned end and a valid CRC-32
+over its fields. For lzip, `_data_end()` in `lzip.py` looks for a trailer whose
+`member_size` leads back to an `LZIP` header; a candidate must end in the zero high bytes
+that any real `member_size` has, which rules out most offsets without a read. Both look
+back at most `TRAILING_DATA_SEARCH` (1 MiB). Further out the index is reported unreadable,
+as before this search existed: `size=None`, and a seek falls back to decoding forward with
+`SEEK_INDEX_DEGRADED`. The forward read then reports the bytes as `ARCHIVE_TRAILING_DATA`
+([`single-file.md`](single-file.md) §2.3). The bound keeps the cost of a file of junk to
+1 MiB of reading at open.
+
 **LZMA Alone** gives its size from the header when the header is not the all-ones
 "unknown" marker. `xz --format=lzma` always writes the marker; the LZMA SDK writes the real
 size.
@@ -189,11 +201,12 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `xz -T4 --block-size=…` | Reads; one seek point per block |
 | `xz -C none`, `xz -C sha256` | Reads. With `-C none` only a broken LZMA2 stream reveals damage |
 | Two `xz` streams with zero padding between them | Reads both |
-| A stream followed by `junk` | Reads the payload and ignores the junk; the index scan fails, so `size=None` and `SEEK_INDEX_DEGRADED`. `xz -t` refuses the file |
+| A stream followed by `junk` | Reads the payload, then `ARCHIVE_TRAILING_DATA`; `size` and seeks from the index. `xz -t` refuses the file |
 | `xz --format=lzma` | Detected by the probe, `PROBABLE`; `size=None` (the "unknown" marker) |
-| LZMA Alone followed by `junk` | Reads; the junk is ignored |
+| LZMA Alone followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` |
+| 40 000 zero bytes named `.lzma` | Reads as empty: 13 zero bytes are a valid header for an empty payload, and the rest is padding |
 | `plzip`, `plzip -B` with a small block | Reads; `size` and the combined CRC-32 from the trailers. The 4 MB payload is one member by default and nine with the small block, one seek point per member |
-| An lzip member followed by `junk` | Reads the payload; the trailer walk fails, so `size` and the CRC-32 are not reported. The lzip manual allows trailing data |
+| An lzip member followed by `junk` | Reads the payload, then `ARCHIVE_TRAILING_DATA`; `size` and the CRC-32 from the trailers. The lzip manual allows trailing data |
 | OLE (`.msi`, old `.doc`) and COFF object files | Can be claimed by the LZMA Alone probe, `PROBABLE`; the read then fails, stamped `format_unconfirmed` |
 
 ## 4. Threat surface
@@ -228,8 +241,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- | --- | --- |
 | A backward seek in a default `xz` or `lzip` file re-decodes from the start | **format** | One block or one member (§1). Write with `xz -T` / `--block-size`, or `plzip -B` |
 | The rewind warning says "this codec has no random-access index" for a multi-block xz or lzip file | **archivey** | The message is shared by every codec; the seek did re-decode, from the nearest point. Tracked internally |
-| Bytes after the last xz stream are ignored, and `size` becomes `None` | **archivey** | `xz -t` refuses them; the cross-codec picture is [`single-file.md`](single-file.md) §3, §7 |
-| An lzip file with trailing data reports no `size` or CRC-32 | **archivey** | The backward trailer walk starts from the last byte, which is not a trailer |
+| A file `xz -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the stream are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
+| More than 1 MiB after the last stream loses `size` and seeks | **archivey** | The index search is bounded (§2.2) |
 | `size` is `None` on a pipe | **format** | The index is at the end |
 | An `xz` block with a filter this liblzma lacks raises `UnsupportedFeatureError` | **library** | Not damage (§2.3) |
 | `ResourceLimitError` naming `max_decoder_memory` | **archivey** | The file declared a dictionary over the cap. Raise it if the file is trusted |
@@ -251,15 +264,11 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Refuse an over-cap `.lzma` on read, not open | Keeps the `format_unconfirmed` stamp on a probe-only claim | Refusing at open |
 | Map liblzma errors by cause (PR #432) | A missing filter or a cap refusal is not damage, and callers act differently on each | Everything as `CorruptionError` |
 | The Alone probe accepts any dictionary size and refuses a declared size of zero (PR #270) | Every dictionary size is legal and real streams use zero; zero padding is a valid empty stream | Gating on the dictionary size, which missed real files |
-| Ignore data after the last xz stream | Matches the lzip rule and `lzma.open`'s handling of trailing bytes | Refusing, as `xz -t` does; open (§7) |
+| Report data after the last stream, xz and lzip alike | The rule every codec shares ([`single-file.md`](single-file.md) §6) | Refusing, as `xz -t` does; ignoring, as `lzma.open` does |
+| Find the index within 1 MiB of bytes after the end | A signature or padding appended to a file should not cost its size and seeks; a bound keeps a file of junk cheap to open | Searching the whole file; not searching, which lost the index for any appended byte |
 
 ## 7. Open questions
 
-- **Trailing data after xz.** The xz specification makes it an error and `xz -t` refuses it;
-  archivey ignores it and loses the index. The same policy question covers every codec
-  ([`single-file.md`](single-file.md) §7).
-- **Reading the xz index through trailing data.** Scanning back for the footer magic `YZ`
-  would recover the size and seek points; not done. Tracked internally.
 - **Distinguishing a multi-point rewind in the warning text.** Tracked internally.
 
 ## 8. Verify
@@ -281,6 +290,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Thinning | `::test_xz_stream_with_more_blocks_than_the_cap_keeps_spaced_blocks`, `::test_lzip_index_over_the_cap_is_thinned_and_seeks_read_right`, `::test_lzip_peek_index_summary_holds_no_per_member_state` |
 | Truncation and short sources | `::test_xz_truncated_large_read_recovers_prefix`, `::test_lzip_truncated_large_read_recovers_prefix`, `::test_xz_source_cut_inside_the_first_header_is_truncated`, `::test_lzip_source_cut_inside_the_first_header_is_truncated`, `::test_lzip_short_source_that_is_not_lzip_is_corrupt` |
 | lzip trailing data is allowed | `::test_lzip_short_trailing_data_after_a_member_is_allowed` |
+| The index through bytes after the end, and its bound | `tests/test_stream_trailing_data.py::test_xz_keeps_its_size_and_index_through_appended_bytes`, `::test_lzip_keeps_its_size_and_crc_through_appended_bytes`, `::test_the_index_search_reaches_its_bound_and_no_further` |
 | Dictionary caps | `tests/test_decoder_limits.py::test_xz_block_declaring_four_gib_is_refused`, `::test_xz_block_resume_after_a_seek_is_capped_too`, `::test_lzip_member_dictionary_is_capped`, `::test_lzma_alone_declaring_four_gib_is_refused`, `::test_lzma_alone_non_seekable_source_is_checked_and_replayed` |
 | liblzma errors by cause | `tests/test_lzma_error_causes.py::test_xz_with_an_unknown_filter_is_unsupported_not_corrupt`, `::test_an_unknown_filter_mid_tar_xz_aborts_the_listing`, `::test_corrupt_xz_data_is_still_corruption` |
 | The Alone probe | `tests/test_detection.py::test_lzma_alone_detected_by_content_probe`, `::test_lzma_alone_declaring_zero_output_is_not_claimed`, `::test_lzma_alone_with_zero_dictionary_size_is_detected`, `::test_lzma_alone_probe_does_not_claim_lzip`, `::test_tlz_alone_content_wins_with_extension_conflict` |

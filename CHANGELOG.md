@@ -22,6 +22,17 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Added
 
+- **Bytes after a compressed stream are read past and reported.** A `.gz`, `.zz`,
+  `.bz2`, `.xz`, `.lz`, `.lzma`, `.zst`, `.lz4` or `.br` file with bytes after its
+  stream (an appended signature, a tool's padding) reads its whole payload, then emits
+  `ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"`; under
+  `DiagnosticPolicy.strict()` the read raises. Zero bytes after the end are padding and
+  report nothing. Before, gzip, zstd, LZ4 and Brotli raised, and the others ignored the
+  bytes without a word; `.xz` and `.lz` also lost their size and seeks, which they now
+  keep when the bytes are within 1 MiB. From a pipe, Brotli still raises
+  `CorruptionError`, because telling the bytes from damage needs a second read. A file
+  of zero bytes named `.lzma` now reads as empty, since 13 zeros are a valid empty
+  stream. `.Z` is unchanged: it has no end marker.
 - **ISO reads zisofs.** A file stored with Rock Ridge transparent compression (`ZF`)
   lists the size it decodes to and reads decoded. pycdlib refused such an image
   outright, and archivey reported the whole image as `CorruptionError`. zisofs2 (under

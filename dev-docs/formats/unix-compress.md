@@ -24,9 +24,9 @@ states the behaviour and links the row.
 
 **Three things a reader might expect and will not find.** A cut `.Z` file is not always
 reported: the format has nothing that would show the cut. Damaged data decodes to wrong
-bytes unless the damage produces an impossible code. And trailing bytes after the data are
-not ignored, as they are for bzip2 and xz: they decode as more codes, and usually end in
-`TruncatedError` (§3).
+bytes unless the damage produces an impossible code. And bytes after the data are not
+reported as `ARCHIVE_TRAILING_DATA`, as they are for every other codec: with no end
+marker they decode as more codes, and usually end in `TruncatedError` (§3).
 
 ## 1. Shape
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import lzma
 import os
 import zlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import BinaryIO, NoReturn, Protocol
 
 from archivey.config import DecoderLimits
@@ -47,14 +47,22 @@ class ZlibDecoder(BaseDecoder):
         return ZlibDecoder(self._wbits)
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        if self._decomp.eof:
+            # Past the end; the stream stops reading once these hold a non-zero byte.
+            self._past_end(chunk)
+            return DecodeOut(b"")
         # unconsumed_tail holds input not yet consumed under a prior max_length cap;
         # prepend it exactly once (mirrors gzip._GzipReader).
         data = self._decomp.unconsumed_tail + chunk
         if not data:
             return DecodeOut(b"")
         if max_length < 0:
-            return DecodeOut(self._decomp.decompress(data))
-        return DecodeOut(self._decomp.decompress(data, max_length))
+            out = self._decomp.decompress(data)
+        else:
+            out = self._decomp.decompress(data, max_length)
+        if self._decomp.eof:
+            self._past_end(self._decomp.unused_data)
+        return DecodeOut(out)
 
     def flush(self) -> DecodeOut:
         if self._decomp.unconsumed_tail:
@@ -81,9 +89,9 @@ class GzipDecoder(BaseDecoder):
     Uses ``wbits=16+MAX_WBITS`` so zlib validates CRC/ISIZE. After each member,
     strips leading NUL padding from ``unused_data`` / retained input, then:
     empty → clean EOF; ``1f 8b`` → new ``decompressobj`` and continue; anything
-    else → deferred :class:`~archivey.exceptions.CorruptionError` (trailing junk /
-    partial magic at true EOF) via :attr:`pending_error`, after returning any
-    already-decoded member bytes — same deliver-then-raise shape as truncation.
+    else (trailing junk, or a partial magic at true EOF) ends the data there and sets
+    :attr:`trailing_bytes`, which the stream reports. ``gzip.GzipFile`` raises on the
+    same bytes; archivey reads the members and reports what follows them.
     Cross-``feed`` NUL runs and a lone trailing ``1f`` are retained until the next
     header (or ``flush``) resolves them.
 
@@ -104,16 +112,12 @@ class GzipDecoder(BaseDecoder):
         return GzipDecoder()
 
     def _arm_trailing_junk(self, data: bytes) -> None:
-        """Defer trailing-junk CorruptionError so already-decoded bytes can return.
+        """End the data at ``data``: bytes after a member that start no further member.
 
-        Raising from ``feed``/``flush`` would discard the local output buffer (and
-        any prior members in the same call). Mirror truncation: arm pending_error
-        and let the stream raise on the next empty ``read`` / ``readall``.
+        ``data`` has its NUL padding stripped already and runs to the end of what has
+        been fed; the stream reports it from :attr:`trailing_bytes`.
         """
-        self._pending_error = CorruptionError(
-            "Trailing non-gzip data after a completed gzip member "
-            f"(starts with {data[:8]!r})"
-        )
+        self._past_end(data)
         self._retained = b""
         self._between_members = False
         self._finished = True
@@ -152,7 +156,7 @@ class GzipDecoder(BaseDecoder):
 
         output = bytearray()
         while True:
-            if self._pending_error is not None:
+            if self._pending_error is not None or self._finished:
                 break
             if max_length >= 0 and len(output) >= max_length:
                 if self._between_members and data:
@@ -161,7 +165,7 @@ class GzipDecoder(BaseDecoder):
 
             if self._between_members:
                 data = self._resolve_between(data)
-                if self._pending_error is not None:
+                if self._pending_error is not None or self._finished:
                     break
                 if self._retained or not data:
                     # Partial magic retained, or only NULs/empty — need more input.
@@ -202,13 +206,13 @@ class GzipDecoder(BaseDecoder):
         return DecodeOut(bytes(output))
 
     def flush(self) -> DecodeOut:
-        if self._finished and self._pending_error is not None:
+        if self._finished:
             return DecodeOut(b"")
         out = bytearray()
         # Drain mid-member unconsumed_tail / continue member chaining with no new input.
         drained = self.feed(b"")
         out.extend(drained.data)
-        if self._pending_error is not None:
+        if self._pending_error is not None or self._finished:
             return DecodeOut(bytes(out))
 
         if self._between_members:
@@ -293,6 +297,155 @@ class GzipDecoder(BaseDecoder):
         return True
 
 
+class _OneStreamDecompressor(Protocol):
+    """The one-stream decompressor objects of ``bz2``, ``lzma``, ``zstd`` and ``lz4.frame``."""
+
+    def decompress(self, data: bytes, max_length: int = ...) -> bytes: ...
+
+    @property
+    def eof(self) -> bool: ...
+
+    @property
+    def unused_data(self) -> bytes | None: ...
+
+    @property
+    def needs_input(self) -> bool: ...
+
+
+# A stream's magic, as the bytes each position may hold; a codec lists one per kind of
+# stream that may follow the first (zstd: a frame or a skippable frame).
+StreamMagic = tuple[tuple[frozenset[int], ...], ...]
+
+
+def stream_magic(*alternatives: tuple[bytes | range, ...]) -> StreamMagic:
+    """Build a :data:`StreamMagic` from per-position byte strings or ranges."""
+    return tuple(
+        tuple(frozenset(position) for position in alternative)
+        for alternative in alternatives
+    )
+
+
+def _magic_state(data: bytes, magic: StreamMagic) -> bool | None:
+    """True when ``data`` starts a stream, None when it may once more bytes come."""
+    for alternative in magic:
+        seen = min(len(data), len(alternative))
+        if all(data[i] in alternative[i] for i in range(seen)):
+            return True if seen == len(alternative) else None
+    return False
+
+
+class FramedDecoder(BaseDecoder):
+    """Decode a codec whose library decompressor stops at the end of one stream.
+
+    ``bz2``, ``lzma`` (Alone), ``zstd`` and ``lz4.frame`` each have a one-stream
+    decompressor with ``decompress(data, max_length)``, ``eof``, ``unused_data`` and
+    ``needs_input``. Their file readers decide on their own what may follow a stream,
+    and disagree: ``bz2.open`` ignores anything that does not decode, zstd and lz4
+    raise on it. This adapter decides it the same way for all of them. Bytes that start
+    ``magic`` begin another stream (a concatenated file); zeros are padding; anything
+    else ends the data and sets :attr:`trailing_bytes`.
+
+    The first stream is handed to the library as it comes, so a file that is not this
+    codec at all fails with the library's own error. An empty source, or one that ends
+    inside a stream, is truncated.
+    """
+
+    def __init__(
+        self,
+        new_decompressor: Callable[[], _OneStreamDecompressor],
+        magic: StreamMagic = (),
+    ) -> None:
+        self._new = new_decompressor
+        self._magic = magic
+        self._decomp = new_decompressor()
+        self._fed = False
+        # Past a stream's end, looking for the next one.
+        self._between = False
+        # Input not yet handed on: kept when an output budget ran out, or a prefix of
+        # the next stream's magic waiting for its remaining bytes (``_need_more``).
+        self._held = b""
+        self._need_more = False
+        self._done = False
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> FramedDecoder:
+        del point, inner
+        return FramedDecoder(self._new, self._magic)
+
+    def _next_stream(self, data: bytes) -> bytes:
+        """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``."""
+        rest = data.lstrip(b"\x00")
+        if not rest:
+            return b""
+        state = _magic_state(rest, self._magic)
+        if state is None:
+            self._held = rest
+            self._need_more = True
+            return b""
+        if state:
+            self._decomp = self._new()
+            self._between = False
+            return rest
+        self._past_end(rest)
+        self._done = True
+        return b""
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        if self._done:
+            return DecodeOut(b"")
+        data = self._held + chunk
+        self._held = b""
+        self._need_more = False
+        self._fed = self._fed or bool(data)
+        output = bytearray()
+        while True:
+            if max_length >= 0 and len(output) >= max_length:
+                self._held = data
+                break
+            if self._between:
+                data = self._next_stream(data)
+                if self._between or self._done:
+                    break
+            limit = max_length - len(output) if max_length >= 0 else -1
+            produced = self._decomp.decompress(data, limit)
+            output.extend(produced)
+            data = b""
+            if self._decomp.eof:
+                # lz4 reports no leftover as None rather than b"".
+                data = self._decomp.unused_data or b""
+                self._between = True
+                continue
+            if self._decomp.needs_input or not produced:
+                break
+        return DecodeOut(bytes(output))
+
+    def flush(self) -> DecodeOut:
+        if self._done:
+            return DecodeOut(b"")
+        if self._between:
+            # A prefix of another stream's magic is where the file ends: too short to
+            # be a stream, so it is what follows this one.
+            self._past_end(self._held)
+            self._held = b""
+            self._done = True
+            return DecodeOut(b"")
+        self._pending_error = TruncatedError(
+            "File is truncated" if self._fed else "File is empty"
+        )
+        return DecodeOut(b"")
+
+    @property
+    def finished(self) -> bool:
+        return self._done
+
+    @property
+    def needs_input(self) -> bool:
+        if self._done:
+            return True
+        if self._held:
+            return self._need_more
+        return self._between or self._decomp.needs_input
+
+
 class _BrotliDecompressor(Protocol):
     """The ``brotli.Decompressor`` methods this adapter calls.
 
@@ -317,11 +470,27 @@ class BrotliDecoder(BaseDecoder):
     ``can_accept_more_data()`` (CVE-2025-6176 mitigation). The limit is block-granular
     (observed floor ~32 KiB), not a hard byte cap, but it stops a single ``process``
     from materializing multi-megabyte bombs on ``read(1)``.
+
+    **Finding the end.** ``brotli`` says nothing about where a stream ends: a call whose
+    input runs past the end fails outright ("decoder failed"), loses that call's output,
+    and leaves the decompressor unusable. The same failure is what corrupt data gives, so
+    the decoder cannot tell the two apart from the error. It finds out by replaying:
+    a fresh decompressor is brought to the last point where everything handed over had
+    been decoded and delivered (``_settled``), by decoding the source from the start with
+    the output discarded, and the input from there to the failure is then handed over one
+    byte at a time. If the stream finishes on one of those bytes, what follows is trailing
+    data and the output lost with the failed call is delivered; if not, the original
+    error was corruption and is raised. The replay reads the source again, so it needs a
+    seekable one; on a pipe the failure stays a ``CorruptionError``. It costs one more
+    decode up to the failure, paid only by a file with bytes after its stream or a corrupt
+    one.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, inner: BinaryIO | None = None) -> None:
         import brotli
 
+        self._brotli = brotli
+        self._inner = inner
         self._decomp: _BrotliDecompressor = brotli.Decompressor()
         self._pending = b""
         # True while a prior budgeted process may still have output to drain via
@@ -330,41 +499,203 @@ class BrotliDecoder(BaseDecoder):
         self._supports_output_limit = callable(
             getattr(self._decomp, "can_accept_more_data", None)
         )
+        # Compressed bytes handed to process() so far, and the count at the last point
+        # where all of them were decoded and their output returned, with the output
+        # returned since then.
+        self._handed = 0
+        self._settled = 0
+        self._out_since_settled = 0
+        # During a replay: the bytes being handed over one at a time, the next one's
+        # index, and how much of their output the caller already has.
+        self._replay: bytes | None = None
+        self._replay_at = 0
+        self._replay_skip = 0
+        self._replay_error: BaseException | None = None
+        self._replay_draining = False
+        self._ended = False
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> BrotliDecoder:
-        del point, inner
-        return BrotliDecoder()
+        del point
+        return BrotliDecoder(inner)
+
+    def _process(self, data: bytes, max_length: int) -> bytes:
+        try:
+            if max_length >= 0 and self._supports_output_limit:
+                out = self._decomp.process(data, output_buffer_limit=max_length)
+            else:
+                out = self._decomp.process(data)
+        except self._brotli.error as e:
+            self._start_replay(self._handed + len(data), e)
+            return b""
+        self._handed += len(data)
+        self._out_since_settled += len(out)
+        # Even an unbounded call can hold output back; the decoder has caught up only
+        # when a call returns nothing and it takes more input.
+        if not self._supports_output_limit or (
+            not out and self._decomp.can_accept_more_data()
+        ):
+            self._settled = self._handed
+            self._out_since_settled = 0
+        return out
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        if self._ended:
+            self._past_end(chunk)
+            return DecodeOut(b"")
+        if self._replay is not None:
+            self._pending += chunk
+            return DecodeOut(self._continue_replay(max_length))
         data = self._pending + chunk
         self._pending = b""
         if max_length < 0 or not self._supports_output_limit:
+            out = b""
+            if self._supports_output_limit and (
+                self._drain_budgeted or not self._decomp.can_accept_more_data()
+            ):
+                # A budgeted call left output owed; take it before any new input,
+                # which the decompressor refuses until then.
+                out = self._process(b"", -1)
             self._drain_budgeted = False
-            if not data:
+            if not data and not out and self._replay is None:
                 return DecodeOut(b"")
-            return DecodeOut(self._decomp.process(data))
-
-        can_accept = bool(self._decomp.can_accept_more_data())
-        if not can_accept:
-            # Limit reached on a prior call: only empty process is legal until
-            # can_accept_more_data() flips true again.
-            self._pending = data
-            out = self._decomp.process(b"", output_buffer_limit=max_length)
-        elif data:
-            out = self._decomp.process(data, output_buffer_limit=max_length)
-        elif self._drain_budgeted:
-            out = self._decomp.process(b"", output_buffer_limit=max_length)
+            # A piece at a time, each drained until it settles, so a replay (below)
+            # covers at most one piece.
+            for start in range(0, len(data), _BROTLI_REPLAY_CHUNK):
+                if self._replay is not None or self._decomp.is_finished():
+                    self._pending = data[start:]
+                    break
+                produced = self._process(data[start : start + _BROTLI_REPLAY_CHUNK], -1)
+                while produced and self._supports_output_limit:
+                    out += produced
+                    produced = self._process(b"", -1)
+                out += produced
         else:
-            return DecodeOut(b"")
-
+            can_accept = bool(self._decomp.can_accept_more_data())
+            if not can_accept:
+                # Limit reached on a prior call: only empty process is legal until
+                # can_accept_more_data() flips true again.
+                self._pending = data
+                out = self._process(b"", max_length)
+            elif data:
+                out = self._process(data, max_length)
+            elif self._drain_budgeted:
+                out = self._process(b"", max_length)
+            else:
+                return DecodeOut(b"")
+        if self._replay is not None:
+            remaining = max_length if max_length < 0 else max_length - len(out)
+            return DecodeOut(out + self._continue_replay(remaining))
         finished = bool(self._decomp.is_finished())
+        if finished:
+            # Whatever is still waiting was read past the end; the stream decides what
+            # it is. (Handing it to the finished decompressor would fail.)
+            self._ended = True
+            self._past_end(self._pending)
+            self._pending = b""
         # Keep draining while output is flowing or the decoder refuses more input.
-        self._drain_budgeted = (not finished) and (
-            len(out) > 0 or not bool(self._decomp.can_accept_more_data())
+        self._drain_budgeted = (
+            self._supports_output_limit
+            and max_length >= 0
+            and not finished
+            and (len(out) > 0 or not bool(self._decomp.can_accept_more_data()))
         )
         return DecodeOut(out)
 
+    def _start_replay(self, failed_end: int, error: BaseException) -> None:
+        """Rebuild the state at ``_settled`` and queue the bytes up to ``failed_end``."""
+        inner = self._inner
+        if inner is None or not inner.seekable():
+            raise error
+        position = inner.tell()
+        try:
+            decomp: _BrotliDecompressor = self._brotli.Decompressor()
+            inner.seek(0)
+            remaining = self._settled
+            while remaining:
+                chunk = inner.read(min(remaining, _BROTLI_REPLAY_CHUNK))
+                if not chunk:
+                    raise error
+                remaining -= len(chunk)
+                self._discard(decomp, chunk)
+            region = inner.read(failed_end - self._settled)
+        finally:
+            inner.seek(position)
+        self._decomp = decomp
+        self._replay = region
+        self._replay_at = 0
+        self._replay_skip = self._out_since_settled
+        self._replay_error = error
+        self._drain_budgeted = False
+
+    def _discard(self, decomp: _BrotliDecompressor, chunk: bytes) -> None:
+        """Hand ``chunk`` to ``decomp`` and drop the output, a bounded piece at a time.
+
+        Drains it fully, so ``decomp`` ends where the original did at ``_settled``.
+        """
+        if not self._supports_output_limit:
+            decomp.process(chunk)
+            return
+        decomp.process(chunk, output_buffer_limit=_BROTLI_REPLAY_CHUNK)
+        while True:
+            out = decomp.process(b"", output_buffer_limit=_BROTLI_REPLAY_CHUNK)
+            if not out and decomp.can_accept_more_data():
+                return
+
+    def _continue_replay(self, max_length: int) -> bytes:
+        assert self._replay is not None
+        assert self._replay_error is not None
+        region = self._replay
+        limited = self._supports_output_limit
+        limit = _BROTLI_REPLAY_CHUNK if max_length < 0 else max_length
+        out = bytearray()
+        while max_length < 0 or len(out) < max_length:
+            if limited and (
+                self._replay_draining or not self._decomp.can_accept_more_data()
+            ):
+                # Output owed for bytes already in: take it before the next byte,
+                # which may be the first one past the end.
+                produced = self._decomp.process(b"", output_buffer_limit=limit)
+                self._replay_draining = bool(produced)
+            elif self._decomp.is_finished():
+                # The stream ended on the last byte handed over: the rest is not part
+                # of it, nor is anything the stream read after it.
+                self._replay = None
+                self._ended = True
+                self._past_end(region[self._replay_at :] + self._pending)
+                self._pending = b""
+                break
+            elif self._replay_at < len(region):
+                byte = region[self._replay_at : self._replay_at + 1]
+                self._replay_at += 1
+                try:
+                    if limited:
+                        produced = self._decomp.process(byte, output_buffer_limit=limit)
+                        self._replay_draining = bool(produced)
+                    else:
+                        produced = self._decomp.process(byte)
+                except self._brotli.error:
+                    # Damage before the stream could end: the original failure stands.
+                    raise self._replay_error from None
+            else:
+                produced = (
+                    self._decomp.process(b"", output_buffer_limit=limit)
+                    if limited
+                    else b""
+                )
+                if not produced:
+                    # Every byte up to the failure went in and the stream did not
+                    # end: the failure was damage, not bytes after the end.
+                    raise self._replay_error
+            if self._replay_skip:
+                dropped = min(self._replay_skip, len(produced))
+                self._replay_skip -= dropped
+                produced = produced[dropped:]
+            out.extend(produced)
+        return bytes(out)
+
     def flush(self) -> DecodeOut:
+        if self._ended:
+            return DecodeOut(b"")
         # Brotli decodes eagerly; there is nothing buffered to flush at EOF.
         if not self.finished:
             self._pending_error = TruncatedError("File is truncated")
@@ -372,10 +703,16 @@ class BrotliDecoder(BaseDecoder):
 
     @property
     def finished(self) -> bool:
-        return bool(self._decomp.is_finished())
+        return self._ended or (
+            self._replay is None and bool(self._decomp.is_finished())
+        )
 
     @property
     def needs_input(self) -> bool:
+        if self._ended:
+            return True
+        if self._replay is not None:
+            return False
         if self._pending:
             return False
         if self._supports_output_limit and not bool(
@@ -383,6 +720,11 @@ class BrotliDecoder(BaseDecoder):
         ):
             return False
         return not self._drain_budgeted
+
+
+# Bytes handed to, and output taken from, the Brotli decompressor per call while a
+# replay rebuilds its state (see BrotliDecoder).
+_BROTLI_REPLAY_CHUNK = 65536
 
 
 # Per-call output request for PPMd8 decodes without a declared size; 64 KiB matches
@@ -1169,27 +1511,69 @@ class Deflate64Decoder(BaseDecoder):
 def ZlibDecompressorStream(
     path: str | os.PathLike[str] | BinaryIO,
     wbits: int = -15,
+    *,
+    collector: DiagnosticCollector | None = None,
+    report_trailing_data: bool = False,
 ) -> DecompressorStream:
     """Inflate a raw-deflate or zlib-wrapped stream (forward-only)."""
-    return DecompressorStream(path, make_decoder=lambda _p, _i: ZlibDecoder(wbits))
+    return DecompressorStream(
+        path,
+        make_decoder=lambda _p, _i: ZlibDecoder(wbits),
+        collector=collector,
+        codec_name="zlib" if wbits > 0 else "deflate",
+        report_trailing_data=report_trailing_data,
+    )
 
 
 def GzipDecompressorStream(
     path: str | os.PathLike[str] | BinaryIO,
+    *,
+    collector: DiagnosticCollector | None = None,
+    report_trailing_data: bool = False,
 ) -> DecompressorStream:
     """Inflate a gzip stream with multi-member chaining (forward-only; O(n) rewind)."""
     return DecompressorStream(
         path,
         make_decoder=lambda _p, _i: GzipDecoder(),
+        collector=collector,
         codec_name="gzip",
+        report_trailing_data=report_trailing_data,
+    )
+
+
+def FramedDecompressorStream(
+    path: str | os.PathLike[str] | BinaryIO,
+    new_decompressor: Callable[[], _OneStreamDecompressor],
+    *,
+    codec_name: str,
+    magic: StreamMagic = (),
+    collector: DiagnosticCollector | None = None,
+    report_trailing_data: bool = False,
+) -> DecompressorStream:
+    """Decode a one-stream library decompressor's codec (forward-only; O(n) rewind)."""
+    return DecompressorStream(
+        path,
+        make_decoder=lambda _p, _i: FramedDecoder(new_decompressor, magic),
+        collector=collector,
+        codec_name=codec_name,
+        report_trailing_data=report_trailing_data,
     )
 
 
 def BrotliDecompressorStream(
     path: str | os.PathLike[str] | BinaryIO,
+    *,
+    collector: DiagnosticCollector | None = None,
+    report_trailing_data: bool = False,
 ) -> DecompressorStream:
     """Decode a raw Brotli stream (forward-only)."""
-    return DecompressorStream(path, make_decoder=lambda _p, _i: BrotliDecoder())
+    return DecompressorStream(
+        path,
+        make_decoder=lambda _p, inner: BrotliDecoder(inner),
+        collector=collector,
+        codec_name="brotli",
+        report_trailing_data=report_trailing_data,
+    )
 
 
 def PpmdDecompressorStream(

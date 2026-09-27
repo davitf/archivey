@@ -384,6 +384,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         rapidgzip_child.RapidgzipChildStream,  # asks the child's rapidgzip index
         codecs._GzipTruncationCheckStream,
         codecs._Bzip2EmptyStreamCheck,
+        codecs._StdlibOnAcceleratorError,
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -558,6 +559,7 @@ def test_delegating_stream_close_inventory() -> None:
         iso_reader._PyCdlibStream,
         codecs._GzipTruncationCheckStream,
         codecs._Bzip2EmptyStreamCheck,
+        codecs._StdlibOnAcceleratorError,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,
     }

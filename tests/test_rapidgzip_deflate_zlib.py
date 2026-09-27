@@ -44,9 +44,15 @@ def _raw_deflate(data: bytes) -> bytes:
 def _assert_accelerator(stream: object) -> None:
     inner = getattr(stream, "_inner", None)
     # Length-verifying / ISIZE wraps sit outside the accelerator.
-    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
+    from archivey.internal.streams.codecs import (
+        _GzipTruncationCheckStream,
+        _StdlibOnAcceleratorError,
+    )
 
-    while isinstance(inner, (VerifyingStream, _GzipTruncationCheckStream)):
+    while isinstance(
+        inner,
+        (VerifyingStream, _GzipTruncationCheckStream, _StdlibOnAcceleratorError),
+    ):
         inner = getattr(inner, "_inner", None)
     assert isinstance(inner, RapidgzipChildStream)
 

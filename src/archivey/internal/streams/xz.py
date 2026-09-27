@@ -46,6 +46,7 @@ from archivey.internal.diagnostics_collector import (
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.decompressor_stream import (
     SEEK_TABLE_THINNED,
+    TRAILING_DATA_SEARCH,
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
@@ -249,6 +250,52 @@ def _skip_stream_padding_backwards(
     return compressed_end
 
 
+def _ends_with_footer(stream: BinaryIO, end: int, stop_at: int) -> bool:
+    """Whether a valid stream footer ends at ``end``, after any stream padding."""
+    try:
+        end = _skip_stream_padding_backwards(stream, end, stop_at)
+        if end - stop_at < _STREAM_FOOTER_SIZE:
+            return False
+        stream.seek(end - _STREAM_FOOTER_SIZE)
+        _parse_xz_footer(stream.read(_STREAM_FOOTER_SIZE))
+    except CorruptionError:
+        return False
+    return True
+
+
+def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
+    """Where the xz data ends: ``file_size``, or the last footer before trailing data.
+
+    A file with something appended does not end with a footer. The footer's magic,
+    its CRC-32 and the 4-byte alignment every stream keeps (XZ spec §2.1) find the last
+    one in the final :data:`TRAILING_DATA_SEARCH` bytes; the walk then checks every
+    index and header as usual. The forward decoder reports the appended bytes when a
+    read reaches them.
+    """
+    if _ends_with_footer(stream, file_size, stop_at):
+        return file_size
+    start = max(stop_at, file_size - TRAILING_DATA_SEARCH)
+    stream.seek(start)
+    window = stream.read(file_size - start)
+    at = len(window)
+    while (at := window.rfind(_XZ_FOOTER_MAGIC, 0, at + 1)) >= 0:
+        end = start + at + len(_XZ_FOOTER_MAGIC)
+        if end % 4 == 0 and at + 2 >= _STREAM_FOOTER_SIZE:
+            try:
+                _parse_xz_footer(window[at + 2 - _STREAM_FOOTER_SIZE : at + 2])
+            except CorruptionError:
+                pass
+            else:
+                return end
+        at -= 1
+        if at < 0:
+            break
+    raise CorruptionError(
+        "XZ stream footer not found at the end of the file or in the "
+        f"{len(window)} bytes before it"
+    )
+
+
 def _read_xz_index_backwards(
     stream: BinaryIO,
     file_size: int,
@@ -272,7 +319,7 @@ def _read_xz_index_backwards(
     kept: SpacedCollector[tuple[int, _XzBlockBounds]] = SpacedCollector(lambda e: e[0])
     thinned = False
     total = 0
-    compressed_end = file_size
+    compressed_end = _data_end(stream, file_size, stop_at)
 
     while compressed_end > stop_at:
         compressed_end = _skip_stream_padding_backwards(stream, compressed_end, stop_at)
@@ -482,12 +529,30 @@ class _XzState:
         # real file offsets; the per-stream backward scan reads the footer from there.
         self._padding_before_stream = 0
         self.truncated = False
+        # Bytes fed past the last stream that start no further one (see Decoder).
+        self.trailing_bytes: int | None = None
 
     def feed(
         self, data: bytes, max_length: int = -1
     ) -> tuple[bytes, list[tuple[int, int]]]:
+        if self._finished:
+            if self.trailing_bytes is None:
+                self._end_at(data)  # only zeros so far: keep looking
+            return b"", []
         self._buf.extend(data)
         return self._process(max_length=max_length)
+
+    def _end_at(self, rest: bytes) -> None:
+        """End the data before ``rest``: bytes past a stream that start no further one.
+
+        Zeros are padding, as XZ's own stream padding is; the first non-zero byte
+        starts the trailing data.
+        """
+        self._finished = True
+        self._buf.clear()
+        rest = rest.lstrip(b"\x00")
+        if rest:
+            self.trailing_bytes = len(rest)
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         if self._state == self._NEED_HEADER:
@@ -502,7 +567,7 @@ class _XzState:
             if len(self._buf) >= 6 and bytes(self._buf[:6]) == _XZ_STREAM_MAGIC:
                 self.truncated = True
                 return b"", []
-            self._finished = True
+            self._end_at(bytes(self._buf))
             return b"", []
         # Mid-stream: drain any remaining buffered input for a recoverable prefix,
         # then arm truncation (decoder owns pending_error).
@@ -563,8 +628,7 @@ class _XzState:
                             f"Not a valid XZ file: expected magic {_XZ_STREAM_MAGIC!r}, "
                             f"got {header[:6]!r}"
                         )
-                    self._finished = True
-                    self._buf.clear()
+                    self._end_at(bytes(self._buf))
                     break
                 del self._buf[:_STREAM_HEADER_SIZE]
                 try:
@@ -812,6 +876,12 @@ class XzDecoder(BaseDecoder):
         )
 
     @property
+    def trailing_bytes(self) -> int | None:
+        # Only the sequential engine meets the end of the data; a block resume hands
+        # off to one before then.
+        return getattr(self._engine, "trailing_bytes", None)
+
+    @property
     def needs_input(self) -> bool:
         return self._engine.needs_input
 
@@ -938,6 +1008,7 @@ def XzDecompressorStream(
     collector: DiagnosticCollector | None = None,
     seekable: bool = True,
     decoder_limits: DecoderLimits = DecoderLimits(),
+    report_trailing_data: bool = False,
 ) -> DecompressorStream:
     """Seekable XZ decompressor backed by stdlib ``lzma``.
 
@@ -974,6 +1045,7 @@ def XzDecompressorStream(
         collector=collector,
         codec_name="xz",
         seekable=seekable,
+        report_trailing_data=report_trailing_data,
     )
     stream_cell[0] = stream
     return stream

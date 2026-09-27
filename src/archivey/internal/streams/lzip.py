@@ -32,6 +32,7 @@ from archivey.internal.config import DecoderLimits, check_decoder_memory
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
 from archivey.internal.streams.decompressor_stream import (
+    TRAILING_DATA_SEARCH,
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
@@ -62,6 +63,65 @@ class _MemberBounds:
         return self.decompressed_start + self.decompressed_size
 
 
+def _member_ends_at(
+    stream: BinaryIO, end: int, stop_at: int, window: bytes = b"", base: int = 0
+) -> bool:
+    """Whether a member's trailer ends at ``end``: its size leads back to a header.
+
+    ``window`` holds the source's bytes from ``base``; bytes it covers are not read
+    again.
+    """
+    if end - stop_at < _HEADER_SIZE + _TRAILER_SIZE:
+        return False
+    if end - _TRAILER_SIZE >= base and end <= base + len(window):
+        trailer = window[end - _TRAILER_SIZE - base : end - base]
+    else:
+        stream.seek(end - _TRAILER_SIZE)
+        trailer = stream.read(_TRAILER_SIZE)
+    if len(trailer) < _TRAILER_SIZE:
+        return False
+    member_size = int.from_bytes(trailer[12:20], "little")
+    start = end - member_size
+    if member_size < _HEADER_SIZE + _TRAILER_SIZE or start < stop_at:
+        return False
+    if base <= start and start + 5 <= base + len(window):
+        header = window[start - base : start - base + 5]
+    else:
+        stream.seek(start)
+        header = stream.read(5)
+    return header == _MAGIC + b"\x01"
+
+
+def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
+    """Where the lzip data ends: ``file_size``, or the last member before trailing data.
+
+    The lzip manual allows data after the last member (§7), and ``lzip`` finds the
+    last member the same way: the latest trailer, within the final
+    :data:`TRAILING_DATA_SEARCH` bytes, whose member size leads back to a member
+    header. A member size is below the file size, so its high bytes are zero; only
+    ends behind such a run are tried, which keeps the search to C-speed scans. The
+    forward decoder reports the appended bytes when a read reaches them.
+    """
+    if _member_ends_at(stream, file_size, stop_at):
+        return file_size
+    base = max(stop_at, file_size - TRAILING_DATA_SEARCH)
+    stream.seek(base)
+    window = stream.read(file_size - base)
+    zeros = b"\x00" * max(1, 8 - (file_size.bit_length() + 7) // 8)
+    # A trailer ends at most 8 bytes past its last non-zero byte (the high bytes of its
+    # member size), so a run of zero padding at the end is skipped in one step.
+    at = min(len(window), len(window.rstrip(b"\x00")) + 8)
+    while (at := window.rfind(zeros, 0, at)) >= 0:
+        end = base + at + len(zeros)
+        if _member_ends_at(stream, end, stop_at, window, base):
+            return end
+        at += len(zeros) - 1
+    raise CorruptionError(
+        "Lzip trailer not found at the end of the file or in the "
+        f"{len(window)} bytes before it"
+    )
+
+
 def _iter_trailers_backwards(
     stream: BinaryIO, file_size: int, stop_at: int = 0
 ) -> Iterator[tuple[int, int, int, int]]:
@@ -69,9 +129,10 @@ def _iter_trailers_backwards(
 
     Reads only trailers and the 4-byte magic at each computed member start — no
     decompression. The magic check catches a corrupt ``member_size`` before it cascades
-    into wrong offsets for every earlier member.
+    into wrong offsets for every earlier member. Data after the last member is looked
+    past (:func:`_data_end`).
     """
-    compressed_end = file_size
+    compressed_end = _data_end(stream, file_size, stop_at)
     while compressed_end > stop_at:
         if compressed_end < _TRAILER_SIZE:
             raise CorruptionError("Lzip file is too small to contain a valid trailer")
@@ -177,10 +238,16 @@ class _LzipState:
         self._finished = False
         self._members_seen = 0
         self.truncated = False
+        # Bytes fed past the last member that start no further one (see Decoder).
+        self.trailing_bytes: int | None = None
 
     def feed(
         self, data: bytes, max_length: int = -1
     ) -> tuple[bytes, list[tuple[int, int]]]:
+        if self._finished:
+            if self.trailing_bytes is None:
+                self._end_at(data)  # only zeros so far: keep looking
+            return b"", []
         self._buf.extend(data)
         return self._process(max_length=max_length)
 
@@ -200,7 +267,7 @@ class _LzipState:
             if head == _MAGIC:
                 self.truncated = True
                 return b"", []
-            self._finished = True
+            self._end_at(bytes(self._buf))
             return b"", []
         out, units = self._process(max_length=-1)
         if self._finished:
@@ -214,6 +281,18 @@ class _LzipState:
                 pass
         self.truncated = True
         return out, units
+
+    def _end_at(self, rest: bytes) -> None:
+        """End the data before ``rest``: bytes after a member that start no further one.
+
+        The lzip manual allows them (§7) and ``lzip`` ignores them unless asked not
+        to; archivey reports them. Zeros are padding and pass.
+        """
+        self._finished = True
+        self._buf.clear()
+        rest = rest.lstrip(b"\x00")
+        if rest:
+            self.trailing_bytes = len(rest)
 
     def is_finished(self) -> bool:
         return self._finished
@@ -236,10 +315,10 @@ class _LzipState:
                 if len(self._buf) < _HEADER_SIZE:
                     break
                 header = bytes(self._buf[:_HEADER_SIZE])
-                del self._buf[:_HEADER_SIZE]
                 if not self._start_member(header):
-                    self._buf.clear()  # discard valid trailing data
+                    self._end_at(bytes(self._buf))
                     break
+                del self._buf[:_HEADER_SIZE]
                 self._state = self._IN_MEMBER
 
             elif self._state == self._IN_MEMBER:
@@ -286,10 +365,7 @@ class _LzipState:
                 raise CorruptionError(
                     f"Not a valid lzip file: expected magic {_MAGIC!r}, got {header[:4]!r}"
                 )
-            self._finished = (
-                True  # lzip spec §7: trailing data after members is allowed
-            )
-            return False
+            return False  # lzip spec §7: trailing data after members is allowed
         if header[4] != 1:
             raise CorruptionError(f"Unsupported lzip version: {header[4]}")
         exp = header[5] & 0x1F
@@ -378,6 +454,10 @@ class LzipDecoder(BaseDecoder):
         return self._state.is_finished() and not self._state.truncated
 
     @property
+    def trailing_bytes(self) -> int | None:
+        return self._state.trailing_bytes
+
+    @property
     def needs_input(self) -> bool:
         return self._state.needs_input
 
@@ -413,6 +493,7 @@ def LzipDecompressorStream(
     collector: DiagnosticCollector | None = None,
     seekable: bool = True,
     decoder_limits: DecoderLimits = DecoderLimits(),
+    report_trailing_data: bool = False,
 ) -> DecompressorStream:
     """Seekable lzip decompressor backed by stdlib ``lzma``.
 
@@ -436,4 +517,5 @@ def LzipDecompressorStream(
         collector=collector,
         codec_name="lzip",
         seekable=seekable,
+        report_trailing_data=report_trailing_data,
     )

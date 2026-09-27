@@ -40,9 +40,9 @@ layer; what differs is on [`tar.md`](tar.md) §2.3.
 codecs: only xz and lzip (from their index, on a seekable source) and an LZMA Alone header
 that declares it give one, although zstd and LZ4 frames can carry a content size too
 (§2.2). `member.hashes` is empty for every codec but lzip; gzip's trailer CRC-32 is left
-out on purpose ([`gzip.md`](gzip.md) §6). Bytes after the last stream are an error for
-some codecs and ignored by others, and the split does not follow what each codec's own
-tool does (§3). A backward seek decodes again from the start of the stream unless the
+out on purpose ([`gzip.md`](gzip.md) §6). Bytes after the last stream are neither an
+error nor ignored: the payload reads in full and the bytes are reported as
+`ARCHIVE_TRAILING_DATA`, although `xz` and `zstd` refuse such a file (§2.3, §3). A backward seek decodes again from the start of the stream unless the
 codec has resume points in front of the target, and most have none (§2.3). And the gzip
 header's stored filename is reported, never used: the member's name comes from the name
 of the file archivey was given (§2.2).
@@ -166,14 +166,17 @@ stamps them with the archive and member, and reports expensive backward seeks. T
 container formats reach the same codecs through `resolve_codec` and `CodecParams`:
 ZIP's DEFLATE, 7z's LZMA2, a `.tar.xz`'s outer stream.
 
-**Two kinds of backend.** Six codecs decode through archivey's own engine,
-`DecompressorStream` (`internal/streams/decompressor_stream.py`): zlib and gzip with the
-standard library's `zlib`, xz and lzip with the standard library's `lzma` driven by
-archivey's own framing code, Brotli with the `brotli` package, and `.Z` with archivey's
-own LZW. Four hand the source to a library's file object: bzip2 (`bz2.open`), LZMA Alone
-(`lzma.LZMAFile`), zstd and LZ4 (their packages' `open`). The engine owns the output
+**One engine.** Every codec decodes through archivey's own engine, `DecompressorStream`
+(`internal/streams/decompressor_stream.py`): zlib and gzip with the standard library's
+`zlib`, xz and lzip with the standard library's `lzma` driven by archivey's own framing
+code, Brotli with the `brotli` package, and `.Z` with archivey's own LZW. bzip2, LZMA
+Alone, zstd and LZ4 run their library's one-stream decompressor inside
+`FramedDecompressorStream`, which starts another at the next stream's magic. The library
+file objects (`bz2.open`, `lzma.LZMAFile`, the packages' `open`) cannot say where the last
+stream ends, which reporting bytes after it needs (§2.3). The engine owns the output
 buffer, the position and the seek table; a codec plugs in as a `Decoder` with
-`feed`/`flush`/`recreate` and, where the format has an index, `build_index`.
+`feed`/`flush`/`recreate` and, where the format has an index, `build_index`. The
+`rapidgzip` accelerator for gzip, zlib and bzip2 is the one stream outside it.
 
 **Seek points.** The engine keeps a sorted table of `SeekPoint`s, each a decompressed
 offset, the compressed offset to resume from, and whatever state the codec needs there.
@@ -231,6 +234,24 @@ probe's `format_unconfirmed` stamp ([`xz.md`](xz.md) §2.3). zstd is not checked
 library applies its own limit ([`zstd-lz4.md`](zstd-lz4.md) §5). bzip2, LZ4, Brotli, gzip
 and `.Z` have small fixed windows.
 
+**Bytes after the end.** Each decoder knows where its stream ends: the gzip member's
+trailer, zlib's Adler-32, the end of an xz stream, lzip member or LZMA Alone payload,
+and the end the bzip2, zstd and LZ4 libraries report for one stream. For bzip2, LZMA
+Alone, zstd and LZ4, `FramedDecoder` in `internal/streams/decompress.py` runs one
+library decompressor per stream and starts another only when the next bytes are that
+codec's magic (a zstd skippable frame counts), so a concatenated file still reads as one
+payload. Past the end, zero bytes are padding, as `tar` pads its records; the first
+non-zero byte ends the stream there. `DecompressorStream` stops reading the source,
+returns everything decoded, and emits one `ARCHIVE_TRAILING_DATA` with
+`expected_marker="end_of_stream"` at that byte's offset. Only a bare file, a compressed
+TAR's codec and `open_stream` report (`StreamConfig.report_trailing_data`); a codec
+inside a ZIP or 7z member stops silently, because the container's sizes decide there,
+and so do the detection and metadata probes. Brotli and the two accelerators need more
+than this ([`brotli.md`](brotli.md) §2.3, [`gzip.md`](gzip.md) §2.3,
+[`bzip2.md`](bzip2.md) §2.3), and xz and lzip search back for their index through up to
+1 MiB of such bytes ([`xz.md`](xz.md) §2.2). `.Z` has no end to find
+([`unix-compress.md`](unix-compress.md)).
+
 **Compressed input is counted.** On a pipe the reader wraps the source so the extraction
 ratio guard has a denominator; a path or seekable stream uses its length.
 
@@ -269,26 +290,19 @@ where the table says otherwise; the per-codec pages carry the details.
 | `brotli` | Detected by the probe, `PROBABLE` |
 | `compress`, `compress -b12` | Read |
 
-**Bytes after the last stream** are where the codecs disagree most, with each other and
-with their own tools. Measured by appending `junk\n` to each file above:
+**Bytes after the last stream.** Measured by appending `junk\n` to each file above. The
+codecs' own tools disagree; archivey treats every codec with an end marker the same way:
 
 | Codec | archivey | The codec's own tool |
 | --- | --- | --- |
-| gzip | `CorruptionError` after the data, with the standard library engine; `TruncatedError` with `rapidgzip` (measured under `ON`) | `gzip -t`: "trailing garbage ignored", exit 2 |
-| zlib | Ignored | — |
-| bzip2 | Ignored; with `rapidgzip` engaged, a warning printed to standard error | `bzip2 -t`: "trailing garbage after EOF ignored", exit 0 |
-| xz | Ignored, and the seek index is lost (`SEEK_INDEX_DEGRADED`, `size=None`) | `xz -t`: "Unexpected end of input", exit 1 |
-| lzip | Ignored, and `size` and the CRC-32 are lost | `plzip -t`: exit 0; the lzip manual allows trailing data |
-| LZMA Alone | Ignored | — |
-| zstd | `CorruptionError: … Unknown frame descriptor` | `zstd -t`: "unsupported format", exit 1 |
-| LZ4 | `TruncatedError` | — |
-| Brotli | `CorruptionError` | — |
+| gzip, zlib, bzip2, xz, lzip, LZMA Alone, zstd, LZ4, Brotli | The whole payload, then `ARCHIVE_TRAILING_DATA` at the junk's offset; `DiagnosticRaisedError` under `strict()`. xz and lzip keep `size` and seeks | — |
+| gzip | as above | `gzip -t`: "trailing garbage ignored", exit 2 |
+| bzip2 | as above; the accelerator also prints a warning to standard error | `bzip2 -t`: "trailing garbage after EOF ignored", exit 0 |
+| xz | as above | `xz -t`: "Unexpected end of input", exit 1 |
+| lzip | as above | `plzip -t`: exit 0; the lzip manual allows trailing data |
+| zstd | as above | `zstd -t`: "unsupported format", exit 1 |
+| Brotli from a pipe | `CorruptionError`: telling the junk from damage needs a second read ([`brotli.md`](brotli.md) §2.3) | — |
 | `.Z` | `TruncatedError`, because the junk decodes as codes | — |
-
-zstd, lzip and bzip2 agree with their tools on whether it is an error; gzip and xz are the
-reverse of theirs. The gzip row follows `gzip.GzipFile`, and the bzip2, zlib and LZMA
-Alone rows follow what the standard library's readers do. §5 has the
-row; the fix is a policy choice, not a bug in one codec (§7).
 
 ## 4. Threat surface
 
@@ -323,7 +337,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | What you see | Where it lives | More |
 | --- | --- | --- |
 | `member.size` is `None` for gzip, bzip2, zlib, zstd, LZ4, Brotli and `.Z`, and on a pipe for every codec but LZMA Alone | **format** / **archivey** | Most of those formats store no reliable total (§1). zstd and LZ4 frames can declare a content size, which archivey does not read ([`zstd-lz4.md`](zstd-lz4.md) §5) |
-| Bytes after the last stream fail one codec and pass another | **archivey** | The per-codec table in §3; a policy question (§7) |
+| A file `xz -t` or `zstd -t` refuses reads, with a warning | **archivey** | Bytes after the stream are reported, not refused (§6); `DiagnosticPolicy.strict()` refuses them |
+| Zero bytes read as an empty `.lzma` | **format** | Thirteen zero bytes are a valid LZMA Alone header for an empty payload, and the rest is padding (§2.3) |
 | A backward seek is slow, and the log says so | **format** | No resume point before the target (§2.3). Use `stream_members()` or read forward once; for gzip and bzip2, `rapidgzip` |
 | The rewind warning says the codec "has no random-access index" on an `.xz` or `.lz` that has one | **archivey** | The message is chosen by codec, not by whether a resume point was found; on a multi-block `.xz` it is wrong. Tracked internally |
 | A second `open()` of the member of a pipe raises `StreamNotSeekableError` | **format** | The one pass is spent; buffer the source to re-read it |
@@ -342,15 +357,11 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Arm truncation at end of input and raise on the next read (PR #183) | The caller gets every byte before the cut from a sized `read(n)`, and the error cannot be missed by a caller who never calls `close()`. A `read()` of everything raises and returns nothing: a short payload returned as if whole is worse than none | Raising inside the decode, which drops the decoded prefix; raising from `close()` (ADR 0014) |
 | A truncation keeps raising after a seek back | The source did not change, so a second pass must not end cleanly | Clearing the error with the position (PR #491) |
 | An absolute 1 MiB threshold for the rewind report (PR #232) | Wall time follows bytes re-decoded, not the ratio to the jump | A relative threshold, which goes quiet on the worst case |
+| Read every stream to its end, then report non-zero bytes after it as `ARCHIVE_TRAILING_DATA`; zeros are padding | The payload is intact, so refusing it helps no one, and a diagnostic lets a caller who cares refuse through the policy. One rule for every codec, as for TAR | Refusing, as `xz` and `zstd` do; ignoring without a word, as the standard library's readers do |
 | Cap the seek table and thin it, rather than refuse (PR #420) | A seek table is an optimisation; nothing becomes unreadable | A `ListingLimits` field that fails the read |
 
 ## 7. Open questions
 
-- **What bytes after the last stream should do.** Two policies are coherent: refuse, as
-  `xz` and `zstd` do, or ignore with a diagnostic, as `gzip` and `bzip2` do. Today's mix
-  follows each backend's library. What would answer it: whether a caller ever needs the
-  junk to be an error, and whether a diagnostic code for "trailing data ignored" is wanted
-  across formats. Tracked internally.
 - **Whether to report the content size zstd and LZ4 frames declare.** It changes `size`
   from `None` to a number for most `.zst` files written from a file. A frame's declared
   size is checked by the library on decode, but a multi-frame file needs every frame's
@@ -374,6 +385,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Concurrent and re-entrant opens are independent | `::test_concurrent_open_same_member_interleaved`, `::test_reentrant_open_after_first_read` |
 | `password=` accepted and unused | `::test_password_is_accepted_and_recorded` |
 | `open_stream` is forward-only unless asked, and builds no index then | `tests/test_open_stream.py::test_open_stream_default_is_forward_only`, `::test_open_stream_xz_default_builds_no_index`, `::test_open_stream_xz_seekable_exposes_size` |
+| Bytes after the stream: payload, one report, zeros silent, strict raises, xz and lzip keep their index, containers silent | `tests/test_stream_trailing_data.py` |
 | A new codec needs only a descriptor | `tests/test_codec_descriptor.py` |
 | Probe order, completion window, `format_unconfirmed` | `tests/test_detection.py`, `tests/test_brotli_framing_gate.py::test_guess_decode_failure_sets_format_unconfirmed` |
 

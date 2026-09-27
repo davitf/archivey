@@ -107,9 +107,10 @@ the shared fields.
 `GzipDecoder`: `zlib.decompressobj(16 + MAX_WBITS)`, which parses each member's header and
 checks its CRC-32 and ISIZE. It is not `gzip.GzipFile`, because `GzipFile.read()` of a
 truncated file discards the prefix it decoded and it validates only on read. After each
-member the decoder follows `GzipFile`'s rules: NUL bytes are skipped (tape padding), `1f 8b`
-starts the next member, and anything else is a `CorruptionError`, raised after the bytes of
-the members before it are delivered. zlib and raw DEFLATE use `ZlibDecoder` with
+member the decoder follows `GzipFile`'s rules for what comes next: NUL bytes are skipped
+(tape padding) and `1f 8b` starts the next member. Anything else ends the stream there:
+every member before it is delivered and the bytes are reported as `ARCHIVE_TRAILING_DATA`
+([`single-file.md`](single-file.md) §2.3), where `GzipFile` would raise. zlib and raw DEFLATE use `ZlibDecoder` with
 `wbits=15` and `-15`. Truncation is certain on this path: a member that did not reach its
 trailer arms a `TruncatedError` at the end of input.
 
@@ -188,6 +189,18 @@ differ by platform (ISA-L on Linux, a different decoder on macOS, a bare
 `_translate_rapidgzip` maps each; the Windows one becomes `CorruptionError`, not
 `TruncatedError`, since the detail is lost.
 
+**Bytes after the stream under `rapidgzip`.** `rapidgzip` has no end of stream: it takes
+bytes after a gzip member for the start of another and fails on them, or, in the child,
+delivers the payload and then takes the file's last four bytes, now junk, for ISIZE. Both
+cases switch to the standard library engine at the position already delivered
+(`_StdlibOnAcceleratorError` in `internal/streams/codecs.py`): a data error from
+`rapidgzip` does it inside the read, and an ISIZE mismatch with no further `1f 8b 08` in
+the file does it through the truncation check. The standard library engine then decodes
+the rest and finds the junk or the cut, so a file with bytes after it reads in full and
+reports once, and a truncated one still raises `TruncatedError`. The switch decodes again
+from the start of the stream up to that position; it is paid only by a file that fails
+under `rapidgzip`.
+
 ### 2.4 Extract
 
 Nothing here is gzip-specific ([`single-file.md`](single-file.md) §2.4).
@@ -208,7 +221,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `bgzip` (BGZF, the genomics format) | Reads, as a run of 64 KiB members; no `FNAME`. The block size in `FEXTRA` is not used for seeking |
 | Two `gzip` files concatenated | Reads both payloads |
 | A member followed by NUL padding | Reads; the padding is skipped |
-| A member followed by `junk` | `CorruptionError` after the whole payload; under `rapidgzip`, `TruncatedError`. `gzip -t` calls it "trailing garbage ignored" and exits 2 |
+| A member followed by `junk` | Reads the whole payload, then `ARCHIVE_TRAILING_DATA`, with or without `rapidgzip`. `gzip -t` calls it "trailing garbage ignored" and exits 2 |
 | GNU gzip of `café.txt` | `extra["gzip.original_filename"] == "cafÃ©.txt"`, `raw_name == b"caf\xc3\xa9.txt"` |
 | `zlib.compress` | Detected by the probe, `PROBABLE`; reads |
 
@@ -251,7 +264,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A truncated multi-member `.gz` read through `rapidgzip` can end short with no error | **library** / **archivey** | `rapidgzip` ends softly; the backstop stands down when a second member may exist. Summing each member's ISIZE is deferred (§7) |
 | A truncated bare zlib or raw DEFLATE stream under `use_rapidgzip=ON` can end short with no error | **library** | No size to check it against (§2.3). `AUTO` never does this |
 | A cut `.gz` delivers less before the error under `rapidgzip` than without it | **library** | It decodes ahead and aborts early (§2.3). Use `OFF` to salvage the most |
-| Trailing junk after a `.gz` is `CorruptionError`, and `TruncatedError` under `rapidgzip` | **archivey** | The standard library engine follows `GzipFile`; the cross-codec picture is [`single-file.md`](single-file.md) §3 |
+| Trailing junk after a `.gz` is a warning, where `GzipFile` raises | **archivey** | The rule is shared by every codec ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
+| A `.gz` with bytes after it under `rapidgzip` decodes part of the file twice | **archivey** | The switch to the standard library replays up to where `rapidgzip` failed (§2.3) |
 | One warning on `archivey.streams` that `rapidgzip` cannot run | **archivey** | No child process can start here; `AUTO` used the standard library. `use_rapidgzip=OFF` silences it |
 | A zlib stream with a preset dictionary is not detected, and fails when opened by name | **format** | archivey holds no dictionary |
 | A cold backward seek under `rapidgzip` still re-decodes megabytes, and the log says so | **library** | Its index is sparse: three points over 5 MB of `gzip.compress` output |
@@ -262,7 +276,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- | --- | --- |
 | Never list the gzip trailer CRC-32 (PR #441) | A digest is worth having to skip a decode or to verify one. The trailer covers only the last member, proving there is one member means reading the whole file at every open (a full download for a remote source), the chance magic made large files "multi-member" anyway, and after a read the decoder has already checked every CRC | Scanning for a second member at open; adding the CRC after a full read, which changes `hashes` under a caller who already read it |
 | Decode with `zlib`'s gzip window under archivey's engine, not `gzip.GzipFile` (PR #183) | Sized reads recover the prefix of a truncated file, and the engine's seek table and rewind report apply | `GzipFile`, which drops the prefix on `read()` and cannot report rewinds |
-| Follow `GzipFile` after a member: skip NULs, refuse other trailing bytes | The standard library is what Python callers compare against | Ignoring trailing bytes, as `gzip -t` does with a warning |
+| Follow `GzipFile` after a member for NULs and the next member; report other bytes instead of raising | NULs and a next member are what `GzipFile` accepts; other bytes follow the rule every codec shares ([`single-file.md`](single-file.md) §6) | Raising, as `GzipFile` does |
+| Switch to the standard library when `rapidgzip` fails on bytes after the stream | `rapidgzip` cannot tell junk from a next member or from damage; the standard library can | Refusing the file under `rapidgzip`, so the result would depend on the accelerator |
 | One accelerator library, `rapidgzip`, for gzip, zlib, raw DEFLATE and bzip2 (ADR 0008) | `indexed_gzip` or `indexed_bzip2` next to it corrupt the heap on macOS | Several accelerator packages |
 | Run `rapidgzip` in a child process for the DEFLATE family (PR #493) | Its abort on a cut stream is uncatchable in-process | In-process with guards, which cannot catch `std::terminate`; decoding with the standard library first and handing `rapidgzip` only proven input, which decoded the whole member at the first backward seek |
 | `AUTO` needs 16 MiB of input and a checkable size | Below that the child costs more than it saves; without a size, a soft end would pass silently | 1 MiB, the in-process threshold; `AUTO` on any declared seek |
@@ -291,7 +306,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 | Claim | Pinned by |
 | --- | --- |
-| Multi-member, NUL padding, trailing junk after the payload | `tests/test_codecs.py::test_gzip_multi_member_and_padding_parity`, `::test_gzip_trailing_junk_delivers_member_then_corruption`, `::test_gzip_multi_member_cross_feed_edges` |
+| Multi-member, NUL padding, trailing junk after the payload | `tests/test_codecs.py::test_gzip_multi_member_and_padding_parity`, `::test_gzip_trailing_junk_delivers_member_then_reports`, `tests/test_stream_trailing_data.py::test_rapidgzip_reads_to_the_end_and_reports`, `::test_gzip_multi_member_cross_feed_edges` |
 | A truncated stream gives its prefix to sized reads and raises | `::test_truncated_gzip_large_read_recovers_prefix_like_read1`, `::test_truncated_zlib_deflate_large_read_recovers_prefix`, `::test_truncated_gzip_readall_raises` |
 | `FNAME`, Latin-1, `MTIME` | `tests/test_single_file.py::test_gzip_stored_filename_surfaced`, `::test_gzip_stored_filename_non_ascii_is_latin1`, `::test_gzip_mtime_surfaced` |
 | No size, no CRC, no scan at open | `::test_gz_size_is_always_none`, `::test_gzip_never_reports_a_crc32`, `::test_gzip_open_does_not_scan_for_a_second_member` |
