@@ -401,8 +401,6 @@ def test_standalone_zlib_midcut_raises_through_rapidgzip_on_without_size() -> No
 
 # --- Adler-32 under rapidgzip ---------------------------------------------------------
 
-# Seeded: whether a flipped bit changes the output depends on where it lands, and with
-# this payload the body flip below does.
 _ADLER_PAYLOAD = random.Random(0).randbytes(300_000) + bytes(200_000)
 
 
@@ -410,6 +408,21 @@ def _flip(data: bytes, index: int) -> bytes:
     out = bytearray(data)
     out[index] ^= 0x01
     return bytes(out)
+
+
+def _body_flip_the_stdlib_rejects(good: bytes) -> bytes:
+    """Flip a bit near the end of the body that the standard library rejects.
+
+    Chosen at run time: the compressed bytes depend on the zlib build (CPython on
+    Windows ships zlib-ng), and a flipped bit can land where it changes nothing.
+    """
+    for index in range(len(good) - 5, len(good) // 2, -1):
+        bad = _flip(good, index)
+        try:
+            zlib.decompress(bad)
+        except zlib.error:
+            return bad
+    raise AssertionError("no rejected body flip found")
 
 
 def _on_zlib(data: bytes):  # noqa: ANN202 - the codec's stream type
@@ -427,7 +440,10 @@ def test_rapidgzip_zlib_damage_raises_from_the_adler_check(where: str) -> None:
     the standard library then finishes the decode and names the damage itself.
     """
     good = zlib.compress(_ADLER_PAYLOAD)
-    bad = _flip(good, len(good) - 1 if where == "trailer" else len(good) - 20)
+    if where == "trailer":
+        bad = _flip(good, len(good) - 1)
+    else:
+        bad = _body_flip_the_stdlib_rejects(good)
     expected = codecs.StreamChecksumError if where == "trailer" else ReadError
     with _on_zlib(bad) as stream:
         with pytest.raises(expected):
