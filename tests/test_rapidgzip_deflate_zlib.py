@@ -212,7 +212,14 @@ def test_auto_without_decompressed_size_uses_stdlib_even_when_large() -> None:
 
 
 def _uses_rapidgzip_child(stream: object) -> bool:
-    """Whether a member stream's wrapper chain reaches a ``RapidgzipChildStream``."""
+    """Whether a member stream's wrapper chain reaches a ``RapidgzipChildStream``.
+
+    ``_assert_accelerator`` and ``_assert_stdlib_zlib`` know the short chain that
+    ``open_codec_stream`` returns; a stream from ``open_archive`` also crosses the
+    backend's wrappers, so this walks them. It returns rather than asserts, and only the
+    ``declared=True`` leg of the test below keeps the walk honest: if it stops reaching
+    the child, that leg fails.
+    """
     seen: set[int] = set()
     pending = [stream]
     while pending:

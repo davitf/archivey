@@ -132,11 +132,11 @@ could catch `rapidgzip` ending one early (below).
 declared seek demand, not against how the caller then reads: a member stream's seek
 machinery is built only on that declaration (xz and lzip build their member-stream seek
 index the same way), and `rapidgzip` is that machinery here. It is also a faster decoder,
-since it decodes in parallel, so the 3.4 ms per MB above applies to a full front-to-back
-read too. A caller who reads large streams front to back and wants that speed declares
-seeking (`seekable_members=True`, `open_stream(seekable=True)`), which keeps the 16 MiB
-gate, or sets `use_rapidgzip=ON`, which pays the child's start on every stream, small ones
-included.
+since it decodes in parallel: the 3.4 ms per MB above is a full-read saving, which a
+front-to-back read gets as well as a seeking one. A caller who reads large streams front
+to back and wants that speed declares seeking (`seekable_members=True`,
+`open_stream(seekable=True)`), which keeps the 16 MiB gate, or sets `use_rapidgzip=ON`,
+which pays the child's start on every stream, small ones included.
 
 **Why a child process.** `rapidgzip` 0.16 calls `std::terminate` when it decodes a DEFLATE
 stream that ends early. The throw comes from a destructor, so it happens for a path, a
