@@ -19,8 +19,10 @@ Spec: https://www.nongnu.org/lzip/manual/lzip_manual.html#File-format
 
 from __future__ import annotations
 
+import itertools
 import lzma
 import os
+import re
 import struct
 import zlib
 from collections.abc import Callable, Iterator
@@ -45,6 +47,8 @@ from archivey.internal.streams.decompressor_stream import (
 _MAGIC = b"LZIP"
 _HEADER_SIZE = 6
 _TRAILER_SIZE = 20
+# The trailer's last field, the member size.
+_SIZE_FIELD = 8
 
 # lzip mandates lc=3, lp=0, pb=2: props byte = (pb*5 + lp)*9 + lc = 93 = 0x5D.
 _PROPS_BYTE = bytes([0x5D])
@@ -99,9 +103,11 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     The lzip manual allows data after the last member (§7), and ``lzip`` finds the
     last member the same way: the latest trailer, within the final
     :data:`TRAILING_DATA_SEARCH` bytes, whose member size leads back to a member
-    header. A member size is below the file size, so its high bytes are zero; only
-    ends behind such a run are tried, at most :data:`TRAILING_DATA_CANDIDATES` of
-    them, since inside a long run of zeros every offset is one. The forward decoder
+    header. A member size is below the file size, so its high bytes are zero, and it is
+    not zero, so one of its bytes is not: a trailer ends at most 7 bytes past the
+    start of a run of zeros, and never deeper inside one. Each run of zeros therefore
+    gives at most a few candidate ends, however long it is, and at most
+    :data:`TRAILING_DATA_CANDIDATES` of them are tried in all. The forward decoder
     reports the appended bytes when a read reaches them.
     """
     if _member_ends_at(stream, file_size, stop_at):
@@ -109,18 +115,19 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     base = max(stop_at, file_size - TRAILING_DATA_SEARCH)
     stream.seek(base)
     window = stream.read(file_size - base)
-    zeros = b"\x00" * max(1, 8 - (file_size.bit_length() + 7) // 8)
-    # A trailer ends at most 8 bytes past its last non-zero byte (the high bytes of its
-    # member size), so a run of zero padding at the end is skipped in one step.
-    at = min(len(window), len(window.rstrip(b"\x00")) + 8)
-    for _ in range(TRAILING_DATA_CANDIDATES):
-        at = window.rfind(zeros, 0, at)
-        if at < 0:
-            break
-        end = base + at + len(zeros)
-        if _member_ends_at(stream, end, stop_at, window, base):
-            return end
-        at += len(zeros) - 1
+    high_zeros = max(1, 8 - (file_size.bit_length() + 7) // 8)
+
+    def candidate_ends() -> Iterator[int]:
+        # Runs are found in the reversed window, so the latest comes first and a long
+        # run is one match rather than one step per byte.
+        for run in re.finditer(b"\x00{%d,}" % high_zeros, window[::-1]):
+            start, stop = len(window) - run.end(), len(window) - run.start()
+            last = min(stop, start + _SIZE_FIELD - 1)
+            yield from range(last, start + high_zeros - 1, -1)
+
+    for end in itertools.islice(candidate_ends(), TRAILING_DATA_CANDIDATES):
+        if _member_ends_at(stream, base + end, stop_at, window, base):
+            return base + end
     raise CorruptionError(
         "Lzip trailer not found at the end of the file or in the "
         f"{len(window)} bytes before it (at most {TRAILING_DATA_CANDIDATES} "

@@ -290,8 +290,10 @@ member read SHALL deliver the whole payload of every stream before the end, and 
 then stop reading the source. Bytes after the end SHALL be classified this way:
 
 - the start of another stream of the same codec is more data and is read: its magic,
-  or for LZMA Alone, which has none, a valid properties byte and a zero first byte of
-  range-coder data, as `lzma.LZMAFile` reads a second stream;
+  or for LZMA Alone, which has none, a properties byte liblzma decodes (`lc + lp` at
+  most 4) and a zero first byte of range-coder data, as `lzma.LZMAFile` reads a second
+  stream. Bytes that pass this check but are not a valid stream fail the read with
+  `CorruptionError`;
 - zero bytes are padding and SHALL NOT be reported;
 - anything else is trailing data: the system SHALL emit one `ARCHIVE_TRAILING_DATA`
   per opened member stream, with `expected_marker="end_of_stream"`, the codec name as
@@ -334,7 +336,8 @@ after the data decode as more codes.
 | `.zst` with a skippable frame between two frames | Both payloads; no report |
 | `.xz` / `.lz` + junk within 1 MiB | Size known, seek works, full payload, one report |
 | `.xz` / `.lz` + more than 1 MiB of junk | Size unknown; seeking reports `SEEK_INDEX_DEGRADED`; payload and one report |
-| `.xz` + 1 MiB of `00 00 59 5A`, `.lz` + 1 MiB of zeros and one byte | Same, after at most 4096 candidates checked |
+| `.lz` + 900 000 zero bytes + junk | Size known, seek works, full payload, one report |
+| `.xz` + 1 MiB of `00 00 59 5A`, `.lz` + 1 MiB of 8 zero bytes and one byte, repeated | Size unknown; payload and one report, after at most 4096 candidates checked |
 | `.tar.xz` with junk after the xz stream | Members read; one report with `format="xz"` |
 | Brotli + junk from a pipe | `CorruptionError` |
 | Brotli damaged mid-stream | `CorruptionError` |

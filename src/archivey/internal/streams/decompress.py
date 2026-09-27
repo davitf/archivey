@@ -316,8 +316,10 @@ class _OneStreamDecompressor(Protocol):
 # A stream's magic, as the bytes each position may hold; a codec lists one per kind of
 # stream that may follow the first (zstd: a frame or a skippable frame).
 StreamMagic = tuple[tuple[frozenset[int], ...], ...]
-# For a codec with no magic: given the bytes after a stream, True when they start
-# another, None when more bytes are needed to tell, False when they do not.
+# Given the bytes after a stream: True when they start another, None when more bytes are
+# needed to tell, False when they do not. It may also refuse the stream by raising, as
+# the LZMA Alone check does for a dictionary over ``max_decoder_memory``, so its
+# result must not be cached or its call skipped.
 StreamStart = Callable[[bytes], bool | None]
 
 
@@ -328,12 +330,6 @@ def stream_magic(*alternatives: tuple[bytes | range, ...]) -> StreamStart:
         for alternative in alternatives
     )
     return functools.partial(_magic_state, magic=magic)
-
-
-def _no_next_stream(data: bytes) -> bool:
-    """A codec whose streams are never concatenated: whatever follows is not one."""
-    del data
-    return False
 
 
 def _magic_state(data: bytes, magic: StreamMagic) -> bool | None:
@@ -355,7 +351,8 @@ class FramedDecoder(BaseDecoder):
     raise on it. This adapter decides it the same way for all of them. Bytes that start
     ``magic`` begin another stream (a concatenated file); zeros are padding; anything
     else ends the data and sets :attr:`trailing_bytes`. A codec with no magic (LZMA
-    Alone) passes a :data:`StreamStart` check of the header instead.
+    Alone) passes a :data:`StreamStart` check of the header instead, which may raise to
+    refuse the next stream.
 
     The first stream is handed to the library as it comes, so a file that is not this
     codec at all fails with the library's own error. An empty source, or one that ends
@@ -365,7 +362,8 @@ class FramedDecoder(BaseDecoder):
     def __init__(
         self,
         new_decompressor: Callable[[], _OneStreamDecompressor],
-        magic: StreamStart = _no_next_stream,
+        *,
+        magic: StreamStart,
     ) -> None:
         self._new = new_decompressor
         self._magic = magic
@@ -381,7 +379,7 @@ class FramedDecoder(BaseDecoder):
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> FramedDecoder:
         del point, inner
-        return FramedDecoder(self._new, self._magic)
+        return FramedDecoder(self._new, magic=self._magic)
 
     def _next_stream(self, data: bytes) -> bytes:
         """Resolve ``data`` past a stream's end: the next stream's input, or ``b""``."""
@@ -1558,14 +1556,14 @@ def FramedDecompressorStream(
     new_decompressor: Callable[[], _OneStreamDecompressor],
     *,
     codec_name: str,
-    magic: StreamStart = _no_next_stream,
+    magic: StreamStart,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
 ) -> DecompressorStream:
     """Decode a one-stream library decompressor's codec (forward-only; O(n) rewind)."""
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: FramedDecoder(new_decompressor, magic),
+        make_decoder=lambda _p, _i: FramedDecoder(new_decompressor, magic=magic),
         collector=collector,
         codec_name=codec_name,
         report_trailing_data=report_trailing_data,

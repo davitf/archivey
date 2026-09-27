@@ -800,6 +800,20 @@ def test_lzma_alone_with_zero_dictionary_size_is_detected() -> None:
     assert info.detected_by == "content_probe"
 
 
+@pytest.mark.parametrize("props", [0x5D, 4, 5, 8, 36, 224])
+def test_lzma_alone_header_gate_matches_what_liblzma_decodes(props: int) -> None:
+    """lc + lp over 4 is refused by liblzma, so the gate refuses it too."""
+    header = (
+        bytes([props]) + (1 << 16).to_bytes(4, "little") + (6).to_bytes(8, "little")
+    )
+    try:
+        lzma.LZMADecompressor(format=lzma.FORMAT_ALONE).decompress(header + bytes(5))
+        decodes = True
+    except lzma.LZMAError:
+        decodes = False
+    assert codecs_module._alone_header_plausible(header) is decodes
+
+
 # --- far magic ahead of the content probes ---------------------------------------------
 
 _ISO_SYSTEM_AREA = 32768

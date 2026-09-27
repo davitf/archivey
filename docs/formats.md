@@ -397,13 +397,15 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   non-seekable sources; CLEAR boundaries provide seek points when seekability is declared.
 - **Bytes after the compressed stream** (a signature or checksum appended to a
   download, a tool that pads its output) do not stop the read. For gzip, zlib, bzip2,
-  xz, lzip, LZMA Alone, zstd, LZ4 and Brotli, archivey returns the whole payload, then emits one `ARCHIVE_TRAILING_DATA` whose `observed_bytes` is the offset of
-  the first appended byte. It is a warning under the default policy; under
+  xz, lzip, LZMA Alone, zstd, LZ4 and Brotli, archivey returns the whole payload, then
+  emits one `ARCHIVE_TRAILING_DATA` whose `observed_bytes` is the offset of the first
+  appended byte. It is a warning under the default policy; under
   `DiagnosticPolicy.strict()` the read that reaches it raises `DiagnosticRaisedError`.
   Zero bytes after the end are padding and report nothing, as for TAR. A second stream
   of the same codec (a concatenated `.gz`, `.bz2`, `.lzma`, `.zst` or `.lz4`) is more
-  data, not trailing bytes. `.xz` and `.lz` keep their size and seeks when the appended bytes are
-  within 1 MiB; further out the index is not found and the size reads as unknown.
+  data, not trailing bytes. `.xz` and `.lz` keep their size and seeks when the
+  appended bytes are within 1 MiB, unless they are crafted to hold thousands of fake
+  end markers; further out the index is not found and the size reads as unknown.
   Brotli has no end marker the library reports, so archivey finds the end by decoding
   the source again, which needs a seekable source: from a pipe, bytes after a Brotli
   stream raise `CorruptionError`. The check applies to a bare compressed file and to a

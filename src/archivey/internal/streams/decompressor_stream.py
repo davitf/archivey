@@ -1050,9 +1050,10 @@ class DecompressorStream(ReadOnlyIOStream):
 # index is reported unreadable (SEEK_INDEX_DEGRADED) and reads decode sequentially.
 TRAILING_DATA_SEARCH = 1 << 20
 # How many candidate ends those scans check before giving up the same way. Real
-# appended data holds a few per MiB (a two-byte magic turns up once every 64 KiB of
-# random bytes); a tail crafted to be all candidates would otherwise cost a Python
-# check per byte on every open.
+# appended data holds few: xz's two-byte footer magic turns up once every 64 KiB of
+# random bytes, and lzip tries a few ends per run of zeros, however long the run. A tail
+# crafted to be all candidates would otherwise cost a Python check per few bytes on
+# every open.
 TRAILING_DATA_CANDIDATES = 4096
 
 

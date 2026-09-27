@@ -241,20 +241,20 @@ Alone, zstd and LZ4, `FramedDecoder` in `internal/streams/decompress.py` runs on
 library decompressor per stream and starts another only when the next bytes are that
 codec's magic (a zstd skippable frame counts), so a concatenated file still reads as one
 payload. LZMA Alone has no magic; the next bytes start a stream when the header's
-properties byte is valid and byte 13, the range coder's first byte, is zero, which every
-LZMA encoder writes and text almost never has. That is how `lzma.LZMAFile` reads a
-concatenated `.lzma` too, and a second stream's dictionary is checked against
-`max_decoder_memory` like the first. Past the end, zero bytes are padding, as `tar` pads its records; the first
-non-zero byte ends the stream there. `DecompressorStream` stops reading the source,
-returns everything decoded, and emits one `ARCHIVE_TRAILING_DATA` with
-`expected_marker="end_of_stream"` at that byte's offset. Only a bare file, a compressed
-TAR's codec and `open_stream` report (`StreamConfig.report_trailing_data`); a codec
-inside a ZIP or 7z member stops silently, because the container's sizes decide there,
-and so do the detection and metadata probes. Brotli and the two accelerators need more
-than this ([`brotli.md`](brotli.md) §2.3, [`gzip.md`](gzip.md) §2.3,
-[`bzip2.md`](bzip2.md) §2.3), and xz and lzip search back for their index through up to
-1 MiB of such bytes ([`xz.md`](xz.md) §2.2). `.Z` has no end to find
-([`unix-compress.md`](unix-compress.md)).
+properties byte is one liblzma decodes and byte 13, the range coder's first byte, is
+zero, which every LZMA encoder writes and text almost never has. That is how
+`lzma.LZMAFile` reads a concatenated `.lzma` too, and a second stream's dictionary is
+checked against `max_decoder_memory` like the first. Past the end, zero bytes are
+padding, as `tar` pads its records; the first non-zero byte ends the stream there.
+`DecompressorStream` stops reading the source, returns everything decoded, and emits one
+`ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"` at that byte's offset.
+Only a bare file, a compressed TAR's codec and `open_stream` report
+(`StreamConfig.report_trailing_data`); a codec inside a ZIP or 7z member stops silently,
+because the container's sizes decide there, and so do the detection and metadata probes.
+Brotli and the two accelerators need more than this ([`brotli.md`](brotli.md) §2.3,
+[`gzip.md`](gzip.md) §2.3, [`bzip2.md`](bzip2.md) §2.3), and xz and lzip search back for
+their index through up to 1 MiB of such bytes ([`xz.md`](xz.md) §2.2). `.Z` has no end
+to find ([`unix-compress.md`](unix-compress.md)).
 
 **Compressed input is counted.** On a pipe the reader wraps the source so the extraction
 ratio guard has a denominator; a path or seekable stream uses its length.

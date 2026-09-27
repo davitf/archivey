@@ -25,7 +25,10 @@ import pytest
 from archivey import AcceleratorMode, ArchiveyConfig, DiagnosticPolicy, open_archive
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
 from archivey.exceptions import CorruptionError, DiagnosticRaisedError
-from archivey.internal.streams.decompressor_stream import TRAILING_DATA_SEARCH
+from archivey.internal.streams.decompressor_stream import (
+    TRAILING_DATA_CANDIDATES,
+    TRAILING_DATA_SEARCH,
+)
 from archivey.types import HashAlgorithm
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.streams_util import (
@@ -316,6 +319,20 @@ def test_a_second_lzma_stream_is_checked_against_the_dictionary_cap(
             reader.read(reader.members()[0])
 
 
+def test_a_tail_shaped_like_an_lzma_header_liblzma_refuses_is_reported(
+    tmp_path: Path,
+) -> None:
+    """Properties 5 (lc=5) is under the 225 the byte can encode but over liblzma's
+    lc + lp <= 4, so the tail cannot start a stream and is trailing data."""
+    header = bytes([5]) + b"\x00" * 4 + b"\xff" * 8 + b"\x00"
+    first = lzma.compress(_PAYLOAD, format=lzma.FORMAT_ALONE)
+    path = _write(tmp_path, ".lzma", first + header + b"rest of junk here")
+    with open_archive(path) as reader:
+        assert reader.read(reader.members()[0]) == _PAYLOAD
+        (report,) = _reports(reader)
+    assert report.observed_bytes == len(first)
+
+
 @requires_zstd()
 def test_a_zstd_skippable_frame_is_part_of_the_data(tmp_path: Path) -> None:
     skippable = b"\x50\x2a\x4d\x18" + (4).to_bytes(4, "little") + b"note"
@@ -373,7 +390,11 @@ def test_the_index_search_reaches_its_bound_and_no_further(
             ".xz", "xz", "_parse_xz_footer", b"\x00\x00YZ" * (1 << 18), id="xz"
         ),
         pytest.param(
-            ".lz", "lzip", "_member_ends_at", b"\x00" * (1 << 20) + b"J", id="lz"
+            ".lz",
+            "lzip",
+            "_member_ends_at",
+            (b"\x00" * 8 + b"J") * ((1 << 20) // 9),
+            id="lz",
         ),
     ],
 )
@@ -385,8 +406,8 @@ def test_the_index_search_checks_a_bounded_number_of_candidates(
     check: str,
     tail: bytes,
 ) -> None:
-    """A tail made of candidate ends (every ``YZ`` 4-aligned, or a run of zeros where
-    every offset is one) is given up on after a fixed number, not checked per byte."""
+    """A tail made of candidate ends (every ``YZ`` 4-aligned, or short runs of zeros,
+    each a few) is given up on after a fixed number, not checked per byte."""
     import importlib
 
     target = importlib.import_module(f"archivey.internal.streams.{module}")
@@ -404,8 +425,21 @@ def test_the_index_search_checks_a_bounded_number_of_candidates(
     with open_archive(path) as reader:
         assert reader.members()[0].size is None
         assert reader.read(reader.members()[0]) == _PAYLOAD
-    # Per candidate the tail holds 262 144 (xz) or a million (lzip).
-    assert calls <= len(tail) // 64
+    # One check at the end of the file, then the capped search.
+    assert calls <= TRAILING_DATA_CANDIDATES + 1
+
+
+@pytest.mark.parametrize("padding", [4100, 1 << 16, 900_000])
+def test_zero_padding_does_not_cost_lzip_its_index(
+    tmp_path: Path, padding: int
+) -> None:
+    """Inside a run of zeros every offset holds zero high bytes, but a trailer can only
+    end near the run's start, so a long run of padding is one candidate, not thousands."""
+    _name, compress, _marks = _CODECS[".lz"]
+    path = _write(tmp_path, ".lz", compress(_PAYLOAD) + b"\x00" * padding + b"J")
+    with open_archive(path) as reader:
+        assert reader.members()[0].size == len(_PAYLOAD)
+        assert reader.read(reader.members()[0]) == _PAYLOAD
 
 
 def test_compressed_tar_reports_bytes_after_the_codec(tmp_path: Path) -> None:

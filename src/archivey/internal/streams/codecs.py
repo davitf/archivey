@@ -1952,15 +1952,18 @@ class LzipCodec(_SizedLzmaCodec):
 
 
 def _alone_props_plausible(props: int) -> bool:
-    """Whether ``props`` encodes a valid Alone ``(lc, lp, pb)`` triple."""
-    # props = (pb * 5 + lp) * 9 + lc with lc∈[0,8], lp∈[0,4], pb∈[0,4]
+    """Whether ``props`` encodes an ``(lc, lp, pb)`` triple liblzma decodes.
+
+    props = (pb * 5 + lp) * 9 + lc with lc <= 8, lp <= 4, pb <= 4, and liblzma also
+    requires lc + lp <= 4 (``LZMA_LCLP_MAX``): 75 of the 256 values.
+    """
     if props > (4 * 5 + 4) * 9 + 8:
         return False
     lc = props % 9
     rest = props // 9
     lp = rest % 5
     pb = rest // 5
-    return lc <= 8 and lp <= 4 and pb <= 4
+    return lc + lp <= 4 and pb <= 4
 
 
 def _alone_header_plausible(prefix: bytes) -> bool:
@@ -1969,7 +1972,7 @@ def _alone_header_plausible(prefix: bytes) -> bool:
     The 13-byte header is a properties byte, a 32-bit dictionary size, and a 64-bit
     uncompressed size (all-ones meaning "unknown"). Two of the three are checked:
 
-    - **Properties** must encode a legal ``(lc, lp, pb)`` triple.
+    - **Properties** must encode an ``(lc, lp, pb)`` triple liblzma decodes.
     - **Uncompressed size** must not be exactly zero. Any value but the all-ones
       sentinel is the stream's exact output length, so zero declares a stream carrying
       no payload — nothing archivey could open. That is the rule the probe already
@@ -2027,23 +2030,21 @@ def _peek_alone_header(source: CodecSource) -> tuple[CodecSource, bytes]:
     return replay, replay.peek(_ALONE_HEADER_SIZE)
 
 
-# Alone properties byte: (pb * 5 + lp) * 9 + lc, with lc <= 8, lp <= 4, pb <= 4.
-_ALONE_MAX_PROPERTIES = 9 * 5 * 5
-
-
 def _starts_alone_stream(data: bytes, *, limits: DecoderLimits) -> bool | None:
     """Whether the bytes after an Alone stream start another one, as ``lzma`` reads it.
 
     ``lzma.LZMAFile`` reads a second Alone stream after the first, so a concatenated
     ``.lzma`` is one payload. Alone has no magic to tell it by, so this checks what the
-    header must hold: a valid properties byte, and a zero first byte of range-coder
-    data (byte 13), which every LZMA encoder writes. Text and most binary junk fail
-    one of the two. A stream whose dictionary is over ``max_decoder_memory`` is
+    header must hold: a properties byte liblzma decodes, and a zero first byte of
+    range-coder data (byte 13), which every LZMA encoder writes. Text and most binary
+    junk fail one of the two and are trailing data; junk that passes both (about one
+    random tail in 870) is decoded as a stream and fails the read with
+    ``CorruptionError``. A stream whose dictionary is over ``max_decoder_memory`` is
     refused as the first one is, rather than read as trailing data.
     """
     if len(data) <= _ALONE_HEADER_SIZE:
         return None
-    if data[0] >= _ALONE_MAX_PROPERTIES or data[_ALONE_HEADER_SIZE] != 0:
+    if not _alone_props_plausible(data[0]) or data[_ALONE_HEADER_SIZE] != 0:
         return False
     check_decoder_memory(
         int.from_bytes(data[1:5], "little"),

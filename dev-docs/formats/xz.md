@@ -65,11 +65,11 @@ writes one per data block, so a small file is one member unless `-B` sets smalle
 restarting is possible; the producer decides whether it is useful.
 
 **LZMA Alone has no magic and no trailer.** Its 13-byte header is a properties byte, a
-dictionary size and an uncompressed size. The properties byte has 225 legal values out of
-256, the dictionary size may be anything, and liblzma writes all ones for the size. So a
-large share of random data parses as a header, and detection must decode to decide (§2.1).
-There is no integrity check at all: a corrupt Alone stream decodes to wrong bytes unless
-the corruption breaks the range coder.
+dictionary size and an uncompressed size. The properties byte has 75 values out of 256
+that liblzma decodes (`lc + lp` at most 4), the dictionary size may be anything, and
+liblzma writes all ones for the size. So a large share of random data parses as a header,
+and detection must decode to decide (§2.1). There is no integrity check at all: a corrupt
+Alone stream decodes to wrong bytes unless the corruption breaks the range coder.
 
 **Every one declares a dictionary, and the decoder allocates it.** An xz block header
 names its LZMA2 dictionary, up to 4 GiB; an lzip header names an exponent from 12 to 29,
@@ -85,14 +85,14 @@ inner-TAR probe then decodes 512 bytes and upgrades a match to `TAR_XZ`, or
 to TAR over lzip ([`single-file.md`](single-file.md) §2.1).
 
 LZMA Alone is found by the first of the three content probes. `_alone_header_plausible`
-checks that the properties byte encodes a legal `(lc, lp, pb)` and that the declared size
-is not exactly zero. The dictionary size is not checked: every value is legal, and the
-specification rounds one below 4 KiB up. The zero-size rule is there because 18 zero bytes
-are a valid, complete, empty Alone stream, so without it a run of zero padding would be
-claimed. A source of 13 bytes or fewer is refused, since it has no data after the header.
-Then the probe decodes the sample and requires at least one byte of output
-([`single-file.md`](single-file.md) §2.1). A match is `PROBABLE`, and an error from a
-probe-only match is stamped `format_unconfirmed`.
+checks that the properties byte encodes an `(lc, lp, pb)` liblzma decodes and that the
+declared size is not exactly zero. The dictionary size is not checked: every value is
+legal, and the specification rounds one below 4 KiB up. The zero-size rule is there
+because 18 zero bytes are a valid, complete, empty Alone stream, so without it a run of
+zero padding would be claimed. A source of 13 bytes or fewer is refused, since it has no
+data after the header. Then the probe decodes the sample and requires at least one byte of
+output ([`single-file.md`](single-file.md) §2.1). A match is `PROBABLE`, and an error from
+a probe-only match is stamped `format_unconfirmed`.
 
 `.tlz` is an lzip extension. An LZMA Alone file named `.tlz` is identified by content as
 TAR over LZMA Alone, with an extension-conflict warning.
@@ -107,18 +107,20 @@ trailer CRC with `crc32_combine`, in one walk that holds no per-member state. On
 neither is known before the read ends.
 
 **Through bytes after the end.** The walk has to start at the last stream's end, not at
-the file's. Zero bytes are skipped first. For xz, `_data_end()` in `internal/streams/xz.py`
-then looks back for a footer that checks out: `YZ` at a 4-aligned end and a valid CRC-32
-over its fields. For lzip, `_data_end()` in `lzip.py` looks for a trailer whose
-`member_size` leads back to an `LZIP` header; a candidate must end in the zero high bytes
-that any real `member_size` has, which rules out most offsets without a read. Both look
-back at most `TRAILING_DATA_SEARCH` (1 MiB) and check at most `TRAILING_DATA_CANDIDATES`
-(4096) candidate ends there: a tail can be crafted so that every `YZ` is 4-aligned, and
-a run of zeros puts a candidate at every offset. Past either bound the index is reported
-unreadable: `size=None`, and a seek falls back to decoding forward with
-`SEEK_INDEX_DEGRADED`. The forward read then reports the bytes as `ARCHIVE_TRAILING_DATA`
-([`single-file.md`](single-file.md) §2.3). The two bounds keep the cost of a file of junk
-to 1 MiB of reading and 4096 checks at open, a few milliseconds.
+the file's. Zero bytes are skipped first. For xz, `_data_end()` in
+`internal/streams/xz.py` then looks back for a footer that checks out: `YZ` at a 4-aligned
+end and a valid CRC-32 over its fields. For lzip, `_data_end()` in `lzip.py` looks for a
+trailer whose `member_size` leads back to an `LZIP` header; a candidate must end in the
+zero high bytes that any real `member_size` has, which rules out most offsets without a
+read. A `member_size` is not zero, so a trailer ends at most 7 bytes past the start of a
+run of zeros: a run of padding of any length gives a few candidates, found with one regex
+match over the reversed window. Both look back at most `TRAILING_DATA_SEARCH` (1 MiB) and
+check at most `TRAILING_DATA_CANDIDATES` (4096) candidate ends there: a tail can be
+crafted so that every `YZ` is 4-aligned, or as thousands of short runs of zeros. Past
+either bound the index is reported unreadable: `size=None`, and a seek falls back to
+decoding forward with `SEEK_INDEX_DEGRADED`. The forward read then reports the bytes as
+`ARCHIVE_TRAILING_DATA` ([`single-file.md`](single-file.md) §2.3). The two bounds keep the
+cost of a file of junk to 1 MiB of reading and 4096 checks at open, a few milliseconds.
 
 **LZMA Alone** gives its size from the header when the header is not the all-ones
 "unknown" marker. `xz --format=lzma` always writes the marker; the LZMA SDK writes the real
@@ -205,7 +207,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | Two `xz` streams with zero padding between them | Reads both |
 | A stream followed by `junk` | Reads the payload, then `ARCHIVE_TRAILING_DATA`; `size` and seeks from the index. `xz -t` refuses the file |
 | `xz --format=lzma` | Detected by the probe, `PROBABLE`; `size=None` (the "unknown" marker) |
-| LZMA Alone followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` |
+| LZMA Alone followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`. Junk that passes the next-stream check (about one random tail in 870) fails with `CorruptionError` |
 | Two LZMA Alone streams concatenated | Reads both, as `lzma.LZMAFile` does; the second is recognised by its header (§2.3 of [`single-file.md`](single-file.md)) |
 | 40 000 zero bytes named `.lzma` | Reads as empty: 18 zero bytes are a complete empty stream (a 13-byte header and 5 bytes of range coder), and the rest is padding |
 | `plzip`, `plzip -B` with a small block | Reads; `size` and the combined CRC-32 from the trailers. The 4 MB payload is one member by default and nine with the small block, one seek point per member |
