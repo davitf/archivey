@@ -574,11 +574,18 @@ def test_close_before_end_of_file_is_not_an_error() -> None:
 def test_a_stream_that_cannot_be_built_stops_its_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The stream owns the process from its constructor: a raise there reaps it."""
+    """The stream owns the process from its constructor: a raise there reaps it.
+
+    The raise itself must reap, not the collection of the half-built stream
+    (``IOBase.__del__`` calls ``close()`` on it too). Binding ``refused`` keeps its
+    traceback, and with it the half-built stream, alive past the assertion.
+    """
 
     def refuse(self: object, inner: object) -> None:
         raise RuntimeError("wrapper refused")
 
+    # Patches the shared base class; nothing else constructs a DelegatingStream in
+    # this block.
     monkeypatch.setattr(cli.DelegatingStream, "__init__", refuse)
     proc = subprocess.Popen(
         [sys.executable, "-c", "import sys\nwhile True: sys.stdout.write('x' * 65536)"],
@@ -587,13 +594,14 @@ def test_a_stream_that_cannot_be_built_stops_its_process(
     )
     assert proc.stdout is not None
     try:
-        with pytest.raises(RuntimeError, match="wrapper refused"):
+        with pytest.raises(RuntimeError, match="wrapper refused") as refused:
             unar.UnarOutputStream(
                 proc.stdout,  # type: ignore[arg-type]
                 proc,
                 has_verifiable_digest=False,
             )
         assert proc.returncode is not None
+        del refused
     finally:
         proc.stdout.close()
         cli.terminate_process(proc)

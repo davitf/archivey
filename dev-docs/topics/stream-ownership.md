@@ -59,7 +59,9 @@ Flipping it to borrow was the tempting unification: then swapping
 catches that swap (`tests/leak_oracle.py` pins `owns_inner=True` slices and
 live children). The remaining risk is the other direction.
 
-Ten production subclasses. Seven ride the owning default with no keyword.
+Fourteen production subclasses, each classified by the inventory in
+`tests/test_stream_bases.py::test_delegating_stream_close_inventory`. Ten ride the
+owning default with no keyword.
 Counting wrappers (`CountingReader`, `OutputCountingStream`,
 `SeekCountingStream`) are spliced mid-chain, and their inner must therefore be a
 wrapper rather than the caller's own object.
@@ -79,14 +81,14 @@ both common stream shapes, and measurement on and off.
 | `SeekCountingStream` | mid-chain; inner is already a non-closing wrapper (see above) |
 | `CountingReader` | mid-chain; inner is already a non-closing wrapper (see above) |
 
-Two more own, but close themselves and tell the base to skip the second call:
+The other four own too, but close themselves and tell the base to skip the second call:
 
 | Class | Why `_SUBCLASS_CLOSES_INNER = True` |
 | --- | --- |
 | `ProcessOutputStream` (`_UnrarOwnedStream`, `UnarOutputStream`) | close the pipe, then reap the process, then mark closed |
 | `_AcceleratorStream` | `weakref.finalize` closes the raw object once |
 
-Those seven would need `owns_inner=True` after a flip. A missed one leaks a
+The ten that ride the default would need `owns_inner=True` after a flip. A missed one leaks a
 handle the oracle does not pin: default `DelegatingStream` constructors wrap
 `BytesIO` by the thousand and are excluded on purpose. The oracle catching the
 #336 shape is not a reason to create a new silent-miss on `LockedStream`.
