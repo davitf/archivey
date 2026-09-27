@@ -800,6 +800,21 @@ def test_lzma_alone_with_zero_dictionary_size_is_detected() -> None:
     assert info.detected_by == "content_probe"
 
 
+@pytest.mark.parametrize(
+    ("props", "legal"),
+    [(0x5D, True), (0x4C, True), (0x4D, True), (0x7F, True), (224, True), (225, False)],
+)
+def test_lzma_alone_header_gate_admits_the_formats_full_properties_range(
+    props: int, legal: bool
+) -> None:
+    """The gate admits every legal properties byte, including the 150 liblzma refuses
+    (``MZ``, COFF and ELF first bytes among them); the decode decides."""
+    header = (
+        bytes([props]) + (1 << 16).to_bytes(4, "little") + (6).to_bytes(8, "little")
+    )
+    assert codecs_module._alone_header_plausible(header) is legal
+
+
 # --- far magic ahead of the content probes ---------------------------------------------
 
 _ISO_SYSTEM_AREA = 32768

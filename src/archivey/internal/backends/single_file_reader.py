@@ -136,10 +136,14 @@ class SingleFileReader(BaseArchiveReader):
         # Keep the codec sequential for such a source regardless of the archive's streaming flag.
         # Declared seek demand (MemberStreams.SEEKABLE) also gates accelerator AUTO resolution.
         seek_declared = MemberStreams.SEEKABLE in member_streams
-        self._codec_config = stream_config_from_archivey(
-            self._config,
-            streaming=self._streaming or not self._seekable,
-            seekable=seek_declared and self._seekable,
+        # The codec stream is the whole file, so bytes after its end are reported.
+        self._codec_config = replace(
+            stream_config_from_archivey(
+                self._config,
+                streaming=self._streaming or not self._seekable,
+                seekable=seek_declared and self._seekable,
+            ),
+            report_trailing_data=True,
         )
 
         # Metadata probes answer a different question than member streams, so they get

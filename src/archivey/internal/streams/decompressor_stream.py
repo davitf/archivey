@@ -35,7 +35,7 @@ from typing import (
     cast,
 )
 
-from archivey.diagnostics import DiagnosticCode, SeekIndexContext
+from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, SeekIndexContext
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
@@ -104,6 +104,17 @@ class Decoder(Protocol):
     def finished(self) -> bool: ...
 
     @property
+    def trailing_bytes(self) -> int | None:
+        """How many of the bytes fed so far lie past the stream's end, once any do.
+
+        ``None`` until the decoder has reached the end of its data and found a non-zero
+        byte after it that starts no further stream. The count runs from that byte to
+        the end of everything fed, so the stream can turn it into a source offset. A
+        decoder that sets it is :attr:`finished` and ignores further input.
+        """
+        ...
+
+    @property
     def needs_input(self) -> bool:
         """False when more output can be produced without reading new compressed bytes."""
         ...
@@ -141,10 +152,28 @@ class BaseDecoder:
     """
 
     _pending_error: BaseException | None = None
+    _trailing_bytes: int | None = None
 
     @property
     def pending_error(self) -> BaseException | None:
         return self._pending_error
+
+    @property
+    def trailing_bytes(self) -> int | None:
+        return self._trailing_bytes
+
+    def _past_end(self, data: bytes) -> bool:
+        """Account for ``data``, fed after the stream's last byte; True once it is junk.
+
+        Zeros are padding and pass, as they do after a TAR trailer: block devices, tape
+        and ``dd`` pad files with them. The first non-zero byte sets
+        :attr:`trailing_bytes`; the caller then stops decoding.
+        """
+        if self._trailing_bytes is None:
+            rest = data.lstrip(b"\x00")
+            if rest:
+                self._trailing_bytes = len(rest)
+        return self._trailing_bytes is not None
 
     def clear_pending_error(self) -> None:
         self._pending_error = None
@@ -429,11 +458,18 @@ class DecompressorStream(ReadOnlyIOStream):
         codec_name: str = "",
         seekable: bool = True,
         owns_inner: bool = False,
+        report_trailing_data: bool = False,
     ) -> None:
         super().__init__()
         self._owned_inner: BinaryIO | None = None
         self._diagnostics_collector = collector
         self._codec_name = codec_name
+        self._report_trailing_data = report_trailing_data
+        # Reported once per stream: a seek back re-decodes to the same end.
+        self._trailing_reported = False
+        # Compressed bytes read from the start of the source, for the offset of
+        # trailing data on a source that cannot tell() (a seek resets it).
+        self._compressed_read = 0
         # Declared seek demand: without it, skip seek-point tables / index scans, but
         # still allow O(n) seeks from the origin (compressed TAR needs that for random
         # access even when MemberStreams.SEEKABLE was not declared).
@@ -646,6 +682,7 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def _reset_to_seek_point(self, point: SeekPoint) -> None:
         self._inner.seek(point.compressed_offset)
+        self._compressed_read = point.compressed_offset
         # Dispose the outgoing decoder deterministically before dropping it:
         # mid-member a PPMd decode can leave its native worker parked, and relying
         # on __del__/GC timing to quiesce it is exactly what close() exists to avoid
@@ -668,14 +705,19 @@ class DecompressorStream(ReadOnlyIOStream):
     def _read_decompressed_chunk(self, max_length: int = -1) -> bytes:
         if not self._decoder.needs_input:
             drained = self._ingest_decode(self._decoder.feed(b"", max_length))
+            if self._decoder.trailing_bytes is not None:
+                return self._end_at_trailing_data(drained)
             if drained:
                 return drained
             # Decoder claimed retained input but produced nothing (e.g. a stuck
             # lzma needs_input=False under a budget). Fall through to reading more
             # compressed bytes — or EOF — so the caller cannot spin forever.
         chunk = self._inner.read(_compressed_feed_size(max_length))
+        self._compressed_read += len(chunk)
         if not chunk:
             leftover = self._ingest_decode(self._decoder.flush())
+            if self._decoder.trailing_bytes is not None:
+                return self._end_at_trailing_data(leftover)
             if leftover and getattr(self._decoder, "drains_after_flush", False):
                 # The decoder took its input whole at compressed EOF and has more
                 # output: keep pulling it through ``feed(b"")``. It reports False
@@ -691,7 +733,42 @@ class DecompressorStream(ReadOnlyIOStream):
                 self._size = self._pos + len(self._buffer) + len(leftover)
                 self._index_built = True  # a forward scan to EOF is a complete index
             return leftover
-        return self._ingest_decode(self._decoder.feed(chunk, max_length))
+        data = self._ingest_decode(self._decoder.feed(chunk, max_length))
+        if self._decoder.trailing_bytes is not None:
+            return self._end_at_trailing_data(data)
+        return data
+
+    def _end_at_trailing_data(self, data: bytes) -> bytes:
+        """End the stream where the decoder found bytes past the codec's end.
+
+        ``data`` is this call's output, all of it before that end. The stream is
+        complete, so its size is published, and nothing further is read from the
+        source: the bytes past the end are not decoded, however many there are. They
+        are reported once per stream, as ``ARCHIVE_TRAILING_DATA``, when the stream is
+        one the caller was handed (``report_trailing_data``); inside a container they
+        end the stream silently.
+        """
+        if not self._eof:
+            self._eof = True
+            self._size = self._pos + len(self._buffer) + len(data)
+            self._index_built = True
+        if self._report_trailing_data and not self._trailing_reported:
+            self._trailing_reported = True
+            self._report_trailing(self._trailing_data_offset())
+        return data
+
+    def _trailing_data_offset(self) -> int:
+        trailing = self._decoder.trailing_bytes or 0
+        end = self._compressed_read
+        if self._inner.seekable():
+            # A resuming decoder (xz's block hand-off) moves the source itself.
+            end = self._inner.tell()
+        return max(end - trailing, 0)
+
+    def _report_trailing(self, offset: int) -> None:
+        report_trailing_data(
+            self._diagnostics_collector, self._codec_name or "compressed", offset
+        )
 
     @contextmanager
     def _deferring_raises(self) -> Iterator[Callable[[], Exception | None]]:
@@ -965,3 +1042,43 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def tell(self, /) -> int:
         return self._pos
+
+
+# How far back from the end of the file the xz and lzip index scans look for the end
+# of the data when the file does not end with it. The same bound as the TAR trailing
+# scan: enough for any padding or appended signature seen in practice. Past it the
+# index is reported unreadable (SEEK_INDEX_DEGRADED) and reads decode sequentially.
+TRAILING_DATA_SEARCH = 1 << 20
+# How many candidate ends those scans check before giving up the same way. Real
+# appended data holds few: xz's two-byte footer magic turns up once every 64 KiB of
+# random bytes, and lzip tries a few ends per run of zeros, however long the run. A tail
+# crafted to be all candidates would otherwise cost a Python check per few bytes on
+# every open.
+TRAILING_DATA_CANDIDATES = 4096
+
+
+def report_trailing_data(
+    collector: DiagnosticCollector | None, codec_name: str, offset: int
+) -> None:
+    """Report non-zero bytes at compressed ``offset``, past the end of a codec's data.
+
+    Shared by :class:`DecompressorStream` and the accelerator wrappers that find the
+    same thing another way, so every path says it identically.
+    """
+    resolve_collector(collector).emit(
+        code=DiagnosticCode.ARCHIVE_TRAILING_DATA,
+        message=(
+            f"The {codec_name} stream ends before the file does: bytes that are not "
+            f"part of it start at compressed offset {offset}. The data was read in "
+            "full; the bytes after it were not decoded (something may have been "
+            "appended to the file)."
+        ),
+        context=ArchiveEofContext(
+            format=codec_name,
+            expected_marker="end_of_stream",
+            expected_bytes=0,
+            observed_bytes=offset,
+            observed_kind="nonzero",
+        ),
+        logger=logger,
+    )

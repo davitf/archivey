@@ -46,9 +46,15 @@ def _raw_deflate(data: bytes) -> bytes:
 def _assert_accelerator(stream: object) -> None:
     inner = getattr(stream, "_inner", None)
     # Length-verifying / ISIZE wraps sit outside the accelerator.
-    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
+    from archivey.internal.streams.codecs import (
+        _GzipTruncationCheckStream,
+        _StdlibOnAcceleratorError,
+    )
 
-    while isinstance(inner, (VerifyingStream, _GzipTruncationCheckStream)):
+    while isinstance(
+        inner,
+        (VerifyingStream, _GzipTruncationCheckStream, _StdlibOnAcceleratorError),
+    ):
         inner = getattr(inner, "_inner", None)
     assert isinstance(inner, RapidgzipChildStream)
 
@@ -375,7 +381,9 @@ def test_standalone_zlib_midcut_may_short_read_through_rapidgzip_on_without_size
 
     ``ON`` bypasses the AUTO verifiable-size gate; without a declared length there is
     no backstop. Either a short read or a translated error is acceptable — a raw
-    rapidgzip exception is not.
+    rapidgzip exception is not. Where rapidgzip raises on the cut (macOS reports it as
+    ``std::exception``), the stream finishes with the standard library, which names
+    the cut: ``TruncatedError``.
     """
     pytest.importorskip("rapidgzip")
     full = zlib.compress(_SMALL * 100)
@@ -386,7 +394,7 @@ def test_standalone_zlib_midcut_may_short_read_through_rapidgzip_on_without_size
     try:
         with open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=on) as stream:
             out = stream.read()
-    except CorruptionError:
+    except (CorruptionError, TruncatedError):
         return
     # Silent short read: decompressed less than the full payload would have been.
     assert len(out) < len(_SMALL * 100)
