@@ -789,6 +789,29 @@ any of them is built
 folder stream that `ExtractionLimits` counts, so the decoder's end-of-output check reads
 at most one byte from each branch and never drains one.
 
+### O21. A directory source changed by another process between listing and reading — accepted
+
+The directory reader lists a tree with `lstat` and never walks through a symlink, so the
+listing stays inside the root. A member's data is opened later, by path, with plain
+`open()`. Whatever is at that path then is what the caller reads. If another process
+replaces a listed file with a symlink to a file outside the root, the read returns that
+file's bytes. If it replaces a listed directory with a symlink, reading a file under it
+does the same. A file replaced by a FIFO blocks `open()` until something writes to it. A
+file that grew reads past its listed `size`. None of this raises or emits a diagnostic.
+
+*Accepted* under the published trust boundary
+([`docs/extracting.md`](../docs/extracting.md) §Trust boundaries): other local processes
+are trusted, and racing them is out of scope. A caller that reads a tree someone else can
+write to while archivey reads it (an upload staging folder, a shared drop folder) is
+exposed. The direction if this ever moves in scope: open with `O_NOFOLLOW | O_NONBLOCK`
+through an `openat` walk from the root, `fstat` the handle, and refuse a mismatch with the
+listing's `(st_dev, st_ino)` and file type. Tracked internally.
+
+Pinned as today's behaviour, so a fix fails them:
+`tests/test_directory.py::test_a_file_swapped_for_a_symlink_after_listing_is_followed`,
+`::test_a_file_grown_after_listing_reads_at_its_new_length`. Handbook:
+[`formats/directory.md`](formats/directory.md) §2.3, §4.
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed

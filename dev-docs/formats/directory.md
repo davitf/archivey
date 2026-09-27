@@ -37,13 +37,13 @@ is always `None`, because `os.stat` exposes no birth time there (§2.2).
 Three properties generate most of this page.
 
 ```
-root/                     walk order (depth-first preorder, per-directory name order)
-├── a.txt       FILE      1. a.txt
-├── b.txt  ─┐   HARDLINK  2. b.txt      → link_target "a.txt" (same st_dev, st_ino)
-├── link   ─┼─▶ SYMLINK   3. link       → link_target as readlink() returned it
-├── fifo    │   OTHER     4. fifo
-└── sub/    │   DIRECTORY 5. sub/
-    └── c.txt   FILE      6. sub/c.txt
+root/                 walk order (depth-first preorder, per-directory name order)
+├── a.txt   FILE      1. a.txt
+├── b.txt   HARDLINK  2. b.txt      → link_target "a.txt" (same st_dev, st_ino)
+├── fifo    OTHER     3. fifo
+├── link    SYMLINK   4. link       → link_target as readlink() returned it
+└── sub/    DIRECTORY 5. sub/
+    └── c.txt FILE    6. sub/c.txt
 ```
 
 **The tree is live, and the listing is a snapshot of it at walk time.** Every other
@@ -102,9 +102,11 @@ Subdirectories are pushed in reverse so they pop in name order. The order is the
 depth-first preorder that does not depend on the filesystem's own directory order, which
 is what makes the choice of hardlink "first name" deterministic.
 
-**Typing.** Each entry's type comes from `entry.stat(follow_symlinks=False)`, not from the
-`DirEntry` snapshot, so an entry replaced between `scandir` and `lstat` is typed as what is
-there now, and `readlink` only runs on something that is a link.
+**Typing.** Each entry's type comes from `entry.stat(follow_symlinks=False)`. On POSIX that
+is a real `lstat`, so an entry replaced between `scandir` and `lstat` is typed as what is
+there now, and `readlink` only runs on something that is a link. On Windows it serves
+`scandir`'s cached data, refreshed only for regular files (the identity `lstat` below), so
+there an entry replaced in the window is typed as `scandir` saw it (see **Races**).
 
 | On disk | Member |
 | --- | --- |
@@ -230,19 +232,22 @@ There are no producers; there are filesystems, and each reports `lstat` differen
 
 ## 4. Threat surface
 
-The listing is safe to hand a hostile tree: the walk never follows a symlink or junction, so
-it cannot loop (Windows on Python 3.11 aside, §7), and every name is built from real directory entries, so there is no `..`,
-absolute path or empty component to normalize. The listing limits bound the member count
+The listing is safe to hand a hostile tree. The walk never follows a symlink or junction,
+so it cannot loop (Windows on Python 3.11 aside, §7). Every name is built from real
+directory entries, so there is no `..`, absolute path or empty component to normalize. The listing limits bound the member count
 and the retained text. Extraction goes through the shared filter
 ([`threat-model.md`](../threat-model.md)).
 
 What is specific to this backend is the gap between listing and reading, when someone
 else can write to the tree while archivey reads it: an upload staging directory, a shared
-drop folder. Whoever controls the tree can:
+drop folder. That is outside the published trust boundary, which trusts other local
+processes ([`docs/extracting.md`](../../docs/extracting.md) §Trust boundaries), and it is
+recorded as accepted in [`threat-model.md`](../threat-model.md) O21. Whoever controls the
+tree can:
 
 - **swap a listed file or directory for a symlink**, so a read returns a file outside the
   root that the caller never listed and may not be allowed to publish. The open follows
-  it with no error (§2.3). Tracked internally.
+  it with no error (§2.3).
 - **swap a file for a FIFO**, so the read blocks until they write to it.
 - **grow a file after the walk**, so a read returns more than the listed `size`; limits
   based on the listing do not bound it, and extraction's per-member ratio is the only
@@ -257,11 +262,11 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
-| A read returns a file from outside the root | **archivey** | A listed path replaced by a symlink after the walk is followed at open (§2.3, §4). Opening with `O_NOFOLLOW` and checking the identity against the listing would refuse it. Tracked internally |
-| A read returns a different length from `member.size`, with no error | **archivey** | The open is by path and nothing compares the file with its listing (§2.3). Tracked internally |
+| A read returns a file from outside the root | **archivey** | A listed path replaced by a symlink after the walk is followed at open (§2.3, §4). Accepted under the published trust boundary; opening with `O_NOFOLLOW` and checking the identity against the listing would refuse it ([`threat-model.md`](../threat-model.md) O21) |
+| A read returns a different length from `member.size`, with no error | **archivey** | The open is by path and nothing compares the file with its listing (§2.3, [`threat-model.md`](../threat-model.md) O21). What it should do is open (§7) |
 | Extracting a file that grew since listing fails with "Decompression ratio … exceeds limit" | **archivey** | `compressed_size` is the listed size, so growth reads as a ratio. The error does not say the file changed. Tracked internally |
 | Extracting into a folder inside the root adds that folder to the output (`out/out/`); with `streaming=True` it nests `out/out/out/…` until the path is too long | **archivey** | The walk reads the live tree, including what the extraction writes. Tracked internally |
-| `open()` on a listed file hangs | **archivey** | The file was replaced by a FIFO after the walk (§2.3). Same fix as the symlink row |
+| `open()` on a listed file hangs | **archivey** | The file was replaced by a FIFO after the walk (§2.3). Same fix as the symlink row ([`threat-model.md`](../threat-model.md) O21) |
 | A symlink whose target exists on disk raises `LinkTargetNotFoundError` | **archivey** | By design: targets resolve inside the listed tree, as in an archive (§6) |
 | A permission error in one subdirectory fails the whole listing | **archivey** | By design: a listing with a hole would look complete (§6) |
 | A member vanished from the listing and a `SCAN_*_VANISHED` diagnostic says why | **format** | The tree changed during the walk (§1) |
@@ -324,16 +329,17 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Concurrent reads | `tests/test_concurrent_multithread.py::test_multithread_directory_open_read` |
 | Cross-format equivalence, including `hardlinks-walk-order` | `tests/test_corpus_sweep.py` (`dir` cells from `tests/sample_archives.py`) |
 
-**Nothing pins §2.3's open-time behaviour** (a changed, swapped or FIFO-replaced file after
-listing), nor the extraction-into-the-root behaviour in §5. To see them, list a tree,
-change it, then read:
+**Today's behaviour, pinned so that a fix fails it.** These tests assert what §2.3 and §5
+describe, not what is wanted; each says so in a comment.
 
-```python
-with archivey.open_archive(root) as r:
-    m = r.get("a.txt")
-    os.remove(root / "a.txt"); os.symlink(outside_file, root / "a.txt")
-    r.read(m)  # returns outside_file's bytes
-```
+| Claim | Pinned by |
+| --- | --- |
+| A file grown after listing reads at its new length; `stream.size` keeps the listed one | `tests/test_directory.py::test_a_file_grown_after_listing_reads_at_its_new_length` |
+| A listed file swapped for a symlink is followed out of the root | `::test_a_file_swapped_for_a_symlink_after_listing_is_followed` |
+| Extracting into a folder inside the root lists that folder | `::test_extracting_into_the_root_lists_the_destination` |
+
+The FIFO swap and the `streaming=True` nesting are not pinned: one blocks without a writer
+thread, the other runs until the path is too long.
 
 **Building fixtures.** The tests build trees in `tmp_path`; nothing is checked in. A
 hardlink is `os.link`, a FIFO `os.mkfifo`, a name that is not UTF-8 `open(os.path.join(
