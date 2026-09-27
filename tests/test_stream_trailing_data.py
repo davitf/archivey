@@ -281,6 +281,11 @@ def test_rereading_after_a_seek_reports_once(tmp_path: Path, suffix: str) -> Non
         pytest.param(".zst", _zstd, id="zst", marks=requires_zstd()),
         pytest.param(".lz4", _lz4, id="lz4", marks=requires("lz4")),
         pytest.param(".gz", gzip.compress, id="gz"),
+        pytest.param(
+            ".lzma",
+            lambda data: lzma.compress(data, format=lzma.FORMAT_ALONE),
+            id="lzma",
+        ),
     ],
 )
 def test_concatenated_streams_read_whole_before_the_bytes(
@@ -292,6 +297,23 @@ def test_concatenated_streams_read_whole_before_the_bytes(
         assert reader.read(reader.members()[0]) == b"first|second"
         (report,) = _reports(reader)
     assert report.observed_bytes == len(first) + len(second)
+
+
+def test_a_second_lzma_stream_is_checked_against_the_dictionary_cap(
+    tmp_path: Path,
+) -> None:
+    """A second Alone stream is refused over ``max_decoder_memory`` like the first."""
+    from archivey import DecoderLimits
+    from archivey.exceptions import ResourceLimitError
+
+    first = lzma.compress(b"first", format=lzma.FORMAT_ALONE)
+    second = bytearray(lzma.compress(b"second", format=lzma.FORMAT_ALONE))
+    second[1:5] = (1 << 30).to_bytes(4, "little")
+    path = _write(tmp_path, ".lzma", first + bytes(second))
+    limits = DecoderLimits(max_decoder_memory=1 << 26)
+    with open_archive(path, config=ArchiveyConfig(decoder_limits=limits)) as reader:
+        with pytest.raises(ResourceLimitError):
+            reader.read(reader.members()[0])
 
 
 @requires_zstd()

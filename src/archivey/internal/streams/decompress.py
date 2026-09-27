@@ -9,6 +9,7 @@ same reason (larger index/LZW logic).
 
 from __future__ import annotations
 
+import functools
 import lzma
 import os
 import zlib
@@ -315,14 +316,24 @@ class _OneStreamDecompressor(Protocol):
 # A stream's magic, as the bytes each position may hold; a codec lists one per kind of
 # stream that may follow the first (zstd: a frame or a skippable frame).
 StreamMagic = tuple[tuple[frozenset[int], ...], ...]
+# For a codec with no magic: given the bytes after a stream, True when they start
+# another, None when more bytes are needed to tell, False when they do not.
+StreamStart = Callable[[bytes], bool | None]
 
 
-def stream_magic(*alternatives: tuple[bytes | range, ...]) -> StreamMagic:
-    """Build a :data:`StreamMagic` from per-position byte strings or ranges."""
-    return tuple(
+def stream_magic(*alternatives: tuple[bytes | range, ...]) -> StreamStart:
+    """A :data:`StreamStart` matching any of ``alternatives``, per-position bytes or ranges."""
+    magic: StreamMagic = tuple(
         tuple(frozenset(position) for position in alternative)
         for alternative in alternatives
     )
+    return functools.partial(_magic_state, magic=magic)
+
+
+def _no_next_stream(data: bytes) -> bool:
+    """A codec whose streams are never concatenated: whatever follows is not one."""
+    del data
+    return False
 
 
 def _magic_state(data: bytes, magic: StreamMagic) -> bool | None:
@@ -343,7 +354,8 @@ class FramedDecoder(BaseDecoder):
     and disagree: ``bz2.open`` ignores anything that does not decode, zstd and lz4
     raise on it. This adapter decides it the same way for all of them. Bytes that start
     ``magic`` begin another stream (a concatenated file); zeros are padding; anything
-    else ends the data and sets :attr:`trailing_bytes`.
+    else ends the data and sets :attr:`trailing_bytes`. A codec with no magic (LZMA
+    Alone) passes a :data:`StreamStart` check of the header instead.
 
     The first stream is handed to the library as it comes, so a file that is not this
     codec at all fails with the library's own error. An empty source, or one that ends
@@ -353,7 +365,7 @@ class FramedDecoder(BaseDecoder):
     def __init__(
         self,
         new_decompressor: Callable[[], _OneStreamDecompressor],
-        magic: StreamMagic = (),
+        magic: StreamStart = _no_next_stream,
     ) -> None:
         self._new = new_decompressor
         self._magic = magic
@@ -376,7 +388,7 @@ class FramedDecoder(BaseDecoder):
         rest = data.lstrip(b"\x00")
         if not rest:
             return b""
-        state = _magic_state(rest, self._magic)
+        state = self._magic(rest)
         if state is None:
             self._held = rest
             self._need_more = True
@@ -1546,7 +1558,7 @@ def FramedDecompressorStream(
     new_decompressor: Callable[[], _OneStreamDecompressor],
     *,
     codec_name: str,
-    magic: StreamMagic = (),
+    magic: StreamStart = _no_next_stream,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
 ) -> DecompressorStream:

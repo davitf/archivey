@@ -6,7 +6,9 @@ For gzip, zlib, raw deflate, bzip2, xz, lzip, LZMA Alone, zstd, LZ4 and Brotli, 
 member read SHALL deliver the whole payload of every stream before the end, and SHALL
 then stop reading the source. Bytes after the end SHALL be classified this way:
 
-- the start of another stream of the same codec (its magic) is more data and is read;
+- the start of another stream of the same codec is more data and is read: its magic,
+  or for LZMA Alone, which has none, a valid properties byte and a zero first byte of
+  range-coder data, as `lzma.LZMAFile` reads a second stream;
 - zero bytes are padding and SHALL NOT be reported;
 - anything else is trailing data: the system SHALL emit one `ARCHIVE_TRAILING_DATA`
   per opened member stream, with `expected_marker="end_of_stream"`, the codec name as
@@ -44,7 +46,7 @@ after the data decode as more codes.
 | Same, `DiagnosticPolicy.strict()` | The read raises `DiagnosticRaisedError` |
 | Valid stream + 4096 zero bytes | Full payload; no diagnostic |
 | Valid stream + zeros + junk | One report at the first non-zero byte |
-| Two concatenated `.gz` / `.bz2` / `.zst` / `.lz4` streams + junk | Both payloads; one report after the second |
+| Two concatenated `.gz` / `.bz2` / `.lzma` / `.zst` / `.lz4` streams + junk | Both payloads; one report after the second |
 | `.zst` with a skippable frame between two frames | Both payloads; no report |
 | `.xz` / `.lz` + junk within 1 MiB | Size known, seek works, full payload, one report |
 | `.xz` / `.lz` + more than 1 MiB of junk | Size unknown; seeking reports `SEEK_INDEX_DEGRADED`; payload and one report |

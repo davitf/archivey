@@ -23,6 +23,7 @@ raw deflate/Brotli/… live in ``decompressor_stream`` + ``decompress``; XZ/lzip
 from __future__ import annotations
 
 import bz2
+import functools
 import gzip
 import importlib
 import io
@@ -2028,6 +2029,32 @@ def _peek_alone_header(source: CodecSource) -> tuple[CodecSource, bytes]:
     return replay, replay.peek(_ALONE_HEADER_SIZE)
 
 
+# Alone properties byte: (pb * 5 + lp) * 9 + lc, with lc <= 8, lp <= 4, pb <= 4.
+_ALONE_MAX_PROPERTIES = 9 * 5 * 5
+
+
+def _starts_alone_stream(data: bytes, *, limits: DecoderLimits) -> bool | None:
+    """Whether the bytes after an Alone stream start another one, as ``lzma`` reads it.
+
+    ``lzma.LZMAFile`` reads a second Alone stream after the first, so a concatenated
+    ``.lzma`` is one payload. Alone has no magic to tell it by, so this checks what the
+    header must hold: a valid properties byte, and a zero first byte of range-coder
+    data (byte 13), which every LZMA encoder writes. Text and most binary junk fail
+    one of the two. A stream whose dictionary is over ``max_decoder_memory`` is
+    refused as the first one is, rather than read as trailing data.
+    """
+    if len(data) <= _ALONE_HEADER_SIZE:
+        return None
+    if data[0] >= _ALONE_MAX_PROPERTIES or data[_ALONE_HEADER_SIZE] != 0:
+        return False
+    check_decoder_memory(
+        int.from_bytes(data[1:5], "little"),
+        limits=limits,
+        what="LZMA Alone dictionary size",
+    )
+    return True
+
+
 class _RefusedAloneStream(ReadOnlyIOStream):
     """What ``.lzma`` opens as when its dictionary is over the cap: every read refuses.
 
@@ -2076,11 +2103,12 @@ class LzmaAloneCodec(_LzmaErrorCodec):
             if exceeds_decoder_memory(declared, config.decoder_limits):
                 return _RefusedAloneStream(declared, config.decoder_limits)
         # A rewind re-decompresses from the start; the outer ArchiveStream warns (see
-        # rewind_warning). An Alone stream is never followed by another.
+        # rewind_warning).
         return FramedDecompressorStream(
             source,
             lambda: lzma.LZMADecompressor(format=lzma.FORMAT_ALONE),
             codec_name="lzma",
+            magic=functools.partial(_starts_alone_stream, limits=config.decoder_limits),
             collector=config.collector,
             report_trailing_data=config.report_trailing_data,
         )

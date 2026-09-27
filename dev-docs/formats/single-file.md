@@ -240,7 +240,11 @@ and the end the bzip2, zstd and LZ4 libraries report for one stream. For bzip2, 
 Alone, zstd and LZ4, `FramedDecoder` in `internal/streams/decompress.py` runs one
 library decompressor per stream and starts another only when the next bytes are that
 codec's magic (a zstd skippable frame counts), so a concatenated file still reads as one
-payload. Past the end, zero bytes are padding, as `tar` pads its records; the first
+payload. LZMA Alone has no magic; the next bytes start a stream when the header's
+properties byte is valid and byte 13, the range coder's first byte, is zero, which every
+LZMA encoder writes and text almost never has. That is how `lzma.LZMAFile` reads a
+concatenated `.lzma` too, and a second stream's dictionary is checked against
+`max_decoder_memory` like the first. Past the end, zero bytes are padding, as `tar` pads its records; the first
 non-zero byte ends the stream there. `DecompressorStream` stops reading the source,
 returns everything decoded, and emits one `ARCHIVE_TRAILING_DATA` with
 `expected_marker="end_of_stream"` at that byte's offset. Only a bare file, a compressed
