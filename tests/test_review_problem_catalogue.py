@@ -58,7 +58,7 @@ ARCHIVEY_NAMES = (
     "ArchiveFormat",
     "BaseArchiveReader",
     "BombTracker",
-    "ConcurrentAccessError",
+    "ArchiveyUsageError",
     "CorruptionError",
     "CostReceipt",
     "DecompressorStream",

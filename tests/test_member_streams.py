@@ -13,7 +13,6 @@ import archivey
 from archivey import (
     ArchiveyError,
     ArchiveyUsageError,
-    ConcurrentAccessError,
     open_archive,
 )
 
@@ -30,9 +29,7 @@ def test_second_overlapping_open_raises_concurrent_access_error(tmp_path: Path) 
     root = _two_file_dir(tmp_path)
     with open_archive(root) as reader:
         s1 = reader.open("a.txt")
-        with pytest.raises(
-            ConcurrentAccessError, match="concurrent_members=True"
-        ) as ei:
+        with pytest.raises(ArchiveyUsageError, match="concurrent_members=True") as ei:
             reader.open("b.txt")
         # Breadcrumb points at this test file.
         assert "test_member_streams.py" in str(ei.value)
@@ -47,7 +44,7 @@ def test_refused_open_does_not_call_open_member(tmp_path: Path) -> None:
     """The single-live-stream gate must fire before ``_open_member``, not after.
 
     A spawn-then-close (or spawn-then-GC) implementation still raises
-    ``ConcurrentAccessError`` but has already built the second stream. Counting
+    ``ArchiveyUsageError`` but has already built the second stream. Counting
     ``_open_member`` is the format-agnostic discriminator.
     """
     root = _two_file_dir(tmp_path)
@@ -63,7 +60,7 @@ def test_refused_open_does_not_call_open_member(tmp_path: Path) -> None:
         reader._open_member = counting_open_member  # type: ignore[method-assign]
         s1 = reader.open("a.txt")
         assert opens == 1
-        with pytest.raises(ConcurrentAccessError):
+        with pytest.raises(ArchiveyUsageError):
             reader.open("b.txt")
         assert opens == 1
         s1.close()
@@ -113,13 +110,13 @@ def test_usage_error_is_not_archivey_error(tmp_path: Path) -> None:
             try:
                 reader.open("b.txt")
             except ArchiveyError:
-                pytest.fail("ConcurrentAccessError must not be an ArchiveyError")
-            except ConcurrentAccessError:
+                pytest.fail("ArchiveyUsageError must not be an ArchiveyError")
+            except ArchiveyUsageError:
                 pass
         finally:
             s1.close()
-    assert not issubclass(ConcurrentAccessError, ArchiveyError)
-    assert issubclass(ConcurrentAccessError, ArchiveyUsageError)
+    assert not issubclass(ArchiveyUsageError, ArchiveyError)
+    assert issubclass(ArchiveyUsageError, ArchiveyUsageError)
 
 
 def test_concurrent_flag_allows_overlapping_opens(tmp_path: Path) -> None:

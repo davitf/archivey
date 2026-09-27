@@ -12,7 +12,7 @@ import shutil
 from typing import BinaryIO
 
 from archivey.config import SpoolLimits
-from archivey.exceptions import SpoolLimitExceededError
+from archivey.exceptions import ResourceLimitError
 from archivey.types import ArchiveFormat
 
 # Each read from a SharedSource view takes the source lock and seeks, so a large
@@ -90,7 +90,7 @@ class SpoolBudget:
         if self._refused is not None:
             raise self._error(self._refused)
 
-    def _refuse(self, size: str) -> SpoolLimitExceededError:
+    def _refuse(self, size: str) -> ResourceLimitError:
         """Record and return the refusal of a copy of ``size`` more bytes.
 
         Bytes already charged are named, so the sentence stays true when an earlier
@@ -101,8 +101,8 @@ class SpoolBudget:
         self._refused = size
         return self._error(size)
 
-    def _error(self, size: str) -> SpoolLimitExceededError:
-        return SpoolLimitExceededError(
+    def _error(self, size: str) -> ResourceLimitError:
+        return ResourceLimitError(
             f"Spool limit reached: {self._what}, and the copy would be {size}, over "
             f"SpoolLimits.max_bytes={self._limit} (ArchiveyConfig.spool_limits). "
             f"Open the archive from a file path, which is read in place, or raise "

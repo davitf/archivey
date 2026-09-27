@@ -85,7 +85,7 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   single line, so everything from the first newline on would be discarded — a wrong
   password would decrypt, with nothing downstream able to tell. Archivey refuses it
   instead: reading any RAR member through `unrar`, from an archive that contains
-  anything encrypted, raises `UnsupportedOperationError`. That covers unencrypted
+  anything encrypted, raises `UnsupportedFeatureError`. That covers unencrypted
   members of such an archive too, because on a solid archive their data can sit behind
   an encrypted member's. An archive with nothing encrypted is unaffected — no password
   is handed to `unrar` at all. Watch for a password read from a file, which usually

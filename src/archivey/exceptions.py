@@ -8,8 +8,14 @@ Two roots (intentional):
   ``ArchiveyError`` tree so ``except ArchiveyError`` does not hide bugs in calling
   code.
 
-Under ``ArchiveyError``, names track the failing phase: open → read → extract,
-plus feature/package/resource limits.
+Under ``ArchiveyError`` the groups follow the cause, not the call that hit it:
+:class:`OpenError` means reading never started, :class:`ReadError` means the archive's
+data is bad or unreadable (a damaged header at open included), and
+:class:`ExtractionError` means writing a member to disk failed; beside them sit the
+feature, package, resource-limit and diagnostic errors.
+
+A type earns a place here only when a caller would act on it differently from its
+parent. Anything finer goes in the message.
 
 Both roots **escape their message** at construction: the text call sites build
 interpolates attacker-controlled member names and the paths derived from them, and
@@ -73,7 +79,7 @@ class ArchiveyError(Exception):
     :meth:`__str__` renders the names through ``!r``, which escapes them for display in
     turn — so a name available as an attribute should **not** also be interpolated into
     the message, or it prints twice. Prefer prose plus attributes:
-    ``SymlinkEscapeError("Symlink target escapes destination", member_name=name,
+    ``FilterRejectionError("Symlink target escapes destination", member_name=name,
     link_target=target)``.
 
     ``format_unconfirmed`` is a boolean (default ``False``): ``True`` when the format
@@ -139,15 +145,16 @@ class ArchiveyError(Exception):
 
 
 class OpenError(ArchiveyError):
-    """Cannot open or parse archive header."""
+    """Reading could not start: the source is not a recognized archive, is not seekable
+    where the format needs it, or a volume file cannot be opened.
+
+    A recognized archive whose header is damaged, cut short or encrypted raises a
+    :class:`ReadError` subclass instead, from ``open_archive()`` as from any later call.
+    """
 
 
 class FormatDetectionError(OpenError):
     """Could not detect archive format."""
-
-
-class UnsupportedFormatError(OpenError):
-    """Format detected but no backend available."""
 
 
 class StreamNotSeekableError(OpenError):
@@ -155,7 +162,11 @@ class StreamNotSeekableError(OpenError):
 
 
 class ReadError(ArchiveyError):
-    """Error reading a member."""
+    """The archive's data is bad or cannot be read, at open or later.
+
+    Raised directly when an external decoder or a child process fails without saying
+    why, or a link chain loops; the subclasses name the common causes.
+    """
 
 
 class CorruptionError(ReadError):
@@ -179,43 +190,13 @@ class ExtractionError(ArchiveyError):
 
 
 class FilterRejectionError(ExtractionError):
-    """Safety filter blocked the member."""
+    """A safety check refused to write the member.
 
-
-class PathTraversalError(FilterRejectionError):
-    """Path traversal attempt (../ or absolute path)."""
-
-
-class SymlinkEscapeError(FilterRejectionError):
-    """Symlink resolves outside destination."""
-
-
-class SpecialFileError(FilterRejectionError):
-    """Device node, FIFO, socket — always rejected."""
-
-
-class UnportableNameError(FilterRejectionError):
-    """A member name is unsafe on the destination OS under the active policy.
-
-    Covers the cross-platform name hazards (see ``safe-extraction``): Windows-reserved
-    device names, a trailing dot/space, or ``:`` in a path segment, rejected under
-    ``STRICT`` on every platform (``STANDARD`` rejects the reserved/``:`` subset).
-    """
-
-
-class DeceptiveNameError(FilterRejectionError):
-    """A member name is built to display as something other than what it is.
-
-    Raised for Unicode bidi **override/isolate** characters (U+202A–202E, U+2066–2069),
-    which reorder the surrounding text so that ``evil‮gnp.exe`` reads as a ``.png``
-    in every listing a person will see. Distinct from its siblings because a caller
-    triaging a batch acts differently on each: nothing here escapes the destination
-    (``PathTraversalError``) and nothing is unwritable on this platform
-    (``UnportableNameError``) — the name is simply a lie.
-
-    The three *directional marks* (U+061C, U+200E, U+200F) are **not** covered: they
-    reorder nothing and appear in legitimate Arabic and Hebrew filenames. They are
-    reported at listing time as ``MEMBER_NAME_BIDI_CONTROL`` and extract normally.
+    One type for every check: a path that escapes the destination (``..`` or an absolute
+    path), a symlink that resolves outside it, a device node, FIFO or socket, a name the
+    destination OS cannot store safely under the active policy (see ``safe-extraction``),
+    and a name built to display as something it is not (a Unicode bidi override or
+    isolate). The member is ``BLOCKED`` whichever check fired, and the message says which.
     """
 
 
@@ -248,46 +229,34 @@ class ResourceLimitError(ArchiveyError):
     :class:`~archivey.config.ExtractionLimits` bomb guards,
     :class:`~archivey.config.DecoderLimits` caps on archive-declared decoder memory
     and key-derivation work, and :class:`~archivey.config.SpoolLimits`, the cap on
-    copying a stream source to temporary storage (raised as its subclass
-    :class:`SpoolLimitExceededError`).
+    copying a stream source to temporary storage; opening the archive from a path
+    avoids that copy.
     Sibling of :class:`ExtractionError` (not a subclass): limit trips are not
     filter/path failures.
     """
 
 
-class SpoolLimitExceededError(ResourceLimitError):
-    """A copy of the archive source to temporary storage would pass its limit.
+class UnsupportedFeatureError(ArchiveyError):
+    """The archive is recognized, but uses something archivey cannot handle.
 
-    Raised when :attr:`~archivey.config.SpoolLimits.max_bytes` refuses the copy a
-    backend needs because it cannot read the caller's stream in place. Today that is a
-    RAR opened from a stream, whose compressed members go through RARLAB ``unrar``,
-    which reads only files. A subclass of :class:`ResourceLimitError`, so
-    ``except ResourceLimitError`` still catches it; catch this one to tell a spool
-    refusal apart from the other configured limits. Opening the archive from a path
-    avoids the copy.
+    A variant, codec or layout of a known format (a raw CD sector image, a 7z coder
+    graph that is not a tree of chains, a multi-volume set where the format has none),
+    or a request this archive or backend cannot serve (a password ``unrar`` cannot be
+    given). The problem is the archive, not the calling code: that raises
+    :class:`ArchiveyUsageError`.
+
+    A refused ``seek()`` or ``tell()`` on a member stream is *not* this class: a member
+    stream has to keep behaving like a file object, so it raises
+    :exc:`io.UnsupportedOperation` (a subclass of :exc:`OSError` and :exc:`ValueError`).
     """
 
 
-class UnsupportedFeatureError(ArchiveyError):
-    """Recognized but unhandled feature/variant/codec."""
-
-
 class PackageNotInstalledError(ArchiveyError):
-    """A required optional package or external tool is absent."""
+    """A required optional package or external tool is absent.
 
-
-class UnsupportedOperationError(ArchiveyError):
-    """Operation not valid for this archive, format, backend, or access mode.
-
-    Describes what an archive or mode cannot provide — not a bug in calling code.
-    Caller misuse (wrong-reader identity, post-close use, undeclared concurrent
-    streams) raises :class:`ArchiveyUsageError` instead.
-
-    A refused ``seek()`` or ``tell()`` on a member stream is the near neighbour that
-    is *not* this class: a member stream has to keep behaving like a file object, so
-    it raises :exc:`io.UnsupportedOperation` (a subclass of :exc:`OSError` and
-    :exc:`ValueError`). ``except UnsupportedOperationError`` around a member-stream
-    seek catches nothing.
+    Raised both when a whole format needs it (opening an ISO without ``pycdlib``) and
+    when one member does (a PPMd member without ``pyppmd``). The message names what to
+    install.
     """
 
 
@@ -296,6 +265,12 @@ class ArchiveyUsageError(Exception):
 
     ``except ArchiveyError`` wraps archive/environment problems; usage errors indicate
     a bug in calling code and must not be swallowed by those handlers.
+
+    It covers what the argument types alone cannot rule out: calling a method the
+    reader's mode forbids (``members()`` on a ``streaming=True`` reader), using a closed
+    reader, opening a second overlapping member stream without
+    ``concurrent_members=True`` (the message names the ``open_archive()`` call site),
+    and driving the reader from inside a diagnostic callback.
 
     The message is escaped on the same terms as :class:`ArchiveyError`'s. A usage
     error's text is mostly archivey's own, so the escaping is usually a no-op — but
@@ -315,14 +290,6 @@ class ArchiveyUsageError(Exception):
 
     def __str__(self) -> str:
         return self.message
-
-
-class ConcurrentAccessError(ArchiveyUsageError):
-    """A second overlapping member stream was opened without ``concurrent_members=True``.
-
-    The message includes the ``open_archive()`` call site so the error points at where
-    the capability should have been declared.
-    """
 
 
 class DiagnosticRaisedError(ArchiveyError):

@@ -17,7 +17,7 @@ on TAR/7z. Cost receipts alone are too passive (warnings deferred).
 Both capabilities are off by default:
 
 - streams report `seekable() is False`; `seek()` → `io.UnsupportedOperation`
-- at most one live member stream; a second overlapping `open()` → `ConcurrentAccessError`
+- at most one live member stream; a second overlapping `open()` → `ArchiveyUsageError`
 
 Opt in with `open_archive(..., seekable_members=True, concurrent_members=True)`. Same
 rule for `open_stream(..., seekable=False)`. Seek indexes / accelerators are

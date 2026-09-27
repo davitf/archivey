@@ -51,7 +51,7 @@ _READS_FORWARD = (
 
 
 def _skip_unless_registered(fmt: ArchiveFormat) -> None:
-    # ISO needs pycdlib; without it the open fails as UnsupportedFormatError long
+    # ISO needs pycdlib; without it the open fails as PackageNotInstalledError long
     # before the seekability check this module is about.
     availability = format_availability(fmt)
     if availability.support is FormatSupport.NONE:

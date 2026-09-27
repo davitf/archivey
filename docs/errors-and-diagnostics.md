@@ -22,28 +22,27 @@ React to specific cases with the subtypes:
 
 | Exception | Raised when |
 | --- | --- |
-| [`OpenError`][archivey.OpenError] | the source can't be opened — `FormatDetectionError` (unknown format), `UnsupportedFormatError` (the format is known and no backend can open it, usually a missing package), `StreamNotSeekableError` (a pipe, where the format or the access mode needs seek) |
-| [`ReadError`][archivey.ReadError] | the archive opened but a member could not be read; the parent of the next three rows, and the thing to catch when you do not care which |
+| [`OpenError`][archivey.OpenError] | reading could not start — `FormatDetectionError` (not a format archivey recognizes, or not a compressed stream under `open_stream()`), `StreamNotSeekableError` (a pipe, where the format or the access mode needs seek), or a volume file that cannot be opened |
+| [`ReadError`][archivey.ReadError] | the archive's data is bad or cannot be read, whether at open (a damaged header) or later; the parent of the next three rows, and the thing to catch when you do not care which. A damaged header raises one of these from `open_archive()`, not `OpenError` |
 | [`EncryptionError`][archivey.EncryptionError] | a password is required, missing, or wrong; for a ZipCrypto member, also when its data fails its integrity check after the password passed the format's one-byte check, which a damaged member can cause too (see [Gotchas](gotchas.md)) |
 | [`CorruptionError`][archivey.CorruptionError] / [`TruncatedError`][archivey.TruncatedError] | the archive is malformed or cut short |
 | [`LinkTargetNotFoundError`][archivey.LinkTargetNotFoundError] | a symlink or hardlink member points at a target the archive does not contain |
-| [`PackageNotInstalledError`][archivey.PackageNotInstalledError] | an optional package or tool is absent, or RARLAB `unrar`/`rar` is older than 6.0 (see [Install](install.md#getting-rarlab-unrar-or-rar)) |
+| [`PackageNotInstalledError`][archivey.PackageNotInstalledError] | an optional package or tool is absent — for the whole format at open (ISO without `pycdlib`) or for one member when you read it (PPMd without `pyppmd`) — or RARLAB `unrar`/`rar` is older than 6.0 (see [Install](install.md#getting-rarlab-unrar-or-rar)) |
 | [`ExtractionError`][archivey.ExtractionError] | writing a member to disk failed; the parent of the next two rows |
-| [`FilterRejectionError`][archivey.FilterRejectionError] | extraction blocked an unsafe member — `PathTraversalError`, `SymlinkEscapeError`, `SpecialFileError`, `UnportableNameError` (a name the destination OS cannot store safely, such as a Windows-reserved name), `DeceptiveNameError` (a name built to display as something it is not, such as a bidi override) |
+| [`FilterRejectionError`][archivey.FilterRejectionError] | extraction blocked an unsafe member: a path that escapes the destination, a symlink that resolves outside it, a device node, FIFO or socket, a name the destination OS cannot store safely (such as a Windows-reserved name), or a name built to display as something it is not (such as a bidi override). The message says which |
 | [`NameCollisionError`][archivey.NameCollisionError] / [`NameRewrittenError`][archivey.NameRewrittenError] | raised only when you opted in with `abort_on` (see [Safe extraction](extracting.md)); without it, a collision or a portable-name rewrite is recorded in the result, not raised |
-| [`UnsupportedFeatureError`][archivey.UnsupportedFeatureError] | the format is handled but this archive uses a variant or codec the backend cannot decode (a 7z coder graph that is not a tree of chains, or PPMd without its package); unlike `UnsupportedFormatError` the archive opened, and unlike `UnsupportedOperationError` the problem is the archive, not the call |
-| [`UnsupportedOperationError`][archivey.UnsupportedOperationError] | the call is not valid for this archive, backend or access mode — `members()` on a streaming reader, `seek()` where the format cannot |
+| [`UnsupportedFeatureError`][archivey.UnsupportedFeatureError] | the format is recognized but this archive uses something archivey cannot handle: a variant or layout (a raw CD sector image, a 7z coder graph that is not a tree of chains, multi-volume where the format has none) or a request the backend cannot serve (a RAR password with a line break, which `unrar` cannot be given) |
 | [`DiagnosticRaisedError`][archivey.DiagnosticRaisedError] | a diagnostic whose disposition you set to `RAISE` fired; carries the `Diagnostic` (see [Diagnostics](#diagnostics)) |
-| [`ResourceLimitError`][archivey.ResourceLimitError] | a listing, extraction, decoder or spool safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and compressed RAR 1.5/2.x comment bytes at open), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, the total password-hashing rounds an encrypted archive asks for, checked before each key is derived, or the size of the temp copy a RAR stream source needs for `unrar`, checked before it is written. A large PPMd member also raises it when its child decoder process cannot run it: no child can be started, the child cannot allocate the member's model, or the system kills it with SIGKILL (see [Extracting](extracting.md)) |
-| [`SpoolLimitExceededError`][archivey.SpoolLimitExceededError] | the `ResourceLimitError` for that last case: `SpoolLimits.max_bytes` refused the temp copy a RAR stream source needs for `unrar`; catch it to tell a refused copy from the other limits, or open the archive from a path, which is never copied |
+| [`ResourceLimitError`][archivey.ResourceLimitError] | a listing, extraction, decoder or spool safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and compressed RAR 1.5/2.x comment bytes at open), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, the total password-hashing rounds an encrypted archive asks for, checked before each key is derived, or the size of the temp copy a RAR stream source needs for `unrar`, checked before it is written (opening from a path avoids that copy). A large PPMd member also raises it when its child decoder process cannot run it: no child can be started, the child cannot allocate the member's model, or the system kills it with SIGKILL (see [Extracting](extracting.md)) |
 
 Mistakes in **your** code are deliberately kept out of that hierarchy: opening a second
-overlapping stream without `concurrent_members=True`, using a closed reader, and similar
-misuse raise [`ArchiveyUsageError`][archivey.ArchiveyUsageError] (e.g.
-`ConcurrentAccessError`), which is **not** an `ArchiveyError` — so a blanket
-`except ArchiveyError` never silently swallows a bug. (When an *archive* genuinely can't
-provide an operation — seeking a non-seekable member, a format that can't list — that is a
-real `ArchiveyError`: `UnsupportedOperationError`.)
+overlapping stream without `concurrent_members=True`, using a closed reader, calling
+`members()` or `open()` on a `streaming=True` reader, and similar misuse raise
+[`ArchiveyUsageError`][archivey.ArchiveyUsageError], which is **not** an `ArchiveyError`
+— so a blanket `except ArchiveyError` never silently swallows a bug. (When an *archive*
+genuinely can't provide something, that is a real `ArchiveyError`:
+`UnsupportedFeatureError`. A refused `seek()` on a member stream raises
+`io.UnsupportedOperation`, as any file object does.)
 
 Every archivey exception can be pickled and copied with its message and attributes
 intact, so one raised in a `ProcessPoolExecutor` or `multiprocessing` worker arrives in

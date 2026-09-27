@@ -17,7 +17,6 @@ import pytest
 from archivey import (
     ArchiveyError,
     ArchiveyUsageError,
-    ConcurrentAccessError,
     open_archive,
 )
 from archivey.internal.password import _PasswordCandidates
@@ -92,7 +91,7 @@ def test_iterate_default_single_live_stream_gate_preserved(tmp_path: Path) -> No
     """The fix must not weaken the default single-live-stream gate during iteration."""
     root = _dir_with_files(tmp_path)
     with open_archive(root) as reader:
-        with pytest.raises(ConcurrentAccessError):
+        with pytest.raises(ArchiveyUsageError):
             held = []
             for member in reader:
                 if member.is_file:
@@ -152,11 +151,11 @@ def test_usage_errors_escape_archivey_error(tmp_path: Path) -> None:
     with open_archive(root) as reader:
         s = reader.open("a.txt")
         try:
-            with pytest.raises(ConcurrentAccessError):
+            with pytest.raises(ArchiveyUsageError):
                 reader.open("b.txt")
         finally:
             s.close()
-    assert not issubclass(ConcurrentAccessError, ArchiveyError)
+    assert not issubclass(ArchiveyUsageError, ArchiveyError)
 
 
 # --- 7.5 password (simplified D10) ------------------------------------------------------

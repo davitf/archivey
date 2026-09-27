@@ -98,9 +98,9 @@ class _ForwardOnlyReader(BaseArchiveReader):
 def test_open_raises_without_random_access_capability() -> None:
     # streaming=False isolates the *capability* gate from the access-mode gate.
     reader = _ForwardOnlyReader(ArchiveFormat.TAR, False, "x.tar")
-    with pytest.raises(archivey.UnsupportedOperationError):
+    with pytest.raises(archivey.ArchiveyUsageError):
         reader.open("a.txt")
-    with pytest.raises(archivey.UnsupportedOperationError):
+    with pytest.raises(archivey.ArchiveyUsageError):
         reader.read("a.txt")
 
 
@@ -124,7 +124,7 @@ def test_streaming_disables_random_access_on_capable_backend() -> None:
         lambda: reader.open("a.txt"),
         lambda: reader.read("a.txt"),
     ):
-        with pytest.raises(archivey.UnsupportedOperationError):
+        with pytest.raises(archivey.ArchiveyUsageError):
             call()
     # A single forward pass is still allowed.
     assert [m.name for m in reader] == ["a.txt"]
@@ -235,7 +235,7 @@ def test_streaming_iteration_registers_member_ids() -> None:
 def test_streaming_second_iter_raises() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")
     list(reader)
-    with pytest.raises(archivey.UnsupportedOperationError):
+    with pytest.raises(archivey.ArchiveyUsageError):
         list(reader)
 
 

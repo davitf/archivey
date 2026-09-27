@@ -16,10 +16,8 @@ import pytest
 from archivey import ExtractionPolicy, ExtractionStatus, open_archive
 from archivey.exceptions import (
     CorruptionError,
-    DeceptiveNameError,
     ExtractionError,
-    PathTraversalError,
-    SymlinkEscapeError,
+    FilterRejectionError,
 )
 from tests import create_adversarial as gen
 from tests.create_adversarial import (
@@ -200,14 +198,14 @@ def test_adversarial_extract_has_exact_outcome(
             ).results
             assert len(results) == 1
             assert results[0].status is ExtractionStatus.BLOCKED
-            assert isinstance(results[0].error, PathTraversalError)
+            assert isinstance(results[0].error, FilterRejectionError)
         elif entry.extract_outcome == "symlink_escape":
             results = archive.extract_all(
                 dest, members=[target], policy=ExtractionPolicy.TRUSTED
             ).results
             assert len(results) == 1
             assert results[0].status is ExtractionStatus.BLOCKED
-            assert isinstance(results[0].error, SymlinkEscapeError)
+            assert isinstance(results[0].error, FilterRejectionError)
         elif entry.extract_outcome == "deceptive_name":
             # A bidi override/isolate in the name reorders the surrounding text, so the
             # extracted file would display as something it is not.
@@ -238,7 +236,7 @@ def test_adversarial_extract_has_exact_outcome(
                 ).results
                 assert len(blocked) == 1
                 assert blocked[0].status is ExtractionStatus.BLOCKED
-                assert isinstance(blocked[0].error, DeceptiveNameError)
+                assert isinstance(blocked[0].error, FilterRejectionError)
         elif entry.extract_outcome == "filesystem_name_refusal":
             # A UTF-8-enforcing filesystem (e.g. APFS) refuses the surrogateescape
             # name with EILSEQ; the coordinator translates that to ExtractionError

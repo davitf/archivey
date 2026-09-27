@@ -396,9 +396,9 @@ def test_quoted_never_introduces_a_backslash() -> None:
 
 def test_link_target_is_a_structured_field_not_message_text() -> None:
     """Six two-name messages became prose; the target renders once, escaped, in __str__."""
-    from archivey.exceptions import SymlinkEscapeError
+    from archivey.exceptions import FilterRejectionError
 
-    exc = SymlinkEscapeError(
+    exc = FilterRejectionError(
         "Symlink target escapes destination",
         member_name="ev\x1b[2Kil",
         link_target="../etc/pa\x1b[2Ksswd",
@@ -412,9 +412,11 @@ def test_link_target_is_a_structured_field_not_message_text() -> None:
 
 def test_names_are_not_rendered_twice() -> None:
     """The message no longer repeats what member= already shows."""
-    from archivey.exceptions import PathTraversalError
+    from archivey.exceptions import FilterRejectionError
 
-    rendered = str(PathTraversalError("Null byte in member name", member_name="a.txt"))
+    rendered = str(
+        FilterRejectionError("Null byte in member name", member_name="a.txt")
+    )
     assert rendered.count("a.txt") == 1
 
 

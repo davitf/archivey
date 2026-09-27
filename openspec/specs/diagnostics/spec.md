@@ -248,7 +248,7 @@ No collector/reader/stream/backend/registry lock while calling handlers/callback
 Callbacks MAY read snapshots; same-emitting-reader/stream operational reentry is
 rejected: the reader's operation gate raises `ArchiveyUsageError` (reader-concurrency),
 and a re-entrant call that gets as far as emitting a diagnostic of its own raises
-`UnsupportedOperationError` from the collector; other readers OK.
+`ArchiveyUsageError` from the collector; other readers OK.
 
 **Deduplication is a presentation concern; escalation is not.** Where a code is
 documented as recorded *at most once* per stream or per reader, that bound SHALL apply to
@@ -364,7 +364,7 @@ wrong password on an *encrypted* archive is unaffected and still raises.
 | `open_archive(iso, encoding="cp500")` | No diagnostic; UTF-8 names unchanged, and the encoding applies to a Rock Ridge or plain name that is not valid UTF-8 |
 | `open_archive(zip, encoding="cp500")` | No diagnostic; the encoding is applied |
 | Auto-detected open with no `encoding=` on a backend that ignores encoding | No diagnostic |
-| `open_archive(tar, password="p")` / `password=["a","b"]` | Both open; one `PASSWORD_ARGUMENT_UNUSED` each; no `UnsupportedOperationError` |
+| `open_archive(tar, password="p")` / `password=["a","b"]` | Both open; one `PASSWORD_ARGUMENT_UNUSED` each; no `ArchiveyUsageError` |
 | `open_archive(tar \| gz \| directory, password=lambda r: "p")` | Opens; no `PASSWORD_ARGUMENT_UNUSED`; the provider is never called |
 | Wrong password on an encrypted ZIP | Unchanged: `EncryptionError` |
 

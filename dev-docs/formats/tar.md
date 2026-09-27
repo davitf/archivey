@@ -249,7 +249,7 @@ back to copying from a path already written. The full matrix is in
 [`format-tar`](../../openspec/specs/format-tar/spec.md).
 
 **Special files are blocked.** A device, FIFO or socket member is `OTHER`, and the
-default filter records it as `BLOCKED` with `SpecialFileError` rather than creating it.
+default filter records it as `BLOCKED` with `FilterRejectionError` rather than creating it.
 
 **A sparse member is written dense and its holes count as output.** Extraction copies the
 member's logical bytes, so every hole becomes zeros on disk and in the decompression-ratio

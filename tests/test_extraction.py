@@ -33,13 +33,10 @@ from archivey import (
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ExtractionError,
+    FilterRejectionError,
     NameCollisionError,
     NameRewrittenError,
-    PathTraversalError,
     ResourceLimitError,
-    SpecialFileError,
-    SymlinkEscapeError,
-    UnportableNameError,
 )
 from archivey.internal.extraction import (
     _CHUNK,
@@ -143,18 +140,18 @@ def _write_zip(path: Path, entries: dict[str, bytes], mode: int | None = None) -
     ],
 )
 def test_check_universal_rejects_traversal(tmp_path: Path, name: str) -> None:
-    with pytest.raises(PathTraversalError):
+    with pytest.raises(FilterRejectionError):
         check_universal(_member(name), tmp_path)
 
 
 def test_check_universal_rejects_null_byte(tmp_path: Path) -> None:
-    with pytest.raises(PathTraversalError):
+    with pytest.raises(FilterRejectionError):
         check_universal(_member("a\x00b"), tmp_path)
 
 
 @pytest.mark.parametrize("name", ["C:evil", "c:evil", "C:\\evil"])
 def test_check_universal_rejects_drive_letter(tmp_path: Path, name: str) -> None:
-    with pytest.raises(PathTraversalError, match="Absolute path"):
+    with pytest.raises(FilterRejectionError, match="Absolute path"):
         check_universal(_member(name), tmp_path)
 
 
@@ -189,9 +186,9 @@ def test_check_universal_allows_non_ascii_letter_before_colon(
 
 
 def test_check_universal_rejects_root_named_file(tmp_path: Path) -> None:
-    with pytest.raises(PathTraversalError, match="extraction root"):
+    with pytest.raises(FilterRejectionError, match="extraction root"):
         check_universal(_member("."), tmp_path)
-    with pytest.raises(PathTraversalError, match="extraction root"):
+    with pytest.raises(FilterRejectionError, match="extraction root"):
         check_universal(_member(""), tmp_path)
 
 
@@ -200,19 +197,19 @@ def test_check_universal_allows_root_directory(tmp_path: Path) -> None:
 
 
 def test_check_universal_rejects_special_file(tmp_path: Path) -> None:
-    with pytest.raises(SpecialFileError):
+    with pytest.raises(FilterRejectionError):
         check_universal(_member("dev", type=MemberType.OTHER), tmp_path)
 
 
 def test_check_universal_rejects_symlink_escape(tmp_path: Path) -> None:
     m = _member("link", type=MemberType.SYMLINK, link_target="../../etc/passwd")
-    with pytest.raises(SymlinkEscapeError):
+    with pytest.raises(FilterRejectionError):
         check_universal(m, tmp_path)
 
 
 def test_check_universal_rejects_null_byte_in_symlink_target(tmp_path: Path) -> None:
     m = _member("link", type=MemberType.SYMLINK, link_target="target\x00hidden")
-    with pytest.raises(SymlinkEscapeError, match="Null byte in link target"):
+    with pytest.raises(FilterRejectionError, match="Null byte in link target"):
         check_universal(m, tmp_path)
 
 
@@ -223,7 +220,7 @@ def test_check_universal_allows_internal_symlink(tmp_path: Path) -> None:
 
 def test_check_universal_enforced_under_trusted(tmp_path: Path) -> None:
     # Universal checks are non-bypassable, even under TRUSTED.
-    with pytest.raises(PathTraversalError):
+    with pytest.raises(FilterRejectionError):
         check_universal(_member("../evil"), tmp_path)
     # ...and TRUSTED's transform itself is identity (path safety is separate).
     m = _member("ok", mode=0o777)
@@ -1218,7 +1215,7 @@ def test_tar_symlink_escape_rejected(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     report = extract(src, dest)  # default STOP; blocks always continue
     assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert isinstance(report.results[0].error, SymlinkEscapeError)
+    assert isinstance(report.results[0].error, FilterRejectionError)
     assert not (dest / "evil").exists()
 
 
@@ -1242,10 +1239,10 @@ def test_tar_symlink_escape_continue_records_rejected(tmp_path: Path) -> None:
 # extractor lands the payload outside dest. archivey blocks this on two layers, and both
 # the SYMLINK-payload and FILE-payload variants of member 2 must be neutralized:
 #   * the escaping parent symlink is rejected up front by the universal check
-#     (SymlinkEscapeError), so it is never planted, and
+#     (FilterRejectionError), so it is never planted, and
 #   * the universal check re-resolves each member's PARENT directory on the real
 #     filesystem, so a payload written through an already-planted hostile parent symlink
-#     is rejected (PathTraversalError) before any bytes are written outside dest.
+#     is rejected (FilterRejectionError) before any bytes are written outside dest.
 # ---------------------------------------------------------------------------
 
 
@@ -1267,7 +1264,7 @@ def test_chained_symlink_attack_symlink_payload_rejected(tmp_path: Path) -> None
     assert statuses["sub"] is ExtractionStatus.BLOCKED
     assert isinstance(
         next(r.error for r in report.results if r.member.name == "sub"),
-        SymlinkEscapeError,
+        FilterRejectionError,
     )
     # Parent escape never planted, so the payload symlink resolves inside dest.
     assert list(outside.iterdir()) == []  # nothing leaked outside the destination
@@ -1315,7 +1312,7 @@ def test_file_payload_through_preexisting_parent_symlink_rejected(
     src.write_bytes(_tar_bytes([("file", "sub/leak.txt", b"pwned")]))
     report = extract(src, dest)  # default STOP; blocks always continue
     assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert isinstance(report.results[0].error, PathTraversalError)
+    assert isinstance(report.results[0].error, FilterRejectionError)
     assert not (outside / "leak.txt").exists()
 
 
@@ -1335,7 +1332,7 @@ def test_symlink_payload_through_preexisting_parent_symlink_rejected(
     src.write_bytes(_tar_bytes([("sym", "sub/leak", "x")]))
     report = extract(src, dest)  # default STOP; blocks always continue
     assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert isinstance(report.results[0].error, PathTraversalError)
+    assert isinstance(report.results[0].error, FilterRejectionError)
     assert not (outside / "leak").exists()
 
 
@@ -2403,7 +2400,7 @@ def test_o3_reserved_name_rejected(tmp_path: Path, name: str, policy) -> None:
         io.BytesIO(archive), dest, policy=policy, on_error=OnError.CONTINUE
     )
     assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert isinstance(report.results[0].error, UnportableNameError)
+    assert isinstance(report.results[0].error, FilterRejectionError)
 
 
 @pytest.mark.skipif(
@@ -2429,7 +2426,7 @@ def test_o4_colon_rejected_strict_and_standard(tmp_path: Path, policy) -> None:
         io.BytesIO(archive), dest, policy=policy, on_error=OnError.CONTINUE
     )
     assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert isinstance(report.results[0].error, UnportableNameError)
+    assert isinstance(report.results[0].error, FilterRejectionError)
 
 
 @pytest.mark.parametrize("name,portable", [("foo.", "foo"), ("bar ", "bar")])
@@ -2489,7 +2486,7 @@ def test_o3_all_dots_segment_rejected(tmp_path: Path) -> None:
         on_error=OnError.CONTINUE,
     )
     assert report.results[0].status is ExtractionStatus.BLOCKED
-    assert isinstance(report.results[0].error, UnportableNameError)
+    assert isinstance(report.results[0].error, FilterRejectionError)
 
 
 def test_o3_strip_passes_through_bare_dot_root(tmp_path: Path) -> None:
@@ -2567,7 +2564,7 @@ def test_o3_strip_treats_a_backslash_as_a_separator(name: str, expected: str) ->
 
 @pytest.mark.parametrize("name", ["a/.../b", "a\\...\\b", "a/. \\b"])
 def test_o3_all_dots_segment_rejected_after_either_separator(name: str) -> None:
-    with pytest.raises(UnportableNameError, match="entirely dots/spaces"):
+    with pytest.raises(FilterRejectionError, match="entirely dots/spaces"):
         apply_name_policy(_member(name), ExtractionPolicy.STRICT)
 
 
@@ -2869,11 +2866,11 @@ def test_apply_name_policy_raises_deceptive_name_error(
     Pinned at this boundary so a move back to `check_universal` — which would silently
     re-break `TRUSTED` — fails here.
     """
-    from archivey.exceptions import DeceptiveNameError
+    from archivey.exceptions import FilterRejectionError
     from archivey.internal.filters import apply_name_policy
 
     check_universal(_member(name), tmp_path)  # not a universal violation
-    with pytest.raises(DeceptiveNameError):
+    with pytest.raises(FilterRejectionError):
         apply_name_policy(_member(name), ExtractionPolicy.STRICT)
     assert (
         apply_name_policy(_member(name), ExtractionPolicy.TRUSTED).name == name
@@ -2882,12 +2879,12 @@ def test_apply_name_policy_raises_deceptive_name_error(
 
 def test_bidi_override_in_a_symlink_target_is_refused(tmp_path: Path) -> None:
     """The same disguise with an extra hop: a plausible-looking target on disk."""
-    from archivey.exceptions import DeceptiveNameError
+    from archivey.exceptions import FilterRejectionError
     from archivey.internal.filters import apply_name_policy
 
     member = _member("link", type=MemberType.SYMLINK, link_target="rea‮dm.txt")
     check_universal(member, tmp_path)  # not a universal violation
-    with pytest.raises(DeceptiveNameError):
+    with pytest.raises(FilterRejectionError):
         apply_name_policy(member, ExtractionPolicy.STRICT)
 
     src = _tar_with_member(tmp_path / "a.tar", "link", link_target="rea‮dm.txt")
@@ -3048,7 +3045,7 @@ def test_abort_on_is_independent_of_on_error(tmp_path: Path) -> None:
     archive = _tar_bytes([("file", "NUL", b"x"), ("file", "ok.txt", b"y")])
     for on_error in (OnError.STOP, OnError.CONTINUE):
         dest = tmp_path / f"abort-{on_error.value}"
-        with pytest.raises(UnportableNameError):
+        with pytest.raises(FilterRejectionError):
             extract(
                 io.BytesIO(archive),
                 dest,

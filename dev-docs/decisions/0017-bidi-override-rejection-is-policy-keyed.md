@@ -62,7 +62,7 @@ round-trip an archive faithfully.
 
 **Reject bidi overrides in `apply_name_policy`, not `check_universal`.**
 
-- `STRICT` (the default) and `STANDARD` reject with `DeceptiveNameError`, as before.
+- `STRICT` (the default) and `STANDARD` reject with `FilterRejectionError`, as before (`DeceptiveNameError` until it was folded into its parent before 0.2.0).
 - **`TRUSTED` extracts the member unchanged**, under its stored name.
 - The check runs on the **final** name, after the caller filter — so a filter that
   renames the member rescues it. Renaming a name that is a lie is the natural remedy, and

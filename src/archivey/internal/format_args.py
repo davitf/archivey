@@ -84,7 +84,7 @@ def _accepted_archive_formats() -> str:
 
     Extensions only, and lowercased. ``DIRECTORY`` and ``UNKNOWN`` have no extension and
     are still accepted by the table, but neither opens anything — ``format="unknown"``
-    raises ``UnsupportedFormatError`` and ``format="directory"`` an ``OSError`` — so a
+    raises ``UnsupportedFeatureError`` and ``format="directory"`` an ``OSError`` — so a
     message offering them as repairs would be sending the caller somewhere worse.
     Lowercasing keeps the list from implying that case is significant, in a message
     whose subject is a spelling that ignores it.

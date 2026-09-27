@@ -21,8 +21,8 @@ if TYPE_CHECKING:
 
 from archivey.cost import StreamCapability
 from archivey.exceptions import (
-    UnsupportedFormatError,
-    UnsupportedOperationError,
+    PackageNotInstalledError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.format_args import coerce_archive_format
 from archivey.internal.sfx import HitValidator
@@ -313,14 +313,14 @@ class BackendRegistry:
         if availability.support is FormatSupport.NONE:
             backend_cls = self._readers.get(fmt)
             if backend_cls is None:
-                raise UnsupportedFormatError(
+                raise UnsupportedFeatureError(
                     f"No read backend registered for format {fmt.display_name}",
                     source_format=fmt,
                 )
             hints = "; ".join(
                 f"{m.name} ({m.install_hint})" for m in availability.missing
             )
-            raise UnsupportedFormatError(
+            raise PackageNotInstalledError(
                 f"Format {fmt.display_name} is not available: missing {hints}",
                 source_format=fmt,
             )
@@ -328,7 +328,7 @@ class BackendRegistry:
 
     def writer_for_format(self, fmt: ArchiveFormat) -> type[WriteBackend]:
         if fmt not in self._writers:
-            raise UnsupportedOperationError(
+            raise UnsupportedFeatureError(
                 f"No write backend registered for format {fmt.display_name}",
                 source_format=fmt,
             )

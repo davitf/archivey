@@ -727,7 +727,7 @@
   measurements. Also applies to **solid archives with multiple independent blocks** —
   e.g. a 7z with several solid folders can decompress folders in parallel (py7zr does
   this); members *within* one solid block stay sequential. No benefit for a single-block
-  solid archive. Misuse fails loudly (`ArchiveyUsageError` / `ConcurrentAccessError`).
+  solid archive. Misuse fails loudly (`ArchiveyUsageError`).
 
 - **Hold the solid-block decoder open across `open()` calls — and decide what that means
   under `concurrent_members`.** *(Status: **deferred on purpose**; direction agreed, the
@@ -759,7 +759,7 @@
   solid 7z (200 KB per member, 1.2 MB payload): opening members 1 and 4 *simultaneously*
   succeeds, and `IoStats.bytes_decompressed` is **1 400 000** — 400 KB + 1 000 KB, i.e.
   **two independent decodes, each from the folder's start, live at the same time.**
-  (Without `concurrent_members` the second `open()` raises `ConcurrentAccessError`.)
+  (Without `concurrent_members` the second `open()` raises `ArchiveyUsageError`.)
 
   So N concurrent opens on one solid folder means N live LZMA states, each with its own
   dictionary. The unanswered questions, and they need a real brainstorm rather than a

@@ -48,14 +48,14 @@
       the configured limit. Do **not** append a note when a spool happens: `CostReceipt`
       is an immutable open-time description and `format-rar` already forbids a post-open
       note. No diagnostic.
-- [ ] 2.5 Refusal path for the "none" setting, raising the same `SpoolLimitExceededError` —
+- [ ] 2.5 Refusal path for the "none" setting, raising the same `ResourceLimitError` —
       a limit of none is a limit of zero bytes. Keep `StreamNotSeekableError` for the
       non-seekable-source case, extending its message to name the setting.
 
 ## 3. Route the existing RAR materialization through it
 
 - [x] 3.1 *(shipped)* `RarReader._ensure_archive_path()` uses the primitive and raises
-      `SpoolLimitExceededError`.
+      `ResourceLimitError`.
 - [x] 3.2 *(shipped)* `RarReader._materialize_stream_volumes()` likewise, with the limit
       measured across the whole volume set rather than per volume.
 - [x] 3.3 *(shipped)* Confirm no behaviour change for path sources, for listing a stream
@@ -74,7 +74,7 @@
 ## 5. Tests
 
 - [ ] 5.1 Red-green for the P11 case: a compressed RAR member read from a `BytesIO` records
-      a `CostReceipt.notes` entry, and exceeds a low limit with `SpoolLimitExceededError`.
+      a `CostReceipt.notes` entry, and exceeds a low limit with `ResourceLimitError`.
       Verify by reverting the fix and watching each fail.
 - [x] 5.1a *(shipped)* Drive the **1 GiB default** boundary directly. No corpus archive
       comes near it (the largest RAR is 188 KiB), so nothing else will catch a wrong

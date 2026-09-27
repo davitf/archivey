@@ -31,7 +31,7 @@ from archivey.diagnostics import (
     DiagnosticDisposition,
     DiagnosticPolicy,
 )
-from archivey.exceptions import LinkTargetNotFoundError, SymlinkEscapeError
+from archivey.exceptions import FilterRejectionError, LinkTargetNotFoundError
 from archivey.internal.backends import directory_reader
 from archivey.internal.backends.rar_parser import RarMemberInfo
 from archivey.internal.backends.rar_reader import _rar_member_extra_and_link
@@ -534,7 +534,7 @@ def test_a_unc_symlink_is_blocked_at_extraction(tmp_path: Path) -> None:
         (result,) = opened.extract_all(dest, on_error=OnError.CONTINUE).results
     assert result.member.link_target == "//server/share/dir"
     assert result.status is ExtractionStatus.BLOCKED
-    assert isinstance(result.error, SymlinkEscapeError)
+    assert isinstance(result.error, FilterRejectionError)
     assert not (dest / "link").is_symlink()
 
 

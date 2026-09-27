@@ -14,7 +14,7 @@ use, free-threaded correctness, and pass ownership.
 | --- | --- |
 | `archive-reading` | Declares the capability booleans, default single-live-stream gate, public lifecycle |
 | `access-mode-and-cost` | `streaming=True` remains forward-only; concurrency is a random-access concern |
-| `error-handling` | `ConcurrentAccessError`, `ArchiveyUsageError` shapes |
+| `error-handling` | `ArchiveyUsageError` shapes |
 | `packaging-and-extras` | Free-threaded CI / supported-capability documentation |
 | `format-tar` / `format-iso` / `format-zip` | Per-backend handle-lock compliance |
 | `testing-contract` | Multi-thread / `3.13t` coverage expectations |

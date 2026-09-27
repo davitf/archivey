@@ -14,7 +14,7 @@ the choice in ``ArchiveInfo.extra["iso.namespace"]``:
 
 The directory tree lives in the header region → ``INDEXED`` listing and ``DIRECT``
 random access. A non-seekable source is rejected (trailing metadata; no streaming).
-Write is out of scope (``UnsupportedOperationError``). ``pycdlib`` uses absolute
+Write is out of scope (``UnsupportedFeatureError``). ``pycdlib`` uses absolute
 offsets, so the image must start at ``tell() == 0`` — ``open_archive`` wraps
 mid-positioned streams (stream-position contract). A compressed ``.iso.xz`` is a
 single-file compressor wrapping the image, not mounted here.

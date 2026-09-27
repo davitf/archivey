@@ -35,7 +35,6 @@ from archivey.exceptions import (
     FormatDetectionError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
-    UnsupportedFormatError,
 )
 from archivey.internal.arg_checks import (
     check_callable,
@@ -280,7 +279,7 @@ def open_archive(
       stream never seeks, with or without this flag.
     - ``concurrent_members=True`` — multiple member streams may be open at once
       (coordinated first-touch materialization, then worker fan-out; draining close).
-      Without it, a second overlapping ``open()`` raises ``ConcurrentAccessError``.
+      Without it, a second overlapping ``open()`` raises ``ArchiveyUsageError``.
 
     ``open_stream`` uses the same vocabulary for the single-stream case
     (``open_stream(..., seekable=True)``); concurrency is meaningless there, so it has
@@ -744,7 +743,7 @@ def _open_stream_from_source(
         format, codec_input, collector, effective_config
     )
     if stream_format is StreamFormat.UNCOMPRESSED:
-        raise UnsupportedFormatError(
+        raise ArchiveyUsageError(
             "open_stream requires a compressed stream format "
             f"(got {stream_format!r}); use open_archive for uncompressed containers."
         )
@@ -805,7 +804,9 @@ def _resolve_stream_format(
 
     detected = detect_format_into(open_source, config=config, collector=collector)
     if detected.format.container is not ContainerFormat.RAW_STREAM:
-        raise UnsupportedFormatError(
+        # Detection found a container, not a compressed stream: to open_stream that is
+        # the same answer as finding nothing it can open.
+        raise FormatDetectionError(
             f"Detected {detected.format!r}, which is not a single-file compressed "
             "stream. Use open_archive for archive containers."
         )

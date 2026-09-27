@@ -14,7 +14,7 @@ selection.
 | `format-detection` | Central magic/probe/extension matching before registry lookup |
 | `compressed-streams` | Codec descriptors and codec availability used in format support |
 | `archive-reading` | `open_archive()` calls detection then registry selection |
-| `error-handling` | `FormatDetectionError`, `UnsupportedFormatError`, `PackageNotInstalledError` |
+| `error-handling` | `FormatDetectionError`, `PackageNotInstalledError`, `UnsupportedFeatureError` |
 | `packaging-and-extras` | Extras that satisfy optional dependencies |
 
 ## Requirements
@@ -81,7 +81,7 @@ The system SHALL keep format detection and backend selection separate.
 the detection workspace, consumes no bytes, and raises `FormatDetectionError` when no
 format matches. The registry SHALL map the resolved `ArchiveFormat` to a
 registered available backend. If a detected format has no available backend,
-lookup SHALL raise `UnsupportedFormatError` with the install hint.
+lookup SHALL raise `PackageNotInstalledError` with the install hint.
 
 ```python
 class BackendRegistry:
@@ -98,7 +98,7 @@ class BackendRegistry:
 | Case | Expected |
 | --- | --- |
 | Detection reports `ArchiveFormat.SEVEN_Z` | `reader_for_format()` returns native `SevenZReadBackend` |
-| Detected backend's optional dependency is missing | `UnsupportedFormatError` names missing package and install hint |
+| Detected backend's optional dependency is missing | `PackageNotInstalledError` names missing package and install hint |
 | No magic/probe/extension matches | `FormatDetectionError`; no backend lookup |
 
 ### Requirement: ReadBackend and WriteBackend are separate ABCs
@@ -140,12 +140,12 @@ class WriteBackend(ABC):
 
 The `format` argument SHALL be the already-resolved `ArchiveFormat`; multi-format
 backends use it to choose a variant, while single-format backends may ignore it.
-A missing write backend SHALL raise `UnsupportedOperationError` for read-only
-formats or `UnsupportedFormatError` with an install hint for optional write
+A missing write backend SHALL raise `UnsupportedFeatureError` for read-only
+formats or `PackageNotInstalledError` with an install hint for optional write
 formats.
 
 **No writer is registered for any format today.** `register_writer` is never
-called, so `writer_for_format` raises `UnsupportedOperationError` for every
+called, so `writer_for_format` raises `UnsupportedFeatureError` for every
 format and the second branch above is unreachable — the write half of the
 registry is ABC scaffolding, not a shipped path. There is no `archivey.create`.
 The writer surface is parked in
@@ -157,7 +157,7 @@ until `PLAN.md` phase 9.
 | Case | Expected |
 | --- | --- |
 | `SingleFileBackend.MAGIC` has gzip and bzip2 signatures | Detector resolves `GZ` vs `BZ2`; both are served by one backend |
-| `writer_for_format(RAR)` — or any other format | `UnsupportedOperationError` names the format; nothing is registered to write |
+| `writer_for_format(RAR)` — or any other format | `UnsupportedFeatureError` names the format; nothing is registered to write |
 
 ### Requirement: Optional dependencies degrade gracefully
 
@@ -168,15 +168,15 @@ command from the same metadata exposed by `format_availability()`.
 
 | Missing component kind | Support | Later error |
 | --- | --- | --- |
-| Single-codec format backend/codec missing (ISO without `pycdlib`, `.zst` without zstd backend before 3.14, `.lz4` without `lz4`) | NONE | `UnsupportedFormatError` at open with hint |
+| Single-codec format backend/codec missing (ISO without `pycdlib`, `.zst` without zstd backend before 3.14, `.lz4` without `lz4`) | NONE | `PackageNotInstalledError` at open with hint |
 | Multi-codec container missing optional member codec/tool | PARTIAL | Opens/lists; member read raises `PackageNotInstalledError` or documented missing-tool error |
-| 7z writing (not yet implemented) | Read support unaffected | Write raises `UnsupportedOperationError` |
+| 7z writing (not yet implemented) | Read support unaffected | Write raises `UnsupportedFeatureError` |
 
 #### Scenario: graceful degradation matrix
 
 | Case | Expected |
 | --- | --- |
-| ISO magic source opened without `pycdlib` | `UnsupportedFormatError` names `pycdlib` and `pip install archivey[recommended]`; no `ImportError` |
+| ISO magic source opened without `pycdlib` | `PackageNotInstalledError` names `pycdlib` and `pip install archivey[recommended]`; no `ImportError` |
 | `list_supported_formats()` without `pycdlib` | ISO absent; native 7z/RAR and satisfied formats present |
 
 ### Requirement: Codec availability and install hints come from descriptors
