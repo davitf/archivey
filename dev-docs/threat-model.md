@@ -789,7 +789,7 @@ any of them is built
 folder stream that `ExtractionLimits` counts, so the decoder's end-of-output check reads
 at most one byte from each branch and never drains one.
 
-### O21. A directory source changed by another process between listing and reading — accepted
+### O21. A directory source changed by another process between listing and reading — open
 
 The directory reader lists a tree with `lstat` and never walks through a symlink, so the
 listing stays inside the root (Windows on Python 3.11 aside, where a junction may be
@@ -801,13 +801,14 @@ symlink, reading a file under it does the same. A file replaced by a FIFO blocks
 until something writes to it. A file that grew reads past its listed `size`. None of this
 raises or emits a diagnostic.
 
-*Accepted* under the published trust boundary
-([`docs/extracting.md`](../docs/extracting.md) §Trust boundaries): other local processes
-are trusted, and racing them is out of scope. A caller that reads a tree someone else can
-write to while archivey reads it (an upload staging folder, a shared drop folder) is
-exposed. The direction if this ever moves in scope: open with `O_NOFOLLOW | O_NONBLOCK`
-through an `openat` walk from the root, `fstat` the handle, and refuse a mismatch with the
-listing's `(st_dev, st_ino)` and file type. Tracked internally.
+*Open, in scope*, ruled by davi on 2026-09-27 (PR #496's decision card). A directory
+source is the exception to the published rule that other local processes are trusted
+([`docs/extracting.md`](../docs/extracting.md) §Trust boundaries): a caller may read a
+tree someone else can write to while archivey reads it (an upload staging folder, a
+shared drop folder), and a read must not leave the root. The fix is a pre-release item:
+open with `O_NOFOLLOW | O_NONBLOCK` through an `openat` walk from the root, `fstat` the
+handle, and refuse a mismatch with the listing's `(st_dev, st_ino)` and file type.
+Tracked internally.
 
 Pinned as today's behaviour, so a fix fails them:
 `tests/test_directory.py::test_a_file_swapped_for_a_symlink_after_listing_is_followed`,

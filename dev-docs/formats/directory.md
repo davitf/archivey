@@ -240,10 +240,10 @@ the shared filter ([`threat-model.md`](../threat-model.md)).
 
 What is specific to this backend is the gap between listing and reading, when someone
 else can write to the tree while archivey reads it: an upload staging directory, a shared
-drop folder. That is outside the published trust boundary, which trusts other local
-processes ([`docs/extracting.md`](../../docs/extracting.md) §Trust boundaries), and it is
-recorded as accepted in [`threat-model.md`](../threat-model.md) O21. Whoever controls the
-tree can:
+drop folder. That is in scope: a directory source is the one exception to the published
+rule that other local processes are trusted
+([`docs/extracting.md`](../../docs/extracting.md) §Trust boundaries), and the gap is open
+as [`threat-model.md`](../threat-model.md) O21. Whoever controls the tree can:
 
 - **swap a listed file or directory for a symlink**, so a read returns a file outside the
   root that the caller never listed and may not be allowed to publish. The open follows
@@ -262,7 +262,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
-| A read returns a file from outside the root | **archivey** | A listed path replaced by a symlink after the walk is followed at open (§2.3, §4). Accepted under the published trust boundary; opening with `O_NOFOLLOW` and checking the identity against the listing would refuse it ([`threat-model.md`](../threat-model.md) O21) |
+| A read returns a file from outside the root | **archivey** | A listed path replaced by a symlink after the walk is followed at open (§2.3, §4). Open and in scope; opening with `O_NOFOLLOW` and checking the identity against the listing will refuse it ([`threat-model.md`](../threat-model.md) O21) |
 | A read returns a different length from `member.size`, with no error | **archivey** | The open is by path and nothing compares the file with its listing (§2.3, [`threat-model.md`](../threat-model.md) O21). What it should do is open (§7) |
 | Extracting a file that grew since listing fails with "Decompression ratio … exceeds limit" | **archivey** | `compressed_size` is the listed size, so growth reads as a ratio. The error does not say the file changed ([`threat-model.md`](../threat-model.md) O21) |
 | Extracting into a folder inside the root adds that folder to the output (`out/out/`); with `streaming=True` it nests `out/out/out/…` until the path is too long | **archivey** | The walk reads the live tree, including what the extraction writes. Tracked internally |
