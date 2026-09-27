@@ -38,7 +38,11 @@ What the CLI hand-rolls that the library could have offered was the July review'
 richer question. Checked again against the current `cli/`:
 
 - **`--track-io`**: uses `enable_measurement()` and `reader.io_stats()` (July E1,
-  fixed).
+  fixed). *Superseded 2026-09-27 (PR #505):* both are now internal, and `--track-io`
+  imports `archivey.internal.measurement`, the one allowlisted exception in
+  `tests/test_cli_uses_public_api.py`, because the CLI is also the library's debugging
+  tool. So the answer to "where does the CLI reach past the surface" is now: there,
+  on purpose.
 - **`info`**: uses `reader.format_info` (`#468`) and `ArchiveFormat.display_name` (July
   S2, fixed); detects once.
 - **`list -v`**: prints `member.diagnostics` messages. The library offers the tuple;

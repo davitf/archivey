@@ -362,6 +362,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.zip_reader as zip_reader
     import archivey.internal.backends.zipcrypto as zipcrypto
     import archivey.internal.detection as detection
+    import archivey.internal.external.cli as cli
     import archivey.internal.external.unar as unar
     import archivey.internal.password_confirm as password_confirm
     import archivey.internal.source as source_mod
@@ -406,6 +407,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         rar_reader._RespawnStream,
         # Subprocess stdout, like the unrar pipe: nothing below it has a table.
         unar.UnarOutputStream,
+        cli.ProcessOutputStream,  # the base of the two subprocess stdout streams
         iso_reader._PyCdlibStream,
         solid._MemberSlice,
         # The source boundary: it wraps the archive source, and every seek-point
@@ -545,6 +547,7 @@ def test_delegating_stream_close_inventory() -> None:
     import archivey.internal.backends.iso_reader as iso_reader
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.backends.zip_reader as zip_reader
+    import archivey.internal.external.cli as cli
     import archivey.internal.external.unar as unar
     import archivey.internal.password_confirm as password_confirm
     import archivey.internal.streams.codecs as codecs
@@ -564,6 +567,7 @@ def test_delegating_stream_close_inventory() -> None:
         password_confirm.UnverifiedPasswordReadWatch,
     }
     subclass_closes_inner = {
+        cli.ProcessOutputStream,
         rar_reader._UnrarOwnedStream,
         unar.UnarOutputStream,
         codecs._AcceleratorStream,
@@ -605,15 +609,16 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
     """A read override without a readinto override must disable passthrough.
 
     ``DelegatingStream.readinto`` zero-copies to ``inner.readinto`` by default,
-    which bypasses this class's ``read``. The three production cases that
-    override ``read`` only (``_GzipTruncationCheckStream``,
-    ``_Bzip2EmptyStreamCheck``, ``_UnrarOwnedStream``) set
+    which bypasses this class's ``read``. The production cases that override
+    ``read`` only (``_GzipTruncationCheckStream``, ``_Bzip2EmptyStreamCheck``,
+    and ``ProcessOutputStream`` with its two subclasses) set
     ``readinto_passthrough = False`` on the class and omit the constructor
-    kwarg so the side effect still runs. Deleting those three class flags leaves the rest of the suite green; this test is
-    the gate that does not.
+    kwarg so the side effect still runs. Deleting those class flags leaves the
+    rest of the suite green; this test is the gate that does not.
 
-    The dangerous set is computed from ``cls.__dict__``, not a hand-maintained
-    list: overrides ``read``, does not override ``readinto``. Runtime
+    The dangerous set is computed from each class's MRO below
+    ``DelegatingStream``, not a hand-maintained list: overrides ``read``
+    (itself or through a base), does not override ``readinto``. Runtime
     auto-detection of an overridden ``read`` is still rejected (base
     docstring) — a plain forward of ``read`` should keep the zero-copy path,
     and silent auto-detection would hide that choice. No such forward exists
@@ -634,7 +639,7 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
 
     Mutants this test must catch:
 
-    - ``readinto_passthrough=False`` restored on ``_UnrarOwnedStream.__init__``'s
+    - ``readinto_passthrough=False`` restored on ``ProcessOutputStream.__init__``'s
       ``super()`` while the class flag stays False → ``passed_kwarg``
 
     Reuses ``_delegating_stream_subclasses`` (archivey modules only); test-file
@@ -643,10 +648,13 @@ def test_delegating_stream_readinto_passthrough_inventory() -> None:
     _import_all_archivey_modules()
     found = _delegating_stream_subclasses()
 
+    def defines(cls: type, name: str) -> bool:
+        # Inherited overrides count: ProcessOutputStream's read serves both subclasses.
+        mro = cls.__mro__
+        return any(name in c.__dict__ for c in mro[: mro.index(DelegatingStream)])
+
     needs_via_read = {
-        cls
-        for cls in found
-        if "read" in cls.__dict__ and "readinto" not in cls.__dict__
+        cls for cls in found if defines(cls, "read") and not defines(cls, "readinto")
     }
     missing = {cls for cls in needs_via_read if cls.readinto_passthrough is not False}
     assert missing == set(), (

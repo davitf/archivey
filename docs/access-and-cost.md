@@ -268,27 +268,6 @@ this page (cuts, bit flips, CRC damage, as path and as file object), but that is
 not a guarantee: an input that aborts the bzip2 decoder would end your process. Details:
 [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
 
-## Measuring what a read cost
-
-`reader.cost` predicts; `reader.io_stats()` counts. Counting is off by default and costs
-nothing then. It is decided when the reader is opened, so open inside
-`enable_measurement()`:
-
-```python
-from archivey import enable_measurement, open_archive
-
-with enable_measurement():
-    reader = open_archive("data.zip")
-
-with reader:
-    reader.read("file.txt")
-    stats = reader.io_stats()   # None if the reader was opened outside the block
-```
-
-The reader keeps counting after the `with` block ends. `io_stats()` returns `None` for
-a reader opened outside it. The fields are listed on
-[`IoStats`][archivey.IoStats]. The CLI's `--track-io` prints the same counters.
-
 ## Checklist
 
 | Situation | Prefer |

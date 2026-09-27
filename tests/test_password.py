@@ -15,8 +15,8 @@ import archivey
 from archivey import PasswordRequest, open_archive
 from archivey.exceptions import EncryptionError
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
+from archivey.internal.measurement import enable_measurement
 from archivey.internal.password import _PasswordCandidates, wrong_password_error
-from archivey.measurement import enable_measurement
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
 

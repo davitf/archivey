@@ -72,10 +72,10 @@ contract neither requires one decoder per open nor promises elimination of
 redundant decompression.
 
 **Reader-wide operation ownership.** Distinct reader-wide passes (`__iter__`,
-`stream_members`, `extract_all`) and `scan_members` /
-`members_report_if_available` initialization remain single-owner and cannot overlap
-one another or the random worker seam. Under `CONCURRENT`, first-touch
-materialization is coordinated (wait/share) and `reader.close()` drains
+`stream_members`, `extract_all`) and `members_report_if_available` initialization
+remain single-owner and cannot overlap one another or the random worker seam. Under
+`CONCURRENT`, first-touch materialization through `members()`, `members_report()` or
+`scan_members()` is coordinated (wait/share) and `reader.close()` drains
 in-flight worker calls rather than rejecting them. The base reader SHALL
 represent ownership with an explicit unforgeable root token, not thread
 identity. Private helpers MAY receive that token to enter child scopes:

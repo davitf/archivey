@@ -397,7 +397,6 @@ def test_other_single_file_codecs_omit_stored_digests(tmp_path: Path) -> None:
         path.write_bytes(blob)
         with open_archive(path) as ar:
             assert HashAlgorithm.CRC32 not in ar.members()[0].hashes, name
-            assert HashAlgorithm.ADLER32 not in ar.members()[0].hashes, name
 
 
 def test_zlib_omits_hashes_but_verifies_adler_on_read(tmp_path: Path) -> None:
@@ -408,8 +407,7 @@ def test_zlib_omits_hashes_but_verifies_adler_on_read(tmp_path: Path) -> None:
     path.write_bytes(blob)
     with open_archive(path) as ar:
         member = ar.members()[0]
-        assert HashAlgorithm.ADLER32 not in member.hashes
-        assert HashAlgorithm.CRC32 not in member.hashes
+        assert not member.hashes
         with pytest.raises(CorruptionError):
             ar.read(member)
 

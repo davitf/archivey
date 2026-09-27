@@ -27,7 +27,7 @@ The system SHALL produce equivalent `ArchiveMember` objects from ZIP, TAR, 7z, R
 and ISO sources when reading the canonical directory structure: files, symlinks,
 nested directories, empty directories, and filenames with Unicode and spaces.
 Equivalence SHALL mean field-by-field equality excluding identity fields
-(`member_id` / `archive_id`), `raw_name`, `compressed_size`, `hashes`, and `extra`.
+(`member_id` and the reader identity), `raw_name`, `compressed_size`, `hashes`, and `extra`.
 Per-format expected deviations MUST be represented as `ArchiveFormatFeatures` flags
 and consumed by the assertion helper, not silently excluded.
 

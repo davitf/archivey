@@ -4,7 +4,7 @@
 sockets, FUSE mounts, and user-written wrappers all hand back short chunks mid-stream with
 no EOF in sight. Fixed-size structure reads used to issue a single ``read(n)`` and read the
 short return as EOF — in archivey's own RAR parser, in the stdlib/third-party readers it
-delegates to (``zipfile``, ``tarfile``, ``pycdlib``), and in the ``indexed_bzip2`` seek-index
+delegates to (``zipfile``, ``tarfile``, ``pycdlib``), and in rapidgzip's bzip2 seek-index
 accelerator alike — so a **healthy** archive from such a source was reported as
 ``CorruptionError`` / ``TruncatedError``. Two layers fix it: the source boundary coalesces
 short reads for **both** seekable and non-seekable streams, and archivey's own parsers
@@ -138,7 +138,7 @@ def test_open_stream_decodes_from_short_read_source(
     """``open_stream`` needs the same boundary as ``open_archive``.
 
     ``seekable=True`` is the case that bites: a seek-index accelerator
-    (``indexed_bzip2``) reads the source itself and reported a healthy stream as
+    (rapidgzip's bzip2 decoder) reads the source itself and reported a healthy stream as
     ``CorruptionError`` on a short return.
     """
     entry = next(e for e in CORPUS if key in e.formats)

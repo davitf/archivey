@@ -36,7 +36,7 @@ from archivey.exceptions import (
     UnsupportedOperationError,
 )
 from archivey.internal.base_reader import BaseArchiveReader
-from archivey.measurement import enable_measurement
+from archivey.internal.measurement import enable_measurement
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires

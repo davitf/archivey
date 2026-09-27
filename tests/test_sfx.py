@@ -30,7 +30,6 @@ from archivey.detection_cost import (
     BALANCED_BUDGET,
     FAST_BUDGET,
     DetectionBudget,
-    TierSkipReason,
 )
 from archivey.exceptions import (
     CorruptionError,
@@ -71,6 +70,7 @@ from archivey.internal.streams.brotli_framing import (
 from archivey.internal.streams.streamtools.slice import SlicingStream
 from archivey.types import ArchiveFormat
 from tests.conftest import requires, requires_binary
+from tests.detection_cost_util import within_budget
 from tests.streams_util import NonSeekableBytesIO, brotli_compressed_metablock_header
 from tests.test_detection_workspace import InstrumentedBytesIO
 
@@ -1630,10 +1630,7 @@ def test_zipapp_detects_as_zip_and_lists_members(tmp_path: Path) -> None:
     assert detected.format == ArchiveFormat.ZIP
     assert detected.detected_by == "sfx_scan"
     assert detected.payload_offset > 0
-    assert any(
-        skip.tier == "zip_tail" and skip.reason is TierSkipReason.NOT_ENABLED_BY_POLICY
-        for skip in detected.unavailable_tiers
-    )
+    assert detected.unavailable_tiers == ()
     with open_archive(out) as archive:
         names = {m.name for m in archive.members() if m.is_file}
         assert "__main__.py" in names
@@ -1696,7 +1693,7 @@ def test_hostile_zip_local_header_stays_inside_the_scan_budget(tmp_path: Path) -
     assert src.unique_bytes <= SFX_MAX + 256
     info = detect_format(path)
     assert info.cost_receipt is not None
-    assert info.cost_receipt.within_budget(BALANCED_BUDGET)
+    assert within_budget(info.cost_receipt, BALANCED_BUDGET)
     assert info.cost_receipt.unique_bytes_read <= SFX_MAX + 256
 
 

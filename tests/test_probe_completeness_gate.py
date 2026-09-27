@@ -27,6 +27,7 @@ from archivey.internal.streams.brotli_framing import (
 )
 from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec, ZlibCodec
 from tests.conftest import requires
+from tests.detection_cost_util import within_budget
 from tests.streams_util import (
     NonSeekableBytesIO,
     brotli_compressed_metablock_header,
@@ -388,7 +389,7 @@ def test_probe_hit_under_the_completion_window_is_checked_whole() -> None:
         for s in fast.unavailable_tiers
     ), fast.unavailable_tiers
     assert fast.cost_receipt is not None
-    assert fast.cost_receipt.within_budget(FAST_BUDGET)
+    assert within_budget(fast.cost_receipt, FAST_BUDGET)
 
 
 @requires("brotli")
@@ -406,7 +407,7 @@ def test_complete_stream_under_the_completion_window_still_detects() -> None:
     assert info.cost_receipt is not None
     # The completion decode is charged: the whole source on top of the window.
     assert info.cost_receipt.decode_input >= len(data)
-    assert info.cost_receipt.within_budget(BALANCED_BUDGET)
+    assert within_budget(info.cost_receipt, BALANCED_BUDGET)
 
 
 @requires("brotli")
@@ -437,4 +438,4 @@ def test_completion_the_decode_allowance_cannot_cover_is_recorded() -> None:
         for s in info.unavailable_tiers
     ), info.unavailable_tiers
     assert info.cost_receipt is not None
-    assert info.cost_receipt.within_budget(budget)
+    assert within_budget(info.cost_receipt, budget)

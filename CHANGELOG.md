@@ -430,16 +430,34 @@ promise with that line; treat `0.2.0` as the first release of this library.
   extraction wrote, as every other name collision already treated the two.
 - **Detection's cost receipt now reports what detection did.** Under a smaller
   `DetectionBudget` the inner-TAR probe still decoded up to 1 MiB, and a content probe
-  on an `ArchiveStream` could buffer 1 MiB, so the receipt failed its own
-  `within_budget` check with no skipped tier to explain it. Both now stay inside the
+  on an `ArchiveStream` could buffer 1 MiB, so the receipt showed more work than the
+  budget allowed, with no skipped tier to explain it. Both now stay inside the
   budget and record the tier as budget-exhausted when they are cut short, as do a far
   signature past `max_far_bytes` and an SFX scan that misses in a window the budget
-  shortened. A failed inner-TAR decode is now charged, `within_budget` also checks
-  `far_bytes`, and a stub `.exe` followed to its split volume reports both passes' cost
-  with `passes=2`, judged against two budgets.
+  shortened. A failed inner-TAR decode is now charged, and a stub `.exe` followed to its
+  split volume reports both passes' cost with `passes=2`, judged against two budgets.
 
 ### Changed
 
+- **IO measurement is no longer public API.** `IoStats`, `enable_measurement`, the
+  `archivey.measurement` module and `ArchiveReader.io_stats()` are removed from the
+  public surface. The counters stay for the benchmark harness and the CLI, whose
+  `--track-io` prints them as before.
+- **`ArchiveMember.archive_id` and `HashAlgorithm.ADLER32` are removed.** No caller
+  used `archive_id`; `member in reader` is how to ask whether a member came from a
+  reader. No backend ever listed an Adler-32 digest in `member.hashes`: a zlib stream's
+  Adler-32 trailer is still checked by the decompressor on read.
+- **`scan_members()` is `members_report()` that raises the report's error.** Under
+  `concurrent_members=True` it now shares first-touch materialization with `members()`
+  and `members_report()`, so it no longer raises `ArchiveyUsageError` when another
+  thread is inside `open()`.
+- **`archivey.detection_cost` keeps only what detection uses.** `DetectionCapability` is
+  removed. `DetectionBudget` loses `max_tail_bytes`, `max_seeks` and `max_probe_links`,
+  which no tier read, and `spool_non_seekable_up_to`: detection no longer spools a pipe
+  to a temporary file. `DetectionCostReceipt` loses `tail_bytes`, `seeks` and
+  `spooled_bytes`, and its `charge()` and `within_budget()` methods.
+  `FormatInfo.unavailable_tiers` no longer lists a `zip_tail` skip on every result, so
+  it is empty when every tier ran.
 - **TAR names decode as UTF-8 whatever the locale.** Without `encoding=`, ustar and GNU
   names (and `uname`, `gname`, link targets) used to follow Python's `tarfile` default,
   the process filesystem encoding on POSIX, so the same archive listed differently under
@@ -494,14 +512,14 @@ promise with that line; treat `0.2.0` as the first release of this library.
   `max_index_bytes` and `collect_nonmaximal_candidates`, and `DetectionCostReceipt` loses
   `index_bytes`. `DetectionBudgetPresetStr`, the string alias only that argument used, is
   gone too.
-- **Every public class and function reports `archivey` as its `__module__`.** Seventeen
-  names in `__all__` are defined under `archivey.internal` (the extraction types,
-  `detect_format`, the registry queries, `ArchiveStream`, `enable_measurement`). They
-  now report `archivey`, so a pickled `ExtractionResult` or policy enum records
-  `archivey.OverwritePolicy` rather than an internal path that could never move, and
-  `repr()` and `help()` agree. `typing.get_type_hints` still resolves on those classes.
-  `inspect.getsource` on the twelve pinned classes now raises `OSError`: Python finds a
-  class's source through its module, and there is no way to point it back.
+- **No public name reports an internal `__module__`.** Five names in `__all__` are
+  defined under `archivey.internal` (`detect_format`, the three registry queries and
+  `ArchiveStream`). They now report `archivey`, so a pickled reference to one records
+  `archivey.detect_format` rather than an internal path that could never move, and
+  `repr()` and `help()` agree. Every other public name is defined in a public module
+  (the extraction types and policy enums in `archivey.types`). `inspect.getsource` on
+  `ArchiveStream` now raises `OSError`: Python finds a class's source through its
+  module, and there is no way to point it back.
 - **A raw CD sector image is refused by name.** The `.bin` of a `.bin`/`.cue` pair
   used to fail detection with "no magic-byte match", which reads like a corrupt file. It
   is now recognised by its sector sync pattern and refused with

@@ -209,10 +209,11 @@ def test_member_ids_are_unique(simple_dir: Path) -> None:
         assert len(ids) == len(set(ids))
 
 
-def test_member_archive_id_set(simple_dir: Path) -> None:
-    with open_archive(simple_dir) as reader:
+def test_members_belong_to_their_reader(simple_dir: Path) -> None:
+    with open_archive(simple_dir) as reader, open_archive(simple_dir) as other:
         for member in reader.members():
-            assert member.archive_id  # non-empty string
+            assert member in reader
+            assert member not in other
 
 
 # ---------------------------------------------------------------------------

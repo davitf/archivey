@@ -1,16 +1,91 @@
-"""How a decoder child process ended, read from its return code.
+"""Start a child process, end it, and read how it ended from its return code.
 
 A native decoder that archivey runs in a child process (pyppmd, see ``ppmd_child``;
 rapidgzip, see ``rapidgzip_child``) can crash on hostile input. Only a crash is a
 verdict on the data. A child ended from outside (the out-of-memory killer, an
 operator, a supervisor) says nothing about the data, and the caller must not be told
 it does.
+
+The external data programs (``unrar``, ``unar``; see ``archivey.internal.external``)
+start and end through the same functions, and map their own exit statuses.
 """
 
 from __future__ import annotations
 
 import signal
+import subprocess
 import sys
+from collections.abc import Callable
+from pathlib import Path
+from typing import IO
+
+# Seconds a child has to exit after it is told to end (its pipes closed, or a signal
+# sent) before it is killed.
+REAP_TIMEOUT = 5
+
+# Makes the caller's start error from the reason (the ``OSError``, or no interpreter).
+StartFailure = Callable[[str], Exception]
+
+
+def python_argv(script: Path, fail: StartFailure) -> list[str]:
+    """The argv that runs ``script`` under this interpreter.
+
+    Raises ``fail(...)`` when ``sys.executable`` is not set: ``Popen([None, ...])``
+    raises ``TypeError``, not ``OSError``, so :func:`spawn` would not map it.
+    """
+    if not sys.executable:
+        raise fail("sys.executable is not set")
+    # -P: the script's own directory is not put on sys.path, so its sibling modules
+    # (``codecs.py``) cannot shadow the standard library.
+    return [sys.executable, "-P", str(script)]
+
+
+def spawn(
+    argv: list[str],
+    fail: StartFailure,
+    *,
+    stdin: int | IO[bytes],
+    stderr: int | IO[bytes],
+    bufsize: int = -1,
+) -> subprocess.Popen[bytes]:
+    """Start ``argv`` with its stdout on a pipe. An ``OSError`` raises ``fail(str(exc))``."""
+    try:
+        return subprocess.Popen(
+            argv, stdin=stdin, stdout=subprocess.PIPE, stderr=stderr, bufsize=bufsize
+        )
+    except OSError as exc:
+        raise fail(str(exc)) from exc
+
+
+def wait_or_kill(proc: subprocess.Popen[bytes]) -> None:
+    """Wait for the child to exit; kill it after ``REAP_TIMEOUT`` seconds."""
+    try:
+        proc.wait(timeout=REAP_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+def reap(proc: subprocess.Popen[bytes], *, kill: bool = False) -> None:
+    """End a child that talks on its pipes, and wait for it. Never raises.
+
+    ``kill`` kills it first; otherwise closing the pipes ends it.
+    """
+    if kill:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    # Both pipes before the wait: a child blocked writing to a pipe nobody reads gets
+    # EPIPE and exits, where it would otherwise never see stdin close.
+    for pipe in (proc.stdin, proc.stdout):
+        try:
+            if pipe is not None:
+                pipe.close()
+        except OSError:
+            pass
+    wait_or_kill(proc)
+
 
 # The system kills with SIGKILL: the kernel's out-of-memory killer, an operator or a
 # supervisor. Windows has no such signal.

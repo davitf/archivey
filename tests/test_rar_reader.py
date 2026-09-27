@@ -3972,6 +3972,23 @@ def test_unrar_owned_stream_suppresses_fatal_crc_when_hash_present(rc: int) -> N
     _close_unrar_owned(rc=rc, named_member=True, has_verifiable_hash=True)
 
 
+def test_unrar_owned_stream_zero_length_read_is_not_end_of_file() -> None:
+    """read(0) and an empty readinto return nothing and leave the exit status alone."""
+    from archivey.internal.backends.rar_reader import _UnrarOwnedStream
+
+    stream = _UnrarOwnedStream(
+        io.BytesIO(b""),
+        _FakeUnrarProc(11),  # type: ignore[arg-type]
+        named_member=True,
+        encrypted=True,
+    )
+    assert stream.read(0) == b""
+    assert stream.readinto(bytearray()) == 0
+    with pytest.raises(EncryptionError):
+        stream.read()
+    stream.close()
+
+
 @pytest.mark.parametrize("rc", [2, 3])
 def test_unrar_owned_stream_encrypted_empty_maps_to_encryption_error_on_read(
     rc: int,

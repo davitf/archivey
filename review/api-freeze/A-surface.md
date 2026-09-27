@@ -10,7 +10,7 @@ vocabulary is the brief's: **keep**, **demote** (importable from its module, out
 | Defined in | Names | Verdict |
 | --- | --- | --- |
 | `archivey.core` | `open_archive`, `open_stream`, `extract` | keep |
-| `archivey` (pinned `__module__`) | `detect_format`, `format_availability`, `list_supported_formats`, `list_known_formats`, `ArchiveStream`, `enable_measurement` | keep; see A-2 on `detect_format` |
+| `archivey` (pinned `__module__`) | `detect_format`, `format_availability`, `list_supported_formats`, `list_known_formats`, `ArchiveStream`, ~~`enable_measurement`~~ | keep; see A-2 on `detect_format`. `enable_measurement`: made internal 2026-09-27 (below) |
 | `archivey.reader` | `ArchiveReader` | keep |
 | `archivey.types` | 24 names (below) | keep 23, demote 1 (`MemberStreams`) |
 | `archivey.config` | `ArchiveyConfig`, `DEFAULT_ARCHIVEY_CONFIG`, `DecoderLimits`, `ExtractionLimits`, `ListingLimits`, `AcceleratorMode`, `PasswordRequest` | keep |
@@ -18,9 +18,15 @@ vocabulary is the brief's: **keep**, **demote** (importable from its module, out
 | `archivey.detection` | `FormatInfo`, `DetectionConfidence` | keep |
 | `archivey.diagnostics` | `Diagnostic`, `DiagnosticCode`, `DiagnosticSeverity`, `DiagnosticDisposition`, `DiagnosticPolicy`, `DiagnosticSummary`, `ExtractionReport`, `MemberListReport`, `ARCHIVE_INTEGRITY_CODES` | keep (Q3 on `DiagnosticSeverity`) |
 | `archivey.exceptions` | 26 classes | keep; see `D-errors.md` |
-| `archivey.measurement` | `IoStats` | keep |
+| ~~`archivey.measurement`~~ | ~~`IoStats`~~ | made internal 2026-09-27 (below) |
 | type aliases | `PasswordInput`, `PasswordProvider`, `OnDiagnostic`, `DiagnosticContext`, `MemberSelector`, `MemberFilter` | keep |
 | `__version__` | | keep |
+
+**Superseded 2026-09-27.** `enable_measurement` and `IoStats` left the public API on
+2026-09-27, PR #505: davi chose to make IO measurement internal, with the CLI's
+`--track-io` as a debugging hook allowed to import it. The same PR removed
+`ArchiveMember.archive_id`, `HashAlgorithm.ADLER32` and the unused half of
+`archivey.detection_cost`, after the size review of that date.
 
 The 24 `types` names: `ExtractionPolicy`, `OverwritePolicy`, `OnError`, `AbortOn`,
 `ExtractionStatus`, `ExtractionProgress`, `ExtractionResult`, `FormatSupport`,

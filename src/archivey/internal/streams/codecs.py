@@ -1835,26 +1835,26 @@ class Bzip2Codec(StreamCodec):
         )
 
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
-        """Translate the indexed_bzip2 accelerator's exceptions to the library's error types."""
+        """Translate the rapidgzip bzip2 accelerator's exceptions to the library's error types."""
         if from_callers_source(exc):
             return None  # the caller's source raised it, through _TrappingSource
         text = str(exc)
         if isinstance(exc, RuntimeError) and "Calculated CRC" in text:
             return CorruptionError(
-                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
         if isinstance(exc, RuntimeError) and text in (
             "std::exception",
             "Unknown exception",
         ):
             return CorruptionError(
-                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
         if "[BZip2 block" in text:
             # Corrupt block data or block header (e.g. "[BZip2 block header] Invalid Huffman
             # coding group count"); surfaced as ValueError or RuntimeError depending on where.
             return CorruptionError(
-                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
         if isinstance(exc, (ValueError, RuntimeError)) and (
             "Huffman" in text
@@ -1866,15 +1866,15 @@ class Bzip2Codec(StreamCodec):
             # "[BZip2 block]"-tagged context (e.g. "Constructing a Huffman coding … failed!"
             # or "bad optional access") — all found by the corpus mutation harness.
             return CorruptionError(
-                f"Error reading bzip2 stream (indexed_bzip2): {exc!r}"
+                f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
         if isinstance(exc, ValueError) and "has no valid fileno" in text:
             return StreamNotSeekableError(
-                "indexed_bzip2 does not support non-seekable streams"
+                "the rapidgzip bzip2 accelerator does not support non-seekable streams"
             )
         if isinstance(exc, io.UnsupportedOperation) and "seek" in text:
             return StreamNotSeekableError(
-                "indexed_bzip2 does not support non-seekable streams"
+                "the rapidgzip bzip2 accelerator does not support non-seekable streams"
             )
         if isinstance(exc, (EOFError, OSError)):
             # The stdlib engine that _Bzip2EmptyStreamCheck falls back to raises these.
