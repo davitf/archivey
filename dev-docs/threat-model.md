@@ -798,9 +798,28 @@ RAR member data requires an external tool. `unrar` is **non-free** (freeware lic
 exists on macOS. A multi-tool fallback matrix would otherwise degrade into "works on my
 machine" plus divergent solid/password behavior.
 
-*Decision (closed):* Archivey supports **RARLAB `unrar` only** for RAR member data.
+*Decision (closed):* Archivey uses **RARLAB `unrar`** for RAR member data by default.
 Non-RARLAB binaries on `PATH` raise `PackageNotInstalledError` naming RARLAB `unrar`;
-there is no silent fallback to `unrar-free` / `unar` / `7z`. Licensing remains a
+there is no silent fallback to `unrar-free` / `unar` / `7z`. *Amended 2026-09-26:* a
+second program exists. `ArchiveyConfig.rar_decompressor` defaults to `"auto"`, which
+takes RARLAB `unrar` when it is installed and `unar` otherwise; the maintainer chose that
+default (2026-09-26, "auto is default"). So `unar` *is* now a fallback, but a bounded one:
+`"auto"` decides once when the archive opens, a read `unar` refuses is never retried
+with `unrar`, `unrar-free` / `7z` / `bsdtar` are still never used, and the reads `unar`
+gets wrong are refused before it runs rather than trusted. `"unrar"` restores the old
+behaviour (RARLAB or `PackageNotInstalledError`); `"unar"` with `unar` missing raises.
+The `unar` path keeps the `unrar` boundary's rules — a banner probe with a timeout and a
+stat-keyed cache, a fixed argv ending in `--` and an absolute archive path, members named
+by decimal entry index (no hostile name reaches argv, no include mask). One rule differs:
+`unar` takes a password only on its command line, so under `unar` the password is
+visible to other local users in `ps` and `/proc/<pid>/cmdline` for the life of the
+process. The maintainer accepted that (2026-09-26, "fine in most cases"); the user docs
+say so and point shared-machine users at `unrar` (installed, or forced with
+`"unrar"`), which reads the password from stdin. Because `"auto"` is the default, a
+caller who never touched the setting can put a password on `unar`'s argv by not having
+RARLAB installed; that is the accepted cost of the default.
+The password is its own argv item after `-p`, before `--`, so a leading `-` cannot turn
+it into an option. Licensing remains a
 documented system dependency (archivey itself stays permissively licensed). See
 ADR [`0002-native-rar-metadata-unrar-data`](decisions/0002-native-rar-metadata-unrar-data.md)
 and OpenSpec `format-rar`.

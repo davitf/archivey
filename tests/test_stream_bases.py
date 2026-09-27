@@ -362,6 +362,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     import archivey.internal.backends.zip_reader as zip_reader
     import archivey.internal.backends.zipcrypto as zipcrypto
     import archivey.internal.detection as detection
+    import archivey.internal.external.unar as unar
     import archivey.internal.password_confirm as password_confirm
     import archivey.internal.source as source_mod
     import archivey.internal.streams.archive_stream as archive_stream
@@ -401,7 +402,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         counting.CountingReader,
         counting.SeekCountingStream,
         rar_reader._UnrarOwnedStream,
-        rar_reader._UnrarRespawnStream,
+        rar_reader._RespawnStream,
+        # Subprocess stdout, like the unrar pipe: nothing below it has a table.
+        unar.UnarOutputStream,
         iso_reader._PyCdlibStream,
         solid._MemberSlice,
         # The source boundary: it wraps the archive source, and every seek-point
@@ -541,6 +544,7 @@ def test_delegating_stream_close_inventory() -> None:
     import archivey.internal.backends.iso_reader as iso_reader
     import archivey.internal.backends.rar_reader as rar_reader
     import archivey.internal.backends.zip_reader as zip_reader
+    import archivey.internal.external.unar as unar
     import archivey.internal.password_confirm as password_confirm
     import archivey.internal.streams.codecs as codecs
     import archivey.internal.streams.counting as counting
@@ -559,6 +563,7 @@ def test_delegating_stream_close_inventory() -> None:
     }
     subclass_closes_inner = {
         rar_reader._UnrarOwnedStream,
+        unar.UnarOutputStream,
         codecs._AcceleratorStream,
     }
     found = _delegating_stream_subclasses()

@@ -47,6 +47,7 @@ from archivey.internal.backends.rar_parser import (
     load_vint,
     parse_rar_archive,
 )
+from archivey.internal.external.cli import terminate_process
 from archivey.terminal import display_path
 from archivey.types import (
     EXTRA_RAR_EXTRACT_VERSION,
@@ -135,7 +136,7 @@ def _named_unrar_p_bytes(path: Path, member: str) -> bytes:
         try:
             rc = proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            rar_unrar.terminate_unrar(proc)
+            terminate_process(proc)
             raise
     assert rc == 0, f"unrar p member={member!r} exited {rc} (10 is no-match)"
     return data
@@ -344,7 +345,7 @@ def test_unrar_respawn_overrun_probe_sees_trailing_bytes() -> None:
     def spawn() -> io.BytesIO:
         return io.BytesIO(payload)
 
-    stream = rar_reader._UnrarRespawnStream(spawn, spawn(), size=declared)
+    stream = rar_reader._RespawnStream(spawn, spawn(), size=declared)
     assert stream.read(declared) == payload[:declared]
     assert stream.read(1) == payload[declared : declared + 1]
     stream.seek(0)
@@ -360,7 +361,7 @@ def test_unrar_respawn_boundary_read_is_one_byte() -> None:
     def spawn() -> io.BytesIO:
         return io.BytesIO(payload)
 
-    stream = rar_reader._UnrarRespawnStream(spawn, spawn(), size=declared)
+    stream = rar_reader._RespawnStream(spawn, spawn(), size=declared)
     assert stream.read(declared) == payload[:declared]
     assert stream.read(-1) == payload[declared : declared + 1]
 
@@ -387,7 +388,7 @@ def test_unrar_respawn_overrun_probe_noop_seek_does_not_kill_pipe() -> None:
         return _TrackClose(payload)
 
     inner = spawn()
-    stream = rar_reader._UnrarRespawnStream(spawn, inner, size=declared)
+    stream = rar_reader._RespawnStream(spawn, inner, size=declared)
     assert stream.read(declared) == payload[:declared]
     assert stream.read(1) == payload[declared : declared + 1]
     assert closed == []
@@ -410,7 +411,7 @@ def test_unrar_respawn_failed_seek_leaves_position() -> None:
     def spawn() -> io.BytesIO:
         return io.BytesIO(b"x" * 20)
 
-    stream = rar_reader._UnrarRespawnStream(spawn, _CloseBoom(b"x" * 20), size=20)
+    stream = rar_reader._RespawnStream(spawn, _CloseBoom(b"x" * 20), size=20)
     assert stream.read(10) == b"x" * 10
     assert stream.tell() == 10
     with pytest.raises(OSError, match="close failed"):
@@ -428,7 +429,7 @@ def test_unrar_respawn_seek_end_does_not_drain_or_respawn() -> None:
         spawns += 1
         return io.BytesIO(payload)
 
-    stream = rar_reader._UnrarRespawnStream(spawn, spawn(), size=len(payload))
+    stream = rar_reader._RespawnStream(spawn, spawn(), size=len(payload))
     assert spawns == 1
     assert stream.seek(0, io.SEEK_END) == len(payload)
     assert spawns == 1

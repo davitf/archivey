@@ -1,0 +1,246 @@
+"""RAR policy for the ``unar`` data path: what ``unar`` may read, and where its bytes land.
+
+The process layer is :mod:`archivey.internal.external.unar` and knows nothing about RAR.
+This module holds the RAR facts that decide how :mod:`.rar_reader` uses it, all taken
+from the native parse before any process starts:
+
+- **Entry indexes.** ``unar -i`` addresses an entry by its position in ``lsar``'s list,
+  which for RAR is one entry per FILE header in archive order, a file split across
+  volumes counted once. That is the order of :attr:`RarArchive.members`.
+- **What an all-entries run emits.** ``unar -o -`` with no index writes each entry's
+  unpacked bytes in archive order. That differs from ``unrar p``: every file-version
+  history row is included (``unrar`` needs ``-ver``), a RAR3/4 symlink emits its stored
+  target, and a directory or a RAR5 redirect emits nothing.
+- **Refusals.** The reads ``unar`` 1.10 is known to get wrong. Each is refused with
+  ``UnsupportedFeatureError`` before ``unar`` runs, because ``unar`` reports several of
+  them with exit 0. RAR5 encryption is read, with the password on ``unar``'s command
+  line (see :mod:`archivey.internal.external.unar`).
+
+Measurements: ``dev-docs/investigations/alternative-rar-decompressors.md`` and
+``scripts/exploration/rar_decompressor_matrix.py``.
+"""
+
+from __future__ import annotations
+
+from archivey.internal.backends.rar_parser import RarArchive, RarMemberInfo
+
+# RAR3/4 method byte for "stored". Compression versions below 2.0 are decoded by a
+# separate RAR 1.5 algorithm, which only matters when the data is compressed.
+_METHOD_STORED = 0x30
+_FIRST_UNAR_SAFE_EXTRACT_VERSION = 20
+
+UNAR_PURPOSE = (
+    "to read RAR member data with ArchiveyConfig.rar_decompressor set to 'unar'"
+)
+
+_USE_UNRAR = (
+    "Set ArchiveyConfig.rar_decompressor to 'unrar' to read it with RARLAB unrar."
+)
+
+REFUSE_RAR4_ENCRYPTED = (
+    "unar 1.10 returns no data, and reports success, for encrypted RAR 2.x-4.x data "
+    "even with the right password. " + _USE_UNRAR
+)
+REFUSE_NON_ASCII_PASSWORD = (
+    "unar 1.10 does not decrypt with a password that is not ASCII. " + _USE_UNRAR
+)
+REFUSE_HEADER_ENCRYPTED_VOLUMES = (
+    "unar 1.10.8 returns no data, and reports success, for a multi-volume RAR5 set "
+    "with encrypted headers, even with the right password. " + _USE_UNRAR
+)
+REFUSE_RAR15 = (
+    "unar 1.10 returns no data, and reports success, for a member compressed with the "
+    "RAR 1.5 algorithm. " + _USE_UNRAR
+)
+REFUSE_RAR5_SOLID_AFTER_EMPTY = (
+    "unar 1.10 crashes, or reports success with no data, on a RAR5 solid archive when a "
+    "member with data follows an empty file, a directory or a link. " + _USE_UNRAR
+)
+
+
+# The most entries one solid pass names on the ``unar`` command line. The bound that
+# applies is ``ARG_MAX``, which covers argv and the environment together: 256 KiB on
+# older macOS, 1 MiB on current macOS, 2 MiB on Linux. 4000 indexes of up to six
+# digits cost under 60 KB, counting each string's terminator and its argv pointer,
+# which leaves most of the smallest of those for the environment, the fixed argv and
+# a long archive path. ``unar`` is not packaged for Windows, so its 32 767-character
+# command line is not the constraint. Only a pass with a refused member names entries
+# at all; the cap is in the ``format-rar`` spec and in ``docs/formats.md``.
+MAX_SELECTED_ENTRIES = 4000
+
+REFUSE_TOO_MANY_SELECTED = (
+    f"this archive has a member that unar cannot read, so a single unar run must name "
+    f"each readable member, and it can name at most {MAX_SELECTED_ENTRIES}. Open this "
+    "member on its own instead. " + _USE_UNRAR
+)
+
+
+def unar_entry_index(archive: RarArchive) -> dict[int, int]:
+    """``id(member info)`` to its ``unar -i`` index."""
+    return {id(info): index for index, info in enumerate(archive.members)}
+
+
+def _carries_no_solid_data(info: RarMemberInfo) -> bool:
+    return (
+        info.is_directory
+        or info.file_redir is not None
+        or info.is_hardlink_or_copy
+        or info.file_size == 0
+    )
+
+
+def unar_emitted_size(info: RarMemberInfo) -> int:
+    """Bytes ``unar -o -`` writes for this entry in an all-entries run."""
+    if info.is_directory or info.file_redir is not None or info.is_hardlink_or_copy:
+        return 0
+    return info.file_size
+
+
+def unar_pipe_offsets(archive: RarArchive) -> dict[int, int]:
+    """``id(member info)`` to where its bytes start in an all-entries ``unar`` run."""
+    offsets: dict[int, int] = {}
+    position = 0
+    for info in archive.members:
+        offsets[id(info)] = position
+        position += unar_emitted_size(info)
+    return offsets
+
+
+def _rar5_solid_after_empty(archive: RarArchive) -> set[int]:
+    """``id``s of RAR5 solid members that ``unar`` 1.10 does not decode.
+
+    Measured with ``unar`` 1.10.1 (SIGSEGV) and XADMaster 1.10.8 (exit 0, no data): a
+    member with data that comes after an empty file or a directory in a RAR5 solid
+    archive. An empty entry *last* is harmless, and so is anything before it. Links are
+    included on the same grounds as directories (no data in the solid stream), without
+    a failing sample: a link before data in a solid RAR5 archive is untested, and this
+    refuses rather than guesses. RAR3/4 solid archives decoded correctly in every
+    shape measured, so they are not refused; the size and digest check on every member
+    is the net there.
+    """
+    if archive.version != 5 or not archive.is_solid:
+        return set()
+    refused: set[int] = set()
+    seen_empty = False
+    for info in archive.members:
+        if seen_empty and not _carries_no_solid_data(info):
+            refused.add(id(info))
+        if _carries_no_solid_data(info):
+            seen_empty = True
+    return refused
+
+
+def _needs_password(archive: RarArchive, info: RarMemberInfo) -> bool:
+    return archive.has_header_encryption or info.is_encrypted or info.encryption_unknown
+
+
+def _rar4_encrypted(archive: RarArchive, info: RarMemberInfo) -> bool:
+    return archive.version != 5 and _needs_password(archive, info)
+
+
+def _archive_refusal(archive: RarArchive) -> str | None:
+    """Why no solid pass over this archive can use ``unar``, or ``None``."""
+    if archive.version != 5 and (
+        archive.has_header_encryption
+        or any(_needs_password(archive, info) for info in archive.members)
+    ):
+        return REFUSE_RAR4_ENCRYPTED
+    # Measured on the Homebrew bottle (XADMaster 1.10.8) with ``tinyvol_hp``: no data,
+    # exit 0. Debian's 1.10.1 reads the same set; the version is not told apart.
+    if archive.version == 5 and archive.has_header_encryption and archive.is_volume:
+        return REFUSE_HEADER_ENCRYPTED_VOLUMES
+    return None
+
+
+class UnarRarPolicy:
+    """The refusals and pipe layout for one parsed archive, computed once."""
+
+    def __init__(self, archive: RarArchive) -> None:
+        self._archive = archive
+        self._index = unar_entry_index(archive)
+        self._solid_after_empty = _rar5_solid_after_empty(archive)
+        self._archive_refusal = _archive_refusal(archive)
+        self._pass_refusals: dict[int, str] = {}
+        self._pass_indexes: list[int] | None = None
+        self._pass_offsets: dict[int, int] = {}
+        if self._archive_refusal is None:
+            self._plan_solid_pass()
+
+    def _plan_solid_pass(self) -> None:
+        """Choose the one ``unar`` run a solid pass reads, and where each member lands.
+
+        With nothing refused, the run selects every entry and the offsets follow
+        :func:`unar_emitted_size`. With a refused member, the run names only the
+        readable payload members by index. The refused member must stay out of the run,
+        not only out of the demux: ``unar`` 1.10.1 crashes on it, and the crash loses
+        output of *earlier* members that ``unar`` had buffered but not yet written.
+        """
+        payload = [info for info in self._archive.members if info.is_payload_file()]
+        for info in payload:
+            reason = self.member_refusal(info)
+            if reason is not None:
+                self._pass_refusals[id(info)] = reason
+        if not self._pass_refusals:
+            self._pass_offsets = unar_pipe_offsets(self._archive)
+            return
+        selected: list[RarMemberInfo] = []
+        for info in payload:
+            if id(info) in self._pass_refusals:
+                continue
+            if len(selected) == MAX_SELECTED_ENTRIES:
+                self._pass_refusals[id(info)] = REFUSE_TOO_MANY_SELECTED
+                continue
+            selected.append(info)
+        position = 0
+        for info in selected:
+            self._pass_offsets[id(info)] = position
+            position += info.file_size
+        self._pass_indexes = [self._index[id(info)] for info in selected]
+
+    def entry_index(self, info: RarMemberInfo) -> int:
+        return self._index[id(info)]
+
+    def member_refusal(self, info: RarMemberInfo) -> str | None:
+        """Why ``unar`` must not read this member on its own, or ``None``."""
+        if _rar4_encrypted(self._archive, info):
+            return REFUSE_RAR4_ENCRYPTED
+        if self._archive_refusal == REFUSE_HEADER_ENCRYPTED_VOLUMES:
+            return self._archive_refusal
+        if (
+            info.extract_version is not None
+            and info.extract_version < _FIRST_UNAR_SAFE_EXTRACT_VERSION
+            and info.compress_type != _METHOD_STORED
+        ):
+            return REFUSE_RAR15
+        if id(info) in self._solid_after_empty:
+            return REFUSE_RAR5_SOLID_AFTER_EMPTY
+        return None
+
+    @property
+    def solid_pass_indexes(self) -> list[int] | None:
+        """The ``unar -i`` selection for a solid pass; ``None`` selects every entry."""
+        return self._pass_indexes
+
+    def solid_pass_refusal(self, info: RarMemberInfo) -> str | None:
+        """Why this payload member cannot come out of the solid pass's run, or ``None``.
+
+        In a RAR 2.x-4.x archive, one encrypted member anywhere refuses the whole run:
+        ``unar`` would have to decode it to reach any later member of the solid stream.
+        """
+        if self._archive_refusal is not None:
+            return self._archive_refusal
+        return self._pass_refusals.get(id(info))
+
+    def solid_pass_emits_data(self) -> bool:
+        """Whether the solid pass's run writes at least one byte when it decrypts."""
+        if self._pass_indexes is not None:
+            return any(
+                info.file_size > 0
+                for info in self._archive.members
+                if id(info) in self._pass_offsets
+            )
+        return any(unar_emitted_size(info) > 0 for info in self._archive.members)
+
+    def solid_pass_offset(self, info: RarMemberInfo) -> int:
+        """Where this readable payload member starts in the solid pass's run."""
+        return self._pass_offsets[id(info)]

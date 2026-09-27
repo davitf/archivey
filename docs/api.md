@@ -91,6 +91,7 @@ spec for lifecycle, retention, and policy.
 ::: archivey.DecoderLimits
 ::: archivey.SpoolLimits
 ::: archivey.AcceleratorMode
+::: archivey.RarDecompressor
 ::: archivey.PasswordInput
 ::: archivey.PasswordRequest
 ::: archivey.PasswordProvider
