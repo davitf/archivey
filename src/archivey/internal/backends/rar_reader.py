@@ -2156,6 +2156,19 @@ class RarReader(BaseArchiveReader):
                 data = view.read()
             finally:
                 view.close()
+            # The header's data CRC32 covers these bytes, and the header CRC does not,
+            # so this is the only check a damaged target meets. Held to it as ZIP and
+            # 7z hold theirs: a mismatch raises, and link finalization lists the link
+            # targetless (`_report_damaged_link_target`) while open/extract re-raise.
+            # A short read is caught by the same comparison. Encrypted members never
+            # reach here, so the CRC is never a RAR5 key-tweaked one.
+            if raw.crc32 is not None and zlib.crc32(data) != raw.crc32:
+                raise CorruptionError(
+                    "The stored symlink target does not match its CRC32 checksum",
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    source_format=ArchiveFormat.RAR,
+                )
             member.link_target = data.decode("utf-8", errors="surrogateescape")
             return
         # Encrypted / compressed target without usable direct bytes: leave unset. The

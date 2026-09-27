@@ -118,6 +118,13 @@ promise with that line; treat `0.2.0` as the first release of this library.
 
 ### Fixed
 
+- **A damaged RAR3/4 symlink target is no longer returned as the link's target.** The
+  target is stored as the member's data and was read with no check, so a damaged one
+  listed as a wrong target with no diagnostic, and a strict `DiagnosticPolicy` accepted
+  the archive. It is now checked against the member's CRC32 and handled as ZIP and 7z
+  handle a damaged target: the link lists with `link_target` unset and
+  `SYMLINK_TARGET_UNAVAILABLE` (`reason="target_data_damaged"`), and opening or
+  extracting it raises `CorruptionError`.
 - **One malformed Rock Ridge record no longer costs a whole ISO image.** A System Use
   entry pycdlib does not know is skipped, as SUSP specifies, and a malformed one ends
   that record's Rock Ridge data with a `MEMBER_HEADER_RECORD_SKIPPED` diagnostic on the

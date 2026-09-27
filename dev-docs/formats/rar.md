@@ -233,6 +233,15 @@ per-member failures governed by `OnError`. That is why the encrypted row is not 
 member and catch the failure, so a password really is what is missing, whereas this
 path never decrypts and a correct password does not change its answer.
 
+A target the direct read does reach is held to the member's data CRC32 before it is
+used: the header CRC does not cover the data, so that is the only check a damaged target
+meets. On a mismatch the read raises `CorruptionError`, and link finalization treats it
+as ZIP and 7z treat a damaged target (`_report_damaged_link_target`): the link stays
+listed with `link_target` unset, `SYMLINK_TARGET_UNAVAILABLE` carries
+`reason="target_data_damaged"` (so a strict policy refuses the archive), and opening or
+extracting the link raises the fault. A RAR5 redirect needs no such check, since its
+target is a header field covered by the header CRC.
+
 The RARLAB writer produces only the encrypted case in practice — it stores every
 symlink target M0, which is why `target_data_compressed` has no fixture (§8) and the
 four rows are pinned by patching the parsed header instead.
@@ -766,7 +775,6 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | `seekable_members=True` on a sequential solid pass is still a pipe | **archivey** | Random `open()` of an `unrar`-backed member respawns the process on a backward seek, the same reopen the other backends use. `stream_members()` is never seekable by design: those handles are a single-pass decode, and seeking would break it. The `seekable_members=True` you declared still holds — it promises what random `open()` can do |
 | Reading one member of a solid archive out of order decodes the whole archive, and doing it twice decodes it twice | **format** / **archivey** | No per-block boundaries to resume from (§1), and nothing caches the decode (§2.4). `AccessCost.SOLID` is the signal |
 | Handing over **any non-path stream** — a `BytesIO`, a file object, a network-backed reader — may write a full-size copy of the archive to `/tmp`; `cost.notes` says so at open | **archivey** | The RARLAB decompressor needs a path (§1). The copy waits for the first member `unrar` has to read, so listing writes nothing and a stored member is free; the next compressed one is not. Open volume streams behave the same way and copy the whole set (§2.3). Bounding the copy to one member rather than moving it is §7 |
-| A RAR3/4 symlink whose stored target bytes are damaged lists with the damaged string as its target, and no diagnostic | **archivey** | The target is read straight out of the archive (the target is stored uncompressed, §2.2) and its data CRC is not checked. ZIP and 7z read a link target through the verified member path, so the same damage there leaves the link targetless with `SYMLINK_TARGET_UNAVAILABLE(reason="target_data_damaged")`. Tracked internally |
 | A corrupt encrypted member can be reported as a wrong password | **library** / **archivey** | `unrar` reports both as exit 2/3 with empty output on RAR4 and exposes no signal to separate them — that half is upstream's. Resolving the ambiguity toward `EncryptionError` is ours and is reversible (§2.3) |
 | A 7-Zip SFX stub sitting beside a numbered split (`vol.exe` next to `vol.exe.001` / `vol.7z.001` / `vol.zip.001`) | **archivey** | Opening the stub follows that first volume. The stub is still not a sibling. An old-scheme SFX first volume (`name.exe` + `.r00`) is discovered as volume 1 of that `.rNN` set |
 | A RAR on a pipe or socket cannot be opened at all, in either access mode | **format** | Block headers are chained forward but the walk still seeks; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
