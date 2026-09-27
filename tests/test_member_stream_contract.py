@@ -230,11 +230,15 @@ def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> No
         stream.close()
 
 
-def test_a_kept_verdict_does_not_keep_the_withheld_member_alive() -> None:
+@pytest.mark.parametrize("first_read", ["read", "read-size", "readinto-size"])
+def test_a_kept_verdict_does_not_keep_the_withheld_member_alive(
+    first_read: str,
+) -> None:
     """The verdict keeps its first traceback, and that must not pin the member's bytes.
 
-    The sized drain accumulates the whole member before the digest check raises; the
-    frame it raised from stays reachable from the kept traceback (S28-K17).
+    Every read shape that reaches the end holds the member in a local when the digest
+    check raises; the frame it raised from stays reachable from the kept traceback
+    (S28-K17, S28-K21).
     """
     payload = os.urandom(1 << 20)
     buf = io.BytesIO()
@@ -245,8 +249,16 @@ def test_a_kept_verdict_does_not_keep_the_withheld_member_alive() -> None:
         blob[blob.index(sig) + off] ^= 0x01
     with open_archive(io.BytesIO(bytes(blob)), seekable_members=True) as ar:
         stream = ar.open("a.bin")
+        # The caller's own readinto buffer is in the frames as an argument, as in any
+        # traceback; it is theirs, not the withheld member.
+        buffer = bytearray(len(payload))
         with pytest.raises(CorruptionError) as caught:
-            stream.read()
+            if first_read == "read":
+                stream.read()
+            elif first_read == "read-size":
+                stream.read(len(payload))
+            else:
+                stream.readinto(buffer)
         tb = caught.value.__traceback__
         biggest = 0
         while tb is not None:
@@ -254,6 +266,8 @@ def test_a_kept_verdict_does_not_keep_the_withheld_member_alive() -> None:
                 tb = tb.tb_next  # this test's own frame holds the payload, rightly
                 continue
             for value in tb.tb_frame.f_locals.values():
+                if value is buffer:
+                    continue
                 if isinstance(value, (bytes, bytearray)):
                     biggest = max(biggest, len(value))
                 elif isinstance(value, list):

@@ -466,7 +466,11 @@ class MemberVerifier:
             if data:
                 self._record_read(data)
             if not self._abandoned and not self._verified:
-                self._finish(inner)
+                try:
+                    self._finish(inner)
+                except BaseException:
+                    del data  # withheld: the kept traceback must not pin it
+                    raise
             return data
 
         # Bounded full-count read.
@@ -505,7 +509,11 @@ class MemberVerifier:
                 and self._furthest_read_pos >= self._expected_size
             ):
                 # Size-declared verifying event: withhold this chunk on fault.
-                self._finish(inner)
+                try:
+                    self._finish(inner)
+                except BaseException:
+                    del data  # withheld: the kept traceback must not pin it
+                    raise
             return data
 
         # Empty: size-unknown digest / truncation-shaped terminal read.
