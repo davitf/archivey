@@ -177,13 +177,16 @@ class CorruptionError(ReadError):
     """The archive's bytes are damaged: a checksum mismatch, a bad header or data block.
 
     Data that ends early is damage too, so :class:`TruncatedError` is a subclass and
-    ``except CorruptionError`` catches it. Catch :class:`TruncatedError` first when the
-    two need different handling, such as waiting for more of a file still being written.
+    ``except CorruptionError`` catches it.
     """
 
 
 class TruncatedError(CorruptionError):
-    """The archive's data ends before its structure says it should."""
+    """Damage that looks like the data ending early.
+
+    A best-effort label, not a diagnosis: damage that decodes short can raise it, and some
+    cut-short headers raise a plain :class:`CorruptionError`. Do not branch on it.
+    """
 
 
 class EncryptionError(ReadError):

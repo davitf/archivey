@@ -65,8 +65,8 @@ type, and a `SpoolLimits` trip is a plain `ResourceLimitError`.
 `TruncatedError` SHALL be a `CorruptionError` subclass: data that ends before its
 structure says it should is damaged data, and from the bytes alone a decoder often cannot
 tell a cut stream from damage that decodes short. So `except CorruptionError` catches
-truncation too, and a caller that handles a short file differently (waiting for a
-download to finish, say) catches `TruncatedError` first.
+truncation too. Which of the two is raised is a best-effort label, not a diagnosis, and
+the documentation SHALL NOT tell callers to branch on it.
 
 | Error split | Meaning |
 | --- | --- |
