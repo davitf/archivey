@@ -131,7 +131,9 @@ promise with that line; treat `0.2.0` as the first release of this library.
   too much memory for decoding` from libzstd's own default limit, which no setting could
   lift. The decoder's window limit is now `DecoderLimits.max_decoder_memory` (2 GiB by
   default, rounded down to a power of two), and a window over it raises
-  `ResourceLimitError`. This covers `.zst`, `.tar.zst`, ZIP method 93 and 7z zstd.
+  `ResourceLimitError`. A window over 2 GiB, beyond libzstd at any setting, raises
+  `UnsupportedFeatureError`. This covers `.zst`, `.tar.zst`, ZIP method 93 and 7z
+  zstd.
 
 - **A partial read of RAR3/4 encrypted data now emits `ENCRYPTED_MEMBER_UNVERIFIED`.**
   RAR3/4 data has no password check, so only the member's CRC at EOF catches a wrong

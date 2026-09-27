@@ -2473,6 +2473,13 @@ class RarReader(BaseArchiveReader):
         closes never reaches the CRC, so the close reports it. A RAR5 record's 64-bit
         PswCheck vouches for the password, and so does a header-encrypted archive's
         header decryption, which the password passed CRC by CRC; neither is watched.
+
+        The test is the parser's ``is_encrypted``, not the member's wider
+        ``encrypted`` (which adds ``encryption_unknown``), on purpose. A member whose
+        extra-area walk stopped before its encryption record never meets a key: a
+        stored one is proved plaintext by ``_confirm_unsettled_plaintext`` or
+        refused, and ``unrar`` reads the same damaged header, so it never sees the
+        encryption marker and derives no key. There is no wrong-key prefix to report.
         """
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)

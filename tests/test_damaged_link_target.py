@@ -2,9 +2,10 @@
 
 ZIP, 7z and RAR3/4 store a symlink's target as the member's data, so listing has to
 read and verify it. (RAR5 keeps the target in a header record, covered by the header's
-own CRC, so it has no data read here to fail.) When that read fails its integrity check, only the link is wrong: the listing keeps every member, the
-link has no ``link_target``, and ``SYMLINK_TARGET_UNAVAILABLE``
-(``reason="target_data_damaged"``) says why. The fault itself is raised where the
+own CRC, so it has no data read here to fail.) When that read fails its integrity
+check, only the link is wrong: the listing keeps every member, the link has no
+``link_target``, and ``SYMLINK_TARGET_UNAVAILABLE`` (``reason="target_data_damaged"``)
+says why. The fault itself is raised where the
 caller touches the link: opening it, or extracting it.
 """
 

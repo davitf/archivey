@@ -413,7 +413,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - A `.zst` frame declares its window, and the decoder keeps that much memory.
   `DecoderLimits.max_decoder_memory` (2 GiB by default) caps it, so the 2 GiB window of
   `zstd --long=31` reading standard input reads. A window over the cap raises
-  `ResourceLimitError`. The cap is rounded down to a power of two for zstd.
+  `ResourceLimitError`. The cap is rounded down to a power of two for zstd. A window
+  over 2 GiB is beyond what libzstd decodes at any setting and raises
+  `UnsupportedFeatureError`. Detection reads a sample of the stream with no cap, so
+  a frame declaring 2 GiB has that much address space reserved while `open_archive`
+  detects it, whatever the cap.
 - The legacy LZ4 format (`lz4 -l`, used for Linux kernel images) is not supported: it is
   not detected, and a `.lz4` file in that format fails to read.
 - `archivey.open_stream(...)` matches the archive rule: non-seekable unless

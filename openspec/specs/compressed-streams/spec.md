@@ -182,7 +182,10 @@ Archivey exceptions: corrupt data as `CorruptionError`, unexpected end-of-input
 as `TruncatedError`, and source seek requirements as the documented non-seekable
 error. No raw backend exception SHALL escape. For zstd specifically,
 `compression.zstd.ZstdError` SHALL map to `CorruptionError`, and its truncation
-`EOFError` SHALL map to `TruncatedError`.
+`EOFError` SHALL map to `TruncatedError`, except for a declared window the decoder
+refuses: a window over `DecoderLimits.max_decoder_memory` SHALL raise
+`ResourceLimitError`, and a window over libzstd's own ceiling, which no cap lifts, SHALL
+raise `UnsupportedFeatureError`.
 
 A liblzma failure that is not damage SHALL NOT surface as `CorruptionError`: a filter,
 filter option or integrity check liblzma cannot decode SHALL raise
@@ -208,6 +211,8 @@ valid empty stream.
 | Source shorter than a header whose bytes are not the format's magic (xz / lzip / unix-compress) | `CorruptionError`, never `b""` |
 | xz block header (valid CRC) names a filter liblzma does not know | `UnsupportedFeatureError`, not `CorruptionError` |
 | xz / LZMA stream declares a dictionary above `DecoderLimits.max_decoder_memory` | `ResourceLimitError` |
+| zstd frame declares a window above `DecoderLimits.max_decoder_memory` | `ResourceLimitError` |
+| zstd frame declares a window above libzstd's ceiling (2^31 on a 64-bit build) | `UnsupportedFeatureError`, naming no cap to raise |
 
 ### Requirement: Content faults raise from read, never from close
 

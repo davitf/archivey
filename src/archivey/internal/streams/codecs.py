@@ -1178,7 +1178,10 @@ class MetadataContext:
 # would make detection answer "not this format" for a stream whose dictionary is
 # over the cap, and a caller who opened it with ``DecoderLimits.UNLIMITED`` would get
 # the wrong format rather than the read they asked for. ``DecoderLimits`` says so;
-# the open that follows detection applies the caller's limits.
+# the open that follows detection applies the caller's limits. libzstd reserves the
+# same way: a probe decodes with ``window_log_max`` at libzstd's ceiling (2 GiB on a
+# 64-bit build), so a frame declaring a 2 GiB window is reserved in full during
+# detection whatever ``max_decoder_memory`` says.
 _PROBE_STREAM_CONFIG = replace(
     DEFAULT_STREAM_CONFIG, decoder_limits=DecoderLimits.UNLIMITED
 )
@@ -2088,9 +2091,10 @@ def _zstd_window_log_max(limits: DecoderLimits) -> tuple[int, bool]:
     between that power of two and a cap that is not one is refused. The rounding
     goes toward refusal, so no window over the cap is decoded. libzstd bounds the
     value (``2**10`` to ``2**31`` on a 64-bit build) and it is clamped to those
-    bounds. Below the lower bound a cap acts as 1 KiB. Above the upper bound, or with
-    no cap, the refusal is libzstd's own ceiling and not the cap, and the second
-    value is ``False``.
+    bounds. Below the lower bound a cap acts as 1 KiB. At or above the upper bound, or
+    with no cap, a refused window is over libzstd's own ceiling, which no cap can
+    lift, and the second value is ``False``. The default cap, 2 GiB, is exactly that
+    ceiling, so under the default a refusal is always the ceiling's.
     """
     assert _zstd is not None
     low, high = _zstd.DecompressionParameter.window_log_max.bounds()
@@ -2098,19 +2102,24 @@ def _zstd_window_log_max(limits: DecoderLimits) -> tuple[int, bool]:
     if cap is None:
         return high, False
     wanted = max(cap.bit_length() - 1, 0)
-    # A cap of exactly 2**high refuses only windows that are over the cap.
-    return max(low, min(wanted, high)), cap <= 1 << high
+    return max(low, min(wanted, high)), cap < 1 << high
 
 
 def _zstd_window_refusal(exc: Exception, limits: DecoderLimits) -> ArchiveyError:
     """Map libzstd's window refusal to the cap that caused it, or to its own ceiling."""
     window_log_max, is_cap = _zstd_window_log_max(limits)
     if is_cap:
+        cap = limits.max_decoder_memory
+        assert cap is not None
+        bound = (
+            "the largest power of two within the cap"
+            if 1 << window_log_max <= cap
+            else "the smallest window libzstd can be limited to"
+        )
         return ResourceLimitError(
-            f"Decoder limit reached: max_decoder_memory={limits.max_decoder_memory} "
-            f"(a zstd frame declares a window over {1 << window_log_max} bytes, the "
-            f"largest power of two within the cap; libzstd refused it before "
-            f"allocating). The archive chose this number; raise "
+            f"Decoder limit reached: max_decoder_memory={cap} (a zstd frame declares "
+            f"a window over {1 << window_log_max} bytes, {bound}; libzstd refused it "
+            f"before allocating). The archive chose this number; raise "
             f"DecoderLimits.max_decoder_memory if the archive is trusted."
         )
     return UnsupportedFeatureError(

@@ -947,7 +947,10 @@ def test_zstd_cap_below_libzstd_s_smallest_limit_acts_as_one_kib() -> None:
     Handing the cap over unclamped raised ``ValueError`` from the decoder's options.
     """
     frame = _zstd_frame_with_window_log(11)
-    with pytest.raises(ResourceLimitError, match="max_decoder_memory=512 .*over 1024"):
+    with pytest.raises(
+        ResourceLimitError,
+        match="max_decoder_memory=512 .*over 1024 bytes, the smallest",
+    ):
         with open_codec_stream(
             Codec.ZSTD, io.BytesIO(frame), config=_stream_config(512)
         ) as stream:
@@ -971,18 +974,26 @@ def test_zip_zstd_member_window_is_capped(tmp_path: Path) -> None:
 
 @requires_zstd()
 def test_zstd_window_over_libzstd_s_ceiling() -> None:
-    """A 4 GiB window is over the default cap and over what libzstd can decode at all.
+    """A 4 GiB window is over what libzstd can decode at any setting.
 
-    The header is rewritten; libzstd refuses it from the header, before allocating.
+    The default cap, 2 GiB, is exactly libzstd's ceiling, so the refusal is the
+    ceiling's and names no remedy, under the default and with no cap alike. The
+    header is rewritten; libzstd refuses it from the header, before allocating.
     """
     frame = bytearray(_zstd_frame_with_window_log(28))
     frame[5] = (32 - 10) << 3
-    with pytest.raises(ResourceLimitError, match=f"max_decoder_memory={2 * 2**30}"):
+    with pytest.raises(UnsupportedFeatureError, match="largest window") as default:
         with open_codec_stream(Codec.ZSTD, io.BytesIO(bytes(frame))) as stream:
             stream.read()
-    # With no cap, raising one would not help: the refusal is libzstd's own.
+    assert "max_decoder_memory" not in str(default.value)
     with pytest.raises(UnsupportedFeatureError, match="largest window"):
         with open_codec_stream(
             Codec.ZSTD, io.BytesIO(bytes(frame)), config=_stream_config(None)
+        ) as stream:
+            stream.read()
+    # Under a cap below the ceiling the same frame is the cap's refusal.
+    with pytest.raises(ResourceLimitError, match=f"max_decoder_memory={2**30}"):
+        with open_codec_stream(
+            Codec.ZSTD, io.BytesIO(bytes(frame)), config=_stream_config(2**30)
         ) as stream:
             stream.read()

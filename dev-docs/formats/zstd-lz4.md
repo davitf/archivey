@@ -21,7 +21,7 @@ behaviour and links the row.
 | Digests | None listed. A frame's content checksum, when present, is checked on read |
 | Metadata | None beyond the shared fields |
 | Truncation | Always raised, as `TruncatedError` |
-| Refuses | zstd: a frame whose window is over `DecoderLimits.max_decoder_memory`, as `ResourceLimitError` (§4). LZ4: the legacy frame format is not detected |
+| Refuses | zstd: a frame whose window is over `DecoderLimits.max_decoder_memory`, as `ResourceLimitError`, or over libzstd's 2 GiB ceiling, as `UnsupportedFeatureError` (§4). LZ4: the legacy frame format is not detected |
 
 **Three things a reader might expect and will not find.** `member.size` is `None` for a
 frame that records its content size. A zstd or LZ4 frame written without a checksum can
@@ -138,9 +138,18 @@ Specific to these formats; the shared items are [`single-file.md`](single-file.m
   allocates. That refusal is `ResourceLimitError`. `window_log_max` is a power of two, so
   the cap is rounded down to one; a window between that power of two and the cap is
   refused too. libzstd accepts values from 2^10 to 2^31 on a 64-bit build, and the cap is
-  clamped to that range. With no cap, or a cap over 2^31, a window over 2^31 is
-  libzstd's own ceiling and is `UnsupportedFeatureError`. Every frame of the stream is
-  checked, not only the first. LZ4's memory is fixed by the format.
+  clamped to that range, so a cap under 1 KiB acts as 1 KiB. A window over 2^31 is
+  libzstd's own ceiling and is `UnsupportedFeatureError`, with no remedy named: the
+  default cap is exactly 2^31, so under the default every refusal is this one. Every
+  frame of the stream is checked, not only the first. LZ4's memory is fixed by the
+  format.
+- **Detection lifts the cap.** The detection probes decode a sample with
+  `DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG` in `codecs.py`, the same rule as
+  liblzma's dictionary), so a probe decodes with `window_log_max` at libzstd's ceiling.
+  libzstd reserves the declared window on the first read: an 18-byte frame declaring
+  2 GiB reserves 2 GiB of address space during `open_archive` whatever
+  `max_decoder_memory` says. Under overcommit that costs nothing resident; under
+  `RLIMIT_AS` or a strict commit limit it is a `MemoryError` at detection.
 - **The decoders are native code.** Both run in the caller's process. `compression.zstd`
   is the standard library's; `lz4` is a C extension. Neither is fuzzed by archivey's own
   harness beyond the corpus.
