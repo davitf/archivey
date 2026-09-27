@@ -854,7 +854,6 @@ def test_a_file_grown_after_listing_reads_at_its_new_length(tmp_path: Path) -> N
     assert member.size == 5
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges")
 def test_a_file_swapped_for_a_symlink_after_listing_is_followed(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()

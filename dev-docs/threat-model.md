@@ -792,12 +792,14 @@ at most one byte from each branch and never drains one.
 ### O21. A directory source changed by another process between listing and reading — accepted
 
 The directory reader lists a tree with `lstat` and never walks through a symlink, so the
-listing stays inside the root. A member's data is opened later, by path, with plain
-`open()`. Whatever is at that path then is what the caller reads. If another process
-replaces a listed file with a symlink to a file outside the root, the read returns that
-file's bytes. If it replaces a listed directory with a symlink, reading a file under it
-does the same. A file replaced by a FIFO blocks `open()` until something writes to it. A
-file that grew reads past its listed `size`. None of this raises or emits a diagnostic.
+listing stays inside the root (Windows on Python 3.11 aside, where a junction may be
+walked: [`formats/directory.md`](formats/directory.md) §7). A member's data is opened
+later, by path, with plain `open()`. Whatever is at that path then is what the caller
+reads. If another process replaces a listed file with a symlink to a file outside the
+root, the read returns that file's bytes. If it replaces a listed directory with a
+symlink, reading a file under it does the same. A file replaced by a FIFO blocks `open()`
+until something writes to it. A file that grew reads past its listed `size`. None of this
+raises or emits a diagnostic.
 
 *Accepted* under the published trust boundary
 ([`docs/extracting.md`](../docs/extracting.md) §Trust boundaries): other local processes

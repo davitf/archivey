@@ -37,13 +37,13 @@ is always `None`, because `os.stat` exposes no birth time there (§2.2).
 Three properties generate most of this page.
 
 ```
-root/                 walk order (depth-first preorder, per-directory name order)
-├── a.txt   FILE      1. a.txt
-├── b.txt   HARDLINK  2. b.txt      → link_target "a.txt" (same st_dev, st_ino)
-├── fifo    OTHER     3. fifo
-├── link    SYMLINK   4. link       → link_target as readlink() returned it
-└── sub/    DIRECTORY 5. sub/
-    └── c.txt FILE    6. sub/c.txt
+root/                   walk order (depth-first preorder, per-directory name order)
+├── a.txt     FILE      1. a.txt
+├── b.txt     HARDLINK  2. b.txt      → link_target "a.txt" (same st_dev, st_ino)
+├── fifo      OTHER     3. fifo
+├── link      SYMLINK   4. link       → link_target as readlink() returned it
+└── sub/      DIRECTORY 5. sub/
+    └── c.txt FILE      6. sub/c.txt
 ```
 
 **The tree is live, and the listing is a snapshot of it at walk time.** Every other
@@ -234,9 +234,9 @@ There are no producers; there are filesystems, and each reports `lstat` differen
 
 The listing is safe to hand a hostile tree. The walk never follows a symlink or junction,
 so it cannot loop (Windows on Python 3.11 aside, §7). Every name is built from real
-directory entries, so there is no `..`, absolute path or empty component to normalize. The listing limits bound the member count
-and the retained text. Extraction goes through the shared filter
-([`threat-model.md`](../threat-model.md)).
+directory entries, so there is no `..`, absolute path or empty component to normalize.
+The listing limits bound the member count and the retained text. Extraction goes through
+the shared filter ([`threat-model.md`](../threat-model.md)).
 
 What is specific to this backend is the gap between listing and reading, when someone
 else can write to the tree while archivey reads it: an upload staging directory, a shared
