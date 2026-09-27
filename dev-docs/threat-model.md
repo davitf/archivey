@@ -809,14 +809,19 @@ the path fails with `ELOOP` and a FIFO does not block. It then `fstat`s the hand
 refuses, with `OSError(ESTALE)`, anything that is not a regular file with the listing's
 `(st_dev, st_ino)` and listed size (a listed size of 0 is exempt, for procfs and sysfs).
 Windows has no `O_NOFOLLOW`; the identity check carries it there, plus a reparse-point
-check for a member listed without an identity. What remains is a same-size rewrite in
-place and a change after the open; both read the listed file, inside the root.
+check for a member listed without an identity. A member listed with no identity
+(`st_ino` 0, on some FUSE and network mounts) is checked on type and size alone on every
+platform. What remains is a same-size rewrite in place, a change after the open, and a
+same-size replacement of an identity-less member. The first two read the listed file,
+inside the root; the third could read a same-size hardlink to a file elsewhere on that
+mount, on a filesystem that has hard links but no stable inode numbers.
 
 Pinned by `tests/test_directory.py::test_a_file_swapped_for_a_symlink_after_listing_is_refused`,
 `::test_a_directory_swapped_for_a_symlink_after_listing_is_refused`,
 `::test_a_file_replaced_after_listing_is_refused`,
 `::test_a_file_swapped_for_a_fifo_after_listing_is_refused_without_blocking`,
-`::test_a_file_resized_after_listing_is_refused`. Handbook:
+`::test_a_file_resized_after_listing_is_refused`,
+`::test_an_identityless_member_that_is_now_a_reparse_point_is_refused`. Handbook:
 [`formats/directory.md`](formats/directory.md) §2.3, §4.
 
 ## OPEN gaps — compatibility

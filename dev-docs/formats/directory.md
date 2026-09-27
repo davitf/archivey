@@ -180,9 +180,12 @@ still the listed one before any byte is read:
   list 0 for files that have content (§3).
 
 What the check does not catch: a file rewritten in place at the same size reads its new
-bytes, and a file that changes after the open reads whatever the descriptor returns. On
-Windows there is no `O_NOFOLLOW`; the identity check does the work, and a member with no
-identity (`st_ino` 0) is refused if its path is now a reparse point.
+bytes, and a file that changes after the open reads whatever the descriptor returns. A
+member the walk listed with no identity (`st_ino` 0: some FUSE and network mounts, or a
+Windows path the identity stat could not reach) is checked on type and size alone, on
+every platform, so a same-size replacement of it also reads. On Windows there is no
+`O_NOFOLLOW`; the identity check does the work, and a member with no identity is refused
+if its path is now a reparse point.
 
 The refusals are plain `OSError` with `errno.ESTALE` (or the kernel's `ELOOP`), the error
 type the backend already raised for a file that vanished; `extract_all` reports them as it
@@ -211,7 +214,9 @@ they would over a tar. The format-shaped outcomes are these.
   the shared filter's rule for surrogate escapes.
 - **Limits** apply with `compressed_size` equal to the listed size, so the per-member
   ratio is 1:1. A file resized since the walk never reaches them: the open refuses it
-  (§2.3).
+  (§2.3). The exception is a member listed at size 0, which the size check exempts: its
+  bytes do reach the limits, where the per-member ratio does not apply (`compressed_size`
+  is 0) and `max_extracted_bytes` is the bound that holds.
 - **A destination inside the root** is part of the tree being walked (§5).
 
 ### 2.5 Write
@@ -300,7 +305,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Sort each directory and walk depth-first with an explicit stack | The order, and so the hardlink "first name", does not depend on the filesystem; any depth lists (PR #428) | Filesystem order; recursion, which failed near 1 000 levels |
 | `REQUIRES_SCANNING`, no upfront member list | There is no index; running the walk on every peek would be a hidden full scan | Claiming `INDEXED` because a directory feels indexed |
 | `created` only from a birth time | `created` never holds `st_ctime`; the change time goes to `ctime` (PR #470) | Falling back to `st_ctime` |
-| Open members without following links, and refuse a handle that is not the listed regular file at the listed size | A directory source may be written by someone else while it is read, and a read must not leave the root or return data the listing did not describe ([`threat-model.md`](../threat-model.md) O21) | Opening by path, which followed a swapped-in symlink; a diagnostic for a changed size, which still returns the unlisted bytes |
+| Open members without following links, and refuse a handle that is not the listed regular file at the listed size | A directory source may be written by someone else while it is read, and a read must not leave the root or return data the listing did not describe ([`threat-model.md`](../threat-model.md) O21) | Opening by path, which followed a swapped-in symlink; a diagnostic for a changed size, which still returns the unlisted bytes (PR #501) |
 | Refuse a conflicting `format=` on a directory path | Silently overruling it hands back a reader the caller did not ask for | Ignoring `format=` |
 
 ## 7. Open questions
@@ -332,6 +337,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Races skip with a diagnostic; a genuine error fails the listing | `::test_subdirectory_vanishing_mid_walk_is_skipped`, `::test_symlink_vanishing_before_readlink_is_skipped`, `::test_symlink_replaced_by_file_mid_scan_lists_as_file`, `::test_unreadable_subdirectory_fails_listing`; `tests/test_diagnostics.py::test_directory_scan_race_diagnostic` |
 | Hardlinks: first name `FILE`, later `HARDLINK`; outside names and inode 0 stay `FILE`; the Windows identity `lstat` | `tests/test_directory.py::test_hardlinked_names_list_as_hardlink_to_the_first`, `::test_link_count_from_outside_the_tree_is_a_plain_file`, `::test_hardlinked_directory_extracts_both_names`, `::test_zero_inode_is_no_identity`, `::test_identity_stat_path_failure_keeps_the_file`, `::test_identity_stat_genuine_error_propagates` |
 | A read refuses a file replaced, resized, or swapped for a symlink or FIFO since listing; a directory swapped for a symlink; same-size rewrites and files listed empty still read | `::test_a_file_resized_after_listing_is_refused`, `::test_a_file_rewritten_at_the_same_size_reads_its_new_content`, `::test_a_file_listed_empty_reads_whatever_it_holds_at_open`, `::test_a_file_swapped_for_a_symlink_after_listing_is_refused`, `::test_a_directory_swapped_for_a_symlink_after_listing_is_refused`, `::test_a_file_replaced_after_listing_is_refused`, `::test_a_file_swapped_for_a_fifo_after_listing_is_refused_without_blocking`, `::test_hardlinks_and_symlinks_still_read_through_the_checked_open` |
+| A member listed with no identity is checked on type and size alone, and refused if it is now a reparse point (simulated through the `_identity_stat`, `_HAS_NOFOLLOW` and `_file_attributes` seams) | `::test_an_identityless_member_is_checked_on_type_and_size_alone`, `::test_an_identityless_member_that_is_now_a_reparse_point_is_refused` |
 | Streaming extraction fails a link whose first name was filtered out | `::test_streaming_extract_with_first_name_filtered_out_fails_the_link` |
 | Password dropped with a diagnostic | `::test_password_is_accepted_and_recorded` |
 | Same reader surface and streaming mode as the archive backends | `tests/test_review_simplicity_consistency.py::test_reader_surface_is_uniform_across_formats`, `::test_streaming_mode_is_uniform_across_formats` |

@@ -921,18 +921,66 @@ def test_a_directory_swapped_for_a_symlink_after_listing_is_refused(
 
 
 def test_a_file_replaced_after_listing_is_refused(tmp_path: Path) -> None:
-    import errno
-
+    # Same length as the listed file, so only the (st_dev, st_ino) comparison can
+    # catch it; removing that comparison turns this test red.
     (tmp_path / "a.txt").write_bytes(b"listed")
     with open_archive(tmp_path) as reader:
         member = reader.get("a.txt")
         replacement = tmp_path / "new.tmp"
-        replacement.write_bytes(b"another file")
+        replacement.write_bytes(b"edited")
         os.replace(replacement, tmp_path / "a.txt")
-        with pytest.raises(OSError) as excinfo:
+        with pytest.raises(OSError, match="was replaced") as excinfo:
             reader.read(member)
     assert excinfo.value.errno == errno.ESTALE
-    assert "since the directory was listed" in str(excinfo.value)
+
+
+def _identityless_open(monkeypatch: pytest.MonkeyPatch, attributes: int) -> None:
+    """Simulate Windows for the open: no O_NOFOLLOW, st_ino 0 in the listing."""
+    from archivey.internal.backends import directory_reader
+
+    def zero_inode(path: str) -> os.stat_result:
+        fields = list(os.stat(path, follow_symlinks=False))
+        fields[stat.ST_INO] = 0
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(directory_reader, "_STAT_LACKS_IDENTITY", True)
+    monkeypatch.setattr(directory_reader, "_identity_stat", zero_inode)
+    monkeypatch.setattr(directory_reader, "_HAS_NOFOLLOW", False)
+    monkeypatch.setattr(directory_reader, "_file_attributes", lambda path: attributes)
+
+
+def test_an_identityless_member_that_is_now_a_reparse_point_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
+
+    _identityless_open(monkeypatch, FILE_ATTRIBUTE_REPARSE_POINT)
+    (tmp_path / "a.txt").write_bytes(b"listed")
+    with open_archive(tmp_path) as reader:
+        member = reader.get("a.txt")
+        with pytest.raises(OSError, match="is now a reparse point") as excinfo:
+            reader.read(member)
+    assert excinfo.value.errno == errno.ESTALE
+
+
+def test_an_identityless_member_is_checked_on_type_and_size_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With no identity from the listing, a same-size replacement reads (directory.md
+    # §2.3); a resize is still refused.
+    _identityless_open(monkeypatch, 0)
+    (tmp_path / "a.txt").write_bytes(b"listed")
+    (tmp_path / "b.txt").write_bytes(b"listed")
+    with open_archive(tmp_path) as reader:
+        a = reader.get("a.txt")
+        b = reader.get("b.txt")
+        replacement = tmp_path / "new.tmp"
+        replacement.write_bytes(b"edited")
+        os.replace(replacement, tmp_path / "a.txt")
+        (tmp_path / "b.txt").write_bytes(b"longer now")
+        assert reader.read(a) == b"edited"
+        with pytest.raises(OSError, match="changed size"):
+            reader.read(b)
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
