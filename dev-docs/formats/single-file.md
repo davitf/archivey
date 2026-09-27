@@ -40,12 +40,13 @@ layer; what differs is on [`tar.md`](tar.md) §2.3.
 codecs: only xz and lzip (from their index, on a seekable source) and an LZMA Alone header
 that declares it give one, although zstd and LZ4 frames can carry a content size too
 (§2.2). `member.hashes` is empty for every codec but lzip; gzip's trailer CRC-32 is left
-out on purpose ([`gzip.md`](gzip.md) §6). Bytes after the last stream are neither an
-error nor ignored: the payload reads in full and the bytes are reported as
-`ARCHIVE_TRAILING_DATA`, although `xz` and `zstd` refuse such a file (§2.3, §3). A backward seek decodes again from the start of the stream unless the
-codec has resume points in front of the target, and most have none (§2.3). And the gzip
-header's stored filename is reported, never used: the member's name comes from the name
-of the file archivey was given (§2.2).
+out on purpose ([`gzip.md`](gzip.md) §6). Bytes after the last stream are neither an error
+nor ignored: the payload reads in full and the bytes are reported as
+`ARCHIVE_TRAILING_DATA`, although `xz` and `zstd` refuse such a file (§2.3, §3). A
+backward seek decodes again from the start of the stream unless the codec has resume
+points in front of the target, and most have none (§2.3). And the gzip header's stored
+filename is reported, never used: the member's name comes from the name of the file
+archivey was given (§2.2).
 
 ## 1. Shape
 

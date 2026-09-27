@@ -113,19 +113,20 @@ decompressor simply never reports that it finished, so the engine arms a `Trunca
 at the end of input ([`single-file.md`](single-file.md) §2.3). A backward seek decodes again
 from the start, and the rewind report says so.
 
-**Bytes after the end.** The library does not say where a stream ends. A `process()` call
-whose input runs past the end fails with the same "decoder failed" as damage, returns none
-of that call's output, and leaves the decompressor unusable. So `BrotliDecoder` replays on
-any `brotli.error`. It keeps the input offset of the last point where everything handed
-over had been decoded and returned. That point needs a call that returned nothing: the
-library holds output back even from a call with no limit, so input is handed over in
-64 KiB pieces and each is drained until it settles. It builds a fresh decompressor, brings it to that
-point by decoding the source from offset 0 with the output thrown away, and then hands
-over the bytes up to the failure one at a time, draining output before each byte. If the
-stream finishes on one of them, the rest is trailing data: the output lost with the failed
-call is delivered, skipping what the caller already had, and the bytes after the end are
-reported as `ARCHIVE_TRAILING_DATA` unless they are zeros. If not, the original error
-stands and is raised as `CorruptionError`.
+**Bytes after the end.** The library does not say where a stream ends. A `process()`
+call whose input runs past the end fails with the same "decoder failed" as damage,
+returns none of that call's output, and leaves the decompressor unusable. So
+`BrotliDecoder` replays on any `brotli.error`. It keeps the input offset of the last
+point where everything handed over had been decoded and returned. That point needs a
+call that returned nothing: the library holds output back even from a call with no
+limit, so input is handed over in 64 KiB pieces and each is drained until it settles. It
+builds a fresh decompressor, brings it to that point by decoding the source from offset
+0 with the output thrown away, and then hands over the bytes up to the failure one at a
+time, draining output before each byte. If the stream finishes on one of them, the rest
+is trailing data: the output lost with the failed call is delivered, skipping what the
+caller already had, and the bytes after the end are reported as `ARCHIVE_TRAILING_DATA`
+unless they are zeros. If not, the original error stands and is raised as
+`CorruptionError`.
 
 The replay reads the source a second time, so it needs a seekable source. From a pipe the
 error is raised unchanged, and a Brotli stream with bytes after it is a `CorruptionError`

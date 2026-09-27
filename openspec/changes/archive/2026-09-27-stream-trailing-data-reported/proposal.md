@@ -5,10 +5,10 @@
 A compressed file with bytes after its stream (a signature appended to a download,
 padding from a tool) was handled differently per codec: gzip, zstd, LZ4 and Brotli
 raised; zlib, bzip2, xz, LZMA Alone and lzip ignored the bytes without a word, and xz
-and lzip lost their size and seeks, because the index is found from the end of the file. The reference tools differ
-too: `xz`, `lzma` and `zstd` refuse such a file, `bzip2` warns and succeeds. The
-payload is intact in every case, so refusing it helps no one, but ignoring the bytes
-silently hides a file that is not what it claims.
+and lzip lost their size and seeks, because the index is found from the end of the
+file. The reference tools differ too: `xz`, `lzma` and `zstd` refuse such a file,
+`bzip2` warns and succeeds. The payload is intact in every case, so refusing it helps
+no one, but ignoring the bytes silently hides a file that is not what it claims.
 
 ## What changes
 

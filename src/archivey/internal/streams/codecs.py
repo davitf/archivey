@@ -1952,18 +1952,24 @@ class LzipCodec(_SizedLzmaCodec):
 
 
 def _alone_props_plausible(props: int) -> bool:
-    """Whether ``props`` encodes an ``(lc, lp, pb)`` triple liblzma decodes.
+    """Whether ``props`` encodes a valid Alone ``(lc, lp, pb)`` triple.
 
-    props = (pb * 5 + lp) * 9 + lc with lc <= 8, lp <= 4, pb <= 4, and liblzma also
-    requires lc + lp <= 4 (``LZMA_LCLP_MAX``): 75 of the 256 values.
+    The format's range, props = (pb * 5 + lp) * 9 + lc with lc <= 8, lp <= 4, pb <= 4:
+    225 of the 256 values. Detection admits all of them, since a header grammar accepts
+    the format's full legal range and the decode decides.
     """
-    if props > (4 * 5 + 4) * 9 + 8:
-        return False
+    return props <= (4 * 5 + 4) * 9 + 8
+
+
+def _alone_props_liblzma_decodes(props: int) -> bool:
+    """Whether liblzma decodes a stream with these properties: 75 of the 256 values.
+
+    liblzma also requires lc + lp <= 4 (``LZMA_LCLP_MAX``). The next-stream check uses
+    this, because a header liblzma refuses there fails the whole read.
+    """
     lc = props % 9
-    rest = props // 9
-    lp = rest % 5
-    pb = rest // 5
-    return lc + lp <= 4 and pb <= 4
+    lp = props // 9 % 5
+    return _alone_props_plausible(props) and lc + lp <= 4
 
 
 def _alone_header_plausible(prefix: bytes) -> bool:
@@ -1972,7 +1978,7 @@ def _alone_header_plausible(prefix: bytes) -> bool:
     The 13-byte header is a properties byte, a 32-bit dictionary size, and a 64-bit
     uncompressed size (all-ones meaning "unknown"). Two of the three are checked:
 
-    - **Properties** must encode an ``(lc, lp, pb)`` triple liblzma decodes.
+    - **Properties** must encode a legal ``(lc, lp, pb)`` triple.
     - **Uncompressed size** must not be exactly zero. Any value but the all-ones
       sentinel is the stream's exact output length, so zero declares a stream carrying
       no payload — nothing archivey could open. That is the rule the probe already
@@ -2044,7 +2050,7 @@ def _starts_alone_stream(data: bytes, *, limits: DecoderLimits) -> bool | None:
     """
     if len(data) <= _ALONE_HEADER_SIZE:
         return None
-    if not _alone_props_plausible(data[0]) or data[_ALONE_HEADER_SIZE] != 0:
+    if not _alone_props_liblzma_decodes(data[0]) or data[_ALONE_HEADER_SIZE] != 0:
         return False
     check_decoder_memory(
         int.from_bytes(data[1:5], "little"),

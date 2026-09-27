@@ -333,6 +333,23 @@ def test_a_tail_shaped_like_an_lzma_header_liblzma_refuses_is_reported(
     assert report.observed_bytes == len(first)
 
 
+def test_the_next_lzma_stream_rule_matches_what_liblzma_decodes() -> None:
+    from archivey.internal.streams import codecs
+
+    for props in range(256):
+        header = (
+            bytes([props]) + (1 << 16).to_bytes(4, "little") + (6).to_bytes(8, "little")
+        )
+        try:
+            lzma.LZMADecompressor(format=lzma.FORMAT_ALONE).decompress(
+                header + bytes(5)
+            )
+            decodes = True
+        except lzma.LZMAError:
+            decodes = False
+        assert codecs._alone_props_liblzma_decodes(props) is decodes, props
+
+
 @requires_zstd()
 def test_a_zstd_skippable_frame_is_part_of_the_data(tmp_path: Path) -> None:
     skippable = b"\x50\x2a\x4d\x18" + (4).to_bytes(4, "little") + b"note"

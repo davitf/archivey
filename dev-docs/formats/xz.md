@@ -65,11 +65,12 @@ writes one per data block, so a small file is one member unless `-B` sets smalle
 restarting is possible; the producer decides whether it is useful.
 
 **LZMA Alone has no magic and no trailer.** Its 13-byte header is a properties byte, a
-dictionary size and an uncompressed size. The properties byte has 75 values out of 256
-that liblzma decodes (`lc + lp` at most 4), the dictionary size may be anything, and
-liblzma writes all ones for the size. So a large share of random data parses as a header,
-and detection must decode to decide (§2.1). There is no integrity check at all: a corrupt
-Alone stream decodes to wrong bytes unless the corruption breaks the range coder.
+dictionary size and an uncompressed size. The properties byte has 225 legal values out of
+256, of which liblzma decodes 75 (`lc + lp` at most 4), the dictionary size may be
+anything, and liblzma writes all ones for the size. So a large share of random data parses
+as a header, and detection must decode to decide (§2.1). There is no integrity check at
+all: a corrupt Alone stream decodes to wrong bytes unless the corruption breaks the range
+coder.
 
 **Every one declares a dictionary, and the decoder allocates it.** An xz block header
 names its LZMA2 dictionary, up to 4 GiB; an lzip header names an exponent from 12 to 29,
@@ -85,14 +86,14 @@ inner-TAR probe then decodes 512 bytes and upgrades a match to `TAR_XZ`, or
 to TAR over lzip ([`single-file.md`](single-file.md) §2.1).
 
 LZMA Alone is found by the first of the three content probes. `_alone_header_plausible`
-checks that the properties byte encodes an `(lc, lp, pb)` liblzma decodes and that the
-declared size is not exactly zero. The dictionary size is not checked: every value is
-legal, and the specification rounds one below 4 KiB up. The zero-size rule is there
-because 18 zero bytes are a valid, complete, empty Alone stream, so without it a run of
-zero padding would be claimed. A source of 13 bytes or fewer is refused, since it has no
-data after the header. Then the probe decodes the sample and requires at least one byte of
-output ([`single-file.md`](single-file.md) §2.1). A match is `PROBABLE`, and an error from
-a probe-only match is stamped `format_unconfirmed`.
+checks that the properties byte encodes a legal `(lc, lp, pb)` and that the declared size
+is not exactly zero. The dictionary size is not checked: every value is legal, and the
+specification rounds one below 4 KiB up. The zero-size rule is there because 18 zero bytes
+are a valid, complete, empty Alone stream, so without it a run of zero padding would be
+claimed. A source of 13 bytes or fewer is refused, since it has no data after the header.
+Then the probe decodes the sample and requires at least one byte of output
+([`single-file.md`](single-file.md) §2.1). A match is `PROBABLE`, and an error from a
+probe-only match is stamped `format_unconfirmed`.
 
 `.tlz` is an lzip extension. An LZMA Alone file named `.tlz` is identified by content as
 TAR over LZMA Alone, with an extension-conflict warning.
