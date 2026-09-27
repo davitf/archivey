@@ -180,8 +180,6 @@ class UnarOutputStream(ProcessOutputStream):
     the caller's size check would report.
     """
 
-    readinto_passthrough = False
-
     def __init__(
         self,
         stdout: BinaryIO,
@@ -195,21 +193,17 @@ class UnarOutputStream(ProcessOutputStream):
         self._saw_eof = False
         super().__init__(stdout, proc)
 
-    def read(self, n: int = -1, /) -> bytes:
-        data = super().read(n)
-        self._bytes_read += len(data)
-        if not data and n != 0:
-            self._saw_eof = True
-            if self._empty_means_wrong_password and self._bytes_read == 0:
-                # This is the verdict; the exit status that follows (2 when no
-                # password was given, 0 for a wrong one) must not replace it.
-                self._exit_checked = True
-                raise EncryptionError(
-                    "unar produced no data for encrypted content: the password is "
-                    "missing or wrong"
-                )
-            self._check_exit(wait_timeout=self._EOF_EXIT_WAIT)
-        return data
+    def _at_eof(self) -> None:
+        self._saw_eof = True
+        if self._empty_means_wrong_password and self._bytes_read == 0:
+            # This is the verdict; the exit status that follows (2 when no password was
+            # given, 0 for a wrong one) must not replace it.
+            self._exit_checked = True
+            raise EncryptionError(
+                "unar produced no data for encrypted content: the password is "
+                "missing or wrong"
+            )
+        super()._at_eof()
 
     def _raise_for_returncode(self, rc: int) -> None:
         # A status before end of file is archivey's doing: it closed the pipe on a

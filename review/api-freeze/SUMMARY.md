@@ -17,7 +17,9 @@ explanation is written (`0-diagnostics.md` §The page) and is the proposed repla
 for the opening of §Diagnostics in `docs/errors-and-diagnostics.md`.
 
 Beyond diagnostics, the 90 names in `__all__` all earn their place; the 15 arrivals
-since July each have a verdict of keep (`A-surface.md`). Three small surface cleanups
+since July each have a verdict of keep (`A-surface.md`). (Superseded in part on
+2026-09-27: PR #505 made `enable_measurement` and `IoStats` internal; see
+`A-surface.md`.) Three small surface cleanups
 are worth doing before the tag because they are free now and breaking later: an
 internal type on `detect_format`'s signature, a public class that calls itself internal
 (`MemberStreams`), and an exception nothing raises (`WriteError`). One module

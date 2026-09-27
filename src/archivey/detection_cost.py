@@ -63,9 +63,8 @@ class DetectionBudget:
     ``completion_window_bytes`` is the largest source a content-probe hit is re-checked
     against in full (see ``format-detection``); ``0`` turns the check off.
 
-    ``max_probe_links`` is the number of content-probe chain links whose seek-based
-    header reads a budget allows for. No tier reads it: the Brotli walk follows its own
-    ``CHAIN_MAX_LINKS`` (8).
+    Content-probe reads at an offset are not a budget field: the Brotli chain walk caps
+    them itself, at ``CHAIN_MAX_LINKS`` (8) header reads of 24 bytes.
     """
 
     max_prefix_bytes: int
@@ -74,7 +73,6 @@ class DetectionBudget:
     max_decode_input: int
     max_decode_output: int
     completion_window_bytes: int
-    max_probe_links: int
 
     @classmethod
     def for_preset(cls, preset: DetectionBudgetPreset) -> DetectionBudget:
@@ -130,7 +128,6 @@ BALANCED_BUDGET = DetectionBudget(
     max_decode_input=_INNER_TAR_DECODE,
     max_decode_output=_INNER_TAR_DECODE,
     completion_window_bytes=_COMPLETION_WINDOW,
-    max_probe_links=8,
 )
 
 FAST_BUDGET = DetectionBudget(
@@ -140,7 +137,6 @@ FAST_BUDGET = DetectionBudget(
     max_decode_input=64 * 1024,
     max_decode_output=64 * 1024,
     completion_window_bytes=0,  # no whole-source completion
-    max_probe_links=2,
 )
 
 THOROUGH_BUDGET = DetectionBudget(
@@ -152,5 +148,4 @@ THOROUGH_BUDGET = DetectionBudget(
     # Whole-source completion as far as the decode allowance reaches; the allowance
     # (``max_decode_input``) is the real bound, so this is the same 1 MiB.
     completion_window_bytes=_INNER_TAR_DECODE,
-    max_probe_links=32,
 )

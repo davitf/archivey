@@ -245,13 +245,15 @@ class ProcessOutputStream(DelegatingStream):
     """A program's stdout that owns the program: close stops and reaps it.
 
     ``_raise_for_returncode`` maps the exit status once: on the read at end of file
-    (the subclass's ``read`` calls ``_check_exit``) if the program has exited by then,
-    else on close. The stream owns the program from the ``try`` in ``__init__`` on: a
+    (``_at_eof``) if the program has exited by then, else on close. ``read(0)`` is not
+    end of file. The stream owns the program from the ``try`` in ``__init__`` on: a
     raise from there stops the program first. A subclass's own assignments before
     ``super().__init__`` run before that, so they must not raise.
     """
 
     _SUBCLASS_CLOSES_INNER = True
+    # read() counts and checks the exit; readinto must go through it.
+    readinto_passthrough = False
     # Seconds the read at end of file waits for the program to exit. The program closed
     # its stdout, so it is exiting; one that takes longer is checked on close.
     _EOF_EXIT_WAIT = 1.0
@@ -267,6 +269,17 @@ class ProcessOutputStream(DelegatingStream):
         except BaseException:
             terminate_process(proc)
             raise
+
+    def read(self, n: int = -1, /) -> bytes:
+        data = super().read(n)
+        self._bytes_read += len(data)
+        if not data and n != 0:
+            self._at_eof()
+        return data
+
+    def _at_eof(self) -> None:
+        """Map the exit status on the read at end of file, so a fault raises from read."""
+        self._check_exit(wait_timeout=self._EOF_EXIT_WAIT)
 
     @abstractmethod
     def _raise_for_returncode(self, rc: int) -> None:

@@ -540,9 +540,6 @@ class _UnrarOwnedStream(ProcessOutputStream):
     ``close()``. ``close()`` still maps if the empty-read path never ran (early stop).
     """
 
-    # Side-effecting read(); disable passthrough so counting still runs on readinto.
-    readinto_passthrough = False
-
     def __init__(
         self,
         stdout: BinaryIO,
@@ -556,15 +553,6 @@ class _UnrarOwnedStream(ProcessOutputStream):
         self._has_verifiable_hash = has_verifiable_hash
         self._encrypted = encrypted
         super().__init__(stdout, proc)
-
-    def read(self, n: int = -1, /) -> bytes:
-        data = super().read(n)
-        self._bytes_read += len(data)
-        if not data and n != 0:
-            # Completing / EOF read: reap and map exit here so content faults raise on
-            # read (not only on close).
-            self._check_exit(wait_timeout=self._EOF_EXIT_WAIT)
-        return data
 
     def tell(self, /) -> int:
         if self.closed:

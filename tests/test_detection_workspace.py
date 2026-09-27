@@ -369,12 +369,15 @@ def test_sfx_miss_extension_guess_stays_within_budget(tmp_path: Path) -> None:
 
 def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     # Seek-based read_at charges unique_bytes without a scan-window home; the allowance
-    # is max_probe_links * CHAIN_HEADER_READ.
+    # is CHAIN_MAX_LINKS * CHAIN_HEADER_READ.
     from archivey.detection_cost import DetectionCostReceipt
-    from archivey.internal.streams.brotli_framing import CHAIN_HEADER_READ
+    from archivey.internal.streams.brotli_framing import (
+        CHAIN_HEADER_READ,
+        CHAIN_MAX_LINKS,
+    )
 
     scan = BALANCED_BUDGET.max_scan_bytes
-    allowance = BALANCED_BUDGET.max_probe_links * CHAIN_HEADER_READ
+    allowance = CHAIN_MAX_LINKS * CHAIN_HEADER_READ
     at_cap = DetectionCostReceipt(
         unique_bytes_read=scan + allowance,
         scanned_bytes=scan,

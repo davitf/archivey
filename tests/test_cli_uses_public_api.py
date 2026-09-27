@@ -30,6 +30,10 @@ def _without_line(hit: str) -> str:
     return f"{location.rsplit(':', 1)[0]}: {statement}"
 
 
+def _offending(hits: list[str]) -> list[str]:
+    return [hit for hit in hits if _without_line(hit) not in ALLOWED_INTERNAL_IMPORTS]
+
+
 def _internal_imports(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found: list[str] = []
@@ -55,9 +59,7 @@ def test_cli_imports_nothing_from_internal() -> None:
     files = sorted(CLI_DIR.rglob("*.py"))
     assert files, f"no CLI sources under {CLI_DIR}"
     hits = [hit for path in files for hit in _internal_imports(path)]
-    offending = [
-        hit for hit in hits if _without_line(hit) not in ALLOWED_INTERNAL_IMPORTS
-    ]
+    offending = _offending(hits)
     assert offending == [], (
         "archivey.cli must use only public API; move what it needs to a public module "
         f"(archivey.terminal for display helpers): {offending}"
@@ -76,3 +78,17 @@ def test_the_guard_sees_an_internal_import(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert len(_internal_imports(probe)) == 3
+
+
+def test_the_allowlist_admits_one_statement_not_its_file(tmp_path: Path) -> None:
+    """A second internal import in the allowlisted file is still reported."""
+    probe = tmp_path / "common.py"
+    probe.write_text(
+        "from archivey.internal.measurement import enable_measurement, io_stats\n"
+        "from archivey.internal.registry import get_registry\n",
+        encoding="utf-8",
+    )
+    offending = _offending(_internal_imports(probe))
+    assert offending == [
+        "common.py:2 from archivey.internal.registry import get_registry"
+    ]

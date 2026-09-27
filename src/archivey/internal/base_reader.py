@@ -2274,21 +2274,25 @@ class BaseArchiveReader(ArchiveReader):
             self._state.release_pass(token)
 
     def members_report(self) -> MemberListReport:
-        self._state.require_open("members_report()")
+        return self._members_report("members_report")
+
+    def _members_report(self, op: str) -> MemberListReport:
+        """``members_report()``, with usage errors naming ``op``, the method called."""
+        self._state.require_open(f"{op}()")
         if not self._streaming:
             if self._state.concurrent:
-                token = self._state.acquire_worker("members_report")
+                token = self._state.acquire_worker(op)
                 try:
                     return self._materialize_members().report
                 finally:
                     self._state.release_worker(token)
-            token = self._state.acquire_pass("members_report")
+            token = self._state.acquire_pass(op)
             try:
                 return self._materialize_members().report
             finally:
                 self._state.release_pass(token)
 
-        token = self._state.acquire_pass("members_report")
+        token = self._state.acquire_pass(op)
         try:
             if self._materialized is not None:
                 self._listing_tracker.assert_within_limits()
@@ -2316,7 +2320,7 @@ class BaseArchiveReader(ArchiveReader):
             self._state.release_pass(token)
 
     def scan_members(self) -> list[ArchiveMember]:
-        report = self.members_report()
+        report = self._members_report("scan_members")
         if report.error is not None:
             raise report.error
         return list(report.members)

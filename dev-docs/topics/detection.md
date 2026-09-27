@@ -20,8 +20,9 @@ Three other pages own parts of this, and this page links them rather than repeat
   → far magic → content probes → extension. The whole order is one function,
   `_detect_format_body` in `internal/detection.py`.
 - **Detection reads only the front of the source.** Nothing reads the tail today: no ZIP
-  tail probe is shipped, and the budget has no field for one. An archive that is found only from
-  its end, such as a ZIP appended to a JPEG, is not detected. `format=ZIP` still opens it.
+  tail probe is shipped, and the budget has no field for one. An archive that is found
+  only from its end, such as a ZIP appended to a JPEG, is not detected. `format=ZIP`
+  still opens it.
 - **Detection never consumes bytes the backend needs.** A path gets its own handle. A
   seekable stream is put back where the caller left it. A non-seekable stream is peeked
   through the replay prefix that the backend then reads first. A raw pipe handed straight
@@ -264,11 +265,6 @@ name common settings:
 | `max_scan_bytes` | 2 MiB | 256 KiB | 2 MiB |
 | `max_decode_input` / `max_decode_output` | 1 MiB | 64 KiB | 1 MiB |
 | `completion_window_bytes` | 64 KiB | off | 1 MiB |
-| `max_probe_links` | 8 | 2 | 32 |
-
-`max_probe_links` only widens what the test suite's within-budget check allows for the
-probes' positioned reads. It does not stop the walk: the Brotli chain walk follows its own
-`CHAIN_MAX_LINKS` (8) on every preset.
 
 **The budget is set in one place, `ArchiveyConfig.detection_budget`.** `detect_format`,
 `open_archive` and `open_stream` read it from there. With a second way to set it, such as a
@@ -294,8 +290,8 @@ detection overruns its own preset, and nothing in the receipt says why.
 a few bytes deep in the source through `PrefixWorkspace.read_at`, which is how the Brotli
 chain walk checks later meta-block headers. On a path or a plain seekable stream,
 `read_at` seeks to the offset, reads, and seeks back, without growing the prefix. It is
-charged to `unique_bytes_read`. It is bounded by the walk's `CHAIN_MAX_LINKS` (8 links of 24 bytes), not by a
-budget field. On a pipe, or on an `ArchiveStream` whose rewind would re-decode, `read_at`
+charged to `unique_bytes_read`. It is bounded by the walk's `CHAIN_MAX_LINKS` (8 links of
+24 bytes), not by a budget field. On a pipe, or on an `ArchiveStream` whose rewind would re-decode, `read_at`
 grows the prefix instead, up to the smaller of `PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` (1
 MiB) and the workspace's read ceiling (the largest of the prefix, far and scan limits).
 Past that it returns nothing and records `content_probe_read_at` as `BUDGET_EXHAUSTED`.

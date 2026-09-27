@@ -38,7 +38,6 @@ class DetectionBudget:
     max_decode_input: int
     max_decode_output: int
     completion_window_bytes: int   # largest source a content-probe hit is re-checked whole
-    max_probe_links: int           # probe-seek allowance only; the walk uses CHAIN_MAX_LINKS
 
 @dataclass(frozen=True)
 class DetectionCostReceipt:
@@ -67,8 +66,9 @@ otherwise forbid.
 Budget fields that gate detection: `max_prefix_bytes` (near peek clamp), `max_far_bytes`,
 `max_scan_bytes` (SFX window), `max_decode_input` / `max_decode_output`, and
 `completion_window_bytes` (see `format-detection`: a content-probe hit on a source no
-larger than this is re-checked against the whole source). `max_probe_links` sets only the
-probe-seek allowance below (`max_probe_links × 24` bytes, the Brotli chain header read).
+larger than this is re-checked against the whole source). Content-probe reads at an offset
+have no budget field: the Brotli walk caps them at `CHAIN_MAX_LINKS` (8) header reads of
+24 bytes, and that is the probe-seek allowance below.
 
 `max_decode_input` SHALL be one allowance for the whole `detect_format` pass, not a limit
 per tier or per candidate: every tier that decodes draws on what earlier tiers left, so
@@ -101,10 +101,8 @@ of the same name, and `unique_bytes_read` against the largest of `max_prefix_byt
 `max_far_bytes` and `max_scan_bytes` plus the probe-seek allowance. `prefix_bytes` is not
 compared, because it bills overlapping requests in full and `unique_bytes_read` stands in
 for it. A receipt that is not within its budget SHALL carry a *budget exhausted* or
-*capability unavailable* skip naming the tier that was cut short, except where a budget
-field is not honoured by the tier spending against it: the Brotli walk follows its own
-`CHAIN_MAX_LINKS` (8), not `max_probe_links`. The library does not expose this check; the
-test suite asserts it.
+*capability unavailable* skip naming the tier that was cut short. The library does not
+expose this check; the test suite asserts it.
 
 #### Scenario: receipt reflects the source kind
 
@@ -181,7 +179,7 @@ behaviour below is what detection **runs today**.
 | --- | --- |
 | `BALANCED` | near prefix; far fixed-offset evidence; cued bounded SFX scan (`max_scan_bytes` = 2 MiB); bounded content probes; whole-source completion of a probe hit up to 64 KiB; inner TAR; no exhaustive scan; no spool |
 | `FAST` | same tiers as `BALANCED` with a smaller SFX scan (`max_scan_bytes` = 256 KiB), smaller decode ceilings, and no whole-source completion (`probe_completion` recorded *not enabled by policy* when a probe hit could have used it) |
-| `THOROUGH` | same scheduled tiers as `BALANCED` today, with whole-source completion as far as the 1 MiB decode allowance reaches (the probes' samples are charged first, so a source just under 1 MiB may not complete); a larger `max_probe_links` widens only the probe-seek allowance |
+| `THOROUGH` | same scheduled tiers as `BALANCED` today, with whole-source completion as far as the 1 MiB decode allowance reaches (the probes' samples are charged first, so a source just under 1 MiB may not complete) |
 
 No preset reads the source's tail: a ZIP behind a prefix that does not cue the SFX scan is
 not found. Format boundedness proves the search is complete for the tiers a policy enables.

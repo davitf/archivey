@@ -556,6 +556,16 @@ def test_failure_exit_raises_on_the_completing_read() -> None:
     stream.close()
 
 
+def test_a_zero_length_read_is_not_end_of_file() -> None:
+    proc, stream = _child("import sys; sys.exit(1)")
+    proc.wait()
+    assert stream.read(0) == b""
+    assert stream.readinto(bytearray()) == 0
+    with pytest.raises(CorruptionError, match="exit 1"):
+        stream.read()
+    stream.close()
+
+
 @_posix_only
 def test_crash_raises_on_the_completing_read() -> None:
     _proc, stream = _child("import os, signal; os.kill(os.getpid(), signal.SIGSEGV)")
