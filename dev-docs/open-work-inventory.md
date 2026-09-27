@@ -83,9 +83,9 @@ revision has merged, and so has everything opened since.
 **Twenty-seven merged between 2026-09-23 14:17Z and 2026-09-24 14:15Z**, #406 to #432 less
 the unused numbers. The last ten were merged together on 2026-09-24 after main plus all ten
 passed lint and all three test configurations locally; three needed main merged in first, each
-for a `CHANGELOG.md` conflict only. **CHANGELOG entries are no longer added per fix before the
-first release** (davi, 2026-09-24): the file will be cleared before 0.2.0, so a PR that
-conflicts there drops its own entry.
+for a `CHANGELOG.md` conflict only. **Pull requests no longer add CHANGELOG entries**
+(davi, 2026-09-24; policy in `dev-docs/release-checklist.md` §1): the release PR writes
+each entry, so a PR that conflicts there drops its own entry.
 
 | PR | What it did | Effect here |
 | --- | --- | --- |
