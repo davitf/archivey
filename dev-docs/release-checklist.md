@@ -28,9 +28,20 @@ from the git tag). `publish.yml` fails if the tag and packaged version disagree.
 
 ## 1. Gather user-visible changes (CHANGELOG)
 
-Previous release tag: `PREV=$(git describe --tags --abbrev=0 2>/dev/null || true)`  
-(If there is no tag yet — first release — use the empty range / whole history and
-write the entry-zero under `## [0.2.0]` from `[Unreleased]`.)
+Pull requests do not edit `CHANGELOG.md`; the release PR writes the whole entry. What
+goes in it:
+
+- one line per new feature and per public API change (**Added** / **Changed** /
+  **Deprecated** / **Removed**);
+- one line per security fix (**Security**);
+- one line summarizing all other bug fixes (**Fixed**), unless a fix changes behavior
+  users rely on, which then gets its own line.
+
+Internal refactors, review docs and chore work stay out.
+
+Previous release tag: `PREV=$(git describe --tags --abbrev=0 2>/dev/null || true)`
+(0.2.0, the first release, has its entry written already: a feature summary rather
+than a change list. Only fill in the date.)
 
 - [ ] List commits / merged PRs since `PREV`:
 
@@ -40,12 +51,8 @@ write the entry-zero under `## [0.2.0]` from `[Unreleased]`.)
   gh pr list --state merged --base main --search "merged:>$(git log -1 --format=%cI "$PREV" 2>/dev/null || echo 2020-01-01)" --limit 100
   ```
 
-- [ ] Triage into Keep a Changelog buckets in `CHANGELOG.md`:
-  **Added** / **Changed** / **Deprecated** / **Removed** / **Fixed** / **Security**.
-  Prefer user-facing behavior over internal refactors. Omit chore-only / review-doc
-  noise unless it changes a published claim.
-- [ ] Move `[Unreleased]` items into a new `## [X.Y.Z] - YYYY-MM-DD` section; leave
-  a fresh empty `[Unreleased]` above it.
+- [ ] Write the entry under a new `## [X.Y.Z] - YYYY-MM-DD` heading, below an empty
+  `[Unreleased]`.
 - [ ] Add / update the compare links at the bottom of `CHANGELOG.md` once the tag
   name is known.
 
