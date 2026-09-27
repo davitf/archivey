@@ -52,6 +52,7 @@ from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires, requires_binary
+from tests.corruption_util import raises_corruption
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 
@@ -170,7 +171,7 @@ def test_f1_convert_hash_to_mac_crc_and_blake2sp_roundtrip() -> None:
         {HashAlgorithm.BLAKE2SP: bytes(32)},
         digest_transforms=transforms,
     )
-    with pytest.raises(CorruptionError, match="blake2sp"):
+    with raises_corruption(match="blake2sp"):
         bad.read()
         bad.close()
 
@@ -280,7 +281,7 @@ def test_f1_forward_transform_detects_corrupt_tweaked_blake2sp() -> None:
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
         member._raw = replace(raw, blake2sp_hash=bytes(32))
-        with pytest.raises(CorruptionError, match="blake2sp"):
+        with raises_corruption(match="blake2sp"):
             reader.read(member)
 
 

@@ -21,10 +21,11 @@ import pytest
 from archivey import ExtractionStatus, open_archive
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy, SymlinkTargetContext
-from archivey.exceptions import CorruptionError, DiagnosticRaisedError
+from archivey.exceptions import DiagnosticRaisedError
 from archivey.reader import ArchiveReader
 from archivey.types import MemberType, OnError
 from tests.conftest import requires, requires_binary
+from tests.corruption_util import is_corruption, raises_corruption
 from tests.test_link_target_cap import _sevenzip_with_link
 from tests.zip_aes_fixture import build_aes_zip
 
@@ -95,7 +96,7 @@ def test_damaged_zip_link_target_keeps_the_listing() -> None:
     with open_archive(io.BytesIO(_damaged_zip_symlink())) as ar:
         _assert_listed_targetless(ar)
         assert ar.read(ar.get("target.txt")) == b"payload"
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             ar.open(ar.get("link"))
 
 
@@ -109,7 +110,7 @@ def test_damaged_aes_link_target_keeps_the_listing(
     """Both password paths list the link: its HMAC failure is damage (S28-K4)."""
     with open_archive(io.BytesIO(_damaged_aes_symlink()), password=passwords) as ar:
         _assert_listed_targetless(ar)
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             ar.open(ar.get("link"))
 
 
@@ -118,7 +119,7 @@ def test_damaged_7z_link_target_keeps_the_listing(tmp_path: Path) -> None:
     with open_archive(io.BytesIO(_damaged_7z_symlink(tmp_path))) as ar:
         _assert_listed_targetless(ar)
         assert ar.read(ar.get("target.txt")) == b"payload"
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             ar.open(ar.get("link"))
 
 
@@ -137,7 +138,7 @@ def test_damaged_link_target_fails_only_that_link_at_extraction(
     by_name = {result.member.name: result for result in report.results}
     assert by_name["target.txt"].status is ExtractionStatus.EXTRACTED
     assert by_name["link"].status is ExtractionStatus.FAILED
-    assert isinstance(by_name["link"].error, CorruptionError)
+    assert is_corruption(by_name["link"].error)
     assert (tmp_path / "out" / "target.txt").read_bytes() == b"payload"
     assert not (tmp_path / "out" / "link").is_symlink()
 

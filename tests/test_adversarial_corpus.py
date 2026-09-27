@@ -16,11 +16,11 @@ import pytest
 
 from archivey import ExtractionPolicy, ExtractionStatus, open_archive
 from archivey.exceptions import (
-    CorruptionError,
     ExtractionError,
     FilterRejectionError,
 )
 from tests import create_adversarial as gen
+from tests.corruption_util import raises_corruption
 from tests.create_adversarial import (
     Adversarial,
     adversarial_archives,
@@ -115,7 +115,7 @@ def test_adversarial_open_list_read_semantics(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     if entry.open_outcome == "corruption":
-        with pytest.raises(CorruptionError) as caught:
+        with raises_corruption() as caught:
             open_archive(io.BytesIO(blob))
         assert isinstance(caught.value.__cause__, UnicodeDecodeError)
         return

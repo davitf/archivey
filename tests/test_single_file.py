@@ -37,6 +37,7 @@ from archivey.exceptions import (
 )
 from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.corruption_util import raises_corruption
 from tests.streams_util import (
     NonSeekableBytesIO,
     make_lzip_member,
@@ -408,7 +409,7 @@ def test_zlib_omits_hashes_but_verifies_adler_on_read(tmp_path: Path) -> None:
     with open_archive(path) as ar:
         member = ar.members()[0]
         assert not member.hashes
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             ar.read(member)
 
 
@@ -703,7 +704,7 @@ def test_corrupt_gzip_raises_corruption() -> None:
     data = bytearray(gzip.compress(b"streamed payload" * 100))
     data[15:35] = b"\x00" * 20  # clobber the deflate body (past the 10-byte header)
     with open_archive(NonSeekableBytesIO(bytes(data)), streaming=True) as ar:
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             _read_single_streamed_member(ar)
 
 
@@ -925,7 +926,7 @@ def test_open_time_failure_names_no_member(tmp_path: Path) -> None:
     # Nobody asked for a member yet, so the error must not attribute the failure to one.
     path = tmp_path / "backup.gz"
     path.write_bytes(b"\x00" * 40_000)
-    with pytest.raises(CorruptionError) as info:
+    with raises_corruption() as info:
         open_archive(path)
     assert info.value.member_name is None
     assert info.value.archive_name is not None
@@ -937,7 +938,7 @@ def test_non_seekable_source_still_defers_validation_to_the_read() -> None:
     with open_archive(
         NonSeekableBytesIO(b"\x00" * 40_000), format=ArchiveFormat.GZ, streaming=True
     ) as ar:
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             _read_single_streamed_member(ar)
 
 

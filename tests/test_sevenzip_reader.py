@@ -24,7 +24,6 @@ from archivey.config import (
 )
 from archivey.exceptions import (
     ArchiveyUsageError,
-    CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
     TruncatedError,
@@ -45,6 +44,7 @@ from archivey.internal.password_confirm import PASSWORD_CONFIRM_CHUNK_BYTES
 from archivey.internal.streams import codecs, crypto
 from archivey.types import CompressionAlgorithm, HashAlgorithm, MemberType
 from tests.conftest import ReadSizeSpy, requires, requires_binary, requires_zstd
+from tests.corruption_util import raises_corruption
 
 _FILES = {
     "alpha.txt": b"alpha\n" * 100,
@@ -1415,7 +1415,7 @@ def test_malformed_aes_properties_raise_corruption_error(properties: bytes) -> N
     on the core-only leg.
     """
     reader = _reader_for_unit_tests()
-    with pytest.raises(CorruptionError, match="Malformed 7z AES properties") as info:
+    with raises_corruption(match="Malformed 7z AES properties") as info:
         _open_pipeline(
             reader,
             io.BytesIO(bytes(64)),
@@ -1693,18 +1693,16 @@ def test_files_info_count_is_bounded_against_header_size() -> None:
     # reject it against the header size instead of pre-allocating one object per claimed
     # file and OOM-ing the process (threat-model O1 / review L1). Encode num_files = 2**40
     # in the 7z uint64 form (0xFF marker + 8 LE bytes) and feed it straight to the reader.
-    from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_parser import _Cursor, _read_files_info
 
     huge = (1 << 40).to_bytes(8, "little")
     cur = _Cursor(b"\xff" + huge)  # a 9-byte "header" claiming 2**40 files
-    with pytest.raises(CorruptionError, match="exceeds the .* header"):
+    with raises_corruption(match="exceeds the .* header"):
         _read_files_info(cur, max_members=None)
 
 
 def test_num_unpack_streams_count_is_bounded() -> None:
     """``kNumUnPackStream`` is not bounded by remaining header bytes (S2-F1 / O13)."""
-    from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_parser import (
         _MAX_NUM_STREAMS,
         PlainHeader,
@@ -1729,15 +1727,14 @@ def test_num_unpack_streams_count_is_bounded() -> None:
     assert len(at_scale.streams.digests) == above_stream_cap
 
     for count in (above_stream_cap, 1 << 20, 1 << 40):
-        with pytest.raises(CorruptionError, match="unpack stream count .* header"):
+        with raises_corruption(match="unpack stream count .* header"):
             parse_header_block(_num_unpack_stream_header(count))
-        with pytest.raises(CorruptionError, match="unpack stream count .* header"):
+        with raises_corruption(match="unpack stream count .* header"):
             parse_header_block(_num_unpack_stream_header(count, crc_all_defined=True))
 
 
 def test_num_unpack_streams_sum_across_folders_is_bounded() -> None:
     """Per-folder counts under the header-size cap can still sum past it."""
-    from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_parser import parse_header_block
 
     # Two COPY folders, counts that each fit in this ~24-byte header (20 < 24)
@@ -1749,7 +1746,7 @@ def test_num_unpack_streams_sum_across_folders_is_bounded() -> None:
         + bytes.fromhex("000005000000")
     )
     assert 20 < len(header) < 40
-    with pytest.raises(CorruptionError, match="unpack stream count .* header"):
+    with raises_corruption(match="unpack stream count .* header"):
         parse_header_block(header)
 
 
@@ -1776,22 +1773,20 @@ def test_member_scaled_counts_respect_max_members() -> None:
 
 def test_cursor_truncated_property_payload_raises() -> None:
     """A property size larger than remaining header bytes must raise CorruptionError."""
-    from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_parser import _Cursor, _read_files_info
 
     # FILES_INFO: num_files=1, then NAME property (0x11) claiming 100-byte payload
     # with only a few bytes left → truncated at slice().
     cur = _Cursor(bytes([1, 0x11, 100]))
-    with pytest.raises(CorruptionError, match="Truncated"):
+    with raises_corruption(match="Truncated"):
         _read_files_info(cur, max_members=None)
 
 
 def test_cursor_fixed_width_field_at_eof_raises() -> None:
-    from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_parser import _Cursor
 
     cur = _Cursor(b"\x01\x02")  # only 2 bytes; uint32 needs 4
-    with pytest.raises(CorruptionError, match="Truncated 7z UINT32"):
+    with raises_corruption(match="Truncated 7z UINT32"):
         cur.uint32()
 
 
@@ -1822,7 +1817,6 @@ def test_next_header_offset_overflow_is_typed_corruption() -> None:
     import struct
     import zlib
 
-    from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
     from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
@@ -1834,7 +1828,7 @@ def test_next_header_offset_overflow_is_typed_corruption() -> None:
     start_crc = zlib.crc32(start_header) & 0xFFFFFFFF
     blob = MAGIC_7Z + bytes([0, 4]) + struct.pack("<I", start_crc) + start_header
 
-    with pytest.raises(CorruptionError, match="next-header offset"):
+    with raises_corruption(match="next-header offset"):
         parse_sevenzip_archive(io.BytesIO(blob))
 
 
@@ -1842,7 +1836,6 @@ def test_next_header_size_cap_is_typed_corruption() -> None:
     import struct
     import zlib
 
-    from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_parser import (
         MAGIC_7Z,
         MAX_NEXT_HEADER_SIZE,
@@ -1856,7 +1849,7 @@ def test_next_header_size_cap_is_typed_corruption() -> None:
     start_crc = zlib.crc32(start_header) & 0xFFFFFFFF
     blob = MAGIC_7Z + bytes([0, 4]) + struct.pack("<I", start_crc) + start_header
 
-    with pytest.raises(CorruptionError, match="next-header size"):
+    with raises_corruption(match="next-header size"):
         parse_sevenzip_archive(io.BytesIO(blob))
 
 
@@ -1865,7 +1858,6 @@ def test_archive_property_payload_size_is_bounded() -> None:
     import struct
     import zlib
 
-    from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
     from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
@@ -1886,13 +1878,12 @@ def test_archive_property_payload_size_is_bounded() -> None:
         + header_body
     )
 
-    with pytest.raises(CorruptionError, match="(length|Truncated|parser limit)"):
+    with raises_corruption(match="(length|Truncated|parser limit)"):
         parse_sevenzip_archive(io.BytesIO(blob))
 
 
 def test_encoded_header_huge_unpack_size_is_typed_corruption() -> None:
     """Hostile encoded-header unpack size must not raise MemoryError (Atheris finding)."""
-    from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     # CI crash input (sevenzip_header, 2026-07-15): ENCODED_HEADER claims ~7.26e17
@@ -1909,7 +1900,7 @@ def test_encoded_header_huge_unpack_size_is_typed_corruption() -> None:
         "00000017062d010980b600070b010001212101180cffffffffffffff110a0a0a"
         "0a01000000000002830a0a0a0a0a0a0a0a0a0a0a0a816e0000"
     )
-    with pytest.raises(CorruptionError, match="unpack size|parser limit"):
+    with raises_corruption(match="unpack size|parser limit"):
         parse_sevenzip_archive(io.BytesIO(blob))
 
 
@@ -1932,7 +1923,6 @@ def _sevenzip_blob(*, packed: bytes, next_header: bytes) -> bytes:
 @pytest.mark.timeout(5)
 def test_encoded_header_self_copy_is_typed_corruption() -> None:
     """COPY encoded header whose packed bytes are itself must not hang (S2-F2 / O14)."""
-    from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     # 66-byte archive from the S2-F2 trigger: signature + 17-byte COPY payload that
@@ -1940,16 +1930,15 @@ def test_encoded_header_self_copy_is_typed_corruption() -> None:
     next_header = bytes.fromhex("17060001091100070b010001000c110000")
     blob = _sevenzip_blob(packed=next_header, next_header=next_header)
     assert len(blob) == 66
-    with pytest.raises(CorruptionError, match="decoded to another encoded header"):
+    with raises_corruption(match="decoded to another encoded header"):
         parse_sevenzip_archive(io.BytesIO(blob))
-    with pytest.raises(CorruptionError, match="decoded to another encoded header"):
+    with raises_corruption(match="decoded to another encoded header"):
         with open_archive(io.BytesIO(blob)):
             pass
 
 
 def test_encoded_header_folder_unpack_sizes_are_capped_in_total() -> None:
     """Per-folder unpack cap is not enough: two COPY folders can concatenate past it."""
-    from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_parser import MAX_NEXT_HEADER_SIZE
     from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
@@ -1962,7 +1951,7 @@ def test_encoded_header_folder_unpack_sizes_are_capped_in_total() -> None:
         + bytes.fromhex("0000")
     )
     blob = _sevenzip_blob(packed=b"\x00\x00", next_header=next_header)
-    with pytest.raises(CorruptionError, match="unpack size|parser limit"):
+    with raises_corruption(match="unpack size|parser limit"):
         parse_sevenzip_archive(io.BytesIO(blob))
 
 
@@ -2314,7 +2303,6 @@ def test_lz4_7z_fixture_reads_members() -> None:
 
 
 def test_decode_utf16_names_bulk() -> None:
-    from archivey.exceptions import CorruptionError
     from archivey.internal.backends.sevenzip_parser import _decode_utf16_names
 
     blob = _names_payload(["a.txt", "dir/b"])
@@ -2324,13 +2312,13 @@ def test_decode_utf16_names_bulk() -> None:
     assert names == ["a.txt", "dir/b"]
     # Zero files: empty blob is the legitimate encoding (old loop was a no-op).
     assert _decode_utf16_names(b"", expected_count=0) == []
-    with pytest.raises(CorruptionError, match="non-empty for zero files"):
+    with raises_corruption(match="non-empty for zero files"):
         _decode_utf16_names(b"\x00\x00", expected_count=0)
-    with pytest.raises(CorruptionError, match="odd byte length"):
+    with raises_corruption(match="odd byte length"):
         _decode_utf16_names(b"abc", expected_count=1)
-    with pytest.raises(CorruptionError, match="not null-terminated"):
+    with raises_corruption(match="not null-terminated"):
         _decode_utf16_names(b"a\x00", expected_count=1)
-    with pytest.raises(CorruptionError, match="name count"):
+    with raises_corruption(match="name count"):
         _decode_utf16_names(blob[1:], expected_count=3)
 
 

@@ -174,11 +174,16 @@ class ReadError(ArchiveyError):
 
 
 class CorruptionError(ReadError):
-    """CRC mismatch or bad data block."""
+    """The archive's bytes are damaged: a checksum mismatch, a bad header or data block.
+
+    Data that ends early is damage too, so :class:`TruncatedError` is a subclass and
+    ``except CorruptionError`` catches it. Catch :class:`TruncatedError` first when the
+    two need different handling, such as waiting for more of a file still being written.
+    """
 
 
-class TruncatedError(ReadError):
-    """Unexpected EOF."""
+class TruncatedError(CorruptionError):
+    """The archive's data ends before its structure says it should."""
 
 
 class EncryptionError(ReadError):

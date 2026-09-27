@@ -31,7 +31,7 @@ ArchiveyError(Exception)
 │   └── StreamNotSeekableError
 ├── ReadError
 │   ├── CorruptionError
-│   ├── TruncatedError
+│   │   └── TruncatedError
 │   ├── EncryptionError
 │   └── LinkTargetNotFoundError
 ├── ExtractionError
@@ -62,6 +62,12 @@ anything finer goes in the message. So the checks behind `FilterRejectionError` 
 traversal, symlink escape, special file, unportable name, deceptive name) share that one
 type, and a `SpoolLimits` trip is a plain `ResourceLimitError`.
 
+`TruncatedError` SHALL be a `CorruptionError` subclass: data that ends before its
+structure says it should is damaged data, and from the bytes alone a decoder often cannot
+tell a cut stream from damage that decodes short. So `except CorruptionError` catches
+truncation too, and a caller that handles a short file differently (waiting for a
+download to finish, say) catches `TruncatedError` first.
+
 | Error split | Meaning |
 | --- | --- |
 | `UnsupportedFeatureError` | Valid archive uses a recognized feature Archivey does not implement (unsupported ZIP method, unknown 7z coder, a 7z coder graph that is not a tree of chains, a raw CD sector image), or the archive or backend cannot serve a valid request (writing any format, a RAR password with a line break for `unrar`, `format=ArchiveFormat.UNKNOWN`). |
@@ -76,6 +82,7 @@ type, and a `SpoolLimits` trip is a plain `ResourceLimitError`.
 | Diagnostic policy escalates | `DiagnosticRaisedError` is caught by `except ArchiveyError` |
 | Member name with a bidi override, extracted | `FilterRejectionError` whose message names the override; caught by `except ExtractionError` |
 | Recognized archive with a damaged header, opened | `CorruptionError` or `TruncatedError` from `open_archive()`; not an `OpenError` |
+| Member data that ends early, read | `TruncatedError`; caught by `except CorruptionError` and by `except ReadError` |
 
 ### Requirement: Caller misuse remains outside ArchiveyError
 

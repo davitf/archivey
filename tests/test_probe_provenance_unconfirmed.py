@@ -34,6 +34,7 @@ from archivey.internal.detection import _extension_corroborates
 from archivey.internal.streams.brotli_framing import BrotliBlock, parse_metablock
 from archivey.types import ContainerFormat, StreamFormat
 from tests.conftest import requires
+from tests.corruption_util import raises_corruption
 from tests.streams_util import truncated_brotli
 
 TAR_BROTLI = ArchiveFormat(ContainerFormat.TAR, StreamFormat.BROTLI)
@@ -403,7 +404,7 @@ def test_extension_only_failure_sets_format_unconfirmed(tmp_path: Path) -> None:
     assert info.detected_by == "extension"
 
     diagnostics: list[Diagnostic] = []
-    with pytest.raises(CorruptionError) as caught:
+    with raises_corruption() as caught:
         _open_and_read(path, diagnostics)
     exc = caught.value
     assert exc.format_unconfirmed is True
@@ -425,7 +426,7 @@ def test_strict_extension_only_failure_keeps_typed_error(tmp_path: Path) -> None
     path = tmp_path / "backup.gz"
     path.write_bytes(b"\x00" * 40_000)
     cfg = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
-    with pytest.raises(CorruptionError) as caught:
+    with raises_corruption() as caught:
         _open_and_read(path, config=cfg)
     assert not isinstance(caught.value, DiagnosticRaisedError)
     assert caught.value.format_unconfirmed is True

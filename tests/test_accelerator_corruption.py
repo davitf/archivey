@@ -30,6 +30,7 @@ from archivey.internal.streams.codecs import (
     _stdlib_gzip,
     open_codec_stream,
 )
+from tests.corruption_util import is_corruption, raises_corruption
 
 _GZ_ON = StreamConfig(use_rapidgzip=AcceleratorMode.ON)
 _BZ_ON = StreamConfig(use_indexed_bzip2=AcceleratorMode.ON)
@@ -51,7 +52,7 @@ def test_rapidgzip_corrupt_translates_to_corruption() -> None:
     # An in-memory source exercises the "Failed to parse gzip/zlib header" path that was
     # previously left untranslated (leaking a raw RuntimeError).
     with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_GZ_ON) as s:
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             s.read()
 
 
@@ -84,9 +85,9 @@ def test_rapidgzip_macos_deflate_corruption_messages_are_translated(
     from archivey.internal.streams.codecs import DeflateCodec, GzipCodec, ZlibCodec
 
     exc = ValueError(message)
-    assert isinstance(GzipCodec()._translate_accelerator(exc), CorruptionError)
-    assert isinstance(DeflateCodec()._translate_accelerator(exc), CorruptionError)
-    assert isinstance(ZlibCodec()._translate_accelerator(exc), CorruptionError)
+    assert is_corruption(GzipCodec()._translate_accelerator(exc))
+    assert is_corruption(DeflateCodec()._translate_accelerator(exc))
+    assert is_corruption(ZlibCodec()._translate_accelerator(exc))
 
 
 def test_rapidgzip_truncation_is_reported(tmp_path: Path) -> None:
@@ -145,7 +146,7 @@ def test_rapidgzip_silent_empty_fallback_recovers_prefix(tmp_path: Path) -> None
             raised = exc
     if raised is None:
         pytest.fail("expected TruncatedError or CorruptionError on truncated gzip")
-    if isinstance(raised, CorruptionError):
+    if is_corruption(raised):
         # macOS / rapidgzip raised before empty→stdlib fallback — no prefix contract.
         return
     assert recovered
@@ -365,7 +366,7 @@ def test_indexed_bzip2_corrupt_translates_to_corruption(tmp_path: Path) -> None:
     corrupt[20:45] = b"\x00" * 25  # clobber block data/header
     path = _write(tmp_path, "corrupt.bz2", bytes(corrupt))
     with open_codec_stream(Codec.BZIP2, path, config=_BZ_ON) as s:
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             s.read()
 
 
@@ -439,7 +440,7 @@ def test_indexed_bzip2_seek_before_read_still_raises(
     )
     with open_codec_stream(Codec.BZIP2, source, config=_BZ_ON) as s:
         s.seek(100)
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             s.read()
 
 

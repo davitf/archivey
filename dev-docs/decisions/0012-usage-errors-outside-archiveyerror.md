@@ -48,3 +48,8 @@ The same pass folded the five `FilterRejectionError` subclasses into their paren
 a compressed stream). The rule behind all of it: a type is public only when a caller
 would act on it differently from its parent. Adding a subclass back later breaks no one;
 removing one after a release does.
+
+A second change the same day made `TruncatedError` a `CorruptionError` subclass rather
+than a sibling. Data that ends early is damaged data, the library caught the two together
+in most places, and a decoder often cannot tell them apart from the bytes. Moving it later
+would have widened every `except CorruptionError` after callers had written them.

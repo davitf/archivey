@@ -28,6 +28,7 @@ from archivey.types import (
     ArchiveMember,
     MemberType,
 )
+from tests.corruption_util import is_corruption, raises_corruption
 
 
 def _info(
@@ -341,23 +342,23 @@ def test_random_access_terminal_damage_report_and_yield_then_raise() -> None:
 
     report = reader.members_report()
     assert [m.name for m in report] == ["a.txt"]
-    assert isinstance(report.error, archivey.CorruptionError)
+    assert is_corruption(report.error)
     assert reader.members_report() is report
 
-    with pytest.raises(archivey.CorruptionError):
+    with raises_corruption():
         reader.members()
-    with pytest.raises(archivey.CorruptionError):
+    with raises_corruption():
         reader.scan_members()
 
     it = iter(reader)
     member = next(it)
     assert member.name == "a.txt"
     assert reader.read(member) == b"x"
-    with pytest.raises(archivey.CorruptionError):
+    with raises_corruption():
         next(it)
 
     assert reader.get("a.txt") is member
-    with pytest.raises(archivey.CorruptionError):
+    with raises_corruption():
         reader.get("missing.txt")
 
 
@@ -367,27 +368,27 @@ def test_failed_streaming_pass_publishes_incomplete_report() -> None:
     reader = _FailingScanReader(ArchiveFormat.TAR, True, "x.tar")
     it = iter(reader)
     assert next(it).name == "a.txt"
-    with pytest.raises(archivey.CorruptionError):
+    with raises_corruption():
         next(it)
     # Complete-list methods must fail loud, not serve the partial scan as complete.
-    with pytest.raises(archivey.CorruptionError):
+    with raises_corruption():
         reader.scan_members()
     report = reader.members_report_if_available()
     assert report is not None
-    assert isinstance(report.error, archivey.CorruptionError)
+    assert is_corruption(report.error)
     assert [m.name for m in report] == ["a.txt"]
 
 
 def test_failed_streaming_pass_replays_incomplete_report() -> None:
     reader = _FailingScanReader(ArchiveFormat.TAR, True, "x.tar")
-    with pytest.raises(archivey.CorruptionError):
+    with raises_corruption():
         list(reader)
     for _ in range(2):
-        with pytest.raises(archivey.CorruptionError):
+        with raises_corruption():
             reader.scan_members()
         report = reader.members_report()
         assert [m.name for m in report] == ["a.txt"]
-        assert isinstance(report.error, archivey.CorruptionError)
+        assert is_corruption(report.error)
 
 
 # --- Incomplete listing must survive a secondary link-finalize fault (double-fault) ---
@@ -425,11 +426,11 @@ def test_ra_incomplete_listing_survives_link_finalize_double_fault() -> None:
 
     report = reader.members_report()
     assert [m.name for m in report] == ["link"]
-    assert isinstance(report.error, archivey.CorruptionError)
+    assert is_corruption(report.error)
     assert "listing damaged" in str(report.error)
     # Secondary TruncatedError must not replace the listing error or clear the report.
     assert reader.members_report() is report
-    with pytest.raises(archivey.CorruptionError, match="listing damaged"):
+    with raises_corruption(match="listing damaged"):
         reader.members()
 
 
@@ -438,11 +439,11 @@ def test_streaming_incomplete_listing_survives_link_finalize_double_fault() -> N
 
     it = iter(reader)
     assert next(it).name == "link"
-    with pytest.raises(archivey.CorruptionError, match="listing damaged"):
+    with raises_corruption(match="listing damaged"):
         next(it)
 
     report = reader.members_report_if_available()
     assert report is not None
     assert [m.name for m in report] == ["link"]
-    assert isinstance(report.error, archivey.CorruptionError)
+    assert is_corruption(report.error)
     assert "listing damaged" in str(report.error)

@@ -24,13 +24,14 @@ import pytest
 import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
 from archivey import open_archive
 from archivey.diagnostics import DiagnosticCode, EncryptedVerificationContext
-from archivey.exceptions import ArchiveyError, CorruptionError, EncryptionError
+from archivey.exceptions import ArchiveyError, EncryptionError
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_PREFIX_BYTES,
     PasswordConfirmPlan,
     plan_password_confirm,
 )
 from tests.conftest import requires, requires_binary
+from tests.corruption_util import raises_corruption
 
 pytestmark = [requires("cryptography"), requires_binary("7z")]
 
@@ -297,7 +298,7 @@ def test_damage_past_the_confirm_prefix_is_corruption(tmp_path: Path) -> None:
     _flip_packed_byte(archive, _BIG - 4096)
     with open_archive(archive, password=_PASSWORD) as reader:
         member = next(m for m in reader.members() if m.is_file)
-        with pytest.raises(CorruptionError):
+        with raises_corruption():
             reader.read(member)
 
 
