@@ -19,6 +19,9 @@ First public release. This repository is a rewrite: the earlier v1 / alpha line
 [`davitf/archivey-old`](https://github.com/davitf/archivey-old)) is a separate codebase
 with no compatibility promise. Treat 0.2.0 as the first release of this library.
 
+The public API is not frozen until 1.0: minor releases before then may still change it,
+and each change will be listed here. No major changes are expected.
+
 ### Added
 
 - **One interface for reading, streaming and extracting archives.** `open_archive()`
