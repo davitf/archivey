@@ -882,6 +882,7 @@
   `dev-docs/investigations/parallel-reader.md`.
 - **Free-threading position** (threat-model C4) — parallel extraction / parallel
   decode under 3.13t; interacts with the existing parallel-extraction idea above.
+
 ## Testing
 
 - **Commit the leftover live-`rar a` fixtures.** ADR 0016 committed the corpus RAR

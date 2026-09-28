@@ -272,9 +272,11 @@ to:
   scans it**, so the listing shows names, sizes and times from outside the root. On
   POSIX the walk opens each subdirectory with `O_NOFOLLOW | O_DIRECTORY`, checks the
   handle is the `(st_dev, st_ino)` its parent's scan recorded, and scans and `lstat`s
-  through that handle. A symlink in its place fails the open; a directory reached
-  through a swapped parent fails the identity check with `OSError(ESTALE)`. Either
-  fails the listing, as a refused read fails the read.
+  through that handle. A symlink in its place, or a directory reached through a
+  swapped parent, fails with `OSError(ESTALE)` ("was replaced since the directory was
+  listed; not scanning it"). On a filesystem that reports no identity (`st_ino` 0), the
+  subdirectory is opened one component at a time from the root, so a swapped parent
+  still fails. Either way the listing fails, as a refused read fails the read.
 - **swap a file for a FIFO**, so the read blocks. The open does not block and refuses a
   handle that is not a regular file.
 - **replace or resize a file after the walk**, so a read returns data the listing never

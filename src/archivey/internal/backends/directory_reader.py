@@ -94,9 +94,13 @@ def _identity_stat(path: str) -> os.stat_result:
 # component; Windows has neither and relies on the identity check.
 _HAS_NOFOLLOW = hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
-# The walk scans each subdirectory through a descriptor opened with `O_NOFOLLOW`, which
-# needs `os.scandir` to accept one; where it cannot, it scans by path.
-_SCAN_BY_FD = _HAS_NOFOLLOW and os.scandir in os.supports_fd
+# The walk scans each subdirectory through a descriptor opened with `O_NOFOLLOW` (by
+# path, or component by component with `openat` when the listing has no identity to
+# check), lists it with `os.scandir(fd)` and reads links in it with `readlinkat`. Where
+# any of those is missing it scans by path.
+_SCAN_BY_FD = (
+    _HAS_NOFOLLOW and os.scandir in os.supports_fd and os.readlink in os.supports_dir_fd
+)
 
 
 class _Identity(NamedTuple):
@@ -224,8 +228,7 @@ class DirectoryReader(BaseArchiveReader):
         (threat-model O21). So where the platform allows it the subdirectory is opened
         with ``O_NOFOLLOW`` and scanned through that descriptor, and a descriptor that
         is not the listed directory is refused with ``OSError(ESTALE)``, as a read of a
-        replaced file is. A symlink in its place fails from the kernel (``ENOTDIR`` on
-        Linux, ``ELOOP`` elsewhere).
+        replaced file is, and so is a symlink in its place.
         """
         # os.scandir yields DirEntry objects whose stat() is cached, so we avoid a
         # separate os.stat()/os.lstat() syscall per entry.
@@ -380,24 +383,56 @@ class DirectoryReader(BaseArchiveReader):
         """A descriptor on the directory the listing saw at ``directory``, or ``None``.
 
         ``None`` means the level is scanned by path: the root (``rel_prefix`` is
-        empty; the caller chose it, and it may be a symlink), or a platform where
-        `os.scandir` takes no descriptor. Otherwise the path is opened with
+        empty; the caller chose it, and it may be a symlink), or a platform without
+        the calls the descriptor walk needs (`_SCAN_BY_FD`). Otherwise nothing on the
+        way is followed. With the listing's identity, the path is opened with
         ``O_NOFOLLOW | O_DIRECTORY``, so a symlink put in its place fails, and the
         handle must be the listed directory: a directory above it swapped for a
         symlink resolves the path elsewhere, which the identity catches. A directory
-        listed with no identity (``st_ino`` 0) gets the ``O_NOFOLLOW`` open alone.
+        listed with no identity (``st_ino`` 0: some FUSE and network mounts) has
+        nothing to compare, so it is opened one component at a time from the root
+        instead, each with ``O_NOFOLLOW``, and a symlink anywhere on the path fails.
+
+        A symlink in the way fails in the kernel (``ENOTDIR`` on Linux, ``ELOOP``
+        elsewhere); that is reported like a replaced directory, with the kernel's
+        error as the cause. Every other ``OSError`` propagates unchanged, in
+        particular ``FileNotFoundError``, which `_scan_level` reports as a vanished
+        directory.
         """
         if not _SCAN_BY_FD or not rel_prefix:
             return None
-        fd = os.open(
-            directory, os.O_RDONLY | _O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-        )
+        name = rel_prefix.rstrip("/")
+        try:
+            if expected is None:
+                return self._open_directory_nofollow(name)
+            fd = os.open(
+                directory, os.O_RDONLY | _O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+        except OSError as exc:
+            if exc.errno in (errno.ENOTDIR, errno.ELOOP):
+                raise _changed_since_listing(name, "was replaced", "scanning") from exc
+            raise
         try:
             st = os.fstat(fd)
-            if expected is not None and (st.st_dev, st.st_ino) != expected:
-                raise _changed_since_listing(
-                    rel_prefix.rstrip("/"), "was replaced", "scanning"
+            if (st.st_dev, st.st_ino) != expected:
+                raise _changed_since_listing(name, "was replaced", "scanning")
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def _open_directory_nofollow(self, name: str) -> int:
+        """POSIX: open directory ``name`` under the root one component at a time."""
+        fd = os.open(self._root, os.O_RDONLY | _O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            for component in name.split("/"):
+                next_fd = os.open(
+                    component,
+                    os.O_RDONLY | _O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=fd,
                 )
+                os.close(fd)
+                fd = next_fd
         except BaseException:
             os.close(fd)
             raise

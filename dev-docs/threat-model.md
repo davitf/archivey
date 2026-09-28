@@ -467,10 +467,13 @@ is the one exception to "other local processes are trusted" (§1).
 
 **Mechanism.** `internal/backends/directory_reader.py`:
 - The walk lists with `lstat` and never follows a symlink or junction. On POSIX, where
-  `os.scandir` takes a descriptor (`_SCAN_BY_FD`), `_open_listed_directory` opens each
+  the descriptor walk is available (`_SCAN_BY_FD`), `_open_listed_directory` opens each
   subdirectory with `O_NOFOLLOW | O_DIRECTORY`, checks it against the
-  `(st_dev, st_ino)` its parent's scan recorded, and scans through that descriptor, so a
-  directory swapped for a symlink before its scan fails the listing.
+  `(st_dev, st_ino)` its parent's scan recorded, and scans and `lstat`s through that
+  descriptor, so a directory swapped for a symlink before its scan, or reached through a
+  swapped parent, fails the listing with `OSError(ESTALE)`. A directory listed with no
+  identity is opened one component at a time from the root instead, each with
+  `O_NOFOLLOW`, so a swapped parent fails there too.
 - `_open_listed_file` opens each path component with `O_NOFOLLOW` relative to its
   parent's descriptor and the file with `O_NOFOLLOW | O_NONBLOCK`, so a symlink on the
   path fails with `ELOOP` and a FIFO does not block. It then `fstat`s the handle and
@@ -494,7 +497,8 @@ filesystem with hard links but no stable inodes. Windows is weaker and
 `::test_a_file_resized_after_listing_is_refused`,
 `::test_an_identityless_member_that_is_now_a_reparse_point_is_refused`,
 `::test_a_directory_swapped_for_a_symlink_before_its_scan_is_refused`,
-`::test_a_parent_swapped_for_a_symlink_before_a_subdirectory_scan_is_refused`. Handbook:
+`::test_a_parent_swapped_for_a_symlink_before_a_subdirectory_scan_is_refused`,
+`::test_a_parent_swap_is_refused_on_a_filesystem_without_identities`. Handbook:
 [`formats/directory.md`](formats/directory.md) §2.3, §4.
 
 ### Attacker bytes reaching a terminal are inert

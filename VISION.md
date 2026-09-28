@@ -27,7 +27,8 @@ feels like stdlib**.
    decompression-bombed unless the caller explicitly opts out. Safety is a *contract*
    (specced, tested, threat-modeled — see `dev-docs/threat-model.md`), not a feature flag.
 2. **Memory-safe parsing of hostile input.** Every container and header parser is
-   pure Python: archivey's own for 7z and RAR, the standard library's for ZIP and TAR.
+   pure Python: archivey's own for 7z and RAR, the standard library's for ZIP and TAR,
+   and `pycdlib` for ISO.
    That is not purity for its own sake: a pure-Python parser can be *wrong* but it
    cannot be *corrupted*, while C archive parsers (libarchive et al.) have a long CVE
    history of memory-safety bugs triggered by crafted archives. "Parse untrusted
