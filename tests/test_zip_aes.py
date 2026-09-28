@@ -344,7 +344,7 @@ def test_aes_hmac_survives_a_seekable_accelerator(
 @pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
 @requires("cryptography")
 def test_aes_tampered_hmac_partial_read_then_close_is_quiet(method: int) -> None:
-    """Partial read then close is not an HMAC verdict (ADR 0014 / ARC-45).
+    """Partial read then close is not an HMAC verdict (ADR 0014).
 
     STORED used to drain and raise from ``close()``. Compressed members already
     skipped that check (S1-F1): the decompressor borrows the decrypt stream.
@@ -390,7 +390,7 @@ def _aes_decrypt_stream(source: io.BytesIO) -> WinZipAesDecryptStream:
 def test_aes_decrypt_stream_close_releases_source() -> None:
     """Partial read then close still owns the source; a second close is a no-op.
 
-    After ARC-45, releasing ``_source`` is the only thing ``close()`` does.
+    Releasing ``_source`` is the only thing ``close()`` does.
     """
     src = _CloseCounter(b"\x00" * 60)
     stream = _aes_decrypt_stream(src)
