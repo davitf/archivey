@@ -266,7 +266,7 @@ stored target as data.
 
 Still to do: file the XADMaster bug upstream.
 
-## stdlib `tarfile` treats a corrupt non-first header as clean end-of-archive
+## stdlib `tarfile` treats a corrupt non-first header as clean end-of-archive (open)
 
 `tarfile.TarFile.next()` re-raises `InvalidHeaderError` only when it occurs at offset 0;
 a corrupt member header anywhere later is swallowed and iteration simply ends — so
@@ -371,9 +371,10 @@ ISO included, builds each member once and emits its typing-time diagnostics once
 ledger and its re-attach step are gone. Each typing-time diagnostic carries the walk
 position as its context `member_id` on ZIP, 7z, RAR, ISO and TAR.
 
-## Random-access accelerators on macOS (resolved)
+## rapidgzip accelerator: upstream defects
 
-**Status:** resolved. archivey uses a single accelerator library — `rapidgzip` — for both gzip
+**Status:** Bugs 1 and 2 are resolved; Bug 3 is open upstream and Bug 4 is open upstream
+and contained (below). archivey uses a single accelerator library — `rapidgzip` — for both gzip
 and bzip2, and closes every accelerator object via a `weakref.finalize` guard. With those two
 measures the accelerators run cleanly on Linux, Windows, and macOS, so `AUTO` enables them on
 every platform. This note records the two distinct bugs behind the long investigation.
@@ -466,21 +467,17 @@ single-file reader's `_close_archive` deliberately does **not** close the (non-o
 `SharedSource` behind stream-source member streams, so `reader.close()` with a member stream
 still open cannot trigger the abort (and member streams stay readable after reader close, as
 with every other backend). The remaining trigger — the **caller**'s own stream fails or is
-closed while an accelerator-backed stream still reads it — is contained in Python rather than
-fixed: every rapidgzip decoder (gzip / zlib / deflate, and bzip2 since the 2026-09-25 catch-all
-review; before that the bzip2 path aborted) reads a caller-owned stream through
-`_TrappingSource` in `codecs.py`, which parks the callback's exception and returns an
-EOF-shaped value, and `_AcceleratorStream` re-raises it as an ordinary Python exception after
-the call. It is marked as the caller's, so the codec translators leave it as it is: an
+closed while an accelerator-backed stream still reads it — is contained rather than fixed.
+gzip / zlib / deflate run rapidgzip in a child process (Bug 4): the child's source object
+never raises (a failed read is an end of input), and this process serves its reads from the
+caller's stream and raises the caller's exception itself. The bzip2 decoder runs
+in-process and reads a caller-owned stream through `_TrappingSource` in `codecs.py`, which
+parks the callback's exception and returns an EOF-shaped value; `_AcceleratorStream`
+re-raises it as an ordinary Python exception after the call. It is marked as the caller's, so the codec translators leave it as it is: an
 `EOFError` from a dropped network stream stays an `EOFError`, not `TruncatedError`. See `dev-docs/topics/exception-handlers.md` §C-boundary trap. Only an upstream fix
 removes the need for the shim. Path sources are unaffected (rapidgzip owns an independent
 handle) for the *Python-source-raises* trigger. The stdlib codec fallbacks raise a normal
 `ValueError`.
-
-Since the next section, gzip / zlib / deflate no longer run rapidgzip in-process at all: the
-child process's source object never raises (a failed read is an end of input), and this
-process serves its reads from the caller's stream and raises the caller's exception itself.
-`_TrappingSource` now guards the in-process bzip2 decoder only.
 
 ### Bug 4 — rapidgzip aborts on a truncated DEFLATE stream (contained: child process)
 
@@ -794,7 +791,9 @@ with a garbage tail) are pinned as deterministic tests in
   required suite.
 - Deterministic **raw** PPMd coverage (no 7z) lives in `tests/test_ppmd_raw_streams.py`
   (always passes ``unpack_size`` for PPMd7).
-- In-process PPMd7 create/destroy loops remain skipped on Windows (stress job covers that).
+- In-process PPMd7 create/destroy loops remain skipped on Windows (stress job covers that),
+  and so does `test_encrypted_ppmd_chunked_reads_roundtrip` in
+  `tests/test_sevenzip_reader.py`.
 
 ### Non-blocking stress check (investigation vehicle)
 
@@ -803,6 +802,9 @@ main push:
 
 - `windows-latest` + `ubuntu-latest` × Python **3.11 and 3.14**
 - `scripts/ppmd_native_stress.py` (ASCII-safe console I/O) + `pytest -m ppmd_native_stress`
+- a soak of `tests/test_ppmd_raw_streams.py` through `scripts/ci_run_native_modules.py`
+  (`--repeat 20` by default), which hard-fails on an exit-after-green abort
+- on Linux, a valgrind use-after-free gate (`scripts/ppmd_uaf_valgrind.py`)
 - Exit non-zero when any child crashes (visibility only — **do not** make this a required
   check)
 
@@ -826,16 +828,15 @@ ARCHIVEY_PPMD_STRESS_ITERS=30 uv run --no-sync python scripts/ppmd_native_stress
 
 ### Next steps
 
-- **File the upstream issue** — the ready-to-file draft (root cause, repro, crash-rate
-  tables, suggested fixes) is `dev-docs/investigations/pyppmd-upstream-report.md`; the repro
-  script is self-contained (`pyppmd` + stdlib). No matching issue existed upstream as
-  of 2026-07-16.
-- When a fixed pyppmd ships, run the verification checklist at the end of that report;
-  the unbounded-decode guards in `PpmdDecoder` stay regardless (older wheels remain on
-  PyPI, and bounding is correct behavior anyway).
-- The earlier open questions (is it archivey's wrapper? the 7z path? warmup-only?) are
-  resolved: it is pure `pyppmd` (crash reproduces with no archivey imports), warmup only
-  shifts allocator layout, and sized decodes are structurally safe.
+- **File the upstream issue** — the ready-to-file report (root cause, repro, suggested
+  fixes, verification checklist) is §J of
+  `dev-docs/investigations/ppmd-native-investigation-results.md`; the repro scripts are
+  self-contained (`pyppmd` + stdlib). It is not filed upstream yet.
+- When a fixed pyppmd ships, run the verification checklist in that report; the
+  unbounded-decode guards in `PpmdDecoder` stay regardless (older wheels remain on PyPI,
+  and bounding is correct behavior anyway).
+- The crash is pure `pyppmd` (it reproduces with no archivey imports), warmup only shifts
+  allocator layout, and sized decodes are structurally safe.
 
 ## `pyppmd` exit-after-green abort (`test_ppmd_raw_streams` teardown)
 

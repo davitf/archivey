@@ -189,16 +189,17 @@ the destination path itself, replacing the extraction directory with a regular f
 ("poisoned dest"). `check_universal` now rejects non-directory members that name the
 extraction root; the parametrized fuzz loop also asserts the destination stays a
 directory after any successful extract. Unit coverage:
-`test_check_universal_rejects_root_named_file` and `test_extract_error_when_dest_is_a_file`
+`test_check_universal_rejects_root_named_file` and `test_error_when_dest_is_a_file_never_deletes_it`
 in `tests/test_extraction.py`.
 
-### O6. Nested-archive amplification
+### O6. Nested-archive amplification — accepted, documented
 
 Opening archives-inside-archives is supported (and `size` advertisement makes it
 cheap); recursion is caller-driven, so a zip-quine (`droste.zip`) only loops if the
-caller loops. Still worth an explicit documented stance + a recipe for bounded
-recursive processing, since "index my backups" — the founding use case — does exactly
-this.
+caller loops. The stance is published: recursion is the caller's to bound
+(`docs/extracting.md` "Nested archives" row and §What is enforced, `docs/gotchas.md`).
+A recipe or helper for bounded recursive processing is still missing, and "index my
+backups", the founding use case, does exactly this.
 
 ### O7. Names representable as bytes but not by the target filesystem — implemented
 
@@ -219,7 +220,7 @@ write failure.
   still rejected. `TRUSTED` attempts the faithful bytes and lets the local OS decide.
 
 Residual: a public un-escape helper is deferred (addable non-breakingly). User-facing
-notes: [Gotchas — Extraction](../docs/gotchas.md#extraction), ADR 0013.
+notes: [Safe extraction — Names change on disk](../docs/extracting.md#names-change-on-disk), ADR 0013.
 
 ### O8. 7z wrong header-decryption password can silently yield an *empty* archive — mitigated
 
@@ -452,7 +453,7 @@ Changes: `openspec/changes/archive/2026-08-23-brotli-probe-framing-gate/`,
 **Adjacent and already closed:** the *archive-behind-a-stub* case (Topic 8 A-34) via
 `sfx-format-detection`.
 
-### O11. Detection-time decode work is unbounded — open
+### O11. Detection-time decode work — bounded today; re-opens if a tier decodes scan candidates
 
 O1 scopes to *listing*-time metadata bombs; `ExtractionLimits` scopes to `extract`.
 Nothing covers the work `detect_format` may do while deciding what a source is.
@@ -510,7 +511,7 @@ correct 525.1 MB / 8.3 s. Both dimensions are attacker-controlled.
 ratio_activation_threshold=1024)` fired only *after* confirm had already
 buffered ~630 MB (`ERR _AlwaysStopResourceLimitError` at 1048576 bytes written;
 peak still 630.4 MB). The encoded-header path already caps unpack size at
-`_MAX_NEXT_HEADER_SIZE` (64 MiB) before `read_exact`; the folder-data path had
+`MAX_NEXT_HEADER_SIZE` (64 MiB) before `read_exact`; the folder-data path had
 no analogue.
 
 *Mitigation:* confirm now reads the pipeline in 64 KiB chunks and folds a
@@ -577,12 +578,12 @@ in ~0.2 s. Blast radius is `open_archive`, not a fuzz helper —
 `SevenZipReader._load_archive` ran the same loop.
 
 Related cap in the same function: unpack size was capped at
-`_MAX_NEXT_HEADER_SIZE` **per folder**, so two COPY folders at 40 MiB
+`MAX_NEXT_HEADER_SIZE` **per folder**, so two COPY folders at 40 MiB
 concatenated to 80 MiB past the signature next-header cap.
 
 *Closed:* one encoded layer unrolled (no nesting counter); `CorruptionError`
 if the decoded blob is still `EncodedHeader`. Running
-total of folder unpack sizes is capped at `_MAX_NEXT_HEADER_SIZE` before
+total of folder unpack sizes is capped at `MAX_NEXT_HEADER_SIZE` before
 concatenation. Found on PR #315 (S2-F2); Linear ARC-50.
 
 ### O15. A tar extended header sized stdlib `tarfile`'s allocation — closed
@@ -834,7 +835,7 @@ Pinned by `tests/test_directory.py::test_a_file_swapped_for_a_symlink_after_list
 
 ## OPEN gaps — compatibility
 
-### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed
+### C1. RAR data via an external program (`unrar`, or `unar` under `"auto"`) — closed
 
 RAR member data requires an external tool. `unrar` is **non-free** (freeware license);
 `unrar-free` handles little of RAR5; `7z`/`bsdtar` coverage varies by build; `unar`
