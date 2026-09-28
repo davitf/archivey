@@ -53,6 +53,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
+from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_MAX
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -73,8 +74,12 @@ _ExpectedHashes = Mapping[HashAlgorithm, bytes]
 _DigestTransforms = Mapping[HashAlgorithm, Callable[[bytes], bytes]]
 
 # Bounded drain step for sized ``read(-1)``. Must not use ``inner.read(-1)`` on the
-# sized branch: ``expected_size`` is a decompression-bomb cap.
-_SIZED_DRAIN_CHUNK = 65536
+# sized branch: ``expected_size`` is a decompression-bomb cap. The step itself is not
+# the bound (the drain stops at ``expected_size`` whatever the step), so it is sized
+# for speed: a member up to one step arrives as one piece, which ``b"".join`` returns
+# without copying, and it is the decoder's largest compressed feed, so one step is one
+# inflate call.
+_SIZED_DRAIN_CHUNK = _COMPRESSED_READ_SIZE_MAX
 
 
 def _algo_key(algorithm: HashAlgorithm | str) -> str:
@@ -414,8 +419,10 @@ class MemberVerifier:
                     self._finish(inner)
         except BaseException:
             # The raise withholds these bytes, and its traceback keeps this frame
-            # alive for as long as the caller keeps the error: let the body go.
+            # alive for as long as the caller keeps the error: let the body go —
+            # the list and the last piece read, which can be the whole member.
             chunks.clear()
+            piece = b""
             raise
         return b"".join(chunks)
 

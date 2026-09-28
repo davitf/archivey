@@ -20,14 +20,13 @@ from __future__ import annotations
 import bisect
 import io
 import os
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import (
     Any,
     BinaryIO,
     Callable,
     Generic,
-    Iterator,
     NoReturn,
     Protocol,
     Sequence,
@@ -39,6 +38,7 @@ from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, SeekIndexCon
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
+    nothing_held,
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
@@ -234,6 +234,12 @@ def _compressed_feed_size(max_length: int) -> int:
 
 
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
+
+
+# What ``_deferring_raises`` enters without a collector: nothing is ever held.
+_NO_DEFERRAL: AbstractContextManager[Callable[[], Exception | None]] = nullcontext(
+    nothing_held
+)
 
 
 # Upper bound on a stream's seek table, in entries. A seek table is an optimisation, so
@@ -770,8 +776,9 @@ class DecompressorStream(ReadOnlyIOStream):
             self._diagnostics_collector, self._codec_name or "compressed", offset
         )
 
-    @contextmanager
-    def _deferring_raises(self) -> Iterator[Callable[[], Exception | None]]:
+    def _deferring_raises(
+        self,
+    ) -> AbstractContextManager[Callable[[], Exception | None]]:
         """Hold escalated reports until this operation's state is consistent.
 
         See the class docstring. Without a collector there is nothing to hold: the
@@ -779,10 +786,8 @@ class DecompressorStream(ReadOnlyIOStream):
         """
         collector = self._diagnostics_collector
         if collector is None:
-            yield lambda: None
-            return
-        with collector.deferring_raises() as pending:
-            yield pending
+            return _NO_DEFERRAL
+        return collector.deferring_raises()
 
     def readall(self) -> bytes:
         if self._spent is not None:
@@ -835,6 +840,22 @@ class DecompressorStream(ReadOnlyIOStream):
         if self._spent is not None and not self._buffer:
             self._raise_spent()
         with self._deferring_raises() as pending:
+            if not self._buffer and not self._eof:
+                # Common case: nothing buffered and one decode fills the request. Hand
+                # that chunk back as is, skipping the extend / slice / delete copies
+                # through ``_buffer`` (each a full copy of the output). A short or
+                # over-long chunk takes the buffered loop below, unchanged. So does a
+                # chunk decoded while a raise was held: returning it would leave this
+                # block and drop the raise, so the chunk stays buffered, unconsumed,
+                # and the raise propagates below.
+                chunk = self._read_decompressed_chunk(n)
+                if len(chunk) == n and pending() is None:
+                    self._pos += n
+                    return chunk
+                self._buffer.extend(chunk)
+                # ``_buffer`` holds it now. A raise below keeps this frame alive on
+                # its traceback, which must not pin a second copy of the bytes.
+                chunk = b""
             while len(self._buffer) < n and not self._eof:
                 need = n - len(self._buffer)
                 self._buffer.extend(self._read_decompressed_chunk(need))
