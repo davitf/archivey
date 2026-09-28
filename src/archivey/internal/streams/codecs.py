@@ -46,6 +46,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
 from archivey.internal import logs
 from archivey.internal.config import (
@@ -1602,7 +1603,10 @@ class MetadataContext:
 # would make detection answer "not this format" for a stream whose dictionary is
 # over the cap, and a caller who opened it with ``DecoderLimits.UNLIMITED`` would get
 # the wrong format rather than the read they asked for. ``DecoderLimits`` says so;
-# the open that follows detection applies the caller's limits.
+# the open that follows detection applies the caller's limits. libzstd reserves the
+# same way: a probe decodes with ``window_log_max`` at libzstd's ceiling (2 GiB on a
+# 64-bit build), so a frame declaring a 2 GiB window is reserved in full during
+# detection whatever ``max_decoder_memory`` says.
 _PROBE_STREAM_CONFIG = replace(
     DEFAULT_STREAM_CONFIG, decoder_limits=DecoderLimits.UNLIMITED
 )
@@ -2572,6 +2576,59 @@ class ZlibCodec(_ZlibErrorCodec):
         )
 
 
+# libzstd's text for ZSTD_error_frameParameter_windowTooLarge: the frame header
+# declares a window over the decoder's ``window_log_max``.
+_ZSTD_WINDOW_REFUSED = "Frame requires too much memory for decoding"
+
+
+def _zstd_window_log_max(limits: DecoderLimits) -> tuple[int, bool]:
+    """The ``window_log_max`` to decode with, and whether a refusal means the cap.
+
+    A zstd frame header declares its window, and the decoder keeps that much of the
+    output. libzstd refuses a window over ``2**27`` by default. That default is not
+    the caller's choice, so it is replaced with ``max_decoder_memory``.
+
+    ``window_log_max`` is a power of two, so the cap is rounded down to one: a window
+    between that power of two and a cap that is not one is refused. The rounding
+    goes toward refusal, so no window over the cap is decoded. libzstd bounds the
+    value (``2**10`` to ``2**31`` on a 64-bit build) and it is clamped to those
+    bounds. Below the lower bound a cap acts as 1 KiB. At or above the upper bound, or
+    with no cap, a refused window is over libzstd's own ceiling, which no cap can
+    lift, and the second value is ``False``. The default cap, 2 GiB, is exactly that
+    ceiling, so under the default a refusal is always the ceiling's.
+    """
+    assert _zstd is not None
+    low, high = _zstd.DecompressionParameter.window_log_max.bounds()
+    cap = limits.max_decoder_memory
+    if cap is None:
+        return high, False
+    wanted = max(cap.bit_length() - 1, 0)
+    return max(low, min(wanted, high)), cap < 1 << high
+
+
+def _zstd_window_refusal(exc: Exception, limits: DecoderLimits) -> ArchiveyError:
+    """Map libzstd's window refusal to the cap that caused it, or to its own ceiling."""
+    window_log_max, is_cap = _zstd_window_log_max(limits)
+    if is_cap:
+        cap = limits.max_decoder_memory
+        assert cap is not None
+        bound = (
+            "the largest power of two within the cap"
+            if 1 << window_log_max <= cap
+            else "the smallest window libzstd can be limited to"
+        )
+        return ResourceLimitError(
+            f"Decoder limit reached: max_decoder_memory={cap} (a zstd frame declares "
+            f"a window over {1 << window_log_max} bytes, {bound}; libzstd refused it "
+            f"before allocating). The archive chose this number; raise "
+            f"DecoderLimits.max_decoder_memory if the archive is trusted."
+        )
+    return UnsupportedFeatureError(
+        f"A zstd frame declares a window over {1 << window_log_max} bytes, the "
+        f"largest window this libzstd can decode: {exc}"
+    )
+
+
 class ZstdCodec(StreamCodec):
     codec = Codec.ZSTD
     stream_format = StreamFormat.ZSTD
@@ -2594,14 +2651,30 @@ class ZstdCodec(StreamCodec):
                 note="On Python 3.14+ the stdlib compression.zstd module is used instead.",
             )
         zstd = _zstd
+        window_log_max, _ = _zstd_window_log_max(config.decoder_limits)
+        options = {zstd.DecompressionParameter.window_log_max: window_log_max}
         return FramedDecompressorStream(
             source,
-            lambda: zstd.ZstdDecompressor(),
+            lambda: zstd.ZstdDecompressor(options=options),
             codec_name="zstd",
             magic=_ZSTD_STREAMS,
             collector=config.collector,
             report_trailing_data=config.report_trailing_data,
         )
+
+    def translator(self, config: StreamConfig) -> ExceptionTranslator:
+        limits = config.decoder_limits
+
+        def translate(exc: Exception) -> ArchiveyError | None:
+            if (
+                _zstd is not None
+                and isinstance(exc, _zstd.ZstdError)
+                and _ZSTD_WINDOW_REFUSED in str(exc)
+            ):
+                return _zstd_window_refusal(exc, limits)
+            return self.translate(exc)
+
+        return translate
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if _zstd is not None and isinstance(exc, _zstd.ZstdError):

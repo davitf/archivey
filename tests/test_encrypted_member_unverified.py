@@ -19,7 +19,7 @@ from archivey.diagnostics import (
     DiagnosticCode,
     EncryptedVerificationContext,
 )
-from archivey.exceptions import DiagnosticRaisedError, EncryptionError
+from archivey.exceptions import CorruptionError, DiagnosticRaisedError, EncryptionError
 from archivey.types import ArchiveMember
 from tests.conftest import requires, requires_binary
 
@@ -218,3 +218,110 @@ def test_large_compressed_member_ambiguous_candidates_budget_exhausted(
         assert context.check == "confirm_budget_exhausted"
         # A survivor of an ambiguous set without a CRC match stays out of known-good.
         assert reader._passwords._known_good == []  # noqa: SLF001
+
+
+# --- RAR ---------------------------------------------------------------------------
+#
+# RAR3/4 encrypted data carries no password check value, so nothing vouches for a
+# password before ``unrar`` decodes with it; only the CRC at the member's end does.
+# A wrong key does not reliably stop ``unrar`` before output: measured on unrar 7.00,
+# about three wrong passwords in ten decode a compressed member into bytes it streams
+# before the CRC fails (a stored member always does). These wrong passwords are ones
+# that do, for the named members (dev-docs/formats/rar.md §2.2).
+_RAR4 = _FIXTURES / "rar" / "encryption__rar4.rar"
+_RAR4_LEAKING_WRONG = "wrong3"  # secret.txt: 14 bytes out, exit 3
+_RAR4_SOLID = _FIXTURES / "external" / "rar4_solid_encrypted_libarchive.rar"
+_RAR4_SOLID_LEAKING_WRONG = "wrong0"  # a.txt: 18 bytes out, exit 3
+_RAR_SECRET = b"This is secret"
+
+
+@requires_binary("unrar")
+def test_rar4_wrong_password_partial_read_is_reported() -> None:
+    with open_archive(_RAR4, password=_RAR4_LEAKING_WRONG) as reader:
+        member = _member(reader, "secret.txt")
+        with reader.open(member) as stream:
+            # The wrong key reaches the read and returns bytes that are not the
+            # member's; nothing has checked them yet.
+            head = stream.read(4)
+        assert len(head) == 4 and head != _RAR_SECRET[:4]
+        (context,) = _unverified(reader)
+        assert context.check == "no_password_check"
+        assert context.reason == "partial_read"
+        assert context.member_name == "secret.txt"
+
+        # Proof it was the wrong key: to EOF, the CRC fails.
+        with pytest.raises((EncryptionError, CorruptionError)):
+            reader.read(member)
+
+
+@requires_binary("unrar")
+def test_rar4_correct_password_partial_read_is_reported_too() -> None:
+    # No check value: nothing tells the right key from a wrong one before the CRC.
+    with open_archive(_RAR4, password="password") as reader:
+        with reader.open(_member(reader, "secret.txt")) as stream:
+            assert stream.read(4) == _RAR_SECRET[:4]
+        assert len(_unverified(reader)) == 1
+
+
+@requires_binary("unrar")
+def test_rar4_read_to_eof_is_not_reported() -> None:
+    with open_archive(_RAR4, password="password") as reader:
+        for name in ("secret.txt", "also_secret.txt"):
+            with reader.open(_member(reader, name)) as stream:
+                stream.read()
+        assert _unverified(reader) == []
+
+
+@requires_binary("unrar")
+def test_rar4_seek_then_partial_read_is_reported_as_a_seek() -> None:
+    with open_archive(_RAR4, password="password", seekable_members=True) as reader:
+        with reader.open(_member(reader, "secret.txt")) as stream:
+            stream.seek(8)
+            assert stream.read(2) == _RAR_SECRET[8:10]
+        (context,) = _unverified(reader)
+        assert context.reason == "seek"
+
+
+@requires_binary("unrar")
+def test_rar4_solid_pass_partial_read_is_reported() -> None:
+    # The solid pass demultiplexes one ``unrar p`` run; its members are watched too.
+    with open_archive(_RAR4_SOLID, password=_RAR4_SOLID_LEAKING_WRONG) as reader:
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            head = stream.read(4)
+            assert len(head) == 4 and head != b"This"
+            break
+        (context,) = _unverified(reader)
+        assert context.member_name == "a.txt"
+        assert context.check == "no_password_check"
+
+
+@requires_binary("unrar")
+def test_rar4_solid_pass_read_to_eof_is_not_reported() -> None:
+    with open_archive(_RAR4_SOLID, password="password") as reader:
+        for _member_, stream in reader.stream_members():
+            assert stream is not None
+            assert stream.read().startswith(b"This is from ")
+        assert _unverified(reader) == []
+
+
+@requires("cryptography")
+@requires_binary("unrar")
+@pytest.mark.parametrize(
+    ("name", "password"),
+    [
+        # RAR5: the record's 64-bit PswCheck accepted the password before unrar ran.
+        ("encryption_stored__.rar", "password"),
+        ("encryption__.rar", "password"),
+        # RAR4 -hp: the password decrypted every header past its CRC.
+        ("encrypted_header__rar4.rar", "header_password"),
+    ],
+)
+def test_rar_checked_password_partial_read_is_not_reported(
+    name: str, password: str
+) -> None:
+    with open_archive(_FIXTURES / "rar" / name, password=password) as reader:
+        member = next(m for m in reader.members() if m.is_file and m.size)
+        with reader.open(member) as stream:
+            assert stream.read(2)
+        assert _unverified(reader) == []

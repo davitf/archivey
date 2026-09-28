@@ -233,6 +233,15 @@ per-member failures governed by `OnError`. That is why the encrypted row is not 
 member and catch the failure, so a password really is what is missing, whereas this
 path never decrypts and a correct password does not change its answer.
 
+A target the direct read does reach is held to the member's data CRC32 before it is
+used: the header CRC does not cover the data, so that is the only check a damaged target
+meets. On a mismatch the read raises `CorruptionError`, and link finalization treats it
+as ZIP and 7z treat a damaged target (`_report_damaged_link_target`): the link stays
+listed with `link_target` unset, `SYMLINK_TARGET_UNAVAILABLE` carries
+`reason="target_data_damaged"` (so a strict policy refuses the archive), and opening or
+extracting the link raises the fault. A RAR5 redirect needs no such check, since its
+target is a header field covered by the header CRC.
+
 The RARLAB writer produces only the encrypted case in practice — it stores every
 symlink target M0, which is why `target_data_compressed` has no fixture (§8) and the
 four rows are pinned by patching the parsed header instead.
@@ -333,11 +342,40 @@ right password is not first still fails there. A RAR5 member whose record has no
 value, or whose check fails its own SHA-256 checksum, is handled the same way in a
 non-solid archive. In a solid one it takes the solid rule above: the winner of the first
 member whose check can judge a candidate, and the first candidate only when no member
-has one. RAR emits
-no `ENCRYPTED_MEMBER_UNVERIFIED`. A RAR5 check is 64 bits, strong enough to accept a
-password on. RAR3/4 data has no check to accept a password on at all: a wrong one shows
-up only as `unrar`'s exit code or a digest mismatch (table below), and what a partial
-read returns before either is an open question (§7).
+has one.
+
+**A partial read of a member no check vouched for emits `ENCRYPTED_MEMBER_UNVERIFIED`**
+(`check="no_password_check"`). RAR3/4 data has no check to accept a password on at all:
+a wrong one shows up only as `unrar`'s exit code or a digest mismatch (table below), both
+at the member's end, and `unrar` streams what the wrong key decoded before either.
+Measured on unrar 7.00 with `unrar p -inul -p<wrong>`:
+
+- **Stored:** every wrong password returns the member's full length of garbage, then exit
+  3. Measured on a scratch copy of the archivey-dev `encryption_with_symlinks__rar4.rar`
+  fixture, whose stored encrypted symlinks were retyped as regular files (the attribute
+  word and header CRC16 changed, nothing else); not committed.
+- **Compressed:** 63 of 200 wrong passwords (`wrong0`..`wrong199`) returned bytes for the
+  14-byte `secret.txt` in `encryption__rar4.rar`, and 55 of 200 for the solid
+  `a.txt` in `tests/fixtures/external/rar4_solid_encrypted_libarchive.rar`. The rest
+  emit nothing and exit 3. The "a compressed one trips the decompressor first" guess held
+  for two thirds of wrong keys, not all: a small member's garbage can decode to a
+  plausible LZ or PPMd block.
+
+So a caller who reads a prefix and closes got the wrong key's bytes with no signal, the
+ZipCrypto shape. The reader wraps the member stream in the same
+`UnverifiedPasswordReadWatch` ZIP and 7z use, on every data path (named `unrar`, `unar`,
+and both solid passes). What is not watched: a RAR5 member whose own record carries a
+usable PswCheck (64 bits, strong enough to accept a password on), and any member of a
+header-encrypted archive, whose headers the password already decrypted past one CRC
+after another. A RAR5 member with no usable check of its own is watched, even in a solid
+archive whose password another member's check picked; that record is hostile or damaged,
+and over-reporting an advisory code costs less than a silent wrong-key prefix. With the
+`unar` program the question does not arise for RAR3/4: it refuses that data outright (§3).
+
+A wrong key read **to EOF** on a member that did emit bytes surfaces as
+`CorruptionError` (the fused CRC mismatch), not `EncryptionError`: the exit-3-to-
+`EncryptionError` row below applies only when nothing came out. That split is unchanged
+here.
 
 Each encrypted header is its own AES-CBC message (RAR3: 8-byte salt; RAR5: 16-byte IV)
 padded to a 16-byte block. `_HeaderDecryptStream.tell()` is the **ciphertext** cursor,
@@ -766,7 +804,6 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | `seekable_members=True` on a sequential solid pass is still a pipe | **archivey** | Random `open()` of an `unrar`-backed member respawns the process on a backward seek, the same reopen the other backends use. `stream_members()` is never seekable by design: those handles are a single-pass decode, and seeking would break it. The `seekable_members=True` you declared still holds — it promises what random `open()` can do |
 | Reading one member of a solid archive out of order decodes the whole archive, and doing it twice decodes it twice | **format** / **archivey** | No per-block boundaries to resume from (§1), and nothing caches the decode (§2.4). `AccessCost.SOLID` is the signal |
 | Handing over **any non-path stream** — a `BytesIO`, a file object, a network-backed reader — may write a full-size copy of the archive to `/tmp`; `cost.notes` says so at open | **archivey** | The RARLAB decompressor needs a path (§1). The copy waits for the first member `unrar` has to read, so listing writes nothing and a stored member is free; the next compressed one is not. Open volume streams behave the same way and copy the whole set (§2.3). Bounding the copy to one member rather than moving it is §7 |
-| A RAR3/4 symlink whose stored target bytes are damaged lists with the damaged string as its target, and no diagnostic | **archivey** | The target is read straight out of the archive (the target is stored uncompressed, §2.2) and its data CRC is not checked. ZIP and 7z read a link target through the verified member path, so the same damage there leaves the link targetless with `SYMLINK_TARGET_UNAVAILABLE(reason="target_data_damaged")`. Tracked internally |
 | A corrupt encrypted member can be reported as a wrong password | **library** / **archivey** | `unrar` reports both as exit 2/3 with empty output on RAR4 and exposes no signal to separate them — that half is upstream's. Resolving the ambiguity toward `EncryptionError` is ours and is reversible (§2.3) |
 | A 7-Zip SFX stub sitting beside a numbered split (`vol.exe` next to `vol.exe.001` / `vol.7z.001` / `vol.zip.001`) | **archivey** | Opening the stub follows that first volume. The stub is still not a sibling. An old-scheme SFX first volume (`name.exe` + `.r00`) is discovered as volume 1 of that `.rNN` set |
 | A RAR on a pipe or socket cannot be opened at all, in either access mode | **format** | Block headers are chained forward but the walk still seeks; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
@@ -924,16 +961,13 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   whether the early-fail gate predicate is under-inclusive — it is generalized from one
   fixture family, and ANTI members and packed-nonzero/unpacked-zero empties are untested.
   None of that is answerable by reading code.
-- **What does a partial read of a RAR3/4 member return under a wrong password?** Nothing
-  checks a RAR3/4 password before `unrar` runs, and `unrar` checks the CRC only at the end
-  of the member. If it streams the bytes it decrypted before that, a caller who reads a
-  prefix and closes gets output from the wrong key and no diagnostic, which is what
-  `ENCRYPTED_MEMBER_UNVERIFIED` reports for ZIP and 7z. A STORED member is the likely case,
-  since a compressed one usually trips the decompressor before any output. If it does, RAR
-  needs the same close-time report. What would answer it: a `-m0 -p` RAR4 member built
-  with the pinned RAR 6.24 (§3), read for a few bytes with a wrong password. The committed
-  `encryption__rar4.rar` members are compressed and 14 and 19 bytes long, so they cannot.
-  Tracked internally.
+- ~~**What does a partial read of a RAR3/4 member return under a wrong password?**~~
+  The wrong key's bytes, measured on unrar 7.00: always for a stored member, and for
+  about three wrong passwords in ten on a compressed one, which the guess that the
+  decompressor trips first had missed. RAR now emits `ENCRYPTED_MEMBER_UNVERIFIED` on
+  that close (§2.2 has the numbers and what is not watched). The stored measurement used
+  a retyped scratch copy, since RAR 6.24 was still not downloadable here; a real
+  `-ma4 -m0 -p` fixture from it would pin the stored case in CI too.
 - **Is the wrong-password-versus-corruption bias measurable, or only plausible?** The exit-2/3
   mapping for an encrypted member that emits nothing assumes wrong passwords vastly outnumber
   corrupt encrypted members. That is a reasonable prior and it is untested: no archive has
@@ -985,6 +1019,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | A missing stdout pipe is a typed error, not a `RuntimeError` | `::test_open_unrar_p_missing_stdout_pipe_is_typed` |
 | Header-encrypted listing with a password, and a wrong password as `EncryptionError` on both generations | `::test_encrypted_header_lists_with_password`, `::test_header_encryption_wrong_password_is_encryption_error` |
 | Encrypted member data requires a password | `::test_encrypted_data_requires_password` |
+| A partial read of RAR3/4 encrypted data emits `ENCRYPTED_MEMBER_UNVERIFIED` (named open, seek, solid pass); a read to EOF, a RAR5 member with a PswCheck, and a header-encrypted RAR4 archive do not | `tests/test_encrypted_member_unverified.py::test_rar4_wrong_password_partial_read_is_reported` and the six `test_rar*` tests after it |
 | Tweaked digests kept out of `hashes`, and BLAKE2sp verified / cross-checked against `unrar` | `::test_blake2sp_only_hash`, `::test_blake2sp_verified_no_unverifiable_diagnostic`, `::test_blake2sp_corrupt_payload_raises`, `::test_blake2sp_unrar_oracle_crosscheck` |
 | RAR5 redirect digests dropped without losing RAR4's genuine ones | `tests/test_review_simplicity_consistency.py::test_rar4_link_digests_survive_the_rar5_fix`, `tests/test_corpus_sweep.py::test_corpus_conformance` (8 RAR entries) |
 | Solid symlink / hardlink demux does not consume pipe bytes | `tests/test_rar_reader.py::test_solid_symlink_demux_and_link_targets`, `::test_solid_hardlink_demux_and_targets` |

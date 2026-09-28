@@ -330,7 +330,8 @@ class DecoderLimits:
 
     **What is capped today:** both PPMd paths, and the LZMA dictionary size
     wherever an archive declares one — 7z LZMA and LZMA2, ZIP method 14, each xz
-    block, ``.lzma`` and each lzip member. The two hazards differ. A refused
+    block, ``.lzma`` and each lzip member — and the window each zstd frame declares,
+    on ``.zst``, ZIP method 93 and 7z. The two hazards differ. A refused
     allocation inside pyppmd takes the process down. liblzma does raise
     ``MemoryError`` when it cannot reserve the dictionary, but a reservation
     that succeeds is its real cost: the dictionary fills as output is written,

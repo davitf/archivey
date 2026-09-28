@@ -232,8 +232,8 @@ row, and §3 has the table.
 against a dictionary size the stream declares before the decoder is built: xz per block,
 through liblzma's `memlimit`; lzip per member, whose format caps the dictionary at 512 MiB
 anyway; LZMA Alone from its header, refused on the first read so the refusal carries the
-probe's `format_unconfirmed` stamp ([`xz.md`](xz.md) §2.3). zstd is not checked, and its
-library applies its own limit ([`zstd-lz4.md`](zstd-lz4.md) §5). bzip2, LZ4, Brotli, gzip
+probe's `format_unconfirmed` stamp ([`xz.md`](xz.md) §2.3); zstd per frame, through
+libzstd's `window_log_max` ([`zstd-lz4.md`](zstd-lz4.md) §4). bzip2, LZ4, Brotli, gzip
 and `.Z` have small fixed windows.
 
 **Bytes after the end.** Each decoder knows where its stream ends: the gzip member's
@@ -290,7 +290,7 @@ where the table says otherwise; the per-codec pages carry the details.
 | `xz --format=lzma` | Detected by the probe (`PROBABLE`), read; `size=None` because `xz` writes the "unknown size" marker |
 | `plzip`, `plzip -B` | Read; `size` and the combined CRC-32 from the trailers |
 | `zstd`, `zstd --no-check`, `pzstd`, two frames concatenated, `zstd --long=31` from a file | Read |
-| `zstd --long=31` from standard input (frame declares a 2 GiB window) | **`CorruptionError: … Frame requires too much memory for decoding`** ([`zstd-lz4.md`](zstd-lz4.md) §5) |
+| `zstd --long=31` from standard input (frame declares a 2 GiB window) | Read under the default 2 GiB `max_decoder_memory` ([`zstd-lz4.md`](zstd-lz4.md) §4) |
 | `lz4`, `lz4 -BD`, `lz4 --content-size`, two frames concatenated | Read; `size=None` even with `--content-size` |
 | `lz4 -l` (legacy frame, magic `02 21 4c 18`) | **Not detected**; named `.lz4` it opens by extension and fails with `CorruptionError` stamped `format_unconfirmed` ([`zstd-lz4.md`](zstd-lz4.md) §3) |
 | `brotli` | Detected by the probe, `PROBABLE` |

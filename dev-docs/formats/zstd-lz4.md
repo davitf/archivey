@@ -21,14 +21,12 @@ behaviour and links the row.
 | Digests | None listed. A frame's content checksum, when present, is checked on read |
 | Metadata | None beyond the shared fields |
 | Truncation | Always raised, as `TruncatedError` |
-| Refuses | zstd: a frame whose window is over 128 MiB, as `CorruptionError` (§5). LZ4: the legacy frame format is not detected |
+| Refuses | zstd: a frame whose window is over `DecoderLimits.max_decoder_memory`, as `ResourceLimitError`, or over libzstd's 2 GiB ceiling, as `UnsupportedFeatureError` (§4). LZ4: the legacy frame format is not detected |
 
-**Four things a reader might expect and will not find.** `member.size` is `None` for a
-frame that records its content size. `DecoderLimits.max_decoder_memory` does not govern
-zstd: the library's own 128 MiB window limit does, and a frame over it fails as corruption,
-not as a resource limit (§5). A zstd or LZ4 frame written without a checksum can decode
-damaged data to wrong bytes with no error. And the legacy LZ4 format that `lz4 -l` writes,
-used for Linux kernel images, is not recognised (§3).
+**Three things a reader might expect and will not find.** `member.size` is `None` for a
+frame that records its content size. A zstd or LZ4 frame written without a checksum can
+decode damaged data to wrong bytes with no error. And the legacy LZ4 format that `lz4 -l`
+writes, used for Linux kernel images, is not recognised (§3).
 
 ## 1. Shape
 
@@ -97,7 +95,7 @@ frame for the next frame and fail on them.
 **zstd.** The decompressor is `compression.zstd.ZstdDecompressor`, or `backports.zstd`'s
 before Python 3.14, the same API (ADR 0009). It skips skippable frames and checks each
 content checksum. A frame that ends early is `TruncatedError`; any `ZstdError` is
-`CorruptionError`, including the window refusal (§5).
+`CorruptionError`, except the window refusal, which is `ResourceLimitError` (§4).
 
 **LZ4.** The decompressor is `lz4.frame.LZ4FrameDecompressor`, which checks the content
 and block checksums when present. A frame that ends early is `TruncatedError`; a
@@ -125,7 +123,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `zstd`, `zstd --no-check`, `pzstd`, two frames concatenated | Reads; `size=None` |
 | A zstd frame behind a skippable frame | Detected and read |
 | `zstd --long=31` on a file | Reads: the window is sized to the input |
-| `zstd --long=31` from standard input (2 GiB window) | **`CorruptionError: … Frame requires too much memory for decoding`** |
+| `zstd --long=31` from standard input (2 GiB window) | Reads under the default 2 GiB cap; `ResourceLimitError` under a smaller one |
 | A zstd file followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`; `zstd -t` refuses it |
 | One bit flipped mid-file, `zstd` / `zstd --no-check` | `CorruptionError` from the checksum / **read with no error** |
 | `lz4`, `lz4 -BD`, two frames concatenated | Reads |
@@ -140,9 +138,24 @@ The legacy format is what Linux kernel images and initramfs files compressed wit
 
 Specific to these formats; the shared items are [`single-file.md`](single-file.md) §4.
 
-- **The window is an allocation.** zstd's own default limit, 128 MiB (a window log of 27),
-  bounds it; `DecoderLimits` does not reach the zstd decoder. LZ4's memory is fixed by the
+- **The window is an allocation.** `DecoderLimits.max_decoder_memory` bounds it: the cap
+  replaces libzstd's own default of 128 MiB (a window log of 27) as the decoder's
+  `window_log_max`, and libzstd refuses a larger window from the frame header, before it
+  allocates. That refusal is `ResourceLimitError`. `window_log_max` is a power of two, so
+  the cap is rounded down to one; a window between that power of two and the cap is
+  refused too. libzstd accepts values from 2^10 to 2^31 on a 64-bit build, and the cap is
+  clamped to that range, so a cap under 1 KiB acts as 1 KiB. A window over 2^31 is
+  libzstd's own ceiling and is `UnsupportedFeatureError`, with no remedy named: the
+  default cap is exactly 2^31, so under the default every refusal is this one. Every
+  frame of the stream is checked, not only the first. LZ4's memory is fixed by the
   format.
+- **Detection lifts the cap.** The detection probes decode a sample with
+  `DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG` in `codecs.py`, the same rule as
+  liblzma's dictionary), so a probe decodes with `window_log_max` at libzstd's ceiling.
+  libzstd reserves the declared window on the first read: an 18-byte frame declaring
+  2 GiB reserves 2 GiB of address space during `open_archive` whatever
+  `max_decoder_memory` says. Under overcommit that costs nothing resident; under
+  `RLIMIT_AS` or a strict commit limit it is a `MemoryError` at detection.
 - **The decoders are native code.** Both run in the caller's process. `compression.zstd`
   is the standard library's; `lz4` is a C extension. Neither is fuzzed by archivey's own
   harness beyond the corpus.
@@ -158,7 +171,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
-| `CorruptionError: … Frame requires too much memory for decoding` on a valid file | **library** / **archivey** | The frame's window is over zstd's 128 MiB default. archivey reports it as corruption and does not map it to `DecoderLimits`. Tracked internally |
+| `ResourceLimitError` on a zstd file whose window is under the cap | **archivey** | The cap is rounded down to a power of two for zstd (§4) |
 | `member.size` is `None` although the frame header has a content size | **archivey** | One frame's size is not the file's (§1, §7) |
 | An `lz4 -l` file is not detected, and fails when named `.lz4` | **archivey** / **library** | The legacy magic is not registered, and `lz4.frame` does not read the legacy format. Tracked internally |
 | An LZ4 file starting with a skippable frame is not detected by content | **archivey** | The skippable-frame walk is zstd's only |
@@ -186,9 +199,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
   format, are restart points. `indexed_zstd` is frame-granular and bundles the same native
   core as `indexed_bzip2`, the library ADR 0008 keeps out, so a native frame index is
   preferred. Parked in [`IDEAS.md`](../IDEAS.md) §Efficient seekable zstd.
-- **The zstd window under `DecoderLimits`.** Passing the cap as the decoder's maximum window
-  would make the refusal a `ResourceLimitError` a caller can lift. Tracked internally, with
-  the legacy LZ4 frame.
 
 ## 8. Verify
 
@@ -204,9 +214,10 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Skippable frames before a regular frame; alone they are not a claim; the walk stays in the prefix | `tests/test_detection.py::test_zstd_behind_one_skippable_frame`, `::test_zstd_behind_chained_skippable_frames`, `::test_zstd_skippable_frames_alone_are_not_a_zstd_claim`, `::test_zstd_skippable_frame_larger_than_the_prefix_is_not_claimed`, `::test_zstd_skippable_walk_arithmetic` |
 | Backward seeks re-decode and are reported | `tests/test_seekable_streams.py::test_zstd_rewinds_and_warns_on_backward_seek`, `::test_lz4_warns_on_rewind` |
 | zstd as a ZIP method | `tests/test_zip_native_codecs.py::test_zip_zstd_handbuilt_roundtrip`, `::test_zip_zstd_without_backend_raises` |
+| The zstd window is capped by `max_decoder_memory`, on `.zst` and ZIP method 93 | `tests/test_decoder_limits.py::test_zstd_window_over_libzstd_default_reads_under_the_cap`, `::test_zstd_window_against_the_cap`, `::test_zip_zstd_member_window_is_capped`, `::test_zstd_window_over_libzstd_s_ceiling` |
 | `pyzstd` is not a runtime dependency | `tests/test_extras_imported.py::test_pyzstd_and_python_xz_are_not_in_any_extra` |
 
-The window refusal, the legacy LZ4 frame and the LZ4 skippable-frame gap have no test; they
+The legacy LZ4 frame and the LZ4 skippable-frame gap have no test; they
 were measured with the tools in §3.
 
 **Building fixtures.** `compression.zstd` or `backports.zstd` and `lz4.frame` write both

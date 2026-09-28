@@ -1,11 +1,11 @@
 """A damaged link target costs that link its target, not the whole listing.
 
-ZIP and 7z store a symlink's target as the member's data, so listing has to read and
-verify it. (RAR3/4 stores it as data too, but reads it with no check, so a damaged
-RAR3/4 target is returned as stored: there is nothing here to fail.) When that read
-fails its integrity check, only the link is wrong: the listing keeps every member, the
-link has no ``link_target``, and ``SYMLINK_TARGET_UNAVAILABLE``
-(``reason="target_data_damaged"``) says why. The fault itself is raised where the
+ZIP, 7z and RAR3/4 store a symlink's target as the member's data, so listing has to
+read and verify it. (RAR5 keeps the target in a header record, covered by the header's
+own CRC, so it has no data read here to fail.) When that read fails its integrity
+check, only the link is wrong: the listing keeps every member, the link has no
+``link_target``, and ``SYMLINK_TARGET_UNAVAILABLE`` (``reason="target_data_damaged"``)
+says why. The fault itself is raised where the
 caller touches the link: opening it, or extracting it.
 """
 
@@ -71,6 +71,20 @@ def _damaged_7z_symlink(tmp_path: Path) -> bytes:
     """
     blob = _sevenzip_with_link(tmp_path, _TARGET, store=True, sibling=b"payload")
     return _flip_byte(blob, _TARGET)
+
+
+_RAR4_LINKS = Path(__file__).parent / "fixtures" / "rar" / "symlinks_solid__rar4.rar"
+
+
+def _damaged_rar4_symlink() -> bytes:
+    """The RAR4 symlink fixture with one byte of a stored target inverted.
+
+    RAR3/4 stores the target uncompressed as the member's data, covered by the data
+    CRC32 in the file header; the header CRC does not cover it, so the header still
+    parses and only the data check can catch the damage. ``../file1.txt`` is the
+    target of ``subdir/link_to_file1.txt`` and occurs nowhere else in the file.
+    """
+    return _flip_byte(_RAR4_LINKS.read_bytes(), b"../file1.txt")
 
 
 def _link_diagnostics(ar: ArchiveReader) -> list[SymlinkTargetContext]:
@@ -145,5 +159,44 @@ def test_damaged_link_target_fails_only_that_link_at_extraction(
 def test_damaged_link_target_under_strict_policy_refuses_the_listing() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
     with open_archive(io.BytesIO(_damaged_zip_symlink()), config=config) as ar:
+        with pytest.raises(DiagnosticRaisedError):
+            ar.members()
+
+
+_RAR4_DAMAGED = "subdir/link_to_file1.txt"
+
+
+def test_damaged_rar4_link_target_keeps_the_listing() -> None:
+    with open_archive(io.BytesIO(_damaged_rar4_symlink())) as ar:
+        _assert_listed_targetless(ar, _RAR4_DAMAGED)
+        # The other links' targets are intact and still resolve.
+        assert ar.get("symlink_to_file1.txt").link_target == "file1.txt"
+        with pytest.raises(CorruptionError):
+            ar.open(ar.get(_RAR4_DAMAGED))
+
+
+def test_damaged_rar4_link_target_in_a_streaming_pass() -> None:
+    with open_archive(io.BytesIO(_damaged_rar4_symlink()), streaming=True) as ar:
+        for _ in ar.stream_members():
+            pass
+        assert [c.reason for c in _link_diagnostics(ar)] == ["target_data_damaged"]
+
+
+@requires_binary("unrar")  # file1.txt is RAR member data, which needs a data program
+def test_damaged_rar4_link_target_fails_only_that_link_at_extraction(
+    tmp_path: Path,
+) -> None:
+    with open_archive(io.BytesIO(_damaged_rar4_symlink())) as ar:
+        report = ar.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
+    by_name = {result.member.name: result for result in report.results}
+    assert by_name["file1.txt"].status is ExtractionStatus.EXTRACTED
+    assert by_name[_RAR4_DAMAGED].status is ExtractionStatus.FAILED
+    assert isinstance(by_name[_RAR4_DAMAGED].error, CorruptionError)
+    assert not (tmp_path / "out" / "subdir" / "link_to_file1.txt").is_symlink()
+
+
+def test_damaged_rar4_link_target_under_strict_policy_refuses_the_listing() -> None:
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with open_archive(io.BytesIO(_damaged_rar4_symlink()), config=config) as ar:
         with pytest.raises(DiagnosticRaisedError):
             ar.members()

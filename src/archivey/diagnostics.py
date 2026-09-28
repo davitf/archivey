@@ -315,8 +315,10 @@ class EncryptedVerificationContext(_JsonSafeContext):
 
     ``check`` names what accepted the password: ``"weak_open_check"`` (a per-open
     check weaker than 2⁻³², such as ZipCrypto's check byte or WinZip AES's
-    ``pw_verify``) or ``"confirm_budget_exhausted"`` (confirmation survived its bounded
-    prefix without reaching a checksum). ``reason`` names why the digest was not
+    ``pw_verify``), ``"confirm_budget_exhausted"`` (confirmation survived its bounded
+    prefix without reaching a checksum) or ``"no_password_check"`` (the member carries
+    no password check at all, as RAR3/4 data does, so nothing accepted the password
+    before decoding). ``reason`` names why the digest was not
     reached: ``"partial_read"`` (closed before the end) or ``"seek"`` (a seek gave up
     a CRC; a WinZip AES HMAC survives seeks, so for an AES member it means only that a
     failed seek left the position unknown). No password or key material is ever
@@ -465,7 +467,8 @@ and the reasons are part of the contract rather than an oversight:
   archive, and is most useful as a deliberately targeted tripwire.
 - ``ENCRYPTED_MEMBER_UNVERIFIED`` — fires only when the caller abandons a member stream
   before EOF (extraction reads every member to EOF and never fires it). In ``strict`` it
-  would turn a peek at a ZipCrypto member into ``DiagnosticRaisedError``. Revisit when a
+  would turn a peek at a ZipCrypto or RAR3/4 encrypted member into
+  ``DiagnosticRaisedError``. Revisit when a
   ``stream.verified`` attribute lands (``dev-docs/IDEAS.md``) and retires this code.
 - ``PROBE_FORMAT_UNCONFIRMED`` — a probe-only identification is an advisory about
   what the file *is* (its bytes passed that format's content check), not a finding
