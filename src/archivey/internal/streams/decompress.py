@@ -1135,10 +1135,13 @@ class PpmdDecoder(BaseDecoder):
         if self._held is not None:
             self._held += chunk
             limit = self._in_process_max_input
-            if self._pack_complete() is True:
-                chunk = self._release_held(in_child=False)
-            elif limit is not None and len(self._held) > limit:
+            # The limit is checked first: a member past it goes to a child even when
+            # its whole pack arrived in this one feed. How much one feed carries is up
+            # to the caller's read size, which must not decide where a member decodes.
+            if limit is not None and len(self._held) > limit:
                 chunk = self._release_to_child(limit)
+            elif self._pack_complete() is True:
+                chunk = self._release_held(in_child=False)
             else:
                 return DecodeOut(b"")
         # Honour both the container unpack_size cap and the stream-layer read budget.

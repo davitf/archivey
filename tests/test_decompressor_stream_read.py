@@ -8,11 +8,19 @@ that returns less, and one that ignores ``max_length`` and returns more.
 
 from __future__ import annotations
 
+import gzip
 import io
+import os
+from pathlib import Path
 from typing import BinaryIO
 
 import pytest
 
+import archivey
+from archivey import ArchiveyConfig
+from archivey.diagnostics import DiagnosticPolicy
+from archivey.exceptions import DiagnosticRaisedError
+from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -102,3 +110,74 @@ def test_read_n_after_partial_read_keeps_the_buffered_tail() -> None:
         rest = stream.read()
     assert first + second + rest == _DATA
     assert (len(first), len(second)) == (10, 20)
+
+
+class _TrailingAtFillDecoder(_ScalingDecoder):
+    """A pass-through decoder that finds trailing data in the feed that fills a read.
+
+    The first feed returns exactly ``max_length`` bytes and, in the same call, flags
+    bytes past the stream's end, so the stream reports ``ARCHIVE_TRAILING_DATA``
+    while that chunk is in hand.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(1, honour_max_length=True)
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> _TrailingAtFillDecoder:
+        del point, inner
+        return _TrailingAtFillDecoder()
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        out = super().feed(chunk, max_length)
+        self._pending = b""
+        self._trailing_bytes = 1
+        self._done = True
+        return out
+
+
+def _strict_collector() -> DiagnosticCollector:
+    return DiagnosticCollector(policy=DiagnosticPolicy.strict())
+
+
+def test_a_raise_held_while_decoding_a_full_chunk_propagates_and_keeps_the_bytes() -> (
+    None
+):
+    """A read whose one decode fills ``n`` but also holds a raise must raise, and the
+    bytes it decoded must come back on the next read, not be dropped with the raise."""
+    n = 4096
+    with DecompressorStream(
+        io.BytesIO(_DATA),
+        make_decoder=lambda point, inner: _TrailingAtFillDecoder(),
+        collector=_strict_collector(),
+        report_trailing_data=True,
+    ) as stream:
+        with pytest.raises(DiagnosticRaisedError):
+            stream.read(n)
+        assert stream.read(n) == _DATA[:n]
+        assert stream.read(n) == b""
+
+
+def _largest_library_local(exc: BaseException) -> int:
+    """The largest ``bytes``/``bytearray`` local on the non-test frames of ``exc``."""
+    biggest = 0
+    tb = exc.__traceback__
+    while tb is not None:
+        if "tests" not in Path(tb.tb_frame.f_code.co_filename).parts:
+            for value in list(tb.tb_frame.f_locals.values()):
+                if isinstance(value, (bytes, bytearray)):
+                    biggest = max(biggest, len(value))
+        tb = tb.tb_next
+    return biggest
+
+
+def test_a_raise_after_a_short_chunk_does_not_keep_the_chunk_alive() -> None:
+    """The raise's traceback keeps ``read``'s frame alive; the chunk it buffered must
+    not stay bound there as a second copy of the bytes."""
+    payload = os.urandom(200_000)
+    blob = gzip.compress(payload) + b"appended signature\n"
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with archivey.open_stream(io.BytesIO(blob), config=config) as stream:
+        with pytest.raises(DiagnosticRaisedError) as caught:
+            # One request larger than the payload: the decode comes back short.
+            stream.read(len(payload) + 100_000)
+        assert _largest_library_local(caught.value) < 4096

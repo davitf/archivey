@@ -120,7 +120,8 @@ class _ReplayingBlock:
             collector._replays.pop(self._thread_id, None)
 
 
-def _nothing_held() -> Exception | None:
+def nothing_held() -> Exception | None:
+    """The pending-raise getter of a block that never holds anything."""
     return None
 
 
@@ -142,7 +143,7 @@ class _DeferringBlock:
             self._nested = nested = thread_id in collector._deferred
             self._held = collector._deferred.setdefault(thread_id, [])
         if nested:
-            return _nothing_held
+            return nothing_held
         return self._first_held
 
     def _first_held(self) -> Exception | None:

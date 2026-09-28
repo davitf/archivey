@@ -38,6 +38,7 @@ from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, SeekIndexCon
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
+    nothing_held,
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
@@ -235,13 +236,9 @@ def _compressed_feed_size(max_length: int) -> int:
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
 
 
-def _nothing_held() -> Exception | None:
-    return None
-
-
 # What ``_deferring_raises`` enters without a collector: nothing is ever held.
 _NO_DEFERRAL: AbstractContextManager[Callable[[], Exception | None]] = nullcontext(
-    _nothing_held
+    nothing_held
 )
 
 
@@ -847,12 +844,18 @@ class DecompressorStream(ReadOnlyIOStream):
                 # Common case: nothing buffered and one decode fills the request. Hand
                 # that chunk back as is, skipping the extend / slice / delete copies
                 # through ``_buffer`` (each a full copy of the output). A short or
-                # over-long chunk takes the buffered loop below, unchanged.
+                # over-long chunk takes the buffered loop below, unchanged. So does a
+                # chunk decoded while a raise was held: returning it would leave this
+                # block and drop the raise, so the chunk stays buffered, unconsumed,
+                # and the raise propagates below.
                 chunk = self._read_decompressed_chunk(n)
                 if len(chunk) == n and pending() is None:
                     self._pos += n
                     return chunk
                 self._buffer.extend(chunk)
+                # ``_buffer`` holds it now. A raise below keeps this frame alive on
+                # its traceback, which must not pin a second copy of the bytes.
+                chunk = b""
             while len(self._buffer) < n and not self._eof:
                 need = n - len(self._buffer)
                 self._buffer.extend(self._read_decompressed_chunk(need))
