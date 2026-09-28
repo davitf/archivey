@@ -50,6 +50,8 @@ import threading
 from typing import IO, Any
 
 FRAME = struct.Struct("<BqI")
+# The range of FRAME's integer argument, its signed 64-bit ``q``.
+ARG_MIN, ARG_MAX = -(1 << 63), (1 << 63) - 1
 
 OPEN, READ, SEEK, RESUME = 1, 2, 3, 4
 SRC_DATA, SRC_VALUE, SRC_FAIL = 10, 11, 12

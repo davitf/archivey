@@ -21,16 +21,18 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, RarDecompressor, open_archive
+from archivey import ArchiveyConfig, RarDecompressor, SpoolLimits, open_archive
 from archivey.exceptions import (
     ArchiveyError,
     EncryptionError,
     PackageNotInstalledError,
     ReadError,
+    ResourceLimitError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import rar_reader, rar_unar
@@ -238,6 +240,106 @@ def test_prefixed_archive_is_copied_for_unar(tmp_path: Path, name: str) -> None:
             if member.is_file
         }
     assert got == {k: v for k, v in expected.items() if not k.startswith("<comment>")}
+
+
+def _unar_limited(max_bytes: int) -> ArchiveyConfig:
+    return ArchiveyConfig(
+        rar_decompressor=RarDecompressor.UNAR,
+        spool_limits=SpoolLimits(max_bytes=max_bytes),
+    )
+
+
+def _file_digests(archive: object) -> dict[str, str]:
+    return {
+        member.name: hashlib.sha256(archive.read(member)).hexdigest()  # type: ignore[attr-defined]
+        for member in archive.members()  # type: ignore[attr-defined]
+        if member.is_file
+    }
+
+
+@requires_binary("unar", "unrar")
+def test_prefixed_stream_copy_for_unar_is_bounded_by_the_spool_limit() -> None:
+    """A prefixed stream is copied for unar from where the RAR starts, and that copy
+    is a spool copy like unrar's: a limit below its size refuses the read."""
+    original = (_CORPUS / "compressed.rar").read_bytes()
+    prefixed = b"\x00" * 4096 + original
+    with open_archive(io.BytesIO(prefixed), format="rar", config=_UNRAR) as archive:
+        expected = _file_digests(archive)
+    with open_archive(
+        io.BytesIO(prefixed), format="rar", config=_unar_limited(len(original))
+    ) as archive:
+        assert _file_digests(archive) == expected
+    with open_archive(
+        io.BytesIO(prefixed), format="rar", config=_unar_limited(len(original) - 1)
+    ) as archive:
+        member = next(m for m in archive.members() if m.is_file)
+        with pytest.raises(ResourceLimitError, match=r"SpoolLimits\.max_bytes"):
+            archive.read(member)
+
+
+def _spy_links(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record the names ``unar``'s private directory is given."""
+    names: list[str] = []
+    link = rar_reader._link_for_unar
+
+    def spy(source: Path, dest: Path) -> bool:
+        names.append(dest.name)
+        return link(source, dest)
+
+    monkeypatch.setattr(rar_reader, "_link_for_unar", spy)
+    return names
+
+
+@requires_binary("unar")
+def test_a_single_archive_is_linked_as_archive_rar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single archive gets a name no other file continues; a set keeps its scheme."""
+    names = _spy_links(monkeypatch)
+    with open_archive(_CORPUS / "compressed.rar", config=_UNAR) as archive:
+        _file_digests(archive)
+    assert names == ["archive.rar"]
+    names.clear()
+    with open_archive(_RAR / "tinyvol.part1.rar", config=_UNAR) as archive:
+        _file_digests(archive)
+    assert names == ["archive.part1.rar", "archive.part2.rar"]
+
+
+def _no_links(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise OSError("links refused for this test")
+
+    monkeypatch.setattr(os, "symlink", refuse)
+    monkeypatch.setattr(os, "link", refuse)
+
+
+@requires_binary("unar", "unrar")
+@pytest.mark.parametrize(
+    "names",
+    [
+        (_CORPUS / "compressed.rar",),
+        (_RAR / "tinyvol.part1.rar", _RAR / "tinyvol.part2.rar"),
+    ],
+    ids=["single", "volumes"],
+)
+def test_a_volume_that_cannot_be_linked_is_copied_within_the_spool_limit(
+    monkeypatch: pytest.MonkeyPatch, names: tuple[Path, ...]
+) -> None:
+    """Where the system allows neither link, unar gets a copy, and the copy is spooled
+    like any other: read correctly within the limit, refused over it."""
+    with open_archive(names[0], config=_UNRAR) as archive:
+        expected = _file_digests(archive)
+    total = sum(path.stat().st_size for path in names)
+    _no_links(monkeypatch)
+    with open_archive(names[0], config=_unar_limited(total)) as archive:
+        assert _file_digests(archive) == expected
+    before = set(Path(tempfile.gettempdir()).glob("archivey-unar-*"))
+    with open_archive(names[0], config=_unar_limited(total - 1)) as archive:
+        member = next(m for m in archive.members() if m.is_file)
+        with pytest.raises(ResourceLimitError, match=r"SpoolLimits\.max_bytes"):
+            archive.read(member)
+        # Refused before copying: the private directory is gone at once.
+        assert set(Path(tempfile.gettempdir()).glob("archivey-unar-*")) == before
 
 
 @requires_binary("unar", "rar")

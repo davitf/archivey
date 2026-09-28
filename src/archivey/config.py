@@ -527,7 +527,9 @@ class SpoolLimits:
     path, so a RAR opened from a ``BytesIO`` or another file object is copied to a
     temporary file (a volume set, to a temporary directory) the first time a member has
     to go through ``unrar``. The copy is of the whole archive, and it is removed when
-    the reader closes. A source opened from a path is read in place and never copied.
+    the reader closes. A source opened from a path is read in place, except by ``unar``
+    where the system cannot link the file into ``unar``'s private directory: then that
+    copy is bounded here too.
 
     Applied from the reader's open :attr:`ArchiveyConfig.spool_limits` for its lifetime.
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables it.

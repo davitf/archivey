@@ -54,6 +54,8 @@ from archivey.internal.streams.child_process import (
     spawn,
 )
 from archivey.internal.streams.rapidgzip_worker import (
+    ARG_MAX,
+    ARG_MIN,
     ERR,
     FRAME,
     OK,
@@ -84,13 +86,10 @@ _MIN_AHEAD = 64 << 10
 # equally fast, and 4 MiB ones more slowly.
 _CHUNK = 1 << 20
 
-# The range of an integer argument a frame carries (a signed 64-bit ``q`` in ``FRAME``).
-_ARG_MIN, _ARG_MAX = -(1 << 63), (1 << 63) - 1
-
 
 def _check_arg(arg: int) -> None:
     """Refuse an integer a frame cannot carry, as ``io.BytesIO.seek`` refuses one."""
-    if not _ARG_MIN <= arg <= _ARG_MAX:
+    if not ARG_MIN <= arg <= ARG_MAX:
         raise OverflowError(f"{arg} is out of range for the rapidgzip decoder process")
 
 

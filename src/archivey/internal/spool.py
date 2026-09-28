@@ -105,8 +105,8 @@ class SpoolBudget:
         return ResourceLimitError(
             f"Spool limit reached: {self._what}, and the copy would be {size}, over "
             f"SpoolLimits.max_bytes={self._limit} (ArchiveyConfig.spool_limits). "
-            f"Open the archive from a file path, which is read in place, or raise "
-            f"the limit (None removes it).",
+            f"Raise the limit (None removes it), or open a stream source from a "
+            f"file path instead.",
             archive_name=self._archive_name,
             source_format=self._source_format,
         )
