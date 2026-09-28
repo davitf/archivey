@@ -130,23 +130,17 @@ No "bug-free" promises. Instead, machinery that catches bugs before release:
 
 ## Adoption strategy
 
-Built:
-
 - **Release when reading is complete**: ZIP/TAR/single-file/ISO/directory *plus native
-  7z (data included, BCJ2 too) and native RAR metadata*, with RAR member data through
-  an external program (`unrar`/`rar` or `unar`). "Reads everything" is the reason to
-  switch. Writing is not a 1.0 requirement.
+  7z and RAR*, since "reads everything" is the reason to switch. RAR member data goes
+  through an external program (`unrar`/`rar` or `unar`), because a native RAR
+  decompressor is out of scope (ADR 0002). Writing is not a 1.0 requirement.
 - **The CLI is a wedge and a dev tool**, not the main act: `archivey
   list|test|extract|info` is the safer `unzip`/`tar` that demos the library in ten
   seconds, and it doubles as the maintainer's own inspection tool.
-- A [migration guide](docs/migrating.md) from `zipfile`/`tarfile`/
-  `shutil.unpack_archive`/`patool`.
-
-Next:
-
-- Meet users where they are: an fsspec filesystem adapter as an integration channel;
-  recipes for the data-pipeline crowd (who currently hand-roll unsafe `extractall` on
-  downloaded datasets).
+- Meet users where they are: a [migration guide](docs/migrating.md) from
+  `zipfile`/`tarfile`/`shutil.unpack_archive`/`patool`; an fsspec filesystem adapter as
+  an integration channel; recipes for the data-pipeline crowd (who currently hand-roll
+  unsafe `extractall` on downloaded datasets).
 - A **public backend API** (the registry ABC, stabilized) turns "maximum format
   compatibility" from a solo treadmill into an ecosystem: rare formats (CAB, CPIO,
   SquashFS, WIM…) can live as third-party plugins. Pre-1.0 decision.

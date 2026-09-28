@@ -126,9 +126,10 @@ all platforms (it is never a portable filename character).
 
 ### O5. Fuzzing — mutation + Hypothesis + Atheris gate landed; OSS-Fuzz later
 
-The safety claims rest on curated tests plus three complementary fuzz layers. Remaining
-work before any public "safe" claim is release packaging (OSS-Fuzz onboarding);
-disclosure docs are in place (`SECURITY.md`). The in-tree gate:
+The safety claims rest on curated tests plus three complementary fuzz layers, with
+disclosure docs in place (`SECURITY.md`). OSS-Fuzz onboarding comes after the first
+release: VISION's bar for saying "safe" (threat model, adversarial corpus,
+coverage-guided fuzzing, disclosure process) is met without it. The in-tree gate:
 
 1. **Landed:** the corpus **mutation harness** (`tests/test_mutation_fuzz.py`) — every
    corpus archive is deterministically mutated (truncations, bit flips, zeroed blocks,
@@ -158,7 +159,7 @@ disclosure docs are in place (`SECURITY.md`). The in-tree gate:
    [`SECURITY.md`](https://github.com/davitf/archivey/blob/main/SECURITY.md) —
    private reporting via GitHub Security Advisories (preferred), scope, and caller
    guidance (including accelerator-off for hard-latency untrusted input).
-5. **Still open (public release):** OSS-Fuzz onboarding. Accelerator hang sandbox
+5. **After the first release:** OSS-Fuzz onboarding. Accelerator hang sandbox
    (below) remains a separate follow-up.
 
 **Accelerator hang (found by the mutation harness).** The optional `[seekable]`
