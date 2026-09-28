@@ -707,6 +707,27 @@ def test_an_offset_past_the_frame_range_is_refused_and_the_stream_survives(
         child.close()
 
 
+@pytest.mark.parametrize(
+    ("offset", "whence"),
+    [(-1, io.SEEK_SET), (-100, io.SEEK_CUR), (0, 3), (0, 256)],
+    ids=["negative", "negative-relative", "bad-whence-child", "bad-whence-byte"],
+)
+def test_a_refused_seek_keeps_the_position_and_buffer(offset: int, whence: int) -> None:
+    """A seek refused before the child moves, here or by the child itself, leaves the
+    read-ahead buffer and the position as they were (review round 2, K8)."""
+    payload = _payload()
+    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    try:
+        assert child.read(10) == payload[:10]
+        assert child.read(10) == payload[10:20]  # fills the read-ahead buffer
+        with pytest.raises(ValueError):
+            child.seek(offset, whence)
+        assert child.tell() == 20
+        assert child.read(10) == payload[20:30]
+    finally:
+        child.close()
+
+
 @_POSIX
 def test_a_sigint_to_the_child_does_not_stop_it(tmp_path: Path) -> None:
     """A terminal's Ctrl-C signals the whole foreground process group, the decoder child

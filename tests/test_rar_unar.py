@@ -26,7 +26,13 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, RarDecompressor, SpoolLimits, open_archive
+from archivey import (
+    ArchiveReader,
+    ArchiveyConfig,
+    RarDecompressor,
+    SpoolLimits,
+    open_archive,
+)
 from archivey.exceptions import (
     ArchiveyError,
     EncryptionError,
@@ -249,10 +255,10 @@ def _unar_limited(max_bytes: int) -> ArchiveyConfig:
     )
 
 
-def _file_digests(archive: object) -> dict[str, str]:
+def _file_digests(archive: ArchiveReader) -> dict[str, str]:
     return {
-        member.name: hashlib.sha256(archive.read(member)).hexdigest()  # type: ignore[attr-defined]
-        for member in archive.members()  # type: ignore[attr-defined]
+        member.name: hashlib.sha256(archive.read(member)).hexdigest()
+        for member in archive.members()
         if member.is_file
     }
 
@@ -315,26 +321,34 @@ def _no_links(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @requires_binary("unar", "unrar")
 @pytest.mark.parametrize(
-    "names",
+    ("names", "stream"),
     [
-        (_CORPUS / "compressed.rar",),
-        (_RAR / "tinyvol.part1.rar", _RAR / "tinyvol.part2.rar"),
+        ((_CORPUS / "compressed.rar",), False),
+        ((_RAR / "tinyvol.part1.rar", _RAR / "tinyvol.part2.rar"), False),
+        ((_CORPUS / "compressed.rar",), True),
     ],
-    ids=["single", "volumes"],
+    ids=["single", "volumes", "stream"],
 )
 def test_a_volume_that_cannot_be_linked_is_copied_within_the_spool_limit(
-    monkeypatch: pytest.MonkeyPatch, names: tuple[Path, ...]
+    monkeypatch: pytest.MonkeyPatch, names: tuple[Path, ...], stream: bool
 ) -> None:
     """Where the system allows neither link, unar gets a copy, and the copy is spooled
-    like any other: read correctly within the limit, refused over it."""
-    with open_archive(names[0], config=_UNRAR) as archive:
+    like any other: read correctly within the limit, refused over it. A stream source
+    is copied once, straight into unar's directory, so it is charged once too."""
+
+    def source() -> Path | io.BytesIO:
+        return io.BytesIO(names[0].read_bytes()) if stream else names[0]
+
+    with open_archive(source(), format="rar", config=_UNRAR) as archive:
         expected = _file_digests(archive)
     total = sum(path.stat().st_size for path in names)
     _no_links(monkeypatch)
-    with open_archive(names[0], config=_unar_limited(total)) as archive:
+    with open_archive(source(), format="rar", config=_unar_limited(total)) as archive:
         assert _file_digests(archive) == expected
     before = set(Path(tempfile.gettempdir()).glob("archivey-unar-*"))
-    with open_archive(names[0], config=_unar_limited(total - 1)) as archive:
+    with open_archive(
+        source(), format="rar", config=_unar_limited(total - 1)
+    ) as archive:
         member = next(m for m in archive.members() if m.is_file)
         with pytest.raises(ResourceLimitError, match=r"SpoolLimits\.max_bytes"):
             archive.read(member)

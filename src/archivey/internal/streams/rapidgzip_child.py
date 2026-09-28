@@ -611,6 +611,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         pos = self._pos
         if pos is not None and whence in (io.SEEK_SET, io.SEEK_CUR):
             target = offset if whence == io.SEEK_SET else pos + offset
+            _check_arg(target)  # as io.BytesIO: OverflowError before the sign
+            if target < 0:
+                # rapidgzip would clamp it to 0; refuse it as io streams do.
+                raise ValueError(f"negative seek position {target}")
             # A target inside the read-ahead buffer needs no round trip.
             buffer_start = pos - self._buffer_at
             if buffer_start <= target <= buffer_start + len(self._buffer):
@@ -619,15 +623,18 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 return target
             # The child is past the buffer, so a relative seek is made absolute here.
             offset, whence = target, io.SEEK_SET
-        # Before the buffer is dropped: a refused offset leaves the position as it was.
-        _check_arg(offset)
+        # State changes only after the child moved. A seek refused here, by the frame
+        # range or by the child (an ERR reply) leaves the child where it was, so the
+        # buffer and the position stay; a child that died or was stopped is unusable.
+        payload = bytes([whence])
+        try:
+            position, _ = self._call(SEEK, offset, payload)
+        except BaseException:
+            if self._death is not None:
+                self._pos = None
+            raise
         self._drop_buffer()
         self._sequential = False
-        try:
-            position, _ = self._call(SEEK, offset, bytes([whence]))
-        except BaseException:
-            self._pos = None
-            raise
         self._pos = position
         return position
 

@@ -1078,9 +1078,8 @@ class RarReader(BaseArchiveReader):
         One budget per reader, not per attempt: a copy that was refused, or failed
         part-way, is not given a fresh allowance by the next read. Called under
         ``_materialize_lock``. ``what`` names the copy in the refusal; the first call
-        fixes it. A stream source's copies are made before anything is linked for
-        ``unar``, so a later link-fallback copy of those same files is refused under
-        the stream source's wording, which is still true of it.
+        fixes it. Only a path source's files are ever linked for ``unar``, so the
+        link-fallback copy never follows a stream source's copy on one reader.
         """
         if self._spool is None:
             program = (
@@ -1458,6 +1457,9 @@ class RarReader(BaseArchiveReader):
         tried; the notes cover only the copies known at open (a stream source, and a
         prefixed path source).
 
+        A single stream source has no file to link, so it is copied once straight
+        into that directory, within the spool budget.
+
         ``unar`` also does not look for a RAR after a prefix, whether that is an SFX
         stub or anything else; it reports an unknown format and writes nothing. A
         single prefixed archive is therefore copied once into that directory from
@@ -1481,10 +1483,10 @@ class RarReader(BaseArchiveReader):
             # Stream volumes are already written to a directory of their own, holding
             # the set and nothing else.
             return self._ensure_archive_path()
-        volumes: list[Path] = []
-        if start == 0:
-            # Outside ``_materialize_lock``: this takes it itself to copy a stream.
-            volumes = self._volume_paths or [self._ensure_archive_path()]
+        # A path source's files are linked. A single stream source has none: it is
+        # copied once, straight into the private directory, by the branch below, so
+        # no temp copy of it is made first and then copied again.
+        volumes = self._volume_paths if start == 0 else []
         with self._materialize_lock:
             if self._unar_path is not None:
                 return self._unar_path

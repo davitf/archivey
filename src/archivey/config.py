@@ -523,13 +523,17 @@ class SpoolLimits:
     """Caps on copying the archive source to temporary storage.
 
     Some reads need the archive as a file on disk even when the caller passed a stream.
-    Today that is RAR: the ``unrar`` binary that decodes member data takes a filesystem
-    path, so a RAR opened from a ``BytesIO`` or another file object is copied to a
-    temporary file (a volume set, to a temporary directory) the first time a member has
-    to go through ``unrar``. The copy is of the whole archive, and it is removed when
-    the reader closes. A source opened from a path is read in place, except by ``unar``
-    where the system cannot link the file into ``unar``'s private directory: then that
-    copy is bounded here too.
+    Today that is RAR: ``unrar`` and ``unar``, the programs that decode member data, take
+    a filesystem path, so a RAR opened from a ``BytesIO`` or another file object is
+    copied to a temporary file (a volume set, to a temporary directory) the first time a
+    member has to go through one of them. The copy is of the whole archive, and it is
+    removed when the reader closes. These caps bound every such copy.
+
+    A source opened from a path is read in place, with two exceptions, both for
+    ``unar``. When the system can neither symlink nor hard-link the volumes into
+    ``unar``'s private directory, they are copied, and these caps bound that copy. A
+    prefixed (SFX) archive is copied from where the RAR starts, which the reader
+    announces as a cost note when it opens; these caps do not bound that copy.
 
     Applied from the reader's open :attr:`ArchiveyConfig.spool_limits` for its lifetime.
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables it.
