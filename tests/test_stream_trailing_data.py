@@ -24,13 +24,14 @@ import pytest
 
 from archivey import AcceleratorMode, ArchiveyConfig, DiagnosticPolicy, open_archive
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
-from archivey.exceptions import CorruptionError, DiagnosticRaisedError
+from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
 )
 from archivey.types import HashAlgorithm
 from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (
     NonSeekableBytesIO,
     make_lzip_member,
@@ -168,7 +169,7 @@ def test_brotli_on_a_pipe_cannot_tell_appended_bytes_from_damage() -> None:
     with open_archive(source, streaming=True, format=_format(".br")) as reader:
         for _member, stream in reader.stream_members():
             assert stream is not None
-            with pytest.raises(CorruptionError):
+            with raises_corruption_not_truncation():
                 stream.read()
 
 
@@ -205,7 +206,7 @@ def test_brotli_damage_is_still_corruption(tmp_path: Path) -> None:
         pytest.fail("no rejected flip found")
     path = _write(tmp_path, ".br", bytes(damaged))
     with open_archive(path, format=_format(".br")) as reader:
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             reader.read(reader.members()[0])
 
 

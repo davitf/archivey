@@ -383,13 +383,12 @@ class SevenZipReader(BaseArchiveReader):
             # pass through.
             try:
                 decoded = decode(_password_to_kdf_bytes(password))
-            except (CorruptionError, TruncatedError) as exc:
+            except CorruptionError as exc:
                 raise EncryptionError("Password(s) rejected for the 7z header") from exc
             try:
                 plain = parse_decoded_header(decoded, max_members=max_members)
             except (
                 CorruptionError,
-                TruncatedError,
                 UnsupportedFeatureError,
             ) as exc:
                 raise EncryptionError("Password(s) rejected for the 7z header") from exc
