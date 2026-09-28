@@ -122,3 +122,28 @@ def test_empty_symlink_target_is_not_an_untyped_os_error(tmp_path: Path) -> None
     link = by_name["s"]
     assert link.error is None or isinstance(link.error, archivey.ArchiveyError)
     assert by_name["f"].status is ExtractionStatus.EXTRACTED
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "AUDIT: a file member 'd' followed by 'd/f' makes os.makedirs raise an "
+        "archive-caused FileExistsError that aborts a default extract() untyped"
+    ),
+)
+def test_member_under_an_earlier_file_member_is_not_an_untyped_os_error(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "a.tar"
+    _build_tar(archive, [("d", "file", b"x"), ("d/f", "file", b"y")])
+
+    # The conflict is in the archive, not the filesystem, so it must be a typed
+    # per-member outcome and not abort the run as a bare OSError.
+    report = archivey.extract(archive, tmp_path / "out", on_error="continue")
+    by_name = {r.member.name: r for r in report.results}
+    assert by_name["d"].status is ExtractionStatus.EXTRACTED
+    child = by_name["d/f"]
+    assert child.error is None or isinstance(child.error, archivey.ArchiveyError)
+
+    with pytest.raises(archivey.ArchiveyError):
+        archivey.extract(archive, tmp_path / "out2")
