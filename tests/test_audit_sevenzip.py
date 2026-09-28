@@ -1,8 +1,7 @@
 """Audit reproducers for the native 7z backend.
 
-Each ``xfail(strict=True)`` test asserts the promised behaviour and fails today for
-the reason in its marker. Hand-built archives reuse the header builder style of
-``test_sevenzip_parser_hardening``.
+Each test asserts the promised behaviour for a gap an audit found. Hand-built
+archives reuse the header builder style of ``test_sevenzip_parser_hardening``.
 """
 
 from __future__ import annotations
@@ -18,7 +17,12 @@ import pytest
 
 from archivey import open_archive
 from archivey.config import ArchiveyConfig, DecoderLimits
-from archivey.exceptions import ArchiveyError, CorruptionError, ResourceLimitError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    ResourceLimitError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
 from tests.conftest import requires
 
@@ -174,13 +178,9 @@ def _filter_encode(data: bytes, lzma_filter: dict[str, int]) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="AUDIT: a 300-coder filter chain raises a raw RecursionError from read()",
-)
 def test_long_filter_chain_does_not_escape_as_recursion_error() -> None:
-    # 7-Zip caps a folder at 64 coders; the parser allows 65536 per folder, and each
-    # filter-only coder becomes one nested FilterStream, so read() recurses per coder.
+    # Each filter-only coder becomes one nested FilterStream, so read() recurses per
+    # coder. The parser refuses more than 64 coders per folder, as 7-Zip does.
     payload = bytes(100)  # Delta over zeros is zeros, so every layer is valid.
     count = 300
     header = _header(
@@ -197,10 +197,6 @@ def test_long_filter_chain_does_not_escape_as_recursion_error() -> None:
         pass  # refusing the graph is fine; a non-ArchiveyError is not
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="AUDIT: nested BCJ2 coders make plan_folder recurse into a RecursionError",
-)
 def test_nested_bcj2_graph_does_not_escape_as_recursion_error() -> None:
     # BCJ2 coder k's main input is bound to BCJ2 coder k+1's output; every other input
     # is a pack stream. A well-formed tree, 400 deep.
@@ -222,16 +218,34 @@ def test_nested_bcj2_graph_does_not_escape_as_recursion_error() -> None:
         pass
 
 
+def _delta_chain_archive(count: int) -> tuple[bytes, bytes]:
+    payload = bytes(100)  # Delta over zeros is zeros, so every layer is valid.
+    header = _header(
+        folders=[_linear([_coder(_DELTA) for _ in range(count)])],
+        coder_unpack_sizes=[[len(payload)] * count],
+        pack_sizes=[len(payload)],
+        names=["a"],
+        folder_crcs=[_crc(payload)],
+    )
+    return _archive(payload, header), payload
+
+
+def test_folder_at_the_7zip_coder_limit_reads() -> None:
+    data, payload = _delta_chain_archive(64)
+    assert _read_only_member(data) == payload
+
+
+def test_folder_past_the_7zip_coder_limit_is_unsupported() -> None:
+    data, _ = _delta_chain_archive(65)
+    with pytest.raises(UnsupportedFeatureError, match="coder count 65"):
+        _read_only_member(data)
+
+
 # ---------------------------------------------------------------------------
 # Decoder-memory sum is only checked for BCJ2 folders
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="AUDIT: a linear chain of LZMA2 decoders is not summed against "
-    "max_decoder_memory (only BCJ2 folders are)",
-)
 def test_linear_chain_decoder_memory_counts_together() -> None:
     # pack -> LZMA2 (1 MiB dict) -> Copy -> LZMA2 (1 MiB dict) -> output. Copy splits
     # the LZMA run, so two liblzma decoders are alive at once, as with BCJ2 branches.
@@ -283,11 +297,6 @@ def _lzma2_then(kind: str, payload: bytes) -> tuple[list[bytes], list[int], byte
     return coders, [len(compressed), len(payload)], packed
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="AUDIT: an LZMA2 coder decoded after a Delta/BCJ/LZMA2 coder is planned "
-    "as one liblzma chain in the wrong order and refused as unsupported",
-)
 @pytest.mark.parametrize("kind", ["delta", "bcj", "lzma2"])
 def test_lzma2_after_another_lzma_family_coder_reads(kind: str) -> None:
     payload = b"".join(b"\xe8" + i.to_bytes(4, "little") for i in range(500))
@@ -295,6 +304,26 @@ def test_lzma2_after_another_lzma_family_coder_reads(kind: str) -> None:
     header = _header(
         folders=[_linear(coders)],
         coder_unpack_sizes=[sizes],
+        pack_sizes=[len(packed)],
+        names=["a"],
+        folder_crcs=[_crc(payload)],
+    )
+    assert _read_only_member(_archive(packed, header)) == payload
+
+
+def test_lzma1_after_a_delta_coder_reads() -> None:
+    # pack -> Delta -> LZMA1 -> output (7z a -m0=LZMA -m1=Delta:4). Delta decodes
+    # before LZMA1, so the two cannot share one liblzma chain either.
+    payload = b"".join(i.to_bytes(4, "little") for i in range(500))
+    lzma1 = {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}
+    compressed = lzma.compress(payload, format=lzma.FORMAT_RAW, filters=[lzma1])
+    packed = _filter_encode(compressed, {"id": lzma.FILTER_DELTA, "dist": 4})
+    # LZMA1 properties: lc=3, lp=0, pb=2 (93), then a 64 KiB dictionary.
+    lzma1_props = bytes([93]) + (1 << 16).to_bytes(4, "little")
+    coders = [_coder(_DELTA, props=bytes([4 - 1])), _coder(_LZMA, props=lzma1_props)]
+    header = _header(
+        folders=[_linear(coders)],
+        coder_unpack_sizes=[[len(compressed), len(payload)]],
         pack_sizes=[len(packed)],
         names=["a"],
         folder_crcs=[_crc(payload)],
@@ -319,11 +348,6 @@ def _aes_encrypt(payload: bytes, password: str) -> bytes:
 
 
 @requires("cryptography")
-@pytest.mark.xfail(
-    strict=True,
-    reason="AUDIT: _folder_codec_rejects counts an LZMA2 that decodes before AES, so a "
-    "wrong first candidate is accepted INCONCLUSIVE and the right one never tried",
-)
 def test_rejecting_codec_upstream_of_aes_does_not_settle_the_password() -> None:
     # pack -> LZMA2 -> AES -> output: LZMA2 decodes the same bytes whatever the key,
     # so it cannot reject a wrong one. The member CRC sits past the 64 KiB prefix.
@@ -349,11 +373,6 @@ def test_rejecting_codec_upstream_of_aes_does_not_settle_the_password() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="AUDIT: the parser rewrites '\\' to '/' before raw_name is derived, so "
-    "raw_name is not the stored bytes",
-)
 def test_raw_name_keeps_stored_backslash() -> None:
     payload = b"x"
     header = _header(
@@ -374,11 +393,6 @@ def test_raw_name_keeps_stored_backslash() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="AUDIT: a folder whose coder decodes past its declared unpack size is "
-    "sliced to that size and accepted; 7-Zip reports Data Error",
-)
 def test_folder_decoding_past_its_unpack_size_is_corruption() -> None:
     payload = b"hello world " * 100
     packed = _lzma2(payload)  # decodes to 1200 bytes
@@ -399,11 +413,6 @@ def test_folder_decoding_past_its_unpack_size_is_corruption() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="AUDIT: an unknown size-prefixed FILES_INFO property (>= 0x1A) refuses the "
-    "archive; 7-Zip skips it",
-)
 @pytest.mark.parametrize("property_id", [0x1A, 0x30])
 def test_unknown_files_info_property_is_skipped(property_id: int) -> None:
     payload = b"data"

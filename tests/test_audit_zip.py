@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey.exceptions import EncryptionError, UnsupportedFeatureError
+from archivey.exceptions import ResourceLimitError, UnsupportedFeatureError
 from tests.zipcrypto import _Keys, build_zipcrypto_zip
 
 # 7-Zip 16.02 `7z a -tzip -mm=LZMA:eos=off`: one LZMA (method 14) member `f.txt` with
@@ -32,13 +32,6 @@ _LZMA_NO_EOS_ZIP = base64.b64decode(
 _LZMA_NO_EOS_PAYLOAD = b"".join(b"line %d\n" % i for i in range(10))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: ZIP LZMA member without an EOS marker (flag bit 1 clear) is not "
-        "bounded to its declared size; reads past the end raise TruncatedError"
-    ),
-)
 def test_lzma_member_without_eos_marker_extracts(tmp_path: Path) -> None:
     with zipfile.ZipFile(io.BytesIO(_LZMA_NO_EOS_ZIP)) as zf:
         info = zf.infolist()[0]
@@ -96,13 +89,6 @@ def _zipcrypto_lzma_with_colliding_wrong_password() -> bytes:
     return bytes(blob)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: a wrong ZipCrypto candidate's garbage LZMA dict size raises "
-        "ResourceLimitError, which aborts the password search before the right one"
-    ),
-)
 def test_colliding_wrong_candidate_does_not_hide_the_right_password() -> None:
     blob = _zipcrypto_lzma_with_colliding_wrong_password()
     with archivey.open_archive(io.BytesIO(blob), password="right") as ar:
@@ -114,21 +100,32 @@ def test_colliding_wrong_candidate_does_not_hide_the_right_password() -> None:
         assert ar.read(ar.members()[0]) == _LZMA_COLLISION_PAYLOAD
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: a lone colliding wrong ZipCrypto password on an LZMA member raises "
-        "ResourceLimitError instead of the ambiguous EncryptionError"
-    ),
-)
-def test_colliding_lone_wrong_password_is_reported_as_password_or_damage() -> None:
+def test_colliding_lone_wrong_password_is_a_noted_resource_limit() -> None:
     blob = _zipcrypto_lzma_with_colliding_wrong_password()
-    # format-zip: for an LZMA or PPMd member the open raises EncryptionError saying
-    # the password may be wrong or the member corrupt.
+    # format-zip (maintainer decision 2026-09-28): the decrypted LZMA properties ask
+    # for a dictionary over max_decoder_memory. With one password nothing tells a
+    # wrong key's garbage from a real size, so the open raises ResourceLimitError
+    # (raising the cap is what a right password needs) and says the ZipCrypto
+    # password may be wrong.
     with archivey.open_archive(io.BytesIO(blob), password="wrong") as ar:
         member = ar.members()[0]
-        with pytest.raises(EncryptionError):
+        with pytest.raises(ResourceLimitError) as excinfo:
             ar.read(member)
+    assert "password may be wrong" in str(excinfo.value)
+    assert excinfo.value.member_name == "a.txt"
+
+
+def test_colliding_wrong_candidates_only_raise_the_noted_resource_limit() -> None:
+    blob = _zipcrypto_lzma_with_colliding_wrong_password()
+    # Several candidates, none right: the first limit a candidate's settings tripped
+    # is raised, with the same note, rather than the password-or-damage error.
+    with archivey.open_archive(
+        io.BytesIO(blob), password=["wrong", "also-wrong"]
+    ) as ar:
+        member = ar.members()[0]
+        with pytest.raises(ResourceLimitError) as excinfo:
+            ar.read(member)
+    assert "password may be wrong" in str(excinfo.value)
 
 
 def _patched_data_zip(payload: bytes) -> bytes:
@@ -146,13 +143,6 @@ def _patched_data_zip(payload: bytes) -> bytes:
     return bytes(blob)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: flag bit 5 (PKWARE compressed patched data) is ignored; the patch "
-        "stream is returned as the member's content"
-    ),
-)
 def test_compressed_patched_data_member_is_refused() -> None:
     # The body is a patch against some other file, not the file. stdlib zipfile
     # refuses it (NotImplementedError "compressed patched data (flag bit 5)"); the
@@ -169,13 +159,6 @@ def test_compressed_patched_data_member_is_refused() -> None:
             ar.read(member)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: encoding='idna' passes open_archive validation but members() raises a "
-        "raw UnicodeError from the raw_name re-encode (surrogateescape unsupported)"
-    ),
-)
 def test_idna_encoding_does_not_raise_raw_unicode_error() -> None:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -186,3 +169,30 @@ def test_idna_encoding_does_not_raise_raw_unicode_error() -> None:
         except archivey.ArchiveyError:
             return  # a typed refusal is acceptable
         assert [m.name for m in members] == ["hello.txt"]
+
+
+def test_idna_encoding_name_it_cannot_reencode_lists_without_raw_name() -> None:
+    # zipfile decodes "a..b" under idna, but idna cannot encode it back (an empty
+    # label) and refuses surrogateescape outright, so the stored bytes are not
+    # recoverable: raw_name is None (as TAR reports it), and the listing goes on.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a..b", b"x")
+        zf.writestr("ok.txt", b"y")
+    with archivey.open_archive(io.BytesIO(buf.getvalue()), encoding="idna") as ar:
+        members = ar.members()
+    assert [(m.name, m.raw_name) for m in members] == [
+        ("a..b", None),
+        ("ok.txt", b"ok.txt"),
+    ]
+
+
+def test_idna_unflagged_fallback_keeps_the_cp437_name() -> None:
+    # A non-UTF-8 unflagged name goes to zip_unflagged_fallback_encoding, decoded
+    # with surrogateescape; idna refuses that handler, so the cp437 name is kept.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("café.txt", b"x")  # cp437-encodable: flag bit 11 stays clear
+    config = archivey.ArchiveyConfig(zip_unflagged_fallback_encoding="idna")
+    with archivey.open_archive(io.BytesIO(buf.getvalue()), config=config) as ar:
+        assert [m.name for m in ar.members()] == ["café.txt"]

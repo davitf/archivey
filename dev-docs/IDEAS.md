@@ -563,6 +563,31 @@
 
 ## Performance & robustness
 
+- **Bound the `.Z` decoder's dictionary with a hybrid representation** — the pure-Python
+  LZW decoder (`internal/streams/unix_compress.py`) stores every dictionary entry as its
+  full expansion, so a 16-bit dictionary can hold about 65 536²/2 ≈ 2.1 GiB. Measured
+  in the 2026-09 audit: 8 KB of crafted input peaks at 18 MB, and 130 KB reaches about
+  2.1 GiB. A legitimate zero-filled `.Z` builds the same shape (entries grow by one
+  byte and `compress` never clears), so a flat cap would refuse real files, and a
+  `DecoderLimits` check does nothing at the 2 GiB default. Decided (davitf, 2026-09-28):
+  keep full expansions up to about 256 bytes and store longer entries as a
+  (prefix code, byte) pair rebuilt by walking the chain, which bounds the dictionary
+  near 16 MiB. It goes in its own PR because it needs the benchmark gate on real `.Z`
+  corpora. Reproducer:
+  `tests/test_audit_tar_streams.py::test_unix_compress_dictionary_memory_is_bounded`
+  (strict xfail).
+
+- **Tell a real LZMA dictionary size from decrypted garbage** — under ZipCrypto, a wrong
+  password that passes the one-byte check decrypts a ZIP LZMA or PPMd member's codec
+  properties to garbage, and about one such garbage properties blob in five declares a
+  dictionary over the 2 GiB `max_decoder_memory` default. Since the 2026-09 audit
+  (decision A on PR #512), that `ResourceLimitError` counts as a failed candidate while
+  others remain, and the one that surfaces carries a "password may be wrong" note. Real
+  encoders write only a few dictionary sizes: liblzma and 7-Zip round up to `2**n` or
+  `3 * 2**(n-1)`. A size off that grid is almost certainly garbage, so it could be
+  reported as a wrong password instead of a limit. Measure what real writers emit first,
+  including PPMd memory sizes. Raised by davitf, 2026-09-28.
+
 - **Keep a member's checksum across seeks with a hashed frontier** — `MemberVerifier`
   (`internal/streams/verify.py`, `note_seek`) drops the checksum for the rest of the
   handle after the first seek that moves. Instead it could keep the length of the

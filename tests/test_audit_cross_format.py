@@ -144,13 +144,6 @@ def _7z_with_damaged_symlink(path: Path) -> None:
     path.write_bytes(bytes(data))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: `archivey test` skips symlink members, so a ZIP/7z link whose stored "
-        "target data fails its CRC reports OK/exit 0 while `archivey extract` fails it"
-    ),
-)
 @pytest.mark.parametrize(
     "build",
     [
@@ -178,7 +171,7 @@ def test_cli_test_verifies_data_stored_symlink_targets(
 
 
 # ---------------------------------------------------------------------------
-# MEMBER_TIMESTAMP_INVALID — ZIP, TAR and 7z report it; RAR and ISO do not
+# MEMBER_TIMESTAMP_INVALID — every backend with a stored date reports it
 # ---------------------------------------------------------------------------
 
 
@@ -239,14 +232,6 @@ def _iso_month_13(tmp_path: Path) -> Path:
     return out
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: RAR4 clamps an invalid DOS date to a fabricated one, RAR5 and ISO "
-        "drop an out-of-range time to None, all without MEMBER_TIMESTAMP_INVALID "
-        "(ZIP/TAR/7z emit it)"
-    ),
-)
 @pytest.mark.parametrize(
     "build",
     [
@@ -290,14 +275,6 @@ def zlib_gzip(data: bytes) -> bytes:
     return gzip.compress(data, compresslevel=1)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: random-access TAR has no stream_members override, so a pass over a "
-        "compressed tar walks every header to EOF, then rewinds and decodes again "
-        "(STREAM_REWIND_REDECOMPRESSES on a plain forward pass)"
-    ),
-)
 @pytest.mark.parametrize("codec", ["gz", "bz2", "xz"])
 def test_compressed_tar_stream_members_decodes_once(tmp_path: Path, codec: str) -> None:
     archive = _compressed_tar(tmp_path, codec)
@@ -314,13 +291,6 @@ def test_compressed_tar_stream_members_decodes_once(tmp_path: Path, codec: str) 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: tarfile parses a whole PAX header before the batch walk weighs it, "
-        "so a ~200-byte .tar.bz2 allocates ~4x its PAX value despite max_metadata_bytes"
-    ),
-)
 def test_tar_pax_header_costs_the_metadata_cap_not_the_header(tmp_path: Path) -> None:
     value_size = 8 * 2**20
     raw = io.BytesIO()
@@ -382,34 +352,8 @@ def _nonsolid_zip(tmp_path: Path) -> Path:
     "build",
     [
         pytest.param(_nonsolid_zip, id="zip-control"),
-        pytest.param(
-            _solid_7z,
-            id="7z",
-            marks=[
-                requires_binary("7z"),
-                pytest.mark.xfail(
-                    strict=True,
-                    reason=(
-                        "AUDIT: 7z stream_members() streams are not registered with "
-                        "the one-live-stream gate, so a pass runs beside a live open()"
-                    ),
-                ),
-            ],
-        ),
-        pytest.param(
-            _solid_rar,
-            id="rar-solid",
-            marks=[
-                requires_binary("unrar"),
-                pytest.mark.xfail(
-                    strict=True,
-                    reason=(
-                        "AUDIT: solid RAR stream_members() streams are not registered "
-                        "with the one-live-stream gate, so a pass runs beside a live open()"
-                    ),
-                ),
-            ],
-        ),
+        pytest.param(_solid_7z, id="7z", marks=requires_binary("7z")),
+        pytest.param(_solid_rar, id="rar-solid", marks=requires_binary("unrar")),
     ],
 )
 def test_stream_members_refused_while_a_member_stream_is_live(

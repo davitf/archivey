@@ -77,7 +77,11 @@ from archivey.internal.streams.decompress import (
     ZlibDecompressorStream,
     stream_magic,
 )
-from archivey.internal.streams.decompressor_stream import report_trailing_data
+from archivey.internal.streams.decompressor_stream import (
+    _StreamChecksumError,
+    gzip_corruption,
+    report_trailing_data,
+)
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.ppmd_child import PpmdChildError
 from archivey.internal.streams.rapidgzip_child import (
@@ -450,7 +454,9 @@ class CodecParams:
     - ``ppmd_order`` / ``ppmd_mem_size`` / ``ppmd_restore_method`` — ZIP method-98 PPMd8
       parameters (mutually exclusive with 7z ``properties`` for :class:`PpmdCodec`).
     - ``unpack_size`` — known uncompressed output length (7z folder unpack size). Passed
-      to PPMd as ``max_length`` so PPMd7 cannot overshoot without an end mark.
+      to PPMd as ``max_length`` so PPMd7 cannot overshoot without an end mark. Raw
+      LZMA1/LZMA2 stop reading at it; pass it only for a stream with no end marker
+      (ZIP LZMA with bit 1 clear), since it also hides output past that size.
     - ``pack_size`` — known compressed length for the PPMd coder input (7z pack stream /
       ZIP compressed size / sized view). Must match the bytes passed to
       ``PpmdDecoder.feed`` (not an enclosing member size). Gates post-eof empty
@@ -826,7 +832,9 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
     """Map rapidgzip exceptions for a DEFLATE-family codec (gzip / zlib / deflate)."""
     text = str(exc)
     if isinstance(exc, ValueError) and "Mismatching CRC32" in text:
-        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+        return _StreamChecksumError(
+            f"Error reading {label} stream (rapidgzip): {exc!r}"
+        )
     if isinstance(exc, RuntimeError) and "IsalInflateWrapper" in text:
         return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
     if isinstance(exc, ValueError) and (
@@ -1228,15 +1236,6 @@ def _zlib_adler_trailer(source: CodecSource) -> int | None:
             source.seek(pos)
     except (OSError, io.UnsupportedOperation, ValueError, TypeError):
         return None
-
-
-class _StreamChecksumError(CorruptionError):
-    """A whole-stream checksum failed after the stream's bytes were delivered.
-
-    Internal: callers see a :class:`CorruptionError`. A reader that tolerates a decode
-    failure past the end of its own data (the TAR end-of-archive scan) re-raises this
-    one, because the checksum covers bytes it has already handed out.
-    """
 
 
 class _ZlibAdlerCheckStream(DelegatingStream):
@@ -1922,8 +1921,9 @@ class GzipCodec(StreamCodec):
             # Corruption inside the deflate body (a valid gzip header, then bad data) is
             # raised by zlib's gzip window as a raw zlib.error. zlib does not flag
             # truncation distinctly here (a short stream surfaces as TruncatedError via
-            # the decompressor engine), so any zlib.error at this point is corruption.
-            return CorruptionError(f"Error reading gzip stream: {exc!r}")
+            # the decompressor engine), so any zlib.error at this point is corruption,
+            # and a failed CRC-32/ISIZE check a whole-stream one.
+            return gzip_corruption(exc)
         if isinstance(exc, EOFError):
             return TruncatedError(f"gzip stream is truncated: {exc!r}")
         return None
@@ -2062,6 +2062,13 @@ class Bzip2Codec(StreamCodec):
         if from_callers_source(exc):
             return None  # the caller's source raised it, through _TrappingSource
         text = str(exc)
+        if isinstance(exc, UnicodeDecodeError) and isinstance(exc.object, bytes):
+            # rapidgzip quotes the offending input byte in some messages ("…magic
+            # string 'BZh' … with \xf2 …"). When that byte is not UTF-8, the message
+            # itself fails to decode on its way to Python, and the error raised is
+            # this one, holding the message bytes. Read the message from them, so the
+            # arms below match it as they match a message that did decode.
+            text = exc.object.decode("utf-8", "replace")
         if isinstance(exc, RuntimeError) and "Calculated CRC" in text:
             return CorruptionError(
                 f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
@@ -2082,12 +2089,14 @@ class Bzip2Codec(StreamCodec):
         if isinstance(exc, (ValueError, RuntimeError)) and (
             "Huffman" in text
             or "magic" in text  # "Input header is not BZip2 magic string 'BZh'…"
+            or "Blocksize must be one of" in text  # stream header's level byte
             or "bit string" in text
             or "bad optional access" in text  # accelerator read past a corrupt block
         ):
-            # Corrupt Huffman tables, stream/block magic, or internal state, outside a
-            # "[BZip2 block]"-tagged context (e.g. "Constructing a Huffman coding … failed!"
-            # or "bad optional access") — all found by the corpus mutation harness.
+            # Corrupt Huffman tables, stream header, block magic, or internal state,
+            # outside a "[BZip2 block]"-tagged context (e.g. "Constructing a Huffman
+            # coding … failed!" or "bad optional access") — found by the corpus
+            # mutation harness, apart from the header's block-size byte.
             return CorruptionError(
                 f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
@@ -2406,11 +2415,19 @@ class _RawLzmaCodec(_LzmaErrorCodec):
                     limits=config.decoder_limits,
                     what=f"{LZMA_DICTIONARY_FILTERS[spec['id']]} dictionary size",
                 )
-        return ensure_binaryio(
+        decoded = ensure_binaryio(
             lzma.LZMAFile(
                 source, mode="rb", format=lzma.FORMAT_RAW, filters=params.filters
             )
         )
+        if params.unpack_size is None:
+            return decoded
+        # A raw LZMA1 stream written without an end-of-stream marker (ZIP method 14
+        # with general-purpose bit 1 clear) ends where its known output size says.
+        # liblzma cannot tell that from the input, so reading on would ask for input
+        # past the end and fail as truncated; stop at the size instead. The 7z
+        # pipeline bounds its LZMA chains the same way, outside this codec.
+        return SlicingStream(decoded, length=params.unpack_size, owns_inner=True)
 
 
 class LzmaCodec(_RawLzmaCodec):
@@ -2429,7 +2446,8 @@ class _ZlibErrorCodec(StreamCodec):
             text = str(exc)
             if "incomplete" in text or "truncated" in text:
                 return TruncatedError(f"deflate stream is truncated: {exc!r}")
-            return CorruptionError(f"Error reading deflate stream: {exc!r}")
+            # A zlib stream's Adler-32 failing is a whole-stream checksum.
+            return gzip_corruption(exc, "deflate")
         if isinstance(exc, EOFError):
             return TruncatedError(f"deflate stream is truncated: {exc!r}")
         return None
@@ -2678,6 +2696,10 @@ class ZstdCodec(StreamCodec):
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if _zstd is not None and isinstance(exc, _zstd.ZstdError):
+            if "checksum" in str(exc):
+                # The frame's content checksum ("Restored data doesn't match
+                # checksum"), over everything the frame decoded.
+                return _StreamChecksumError(f"Error reading zstd stream: {exc!r}")
             return CorruptionError(f"Error reading zstd stream: {exc!r}")
         if isinstance(exc, EOFError):
             return TruncatedError(f"zstd stream is truncated: {exc!r}")
@@ -2718,6 +2740,10 @@ class Lz4Codec(StreamCodec):
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, RuntimeError) and str(exc).startswith("LZ4"):
+            if "contentChecksum" in str(exc):
+                # The frame's content checksum, over everything the frame decoded; a
+                # block checksum covers one block and stays a plain corruption.
+                return _StreamChecksumError(f"Error reading lz4 stream: {exc!r}")
             return CorruptionError(f"Error reading lz4 stream: {exc!r}")
         if isinstance(exc, EOFError):
             return TruncatedError(f"lz4 stream is truncated: {exc!r}")

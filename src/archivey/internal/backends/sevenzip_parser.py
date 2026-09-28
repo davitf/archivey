@@ -61,13 +61,19 @@ MAGIC_7Z = b"7z\xbc\xaf'\x1c"
 SIGNATURE_HEADER_SIZE = 32
 _MAX_UINT64_ENCODING = 8
 _MAX_UTF16_CHARS = 65536
-# Structural cap for per-folder coder graphs (coders, coder in/out streams).
+# Structural cap for per-folder coder graphs (coders, coder in/out streams). 7-Zip
+# refuses a folder with more than 64 coders or more than 64 coder in-streams as
+# unsupported (``k_Scan_NumCoders_MAX`` and ``k_Scan_NumCodersStreams_in_Folder_MAX``,
+# both 64, in CPP/7zip/Archive/7z/7zIn.cpp). The reader plans each coder
+# recursively and wraps each one in its own stream, so a larger folder would let a
+# small header drive the planner and ``read()`` into RecursionError.
 # Folders, unpack streams, and num_files scale with member count: header size
 # (CorruptionError) plus listing_limits.max_members (ResourceLimitError, None
 # disables). A solid archive puts every file in one folder; a non-solid archive
 # gives each file its own folder. Pack streams are a coder-graph quantity
 # (BCJ2 has four per folder) and keep the header-size bound only.
-_MAX_NUM_STREAMS = 65536
+_MAX_FOLDER_CODERS = 64
+_MAX_FOLDER_CODER_STREAMS = 64
 # Hostile archives can claim a multi-EiB next-header offset/size. Cap before seek/read so we
 # never OverflowError on C ssize_t conversion or allocate a multi-GiB header buffer. Real 7z
 # headers are kilobytes; tens of MiB is already far past any legitimate archive.
@@ -227,9 +233,13 @@ def _check_length(length: int, context: str) -> None:
         )
 
 
-def _require_stream_count(count: int, what: str) -> None:
-    if count > _MAX_NUM_STREAMS:
-        raise CorruptionError(f"7z {what} count is too large: {count}")
+def _require_folder_graph_count(count: int, limit: int, what: str) -> None:
+    # A well-formed folder can hold more, but 7-Zip does not decode it either, so
+    # this is an unsupported feature rather than corruption.
+    if count > limit:
+        raise UnsupportedFeatureError(
+            f"7z folder {what} count {count} exceeds the 7-Zip limit of {limit}"
+        )
 
 
 def _require_header_count(count: int, header_size: int, what: str) -> None:
@@ -789,7 +799,7 @@ def _read_unpack_info(cur: _Cursor, *, max_members: int | None) -> list[SevenZip
 
 def _read_folder(cur: _Cursor) -> SevenZipFolder:
     num_coders = cur.uint64()
-    _require_stream_count(num_coders, "coder")
+    _require_folder_graph_count(num_coders, _MAX_FOLDER_CODERS, "coder")
     coders: list[SevenZipCoder] = []
     total_in = 0
     total_out = 0
@@ -811,8 +821,12 @@ def _read_folder(cur: _Cursor) -> SevenZipFolder:
         else:
             num_in_streams = 1
             num_out_streams = 1
-        _require_stream_count(num_in_streams, "coder in-stream")
-        _require_stream_count(num_out_streams, "coder out-stream")
+        _require_folder_graph_count(
+            num_in_streams, _MAX_FOLDER_CODER_STREAMS, "coder in-stream"
+        )
+        _require_folder_graph_count(
+            num_out_streams, _MAX_FOLDER_CODER_STREAMS, "coder out-stream"
+        )
         properties = None
         if flags & 0x20:
             prop_size = cur.uint64()
@@ -820,8 +834,8 @@ def _read_folder(cur: _Cursor) -> SevenZipFolder:
 
         total_in += num_in_streams
         total_out += num_out_streams
-        _require_stream_count(total_in, "folder in-stream")
-        _require_stream_count(total_out, "folder out-stream")
+        _require_folder_graph_count(total_in, _MAX_FOLDER_CODER_STREAMS, "in-stream")
+        _require_folder_graph_count(total_out, _MAX_FOLDER_CODER_STREAMS, "out-stream")
         coders.append(
             SevenZipCoder(
                 method=method,
@@ -893,9 +907,8 @@ def _read_substreams_info(
         # per-stream read. ``_load_boolean(..., check_all=True)`` is the same
         # bomb one property later. Header size is the impossibility bound (O1);
         # ``max_members`` is the caller's listing budget (None = UNLIMITED).
-        # ``_MAX_NUM_STREAMS`` is the per-folder coder-graph cap and must not
-        # apply here: a solid archive's unpack-stream count *is* the member
-        # count (O13 / review F1).
+        # The per-folder coder-graph caps must not apply here: a solid archive's
+        # unpack-stream count *is* the member count (O13 / review F1).
         header_size = len(cur.buf)
         num_unpackstreams_folders = []
         total_unpack_streams = 0
@@ -999,14 +1012,16 @@ def _read_files_info(
     handlers = _FILES_INFO_HANDLERS
 
     while True:
-        prop = _read_property(cur, "7z FILES_INFO")
+        # 7-Zip reads a FILES_INFO property ID as a number and skips any property
+        # it does not handle by its size prefix (7zIn.cpp, ReadHeader). A property
+        # from a newer writer therefore does not refuse the archive. ``cur.slice``
+        # bounds the skipped payload by the header buffer.
+        prop = cur.uint64()
         if prop == _Property.END:
             return [_file_record_from_props(props) for props in files], comment
 
         size = cur.uint64()
         payload = cur.slice(size, "7z file property payload")
-        if prop == _Property.DUMMY:
-            continue
         if prop == _Property.EMPTY_STREAM:
             empty_streams = _read_boolean(payload, num_files)
             for file_props, empty in zip(files, empty_streams, strict=True):
@@ -1017,11 +1032,8 @@ def _read_files_info(
             comment = _read_comment(payload)
             continue
         handler = handlers.get(prop)
-        if handler is None:
-            raise UnsupportedFeatureError(
-                f"Unsupported 7z FILES_INFO property 0x{prop:02x}"
-            )
-        handler(payload, files, num_empty_streams, num_files)
+        if handler is not None:  # DUMMY and unknown properties are skipped
+            handler(payload, files, num_empty_streams, num_files)
 
 
 def _apply_empty_stream_bool(
@@ -1061,7 +1073,9 @@ def _handle_name(
     payload.pos = len(payload.buf)
     names = _decode_utf16_names(bytes(view), expected_count=len(files))
     for file_props, name in zip(files, names, strict=True):
-        file_props.filename = name.replace("\\", "/")
+        # Stored verbatim: ``raw_name`` is built from it. The reader normalizes
+        # ``\`` as a separator when it builds the presented name.
+        file_props.filename = name
 
 
 def _decode_utf16_names(blob: bytes, *, expected_count: int) -> list[str]:
@@ -1152,7 +1166,7 @@ def _handle_start_pos(
 
 
 _FILES_INFO_HANDLERS: dict[
-    _Property, Callable[[_Cursor, list[_FileProps], int, int], None]
+    int, Callable[[_Cursor, list[_FileProps], int, int], None]
 ] = {
     _Property.EMPTY_FILE: _handle_empty_file,
     _Property.ANTI: _handle_anti,

@@ -357,6 +357,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
 
     import archivey.internal.backends.iso_reader as iso_reader
     import archivey.internal.backends.rar_reader as rar_reader
+    import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
     import archivey.internal.backends.tar_reader as tar_reader
     import archivey.internal.backends.zip_aes as zip_aes
     import archivey.internal.backends.zip_reader as zip_reader
@@ -390,6 +391,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
+        sevenzip_pipeline._DecodedPastSizeCheck,  # same offsets as its LZMA2 chain
         slice_mod.SlicingStream,  # translates remapped offset space; clamp at 0
         verify.VerifyingStream,
     }
@@ -547,6 +549,7 @@ def test_delegating_stream_close_inventory() -> None:
 
     import archivey.internal.backends.iso_reader as iso_reader
     import archivey.internal.backends.rar_reader as rar_reader
+    import archivey.internal.backends.sevenzip_pipeline as sevenzip_pipeline
     import archivey.internal.backends.zip_reader as zip_reader
     import archivey.internal.external.cli as cli
     import archivey.internal.external.unar as unar
@@ -565,6 +568,7 @@ def test_delegating_stream_close_inventory() -> None:
         codecs._ZlibAdlerCheckStream,
         codecs._Bzip2EmptyStreamCheck,
         codecs._StdlibOnAcceleratorError,
+        sevenzip_pipeline._DecodedPastSizeCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,
     }

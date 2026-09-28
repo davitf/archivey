@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from archivey import open_archive
-from archivey.exceptions import PackageNotInstalledError
+from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
 from archivey.internal.backends import rar_unrar
 from archivey.terminal import display_path
 from tests.conftest import requires_binary
@@ -233,3 +233,53 @@ def test_real_hung_unrar_costs_one_probe_timeout(
         with pytest.raises(PackageNotInstalledError, match="0.2 seconds"):
             rar_unrar.find_rarlab_unrar()
     assert spawned == 1
+
+
+# --- the member name in argv, and the child's locale -------------------------
+
+
+def test_8bit_name_mask_is_the_stored_bytes() -> None:
+    """``*`` narrows to ``?`` byte for byte; the stored bytes are not re-encoded."""
+    assert rar_unrar._member_include_switch(b"caf\xe9*.txt") == b"-n./caf\xe9?.txt"
+    argument = rar_unrar.unrar_member_argument(
+        "dir/café.txt", b"dir\\caf\xe9.txt", stored_is_8bit=True
+    )
+    if sys.platform == "win32":
+        assert argument == "dir/café.txt"  # Windows argv is Unicode
+    else:
+        assert argument == b"dir/caf\xe9.txt"
+    assert (
+        rar_unrar.unrar_member_argument(
+            "café.txt", b"caf\xc3\xa9.txt", stored_is_8bit=False
+        )
+        == "café.txt"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX locale behaviour")
+def test_unrar_child_runs_under_a_utf8_locale(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LC_ALL", "C")
+    if rar_unrar._utf8_locale_name() is None:
+        pytest.skip("no UTF-8 locale on this system")
+    env = rar_unrar._unrar_env()
+    assert env is not None
+    assert env["LC_ALL"] in rar_unrar._UTF8_LOCALE_NAMES
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX locale behaviour")
+def test_non_ascii_name_without_a_utf8_locale_is_refused_before_spawning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a UTF-8 locale the mask would not match and the read would look
+    truncated; the refusal names ``unar`` instead, and nothing is spawned."""
+    monkeypatch.setattr(rar_unrar, "_utf8_locale_name", lambda: None)
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/stub/unrar")
+
+    def no_popen(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("unrar must not be spawned")
+
+    monkeypatch.setattr(subprocess, "Popen", no_popen)
+    assert rar_unrar.unrar_member_refusal("plain.txt") is None
+    assert rar_unrar.unrar_member_refusal(b"caf\xe9.txt") is None
+    with pytest.raises(UnsupportedFeatureError, match="UTF-8 locale"):
+        rar_unrar.open_unrar_p("a.rar", member="café.txt")

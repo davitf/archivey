@@ -518,13 +518,6 @@ def _open_resolved(
     ):
         _raise_multi_volume_not_supported(resolved_format, archive_name)
 
-    # RAR multi-volume: unrar needs real sibling files on disk. When resolve_source
-    # concatenated an explicit path sequence, reopen volume 1 only.
-    if resolved_format.container == ContainerFormat.RAR:
-        volume_paths = archive_source.volume_paths
-        if archive_source.joined is not None and volume_paths:
-            archive_source = slot.replace(ArchiveSource.for_path(volume_paths[0]))
-
     # A raw CD sector image is claimed as ISO only so it can be refused by name. Ahead
     # of the availability check, so the answer does not depend on pycdlib; a
     # non-seekable source is left to the seekability refusal below.

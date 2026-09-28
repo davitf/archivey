@@ -229,13 +229,6 @@ def _renamed_rar4_hostile(tmp_path: Path, name: bytes, *, extra_flags: int = 0) 
 # --- multi-volume: an explicit path sequence ---------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: an explicit RAR volume path sequence is dropped for volume 1's "
-        "on-disk siblings (core.py reopens volume_paths[0] only)"
-    ),
-)
 def test_explicit_rar_volume_paths_in_separate_directories_open(
     tmp_path: Path,
 ) -> None:
@@ -341,13 +334,6 @@ _C_LOCALE_READ = textwrap.dedent(
 
 @requires_binary("unrar")
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX locale behaviour")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: under LC_ALL=C unrar cannot match a non-ASCII -n mask, so every "
-        "compressed member with a non-ASCII name reads as TruncatedError"
-    ),
-)
 def test_non_ascii_member_reads_under_the_c_locale(tmp_path: Path) -> None:
     """``LC_ALL=C`` is common in cron jobs, CI and containers; the archive is valid.
 
@@ -375,13 +361,6 @@ def test_non_ascii_member_reads_under_the_c_locale(tmp_path: Path) -> None:
 
 
 @requires_binary("unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: an 8-bit (non-Unicode) RAR3 name is sent to unrar re-encoded as "
-        "UTF-8, which is not the name unrar sees, so the member reads truncated"
-    ),
-)
 def test_rar3_8bit_name_member_is_readable(tmp_path: Path) -> None:
     """A RAR 2.x/3.x name without the Unicode flag, in a single-byte code page.
 
@@ -419,13 +398,6 @@ def test_rar3_8bit_name_is_not_decoded_as_utf16(tmp_path: Path) -> None:
 # --- non-ArchiveyError exceptions --------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: _rar3_split_file_version uses str.isdigit() then int(), so a "
-        "Unicode digit or a >4300-digit ;n suffix raises bare ValueError at open"
-    ),
-)
 @pytest.mark.parametrize(
     "suffix",
     ["²".encode(), b"1" * 5000],
@@ -444,13 +416,6 @@ def test_rar3_version_suffix_is_parsed_without_a_bare_value_error(
 
 
 @requires_binary("unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: a NUL in a RAR member name reaches the unrar argv (-n mask) and "
-        "subprocess raises bare ValueError('embedded null byte') from read()"
-    ),
-)
 def test_nul_in_member_name_read_raises_an_archivey_error(tmp_path: Path) -> None:
     blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
     _rar5_file_blocks(blocks)[0]["name"] = b"nul\x00x.txt"
@@ -466,13 +431,6 @@ def test_nul_in_member_name_read_raises_an_archivey_error(tmp_path: Path) -> Non
 
 
 @requires_binary("unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: unrar stops reading a stdin password at NUL, so 'password\\x00zz' "
-        "decrypts a RAR4 member whose password is 'password'"
-    ),
-)
 def test_password_with_nul_is_not_silently_cut_by_unrar() -> None:
     """``_password_stdin_bytes`` refuses a line break for this reason; NUL is the same.
 
@@ -490,23 +448,15 @@ def test_password_with_nul_is_not_silently_cut_by_unrar() -> None:
 
 
 @requires_binary("rar", "unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: open_unrar_p writes the password to unrar's stdin before reading "
-        "stdout; a password larger than the pipe buffer deadlocks with unrar "
-        "blocked on a full stdout"
-    ),
-)
 def test_long_password_does_not_deadlock_the_unrar_spawn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """RAR5 hashes only the first 127 characters, so this password is the right one.
 
-    The PswCheck accepts it natively; the whole 200 KB then goes to ``unrar``'s
-    stdin. ``unrar`` reads one line's worth and starts writing a 300 KB member, and
-    both processes wait on each other. The read runs in a thread; after the
-    deadline the test kills ``unrar`` to unblock it.
+    The PswCheck accepts it natively. Written whole to ``unrar``'s stdin before
+    stdout is read, 200 KB fills the pipe while ``unrar`` fills stdout with the
+    300 KB member, and both processes wait on each other. The read runs in a
+    thread; after the deadline the test kills ``unrar`` to unblock it.
     """
     source = tmp_path / "rnd.bin"
     source.write_bytes(os.urandom(300_000))

@@ -41,6 +41,7 @@ from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     SeekPoint,
     SpacedCollector,
+    _StreamChecksumError,
     build_index_backwards,
 )
 
@@ -406,12 +407,12 @@ class _LzipState:
     def _verify_trailer(self, trailer: bytes) -> tuple[int, int]:
         crc32_stored, data_size, member_size = struct.unpack_from("<IQQ", trailer, 0)
         if (self._crc & 0xFFFFFFFF) != crc32_stored:
-            raise CorruptionError(
+            raise _StreamChecksumError(
                 f"Lzip CRC32 mismatch: stored {crc32_stored:#010x}, "
                 f"computed {self._crc & 0xFFFFFFFF:#010x}"
             )
         if self._member_size != data_size:
-            raise CorruptionError(
+            raise _StreamChecksumError(
                 f"Lzip size mismatch: stored {data_size}, actual {self._member_size}"
             )
         actual_member_size = self._member_comp_size + _TRAILER_SIZE

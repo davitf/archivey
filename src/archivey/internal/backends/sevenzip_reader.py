@@ -169,17 +169,47 @@ def _is_windows_reparse_point(attrs: int | None) -> bool:
 
 
 _SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?$", re.IGNORECASE)
-# The folder settles a wrong key inside the confirm prefix when its chain holds a
-# REJECTING_CODECS codec. Filters never reject: ``MethodKind.LZMA_FAMILY`` also holds
-# Delta and BCJ, which is why the check is by codec and not by method kind.
+# The folder settles a wrong key inside the confirm prefix when a REJECTING_CODECS
+# codec decodes the AES output. Filters never reject: ``MethodKind.LZMA_FAMILY`` also
+# holds Delta and BCJ, which is why the check is by codec and not by method kind.
 
 
 def _folder_codec_rejects(folder: SevenZipFolder) -> bool:
-    """Whether a decoder in ``folder`` rejects random input (confirm rung 3)."""
-    for coder in folder.coders:
-        method = lookup(coder.method)
-        if method is not None and method.codec in REJECTING_CODECS:
-            return True
+    """Whether a decoder of the decrypted bytes rejects random input (confirm rung 3).
+
+    Only a coder downstream of an AES coder in decode order (it reads what AES
+    decrypted, directly or through other coders) sees wrong-key garbage. A codec
+    that decodes before AES reads the same bytes whatever the key, so it cannot
+    reject one. Listing never validates the graph, so the walk tolerates any wiring.
+    """
+    coders = folder.coders
+    in_owner: dict[int, int] = {}
+    out_owner: dict[int, int] = {}
+    total_in = total_out = 0
+    for index, coder in enumerate(coders):
+        for offset in range(coder.num_in_streams):
+            in_owner[total_in + offset] = index
+        for offset in range(coder.num_out_streams):
+            out_owner[total_out + offset] = index
+        total_in += coder.num_in_streams
+        total_out += coder.num_out_streams
+    consumers: dict[int, list[int]] = {}
+    for in_index, out_index in folder.bind_pairs:
+        producer = out_owner.get(out_index)
+        consumer = in_owner.get(in_index)
+        if producer is not None and consumer is not None:
+            consumers.setdefault(producer, []).append(consumer)
+    pending = [index for index, coder in enumerate(coders) if is_aes(coder.method)]
+    seen: set[int] = set()
+    while pending:
+        for index in consumers.get(pending.pop(), ()):
+            if index in seen:
+                continue
+            seen.add(index)
+            method = lookup(coders[index].method)
+            if method is not None and method.codec in REJECTING_CODECS:
+                return True
+            pending.append(index)
     return False
 
 
@@ -528,14 +558,20 @@ class SevenZipReader(BaseArchiveReader):
                     _enter_folder(raw.folder_index)
                     self._reach_pass_link(member, raw.folder_index, _folder_reader)
                 return None
+            # Registered like the base class's lazy pass streams, so the pass takes
+            # the one live-stream slot and is refused beside a live ``open()``.
             if raw.folder_index is None:
-                return self._wrap_member_stream(
-                    io.BytesIO(b""), member.name, size=member.size
+                return self._register_public_stream(
+                    self._wrap_member_stream(
+                        io.BytesIO(b""), member.name, size=member.size
+                    )
                 )
             _enter_folder(raw.folder_index)
             folder_index = raw.folder_index
-            return self._member_stream_from_solid(
-                lambda: _folder_reader(folder_index, member), member
+            return self._register_public_stream(
+                self._member_stream_from_solid(
+                    lambda: _folder_reader(folder_index, member), member
+                )
             )
 
         def _cleanup() -> None:

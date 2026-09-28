@@ -23,7 +23,10 @@ when members are registered into a materialized / resolved list (`members()`,
 `ResourceLimitError`. Defaults match extract `max_entries` on the count side
 (`1_048_576`) and budget 64 MiB of retained string/bytes metadata.
 `stream_members()` / `streaming=True` / forward-only iteration remain unguarded by
-design (O(1) escape hatch). 7z applies `listing_limits.max_members` at
+design (O(1) escape hatch: nothing is retained per member). That bounds memory, not
+work: a forward-only TAR walk reads through every member it skips, and it does so for
+the bytes present, not the size a header declares (a member declaring more than the
+archive holds raises `TruncatedError` at the first short read). 7z applies `listing_limits.max_members` at
 `open_archive` (folders, unpack streams, `num_files`) and an over-limit
 archive fails at open — `stream_members()` / `streaming=True` are not an
 escape hatch for 7z. Pack streams are a coder-graph quantity (BCJ2 has four
@@ -33,16 +36,23 @@ per folder) and keep the header-size bound only. RAR applies
 `stream_members()` / `streaming=True` are not an escape hatch for RAR. ZIP
 still caps at `members()`. TAR has no member table to parse at `open_archive`, so its
 caps can only bind the header walk: the random-access walk parses headers in batches
-that stop one header past `max_members` or `max_metadata_bytes`, so an over-limit tar
-costs the cap rather than the archive, PAX keywords and values included. `None`
-(`ListingLimits.UNLIMITED`) disables that bound.
+that stop one header past `max_members` or `max_metadata_bytes`. tarfile reads a PAX
+extended or global header, or a GNU long name or link name, whole in one call, so the
+walk refuses such a header from its declared size before that read: in random access
+when it declares more than is left of `max_metadata_bytes` (while the listing enforces
+it; `stream_members()` does not), and in any mode, streaming included, when it declares
+more than the whole cap. An over-limit tar then costs about the cap plus one ordinary
+header rather than the archive, PAX keywords and values included. A sparse map is
+weighed only once parsed (24 bytes per entry), so an old GNU sparse member's chain of
+extension blocks or a PAX sparse 1.0 map is held whole for the one member that crosses
+the cap. `None` (`ListingLimits.UNLIMITED`) disables these bounds.
 `max_metadata_bytes` remains a materialization guard on every format,
 including 7z and RAR. RAR also checks it at `open_archive` against the summed
 declared sizes of compressed RAR 1.5/2.x comments, before decoding any, since
 those expand after the parse; that bounds comment bytes, not the one `unrar`
 spawn each still costs. Format-local parser bounds (e.g. 7z count fields vs
-header size → `CorruptionError`; 7z per-folder coder/in-out counts at
-`_MAX_NUM_STREAMS`) stay as defense-in-depth. RAR no longer has a separate
+header size → `CorruptionError`; 7z per-folder coder and in/out-stream counts at
+7-Zip's own limit of 64, `UnsupportedFeatureError`) stay as defense-in-depth. RAR no longer has a separate
 `_MAX_ARCHIVE_MEMBERS` parser constant. RAR5 QO records that are not FILE
 never reach `_append_member`; their bound is `_RAR5_QO_PAYLOAD_MAX` (16 MiB),
 and parse of that payload is linear (PR #311). 7z may still allocate up to
@@ -563,9 +573,12 @@ counts.
 `num_files`) reject against the header buffer size (`CorruptionError`) and
 against `listing_limits.max_members` (`ResourceLimitError`; `None` disables).
 Pack streams keep the header-size bound only — a BCJ2 folder has four, so
-`max_members` would refuse a legitimate non-solid BCJ2 archive. `_MAX_NUM_STREAMS`
-stays on per-folder coder graphs (coders, in/out streams). Found on PR #315
-(S2-F1); Linear ARC-50.
+`max_members` would refuse a legitimate non-solid BCJ2 archive. Per-folder coder
+graphs (coders, in/out streams) keep their own cap. That cap was `_MAX_NUM_STREAMS`
+(65536) until an audit found that 65,536 coders let a small header drive the planner
+and nested decode streams into a raw `RecursionError`. It is now 7-Zip's own limit
+of 64 (`k_Scan_NumCoders_MAX`, `k_Scan_NumCodersStreams_in_Folder_MAX`), refused as
+`UnsupportedFeatureError`. Found on PR #315 (S2-F1); Linear ARC-50.
 
 ### O14. 7z encoded-header decode had no nesting limit — closed
 
@@ -781,11 +794,13 @@ and not added: no other codec has one.
 
 **Memory.** Every branch decoder of a BCJ2 folder runs at once, each with memory the
 archive declares: three in what 7-Zip writes (`main`, `call`, `jump`, all LZMA), four
-when a crafted folder puts a coder on `rc` too. *Mitigated:* each is capped on its own
-by `DecoderLimits.max_decoder_memory`, and the folder's sum of what that cap bounds per
-decoder (LZMA dictionaries and PPMd memory sizes) is checked against the same cap before
-any of them is built
-(`sevenzip_pipeline.open_folder_pipeline`). Bytes decoded inside a branch never reach the
+when a crafted folder puts a coder on `rc` too. So do the stages of a linear chain,
+which are stacked streams: `LZMA2 → Copy → LZMA2` keeps two dictionaries live.
+*Mitigated:* each is capped on its own by `DecoderLimits.max_decoder_memory`, and for
+every folder with more than one such decoder, BCJ2 or not, the sum of what that cap
+bounds per decoder (LZMA dictionaries and PPMd memory sizes) is checked against the same
+cap before any of them is built (`sevenzip_pipeline.open_folder_pipeline`). Until an
+audit, the sum was checked for BCJ2 folders only. Bytes decoded inside a branch never reach the
 folder stream that `ExtractionLimits` counts, so the decoder's end-of-output check reads
 at most one byte from each branch and never drains one.
 
@@ -831,6 +846,39 @@ Pinned by `tests/test_directory.py::test_a_file_swapped_for_a_symlink_after_list
 `::test_a_file_resized_after_listing_is_refused`,
 `::test_an_identityless_member_that_is_now_a_reparse_point_is_refused`. Handbook:
 [`formats/directory.md`](formats/directory.md) §2.3, §4.
+
+### O22. A later member can turn an extracted symlink into an escape — open
+
+Symlinks are re-validated against the live tree once, right after `os.symlink`. A later
+member can change what an earlier link resolves to. Archive `l -> a/../secret`, then
+`a -> .`: when `l` is created, `a` does not exist, so `l` resolves to `<dest>/secret`
+and passes. `a -> .` is harmless on its own and passes too. On disk, `l` now resolves
+through `a` to `<dest>/../secret`, and nothing rechecks it.
+
+Archivey writes nothing outside the destination: every file write resolves its real
+parent first, so a later `l/x` member is blocked. What stays is a link in the output
+tree that points outside it, against `docs/extracting.md` ("escaping links are removed
+and rejected"). Anything that reads or copies the tree afterwards follows it. Found by
+the 2026-09 extraction audit; pinned by
+`tests/test_audit_extraction.py::test_symlink_made_escaping_by_a_later_member_is_not_left_on_disk`
+(strict xfail).
+
+*Deferred for a separate exploration* (maintainer, 2026-09-28). Options considered and
+why none was taken yet:
+
+- **Refuse `..` after a normal component in a target** (`a/../x`). Cheap, but refuses
+  legitimate targets some build tools write, and its completeness argument is fragile:
+  `OverwritePolicy.REPLACE` can remove a directory and put a symlink in its place.
+- **Re-validate every created symlink at the end of the run.** Complete, but the escape
+  stays live on disk until the sweep, for an unbounded time on a large archive.
+- **Analyse all targets before extracting.** Not available to a streaming extraction,
+  which does not know later members yet.
+- **Recheck only the affected links when a new link appears** (the maintainer's
+  direction). When `a -> .` is created, find the earlier links whose target traverses
+  `a` and recheck those. Plausible, but the traversal runs through other links and
+  through directories `REPLACE` can swap, so the index needs care to be correct.
+- A narrower refusal to evaluate with it: refuse `..` only when the component before it
+  does not exist on disk when the link is created.
 
 ## OPEN gaps — compatibility
 

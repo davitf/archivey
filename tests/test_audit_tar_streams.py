@@ -25,6 +25,7 @@ from archivey import (
     ListingLimits,
     open_archive,
 )
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import ArchiveyError, CorruptionError, ResourceLimitError
 from tests.conftest import requires, requires_zstd
 
@@ -125,13 +126,6 @@ def _drain(ar) -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="SIGALRM watchdog")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: streaming TAR skips a member's declared size in bufsize steps, so a "
-        "2 KiB archive declaring a 2**45-byte member spins for hours"
-    ),
-)
 def test_streaming_tar_huge_declared_size_fails_fast() -> None:
     """A forward-only walk must not do work proportional to a size the archive
     declares but does not contain (``streaming=True`` is the O(1) escape hatch in
@@ -159,13 +153,6 @@ def _huge_size_tar() -> bytes:
 
 
 @pytest.mark.parametrize("source_kind", ["bytesio", "path", "tar.xz"])
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: a PAX/base-256 member size past 2**63 makes TarFile.next() seek past "
-        "ssize_t; OverflowError / ValueError / OSError(EINVAL) escape members()"
-    ),
-)
 def test_random_access_tar_huge_declared_size_is_typed(
     source_kind: str, tmp_path: Path
 ) -> None:
@@ -203,13 +190,6 @@ def test_random_access_tar_huge_declared_size_is_typed(
     ],
     ids=["map", "size", "realsize"],
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: a non-integer GNU.sparse.map/size/realsize PAX record raises a bare "
-        "ValueError from tarfile that TarReader._translate_exception does not map"
-    ),
-)
 def test_gnu_sparse_pax_record_not_an_integer_is_corruption(
     pax: dict[str, str], streaming: bool
 ) -> None:
@@ -221,13 +201,6 @@ def test_gnu_sparse_pax_record_not_an_integer_is_corruption(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: a PAX sparse 1.0 map block with no newline raises a bare ValueError "
-        "(tuple unpack in tarfile._proc_gnusparse_10)"
-    ),
-)
 def test_gnu_sparse_1_0_map_without_newline_is_corruption(streaming: bool) -> None:
     """error-handling: a malformed sparse map is CorruptionError, not ValueError."""
     pax = {
@@ -249,13 +222,6 @@ def test_gnu_sparse_1_0_map_without_newline_is_corruption(streaming: bool) -> No
 
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("mode", [-1, 2**40], ids=["negative", "over-32-bit"])
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: TarReader._to_member calls stat.S_IMODE(info.mode) on a base-256 "
-        "mode field; a negative or >32-bit mode raises OverflowError from members()"
-    ),
-)
 def test_tar_mode_out_of_range_does_not_escape(mode: int, streaming: bool) -> None:
     """error-handling: listing never raises a builtin for a header value; the
     mtime field already degrades a hostile value (MEMBER_TIMESTAMP_INVALID)."""
@@ -276,13 +242,6 @@ def test_tar_mode_out_of_range_does_not_escape(mode: int, streaming: bool) -> No
     "case",
     ["negative-numbytes", "map-past-packed-data"],
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: a GNU sparse map whose data runs backwards makes tarfile's _Stream "
-        "seek backwards; tarfile.StreamError escapes stream_members() untranslated"
-    ),
-)
 def test_streaming_sparse_map_backward_seek_is_typed(case: str) -> None:
     """error-handling: tarfile.StreamError is a tarfile error about the archive's
     layout and must surface as an ArchiveyError (TarReader._translate_exception maps
@@ -297,13 +256,6 @@ def test_streaming_sparse_map_backward_seek_is_typed(case: str) -> None:
             _drain(ar)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: a GNU sparse map claiming more data than the member stores reads "
-        "the following header and member bytes as this member's content, silently"
-    ),
-)
 def test_sparse_map_past_packed_data_is_not_served_silently() -> None:
     """A member's bytes come from its own data area; reading past it into the next
     header is damage (tar(1) refuses such a map). Random access returns 1024 bytes
@@ -330,13 +282,6 @@ def _sparse_1_0_tar(entries: int) -> bytes:
     return _member("GNUSparseFile.0/f", body, pax_headers=pax) + _TRAILER
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: a PAX sparse 1.0 map is parsed into TarInfo.sparse (retained on the "
-        "member) without weighing it against ListingLimits.max_metadata_bytes"
-    ),
-)
 def test_sparse_1_0_map_is_weighed_against_max_metadata_bytes() -> None:
     """threat-model O1: listing-time retained metadata is budgeted by
     ``max_metadata_bytes``. Here 30 000 map entries (120 KB of tar, ~200 bytes of
@@ -368,14 +313,6 @@ def test_sparse_1_0_map_is_weighed_against_max_metadata_bytes() -> None:
     "prefix",
     [b"BZh\x00", b"\xf26oUW"],
     ids=["bad-blocksize-byte", "junk-before-magic"],
-)
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: Bzip2Codec._translate_accelerator does not map rapidgzip's "
-        "'Blocksize must be one of' ValueError nor the UnicodeDecodeError it raises "
-        "when its own message is not UTF-8"
-    ),
 )
 def test_bzip2_accelerator_header_errors_are_typed(prefix: bytes) -> None:
     """compressed-streams: 'Returned streams translate decompression errors' and
@@ -484,13 +421,6 @@ def _extended_header_chain(kind: bytes, count: int) -> bytes:
     [tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK, tarfile.XHDTYPE],
     ids=["L", "K", "x"],
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: a chain of ~1000 GNU long-name / PAX extended headers makes tarfile "
-        "recurse once per header; RecursionError escapes open_archive/members()"
-    ),
-)
 def test_extended_header_chain_does_not_raise_recursion_error(
     kind: bytes, streaming: bool
 ) -> None:
@@ -540,6 +470,7 @@ _CODEC_FORMATS = {
 
 
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("padding", [64 * 1024, 2 * 2**20], ids=["64KiB", "2MiB"])
 @pytest.mark.parametrize(
     "codec",
     [
@@ -548,24 +479,16 @@ _CODEC_FORMATS = {
         pytest.param("lz4", marks=requires("lz4")),
     ],
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: TarReader._verify_nothing_but_zeros_to_eof swallows every ReadError "
-        "past the trailer, so a gzip CRC / zstd / lz4 content-checksum mismatch "
-        "covering the members already served is dropped (64 KiB record padding)"
-    ),
-)
 def test_compressed_tar_stream_checksum_after_trailer_is_not_dropped(
-    codec: str, streaming: bool
+    codec: str, padding: int, streaming: bool
 ) -> None:
-    """compressed-streams: 'Decompressed output digests are verified at clean EOF';
-    the scan's own docstring already makes the exception for zlib's Adler-32
-    (_StreamChecksumError) for exactly this reason. One flipped byte in a stored
-    member body decodes cleanly, so only the stream checksum can see it; with a
-    ``tar -b128`` record (64 KiB of zero padding after the trailer) the checksum
-    is reached inside the trailing scan and ignored. Past 1 MiB of padding it is
-    never reached at all."""
+    """compressed-streams: 'Decompressed output digests are verified at clean EOF'.
+    One flipped byte in a stored member body decodes cleanly, so only the stream
+    checksum can see it. With a ``tar -b128`` record (64 KiB of zero padding after
+    the trailer) the checksum is reached inside the trailing scan, which must raise
+    it (_StreamChecksumError) rather than take it for a tail that failed to decode.
+    Past the scan's 1 MiB bound it is never reached, and DIGEST_UNVERIFIABLE says so;
+    the same archive without the flipped byte reports the same, and raises nothing."""
     import random
 
     payload = random.Random(1).randbytes(20_000)
@@ -574,14 +497,23 @@ def test_compressed_tar_stream_checksum_after_trailer_is_not_dropped(
         info = tarfile.TarInfo("a")
         info.size = len(payload)
         t.addfile(info, io.BytesIO(payload))
-    compressed = bytearray(_stored_codec(codec, tar.getvalue() + b"\0" * 65536))
+    clean = _stored_codec(codec, tar.getvalue() + b"\0" * padding)
+    compressed = bytearray(clean)
     at = compressed.find(payload[1000:1100])
     assert at >= 0, "fixture premise: the member body is stored verbatim"
     compressed[at + 50] ^= 0x01
-    with pytest.raises(CorruptionError):
+
+    def _drained(data: bytes) -> set[DiagnosticCode]:
         with open_archive(
-            io.BytesIO(bytes(compressed)),
-            format=_CODEC_FORMATS[codec],
-            streaming=streaming,
+            io.BytesIO(data), format=_CODEC_FORMATS[codec], streaming=streaming
         ) as ar:
             _drain(ar)
+            return set(ar.diagnostics.counts)
+
+    if padding <= 1 * 2**20:
+        with pytest.raises(CorruptionError):
+            _drained(bytes(compressed))
+        assert DiagnosticCode.DIGEST_UNVERIFIABLE not in _drained(clean)
+    else:
+        assert DiagnosticCode.DIGEST_UNVERIFIABLE in _drained(bytes(compressed))
+        assert DiagnosticCode.DIGEST_UNVERIFIABLE in _drained(clean)

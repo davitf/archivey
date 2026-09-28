@@ -72,6 +72,7 @@ from archivey.internal.measurement import (
     measurement_enabled,
 )
 from archivey.internal.naming import (
+    emit_link_target_bidi_control,
     emit_member_name_bidi_control,
     link_target_name_keys,
     resolve_link_target_name,
@@ -1533,6 +1534,18 @@ class BaseArchiveReader(ArchiveReader):
             raise report.error
         return list(report.members)
 
+    def _extraction_listing(self) -> ContextManager[None]:
+        """Apply ``ListingLimits`` for an extraction over this random-access reader.
+
+        Called by the extraction coordinator before its pass, which it runs inside the
+        returned context. The default lists every member first, with the limits
+        enforced, so nothing is written from an archive over them. A backend whose
+        listing is itself a scan of the data may instead enforce them as members
+        arrive during the pass (TAR), and not decode the archive twice.
+        """
+        self._get_members_registered(enforce_listing_limits=True)
+        return nullcontext()
+
     def _account_archive_comment(self, *, enforce: bool) -> None:
         comment = self._get_archive_info().comment
         self._listing_tracker.account_archive_comment(comment, enforce=enforce)
@@ -1562,8 +1575,42 @@ class BaseArchiveReader(ArchiveReader):
                 member=member,
                 archive_name=self._archive_name,
             )
+            # A target the header carries is known now. A target stored as member data
+            # is checked when it is read (`_resolve_link_target`), so each member is
+            # checked once either way.
+            emit_link_target_bidi_control(
+                self._diagnostics_collector,
+                member=member,
+                archive_name=self._archive_name,
+            )
             self._walk_presented = idx + 1
+        if member.type is MemberType.SYMLINK and member.link_target == "":
+            # A target the header carries (TAR, RAR5, ISO Rock Ridge) is set while the
+            # member is typed, so this is the first place every backend's passes share.
+            # Emit first and clear after: a strict policy that raises here leaves the
+            # member as it was, so a walk started over reports it again.
+            self._emit_empty_link_target(member)
+            member.link_target = None
+            member._link_target_resolved = True
         self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
+
+    def _emit_empty_link_target(self, member: ArchiveMember) -> None:
+        """Report a symlink whose stored target is the empty string.
+
+        No filesystem takes an empty path as a link target, so the archive records no
+        target for this link, the same as a writer that stored none. It is presented
+        the same way: ``link_target`` unset, and extraction records
+        ``LINK_TARGET_UNAVAILABLE`` for it instead of passing ``""`` to ``os.symlink``.
+        """
+        self._emit_link_target_unavailable(
+            member,
+            reason="target_empty",
+            message=(
+                f"The symlink target of {quoted(member.name)} is stored as an empty "
+                f"string; leaving link_target unset."
+            ),
+            target_in_archive=False,
+        )
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         """Populate ``link_target`` from member data when needed. Base is a no-op."""
@@ -1582,6 +1629,18 @@ class BaseArchiveReader(ArchiveReader):
         if member.link_target is not None or member._link_target_resolved:
             return
         self._ensure_link_target(member)
+        if member.type is MemberType.SYMLINK and member.link_target == "":
+            # A target stored as member data (ZIP, 7z) of zero bytes. Cleared
+            # before the emit, the reverse of `_register_member`: if a strict policy
+            # raises here, the memo below stays unset and a later lookup reads the
+            # member again and reports it again.
+            member.link_target = None
+            self._emit_empty_link_target(member)
+        emit_link_target_bidi_control(
+            self._diagnostics_collector,
+            member=member,
+            archive_name=self._archive_name,
+        )
         # After, not before: a hook that raised did not look and come back empty, it
         # never finished. `_finalize_links` reports a CorruptionError / TruncatedError
         # here and lists the link without a target, so marking it resolved on the way

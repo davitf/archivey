@@ -318,7 +318,18 @@ overlap and other structural failures raise before decryption starts and SHALL b
 `CorruptionError` immediately, with no further password iteration; a payload the file
 cuts short stays `TruncatedError`. `UnsupportedFeatureError`,
 `PackageNotInstalledError`, `ResourceLimitError` and `OSError` values SHALL propagate
-unchanged. Rejected-candidate streams SHALL be closed before trying the next candidate.
+unchanged, with one exception. On a ZipCrypto `LZMA` or `PPMd` member the codec
+settings (the LZMA properties, the PPMd order and memory size) are part of the encrypted
+data, so a wrong password that passes the one-byte check decrypts them to an arbitrary
+size. A `ResourceLimitError` those settings raise SHALL count as that candidate's
+failure, and the next candidate SHALL be tried. When no candidate succeeds and at least
+one failed that way, the reader SHALL raise the first such `ResourceLimitError`, its
+message noting that under ZipCrypto the password may be wrong. It stays a
+`ResourceLimitError` so that a caller who raises `DecoderLimits.max_decoder_memory`
+gets a working read when the size is real. A lone password raises the same noted
+`ResourceLimitError`. WinZip AES members keep propagating `ResourceLimitError`
+unchanged: a garbage size needs a wrong password that passes the 16-bit `pw_verify`.
+Rejected-candidate streams SHALL be closed before trying the next candidate.
 
 #### Scenario: ZipCrypto confirmation matrix
 
@@ -327,6 +338,9 @@ unchanged. Rejected-candidate streams SHALL be closed before trying the next can
 | Wrong candidate passes verification byte before correct one (STORED / DEFLATE / BZIP2 / LZMA) | Wrong candidate rejected; fresh stream opened with correct candidate |
 | One distinct static candidate | No confirmation read; member streams lazily |
 | One distinct static candidate that passes the verification byte but is wrong, or right on a corrupt member | Caller `read`/`readinto`/forward `seek` of a compressed member raises `EncryptionError` saying the password may be wrong or the member corrupt (at open for `LZMA`/`PPMd`); no wrong-password mark |
+| Same, `LZMA`/`PPMd` member whose decrypted codec settings exceed `max_decoder_memory` | Open raises `ResourceLimitError` whose message notes the ZipCrypto password may be wrong |
+| Wrong candidate whose decrypted `LZMA`/`PPMd` settings exceed `max_decoder_memory`, before the correct one | Wrong candidate rejected; correct candidate reads |
+| No candidate succeeds, and one failed on a decoder limit from its decrypted settings | The first such `ResourceLimitError`, message noting the ZipCrypto password may be wrong |
 | Same, STORED member, caller seeks and closes | Seek does not raise; `ENCRYPTED_MEMBER_UNVERIFIED` on close |
 | Large compressed member | At most bounded prefix decompressed per candidate; no proportional plaintext storage; caller stream still checks CRC at EOF |
 | STORED member with several surviving candidates | One shared ciphertext pass computes every candidate CRC; matching candidate accepted and reopened |

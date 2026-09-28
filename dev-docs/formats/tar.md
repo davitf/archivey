@@ -136,7 +136,14 @@ In random-access mode the fileobj is wrapped in `_EofProbeStream`, which does tw
   so the allocation follows the bytes that exist. Over the source it passes through,
   because the source already clamps a read to what is left
   ([`threat-model.md`](../threat-model.md) O15). Streaming needs neither: tarfile's
-  `_Stream` reads in `bufsize` chunks.
+  `_Stream` reads in `bufsize` chunks. What streaming does need is a guard on the skip.
+  tarfile skips an unread member by reading `size // bufsize` chunks and does not stop
+  when they come back empty, so the cost followed the declared size: a 2 KiB archive
+  declaring a 2**45-byte member looped for hours. Before each header after the first,
+  `_read_through_member_data` reads the rest of the previous member's data area itself
+  (up to `TarFile.offset`, in 64 KiB chunks) and raises `TruncatedError` at the first
+  short read, so the skip costs the bytes present. On an honest archive these are the
+  bytes tarfile would have read anyway, and its own skip is left with nothing to do.
 - **It remembers the last read**, which is how the end is classified. `TarFile.next()`
   always tries one more block before it returns `None`, so the last read is the block
   the walk stopped on. The EOF check then runs in this order:
@@ -150,7 +157,15 @@ In random-access mode the fileobj is wrapped in `_EofProbeStream`, which does tw
   3. After a good trailer, scan up to 1 MiB for a non-zero byte and emit
      `ARCHIVE_TRAILING_DATA` at the first one. Zeros pass, because `tar` pads to 10 KiB
      records. On a compressed tar the tail is decompressed to look at it, and a tail
-     that does not decode ends the scan with no diagnostic.
+     that does not decode (a truncated footer, junk after the compressed stream) ends
+     the scan with no diagnostic. A whole-stream checksum that fails there (gzip CRC-32
+     or ISIZE, zlib Adler-32, zstd or lz4 content checksum, lzip CRC-32) raises
+     `CorruptionError`: it covers the members already read, and with `tar -b128`
+     padding (64 KiB) the scan is where it is reached. When the scan stops at 1 MiB
+     with the compressed stream still going, that checksum was never checked, and
+     `DIGEST_UNVERIFIABLE` (`reason="trailing_scan_limit"`) says so. An xz integrity
+     check fails with liblzma's generic "Corrupt input data", which a junk tail gives
+     too, so it stays quiet here.
 
   Streaming has no probe, so it runs steps 2 and 3 only, and a rejected header that is
   the file's last block reads there as a missing trailer
@@ -160,7 +175,14 @@ In random-access mode the fileobj is wrapped in `_EofProbeStream`, which does tw
 `iter(TarFile)` in batches of up to 1 024 under one lock hold. A batch never asks for
 more than `ListingLimits.max_members` has left plus one, and is cut short where a low
 count of its header text passes `max_metadata_bytes`, so a header bomb costs about one
-header past either cap and no more. Past a cap that is not enforced (`stream_members()`
+header past either cap and no more. That one header is bounded too: tarfile reads a PAX
+`x`/`g` header or a GNU `L`/`K` name whole, so `_TarInfo._proc_member` refuses one whose
+size field declares more than is left of `max_metadata_bytes` (the whole cap when the
+listing is not enforcing it, and on a streaming walk) with `ResourceLimitError`, before
+the read. The budget reaches it through a context variable the reader sets around each
+tarfile call that parses headers. A sparse member's map counts too, 24 bytes per
+entry: tarfile keeps it on the `TarInfo`, and a PAX sparse 1.0 map is data, not header
+text, so a few kilobytes of compressed map can hold millions of entries. Past a cap that is not enforced (`stream_members()`
 on a random-access reader) the batches go back to full size. Batching keeps the walk a
 dense pass; one header per lock hold was measurably slower on ordinary listings. When
 the walk fails partway through a batch, the headers already parsed are handed out first,
@@ -184,7 +206,7 @@ there both lists grow for the whole pass.
 | `accessed` | PAX `atime` only |
 | `created` | The PAX `LIBARCHIVE.creationtime` keyword, which libarchive writes when the source OS has a birth time. No other TAR writer is known to store one, so it is `None` for most archives |
 | `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created`. A libarchive tar can carry both |
-| `mode`, `uid`, `gid`, `uname`, `gname` | Straight from the header. `mode` keeps the permission and setuid/setgid/sticky bits only |
+| `mode`, `uid`, `gid`, `uname`, `gname` | Straight from the header. `mode` keeps the permission and setuid/setgid/sticky bits only, masked before `stat.S_IMODE`, so a negative or wider-than-32-bit base-256 mode cannot fail the listing |
 | `is_sparse` | `TarInfo.issparse()`, which is true for the old GNU `S` typeflag and for all three PAX sparse encodings |
 | `extra` | `tar.type` always; `tar.pax_headers` when there are any; `tar.devmajor` / `tar.devminor` for device members |
 
@@ -204,6 +226,15 @@ stored bytes.
 tarfile's `extractfile()` does the work in both modes, which is what keeps sparse
 expansion correct without a second implementation. What differs is what sits under it.
 
+**A sparse map is checked against the member's data area first.** tarfile reads the
+map's chunks one after another from the start of the data area and does not know how
+much the member stores, so a map claiming more reads the next header and member as this
+member's content. The reader records where each member's data area ends as tarfile
+parses the header, and refuses a map whose chunks add up to more, or that has a negative
+entry, with `CorruptionError` when the member is opened (streaming: on its first read,
+so a consumer that skips it is unaffected). The end is known only in whole blocks, so up
+to 511 bytes of the member's own padding can still read as data.
+
 **A plain tar reads the member's bytes from the source**, at the offset the walk found.
 Random opens cost one seek each, and members can be read in any order.
 
@@ -216,12 +247,26 @@ the byte count; the first on a stream logs, later ones only escalate, and a call
 wants a rewind to fail sets that code to `RAISE`. A listing ends at the far end of the
 stream, so the first `open()` after `members()` is already a backward seek.
 `stream_members()` decodes the stream once and is the path `docs/formats.md` tells
-callers to use.
+callers to use. On a random-access reader whose walk has not ended it is one pass
+(`_iter_with_data_random_access`): the walk parses one header at a time, registers the
+member as it arrives (so `members()` afterwards serves the same list), and the member's
+data is read from where its header left the stream, before the next header. After a full
+listing it reads the members' data in archive order, one forward sweep after a single
+seek back to the first member. `extract_all()` takes the one-pass path too (§2.4).
 
 **`streaming=True` hands each member out as the pass reaches it.** A member's stream is
 good only until the pass moves on, because tarfile reads the next header from the same
 position; keeping one and reading it later raises `ValueError` on a closed file. A
 hardlink or symlink in a streaming pass resolves against members already seen.
+
+**A hardlink resolves to an earlier member only, in both modes.** A hardlink is a
+reference to a file already archived: tarfile's `_find_link_target` searches only the
+members before the link and takes the last match, and `tar(1)` links to what it has
+already written. `TarReader._lookup_link_target_for_member` refuses the base's forward
+fallback, so a hardlink whose only same-named member comes after it has no
+`link_target_member`, and opening or extracting it raises `LinkTargetNotFoundError`, in
+random access as in a streaming pass. A symlink is a path, not a reference, and resolves
+to the last member of that name either way.
 
 **`MemberStreams.CONCURRENT`** puts one lock around every operation that touches
 tarfile's shared handle: the walk, `extractfile`, each member read, seek and close, the
@@ -241,8 +286,8 @@ Path safety, collisions, limits and the extraction filter are the shared machine
 TAR's own.
 
 **Hardlinks are resolved by a pull-based coordinator.** The source always comes first in
-a tar, so an unfiltered `extract_all()` links every hardlink in one pass with
-`os.link()`. A `members` selector or `filter` can select a link and exclude its source.
+a tar (a hardlink with no earlier source has no target, §2.3), so an unfiltered
+`extract_all()` links every hardlink in one pass with `os.link()`. A `members` selector or `filter` can select a link and exclude its source.
 Then a seekable reader makes one second pass for all such links together, and a
 forward-only one records each as a failure under `OnError`. A cross-device link falls
 back to copying from a path already written. The full matrix is in
@@ -261,9 +306,15 @@ opened from a path is checked against the file's size; one read from a stream is
 live against compressed bytes consumed, which is why a piped `.tar.gz` bomb stops
 mid-pass. A plain tar has nothing to decompress and is checked against the archive size.
 
-**Random-access `extract_all` fails closed.** Extraction materializes the member list
-first, so a corrupt header raises before anything is written. Streaming `extract_all`
-writes what it can reach and raises at the end of the pass.
+**`extract_all` is one forward pass in both modes.** Random access does not list the
+archive first: `TarReader._extraction_listing` has the pass enforce `ListingLimits` as
+members arrive (`ResourceLimitError` at the member that crosses a cap, before it is
+written), so a `.tar.gz` is decoded once and no rewind is reported. What that gives up is
+knowledge of the future, the same as a streaming pass: a corrupt header raises after the
+members before it are written (no longer fails closed), and the duplicate-name cases
+`safe-extraction` lists as differing in a streaming pass differ here too. A hardlink
+source is always earlier (§2.3), so every source is written or excluded by the time its
+link arrives; one a selector excluded is read again in the orphan second pass.
 
 ### 2.5 Write
 
@@ -339,10 +390,11 @@ extraction checks (§2.4).
 | A tar with no trailer warns `ARCHIVE_EOF_MARKER_MISSING` and still lists | **format** | Complete-without-trailer and truncated-at-a-boundary are the same bytes. Set the code to `RAISE` when completeness matters |
 | A corrupt last header raises in random access and only warns when streaming | **library** | tarfile's `_Stream` hides the block the walk stopped on. A native header walker would close it (open-issues **P3**, [`known-issues.md`](../known-issues.md)) |
 | Two tars joined with `cat` list as one archive's members plus `ARCHIVE_TRAILING_DATA` | **format** / **archivey** | The first trailer ends the walk. archivey does not read past it the way `tar -i` does (§6) |
-| A byte more than 1 MiB past the trailer goes unreported | **archivey** | The trailing-data scan is an effort bound, not a guarantee (§2.2) |
+| A byte more than 1 MiB past the trailer goes unreported | **archivey** | The trailing-data scan is an effort bound, not a guarantee (§2.2). On a compressed tar that also leaves the stream checksum unchecked, reported as `DIGEST_UNVERIFIABLE` |
 | A `.tar` of nothing but zeros opens as an empty archive | **format** | That is what an empty tar is ([ADR 0015](../decisions/0015-zero-filled-files-are-valid-empty-tars.md)). `detect_format()` still refuses it |
 | A v7 tar with no extension is not detected | **format** | No magic to find (§2.1). Pass `format=ArchiveFormat.TAR` |
 | A hardlink's `link_target` is `./d/b` while the member it names is `d/b` | **format** / **archivey** | `link_target` is documented as stored text. Use `link_target_member` |
+| A hardlink placed before the only member it names does not extract | **format** | A hardlink refers to an earlier member, as tarfile and `tar(1)` read it; `LinkTargetNotFoundError` in both modes (§2.3) |
 | Extracting a sparse file refuses with a ratio error, or fills the disk with zeros | **archivey** | Holes are written as zeros and counted as output (§2.4). Measured: a 10 MiB sparse file with one byte of data is a 10 240-byte tar, and `extract_all()` refuses it at 1024:1. By design (§6); raise `max_ratio` for an archive known to hold sparse files |
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
 | A streaming pass over millions of members uses memory in proportion | **library** / **archivey** | tarfile appends every header to `TarFile.members`, and the pass keeps its own list for `scan_members()` |
@@ -400,7 +452,8 @@ extraction checks (§2.4).
 | Rejected header, mid-archive and last block, plain, gzip and sparse | `::test_corrupt_mid_header_raises_corruption_by_default`, `::test_corrupt_final_header_raises_corruption_by_default`, `::test_corrupt_final_header_gzip_raises_corruption`, `::test_corrupt_final_header_sparse_raises_corruption` |
 | The streaming last-block gap | `::test_corrupt_final_header_streaming_warns_not_corruption` |
 | Rejected header wins over `IGNORE` and `RAISE` | `::test_corrupt_final_header_ignore_disposition_still_raises`, `::test_corrupt_mid_header_raise_disposition_still_corruption` |
-| Random `extract_all` fails closed; streaming writes then raises | `::test_corrupt_final_header_extract_raises`, `::test_corrupt_mid_header_streaming_extract_writes_then_raises` |
+| `extract_all` writes the salvageable members, then raises, in both modes | `::test_corrupt_final_header_extract_raises`, `::test_corrupt_mid_header_streaming_extract_writes_then_raises` |
+| `archivey.extract` on `.tar.gz`/`.bz2`/`.xz` decodes once; limits still bind | `::test_extract_compressed_tar_decodes_once`, `::test_extract_enforces_listing_limits_as_members_arrive` |
 | Truncation inside member data raises during iteration | `::test_truncated_tar_raises` |
 | Trailing data reported, bounded, quiet on an undecodable tail; zeros pass | `tests/test_review_simplicity_consistency.py::test_trailing_data_is_reported`, `::test_trailing_data_scan_is_bounded`, `::test_compressed_tail_that_will_not_decode_ends_the_scan_quietly`, `::test_zero_padding_after_the_trailer_still_passes`, `::test_wrong_explicit_format_on_iso_reports_trailing_data` |
 | Zero-filled files are empty tars; detection refuses them | `::test_legitimately_empty_tar_stays_valid`, `::test_every_block_aligned_zero_length_is_a_valid_empty_tar`, `::test_zero_filled_dot_tar_opens_empty_via_extension`, `::test_content_detection_refuses_a_zero_filled_file` |
@@ -408,6 +461,8 @@ extraction checks (§2.4).
 | The listing stops reading headers at `max_members` and `max_metadata_bytes`, returns to full batches past the cap, and keeps its prefix when it fails mid-batch | `tests/test_listing_limits.py::test_tar_listing_stops_reading_headers_at_max_members`, `::test_tar_listing_stops_reading_headers_at_max_metadata_bytes`, `::test_tar_header_batch_returns_to_full_size_past_max_members`, `::test_tar_extract_all_enforces_listing_limits`; `tests/test_tar.py::test_members_report_keeps_the_prefix_when_the_walk_raises_mid_batch` |
 | Links: relative, `..`, absolute, archive-relative hardlinks, duplicate names, cycles | `tests/test_tar.py::test_relative_symlink_resolves_against_link_directory` through `::test_chain_through_same_named_members_not_false_cycle` |
 | Hardlink extraction: one pass, orphans, cross-device | `tests/test_extraction.py::test_tar_hardlink_shares_inode`, `::test_tar_hardlink_orphan_recovered_seekable`, `::test_tar_hardlink_orphan_forward_only_onerror`, `::test_cross_device_hardlink_reuses_sibling` |
+| A hardlink resolves backward only, in both modes | `tests/test_tar.py::test_hardlink_resolves_to_an_earlier_member_only`, `tests/test_extraction.py::test_hardlink_before_source_is_not_linked_forward` |
+| `stream_members()` on a random-access compressed tar decodes once | `tests/test_audit_cross_format.py::test_compressed_tar_stream_members_decodes_once` |
 | Ratio guard: static for a path, live for a piped `.tar.gz`, no live check on a plain tar | `::test_seekable_targz_uses_static_not_live`, `::test_streaming_targz_bomb_caught_by_live_ratio`, `::test_streaming_plain_tar_no_live_ratio_trip` |
 | Concurrent reads through the handle lock | `tests/test_concurrent_multithread.py::test_multithread_plain_tar_open_read`, `::test_multithread_gzip_tar_open_read` |
 | Inner-TAR detection over each codec, and its budget | `tests/test_detection.py::test_inner_tar_over_gzip_is_tar_gz` and its siblings, `::test_inner_tar_probe_stays_inside_the_decode_budget` |

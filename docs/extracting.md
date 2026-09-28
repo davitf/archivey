@@ -60,7 +60,8 @@ archivey.extract("archive.zip", "out/")
   flagged one. `extra["is_reparse_point"]` is the weaker fact those archives *do*
   record — this was a Windows symlink or junction rather than a POSIX one — and is set
   from metadata in every format that states it.
-- **A link for which the archive records no target** is recorded
+- **A link for which the archive records no target** (a stored target that is the empty
+  string counts, and lists as `link_target=None`) is recorded
   `ExtractionStatus.LINK_TARGET_UNAVAILABLE` and the rest of the archive still extracts.
   Nothing can be written for it, and nothing about the extraction went wrong, so it is
   not a failure and `OnError.STOP` does not abort on it. That holds in a streaming read
@@ -91,7 +92,9 @@ archivey.extract("archive.zip", "out/")
   U+200F) are **not** rejected: they reorder nothing and occur in legitimate Arabic and
   Hebrew filenames. Right-to-left script itself is unaffected — `فهرس.txt` contains no
   control character at all. Listing and reading always present either kind exactly as
-  stored, with a `MEMBER_NAME_BIDI_CONTROL` diagnostic.
+  stored, in a name or a link target, with one `MEMBER_NAME_BIDI_CONTROL` diagnostic
+  for each; its context's `field` is `"name"` or `"link_target"`. A target stored as the
+  member's data (ZIP, 7z, RAR4) is reported when it is read.
 
     Unlike the rules above, this one **is** lifted by `TRUSTED`, which extracts the
     member under its stored name. The distinction is that nothing here is unsafe to
@@ -227,7 +230,7 @@ Archive order and identity matter more than “the” name.
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
 | Staging leftovers | `.archivey-tmp-*` under the destination are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
-| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` / `streaming=True` are intentionally unguarded, except on formats that already apply `max_members` at parse (7z and RAR): `open_archive` itself raises. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
+| Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` / `streaming=True` are intentionally unguarded, except on formats that already apply `max_members` at parse (7z and RAR): `open_archive` itself raises. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
 
 ## Limits
 
@@ -238,7 +241,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   (`ExtractionLimits`). Trips raise `ResourceLimitError`.
 - **Listing materialization** — member count and retained metadata bytes
   (`ListingLimits`) on `members()` / `scan_members()` / extract-prep materialization.
-  Trips raise `ResourceLimitError`. `stream_members()` / `streaming=True` stay
+  Trips raise `ResourceLimitError`. A TAR extraction does not list first: it checks
+  the limits as each member arrives in its one pass, so members before the one that
+  crosses a cap are already written when it raises. `stream_members()` / `streaming=True` stay
   unguarded by design, except on 7z and RAR where `max_members` is checked at
   `open_archive`. Raise `listing_limits.max_members` to open a larger 7z or
   RAR. That parse bound is a member count, not a byte budget:
@@ -252,6 +257,8 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   `ResourceLimitError`. Format detection is the exception: a `.lzma` or compressed-tar
   sample is decoded uncapped to recognise it, so under a memory cap an oversized
   declaration can surface as `MemoryError` from `open_archive` instead.
+  RAR is not covered: its data is decoded by `unrar` or `unar` in a separate process,
+  and archivey does not check the dictionary size a RAR header declares.
 - **Key-derivation work** — RAR5 and 7z headers say how many hashing rounds turn a
   password into a key, and an archive can salt every member so each needs its own
   (`DecoderLimits.max_key_derivation_rounds`, default `2**27` rounds in total per open
@@ -264,7 +271,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   reads only files, so a RAR opened from a stream is copied to a temp file first
   (`SpoolLimits.max_bytes` on `ArchiveyConfig.spool_limits`, default 1 GiB across the
   whole copy). Checked before anything is written. Trips raise `ResourceLimitError`.
-  A path source is never copied.
+  A path source is read in place, with two exceptions bounded by the same limit: a
+  RAR with a prefix before it (an SFX stub) read with `rar_decompressor="unar"`, and
+  a list of RAR volume files where the system allows no link to them.
 - **PPMd members decoded in-process** — pyppmd, the PPMd decoder (7z and ZIP method
   98), can crash the whole process on corrupt input unless it is handed a member in one
   piece. archivey holds a member's compressed bytes up to

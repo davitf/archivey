@@ -211,7 +211,9 @@ What is ISO-specific in turning a record into a member:
 - **Times.** `modified` is the Rock Ridge `TF` modification time when there is one, else
   the record's 7-byte date; `TF` also supplies `accessed`. `TF` long-form dates (17 bytes,
   hundredths of a second) are read; MagicISO's out-of-range hundredths become 0. A date
-  that is all zeros or invalid is `None` rather than an error. `created` is set only from
+  that is all zeros is unset and `None`. Any other date that is not a date (a month of
+  13) is `None` plus `MEMBER_TIMESTAMP_INVALID`, as in ZIP, TAR and 7z, rather than an
+  error. `created` is set only from
   a `TF` creation time, which few writers record; the `TF` attribute-change time (POSIX
   `st_ctime`) goes to `ctime` and never to `created`. That is the rule after
   PR #470; before it, `created` fell back to the attribute-change time.

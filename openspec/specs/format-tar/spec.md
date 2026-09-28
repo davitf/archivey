@@ -95,6 +95,11 @@ Only a `members` selector or `filter` can orphan a hardlink by selecting the lin
 while excluding its source. Unfiltered extract-all SHALL resolve TAR hardlinks in
 one sequential pass because the source precedes the link.
 
+A TAR hardlink SHALL resolve only to a member before it (the last one of that name, as
+stdlib `tarfile` looks it up), in random access as in a streaming pass. A hardlink whose
+only same-named member comes after it has no `link_target_member`; opening it raises
+`LinkTargetNotFoundError`, and extraction fails it the same way.
+
 The core algorithm SHALL write selected members in one forward pass, recording
 every written FILE path per source. A selected hardlink to an already-written
 source is created with `os.link()`. If a selector/filter orphans a selected link:
@@ -128,6 +133,7 @@ skip doomed attempts but is not required for correctness.
 | Orphaned link on forward-only source | Per-member failure follows `OnError` |
 | `B -> A` copied cross-device, then `C -> A` on B's device | `C` is created with `os.link(B, C)` rather than copying A again |
 | Every recorded path fails with `EXDEV` | Copy source content to link destination and record that path |
+| Hardlink before the only member it names, random access or streaming | That link fails with `LinkTargetNotFoundError`; the later member extracts normally |
 
 ### Requirement: Detect truncated TAR archives
 
@@ -186,10 +192,10 @@ terminal listing error carried through the `partial-members-and-errors` report m
 - `members_report()` (and `members_report_if_available()`) return the recovered prefix plus
   the terminal `error`, so a caller can still inspect the salvageable members.
 - `__iter__` (both access modes) yields the recovered members, then raises.
-- `extract_all` on **random access fails closed** — extract-prep materializes the member
-  list (complete-or-raise) before writing, so a corrupt/truncated archive raises before any
-  member is written and leaves no partial output. **Streaming** `extract_all` verifies at the
-  end of the forward pass, so it writes the salvageable members first and then raises.
+- `extract_all` runs one forward pass in **both** access modes: random access enforces the
+  listing limits as members arrive instead of listing first, so a compressed tar is
+  decoded once. The EOF check therefore runs at the end of that pass: the salvageable
+  members are written first, and then the call raises. It does not fail closed.
 
 The check SHALL raise the escalation from the member scan (so the report model records it as
 `error`); it SHALL NOT record the archive-level EOF only on a separate report field.
@@ -218,8 +224,7 @@ the gap for streaming too. The system SHALL NOT claim otherwise.
 | Rejected **final** header, nothing after | random-access | `nonzero` (via probe) | `CorruptionError` after delivery | `CorruptionError` after delivery |
 | Rejected **final** header, nothing after | streaming | `absent` (limitation) | Warn; pass completes | `DiagnosticRaisedError` after delivery |
 | Truncation inside member data / partial header | both | — | `TruncatedError` during iteration | `TruncatedError` during iteration |
-| Corruption during `extract_all` | random-access | `nonzero` | Fails closed: raises before any write (no partial output) | same |
-| Corruption during `extract_all` | streaming | `nonzero` | Salvageable members written, then `CorruptionError` | same |
+| Corruption during `extract_all` | both | `nonzero` | Salvageable members written, then `CorruptionError` | same |
 | Diagnostic code resolves to `IGNORE`, rejected header | both | `nonzero` | Count increments without delivery; `CorruptionError` raises | same |
 | Diagnostic code resolves to `IGNORE`, `absent`/`short` | both | `absent`/`short` | Count increments without delivery; no error | — |
 | Marker issue discovered after iteration | both | any | `reader.diagnostics` changes; frozen `ArchiveInfo` / `CostReceipt` unchanged | same |
@@ -272,11 +277,17 @@ The check SHALL run only on the success path of the trailer verification — aft
 complete two-block null trailer has been confirmed — so it never competes with the
 `absent` / `short` / `nonzero` classifications of the trailer itself.
 
-The 1 MiB bound is an effort limit, not a ceiling: past it the scan SHALL stop and report
-nothing, and SHALL NOT refuse the archive. It is a module constant, not a configuration
-field. A tail that fails to decode — on a compressed tar, junk after the compressed
-stream or a missing footer — SHALL end the scan with no error and no diagnostic: every
-member was already read whole, and that is not trailing tar data.
+The 1 MiB bound is an effort limit, not a ceiling: past it the scan SHALL stop, SHALL
+NOT report trailing data, and SHALL NOT refuse the archive. It is a module constant, not
+a configuration field. On a compressed tar whose codec can carry a whole-stream checksum
+(gzip, bzip2, xz, zstd, lz4, lzip, zlib), a scan that stops at the bound with the stream
+not at its end SHALL emit `DIGEST_UNVERIFIABLE` (`reason="trailing_scan_limit"`): that
+checksum was never checked. A tail that fails to decode — on a compressed tar, junk
+after the compressed stream or a missing footer — SHALL end the scan with no error and
+no diagnostic: every member was already read whole, and that is not trailing tar data.
+A whole-stream checksum that fails in the scan (gzip CRC-32 or ISIZE, zlib Adler-32,
+zstd or lz4 content checksum, lzip CRC-32) is not such a tail: it covers the members
+already read, and SHALL raise `CorruptionError`.
 
 The code is not a truncation: nothing is truncated, the file is *longer* than the
 listing accounts for.
@@ -289,13 +300,14 @@ listing accounts for.
 | Valid tar + 4 KiB of zeros (`tar` pads to 10 KiB records) | No diagnostic | No diagnostic |
 | Valid tar + 4 KiB of `b"JUNK"` | `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
 | Valid tar + zeros + one non-zero byte, within 1 MiB | `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
-| First non-zero byte more than 1 MiB past the trailer | No diagnostic; the scan stopped | No diagnostic |
+| First non-zero byte more than 1 MiB past the trailer | No diagnostic; the scan stopped (a compressed tar: `DIGEST_UNVERIFIABLE`) | No diagnostic (a compressed tar: raises on `DIGEST_UNVERIFIABLE`) |
 | Two tars concatenated | `ARCHIVE_TRAILING_DATA`; the first is listed | `DiagnosticRaisedError` |
 | Legitimately empty tar (10240 zeros), or 32 KiB of zeros | No diagnostic; all zeros | No diagnostic |
 | A real ISO opened as TAR | Empty listing plus `ARCHIVE_TRAILING_DATA`: its zeros stop at 32768 | Raises |
 | Missing / short trailer | `ARCHIVE_EOF_MARKER_MISSING`; the scan does not run | Raises on that code |
 | `.tar.gz`, junk inside the gzip stream after the trailer | Tail decompressed, at most 1 MiB; `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
 | `.tar.gz`, junk after the gzip stream or a missing gzip footer | No diagnostic, no error | No diagnostic, no error |
+| `.tar.gz` / `.tar.zst` / `.tar.lz4`, a member byte damaged, stream checksum reached within 1 MiB of the trailer | `CorruptionError` | `CorruptionError` |
 
 ### Requirement: Decode TAR member names as UTF-8 by default
 
