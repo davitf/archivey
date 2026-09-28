@@ -73,8 +73,12 @@ _ExpectedHashes = Mapping[HashAlgorithm, bytes]
 _DigestTransforms = Mapping[HashAlgorithm, Callable[[bytes], bytes]]
 
 # Bounded drain step for sized ``read(-1)``. Must not use ``inner.read(-1)`` on the
-# sized branch: ``expected_size`` is a decompression-bomb cap.
-_SIZED_DRAIN_CHUNK = 65536
+# sized branch: ``expected_size`` is a decompression-bomb cap. The step itself is not
+# the bound (the drain stops at ``expected_size`` whatever the step), so it is sized
+# for speed: a member up to one step arrives as one piece, which ``b"".join`` returns
+# without copying, and it matches the decoder's largest compressed feed
+# (``decompressor_stream._COMPRESSED_READ_SIZE_MAX``), so one step is one inflate call.
+_SIZED_DRAIN_CHUNK = 1 << 20
 
 
 def _algo_key(algorithm: HashAlgorithm | str) -> str:

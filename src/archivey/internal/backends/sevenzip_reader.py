@@ -451,14 +451,26 @@ class SevenZipReader(BaseArchiveReader):
         is encryption, reported through ``is_encrypted``.
         """
         out: list[tuple[CompressionMethod, ...]] = []
+        # A non-solid archive has one folder per member, nearly all wired alike, so
+        # the chain is built once per distinct wiring and the tuple shared. The key
+        # holds every field the chain is derived from.
+        by_wiring: dict[object, tuple[CompressionMethod, ...]] = {}
         for folder in archive.folders:
-            out.append(
+            key = (
                 tuple(
+                    (c.method, c.num_in_streams, c.num_out_streams, c.properties)
+                    for c in folder.coders
+                ),
+                tuple(folder.bind_pairs),
+            )
+            chain = by_wiring.get(key)
+            if chain is None:
+                chain = by_wiring[key] = tuple(
                     compression_method_for_coder(coder)
                     for coder in _compression_coders(folder)
                     if not is_aes(coder.method)
                 )
-            )
+            out.append(chain)
         return out
 
     def _build_members(self) -> list[ArchiveMember]:

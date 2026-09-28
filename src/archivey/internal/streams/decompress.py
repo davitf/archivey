@@ -155,11 +155,14 @@ class GzipDecoder(BaseDecoder):
         else:
             data = self._decomp.unconsumed_tail + chunk
 
-        output = bytearray()
+        # Output pieces, joined once at the end: one ``decompress`` call is the common
+        # case, and ``b"".join`` hands a lone piece back without copying it.
+        output: list[bytes] = []
+        produced_total = 0
         while True:
             if self._pending_error is not None or self._finished:
                 break
-            if max_length >= 0 and len(output) >= max_length:
+            if max_length >= 0 and produced_total >= max_length:
                 if self._between_members and data:
                     self._retained = data
                 break
@@ -176,7 +179,7 @@ class GzipDecoder(BaseDecoder):
             if not data:
                 break
 
-            limit = max_length - len(output) if max_length >= 0 else -1
+            limit = max_length - produced_total if max_length >= 0 else -1
             if limit == 0:
                 break
             try:
@@ -190,7 +193,9 @@ class GzipDecoder(BaseDecoder):
                 # with flush() and does not leak zlib.error (GzipCodec.translate maps
                 # it too, but the decoder must stand on its own).
                 raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
-            output.extend(produced)
+            if produced:
+                output.append(produced)
+                produced_total += len(produced)
 
             if self._decomp.eof:
                 data = self._decomp.unused_data
@@ -200,11 +205,11 @@ class GzipDecoder(BaseDecoder):
             # More compressed input remains under a max_length cap — leave it in
             # unconsumed_tail for the next feed (do not copy into _retained).
             data = self._decomp.unconsumed_tail
-            if data and produced and (max_length < 0 or len(output) < max_length):
+            if data and produced and (max_length < 0 or produced_total < max_length):
                 continue
             break
 
-        return DecodeOut(bytes(output))
+        return DecodeOut(b"".join(output))
 
     def flush(self) -> DecodeOut:
         if self._finished:

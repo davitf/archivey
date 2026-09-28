@@ -16,8 +16,7 @@ import logging
 import threading
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -99,6 +98,64 @@ class _Replay:
     cursor: int = 0
 
 
+class _ReplayingBlock:
+    """The context manager :meth:`DiagnosticCollector.replaying` returns."""
+
+    __slots__ = ("_collector", "_log", "_thread_id")
+
+    def __init__(self, collector: DiagnosticCollector, log: EmitLog) -> None:
+        self._collector = collector
+        self._log = log
+        self._thread_id = 0
+
+    def __enter__(self) -> None:
+        collector = self._collector
+        self._thread_id = thread_id = threading.get_ident()
+        with collector._lock:
+            collector._replays[thread_id] = _Replay(self._log)
+
+    def __exit__(self, *exc_info: object) -> None:
+        collector = self._collector
+        with collector._lock:
+            collector._replays.pop(self._thread_id, None)
+
+
+def _nothing_held() -> Exception | None:
+    return None
+
+
+class _DeferringBlock:
+    """The context manager :meth:`DiagnosticCollector.deferring_raises` returns."""
+
+    __slots__ = ("_collector", "_held", "_nested", "_thread_id")
+
+    def __init__(self, collector: DiagnosticCollector) -> None:
+        self._collector = collector
+        self._held: list[Exception] = []
+        self._nested = True
+        self._thread_id = 0
+
+    def __enter__(self) -> Callable[[], Exception | None]:
+        collector = self._collector
+        self._thread_id = thread_id = threading.get_ident()
+        with collector._lock:
+            self._nested = nested = thread_id in collector._deferred
+            self._held = collector._deferred.setdefault(thread_id, [])
+        if nested:
+            return _nothing_held
+        return self._first_held
+
+    def _first_held(self) -> Exception | None:
+        held = self._held
+        return held[0] if held else None
+
+    def __exit__(self, *exc_info: object) -> None:
+        if not self._nested:
+            collector = self._collector
+            with collector._lock:
+                collector._deferred.pop(self._thread_id, None)
+
+
 class DiagnosticCollector:
     """One collector per detection / reader / top-level extract / standalone stream."""
 
@@ -132,8 +189,7 @@ class DiagnosticCollector:
         # Per thread, the raises a ``deferring_raises()`` block is holding back.
         self._deferred: dict[int, list[Exception]] = {}
 
-    @contextmanager
-    def replaying(self, log: EmitLog) -> Iterator[None]:
+    def replaying(self, log: EmitLog) -> _ReplayingBlock:
         """Record this thread's emits into ``log``, or replay the ones it already holds.
 
         For work a reader may have to repeat, such as a random-access member walk
@@ -147,18 +203,14 @@ class DiagnosticCollector:
         from the recorded one means the work is not repeating itself: the log is cut
         there, and that emit and the ones after it are recorded in its place, so the log
         always describes the latest run.
-        """
-        thread_id = threading.get_ident()
-        with self._lock:
-            self._replays[thread_id] = _Replay(log)
-        try:
-            yield
-        finally:
-            with self._lock:
-                self._replays.pop(thread_id, None)
 
-    @contextmanager
-    def deferring_raises(self) -> Iterator[Callable[[], Exception | None]]:
+        The block is a small class rather than a ``@contextmanager`` generator: a
+        random-access member walk enters one per member, so on a large listing the
+        generator machinery was a measurable share of the per-member cost.
+        """
+        return _ReplayingBlock(self, log)
+
+    def deferring_raises(self) -> _DeferringBlock:
         """Hold back this thread's emit raises until the caller can take them.
 
         For code that emits from the middle of a state change it cannot unwind, such as
@@ -176,20 +228,11 @@ class DiagnosticCollector:
         function returns ``None``, so the raise waits for the outermost caller, the
         one whose state change encloses the others. A ``BaseException`` that is not an
         ``Exception`` (``KeyboardInterrupt``) is never held.
+
+        A small class rather than a ``@contextmanager`` generator, for the same reason
+        as :meth:`replaying`: a decompressor stream enters one on every ``read``.
         """
-        thread_id = threading.get_ident()
-        with self._lock:
-            nested = thread_id in self._deferred
-            held = self._deferred.setdefault(thread_id, [])
-        try:
-            if nested:
-                yield lambda: None
-            else:
-                yield lambda: held[0] if held else None
-        finally:
-            if not nested:
-                with self._lock:
-                    self._deferred.pop(thread_id, None)
+        return _DeferringBlock(self)
 
     def _hold(self, thread_id: int, exc: BaseException) -> bool:
         """Hold ``exc`` for this thread's ``deferring_raises`` block, if one is open."""
