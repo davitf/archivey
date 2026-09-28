@@ -262,7 +262,12 @@ class DirectoryReader(BaseArchiveReader):
 
         # Entries scanned through a descriptor are inspected through it too (`lstat`
         # and `readlink` relative to it), so they come from the directory that was
-        # checked, whatever happens to its path meanwhile.
+        # checked, whatever happens to its path meanwhile. So `dir_fd` must stay open
+        # until the last entry is inspected: `os.scandir(fd)` dups the descriptor for
+        # its own iterator, and closing that iterator leaves `dir_fd` open, but each
+        # `DirEntry` resolves `stat()` through `dir_fd` itself. Closed any earlier, an
+        # entry's `stat()` fails with `EBADF`, or runs in whatever directory reused the
+        # number.
         try:
             yield from self._scan_entries(
                 entries, directory, dir_fd, rel_prefix, pending, first_names
