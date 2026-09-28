@@ -418,8 +418,10 @@ class MemberVerifier:
                     self._finish(inner)
         except BaseException:
             # The raise withholds these bytes, and its traceback keeps this frame
-            # alive for as long as the caller keeps the error: let the body go.
+            # alive for as long as the caller keeps the error: let the body go —
+            # the list and the last piece read, which can be the whole member.
             chunks.clear()
+            piece = b""
             raise
         return b"".join(chunks)
 
