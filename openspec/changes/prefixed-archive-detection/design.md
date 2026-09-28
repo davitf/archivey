@@ -195,9 +195,11 @@ scan window / `SFX_MAX`) for the gate, and `==` as a later tie-break among sever
 CRC-valid hits. The slim follow-up after #277 landed the remaining-length gate
 and rejects an empty next-header (`NextHeaderSize == 0`) behind a stub: nobody
 ships a self-extractor with no files, and a genuine empty `.7z` is claimed by
-near magic, never by the scan. Exact-EOF ranking is still earliest-`VALID` —
-task 2.3's remainder, pinned by an `xfail(strict=True)` red half and recorded in
-`dev-docs/topics/prefixed-archives.md`. Appending 16 bytes to a 7z leaves it perfectly
+near magic, never by the scan. Exact-EOF ranking has landed (task 2.3, done
+2026-09-25): a hit whose declared end falls short of the source grades
+`HitOutcome.VALID_SHORT` and the scan keeps looking for one that ends at EOF
+(`internal/sfx.py`), pinned by `tests/test_sfx.py::test_inexact_7z_decoy_loses_to_a_later_exact_payload`
+and recorded in `dev-docs/topics/prefixed-archives.md`. Appending 16 bytes to a 7z leaves it perfectly
 readable while breaking the exact-EOF equality, and some SFX tools append
 configuration after the payload — measured, not assumed. That is why the
 tie-break is a preference among validated hits, not a filter.
