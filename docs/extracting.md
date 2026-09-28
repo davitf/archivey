@@ -151,7 +151,7 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   reclassifies an unknown exception.
 - **Accelerator lifecycle:** C++-threaded accelerators are close-guarded
   (`weakref.finalize`) so crafted-input error paths cannot leave aborting threads
-  (see `known-issues.md`).
+  (see [the rapidgzip report](https://github.com/davitf/archivey/blob/main/dev-docs/investigations/rapidgzip-upstream-report.md), §6).
 
 Atomic file writes stage into temp siblings named `.archivey-tmp-<random>` inside the
 destination directory. Any Python-level failure removes them; only a hard kill

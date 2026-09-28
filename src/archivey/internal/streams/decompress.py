@@ -1360,7 +1360,7 @@ class FilterDecoder(BaseDecoder):
     The filter runs through liblzma, over an :class:`_Lzma2Framer` wrapper because
     liblzma needs a compression filter to close the chain. It must not be ``pybcj``:
     that decoder cannot be constructed for a member of 2 GiB or more, and its IA64
-    filter truncates. See ``dev-docs/known-issues.md`` → "7z BCJ branch filters".
+    filter truncates. See ``dev-docs/investigations/pybcj-upstream-report.md``.
 
     ``lzma_filter`` is the liblzma filter dict, options included (a BCJ
     ``start_offset``, a Delta ``dist``). ``unpack_size`` is the coder's declared
