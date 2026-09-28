@@ -3,8 +3,7 @@
 > What this project is trying to become, why it should exist, and the priorities that
 > follow. `openspec/specs/` defines *what the library does* (historical prose in
 > `dev-docs/history/`); this document defines *what it is for* and how to make trade-offs
-> when they conflict. End-user distill: `docs/philosophy.md`. (Recorded 2026-07 from
-> maintainer + review discussions.)
+> when they conflict. End-user distill: `docs/philosophy.md`.
 
 ## The one-sentence pitch
 
@@ -15,7 +14,8 @@ format, the way `requests` became the default for HTTP.
 This library *should* already exist — arguably in the stdlib — but doesn't: stdlib
 `zipfile`/`tarfile` are two inconsistent APIs with decades of known gotchas
 (`tarfile` path traversal took 15 years to get filters, PEP 706), `shutil.unpack_archive`
-is unsafe and shallow, and the third-party format libraries (`py7zr`, `rarfile`,
+is shallow, unsafe by default before Python 3.14, and has no bomb or resource limits on
+any version, and the third-party format libraries (`py7zr`, `rarfile`,
 libarchive bindings) each have their own APIs, error types, quirks, and performance
 traps. Realistically archivey will never *be* stdlib (stdlib is where libraries
 calcify — see the `compression.zstd` timeline); the goal is to be **so standard it
@@ -48,47 +48,54 @@ That origin story encodes priorities that remain core:
 
 - **Content-first, not extraction-first.** Reading, streaming, and metadata are the
   primary API; extraction is the second; writing is a natural extension but explicitly
-  the lowest priority (may land after 1.0 — see roadmap).
+  the lowest priority (may land after 1.0; see Phase 9 in `dev-docs/PLAN.md`).
 - **Identification must be evidence-based.** Wrong extensions are normal; magic-first
   detection with honest confidence reporting is a feature, not plumbing.
 - **Never decompress the same byte twice** (without saying so). Solid blocks are read
   once per pass; the access-mode/cost model exists so O(n²) traps are impossible to
   hit *silently*.
 - **Damaged input is a first-class citizen** — the founding corpus is full of it. A
-  truncated archive should yield every member that *is* recoverable plus an honest
-  error, not a bare exception at open. (Gap today: reads are all-or-error; a
-  "salvage" read mode is on the backlog — see `dev-docs/IDEAS.md`.)
+  truncated archive yields every member that *is* recoverable plus an honest error,
+  not a bare exception at open: `members_report()` returns the recovered members and
+  the terminal error, iteration yields the prefix and then raises, and a chunked member
+  read delivers every readable byte before it raises. Not built yet: resyncing past
+  damage (a "salvage" mode that walks ZIP local headers or resyncs a TAR stream; see
+  `dev-docs/IDEAS.md`).
 - **Hashes without decompression where possible.** Formats already store CRC32/BLAKE2
-  digests; a dedupe pass should be able to use `member.hashes` without reading data.
+  digests; a dedupe pass can use `member.hashes` without reading data (recipe:
+  [`docs/formats.md`](docs/formats.md#cheap-dedupe-with-stored-hashes)).
 
 ## What "no surprises" means concretely
 
 - Behavior differences between formats are surfaced as **data** (explicit fields,
   `None`, documented sentinels) — never silent guesses. This is the standing design
   authority (`openspec/project.md`).
-- Anything the library can only *warn* about should ideally also be **queryable as
-  data** — a logging warning most applications never see is a surprise deferred, not
-  avoided. (Backlog: the warnings-as-data sweep, `dev-docs/IDEAS.md`.)
+- Anything the library warns about is also **queryable as data**: a `Diagnostic`
+  with a stable code, on the format info, the reader, the member and the extraction
+  report, with a per-code policy to ignore, collect or raise. A logging warning most
+  applications never see is a surprise deferred, not avoided.
+- **No silent success.** Integrity verdicts come from reads, never from `close()`, and
+  once a read has raised a verdict, later reads of that stream raise it again
+  (ADR 0014).
+- With `streaming=False`, a format that needs to seek fails at open on a non-seekable
+  source; archivey does not quietly buffer the input to make it work (ADR 0010).
 - Contracts hold under adversarial input, not just well-formed archives.
 
 ## Performance budget
 
 Wall-time targets are **aspirational peer-ratio bands**, not a claim that every
-path meets them today. Measured ratios live in [`docs/access-and-cost.md`](docs/access-and-cost.md)
-(and the nightly harness report); re-run
-`python -m benchmarks.harness --mode full --scale realistic` to check on your host.
+path meets them today. Measured figures, with their host and commit, live in
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md); the bands are also published in
+[`docs/access-and-cost.md`](docs/access-and-cost.md). To check on your host, run
+`uv run --extra all python -m benchmarks.harness --mode full --scale realistic`.
 
 - **Decompression-dominated** common paths (large-member ZIP/TAR/gzip read):
   target **≤ 1.3×** the relevant stdlib peer; up to ~**2×** where safety or
   correctness features justify it (e.g. extract with path/symlink guards).
-  Nightly realistic (2026-07-23): gzip / tar.bz2 ~parity, tar.gz accel-off
-  ~1.3×, ZIP read-all ~1.9× (under the ~2× safety band); ZIP extract ~2.4×
-  (slightly above). Per-member machinery tracks the listing story below.
 - **Metadata / listing** (open+list): aspirational peer ratios — ZIP/TAR at most
   **2–3×** vs `zipfile`/`tarfile`; native 7z/RAR **≈parity** (~1.25×) with
-  `py7zr`/`rarfile`. Measured realistic ZIP listing is ~4.4×, 7z ~2.1×, RAR
-  ~2.4× — fine for everyday use; closing the ZIP residual (lazy
-  `ArchiveMember` derivation) is a named follow-up, not a release blocker.
+  `py7zr`/`rarfile`. The ZIP listing gap is mostly per-member derivation cost;
+  lazy `ArchiveMember` derivation is the named follow-up, not a release blocker.
 - The bottleneck in real workloads is data movement and *re*-decompression, not
   header parsing. The benchmark suite tracks **bytes decompressed and seek
   patterns**, not just wall time — an implementation that re-reads a solid block
@@ -96,38 +103,47 @@ path meets them today. Measured ratios live in [`docs/access-and-cost.md`](docs/
 - **CI:** structural axes (bytes decompressed, seeks, solid decode-once) gate
   every PR. Absolute wall bands are **not** PR-gated (shared-runner noise). The
   change-guarded nightly (`benchmark-wall.yml`) measures and publishes wall
-  ratios vs peers.
+  ratios vs peers, and fails on drift from the previous run rather than on the
+  absolute bands.
 
 ## Quality scaffolding over promises
 
 No "bug-free" promises. Instead, machinery that catches bugs before release:
 
-- The spec corpus (`openspec/specs/`) with scenario-driven tests — every behavior
-  claim has a test.
-- The **declarative archive corpus + cross-format conformance sweep** (the
-  `retire-dev-oracle` change): every corpus archive must open/list/extract or raise
+- The spec corpus (`openspec/specs/`): every requirement has scenarios, and tests
+  cite them.
+- The **declarative archive corpus + cross-format conformance sweep**
+  (`tests/test_corpus_sweep.py`, specified in the `testing-contract` spec): every
+  corpus archive must open/list/extract or raise
   its documented error, across every implemented backend — the regression net that
   catches "backend X broke shape Y" without a hand-written test per pair.
-- **Fuzzing**, staged: property-based tests (Hypothesis) for the pure logic now;
-  mutation fuzzing (bit-flips/truncation over the corpus, asserting
-  never-crash/never-hang/always-`ArchiveyError`) now; coverage-guided fuzzing
-  (Atheris) as an entry gate for the native 7z/RAR parsers; OSS-Fuzz onboarding at
-  public release.
-- Three-configuration CI (current / lowest / zero-dep) — already standing.
+- **Fuzzing** in three layers: property-based tests (Hypothesis) for the pure safety
+  logic; mutation fuzzing (bit-flips and truncation over the corpus, asserting
+  never-crash/never-hang/always-`ArchiveyError`) over every backend; and
+  coverage-guided fuzzing (Atheris) over the ZIP, TAR, 7z, RAR and ISO parsers,
+  `detect_format` and the stream codecs, sharded on every PR and run in full on a
+  change-guarded nightly. OSS-Fuzz onboarding is not done yet.
+- Three-configuration CI (current / lowest / zero-dep), plus a free-threaded 3.13t job.
 
-## Adoption strategy (when the pieces are in place)
+## Adoption strategy
 
-- **Release when reading is complete** — ZIP/TAR/single-file/ISO/directory *plus native
-  7z/RAR* — since "reads everything" is the reason to switch. Writing is not a 1.0
-  requirement.
-- **The CLI is a wedge and a dev tool**, not the main act: `archivey list|test|extract`
-  is the safer `unzip`/`tar` that demos the library in ten seconds, and it doubles as
-  the maintainer's own inspection tool during development (moved earlier in the
-  roadmap accordingly).
-- Meet users where they are: a migration guide from `zipfile`/`tarfile`/
-  `shutil.unpack_archive`/`patool`; an fsspec filesystem adapter as an integration
-  channel; recipes for the data-pipeline crowd (who currently hand-roll unsafe
-  `extractall` on downloaded datasets).
+Built:
+
+- **Release when reading is complete**: ZIP/TAR/single-file/ISO/directory *plus native
+  7z (data included, BCJ2 too) and native RAR metadata*, with RAR member data through
+  an external program (`unrar`/`rar` or `unar`). "Reads everything" is the reason to
+  switch. Writing is not a 1.0 requirement.
+- **The CLI is a wedge and a dev tool**, not the main act: `archivey
+  list|test|extract|info` is the safer `unzip`/`tar` that demos the library in ten
+  seconds, and it doubles as the maintainer's own inspection tool.
+- A [migration guide](docs/migrating.md) from `zipfile`/`tarfile`/
+  `shutil.unpack_archive`/`patool`.
+
+Next:
+
+- Meet users where they are: an fsspec filesystem adapter as an integration channel;
+  recipes for the data-pipeline crowd (who currently hand-roll unsafe `extractall` on
+  downloaded datasets).
 - A **public backend API** (the registry ABC, stabilized) turns "maximum format
   compatibility" from a solo treadmill into an ecosystem: rare formats (CAB, CPIO,
   SquashFS, WIM…) can live as third-party plugins. Pre-1.0 decision.
@@ -135,7 +151,7 @@ No "bug-free" promises. Instead, machinery that catches bugs before release:
 ## Non-goals
 
 - **Not an everything-tool**: no in-place archive modification, no encryption-write for
-  7z/RAR, no async API in v1 (decided deferrals — `openspec/project.md`).
+  7z/RAR, no async API before 1.0 (decided deferrals: `openspec/project.md`, ADR 0005).
 - **Not a backup engine** — but see the open metadata-fidelity decision (`dev-docs/IDEAS.md`):
   whether xattrs/ACLs/owners round-trip determines whether backup tools can *build on*
   archivey. Read-side fidelity is cheap to add later (fields are additive); the
@@ -144,15 +160,18 @@ No "bug-free" promises. Instead, machinery that catches bugs before release:
   guides rather than emulation layers.
 - **No quirk-driven architecture.** Third-party format libraries whose behavioral
   quirks would leak into the core contracts (py7zr/rarfile as read backends) are kept
-  out even at the cost of a longer road — the DEV codebase demonstrated where that
-  leads. Wrapping is acceptable only where the wrapped library is well-behaved under
-  our contract (`pycdlib`) or delegated cleanly at a process boundary (`unrar` as a
-  data decompressor).
+  out even at the cost of a longer road, because their quirks would become part of the
+  unified contract. Wrapping is acceptable only where the wrapped library is
+  well-behaved under our contract (stdlib `zipfile`/`tarfile`, and `pycdlib` behind
+  archivey's bounded-read source) or delegated at a process boundary (`unrar` or `unar`
+  for RAR member data).
 
 ## Maintenance reality
 
 Developed for fun, released when ready, maintained by one person plus AI agents. The
-consequences are deliberate: a small dependency surface, heavy investment in
+consequences are deliberate: a small dependency surface (bare `pip install archivey`
+has no third-party runtime dependency, ADR 0011), heavy investment in
 self-checking scaffolding (specs, corpus sweep, fuzzing, CI matrix) over manual
 vigilance, a conservative public-API surface (easy to keep stable), and no promised
-support matrix beyond what CI actually exercises.
+support matrix beyond what CI actually exercises. The API is not frozen until 1.0, but
+no major changes are expected, and each change is listed in `CHANGELOG.md`.

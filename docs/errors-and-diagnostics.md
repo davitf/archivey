@@ -315,9 +315,9 @@ except archivey.ReadError:
     ...  # buf holds everything that was readable; the member is damaged
 ```
 
-If you need certainty regardless of how you read — partial reads, seeks, or "never
-hand me unverified bytes" — `VerificationMode.STRICT` verifies a whole member before
-returning any of it.
+Archivey has no mode that verifies a whole member before returning any of it. If you
+need "never hand me unverified bytes", read the member to its end into a buffer or a
+temporary file, and use the bytes only after that read finishes without raising.
 
 #### What each call does
 
