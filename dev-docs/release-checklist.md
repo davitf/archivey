@@ -131,7 +131,7 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
 
 - [ ] README install / quickstart / doc links still accurate.
 - [ ] First release: migration notes if promising a path from
-      `zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` (PLAN release bundle).
+      `zipfile`/`tarfile`/`shutil.unpack_archive`/`patool` (`docs/migrating.md`).
 
 ---
 

@@ -11,7 +11,7 @@ the status — this page states the behaviour and links the row.
 | | |
 | --- | --- |
 | Read | Yes, through `pycdlib` |
-| Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
+| Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
 | Source | Seekable only, in both access modes. `start_offset` is refused: nothing precedes an image |
 | Listing cost | `INDEXED`. The whole tree is parsed inside `open_archive()`, for every tree the image has; listing after that reads nothing, except a directory's own extent to confirm a multi-extent file or recover the declared length of a file whose data ends at the end of the image (§2.3) |
 | Access cost | `DIRECT` — every file is one extent (or one run of extents) at an absolute sector |

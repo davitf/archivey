@@ -10,7 +10,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | | |
 | --- | --- |
 | Read | Yes — metadata natively, member data through RARLAB `unrar` or `rar` |
-| Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
+| Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
 | Source | Seekable only, in both access modes |
 | Listing cost | `INDEXED` — RAR5 with QO: read the copies, skip matching FILE headers on the walk (§1.1). Otherwise a header-to-header walk cached at open (§1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |

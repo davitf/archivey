@@ -13,7 +13,7 @@ and links the row.
 | | |
 | --- | --- |
 | Read | Yes. `internal/backends/directory_reader.py`, a walk over `os.scandir` with one `lstat` per entry |
-| Write | **Not shipped**, for any format (`PLAN.md` phase 9) |
+| Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A directory path only (`str` or `Path`). A symlink to a directory opens its target. No stream, no start offset |
 | Listing cost | `REQUIRES_SCANNING`. `members_report_if_available()` is `None` until a pass has run, and `member_count` is always `None` |
 | Access cost | `DIRECT`; `is_solid=False` |

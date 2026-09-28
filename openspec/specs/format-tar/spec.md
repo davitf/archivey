@@ -32,7 +32,7 @@ The TAR backend SHALL expose these properties for every opened TAR archive:
 | `.tar.zst` and every other codec | `r:` over archivey's decompressor for it | `REQUIRES_DECOMPRESSION` | `SOLID` |
 | Any of the above with `streaming=True` | `r\|` over the same fileobj | As above | As above |
 
-TAR is read-only here: writing is not shipped for any format (`PLAN.md` phase 9).
+TAR is read-only here: writing is not shipped for any format (`dev-docs/investigations/archive-writing-design.md`).
 Compressed variants remain solid even when the source is seekable: random member
 opens may re-decompress earlier bytes, while `stream_members()` is the preferred
 progressive path.

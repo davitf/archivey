@@ -13,8 +13,8 @@ reading found — lives on #315 itself.
 |---|---|
 | The brief handed to each batch agent | [`brief-template.md`](brief-template.md) |
 | What a batch posts, and the `SWEPT` marker shape | [`whole-file-sweep.md`](../../.claude/skills/code-review-skill/reference/whole-file-sweep.md) |
-| Which batches were planned (S1–S14) and in what order | [`dev-docs/open-work-inventory.md`](../../dev-docs/open-work-inventory.md) — **the plan, not the record.** Batches get re-cut as they run; the markers say what was actually read |
-| How coverage is counted | Same page, §How sweep coverage is counted; [`scripts/sweep_coverage.py`](../../scripts/sweep_coverage.py) does it |
+| What was actually read | The `SWEPT` markers on #315. The first pass over `src/` is complete |
+| How coverage is counted | [`scripts/sweep_coverage.py`](../../scripts/sweep_coverage.py); its docstring has the recipe |
 
 ## One `SWEPT` marker per file, findings or not
 
@@ -38,8 +38,7 @@ them invisible or re-sweep them, and the sixteen markers are on #315.
 Each one carries `backfilled=2026-09-19` and says in its own text that nobody re-read the
 file — the marker records the pass that did. They were reconstructed from the paths the
 threads landed on, the S1 and S2 scope tables, and `main`'s tip on the pass date. The
-reconstruction reproduces the hand-derived figure on
-[`open-work-inventory.md`](../../dev-docs/open-work-inventory.md) for those three passes
+reconstruction reproduces the hand-derived figure for those three passes
 exactly — 16 files, 8 299 lines — which is the check that it is not a fresh guess. What the
 sixteen come to as a share of `src/` has already moved since, because batches ran the same
 day; take that figure from the script.
@@ -59,9 +58,7 @@ findings the pass produced.
 So "swept" decays, and it decays furthest exactly where the follow-up was most thorough. That
 is why a marker records `lines=` as read rather than pointing at the file: it is what lets
 [`sweep_coverage.py`](../../scripts/sweep_coverage.py) report a file as drifted instead of
-counting a stale read as current.
-[`dev-docs/open-work-inventory.md`](../../dev-docs/open-work-inventory.md) carries the
-measured table.
+counting a stale read as current. Run the script for the current drift table.
 
 **A re-sweep of `streamtools/` is decided, and the answer is not now** (davi, 2026-09-19):
 finish reading the whole codebase and fix what that turns up, then make another pass. Do not

@@ -1,5 +1,12 @@
 # Archivey — Implementation Plan (v2 Clean-Slate Rewrite)
 
+> **Historical.** This is the phase roadmap from before 0.2.0, kept for history. Every
+> phase is done, dropped, or carried by an OpenSpec change, and parts of it no longer
+> match the code. For current state, read the open OpenSpec changes under
+> `openspec/changes/`, the backlog in [`IDEAS.md`](../IDEAS.md), and
+> [`CHANGELOG.md`](../../CHANGELOG.md). Writing (Phase 9 below) now lives in
+> [`investigations/archive-writing-design.md`](../investigations/archive-writing-design.md).
+
 > **Approach:** clean-slate rewrite. New code is written fresh against the
 > authoritative `openspec/specs/` capability specs (historical prose lives under
 > `dev-docs/history/SPEC.md` and `dev-docs/history/ARCHITECTURE.md`). The
@@ -30,7 +37,7 @@ are archived to `openspec/changes/archive/`). Phases without a change yet need a
 | 6 | Native 7z + RAR read (was Phase 7; **fuzzing is an entry gate** — see cross-cutting) | `format-7z`, `format-rar`, `testing-contract` (oracle cross-validation) | — |
 | 7 | CLI (was Phase 9; pulled forward as dev tool + the safe-extraction demo, per `VISION.md`) | `cli` | — |
 | 8 | Seekable zstd + blocked gzip (rescoped; original zst/lz4 read goals landed in Phases 2–3, `w:zst` moved to the writing phase) | `seekable-decompressor-streams`, `format-single-file-compressors` | `seekable-gzip-and-block-writing` (partial) |
-| 9 | Writing support (was Phase 6; **not a 1.0 requirement** — may land after; spec must design in reproducible output + the metadata-fidelity decision, see `IDEAS.md`) | No capability yet — the `archive-writing` spec and the ZIP/TAR write requirements were retired in 2026-09 and preserved as [`investigations/archive-writing-design.md`](investigations/archive-writing-design.md) | — |
+| 9 | Writing support (was Phase 6; **not a 1.0 requirement** — may land after; spec must design in reproducible output + the metadata-fidelity decision, see `IDEAS.md`) | No capability yet — the `archive-writing` spec and the ZIP/TAR write requirements were retired in 2026-09 and preserved as [`investigations/archive-writing-design.md`](../investigations/archive-writing-design.md) | — |
 | 10 | Polish + release readiness (test-strategy revision per the `retire-dev-oracle` change) | `packaging-and-extras` (finalize), `cli`, `testing-contract` (full corpus) | — |
 
 > **Resequenced (2026-07, per `VISION.md`):** native 7z/RAR reading moved **before**
@@ -594,7 +601,7 @@ thorough exploration pass covering **reproducible output** (`SOURCE_DATE_EPOCH`,
 stable ordering, normalized metadata) and the **metadata-fidelity boundary**
 (xattrs/ACLs round-trip — see `IDEAS.md`), both of which shape the writer API and
 are costly to retrofit. Start from
-[`investigations/archive-writing-design.md`](investigations/archive-writing-design.md) —
+[`investigations/archive-writing-design.md`](../investigations/archive-writing-design.md) —
 the retired `archive-writing` capability, kept because its analysis is real, but written
 before either exploration.
 
@@ -620,7 +627,7 @@ The writing capability's scenarios; a `testing-contract` ZIP/TAR round-trip; con
 
 ### Acceptance — spec scenarios covered
 The requirements this phase re-specifies, starting from
-[`investigations/archive-writing-design.md`](investigations/archive-writing-design.md):
+[`investigations/archive-writing-design.md`](../investigations/archive-writing-design.md):
 the writer surface, the ZIP/TAR round-trips, and ZIP streaming write via data descriptor.
 **Gates:** Pyrefly + ty + ruff clean; no full-archive buffering during stream conversion.
 

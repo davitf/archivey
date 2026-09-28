@@ -29,9 +29,9 @@ that one is the code map.
 - `VISION.md` — the product vision: positioning, priorities, perf budget, adoption
   strategy; the tie-breaker when trade-offs conflict. End-user distill:
   `docs/philosophy.md`.
-- `dev-docs/PLAN.md` — phased implementation roadmap (resequenced 2026-07: native
-  7z/RAR before CLI before writing). `dev-docs/IDEAS.md` — speculative future/backlog
-  ideas (not committed, not in `PLAN.md`).
+- Committed work is the open OpenSpec changes under `openspec/changes/`.
+  `dev-docs/IDEAS.md` is the speculative backlog (not committed). The pre-0.2.0 phase
+  roadmap is kept for history in `dev-docs/history/PLAN.md`.
 - `docs/` — the **published** end-user guide, and nothing else: `index`, `install`,
   `opening-and-listing`, `reading-members`, `extracting`, `gotchas`, `access-and-cost`,
   `formats`, `errors-and-diagnostics`, `cli`, `migrating`, `support-matrix`, `philosophy`,
@@ -530,8 +530,7 @@ Two things about this repo make the handoff sharper than it looks:
   such a phrase said reproduces it, which closed the hub a second time on 2026-09-21 from
   the text explaining the first. Describe the phrase instead, or break the string. The
   failure is silent: threads still serve, `sweep_coverage.py` is unaffected, nothing goes
-  red. [`dev-docs/open-work-inventory.md`](dev-docs/open-work-inventory.md) has both
-  incidents. There is a net under this —
+  red. There is a net under this —
   [`review-hub-watchdog.yml`](.github/workflows/review-hub-watchdog.yml) reopens the hub
   and says which surface closed it — but it is recovery, not prevention. A pull request
   body could be checked before the merge; a squash body could not, because whoever merges

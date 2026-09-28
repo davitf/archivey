@@ -9,7 +9,7 @@ states the behaviour and links the row.
 | | |
 | --- | --- |
 | Read | Yes |
-| Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
+| Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
 | Source | Seekable only, in both access modes |
 | Listing cost | `INDEXED` |
 | Access cost | `DIRECT` |

@@ -1,8 +1,8 @@
 # Archivey — Future Ideas / Backlog
 
 > **Status: speculative.** Nothing here is committed or scheduled. These are
-> "might do later, worth remembering" notes — *not* part of the `PLAN.md` phase
-> roadmap. Firm, decided v1 deferrals (async, in-place modify, sparse-file
+> "might do later, worth remembering" notes, not committed work (that lives in the open
+> OpenSpec changes under `openspec/changes/`). Firm, decided v1 deferrals (async, in-place modify, sparse-file
 > extraction, etc.) live in `openspec/project.md`
 > ("Deferred / out of scope (v1)") and `dev-docs/history/SPEC.md` Appendix A — this file is the
 > looser idea pile. Promote an item by writing a real spec/`openspec` change for it.
@@ -721,8 +721,6 @@
   optimization) and 18 (this brainstorm) with row 17 blocked on row 18.
 
 - **Efficient seekable zstd — probably a *native* frame-index reader, not `indexed_zstd`.**
-  *(Status: **scheduled** — promoted to the rescoped Phase 8 in `PLAN.md`; the analysis
-  below is the basis for that phase's benchmark-first task.)*
   zstd currently has *no* fast random access: a backward seek re-decompresses from the start
   (rewind + warning), like brotli/lz4/zlib. The obvious candidate,
   [`indexed_zstd`](https://github.com/martinellimarco/indexed_zstd) (martinellimarco; the zstd
@@ -911,8 +909,13 @@
   PPMd harness repeats *valid* decodes across threads and interpreter teardown. PPMd is
   not a stream codec, so the fuzzer reaches it only through 7z or ZIP members; adding a
   PPMd 7z archive to the fuzz corpus is tracked internally and does not replace the
-  harness. Measured state of the eight libraries:
-  [`open-work-inventory.md`](open-work-inventory.md) §Native codec stress coverage.
+  harness.
+
+  Coverage of the eight today: `pyppmd` has the stress harness
+  (`scripts/ppmd_native_stress.py`, run by `ppmd-native-stress.yml`). `inflate64`,
+  `brotli` and `lz4` have fuzz targets and no stress harness. `rapidgzip` has
+  `rapidgzip-truncation-sweep.yml`, which checks one behaviour (truncation detection) and
+  is not a stress harness. `cryptography` and `pycdlib` have neither.
 - **Establish that the Windows UnRAR download is rarlab's.** The Windows CI leg
   `Invoke-WebRequest`s `https://www.rarlab.com/rar/unrarw64.exe` and runs the SFX; the
   only integrity checks are a PE sniff and the UNRAR banner. **A pinned SHA-256 is

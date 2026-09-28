@@ -153,7 +153,7 @@ often they turn out to be the right place:
 | Has this already been reviewed? | `review/STATUS.md`, then the archive tables under `review/archive/` |
 | Has this *file* been swept? | The `SWEPT` markers on [#315](https://github.com/davitf/archivey/pull/315) — one per file read end to end, findings or not. `scripts/sweep_coverage.py` counts them; [`review/sweep/`](../review/sweep/README.md) is the brief shape |
 | Was this deliberately deferred? | `review/backlog.md`, `dev-docs/IDEAS.md` |
-| What is open right now, and in what order? | `dev-docs/open-work-inventory.md` — a dated snapshot across every register; the registers themselves stay authoritative |
+| What is open right now? | The open OpenSpec changes under `openspec/changes/` and their `tasks.md`; open pull requests; `review/STATUS.md` |
 | Was this discussed but not settled? | `dev-docs/discussions/` |
 | What does the user-facing story say? | `docs/` (published guide only) |
 

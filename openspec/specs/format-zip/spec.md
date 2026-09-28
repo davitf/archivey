@@ -30,7 +30,7 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 | Access cost | `AccessCost.DIRECT` — independent local file offsets |
 | Stream capability | `StreamCapability.SEEKABLE` |
 | Read source | Seekable only; no implicit buffering/spooling |
-| Write support | No — writing is not shipped for any format (`PLAN.md` phase 9) |
+| Write support | No — writing is not shipped for any format (`dev-docs/investigations/archive-writing-design.md`) |
 
 `reader.get()` and other name lookups SHALL use the central-directory-derived
 member map without extra archive I/O. Unencrypted ZIP member data SHALL decode

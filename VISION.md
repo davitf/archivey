@@ -51,7 +51,7 @@ That origin story encodes priorities that remain core:
 
 - **Content-first, not extraction-first.** Reading, streaming, and metadata are the
   primary API; extraction is the second; writing is a natural extension but explicitly
-  the lowest priority (may land after 1.0; see Phase 9 in `dev-docs/PLAN.md`).
+  the lowest priority (may land after 1.0; see `dev-docs/investigations/archive-writing-design.md`).
 - **Identification must be evidence-based.** Wrong extensions are normal; magic-first
   detection with honest confidence reporting is a feature, not plumbing.
 - **Never decompress the same byte twice** (without saying so). Solid blocks are read

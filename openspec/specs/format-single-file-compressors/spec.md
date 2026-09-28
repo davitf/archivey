@@ -66,7 +66,7 @@ The backend SHALL expose these properties for every single-file compressor:
 | --- | --- |
 | Listing cost | `INDEXED`; exactly one member |
 | Access cost | `DIRECT`; no inter-member dependency exists |
-| Supports write | No — writing is not shipped for any format (`PLAN.md` phase 9) |
+| Supports write | No — writing is not shipped for any format (`dev-docs/investigations/archive-writing-design.md`) |
 | Requires seek | Random access (`streaming=False`) requires seek; forward-only `streaming=True` accepts non-seekable sources for every supported single-file codec including `.Z` |
 
 Random access over a non-seekable source SHALL fail fast at open with

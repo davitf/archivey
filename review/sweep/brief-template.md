@@ -16,12 +16,9 @@ done | python3 scripts/sweep_coverage.py --unswept
 
 That loop pages deliberately: the endpoint serves 100 comments at a time, #315 gains a marker per file swept, and a single-page fetch drops the rest **silently** — the files on the missing page come back as unswept. Raise the range until the last page prints nothing. With the `gh` CLI, `gh api --paginate repos/davitf/archivey/issues/315/comments --jq '.[].body'` does the same in one call.
 
-**Exclude every file that already carries a marker.** The `S1`–`S14` table on
-[`dev-docs/open-work-inventory.md`](../../dev-docs/open-work-inventory.md) is the *plan*, and
-the markers are the *record*. The two have already diverged: the batches run on 2026-09-19
-were cut on different seams, finished S5 between them, and took a file each out of S6, S10 and
-S12. A brief written from the table alone sends an agent back over code another batch has read
-— which nearly happened to `rar_parser.py` twice in one day.
+**Exclude every file that already carries a marker.** The markers are the record of what
+was read; a batch plan is not. A brief written from a plan alone sends an agent back over code
+another batch has read, which nearly happened to `rar_parser.py` twice in one day.
 
 A file the counter reports as **drifted** is a different case: it was read, but the code has
 moved since, so re-reading it is a deliberate re-sweep. Say so in the brief, and give the

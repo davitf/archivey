@@ -12,7 +12,7 @@ this page states the behaviour and links the row.
 | | |
 | --- | --- |
 | Read | Yes, through stdlib `tarfile` in mode `r:` (random access) or `r\|` (streaming). archivey hands it a `fileobj=` every time and never uses tarfile's own `r:gz` / `r:bz2` / `r:xz` modes |
-| Write | **Not shipped**, for any format (`PLAN.md` phase 9) |
+| Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | Seekable for random access. Any source, a pipe included, with `streaming=True` |
 | Listing cost | `REQUIRES_SCANNING` for a plain tar, `REQUIRES_DECOMPRESSION` for a compressed one |
 | Access cost | `DIRECT` for a plain tar. `SOLID` for a compressed one, with `is_solid=True` and `solid_block_count=1` |
