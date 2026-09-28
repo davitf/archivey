@@ -21,6 +21,7 @@ import pytest
 import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
 from archivey import open_archive
 from archivey.exceptions import (
+    CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
 )
