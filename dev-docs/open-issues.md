@@ -7,21 +7,13 @@
 > keep the **irreducible** bucket (plus post-v1 “may improve later” notes) —
 > everything else either ships as a fix or stays here until it does.
 >
-> Snapshot: 2026-07-18 against `main` @ `93dc28e`. Merged since the first triage:
-> [#127](https://github.com/davitf/archivey/pull/127) (crypto F1–F5),
-> [#128](https://github.com/davitf/archivey/pull/128) (stream-decoder F1–F6),
-> [#124](https://github.com/davitf/archivey/pull/124) /
-> [#130](https://github.com/davitf/archivey/pull/130) (PPMd bound decode),
-> [#120](https://github.com/davitf/archivey/pull/120) (CLI). This triage PR is #129.
-> **D4 refresh 2026-07-25:** P1 (TAR EOF Option F) moved to Closed; archive path fixed.
-> **Pre-release refresh 2026-09-26** against `main` @ `436037c`: P14 and P18 moved to
-> Closed, P5 and P6 brought up to date, the "Suggested first cuts" section removed.
+> Last refreshed 2026-09-26 against `main` @ `436037c`.
 
 ## How to use this list
 
 | Bucket | Meaning | Goes to user Gotchas? |
 | --- | --- | --- |
-| **Product** | Behavior we can change | Only until fixed; then drop or turn into a “we used to…” note in Why |
+| **Product** | Behavior we can change | Only until fixed; then drop |
 | **Docs / specs** | Drift or missing user/spec prose for shipped behavior | No — fix the guide/spec |
 | **Irreducible** | Format/stdlib/upstream constraint we can only document + warn | Yes |
 | **Longer-term** | Real work, but belongs in `IDEAS.md` / OpenSpec changes | Maybe a one-liner pointer |
@@ -36,10 +28,9 @@ same change when relevant.
 
 ### P2. Spanned ZIP (`.z01`…`.zip`)
 
-- **Today:** Detected and rejected with `UnsupportedFeatureError` (“rejoin first”).
-  7-Zip's `.zip.NNN` used to be refused alongside it and no longer is: those are raw
-  byte slices of one finished archive, so a complete set is now joined and read like
-  `.7z.NNN` (same `-v` flag, same slicing, and archivey already rejoined it for 7z).
+- **Today:** Spanned `.zNN` sets are detected and rejected with
+  `UnsupportedFeatureError` (“rejoin first”). 7-Zip's `.zip.NNN` sets are raw byte
+  slices of one finished archive, so a complete set is joined and read like `.7z.NNN`.
   What is left here is the Info-ZIP/WinZip spanned family, which is a different
   structure rather than a different name.
 - **Why fixable:** ZIP needs disk-aware central-directory addressing over an ordered
@@ -622,9 +613,7 @@ same shape as the gzip empty→stdlib fallback. Original write-up below.
   fixture.
 - **Why fixable:** Spec’d hardening / shared emission table, as a future change (same
   class as mixed-password ALL-pipe forbid).
-- **Refs:** `format-rar`; handbook `formats/rar.md` §4 / §8. The emission-policy
-  finding came from PR #101, an unrar-piping investigation that closed unmerged; what
-  it measured about link emission is recorded above.
+- **Refs:** `format-rar`; handbook `formats/rar.md` §4 / §8.
 
 ### P17. Old-scheme SFX first volumes (`name.exe` + `.r00`) are undiscovered — **CLOSED**
 
@@ -675,7 +664,7 @@ Code is done unless noted. These should not appear in Gotchas as “broken.”
 | Truncated gzip: stdlib engine recovers prefix on large `read(n)` (`gzip-zlib-truncation-recovery`) | Done | **Composed** with rapidgzip empty→stdlib: fallback fully switches `_inner` to the same gzip-window `DecompressorStream` (#183 / ADR 0014); ISIZE remains for non-empty soft EOF. |
 | `stream_members` laziness not honoured by the solid backends | Behaviour was wrong | **Closed** — the spec already required it ("unselected/unread members are not opened/decompressed **and do not request passwords**"); 7z opened each folder at yield time and solid RAR spawned `unrar` at pass start, so iterating an encrypted archive without reading raised `EncryptionError` and made a wrong password look right. Both now defer to the first read. Fixed in #225; found by review on #224. |
 | `error-handling`'s `ArchiveyUsageError` catalog does not list the argument-validation rules | Done (P10) | **Open, deliberately.** The wrong-typed `format=` refusal is specced once, in `backend-registry` §"A format argument outside its declared type is a usage error"; `error-handling`'s list is prefixed "SHALL also cover" and is already partial in the same way — it names `open_archive(streaming=True, concurrent_members=True)` but not the directory-`format=` refusal, which lives in `archive-reading`. Raised as a nit on #250 and declined there rather than half-done: centralising is a spec-organisation call that should move **both** argument rules at once, or neither |
-| Solid out-of-order `open()` re-decode: spec said it warns, nothing does | Behaviour correct | **Decided** — the spec was wrong, not the code. Maintainer's rule: **diagnostics describe the archive, not the caller's usage pattern**, so "you opened members out of order" is not a diagnostic. `spec-drop-unimplemented-solid-warning` removes the clause; `ArchiveReader.open()` / `.read()` docstrings carry the cost instead, and `reader.cost.access_cost` remains the queryable signal. A plain `warnings.warn` is on the radar as **P9** rather than silently undecided. Fixed in #225; found writing `reading-members.md` (#224). |
+| Solid out-of-order `open()` re-decode: spec said it warns, nothing does | Behaviour correct | **Decided** — the spec was wrong, not the code. Under the diagnostics taxonomy's admission clause (`openspec/specs/diagnostics`), "you opened members out of order" is not a diagnostic: the caller can already learn it from `reader.cost.access_cost`. `spec-drop-unimplemented-solid-warning` removes the clause; `ArchiveReader.open()` / `.read()` docstrings carry the cost instead, and `reader.cost.access_cost` remains the queryable signal. A plain `warnings.warn` is on the radar as **P9** rather than silently undecided. Fixed in #225; found writing `reading-members.md` (#224). |
 
 ---
 
@@ -691,7 +680,8 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 - **ZipCrypto multi-password + STORED** confirmation cost (~1/256 false open → CRC scan).
 - **7z AES has no password check value** — without CRC/folder digest, wrong password can
   yield garbage (we warn; 7-Zip does the same).
-- **RARLAB `unrar` only** for member data; listing works without it.
+- **An external program for member data:** RARLAB `unrar`/`rar`, or `unar` (with
+  refusals) under the default `rar_decompressor="auto"`; listing works without either.
 - **BCJ2 is pure Python** — about half the speed of BCJ through liblzma, and a backward
   seek decodes again from the folder start.
 - **Native optional wheels / accelerators** may crash or hang on hostile input; we
@@ -715,15 +705,13 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 | Theme | Notes |
 | --- | --- |
 | Native streaming ZIP | Pipes, truncated/no-EOCD, multi-volume (P2), UTF-8 flag lie (P4) |
-| Salvage / best-effort read mode | Founding use case; all-or-error today |
-| `pyppmd` exit-after-green abort | Partially mitigated (NUL cap + pack_size gate; Free-race residual / `--allow-exit-after-green`); see `known-issues.md` + exploration doc |
+| Salvage / best-effort read mode | Founding use case; reads already return the recoverable prefix plus the error, but nothing resyncs past damage |
 | Accelerator hang sandbox | Threat-model O5; fuzz with accelerators off until then |
 | OSS-Fuzz onboarding | Before public “safe” marketing (`SECURITY.md` landed) |
 | Nested-archive helper / bounded recursion | O6 recipe → maybe a small helper later |
-| Free-threading support matrix | Document core vs ISO vs accelerators |
 | Public backend API / plugins | Home for exotic formats without libarchive-in-core |
 | CLI UX polish | CLI shipped (#120); remaining design Qs under `review/archive/2026-07-17-cli/` |
-| Trailing-data rule for the decode probes, generally | The probes have a *completeness* gate (a fully visible source whose decode still wants input is rejected) with **no counterpart for the opposite shape**: a decode that terminates cleanly *before* the source's end, leaving trailing bytes. Brotli's chain walk rejects that, but nothing codec-independent does. Evaluated for LZMA Alone in `detection-format-gaps` §5 and declined *there* — it ties the shipped rule on a 68 242-file `/usr` census (2 each), recovers nothing (`require_output` already refuses an empty decode), and cannot fire when the length is unknown, so a non-seekable pipe escapes it. As a **general** rule it is a different proposition: it would strengthen gzip, xz and the rest at once, and it wants the evidence classes to report into. → `detection-evidence-ledger`. |
+| Trailing-data rule for the decode probes, generally | The probes have a *completeness* gate (a fully visible source whose decode still wants input is rejected) with **no counterpart for the opposite shape**: a decode that terminates cleanly *before* the source's end, leaving trailing bytes. Brotli's chain walk rejects that, but nothing codec-independent does. Evaluated for LZMA Alone in `detection-format-gaps` §5 and declined *there* — it ties the shipped rule on a 68 242-file `/usr` census (2 each), recovers nothing (`require_output` already refuses an empty decode), and cannot fire when the length is unknown, so a non-seekable pipe escapes it. As a **general** rule it is a different proposition: it would strengthen gzip, xz and the rest at once, and it wants the evidence classes to report into. |
 | Container CRC vs rapidgzip soft-EOF | Separate check: under `use_rapidgzip=ON`, confirm **corrupted** (and truncated) **ZIP/7z** DEFLATE *member payloads* still fail via `VerifyingStream`/CRC. Whole-archive truncation is less the worry for ZIP (missing central directory → open fails); **in-member corruption** is the sneaky case where rapidgzip soft-EOF could otherwise look like a short clean decode. Codec backstop is bare-stream only. From `rapidgzip-truncation-investigation`. |
 
 ---
@@ -737,9 +725,9 @@ help; they do not disappear. Covered in [Gotchas](../docs/gotchas.md).
 | **P14** Exported names documented nowhere: every name in `archivey.__all__` now renders on `docs/api.md`, and `tests/test_public_api.py` keeps it that way | #465 |
 | **P15** Single-file open-time validation decodes one byte; **P16** a corrupt `.bz2` raises under the accelerator | `openspec/changes/archive/2026-09-25-single-file-open-time-validation/` |
 | **P17** Old-scheme SFX first volumes (`name.exe` + `.r00`) discovered; lone numbered parts name missing siblings | #309 |
-| Three false negatives from the detection-algorithm analysis §5: a zstd stream behind skippable frames, a zlib stream at any window below 32 KiB, an LZMA Alone stream with a zero dictionary size — all decoded by their own decoders, none detected. Plus the bootable ISO claimed by the Brotli probe, which the far-magic hoist that ships with them closes | `openspec/changes/detection-format-gaps/` |
+| Three false negatives from the detection-algorithm analysis §5: a zstd stream behind skippable frames, a zlib stream at any window below 32 KiB, an LZMA Alone stream with a zero dictionary size — all decoded by their own decoders, none detected. Plus the bootable ISO claimed by the Brotli probe, which the far-magic hoist that ships with them closes | `openspec/changes/archive/2026-08-30-detection-format-gaps/` |
 | **P10** A wrong-typed `format=` argument is refused, not answered (all four public entry points) | archived `openspec/changes/archive/2026-08-17-reject-wrong-typed-format-arguments/` |
-| **P1** TAR EOF Option F (`observed_kind` split; `strict_archive_eof` default stays `False`) | #149 / #162 — archived `openspec/changes/archive/2026-07-19-decide-strict-archive-eof-default/` |
+| **P1** TAR EOF Option F (`observed_kind` split) | #149 / #162 — archived `openspec/changes/archive/2026-07-19-decide-strict-archive-eof-default/` |
 | Crypto F1–F5 (HASHMAC, 7z no-anchor diagnostic, NumCycles clamp, unrar stdin password, `compare_digest`) | #127 |
 | Stream-decoder F1–F6 (seek-point collision, rapidgzip size/verify, feed budgets, `readall` pending_error, …) | #128 |
 | PPMd `max_length` / after-eof / version pin product work | #124 / #130 (residual abort → Irreducible) |

@@ -402,8 +402,10 @@ Notes:
   (core, zero-dep). PPMd/Deflate64 and AES decryption via the `[recommended]` extra;
   BCJ2 decodes in pure Python. `py7zr` is a **dev oracle** only
 
-- RAR: native RAR3/RAR5 metadata parser (drops `rarfile`); the external `unrar`
-  binary remains the decompressor for member data. Encrypted headers are decrypted
+- RAR: native RAR3/RAR5 metadata parser (drops `rarfile`); member data goes through
+  an external program: RARLAB `unrar` (or `rar`), or `unar` under the default
+  `rar_decompressor="auto"` when no RARLAB program is installed (`unar` refuses the
+  reads it is known to get wrong). Encrypted headers are decrypted
   natively via `cryptography` (`[recommended]`). `rarfile` is a test oracle only.
 
 See `openspec/specs/format-7z/spec.md`, `format-rar/spec.md`,

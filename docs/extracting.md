@@ -49,7 +49,9 @@ archivey.extract("archive.zip", "out/")
   same-named member), so a crafted duplicate-name archive cannot redirect a link.
 - **Never write through a symlink:** overwrite handling replaces symlinks, never
   follows them; atomic temp-file + `os.replace` writes mean interrupted extraction
-  never leaves a half-written destination file.
+  never leaves a half-written destination file. The destination root itself is yours,
+  so if it is a symlink to a directory, archivey follows it and extracts into the
+  target (as `tar -C` and `unzip -d` do).
 - **Special files** (devices, FIFOs, sockets) are always rejected; an NTFS junction is
   never traversed, because it is a link and extraction never follows one. It is
   *flagged* as a junction — `extra["is_junction"]` — only where the archive says so,
@@ -108,8 +110,12 @@ archivey.extract("archive.zip", "out/")
 - **Cross-platform name safety (STRICT/STANDARD):** casefold+NFC collision tracking,
   reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
   percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
+  Directories are not in the collision map, so a *file* `Foo` and a *directory* `foo/`
+  that differ only by case are not detected as a collision: the outcome depends on
+  whether the destination filesystem is case-sensitive.
 - **Error honesty:** codec/library exceptions are translated to typed `ArchiveyError`s
-  with context; genuine I/O errors propagate unchanged; no catch-all handlers.
+  with context; genuine I/O errors propagate unchanged; no handler swallows or
+  reclassifies an unknown exception.
 - **Accelerator lifecycle:** C++-threaded accelerators are close-guarded
   (`weakref.finalize`) so crafted-input error paths cannot leave aborting threads
   (see `known-issues.md`).
@@ -234,10 +240,11 @@ Archive order and identity matter more than “the” name.
 Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLimits` on
 `ArchiveyConfig`) cap:
 
-- **Extraction bombs** — total extracted bytes, compression ratio, and entry count
-  (`ExtractionLimits`). Trips raise `ResourceLimitError`.
-- **Listing materialization** — member count and retained metadata bytes
-  (`ListingLimits`) on `members()` / `scan_members()` / extract-prep materialization.
+- **Extraction bombs** — total extracted bytes (default 2 GiB), compression ratio
+  (default 1000, checked once 5 MiB has been written), and entry count (default
+  1,048,576) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
+- **Listing materialization** — member count (default 1,048,576) and retained metadata
+  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `scan_members()` / extract-prep materialization.
   Trips raise `ResourceLimitError`. `stream_members()` / `streaming=True` stay
   unguarded by design, except on 7z and RAR where `max_members` is checked at
   `open_archive`. Raise `listing_limits.max_members` to open a larger 7z or
@@ -260,8 +267,8 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   Keys the reader already derived are reused for free, so an ordinary encrypted
   archive spends one or two derivations; each wrong candidate password counts. Trips
   raise `ResourceLimitError` before the derivation starts.
-- **Temporary copies of a stream source** — RAR member data goes through `unrar`, which
-  reads only files, so a RAR opened from a stream is copied to a temp file first
+- **Temporary copies of a stream source** — RAR member data goes through an external
+  program (`unrar` or `unar`), which reads only files, so a RAR opened from a stream is copied to a temp file first
   (`SpoolLimits.max_bytes` on `ArchiveyConfig.spool_limits`, default 1 GiB across the
   whole copy). Checked before anything is written. Trips raise `ResourceLimitError`.
   A path source is never copied.
@@ -328,16 +335,23 @@ members as archives, bound the depth and the cumulative size yourself.
 ## Hardening notes for callers
 
 **Optional `[seekable]` accelerators** (`rapidgzip` and its bundled bzip2
-decoder) are a performance path, not part of the defended fuzz surface. Third-
-party C++ can busy-loop on crafted input in a way Python timeouts cannot cleanly
-interrupt. Callers processing untrusted archives under a hard latency budget
-should leave accelerators off (`AcceleratorMode.OFF`) or enforce their own
-resource limits. Mutation and Atheris harnesses run with accelerators off for
-this reason.
+decoder) are a performance path, not part of the defended fuzz surface. The default is
+`AcceleratorMode.AUTO`, which engages them when the `[seekable]` extra is installed and
+a caller asks for seeking, so turning them off is something you do yourself. The
+gzip, zlib and raw DEFLATE decoder runs in a child process, so a native abort there
+costs only the member; a busy loop in that child is not bounded by a timeout. The bzip2
+decoder runs in-process. Third-party C++ can busy-loop on crafted input in a way Python
+timeouts cannot cleanly interrupt. Callers processing untrusted archives under a hard
+latency budget should turn accelerators off (`use_rapidgzip` and `use_indexed_bzip2`
+set to `AcceleratorMode.OFF`) or enforce their own resource limits. Mutation and
+Atheris harnesses run with accelerators off for this reason.
 
-**External tools:** RAR member *data* may be decompressed by the system `unrar` or
-`rar` binary. Keep that tool updated; treat its availability and behaviour as part of
-your deployment’s trust boundary.
+**External tools:** RAR member *data* is decompressed by an external program: RARLAB
+`unrar` or `rar`, or `unar` under the default `rar_decompressor="auto"` when no RARLAB
+program is installed. Each is found on the process `PATH`. `unar` receives a password on
+its command line, where other local users can see it while it runs; select
+`RarDecompressor.UNRAR` to rule that out. Keep these tools updated; treat their
+availability and behaviour as part of your deployment’s trust boundary.
 
 Prefer extracting untrusted archives into a dedicated directory with limited
 permissions, then validating results before promoting them elsewhere.
