@@ -81,8 +81,8 @@ qualifies:
 
 - [Safe extraction](https://davitf.github.io/archivey/extracting/) — trust
   boundaries, what is enforced, policies, limits, and the hardening notes
-- [`dev-docs/threat-model.md`](dev-docs/threat-model.md) — the maintainer gap
-  register
+- [`dev-docs/threat-model.md`](dev-docs/threat-model.md) — the threat model:
+  attackers, trust boundaries, defended properties and accepted non-guarantees
 
 ## Response Process
 

@@ -2,7 +2,7 @@
 
 > **Not user-facing.** Holding area for items that *look* like user gotchas but are
 > candidates to fix (product), sync (docs/specs), or deliberately leave irreducible.
-> Companion to [threat-model.md](threat-model.md) (security/compat gap register) and
+> Companion to [threat-model.md](threat-model.md) (defended properties, accepted non-guarantees, open design gaps) and
 > `dev-docs/IDEAS.md` (speculative backlog). User-facing [Gotchas](../docs/gotchas.md) should
 > keep the **irreducible** bucket (plus post-v1 “may improve later” notes) —
 > everything else either ships as a fix or stays here until it does.

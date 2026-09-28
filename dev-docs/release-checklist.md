@@ -117,10 +117,11 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
       `reading-members.md`, `formats.md`, `extracting.md`, `gotchas.md`,
       `errors-and-diagnostics.md`, `cli.md`, `api.md`, `philosophy.md`,
       `access-and-cost.md`.
-- [ ] `VISION.md` performance / safety sentences still match what you are willing
-      to ship (no falsifiable over-claim).
-- [ ] `dev-docs/threat-model.md` open items: either fixed, consciously
-      deferred with wording, or called out in SECURITY / gotchas.
+- [ ] `VISION.md` still states what the project wants to provide (it is a vision, not
+      a status page), and `README.md` / `docs/` claim only what ships.
+- [ ] `dev-docs/threat-model.md` §5 open design gaps: either closed, consciously
+      deferred with wording, or called out in SECURITY / gotchas; each §4
+      accepted non-guarantee still has its public line in `docs/extracting.md`.
 - [ ] `dev-docs/open-issues.md` not contradicting shipped decisions (stale
       rows fixed or moved to Closed).
 - [ ] MkDocs builds clean:
