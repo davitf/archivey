@@ -175,7 +175,7 @@ def test_damaged_rar4_link_target_keeps_the_listing() -> None:
         _assert_listed_targetless(ar, _RAR4_DAMAGED)
         # The other links' targets are intact and still resolve.
         assert ar.get("symlink_to_file1.txt").link_target == "file1.txt"
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             ar.open(ar.get(_RAR4_DAMAGED))
 
 
@@ -195,7 +195,7 @@ def test_damaged_rar4_link_target_fails_only_that_link_at_extraction(
     by_name = {result.member.name: result for result in report.results}
     assert by_name["file1.txt"].status is ExtractionStatus.EXTRACTED
     assert by_name[_RAR4_DAMAGED].status is ExtractionStatus.FAILED
-    assert isinstance(by_name[_RAR4_DAMAGED].error, CorruptionError)
+    assert is_corruption_not_truncation(by_name[_RAR4_DAMAGED].error)
     assert not (tmp_path / "out" / "subdir" / "link_to_file1.txt").is_symlink()
 
 
