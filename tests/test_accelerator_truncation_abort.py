@@ -470,6 +470,49 @@ def test_a_fault_archivey_raises_about_the_source_is_not_marked_as_the_sources()
     assert not rapidgzip_child.from_callers_source(info.value)
 
 
+class _FailingOnceSource(io.BytesIO):
+    """The caller's stream, failing once, on the first read past its middle; every
+    other read works, so nothing but the stream's own state can stop a later read."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.failed = False
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        size_ = len(self.getbuffer())
+        if not self.failed and size_ // 2 < self.tell() < size_ - 64 * 1024:
+            self.failed = True
+            raise OSError("transient source fault")
+        return super().read(size)
+
+
+@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
+def test_after_a_source_fault_every_later_call_raises(codec: Codec) -> None:
+    """The child was told its input ended where the source failed, so what it decodes
+    after that is not the stream: no later call may return a clean end or a verdict on
+    the data."""
+    source = _FailingOnceSource(_compress(codec, _payload()))
+    with open_codec_stream(codec, source, config=_ON) as stream:
+        with pytest.raises(OSError, match="transient source fault") as first:
+            while stream.read(1 << 16):
+                pass
+        assert rapidgzip_child.from_callers_source(first.value)
+        messages = set()
+        for call in (
+            lambda: stream.read(1 << 16),
+            lambda: stream.read(),
+            lambda: stream.seek(0),
+            lambda: stream.read(1),
+        ):
+            with pytest.raises(ReadError) as later:
+                call()
+            assert not isinstance(later.value, (CorruptionError, TruncatedError))
+            assert "source" in str(later.value)
+            messages.add(str(later.value))
+        assert len(messages) == 1
+        assert _child_stream(stream)._proc is None  # the child is stopped
+
+
 def test_an_interrupt_from_the_callers_source_leaves_the_stream_unusable() -> None:
     source = _FailingSource(_compress(Codec.ZLIB, _payload()), KeyboardInterrupt())
     with open_codec_stream(Codec.ZLIB, source, config=_ON) as stream:
@@ -631,6 +674,45 @@ def test_close_reaps_the_child_and_later_calls_raise(tmp_path: Path) -> None:
     for call in (lambda: child.read(1), lambda: child.read(), child.tell):
         with pytest.raises(ValueError, match="closed file"):
             call()
+
+
+@pytest.mark.parametrize("offset", [2**63, -(2**63) - 1])
+def test_an_offset_past_the_frame_range_is_refused_and_the_stream_survives(
+    offset: int,
+) -> None:
+    """A seek the protocol cannot carry is refused before anything is sent, so the
+    child is still in step and the stream goes on reading."""
+    payload = _payload()
+    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    try:
+        assert child.read(10) == payload[:10]
+        with pytest.raises(OverflowError):
+            child.seek(offset)
+        assert child.seek(0) == 0
+        assert child.read() == payload
+        # An offset that fits, from a position that takes the target past the range.
+        with pytest.raises(OverflowError):
+            child.seek(2**63 - 1, io.SEEK_CUR)
+        assert child.seek(5) == 5
+        assert child.read(10) == payload[5:15]
+    finally:
+        child.close()
+
+
+@_POSIX
+def test_a_sigint_to_the_child_does_not_stop_it(tmp_path: Path) -> None:
+    """A terminal's Ctrl-C signals the whole foreground process group, the decoder child
+    included. The child ignores it: the parent decides what an interrupt means."""
+    payload = _payload()
+    path = _write(tmp_path, "valid.gz", gzip.compress(payload))
+    with open_codec_stream(Codec.GZIP, str(path), config=_ON) as stream:
+        child = _child_stream(stream)
+        assert stream.read(10) == payload[:10]
+        assert child._proc is not None
+        os.kill(child._proc.pid, signal.SIGINT)
+        with pytest.raises(subprocess.TimeoutExpired):
+            child._proc.wait(timeout=0.5)
+        assert stream.read() == payload[10:]
 
 
 def test_an_interrupted_request_leaves_the_stream_unusable(tmp_path: Path) -> None:

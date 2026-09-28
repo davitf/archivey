@@ -162,7 +162,8 @@ class UnarOutputStream(ProcessOutputStream):
     """``unar`` stdout that owns the process: close stops and reaps it.
 
     The exit status is checked once the pipe reaches end of file: on that read, or on
-    close if the child had not exited by then. ``unar`` exits 0 on success and 1 or 2
+    close if the child exited after that read. A child still running at close is
+    stopped and its status not checked. ``unar`` exits 0 on success and 1 or 2
     on a failure it noticed (bad data, missing password). A negative status is a
     signal, and before end of file it is a crash, which ``unar`` 1.10.1 does on some
     archives. A close before end of file checks nothing: archivey closed the pipe on a

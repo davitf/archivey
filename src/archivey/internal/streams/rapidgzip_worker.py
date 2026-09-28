@@ -43,6 +43,7 @@ import importlib
 import io
 import os
 import queue
+import signal
 import struct
 import sys
 import threading
@@ -200,6 +201,10 @@ def _serve(channel: _Channel, stream: Any) -> None:
 
 
 def main() -> None:
+    # A terminal's Ctrl-C signals the whole foreground process group, this child too.
+    # The parent decides what an interrupt means; here it would kill the process with
+    # rapidgzip's threads running, which aborts it and reads as a decoder crash.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     channel = _Channel()
     tag, kind, payload = channel.requests.get()
     if tag != OPEN:
@@ -233,10 +238,17 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
-    # Skip interpreter finalization: the pump thread may still be blocked on stdin.
+    # Skip interpreter finalization, even after an exception: the pump thread may still
+    # be blocked on stdin, and a rapidgzip thread still running aborts the process.
+    status = 0
     try:
-        sys.stdout.flush()
-    except (OSError, ValueError):
-        pass
-    os._exit(0)
+        main()
+    except BaseException as exc:  # noqa: BLE001 - reported on stderr; the exit must run
+        status = 1
+        sys.excepthook(type(exc), exc, exc.__traceback__)
+    finally:
+        try:
+            sys.stdout.flush()
+        except (OSError, ValueError):
+            pass
+        os._exit(status)

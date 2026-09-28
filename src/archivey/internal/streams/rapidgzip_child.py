@@ -84,6 +84,9 @@ _MIN_AHEAD = 64 << 10
 # equally fast, and 4 MiB ones more slowly.
 _CHUNK = 1 << 20
 
+# The range of an integer argument a frame carries (a signed 64-bit ``q`` in ``FRAME``).
+_ARG_MIN, _ARG_MAX = -(1 << 63), (1 << 63) - 1
+
 # What rapidgzip 0.16 writes to stderr as it aborts on a stream that ends early.
 _TRUNCATION_ABORT = b"The bit buffer should not contain more data than have been read"
 
@@ -260,9 +263,10 @@ def _scan_stderr(stderr: IO[bytes]) -> tuple[bool, str]:
 class RapidgzipChildStream(ReadOnlyIOStream):
     """A seekable stream of rapidgzip's decoded output, decoded in a child process.
 
-    One child per instance. After the child dies, every later call raises the same
-    error again; :meth:`close` still reaps it, and a garbage-collected instance is
-    reaped by its finalizer. ``tell`` needs no round trip: the position is kept here.
+    One child per instance. After the child dies, or a read of the caller's source
+    fails, every later call raises the same error; :meth:`close` still reaps it, and a
+    garbage-collected instance is reaped by its finalizer. ``tell`` needs no round
+    trip: the position is kept here.
 
     ``label`` names the codec in error messages (``gzip``, ``zlib``, ``deflate``).
     """
@@ -353,7 +357,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         """Serve one read, seek or tell of the caller's source for the child.
 
         An ``Exception`` from the source is parked and raised when the current call
-        ends; the child is told the read failed, and treats it as the end of input.
+        ends; the child is told the read failed, and treats it as the end of input. So
+        nothing it decodes after that is the stream, and ``_call`` then stops it.
         Anything else (``KeyboardInterrupt``) propagates at once.
         """
         source = self._source
@@ -412,6 +417,11 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self, tag: int, arg: int = 0, payload: bytes = b"", *, keep_parked: bool = False
     ) -> tuple[int, bytes]:
         self._raise_if_unusable()
+        if not _ARG_MIN <= arg <= _ARG_MAX:
+            # Refused before anything is written, so the child is still in step.
+            raise OverflowError(
+                f"{arg} is out of range for the rapidgzip decoder process"
+            )
         try:
             frame = self._exchange(tag, arg, payload)
         except BaseException:
@@ -429,6 +439,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 raise parked
             raise death
         if parked is not None:
+            self._poison(parked)
             raise parked
         reply, value, data = frame
         if reply == ERR:
@@ -447,6 +458,21 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             ArchiveyUsageError,
             "the rapidgzip decoder process was interrupted in the middle of a "
             "request, and this stream cannot continue",
+        )
+        self._stop(kill=True)
+
+    def _poison(self, fault: Exception) -> None:
+        """Stop the child after a read of the caller's source failed.
+
+        The child took the failure for the end of its input, so a later read would get
+        an early end of the stream, or a false verdict on the data. The caller gets
+        ``fault`` itself once, then every later call raises ``ReadError``.
+        """
+        self._death = (
+            ReadError,
+            f"this {self._label} stream cannot continue: a read from its source "
+            f"failed ({fault!r}), and the rapidgzip decoder process took that for "
+            "the end of its input",
         )
         self._stop(kill=True)
 

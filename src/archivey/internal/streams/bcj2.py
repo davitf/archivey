@@ -15,9 +15,10 @@ relative one (``target - (position + 4)``) and emits it little-endian. The bit's
 probability model has 258 contexts: one per preceding byte for ``E8``, one for ``E9``,
 one for ``Jcc``. The range coder is LZMA's (11-bit probabilities, 5 move bits, a
 5-byte start). Its five start bytes are read with the first output byte, so an empty
-output reads no ``rc`` byte at all. That is
-7-Zip 9.20's ``Bcj2_Decode`` (``C/Bcj2.c``); later 7-Zip restructured the code, not the
-format.
+output reads no ``rc`` byte at all (9.20 reads them first; the output is the same). The
+start is refused as 7-Zip 23.01's ``Bcj2Dec_Decode`` refuses it: a nonzero first byte,
+which no encoder writes, or a code of ``0xFFFFFFFF``. The decoding itself is 7-Zip 9.20's
+``Bcj2_Decode`` (``C/Bcj2.c``); later 7-Zip restructured the code, not the format.
 
 Where the time goes. The Python loop runs once per *candidate* (``E8``, ``E9``,
 ``0F 8x``), not per byte; real x86 code has one every 30 bytes or so, and a hostile
@@ -218,7 +219,11 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
             code = 0
             for _ in range(5):
                 code = (code << 8) | self._rc.byte()
-            self._code = code & 0xFFFFFFFF
+            # 7-Zip 23.01 refuses both: an encoder always writes 0 first, and a code
+            # of 0xFFFFFFFF cannot come out of one.
+            if code >> 32 or code == 0xFFFFFFFF:
+                raise CorruptionError("BCJ2 range coder stream has an invalid start")
+            self._code = code
         main, mpos = self._main, self._mpos
         if mpos == len(main):
             main = self._main_stream.read(_BLOCK)

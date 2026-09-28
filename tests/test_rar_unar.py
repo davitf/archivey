@@ -240,6 +240,27 @@ def test_prefixed_archive_is_copied_for_unar(tmp_path: Path, name: str) -> None:
     assert got == {k: v for k, v in expected.items() if not k.startswith("<comment>")}
 
 
+@requires_binary("unar", "rar")
+def test_numbered_neighbour_is_not_read_as_the_next_volume(tmp_path: Path) -> None:
+    """unar picks a volume set by file name: ``backup2.rar`` beside ``backup1.rar``
+    must still read as itself, not as volume 2 of a set that starts at its neighbour.
+    """
+    for number in (1, 2):
+        source = tmp_path / f"src{number}" / "data.txt"
+        source.parent.mkdir()
+        source.write_bytes(f"contents of archive {number}\n".encode() * 50)
+        subprocess.run(
+            ["rar", "a", "-idq", "-ep", "-m3", str(tmp_path / f"backup{number}.rar")]
+            + [str(source)],
+            check=True,
+        )
+    for number in (1, 2):
+        with open_archive(tmp_path / f"backup{number}.rar", config=_UNAR) as archive:
+            assert archive.read("data.txt") == (
+                f"contents of archive {number}\n".encode() * 50
+            )
+
+
 @requires_binary("unar")
 def test_seekable_member_respawns_unar() -> None:
     path = _RAR / "seek_respawn_solid__.rar"
@@ -572,6 +593,24 @@ def test_crash_raises_on_the_completing_read() -> None:
     with pytest.raises(ReadError, match="signal"):
         stream.read()
     stream.close()
+
+
+def test_a_program_archivey_stops_after_end_of_file_is_not_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A program that closed stdout but exits slower than the wait at end of file is
+    stopped by close(); the signal is archivey's own, so the full read is not an error.
+    """
+    monkeypatch.setattr(unar.UnarOutputStream, "_EOF_EXIT_WAIT", 0.05)
+    proc, stream = _child(
+        "import os, sys, time\n"
+        "sys.stdout.buffer.write(b'x' * 10); sys.stdout.flush()\n"
+        "os.close(1); time.sleep(2)"
+    )
+    assert stream.read() == b"x" * 10
+    assert stream.read() == b""
+    stream.close()
+    assert proc.returncode is not None
 
 
 def test_close_before_end_of_file_is_not_an_error() -> None:
