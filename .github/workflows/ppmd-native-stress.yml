@@ -7,8 +7,9 @@ name: PPMd native stress
 #
 # Runs on every PR and on pushes to main so we keep signal, but lives in its *own*
 # workflow on purpose: do **not** add this check as a required status check — a red
-# run here must not block merge. The main CI Windows matrix skips the 7z PPMd codec
-# param; default pytest excludes ``ppmd_native_stress`` tests. Required CI soft-passes
+# run here must not block merge. The main CI Windows matrix runs the 7z PPMd codec
+# param but skips test_encrypted_ppmd_chunked_reads_roundtrip; default pytest
+# excludes ``ppmd_native_stress`` tests. Required CI soft-passes
 # the raw-streams exit-after-green abort; this workflow soaks that module hard.
 on:
   push:
