@@ -115,8 +115,8 @@ accel_off (indexing / thread-pool startup dominates).
 ### 7z BCJ branch filters — liblzma staging vs `pybcj`
 
 `sevenzip_bcj_{lzma2,lzma1,copy}_read_all` were added with the change that moved
-branch filters off `pybcj` and onto liblzma (`dev-docs/known-issues.md`). liblzma
-refuses a raw chain whose only filter is a branch filter, so a BCJ stage standing
+branch filters off `pybcj` and onto liblzma
+(`dev-docs/investigations/pybcj-upstream-report.md`). liblzma refuses a raw chain whose only filter is a branch filter, so a BCJ stage standing
 outside the folder's main chain reframes its input as LZMA2 *uncompressed* chunks;
 these cases are what makes that reframing cost visible.
 

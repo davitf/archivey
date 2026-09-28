@@ -3,7 +3,8 @@ name: PPMd native stress
 # Investigation vehicle for intermittent ``pyppmd`` native aborts on *valid* PPMd
 # streams (Windows STATUS_HEAP_CORRUPTION; Linux SIGSEGV / malloc abort after
 # other-codec warmup; Linux/Windows exit-after-green abort of
-# tests/test_ppmd_raw_streams.py). See dev-docs/known-issues.md.
+# tests/test_ppmd_raw_streams.py). See dev-docs/known-issues.md and
+# dev-docs/investigations/ppmd-native-investigation-results.md §K.
 #
 # Runs on every PR and on pushes to main so we keep signal, but lives in its *own*
 # workflow on purpose: do **not** add this check as a required status check — a red

@@ -915,5 +915,5 @@ yielded-stream I/O. Implementation
 must use real synchronization rather than relying on the GIL. Parallel extraction scheduling
 remains future, and speed claims require measurements proportionate to the mechanism changed.
 Accelerator close-before-finalize
-(`known-issues.md`) still applies, so member-stream lifecycle leases defer backend teardown
+(`investigations/rapidgzip-upstream-report.md` §6) still applies, so member-stream lifecycle leases defer backend teardown
 until the final stream closes. See [`parallel-reader.md`](investigations/parallel-reader.md) §4.

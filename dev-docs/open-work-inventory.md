@@ -59,7 +59,7 @@ names.
 | [`review/typing-escape-hatches/`](../review/typing-escape-hatches/brief.md) | 89 sites inventoried; the fixes are staged | **Started and mostly landed.** The inventory merged as #352; #376, #377, #378 and #384 landed four waves of it. The rest is held on file collisions only |
 | [`review/exception-catchalls/`](../review/exception-catchalls/brief.md) | 69 blind `except` sites | **Done 2026-09-25.** Seven fixed, the rest fine (two deferred handlers and two added since were reviewed later); see its `SUMMARY.md` |
 | [`threat-model.md`](threat-model.md) | `O*` register | O15 (tar extended header) and O16 (ISO directory record) were added and closed by #396. O12's memory half is mitigated; the rest closes with `sevenzip-aes-tail-key-check`. The PPMd window #398 capped has **no row yet** — #398 left it out because the file belonged to another open PR |
-| [`known-issues.md`](known-issues.md) | Forensics, not a worklist | No action items of its own |
+| [`known-issues.md`](known-issues.md) | Live defects and upstream bugs only; evidence lives in `investigations/` | Its action items are the unfiled upstream reports |
 | **Linear** (`Archivey` team) | seeded 2026-09-17, added to continuously | **The state layer.** Labels: `sweep`, `decision`, `openspec`, `docs`, `review`, `pr-315`, `pr-open`. Not a replacement for any register below |
 | **The #315 sweep** — *the `SWEPT` markers on #315* | First pass complete 2026-09-20; **94 of 97 files on 2026-09-23** | 40 178 of 40 662 lines, **98.8%**. Three files arrived after the pass: `internal/enum_args.py` (#380), `internal/arg_checks.py` (#382) and `internal/windows_reparse.py` (#386). Since then [#448](https://github.com/davitf/archivey/pull/448) added `terminal.py` (the former `escaping.py`, already swept, under a new name) and `detection.py` (moved classes). What is open now is draining the threads, not reading. Count it from the markers, not from this row |
 | **`dev-docs/formats/`** — *no register* | Every container format, the directory source, and the stream codecs | ZIP, RAR, 7z, TAR, ISO, directory, and the stream codecs (`single-file.md` plus six codec pages). `rar.md` alone produced the 21-item `§10` register |
@@ -1026,7 +1026,7 @@ the PR hard to judge:
   parser targets. So inflate64 is *not* uncovered, which an earlier draft of this page got
   wrong. It has fuzz coverage and no native-stress harness.
 - **Native stress exists for exactly one library: `pyppmd`**, and
-  [`known-issues.md`](known-issues.md) §"Intermittent `pyppmd` native aborts on valid PPMd
+  [`known-issues.md`](known-issues.md) §"Intermittent `pyppmd` native aborts on PPMd
   streams" is why. The harness was built to chase a reproducible defect, not as a standard
   every native dependency is held to.
 - **`rapidgzip` has a sweep, not a stress harness.** `rapidgzip-truncation-sweep.yml` targets

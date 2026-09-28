@@ -975,9 +975,10 @@ def run_cases(
 
     # --- 7z BCJ branch filter (x86) ---
     # archivey stages branch filters through liblzma rather than through pybcj
-    # (see dev-docs/known-issues.md). liblzma refuses a raw chain whose only filter
-    # is a branch filter, so a separately-staged BCJ reframes its input as LZMA2
-    # uncompressed chunks; these cases are what makes that reframing cost visible.
+    # (see dev-docs/investigations/pybcj-upstream-report.md). liblzma refuses a raw
+    # chain whose only filter is a branch filter, so a separately-staged BCJ reframes
+    # its input as LZMA2 uncompressed chunks; these cases are what makes that
+    # reframing cost visible.
     # ``copy`` isolates the filter, ``lzma1`` is the shape that forces the staging
     # (the 7-Zip CLI writes LZMA1 without an end-of-stream marker), and ``lzma2``
     # is the common executable-archive shape, where liblzma runs the whole chain

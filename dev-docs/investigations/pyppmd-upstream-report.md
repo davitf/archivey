@@ -30,7 +30,7 @@ Archivey context (what we ship regardless of the upstream fix — bounded decode
 `unpack_size`/`pack_size` requirement, single capped NUL, and the
 `quiesce-on-close` teardown fix) lives in `dev-docs/known-issues.md` →
 “Intermittent `pyppmd` native aborts” and in `ppmd-native-investigation-results.md`
-§I.
+§I and §K.
 
 ---
 

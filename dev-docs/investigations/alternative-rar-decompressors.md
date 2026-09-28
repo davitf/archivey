@@ -2,8 +2,10 @@
 
 **Status:** finished evidence. `7z` closed. **`unar` implemented 2026-09-26** as the
 opt-in `ArchiveyConfig.rar_decompressor="unar"`, with the early-fail gate widened after
-new measurements (see [`known-issues.md`](../known-issues.md) §MacPaw `unar`). The body
-below is the 2026-09-01 evidence as recorded.  
+new measurements ([2026-09-26 measurements](#2026-09-26-measurements-behind-the-shipped-gate)
+at the end of this page; the live upstream defect is in
+[`known-issues.md`](../known-issues.md) §MacPaw `unar`). The body below that section's
+heading is the 2026-09-01 evidence as recorded.  
 **Date:** 2026-09-01  
 **Trigger:** Homebrew disabled the `rar` cask (Gatekeeper / notarization); CI now
 compiles RARLAB UnRAR from a pinned GitHub mirror
@@ -397,3 +399,60 @@ the unofficial formula or a copy-paste `make`.
 
 `7z` leftover (not pursuing): ignore rc=2 when every payload member's CRC
 verifies (symlink archives)? Too much special-casing for a closed branch.
+
+---
+
+## 2026-09-26 measurements behind the shipped gate
+
+**RAR5 solid after an empty entry, by lineage** (stdout and extract-to-disk alike):
+
+| `unar` lineage | `unar -o -` / disk extract |
+| --- | --- |
+| Debian `unar 1.10.7+ds1+really1.10.1` | **SIGSEGV**. Output of *earlier* members that `unar` had buffered is lost too (`wildcard_names_solid__.rar`: 8192 of 8202 bytes of member 0) |
+| Locally built MacPaw XADMaster `v1.10.8` (banner **v1.10.7**) | **rc=0**, empty output (silent wrong data) |
+| homebrew-core formula `unar` (XADMaster **v1.10.8**) | Same 1.10.8 lineage. CI's macOS leg installs it and runs `tests/test_rar_unar.py` against it |
+
+Probes written with `rar a -s -ds -m3`, member order kept: an empty file first or in the
+middle fails, an empty file last passes, a directory between members fails
+(`wildcard_names_solid__.rar`), directories written last pass. RAR4 passed every shape.
+Selecting only the later member does not help: the decoder still walks the earlier slot.
+
+**The gate as shipped.** From the native listing: in a RAR5 solid archive, refuse every
+member with data that follows an empty file, a directory, or a link (links are included
+without a failing sample, on the same no-data-in-the-stream grounds). The solid pass then
+names only the readable members by index, so `unar` never reaches the crash and loses no
+buffered output. RAR4 is not gated; the size and digest check on each member is the net.
+
+**Six more `unar` behaviours found on the committed fixtures**, all handled in
+`internal/backends/rar_unar.py`:
+
+- **RAR 1.5 compression** (`rar15-comment.rar`, `FILE1.TXT`, method 3 at version 15):
+  `unar` writes nothing for the member and exits 0. Refused when a member's extract
+  version is below 20 and it is not stored. The same archive's comment blobs carry the
+  same method (`extract_version=15`, `compress_type=0x34`), and `unar` 1.10.1 decodes
+  them correctly through the one-file RAR `decompress_rar3_blob` builds (archive and both
+  member comments). Comments are therefore not gated; the stored CRC16 drops any wrong or
+  missing output under either program.
+- **A prefix before the RAR** (an SFX stub, or any leading bytes): `unar` reports an
+  unknown format. A single prefixed archive is copied from where the RAR starts; a
+  prefixed multi-volume set is refused.
+- **Volume names follow the header** (`tinyvol_rnn.rar` + `.r00` given as streams):
+  `unar` looks for volume 2 only under the scheme the main header names, and read an
+  old-style set written to disk as `partN` as volume 1 alone (a short member, caught by
+  the size check). Stream volumes are written under the set's own scheme.
+- **Encrypted RAR 2.x-4.x data** (`encryption__rar4.rar`, the RAR4 header-encrypted
+  fixtures): `unar -p <right password>` writes nothing and exits 0. Refused. Encrypted
+  RAR5 data, header-encrypted RAR5 included, decodes correctly with `-p`. A wrong
+  password also gives exit 0 and no output, so an empty pipe for a non-empty encrypted
+  member is reported as `EncryptionError`; no password at all gives exit 2.
+- **A non-ASCII password** does not decrypt RAR5 data (measured with the `rar` writer
+  and a password with `é`). Refused. A password starting with `-`, or holding quotes or
+  backslashes, works because it is its own argv item.
+- **A multi-volume RAR5 set with encrypted headers** (`tinyvol_hp.part1.rar`): Debian's
+  1.10.1 decodes it with the right password, but the Homebrew bottle (XADMaster 1.10.8)
+  writes nothing and exits 0 (CI's macOS leg). Refused under every version, since the
+  finder does not tell 1.10.1 and 1.10.8 apart for this.
+
+Also different from `unrar p`, and handled in the pipe layout rather than refused: an
+all-entries run always includes file-version history rows, and a RAR3/4 symlink emits its
+stored target as data.

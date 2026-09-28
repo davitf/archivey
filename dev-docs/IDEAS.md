@@ -729,7 +729,8 @@
   backend ratarmount uses, wrapping `libzstd-seek`), is a heavy Cython/C++17 extension that
   statically bundles a C++ core "based on `indexed_bzip2`" — so it carries the *same class* of
   macOS dual-load symbol-collision risk that forced archivey onto a single accelerator library
-  (`dev-docs/known-issues.md`) and would need its own coexistence canary.
+  (`dev-docs/investigations/rapidgzip-upstream-report.md` §7) and would need its own
+  coexistence canary.
 
   **But first check whether it actually buys us anything our own infrastructure can't.**
   `libzstd-seek`'s jump table maps **frame boundaries only** — its own header says records map a

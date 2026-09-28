@@ -62,7 +62,7 @@ recommended = [
     # >=1.3.1: 1.1.x/1.2.0 return silently wrong bytes on chunked bounded PPMd
     # decodes (premature eof mid-stream); 1.3.1 fixes that but needs bounded
     # max_length to avoid native heap corruption — archivey always bounds.
-    # See dev-docs/known-issues.md and dev-docs/investigations/pyppmd-upstream-report.md.
+    # See dev-docs/investigations/ppmd-native-investigation-results.md §K.2.
     "pyppmd>=1.3.1",
     "inflate64>=1.0.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
@@ -79,11 +79,12 @@ recommended = [
 # rapidgzip backs BOTH gzip (RapidgzipFile) and bzip2 (its bundled IndexedBzip2File). The
 # separate indexed_bzip2 package is deliberately NOT a dependency: loading both libraries into
 # one process corrupts the heap and aborts on macOS (overlapping statically-linked C++ symbols).
-# >=0.16.0 is the floor known to expose IndexedBzip2File. See dev-docs/known-issues.md.
+# >=0.16.0 is the floor known to expose IndexedBzip2File. See ADR 0008 and
+# dev-docs/investigations/rapidgzip-upstream-report.md §7.
 #
 # Kept OUT of [recommended] on purpose: it is a heavy native build that can fail to compile,
 # importing it re-enables the GIL on free-threaded builds, and it carries the accelerator
-# close-before-finalize hazard in known-issues.md.
+# close-before-finalize hazard in dev-docs/investigations/rapidgzip-upstream-report.md §6.
 seekable = [
     "rapidgzip>=0.16.0",
 ]
@@ -237,7 +238,7 @@ addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=6
 # does not. The bound is narrow: a native call that *releases* the GIL, which is most
 # blocking I/O, is caught fine, and on a free-threaded build the GIL is not the
 # serialising thing at all. Both methods lose only when the GIL is held for the whole
-# hang — the accelerator busy-loop in dev-docs/known-issues.md is exactly that shape, and
+# hang — the accelerator busy-loop in dev-docs/threat-model.md is exactly that shape, and
 # no per-test timeout will ever name it.
 # The cost is that the whole run dies with the timeout instead of one test failing alone.
 # That cost is known to be acceptable rather than merely argued: pytest-timeout falls back

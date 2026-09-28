@@ -13,7 +13,7 @@ site: everything under `docs/` is for users, and everything here is not.
 | [Open issues (gotchas triage)](open-issues.md) | Fixable leftovers vs irreducible user gotchas; docs/spec drift |
 | [Open work inventory](open-work-inventory.md) | Dated cross-register snapshot: which open PRs, OpenSpec changes and register entries are live, what blocks what, and what is already dead. Indexes the registers; never the source of truth for one |
 | [Compression-library analysis](library-analysis.md) | Per-codec backend choice and rationale |
-| [Known issues](known-issues.md) | Defect/contract forensics: upstream bugs, our mitigations, and the evidence behind them |
+| [Known issues](known-issues.md) | Live archivey defects and live upstream bugs archivey works around: symptom, what archivey does, what remains, and a link to the evidence |
 | [Release checklist](release-checklist.md) | Every-release loop: CHANGELOG, perf vs prior tag, docs, tag/publish |
 | [Release-repo cutover](release-repo-cutover.md) | One-time rename / PyPI / Pages before the first public tag |
 | [Decision log](decisions/index.md) | Rare repo-wide ADRs; prefer light notes on format/topic handbook pages for new decisions |

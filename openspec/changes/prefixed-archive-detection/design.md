@@ -197,7 +197,7 @@ and rejects an empty next-header (`NextHeaderSize == 0`) behind a stub: nobody
 ships a self-extractor with no files, and a genuine empty `.7z` is claimed by
 near magic, never by the scan. Exact-EOF ranking is still earliest-`VALID` —
 task 2.3's remainder, pinned by an `xfail(strict=True)` red half and recorded in
-`dev-docs/known-issues.md`. Appending 16 bytes to a 7z leaves it perfectly
+`dev-docs/topics/prefixed-archives.md`. Appending 16 bytes to a 7z leaves it perfectly
 readable while breaking the exact-EOF equality, and some SFX tools append
 configuration after the payload — measured, not assumed. That is why the
 tie-break is a preference among validated hits, not a filter.

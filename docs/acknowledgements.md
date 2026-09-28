@@ -46,7 +46,7 @@ depend on them. Archivey loads **one** accelerator library per process: rapidgzi
 bzip2, and standalone `indexed_bzip2` is deliberately not imported because loading
 both corrupts the heap on macOS. Full scoring lives in
 [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md); the accelerator
-lifecycle notes are in [known issues](https://github.com/davitf/archivey/blob/main/dev-docs/known-issues.md).
+lifecycle notes are in the [rapidgzip investigation](https://github.com/davitf/archivey/blob/main/dev-docs/investigations/rapidgzip-upstream-report.md).
 
 | Project | Role |
 | --- | --- |
