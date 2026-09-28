@@ -29,8 +29,41 @@ archivey.extract("archive.zip", "out/")
   no file identity (some FUSE and network mounts), only the file type and size are
   checked.
 - **Optional dependencies and external tools** (`pycdlib`, codec packages, the `unrar`
-  binary) are trusted code but *not* trusted to be robust: their failures must surface
-  as translated archivey errors, never silently wrong data.
+  and `unar` programs) are trusted code but *not* trusted to be robust: their failures
+  surface as translated archivey errors, except in the accepted cases below.
+
+### Known and accepted limits
+
+These are the places where the guarantees above stop. Each one is a trade-off that was
+chosen, not a bug waiting for a fix, so please don't report them as vulnerabilities.
+
+- **A native decoder that crashes can take the process with it.** Decoders written in
+  C run inside your process: the standard library's `zlib`, `bz2` and `lzma`, pyppmd
+  for PPMd members up to `DecoderLimits.max_ppmd_in_process_input` (16 MiB by default),
+  and the optional bzip2 accelerator. The known crashes have been designed around: the
+  rapidgzip accelerator for gzip, zlib and raw DEFLATE runs in a child process, a larger
+  PPMd member is decoded in a child process, and a smaller one is handed to pyppmd whole,
+  which avoids the input pattern that crashes it. A crash nobody has found yet in an
+  in-process decoder would still abort the process. The bzip2 accelerator stays
+  in-process because no crash has been seen in it.
+- **`MemoryError` is not translated.** It passes through as itself, so that running out
+  of memory is never mistaken for a damaged archive. The `DecoderLimits` and
+  `ListingLimits` caps are there to keep a hostile archive from getting that far.
+- **Nothing bounds CPU or wall-clock time.** The limits cap bytes, entries and key
+  derivation work, not time. A slow decode of a legitimate-looking member is not an
+  error. Enforce a timeout outside archivey if you need one (a worker process you can
+  kill is the reliable way).
+- **Accelerators are on by default when installed.** `AcceleratorMode.AUTO` uses them
+  when the `[seekable]` extra is present and a caller asks for seeking. They sit outside
+  the fuzzed surface (see the hardening notes below); set them to `OFF` for untrusted
+  input under a strict threat model.
+- **After a seek, a crafted `.xz` or `.lz` index can serve the wrong bytes with no
+  error.** The integrity guarantee covers a read from start to end with no seek
+  ([Errors and diagnostics](errors-and-diagnostics.md#the-integrity-guarantee)).
+- **On Windows, a directory source is less protected against concurrent changes.**
+  There is no `O_NOFOLLOW`, so the walk scans subdirectories by path: a subdirectory
+  swapped for a junction or symlink while the walk runs can list entries from outside
+  the root. Reads still check the file identity where the filesystem reports one.
 
 ## What is enforced
 

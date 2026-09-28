@@ -56,6 +56,12 @@ In scope (non-exhaustive):
 - Failure to translate corrupt/truncated input into typed `ArchiveyError`s on
   the defended (non-accelerator) parse path
 
+The [known and accepted limits](https://davitf.github.io/archivey/extracting/#known-and-accepted-limits)
+(a crash inside an in-process native decoder, untranslated `MemoryError`, no CPU or
+time bound, accelerators on by default, a crafted `.xz`/`.lz` index after a seek, and
+the Windows directory-source gap) are documented trade-offs, not vulnerabilities. A
+report that one of them reaches further than the page says is in scope.
+
 Out of scope for private security reports (use ordinary GitHub issues):
 
 - Feature requests, docs typos, and non-security compatibility bugs
