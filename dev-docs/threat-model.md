@@ -712,6 +712,10 @@ digest, before seeking into it. A heuristic diagnostic for an ambiguous trailer 
 (an `LZIP` magic at a member start the walk skipped) was considered and not taken: an
 attacker who controls the trailers can avoid it.
 
+Users see this in [`docs/errors-and-diagnostics.md`](../docs/errors-and-diagnostics.md)
+§The integrity guarantee: the guarantee covers a read from start to end with no seek,
+and checking after a seek is best effort.
+
 ### O18. The archive chooses what a password attempt costs — closed
 
 Both password-based formats store the key-derivation cost in the archive: 7z's
@@ -804,7 +808,11 @@ the exception to the published rule that other local processes are trusted
 ([`docs/extracting.md`](../docs/extracting.md) §Trust boundaries), because a caller may
 read a tree someone else can write to (an upload staging folder, a shared drop folder).
 
-*Closed.* On POSIX the reader opens each path component with `O_NOFOLLOW` relative to its
+*Closed.* The walk itself is guarded the same way: on POSIX each subdirectory is opened
+with `O_NOFOLLOW | O_DIRECTORY`, checked against the `(st_dev, st_ino)` its parent's scan
+recorded, and scanned through that descriptor, so a subdirectory (or a directory above
+it) swapped for a symlink before its scan fails the listing rather than listing entries
+from outside the root. For reads, on POSIX the reader opens each path component with `O_NOFOLLOW` relative to its
 parent's descriptor and the file with `O_NOFOLLOW | O_NONBLOCK`, so a symlink anywhere on
 the path fails with `ELOOP` and a FIFO does not block. It then `fstat`s the handle and
 refuses, with `OSError(ESTALE)`, anything that is not a regular file with the listing's
@@ -815,6 +823,10 @@ stat could not reach) is checked on type and size alone, plus, on Windows, a
 reparse-point check on its final path component.
 
 What remains:
+- on Windows the walk scans by path, with no `O_NOFOLLOW` and no descriptor-based
+  `scandir`, so a subdirectory swapped for a junction or symlink between its parent's
+  scan and its own lists the target's entries. Reading them is refused as above only
+  where the listing recorded an identity. Inferred from the code, not measured.
 - a same-size rewrite in place, and a change after the open. Both read the listed file,
   inside the root.
 - a same-size replacement of an identity-less member. On POSIX the path still follows
@@ -830,7 +842,9 @@ Pinned by `tests/test_directory.py::test_a_file_swapped_for_a_symlink_after_list
 `::test_a_file_replaced_after_listing_is_refused`,
 `::test_a_file_swapped_for_a_fifo_after_listing_is_refused_without_blocking`,
 `::test_a_file_resized_after_listing_is_refused`,
-`::test_an_identityless_member_that_is_now_a_reparse_point_is_refused`. Handbook:
+`::test_an_identityless_member_that_is_now_a_reparse_point_is_refused`,
+`::test_a_directory_swapped_for_a_symlink_before_its_scan_is_refused`,
+`::test_a_parent_swapped_for_a_symlink_before_a_subdirectory_scan_is_refused`. Handbook:
 [`formats/directory.md`](formats/directory.md) §2.3, §4.
 
 ## OPEN gaps — compatibility
