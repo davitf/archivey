@@ -14,7 +14,7 @@ application" normally means exercising the library API:
 `archivey.open_archive(path)` / `archivey.extract(path, dest)` plus the detection
 helpers (`detect_format`, `format_availability`, `list_supported_formats`).
 All backends ship: ZIP, TAR, **7z**, **RAR**, ISO, directory, and
-single-file-compressed (gz/bz2/xz/lzip/zstd/lz4/.Z).
+single-file-compressed (gz/bz2/xz/lzip/LZMA Alone/zstd/lz4/zlib/Brotli/.Z).
 
 ## Where things live
 
@@ -35,7 +35,7 @@ that one is the code map.
 - `docs/` — the **published** end-user guide, and nothing else: `index`, `install`,
   `opening-and-listing`, `reading-members`, `extracting`, `gotchas`, `access-and-cost`,
   `formats`, `errors-and-diagnostics`, `cli`, `migrating`, `support-matrix`, `philosophy`,
-  `api`, `acknowledgements`. Every file under `docs/` has a nav entry in `mkdocs.yml` and
+  `how-it-works`, `api`, `acknowledgements`. Every file under `docs/` has a nav entry in `mkdocs.yml` and
   `scripts/check_docs_nav.py` fails CI otherwise. Placement rule for a new doc:
   `CONTRIBUTING.md` §"Where does a new doc go?".
 - `dev-docs/` — **unpublished** maintainer material: pair workflow, format/topic handbook,
@@ -155,7 +155,7 @@ hand after a manual clone; it is idempotent.
 
 **Do not skip this.** RAR data tests and the benchmark gate's `rar_*` cases *skip*
 when `unrar` is absent, and encrypted-ZIP fixtures skip without `7z` — quietly. A
-container missing them runs ~109 fewer tests while still reporting all-green, and
+container missing them runs about a hundred fewer tests while still reporting all-green, and
 `--update-baselines` there would rewrite `structural.json` without those cases. The
 script ends by printing what is missing; read that line.
 
@@ -265,9 +265,8 @@ Non-obvious gotchas:
   ZIP fixtures by shelling out to it (`tests/test_password.py`, the encrypted corpus
   entries in `tests/test_corpus_sweep.py`); they skip cleanly when it is absent.
   The setup script installs `p7zip-full` automatically.
-- Both of the above skip **quietly**, which is the trap: a container without them ran
-  1900 passed / 167 skipped where a provisioned one runs 2009 / 58 — ~109 tests gone
-  with the suite still green. `--update-baselines` in that state would also rewrite
+- Both of the above skip **quietly**, which is the trap: a container without them runs
+  about a hundred fewer tests, with the suite still green. `--update-baselines` in that state would also rewrite
   `structural.json` without the `rar_*` cases (it now refuses instead). If you are
   unsure whether the environment is complete, run `scripts/setup-dev-env.sh`; its
   closing verification block names anything missing.

@@ -65,7 +65,7 @@ Bare `pip install archivey` has **no** third-party runtime deps. Named extras pu
 | --- | --- |
 | `[recommended]` | [pyppmd](https://github.com/miurahr/pyppmd), [inflate64](https://github.com/miurahr/inflate64), [brotli](https://github.com/google/brotli), [lz4](https://github.com/python-lz4/python-lz4), [backports.zstd](https://github.com/Rogdham/backports.zstd) (Python before 3.14; 3.14+ uses stdlib `compression.zstd`), [cryptography](https://github.com/pyca/cryptography), [pycdlib](https://github.com/clalancette/pycdlib), [tqdm](https://github.com/tqdm/tqdm) |
 | `[seekable]` | [rapidgzip](https://github.com/mxmlnkn/rapidgzip) |
-| `[free-threaded]` | the subset of `[recommended]` that keeps the GIL disabled — `pycdlib`, `lz4`, `tqdm`, `backports.zstd`, and `cryptography` on 3.14+ only. See [Platforms and threading](support-matrix.md#free-threaded-python-313t-and-later) |
+| `[free-threaded]` | the subset of `[recommended]` that keeps the GIL disabled — `pycdlib`, `lz4`, `tqdm`, `backports.zstd`, and `cryptography` on 3.14+ only. See [Platforms and threading](support-matrix.md#free-threaded-python-313t) |
 | `[all]` | `[recommended]` + `[seekable]` |
 
 There is no extra per format: member codecs are shared across containers, so

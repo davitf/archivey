@@ -737,7 +737,7 @@
   "constant-time random access **at zstd frame granularity**". A seek into the middle of a frame
   jumps to that frame's start and decodes forward; there is **no** intra-frame state
   checkpointing (unlike `rapidgzip`, which snapshots the inflate window mid-stream). That is
-  *exactly* the granularity our `_SegmentedDecompressorStream` already delivers for **xz** (block
+  *exactly* the granularity our `DecompressorStream` seek points already deliver for **xz** (block
   index) and **lzip** (member/trailer scan): seek = jump to the segment containing the offset,
   decode forward within it. So the likely-better path is a **small native zstd reader** that
   reuses that infrastructure — build a frame index by scanning frame headers (compressed size
