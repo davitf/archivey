@@ -21,7 +21,6 @@ import pytest
 import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
 from archivey import open_archive
 from archivey.exceptions import (
-    CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -39,6 +38,7 @@ from archivey.internal.streams import bcj2 as bcj2_mod
 from archivey.internal.streams.bcj2 import Bcj2DecoderStream
 from archivey.types import CompressionAlgorithm
 from tests.conftest import requires, requires_binary
+from tests.corruption_util import raises_corruption_not_truncation
 
 _BCJ2 = b"\x03\x03\x01\x1b"
 _COPY = b"\x00"
@@ -391,7 +391,7 @@ def test_a_byte_left_over_in_an_input_is_corruption(
     streams, size, _ = branches
     streams = list(streams)
     streams[index] += b"\x00"
-    with pytest.raises(CorruptionError, match=f"BCJ2 {label} stream has bytes past"):
+    with raises_corruption_not_truncation(match=f"BCJ2 {label} stream has bytes past"):
         _decode(streams, size)
 
 
@@ -413,7 +413,7 @@ def test_leftover_check_reads_one_byte_and_does_not_drain(
     streams, size, _ = branches
     main = _ReadCounter(streams[0] + b"\x00" * (8 * 1024 * 1024))
     stream = Bcj2DecoderStream(main, *map(io.BytesIO, streams[1:]), unpack_size=size)
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         stream.read(size)
     # Whole blocks already buffered count too; the check itself reads one byte.
     assert main.handed_out - len(streams[0]) <= bcj2_mod._BLOCK + 1
@@ -582,13 +582,13 @@ def test_coder_graph_cycle_is_corruption() -> None:
     folder = _graph(
         [_coder(_COPY), _coder(_COPY), _coder(_COPY)], [(1, 2), (2, 1)], [0]
     )
-    with pytest.raises(CorruptionError, match="cycle"):
+    with raises_corruption_not_truncation(match="cycle"):
         plan_folder(folder)
 
 
 def test_output_bound_twice_is_corruption() -> None:
     folder = _graph([_coder(_COPY), _coder(_BCJ2, 4)], [(1, 0), (2, 0), (3, 0)], [0, 4])
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         plan_folder(folder)
 
 
@@ -606,12 +606,12 @@ def test_multi_input_coder_other_than_bcj2_is_unsupported() -> None:
     ],
 )
 def test_coder_with_no_stream_is_corruption(coder: SevenZipCoder, message: str) -> None:
-    with pytest.raises(CorruptionError, match=message):
+    with raises_corruption_not_truncation(match=message):
         plan_folder(_graph([coder], [], [0]))
 
 
 def test_folder_with_no_coders_is_corruption() -> None:
-    with pytest.raises(CorruptionError, match="no coders"):
+    with raises_corruption_not_truncation(match="no coders"):
         plan_folder(_graph([], [], []))
 
 
@@ -703,7 +703,7 @@ def test_encrypted_folder_with_a_cycle_is_corruption_not_a_password_error() -> N
     data = _archive(b"\x00" * 16, header)
     with open_archive(io.BytesIO(data), password="first") as reader:
         (member,) = reader.members()
-        with pytest.raises(CorruptionError, match="cycle"):
+        with raises_corruption_not_truncation(match="cycle"):
             reader.read(member)
 
 

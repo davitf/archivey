@@ -43,6 +43,7 @@ from archivey import (
     open_stream,
 )
 from archivey.types import HashAlgorithm, MemberType
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.sample_archives import (
     CORPUS,
     CorpusEntry,
@@ -589,7 +590,6 @@ def test_zip_corrupt_member_offset_is_still_corruption(tmp_path: Path) -> None:
     The closed-handle carve-out must not take the corrupt-local-header-offset case with
     it — that one really is a bad file, and `CorruptionError` is the right answer.
     """
-    from archivey import CorruptionError
 
     data = bytearray(_zip_bytes())
     # The central directory's local-header offset field, clobbered so zipfile seeks to a
@@ -599,7 +599,7 @@ def test_zip_corrupt_member_offset_is_still_corruption(tmp_path: Path) -> None:
 
     with open_archive(io.BytesIO(bytes(data))) as reader:
         member = next(m for m in reader.members() if m.type is _FILE)
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             reader.open(member)
 
 

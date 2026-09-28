@@ -26,6 +26,10 @@ from archivey.exceptions import (
 )
 from archivey.internal.streams.codecs import LzmaAloneCodec
 from archivey.internal.streams.xz import lzma_error_to_archivey
+from tests.corruption_util import (
+    is_corruption_not_truncation,
+    raises_corruption_not_truncation,
+)
 
 _PAYLOAD = b"hello " * 200
 
@@ -67,7 +71,7 @@ def test_corrupt_xz_data_is_still_corruption(tmp_path: Path) -> None:
     archive = tmp_path / "a.txt.xz"
     archive.write_bytes(bytes(data))
     # The first block fails to decode, so open_archive's one-byte probe raises it.
-    with pytest.raises(CorruptionError), open_archive(archive) as reader:
+    with raises_corruption_not_truncation(), open_archive(archive) as reader:
         (entry,) = reader.members()
         with reader.open(entry) as stream:
             stream.read()
@@ -105,7 +109,7 @@ def test_the_lzma_codecs_translate_by_cause() -> None:
     options = codec.translate(lzma.LZMAError("Invalid or unsupported options"))
     assert isinstance(options, UnsupportedFeatureError)
     corrupt = codec.translate(lzma.LZMAError("Corrupt input data"))
-    assert isinstance(corrupt, CorruptionError)
+    assert is_corruption_not_truncation(corrupt)
 
 
 def test_an_unknown_filter_mid_tar_xz_aborts_the_listing(tmp_path: Path) -> None:

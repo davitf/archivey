@@ -29,6 +29,7 @@ from archivey.internal.streams.lzip import LzipDecompressorStream, _read_index_b
 from archivey.internal.streams.unix_compress import UnixCompressDecompressorStream
 from archivey.internal.streams.xz import XzDecompressorStream, _read_xz_index_backwards
 from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (
     CountingBytesIO,
     make_lzip_member,
@@ -383,7 +384,7 @@ def test_xz_index_crc_mismatch_raises_on_backwards_scan() -> None:
     compressed = bytearray(lzma.compress(CONTENT, format=lzma.FORMAT_XZ))
     # Flip a byte in the index region (just before the 12-byte footer).
     compressed[-16] ^= 0xFF
-    with pytest.raises(CorruptionError, match="index CRC32"):
+    with raises_corruption_not_truncation(match="index CRC32"):
         _read_xz_index_backwards(io.BytesIO(bytes(compressed)), len(compressed))
 
 
@@ -415,7 +416,7 @@ def test_xz_index_unpadded_overflow_raises() -> None:
     )
     # Minimal fake file: header + tiny pad + index + footer (blocks region empty/wrong).
     blob = header + b"\x00" * 16 + index + footer
-    with pytest.raises(CorruptionError, match="negative offset|extends before"):
+    with raises_corruption_not_truncation(match="negative offset|extends before"):
         _read_xz_index_backwards(io.BytesIO(blob), len(blob))
 
 
@@ -448,7 +449,7 @@ def test_xz_padding_scan_matches_the_group_walk(
     except CorruptionError as e:
         expected = e
     if isinstance(expected, Exception):
-        with pytest.raises(CorruptionError, match="too small"):
+        with raises_corruption_not_truncation(match="too small"):
             xz_mod._skip_stream_padding_backwards(io.BytesIO(data), end, stop_at)
     else:
         got = xz_mod._skip_stream_padding_backwards(io.BytesIO(data), end, stop_at)
@@ -496,7 +497,7 @@ def test_xz_source_cut_inside_the_first_header_is_truncated(data: bytes) -> None
 @pytest.mark.parametrize("data", [b"a", b"abc", b"\x00" * 4, b"\xfd7zXY"])
 def test_xz_short_source_that_is_not_xz_is_corrupt(data: bytes) -> None:
     with XzDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(CorruptionError, match="no streams found"):
+        with raises_corruption_not_truncation(match="no streams found"):
             stream.read()
 
 
@@ -505,10 +506,10 @@ def test_xz_index_with_room_for_more_records_is_rejected() -> None:
     from archivey.internal.streams.xz import _parse_xz_index
 
     # Indicator, zero records, then 4 bytes of zeros past the padding.
-    with pytest.raises(CorruptionError, match="length mismatch"):
+    with raises_corruption_not_truncation(match="length mismatch"):
         _parse_xz_index(b"\x00\x00\x00\x00" + b"\x00" * 4)
     # Index cut short of its padding.
-    with pytest.raises(CorruptionError, match="length mismatch"):
+    with raises_corruption_not_truncation(match="length mismatch"):
         _parse_xz_index(b"\x00\x00")
     assert _parse_xz_index(b"\x00\x00\x00\x00") == []
 
@@ -518,7 +519,7 @@ def test_xz_index_rejects_a_non_minimal_multibyte_integer() -> None:
 
     assert _decode_mbi(b"\x00", 0) == (0, 1)
     assert _decode_mbi(b"\x80\x01", 0) == (128, 2)
-    with pytest.raises(CorruptionError, match="not minimally encoded"):
+    with raises_corruption_not_truncation(match="not minimally encoded"):
         _decode_mbi(b"\x80\x00", 0)
 
 
@@ -532,7 +533,9 @@ def test_lzip_trailer_member_size_past_start_raises() -> None:
     struct.pack_into("<IQQ", bad, len(bad) - 20, crc, data_size, len(bad) + 100)
     # With no valid trailer at the end, the walk looks back for the last one (data may
     # follow the last member) and finds none.
-    with pytest.raises(CorruptionError, match="member_size|exceeds|trailer not found"):
+    with raises_corruption_not_truncation(
+        match="member_size|exceeds|trailer not found"
+    ):
         _read_index_backwards(io.BytesIO(bytes(bad)), len(bad))
 
 
@@ -559,7 +562,7 @@ def test_lzip_trailer_member_size_mismatch_raises_on_forward_read() -> None:
     """
     bad = _lzip_with_lying_member_size()
     with LzipDecompressorStream(io.BytesIO(bad)) as stream:
-        with pytest.raises(CorruptionError, match="member size mismatch"):
+        with raises_corruption_not_truncation(match="member size mismatch"):
             stream.read()
 
 
@@ -580,12 +583,12 @@ def test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain() -> None:
         assert stream.tell() == 512
 
     with LzipDecompressorStream(io.BytesIO(bad)) as stream:
-        with pytest.raises(CorruptionError, match="member size mismatch"):
+        with raises_corruption_not_truncation(match="member size mismatch"):
             stream.seek(100)
             stream.read(16)  # the lying trailer is reached within the first feed
 
     with LzipDecompressorStream(io.BytesIO(bad)) as stream:
-        with pytest.raises(CorruptionError, match="member size mismatch"):
+        with raises_corruption_not_truncation(match="member size mismatch"):
             stream.read()
 
 
@@ -636,11 +639,11 @@ def test_xz_cold_seek_trusts_a_self_consistent_block_index() -> None:
     with XzDecompressorStream(io.BytesIO(bad)) as stream:
         stream.seek(1000)
         assert stream.read(70_000) == data[1000:71_000]  # right bytes, no error yet
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             stream.read()
 
     with XzDecompressorStream(io.BytesIO(bad)) as stream:
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             stream.read()
 
 
@@ -707,7 +710,7 @@ def test_lzip_source_cut_inside_the_first_header_is_truncated(data: bytes) -> No
 def test_lzip_short_source_that_is_not_lzip_is_corrupt(data: bytes) -> None:
     """Trailing data is allowed only after a member, so this must not decode to b''."""
     with LzipDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(CorruptionError, match="expected magic"):
+        with raises_corruption_not_truncation(match="expected magic"):
             stream.read()
 
 
@@ -1008,7 +1011,7 @@ def test_xz_block_resume_refuses_blocks_that_disagree_with_the_index() -> None:
         )
         source = io.BytesIO(compressed)
         resume = _XzBlockResume(lying, source, DecoderLimits())
-        with pytest.raises(CorruptionError, match=match):
+        with raises_corruption_not_truncation(match=match):
             resume.feed(source.read())
 
 
@@ -1070,7 +1073,7 @@ def _xz_stream_from_records(records: list[tuple[int, int]]) -> bytes:
 def test_xz_index_with_a_huge_declared_count_fails_without_reserving() -> None:
     from archivey.internal.streams.xz import _encode_mbi, _iter_xz_index
 
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         list(_iter_xz_index(b"\x00" + _encode_mbi(1 << 40)))
 
 

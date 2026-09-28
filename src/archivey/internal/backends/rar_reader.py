@@ -2036,6 +2036,7 @@ class RarReader(BaseArchiveReader):
         try:
             while verifier.read(view, _CONFIRM_CHUNK_BYTES):
                 pass
+        # TruncatedError is a CorruptionError subclass: this clause must stay first.
         except TruncatedError as exc:
             # A member whose bytes end short of its declared size is a truncated
             # member, whatever its header said, and relabelling that as a verdict
