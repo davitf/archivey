@@ -87,6 +87,13 @@ _CHUNK = 1 << 20
 # The range of an integer argument a frame carries (a signed 64-bit ``q`` in ``FRAME``).
 _ARG_MIN, _ARG_MAX = -(1 << 63), (1 << 63) - 1
 
+
+def _check_arg(arg: int) -> None:
+    """Refuse an integer a frame cannot carry, as ``io.BytesIO.seek`` refuses one."""
+    if not _ARG_MIN <= arg <= _ARG_MAX:
+        raise OverflowError(f"{arg} is out of range for the rapidgzip decoder process")
+
+
 # What rapidgzip 0.16 writes to stderr as it aborts on a stream that ends early.
 _TRUNCATION_ABORT = b"The bit buffer should not contain more data than have been read"
 
@@ -417,11 +424,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self, tag: int, arg: int = 0, payload: bytes = b"", *, keep_parked: bool = False
     ) -> tuple[int, bytes]:
         self._raise_if_unusable()
-        if not _ARG_MIN <= arg <= _ARG_MAX:
-            # Refused before anything is written, so the child is still in step.
-            raise OverflowError(
-                f"{arg} is out of range for the rapidgzip decoder process"
-            )
+        # Refused before anything is written, so the child is still in step.
+        _check_arg(arg)
         try:
             frame = self._exchange(tag, arg, payload)
         except BaseException:
@@ -616,6 +620,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 return target
             # The child is past the buffer, so a relative seek is made absolute here.
             offset, whence = target, io.SEEK_SET
+        # Before the buffer is dropped: a refused offset leaves the position as it was.
+        _check_arg(offset)
         self._drop_buffer()
         self._sequential = False
         try:

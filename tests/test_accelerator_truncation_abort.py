@@ -696,6 +696,13 @@ def test_an_offset_past_the_frame_range_is_refused_and_the_stream_survives(
             child.seek(2**63 - 1, io.SEEK_CUR)
         assert child.seek(5) == 5
         assert child.read(10) == payload[5:15]
+        # A second sequential read fills the read-ahead buffer; a refused seek keeps
+        # it and the position, so the next read goes on from where the caller was.
+        assert child.read(10) == payload[15:25]
+        with pytest.raises(OverflowError):
+            child.seek(offset)
+        assert child.tell() == 25
+        assert child.read(10) == payload[25:35]
     finally:
         child.close()
 
