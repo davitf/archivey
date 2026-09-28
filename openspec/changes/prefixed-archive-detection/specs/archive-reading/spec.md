@@ -68,7 +68,7 @@ per-call operational args stay outside `ArchiveyConfig`.
 
 `on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
 reads from a callback are allowed. Starting another operation on the same
-emitting reader/stream SHALL raise `UnsupportedOperationError`; other readers OK.
+emitting reader/stream SHALL raise `ArchiveyUsageError`; other readers OK.
 Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 (`diagnostics` / `reader-concurrency`).
 

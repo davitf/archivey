@@ -28,7 +28,7 @@ from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.exceptions import (
     CorruptionError,
     StreamNotSeekableError,
-    UnsupportedOperationError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.backends.iso_reader import IsoReader
 from archivey.internal.registry import get_registry
@@ -260,7 +260,7 @@ def test_password_is_accepted_and_recorded(rock_ridge_iso: Path) -> None:
 
 def test_write_rejected() -> None:
     # No ISO write backend is registered, so requesting a writer raises.
-    with pytest.raises(UnsupportedOperationError):
+    with pytest.raises(UnsupportedFeatureError):
         get_registry().writer_for_format(ArchiveFormat.ISO)
 
 

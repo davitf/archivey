@@ -21,13 +21,7 @@ import unicodedata
 from pathlib import Path
 from typing import Callable
 
-from archivey.exceptions import (
-    DeceptiveNameError,
-    PathTraversalError,
-    SpecialFileError,
-    SymlinkEscapeError,
-    UnportableNameError,
-)
+from archivey.exceptions import FilterRejectionError
 from archivey.internal.naming import BIDI_REORDERING_CONTROLS
 from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
 
@@ -72,7 +66,7 @@ def _reject_bidi_override(value: str, *, member_name: str, what: str) -> None:
     if not found:
         return
     spelled = ", ".join(f"U+{ord(char):04X}" for char in found)
-    raise DeceptiveNameError(
+    raise FilterRejectionError(
         f"Bidirectional override ({spelled}) in {what}: {value!r}. It would display "
         f"as a different name than it is; extract it under a name you choose.",
         member_name=member_name,
@@ -82,9 +76,9 @@ def _reject_bidi_override(value: str, *, member_name: str, what: str) -> None:
 def check_universal(member: ArchiveMember, dest: Path) -> None:
     """Enforce the non-bypassable universal path-safety constraints on ``member``.
 
-    ``dest`` is the extraction root. Raises a :class:`FilterRejectionError` subclass
-    (``PathTraversalError`` / ``SymlinkEscapeError`` / ``SpecialFileError``) on the
-    first violation; returns ``None`` when the member is safe to extract. Applied to the
+    ``dest`` is the extraction root. Raises :class:`FilterRejectionError` on the first
+    violation (an escaping path, an escaping symlink, a special file); returns ``None``
+    when the member is safe to extract. Applied to the
     original member, before any policy transform, regardless of the active policy.
 
     Everything here makes the *write itself* dangerous or impossible — escaping the
@@ -100,7 +94,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
     # rejected (escaping and internal alike): a well-formed archive has no reason to carry
     # one. (A future opt-in SANITIZE policy may re-root such names instead of rejecting.)
     if "\x00" in name:
-        raise PathTraversalError("Null byte in member name", member_name=name)
+        raise FilterRejectionError("Null byte in member name", member_name=name)
     # A name the platform filesystem encoding cannot represent (a lone surrogate outside
     # the surrogateescape range, on POSIX) can never be materialized under dest — and it
     # would otherwise crash the parent-resolution below with a raw UnicodeEncodeError.
@@ -108,26 +102,26 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
     try:
         os.fsencode(name)
     except UnicodeEncodeError as exc:
-        raise PathTraversalError(
+        raise FilterRejectionError(
             "Member name cannot be encoded for the filesystem",
             member_name=name,
         ) from exc
     if _is_absolute(name):
-        raise PathTraversalError("Absolute path not allowed", member_name=name)
+        raise FilterRejectionError("Absolute path not allowed", member_name=name)
     if ".." in _SEP_SPLIT.split(name):
-        raise PathTraversalError(
+        raise FilterRejectionError(
             "Path traversal ('..') in member name", member_name=name
         )
 
     rel = name.rstrip("/")
     if member.type != MemberType.DIRECTORY and rel in ("", "."):
-        raise PathTraversalError(
+        raise FilterRejectionError(
             "Member name refers to the extraction root",
             member_name=name,
         )
 
     if member.type == MemberType.OTHER:
-        raise SpecialFileError(
+        raise FilterRejectionError(
             "Special file (device/FIFO/socket) not allowed",
             member_name=name,
         )
@@ -142,7 +136,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
     if rel not in ("", "."):  # "" / "." is the root dir member itself
         parent = (dest_root / rel).parent.resolve()
         if not _within(parent, dest_root):
-            raise PathTraversalError(
+            raise FilterRejectionError(
                 "Member resolves outside the destination root",
                 member_name=name,
             )
@@ -158,7 +152,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
             # cannot name a filesystem path, and would crash the resolves below with a
             # raw ValueError / UnicodeEncodeError instead of a typed rejection.
             if "\x00" in target:
-                raise SymlinkEscapeError(
+                raise FilterRejectionError(
                     "Null byte in link target",
                     member_name=name,
                     link_target=target,
@@ -166,7 +160,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
             try:
                 os.fsencode(target)
             except UnicodeEncodeError as exc:
-                raise SymlinkEscapeError(
+                raise FilterRejectionError(
                     "Link target cannot be encoded for the filesystem",
                     member_name=name,
                     link_target=target,
@@ -175,7 +169,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
             link_parent = (dest_root / name).parent
             resolved_target = (link_parent / member.link_target).resolve()
             if not _within(resolved_target, dest_root):
-                raise SymlinkEscapeError(
+                raise FilterRejectionError(
                     "Symlink target escapes destination",
                     member_name=name,
                     link_target=member.link_target,
@@ -183,7 +177,7 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
         elif member.type == MemberType.HARDLINK:
             resolved_target = (dest_root / member.link_target).resolve()
             if not _within(resolved_target, dest_root):
-                raise SymlinkEscapeError(
+                raise FilterRejectionError(
                     "Hardlink target escapes destination",
                     member_name=name,
                     link_target=member.link_target,
@@ -326,7 +320,7 @@ def _strip_trailing_dot_space(name: str) -> str:
             continue
         stripped = part.rstrip(". ")
         if stripped == "":
-            raise UnportableNameError(
+            raise FilterRejectionError(
                 f"Path segment is entirely dots/spaces: {part!r}", member_name=name
             )
         out.append(stripped)
@@ -342,10 +336,9 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     merely-non-portable ones: ``STRICT`` strips trailing dots/spaces (O3) and both levels
     normalize non-representable bytes (O7). Rewriting (not rejecting) a
     legitimate-but-awkward name keeps extraction working; refusal is reserved for
-    structures that cannot be safely written. Raises :class:`UnportableNameError` or
-    :class:`DeceptiveNameError` (both ``FilterRejectionError``, so the coordinator records
-    ``BLOCKED``) on a rejected name; otherwise returns ``member`` or a rewritten
-    ``.replace()`` copy.
+    structures that cannot be safely written. Raises :class:`FilterRejectionError` (so the
+    coordinator records ``BLOCKED``) on a rejected name; otherwise returns ``member`` or a
+    rewritten ``.replace()`` copy.
     """
     if policy is ExtractionPolicy.TRUSTED:
         return member
@@ -374,11 +367,11 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
         # stream), not merely awkward — rejected under STRICT and STANDARD on every platform.
         stem = segment.split(".", 1)[0].strip().upper()
         if stem in _RESERVED_NAMES:
-            raise UnportableNameError(
+            raise FilterRejectionError(
                 f"Windows-reserved device name in path: {segment!r}", member_name=name
             )
         if ":" in segment:
-            raise UnportableNameError(
+            raise FilterRejectionError(
                 f"Colon in path segment (NTFS alternate data stream): {segment!r}",
                 member_name=name,
             )

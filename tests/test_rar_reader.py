@@ -29,7 +29,7 @@ from archivey.cost import AccessCost
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
-    ConcurrentAccessError,
+    ArchiveyUsageError,
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
@@ -257,7 +257,7 @@ def test_solid_stream_members_of_a_stream_source_writes_nothing_until_read(
 def test_refused_second_open_does_not_spawn_unrar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``ConcurrentAccessError`` must mean the second ``unrar`` was never spawned.
+    """``ArchiveyUsageError`` must mean the second ``unrar`` was never spawned.
 
     ``basic_solid__.rar`` is ``-m3`` (not stored): ``open()`` takes the named-unrar
     path. A spawn-then-cleanup fix still raises and leaves no live process, so this
@@ -277,7 +277,7 @@ def test_refused_second_open_does_not_spawn_unrar(
         assert len(files) >= 2
         s1 = archive.open(files[0])
         assert len(spawns) == 1
-        with pytest.raises(ConcurrentAccessError):
+        with pytest.raises(ArchiveyUsageError):
             archive.open(files[1])
         assert len(spawns) == 1
         s1.close()
@@ -4598,13 +4598,13 @@ def test_password_with_a_line_break_is_refused_not_clamped() -> None:
     downstream able to tell. The native header path hashes the whole string, so the same
     argument also meant two different things on the two paths.
     """
-    from archivey.exceptions import UnsupportedOperationError
+    from archivey.exceptions import UnsupportedFeatureError
     from archivey.internal.backends.rar_unrar import _password_stdin_bytes
 
     assert _password_stdin_bytes("ab") == b"ab"
     assert _password_stdin_bytes(b"ab") == b"ab"
     for bad in ["ab\nXX", "ab\rXX", b"ab\nXX", b"ab\rXX"]:
-        with pytest.raises(UnsupportedOperationError, match="line break"):
+        with pytest.raises(UnsupportedFeatureError, match="line break"):
             _password_stdin_bytes(bad)
 
 
@@ -4630,11 +4630,11 @@ def test_unencrypted_archive_opens_with_a_line_break_password(name: str) -> None
 @requires_binary("unrar")
 def test_wrong_password_after_a_line_break_does_not_decrypt() -> None:
     """End to end: the prefix before the break must not be enough to read a member."""
-    from archivey.exceptions import UnsupportedOperationError
+    from archivey.exceptions import UnsupportedFeatureError
 
     path = _fixture("encryption__.rar")
     with open_archive(path, password="password") as archive:
         assert archive.read("secret.txt") == b"This is secret"
     with open_archive(path, password="password\nIGNORED") as archive:
-        with pytest.raises((UnsupportedOperationError, EncryptionError)):
+        with pytest.raises((UnsupportedFeatureError, EncryptionError)):
             archive.read("secret.txt")

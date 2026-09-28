@@ -38,7 +38,7 @@ archivey.extract("archive.zip", "out/")
   UNC prefixes, and null bytes are rejected before any write; the destination parent is
   resolved and containment-checked (`safe-extraction`, `internal/filters.py`).
 - **Extraction-root overwrite:** a *file* member whose normalized name is `"."` or `""`
-  is rejected (`PathTraversalError`); only a directory member may name the extraction
+  is rejected (`FilterRejectionError`); only a directory member may name the extraction
   root. Prevents a corrupt archive from replacing the destination directory with a
   regular file (`internal/filters.py` `check_universal`).
 - **Symlink escapes, three layers:** lexical target check at planning time; parent-dir
@@ -86,7 +86,7 @@ archivey.extract("archive.zip", "out/")
   refuses the archive.
 - **Deceptive names:** a member name (or link target) containing a Unicode bidi
   **override or isolate** — U+202A–202E, U+2066–2069 — is rejected with
-  `DeceptiveNameError` under `STRICT` (the default) and `STANDARD`. Those characters
+  `FilterRejectionError` under `STRICT` (the default) and `STANDARD`. Those characters
   reorder the surrounding text, which is how `evil‮gnp.exe` displays as `evil.png` in
   every listing a person will see. The three *directional marks* (U+061C, U+200E,
   U+200F) are **not** rejected: they reorder nothing and occur in legitimate Arabic and
@@ -264,8 +264,7 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
 - **Temporary copies of a stream source** — RAR member data goes through `unrar`, which
   reads only files, so a RAR opened from a stream is copied to a temp file first
   (`SpoolLimits.max_bytes` on `ArchiveyConfig.spool_limits`, default 1 GiB across the
-  whole copy). Checked before anything is written. Trips raise `SpoolLimitExceededError`,
-  a `ResourceLimitError`.
+  whole copy). Checked before anything is written. Trips raise `ResourceLimitError`.
   A path source is never copied.
 - **PPMd members decoded in-process** — pyppmd, the PPMd decoder (7z and ZIP method
   98), can crash the whole process on corrupt input unless it is handed a member in one

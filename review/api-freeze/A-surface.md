@@ -17,10 +17,18 @@ vocabulary is the brief's: **keep**, **demote** (importable from its module, out
 | `archivey.cost` | `CostReceipt`, `ListingCost`, `AccessCost`, `StreamCapability` | keep |
 | `archivey.detection` | `FormatInfo`, `DetectionConfidence` | keep |
 | `archivey.diagnostics` | `Diagnostic`, `DiagnosticCode`, `DiagnosticSeverity`, `DiagnosticDisposition`, `DiagnosticPolicy`, `DiagnosticSummary`, `ExtractionReport`, `MemberListReport`, `ARCHIVE_INTEGRITY_CODES` | keep (Q3 on `DiagnosticSeverity`) |
-| `archivey.exceptions` | 26 classes | keep; see `D-errors.md` |
+| `archivey.exceptions` | ~~26~~ 18 classes | keep; see `D-errors.md`. Pruned 2026-09-27 (below) |
 | ~~`archivey.measurement`~~ | ~~`IoStats`~~ | made internal 2026-09-27 (below) |
 | type aliases | `PasswordInput`, `PasswordProvider`, `OnDiagnostic`, `DiagnosticContext`, `MemberSelector`, `MemberFilter` | keep |
 | `__version__` | | keep |
+
+**Superseded 2026-09-27 (exception types).** davi asked for the exception-type review
+before 0.2.0 after all, and approved all six of its calls: 27 classes became 18 in
+PR #506. The five `FilterRejectionError` subclasses (including `DeceptiveNameError`),
+`SpoolLimitExceededError`, `ConcurrentAccessError`, `UnsupportedOperationError` and
+`UnsupportedFormatError` are gone; the reasoning is in the amendment to
+`dev-docs/decisions/0012-usage-errors-outside-archiveyerror.md`. The analysis below is
+kept as written.
 
 **Superseded 2026-09-27.** `enable_measurement` and `IoStats` left the public API on
 2026-09-27, PR #505: davi chose to make IO measurement internal, with the CLI's
@@ -43,7 +51,7 @@ The 24 `types` names: `ExtractionPolicy`, `OverwritePolicy`, `OnError`, `AbortOn
 | `ARCHIVE_INTEGRITY_CODES` | API. A caller builds a policy from it | Yes: a `frozenset[DiagnosticCode]`, the same type its members carry | `errors-and-diagnostics.md` | keep |
 | `ArchiveInfoExtra`, `MemberExtra` | API. The typed bag; an overloaded mapping whose known keys carry types (settled in #384/#421) | Yes | `formats.md` | keep |
 | `DecoderLimits` | API. Third of three limits classes on `ArchiveyConfig`; all three have `UNLIMITED`, all use `None` to disable a guard | Yes, and the three are coherent with each other (fields: extraction 4, listing 2, decoder 2; same disable rule) | `extracting.md`, `errors-and-diagnostics.md` | keep |
-| `DeceptiveNameError`, `NameCollisionError`, `NameRewrittenError` | API. See `D-errors.md` §The three name errors | Yes: one is a filter rejection, two are run outcomes a caller opted into raising | `extracting.md`, `errors-and-diagnostics.md` | keep |
+| ~~`DeceptiveNameError`~~, `NameCollisionError`, `NameRewrittenError` | API. See `D-errors.md` §The three name errors | Yes: one is a filter rejection, two are run outcomes a caller opted into raising | `extracting.md`, `errors-and-diagnostics.md` | keep; `DeceptiveNameError` folded into `FilterRejectionError` 2026-09-27 (PR #506) |
 | `HashAlgorithm`, `crc32_digest` | API. The key type of `member.hashes` and the encoder for a CRC into it | Yes | `formats.md` | keep |
 | `IoStats`, `enable_measurement` | API now, not a leak: `#465` gave them a guide section ("Measuring what a read cost") and `ArchiveReader.io_stats()` is on the ABC. The July worry (a debugging affordance) is answered by the design: off by default, decided at open, costs nothing when off | Yes | `access-and-cost.md` | keep |
 | `MemberListReport` | API. Returned by `members_report()`; a caller receives it and branches on `.error` | Yes: same shape as `ExtractionReport` (iterates, sizes, `.diagnostics`) | Described by method, not by name, in `opening-and-listing.md` and `errors-and-diagnostics.md` | keep |

@@ -62,7 +62,8 @@ round-trip an archive faithfully.
 
 **Reject bidi overrides in `apply_name_policy`, not `check_universal`.**
 
-- `STRICT` (the default) and `STANDARD` reject with `DeceptiveNameError`, as before.
+- `STRICT` (the default) and `STANDARD` reject with `FilterRejectionError`, as before
+  (`DeceptiveNameError` until it was folded into its parent before 0.2.0).
 - **`TRUSTED` extracts the member unchanged**, under its stored name.
 - The check runs on the **final** name, after the caller filter — so a filter that
   renames the member rescues it. Renaming a name that is a lie is the natural remedy, and
@@ -92,5 +93,5 @@ refusals to process the file.
   halves — extracted under `TRUSTED`, blocked under `STRICT`/`STANDARD` — so the file's
   one policy-keyed case cannot be mistaken for a universal one.
 - **A move back to `check_universal` fails a test**, not just a review:
-  `test_apply_name_policy_raises_deceptive_name_error` asserts the check is absent from
+  `test_apply_name_policy_rejects_bidi_override` asserts the check is absent from
   `check_universal` and present in `apply_name_policy`.

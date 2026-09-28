@@ -119,7 +119,7 @@ reader attribute SHALL expose the declared capabilities; the two booleans on
 **Default (neither declared), every format including directory:** at most one live member
 data stream per reader; streams are forward-only. "Live" spans `open()` →
 stream `close()`/context exit (not EOF, not GC). A second overlapping `open()`
-SHALL raise `ConcurrentAccessError` at the later call and leave the first stream
+SHALL raise `ArchiveyUsageError` at the later call and leave the first stream
 untouched/readable — the gate never resolves contention by closing a held stream.
 The refusal SHALL happen before the member is opened: a refused `open()` SHALL NOT
 construct a member data stream, spawn a helper process, or read member data.
@@ -143,10 +143,10 @@ uniform so that callers cannot come to rely on a handle that seeks on some forma
 only. A caller that needs to seek opens the member with random `open()` under
 `seekable_members=True`.
 
-`ConcurrentAccessError`'s message SHALL name the parameter a caller would pass to
+`ArchiveyUsageError`'s message SHALL name the parameter a caller would pass to
 allow the operation (`concurrent_members=True`), not an internal type.
 
-`open_archive()` SHALL capture the caller stack once; `ConcurrentAccessError`
+`open_archive()` SHALL capture the caller stack once; `ArchiveyUsageError`
 SHALL include that `file:line`. Full stack is retained on the reader for
 diagnostics (no config knob). Capabilities are per-archive intent only — no
 `ArchiveyConfig` equivalent, no per-`open()` flag. Access cost never determines
@@ -164,7 +164,7 @@ re-decode from block start) stays under `AccessCost` / `solid_block_count` /
 
 | Case | Expected |
 | --- | --- |
-| Overlapping second `open()` without `concurrent_members` (ZIP/TAR/ISO/single-file/dir) | `ConcurrentAccessError` at later `open()` with open_archive `file:line`; first stream remains readable |
+| Overlapping second `open()` without `concurrent_members` (ZIP/TAR/ISO/single-file/dir) | `ArchiveyUsageError` at later `open()` with open_archive `file:line`; first stream remains readable |
 | Refused second `open()` without `concurrent_members` | Raises before the member is opened — no member stream constructed, no helper process spawned, no member data read |
 | Non-overlapping open/read/close loop, no capabilities declared | All opens succeed |
 | Stream without `seekable_members` (incl. real directory file) | `seekable()` false; `seek()` → `io.UnsupportedOperation`; `tell()` + forward reads OK |
@@ -403,7 +403,7 @@ live in member data (see `access-mode-and-cost`); link resolution is independent
 of `error` (completeness).
 
 With `streaming=True`, `members()` / `get()` / `open()` / `read()` SHALL raise
-`UnsupportedOperationError` uniformly. Only one forward pass
+`ArchiveyUsageError` uniformly. Only one forward pass
 (`__iter__`/`stream_members` or one `extract_all`) is allowed, with
 `scan_members()` / `members_report()` to finish/return it and
 `members_report_if_available()` anytime.
@@ -413,8 +413,8 @@ Canonical access-mode × method table: `access-mode-and-cost`.
 
 | Method / action | `streaming=False` | `streaming=True` |
 | --- | --- | --- |
-| `__iter__` | Yields in order; after successful complete materialization, from cache; terminal archive error → yield prefix then raise | Single-use forward pass; terminal archive error → yield prefix then raise; second `__iter__`/`stream_members`/`extract_all` → `UnsupportedOperationError` |
-| `members()` | Full scan if needed; complete list or raise (no partial return) | `UnsupportedOperationError` |
+| `__iter__` | Yields in order; after successful complete materialization, from cache; terminal archive error → yield prefix then raise | Single-use forward pass; terminal archive error → yield prefix then raise; second `__iter__`/`stream_members`/`extract_all` → `ArchiveyUsageError` |
+| `members()` | Full scan if needed; complete list or raise (no partial return) | `ArchiveyUsageError` |
 | `scan_members()` | Same fully-resolved list as `members()` when complete; raise on terminal archive error | Finishes/drains pass; complete list or raise; pass consumed |
 | `members_report()` | Always returns `MemberListReport` (prefix + `error`) | Always returns report; may consume the pass |
 | `scan_members()` after early `break` | n/a | Drains remainder; complete list or raise on terminal error |
@@ -526,7 +526,7 @@ def __contains__(self, member: ArchiveMember) -> bool: ...  # identity, O(1), an
 ```
 
 `get()` looks up by normalized name; duplicates → **last** (sequential extraction
-winner). On `streaming=True` SHALL raise `UnsupportedOperationError` regardless of
+winner). On `streaming=True` SHALL raise `ArchiveyUsageError` regardless of
 loaded index. For a no-scan peek use `members_report_if_available()`.
 
 `member in reader` is identity membership (yielded by this reader), O(1), any mode.
@@ -540,7 +540,7 @@ would consume a streaming pass.
 | --- | --- |
 | `get` existing name | That `ArchiveMember` |
 | `get` missing | `default` / `None`; `open`/`read` of missing name → `KeyError` |
-| `get` on `streaming=True` | `UnsupportedOperationError` |
+| `get` on `streaming=True` | `ArchiveyUsageError` |
 | `member in ar` (yielded by `ar`) | `True`; foreign member → `False`; no scan |
 | `"file.txt" in ar` | `TypeError` → use `get()`; never iterate |
 
@@ -925,7 +925,7 @@ returned stream is unrestricted.
 | --- | --- |
 | Encrypted member, many candidates | Confirmation temp use bounded by a constant |
 | Backend can only serve via materialization | Strategy declared in format spec, not adopted silently |
-| Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `SpoolLimitExceededError` |
+| Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `ResourceLimitError` |
 
 ### Requirement: Explicit configuration object
 
@@ -1014,10 +1014,10 @@ always holds a budget.
 its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
 volume set and across attempts: a copy refused once SHALL stay refused for that reader
 without writing again. `None` SHALL disable the guard; `SpoolLimits.UNLIMITED` sets it to
-`None`. A copy over the limit SHALL raise `SpoolLimitExceededError`, a subclass of
-`ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when the
-size is known, and otherwise before the written total passes the limit, with the partial
-copy removed. A path source is not copied and SHALL NOT be refused by it.
+`None`. A copy over the limit SHALL raise `ResourceLimitError`, naming
+`SpoolLimits.max_bytes`, before any byte is written when the size is known, and otherwise
+before the written total passes the limit, with the partial copy removed. A path source
+is not copied and SHALL NOT be refused by it.
 `read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
 the format stores as member data (see "Link targets stored as member data are read only
 when configured"); like `listing_limits`, it holds for the reader's lifetime.
@@ -1026,7 +1026,7 @@ when configured"); like `listing_limits`, it holds for the reader's lifetime.
 reads from a callback are allowed. Starting another operation on the same
 emitting reader/stream SHALL be rejected: the reader's operation gate raises
 `ArchiveyUsageError`, and a re-entrant call that gets as far as emitting a diagnostic
-of its own raises `UnsupportedOperationError` from the collector; other readers OK.
+of its own raises `ArchiveyUsageError` from the collector; other readers OK.
 Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 (`diagnostics` / `reader-concurrency`).
 

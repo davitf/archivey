@@ -24,7 +24,7 @@ from typing import BinaryIO
 
 from archivey.exceptions import (
     PackageNotInstalledError,
-    UnsupportedOperationError,
+    UnsupportedFeatureError,
 )
 from archivey.internal.external.cli import (
     spawn_for_stdout,
@@ -338,7 +338,7 @@ def _password_stdin_bytes(password: str | bytes) -> bytes:
         else password.encode("utf-8", errors="surrogateescape")
     )
     if b"\n" in raw or b"\r" in raw:
-        raise UnsupportedOperationError(
+        raise UnsupportedFeatureError(
             "A password containing a line break cannot be passed to unrar: it reads "
             "the password as one line and would silently use only the part before "
             "the break."

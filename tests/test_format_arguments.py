@@ -389,7 +389,7 @@ def test_the_archive_accepted_list_only_recommends_spellings_open_archive_takes(
 
     The list is repair advice appended to every ``coerce_archive_format`` refusal, so a
     spelling on it that leads somewhere worse — ``format="unknown"`` raises
-    ``UnsupportedFormatError``, ``format="directory"`` an ``OSError`` — is a message
+    ``UnsupportedFeatureError``, ``format="directory"`` an ``OSError`` — is a message
     sending the caller into a second failure. Asserted as the property rather than as
     the absence of the two names that prompted it, so a third extensionless format
     cannot arrive unnoticed.

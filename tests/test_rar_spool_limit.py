@@ -19,7 +19,6 @@ from archivey import ArchiveyConfig, SpoolLimits, open_archive
 from archivey.exceptions import (
     ArchiveyUsageError,
     ResourceLimitError,
-    SpoolLimitExceededError,
 )
 from archivey.internal.backends import rar_reader
 from archivey.internal.spool import SpoolBudget
@@ -166,7 +165,7 @@ def test_budget_check_total_counts_bytes_already_written() -> None:
     budget = _budget(100)
     budget.copy(io.BytesIO(b"x" * 60), io.BytesIO())
     budget.check_total(40)
-    with pytest.raises(SpoolLimitExceededError):
+    with pytest.raises(ResourceLimitError):
         budget.check_total(41)
 
 
@@ -192,7 +191,7 @@ def test_budget_refusal_names_bytes_an_earlier_attempt_spent() -> None:
     budget.check_total(80)
     with pytest.raises(OSError):
         budget.copy(_FailsAfterOneChunk(b"x" * 40), io.BytesIO())  # type: ignore[arg-type]
-    with pytest.raises(SpoolLimitExceededError) as info:
+    with pytest.raises(ResourceLimitError) as info:
         budget.check_total(80)
     message = str(info.value)
     assert "80 bytes on top of 40 bytes this reader already spooled" in message
@@ -202,20 +201,20 @@ def test_budget_refusal_names_bytes_an_earlier_attempt_spent() -> None:
 def test_budget_copy_refusal_names_what_is_left() -> None:
     budget = _budget(100)
     budget.copy(io.BytesIO(b"x" * 60), io.BytesIO())
-    with pytest.raises(SpoolLimitExceededError) as info:
+    with pytest.raises(ResourceLimitError) as info:
         budget.copy(io.BytesIO(b"x" * 41), io.BytesIO())
     assert "more than 40 bytes on top of 60 bytes" in str(info.value)
 
 
 def test_budget_refuses_everything_after_its_first_refusal() -> None:
     budget = _budget(100)
-    with pytest.raises(SpoolLimitExceededError):
+    with pytest.raises(ResourceLimitError):
         budget.check_total(101)
     # Well within the limit on its own, and still refused, before any read.
-    with pytest.raises(SpoolLimitExceededError, match="101 bytes"):
+    with pytest.raises(ResourceLimitError, match="101 bytes"):
         budget.check_total(None)
     src = io.BytesIO(b"x")
-    with pytest.raises(SpoolLimitExceededError):
+    with pytest.raises(ResourceLimitError):
         budget.copy(src, io.BytesIO())
     assert src.tell() == 0
 
@@ -249,8 +248,8 @@ def test_stream_over_the_limit_refuses_before_writing_or_spawning(
         assert "file1.txt" in [m.name for m in archive.members()]
         with pytest.raises(ResourceLimitError) as info:
             archive.read("file1.txt")
-    # Its own type, and still a ResourceLimitError for callers who catch that.
-    assert type(info.value) is SpoolLimitExceededError
+    # The exact type, not the internal always-stop subclass.
+    assert type(info.value) is ResourceLimitError
     message = str(info.value)
     assert "SpoolLimits.max_bytes" in message
     assert f"{len(blob)} bytes" in message
@@ -397,7 +396,7 @@ def test_over_default_limit_is_refused(
         except OSError as exc:
             pytest.skip(f"temp filesystem cannot hold a {size}-byte file: {exc}")
     with big.open("rb") as handle, open_archive(handle) as archive:
-        with pytest.raises(SpoolLimitExceededError, match=str(size)):
+        with pytest.raises(ResourceLimitError, match=str(size)):
             archive.read("file1.txt")
     assert temp_artifacts == []
 

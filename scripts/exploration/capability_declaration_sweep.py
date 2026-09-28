@@ -50,9 +50,8 @@ if str(_REPO) not in sys.path:
 import pytest  # noqa: E402
 
 from archivey import (  # noqa: E402
-    ConcurrentAccessError,
+    ArchiveyUsageError,
     StreamNotSeekableError,
-    UnsupportedOperationError,
     format_availability,
     list_supported_formats,
     open_archive,
@@ -361,15 +360,15 @@ def _check_concurrent(reader: Any, *, expected: bool) -> Check:
     try:
         try:
             s2 = reader.open(second)
-        except ConcurrentAccessError:
+        except ArchiveyUsageError:
             if expected:
                 return Check(
                     name,
                     DND,
                     declared,
-                    "second open raised ConcurrentAccessError",
+                    "second open raised ArchiveyUsageError",
                 )
-            return Check(name, OK, declared, "second open ConcurrentAccessError")
+            return Check(name, OK, declared, "second open ArchiveyUsageError")
         try:
             a = s1.read()
             b = s2.read()
@@ -613,12 +612,12 @@ def _check_source_pipe(path: Path, entry: CorpusEntry) -> Check:
             "raise StreamNotSeekableError",
             "no CostReceipt; format refuses a pipe even with streaming=True",
         )
-    except UnsupportedOperationError as exc:
+    except ArchiveyUsageError as exc:
         return Check(
             "source_pipe",
             ERROR,
             "forward_only (or refuse)",
-            f"UnsupportedOperationError: {exc}"[:200],
+            f"ArchiveyUsageError: {exc}"[:200],
         )
     except Exception as exc:  # noqa: BLE001 - per-cell observation
         return Check(

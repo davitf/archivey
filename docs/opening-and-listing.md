@@ -183,7 +183,7 @@ archive. There is one wrinkle worth knowing: telling a `.tar.zst` from a plain `
 means decompressing a little of it to look for the tar header, so when that
 compressor's package is not installed the check cannot run and the bare compressor is
 reported instead. You are not left guessing: opening the file raises
-`UnsupportedFormatError`, naming the package to install.
+`PackageNotInstalledError`, naming the package to install.
 See [Install and extras](install.md#what-each-format-needs).
 
 ## Passwords
@@ -230,7 +230,7 @@ as described below.
 On a host whose filesystem encoding is not UTF-8, this also changes what extraction
 writes. A name is written in the filesystem encoding rather than as the bytes stored in
 the archive, and a name that encoding cannot represent is rejected by the extraction
-guard (`PathTraversalError`, "Member name cannot be encoded for the filesystem").
+guard (`FilterRejectionError`, "Member name cannot be encoded for the filesystem").
 Passing the locale's encoding as `encoding=` makes each name encode back to its stored
 bytes on disk.
 

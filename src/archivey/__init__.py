@@ -86,9 +86,7 @@ from archivey.diagnostics import (
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
-    ConcurrentAccessError,
     CorruptionError,
-    DeceptiveNameError,
     DiagnosticRaisedError,
     EncryptionError,
     ExtractionError,
@@ -99,18 +97,11 @@ from archivey.exceptions import (
     NameRewrittenError,
     OpenError,
     PackageNotInstalledError,
-    PathTraversalError,
     ReadError,
     ResourceLimitError,
-    SpecialFileError,
-    SpoolLimitExceededError,
     StreamNotSeekableError,
-    SymlinkEscapeError,
     TruncatedError,
-    UnportableNameError,
     UnsupportedFeatureError,
-    UnsupportedFormatError,
-    UnsupportedOperationError,
 )
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.reader import ArchiveReader, MemberSelector
@@ -207,10 +198,8 @@ __all__ = [
     "DiagnosticRaisedError",
     "ArchiveyError",
     "ArchiveyUsageError",
-    "ConcurrentAccessError",
     "OpenError",
     "FormatDetectionError",
-    "UnsupportedFormatError",
     "StreamNotSeekableError",
     "ReadError",
     "CorruptionError",
@@ -219,18 +208,11 @@ __all__ = [
     "LinkTargetNotFoundError",
     "ExtractionError",
     "FilterRejectionError",
-    "PathTraversalError",
-    "SymlinkEscapeError",
-    "SpecialFileError",
-    "UnportableNameError",
-    "DeceptiveNameError",
     "NameCollisionError",
     "NameRewrittenError",
     "ResourceLimitError",
-    "SpoolLimitExceededError",
     "UnsupportedFeatureError",
     "PackageNotInstalledError",
-    "UnsupportedOperationError",
 ]
 
 # Eager backend registration so list_supported_formats / format_availability work

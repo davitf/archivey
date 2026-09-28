@@ -475,7 +475,7 @@ the call. It is marked as the caller's, so the codec translators leave it as it 
 `EOFError` from a dropped network stream stays an `EOFError`, not `TruncatedError`. See `dev-docs/topics/exception-handlers.md` §C-boundary trap. Only an upstream fix
 removes the need for the shim. Path sources are unaffected (rapidgzip owns an independent
 handle) for the *Python-source-raises* trigger. The stdlib codec fallbacks raise a normal
-`ValueError`, which the reader boundary translates to `UnsupportedOperationError`.
+`ValueError`.
 
 Since the next section, gzip / zlib / deflate no longer run rapidgzip in-process at all: the
 child process's source object never raises (a failed read is an end of input), and this

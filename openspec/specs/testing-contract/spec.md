@@ -48,12 +48,12 @@ enforced in each case. The required adversarial cases are:
 | --- | --- |
 | Zip bomb: quine-style and nested / 42.zip variant | `max_ratio` and `max_extracted_bytes` limits enforced before resource exhaustion |
 | Ratio-floor false positive: tiny highly-compressible file (10 B -> 15 KiB, 1500:1) | Extracts without error while under `ratio_activation_threshold` |
-| Path traversal: `../evil`, `../../etc/passwd`, `./../../outside` | `PathTraversalError`; no outside write |
-| Absolute paths: `/etc/passwd`, `C:\Windows\System32\evil.dll` | `PathTraversalError` |
-| Symlink escape: target `../../outside`, chained symlinks | `SymlinkEscapeError` |
-| Symlink loop: cyclic `a -> b`, `b -> a` | `SymlinkEscapeError`; no uncaught `OSError` or crash |
+| Path traversal: `../evil`, `../../etc/passwd`, `./../../outside` | `FilterRejectionError`; no outside write |
+| Absolute paths: `/etc/passwd`, `C:\Windows\System32\evil.dll` | `FilterRejectionError` |
+| Symlink escape: target `../../outside`, chained symlinks | `FilterRejectionError` |
+| Symlink loop: cyclic `a -> b`, `b -> a` | `FilterRejectionError`; no uncaught `OSError` or crash |
 | Corrupt archive: missing EOCD, truncated TAR, bad CRC | `CorruptionError` or `TruncatedError` with original cause attached |
-| Unicode bombs: null bytes, bidi control characters | Null bytes rejected as traversal; a bidi control emits exactly one `MEMBER_NAME_BIDI_CONTROL` on listing, and an **override/isolate** additionally raises `DeceptiveNameError` on extraction |
+| Unicode bombs: null bytes, bidi control characters | Null bytes rejected as traversal; a bidi control emits exactly one `MEMBER_NAME_BIDI_CONTROL` on listing, and an **override/isolate** additionally raises `FilterRejectionError` on extraction |
 | Giant claimed size: member claims 1 TiB while archive is 1 KiB | Extraction aborts cleanly before exhausting resources |
 
 Regenerable adversarial archives SHALL be generated deterministically in memory or on
@@ -73,14 +73,14 @@ least one **directional mark** case proving it is *not* rejected:
 | Layer | Overrides / isolates (U+202A–202E, U+2066–2069) | Directional marks (U+061C, U+200E, U+200F) |
 | --- | --- | --- |
 | Listing / reading | Presented as stored; one `MEMBER_NAME_BIDI_CONTROL` | Presented as stored; one `MEMBER_NAME_BIDI_CONTROL` |
-| Safe extraction | `DeceptiveNameError` from `check_universal`, hence a `BLOCKED` result, under every policy | Extracted normally |
+| Safe extraction | `FilterRejectionError` from `check_universal`, hence a `BLOCKED` result, under every policy | Extracted normally |
 
 #### Scenario: adversarial-behavior matrix
 
 | Case | Expected |
 | --- | --- |
 | Zip bomb extracted with default limits | `ExtractionError` before configured byte or ratio limit is exceeded |
-| Archive member named `../evil` is extracted | `PathTraversalError`; destination outside tree remains untouched |
+| Archive member named `../evil` is extracted | `FilterRejectionError`; destination outside tree remains untouched |
 | Truncated or CRC-invalid archive is read | `CorruptionError` or `TruncatedError`; original exception is `__cause__` |
 
 #### Scenario: RTL warning is backend-independent
@@ -239,7 +239,7 @@ no special-case exclusions for the retired tree.
 
 The test suite SHALL cover the declared-capability gate uniformly for every
 implemented format, including directory. A reader opened without
-`concurrent_members=True` MUST raise `ConcurrentAccessError` on a second
+`concurrent_members=True` MUST raise `ArchiveyUsageError` on a second
 overlapping `open()` while the first stream stays readable; sequential
 `open -> read -> close -> open next` MUST succeed without any declaration. The
 error message MUST include the recorded `open_archive()` call site and MUST name
@@ -259,17 +259,17 @@ declared streaming `stream_members()`) over one matrix of format fixtures, so a
 format cannot pass one case and be left out of another. `extract_all()`, including
 hardlink recovery and symlink-target reads,
 MUST succeed on readers with no declared capabilities. `ArchiveyUsageError` and
-`ConcurrentAccessError` MUST NOT be `ArchiveyError` subclasses. Accelerator/index
+`ArchiveyUsageError` MUST NOT be `ArchiveyError` subclasses. Accelerator/index
 activation MUST be demand-driven and match `seekable-decompressor-streams`.
 
 #### Scenario: capability-gate matrix
 
 | Case | Expected |
 | --- | --- |
-| Second overlapping `open()` on each implemented format without `CONCURRENT` | `ConcurrentAccessError` names the open site; first stream remains readable |
+| Second overlapping `open()` on each implemented format without `CONCURRENT` | `ArchiveyUsageError` names the open site; first stream remains readable |
 | Refused second `open()` on each implemented format | The member is never opened: no member data stream constructed, no helper process spawned |
 | Sequential open/read/close loop without declarations | Succeeds on every implemented format |
-| `ConcurrentAccessError` inside `except ArchiveyError` | Propagates out of that handler |
+| `ArchiveyUsageError` inside `except ArchiveyError` | Propagates out of that handler |
 | Undeclared accelerator-eligible source | No seek index instantiated |
 | Declared `SEEKABLE` accelerator-eligible source | `AUTO` accelerator resolves as specified |
 | Each format fixture × {default `open()`, default pass, declared `open()`, declared pass, declared streaming pass} | Only declared `open()` seeks; every other handle is forward-only with a working `tell()` |
@@ -305,7 +305,7 @@ MUST still pass without it.
 
 | Case | Expected |
 | --- | --- |
-| Generated traversal / absolute / NUL member names fed to `check_universal` | Typed `FilterRejectionError` subclass for every unsafe name |
+| Generated traversal / absolute / NUL member names fed to `check_universal` | `FilterRejectionError` for every unsafe name |
 | Arbitrary decoded names fed to `normalize_member_name` | Always returns `str`; idempotent; never introduces `..` or leading `/` absent from the input |
 | Arbitrary byte prefixes on a peekable detection source | Typed result or typed error; peek source left unadvanced |
 | Strategy discovers a shrunk failing input | Input is pinned as an `@example` or unit case |

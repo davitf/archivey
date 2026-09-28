@@ -30,7 +30,7 @@ Two defaults keep the common case cheap, and each can be lifted at open time:
   with `streaming=True`. To read a nested archive at random, pass `open_archive()`
   the stream from `open()` under `seekable_members=True`.
 - **One stream may be live at a time.** Opening a second while the first is still
-  open raises `ConcurrentAccessError` unless you opened with
+  open raises `ArchiveyUsageError` unless you opened with
   `concurrent_members=True`.
 
 ```python
@@ -178,7 +178,7 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
 
 `streaming=True` promises one forward pass and nothing more, so the random-access
 methods — `members()`, `get()`, `open()`, `read()` — raise
-`UnsupportedOperationError`. What you have instead is `__iter__`, `stream_members()`
+`ArchiveyUsageError`. What you have instead is `__iter__`, `stream_members()`
 and `extract_all()`, and you get **one** of them: the first consumes the source, even
 if you `break` out early.
 

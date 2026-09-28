@@ -17,11 +17,11 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    ArchiveyUsageError,
     CompressionAlgorithm,
     CompressionMethod,
     ExtractionLimits,
     MemberType,
-    UnsupportedOperationError,
     extract,
     open_archive,
 )
@@ -468,9 +468,9 @@ def test_non_seekable_plain_tar_iter() -> None:
 
 def test_streaming_tar_disables_random_access(plain_tar: Path) -> None:
     with open_archive(plain_tar, streaming=True) as ar:
-        with pytest.raises(UnsupportedOperationError):
+        with pytest.raises(ArchiveyUsageError):
             ar.members()
-        with pytest.raises(UnsupportedOperationError):
+        with pytest.raises(ArchiveyUsageError):
             ar.read("hello.txt")
 
 
@@ -1369,11 +1369,11 @@ def test_scan_members_finishes_interrupted_pass(tmp_path: Path) -> None:
         link = next(m for m in members if m.name == "forward_link")
         assert link.link_target_member is not None
         assert link.link_target_member.name == "target.txt"
-        with pytest.raises(UnsupportedOperationError):
+        with pytest.raises(ArchiveyUsageError):
             list(ar)
-        with pytest.raises(UnsupportedOperationError):
+        with pytest.raises(ArchiveyUsageError):
             list(ar.stream_members())
-        with pytest.raises(UnsupportedOperationError):
+        with pytest.raises(ArchiveyUsageError):
             ar.extract_all(tmp_path)
 
 
@@ -1396,13 +1396,13 @@ def test_streaming_second_pass_raises_tar_and_zip(
         z.writestr("hello.txt", b"hello world")
     with open_archive(plain_tar, streaming=True) as ar:
         list(ar)
-        with pytest.raises(UnsupportedOperationError):
+        with pytest.raises(ArchiveyUsageError):
             list(ar)
-        with pytest.raises(UnsupportedOperationError):
+        with pytest.raises(ArchiveyUsageError):
             list(ar.stream_members())
     with open_archive(zip_path, streaming=True) as ar:
         list(ar)
-        with pytest.raises(UnsupportedOperationError):
+        with pytest.raises(ArchiveyUsageError):
             list(ar)
 
 
@@ -1436,7 +1436,7 @@ def test_scan_members_before_pass_consumes_streaming_reader(
         with open_archive(source, streaming=True) as ar:
             names = {m.name for m in ar.scan_members()}
             assert len(names) > 0
-            with pytest.raises(UnsupportedOperationError):
+            with pytest.raises(ArchiveyUsageError):
                 list(ar.stream_members())
 
 

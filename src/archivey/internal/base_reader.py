@@ -50,7 +50,6 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
-    UnsupportedOperationError,
     raw_message_of,
 )
 from archivey.internal.arg_checks import (
@@ -354,14 +353,14 @@ class BaseArchiveReader(ArchiveReader):
       (it returns a report when ``True``, else ``None``). It does **not** gate the
       access-mode-enforced methods — those key off the ``streaming`` flag alone.
     - ``_SUPPORTS_RANDOM_ACCESS`` — can an arbitrary member be opened out of order?
-      When ``False``, ``open``/``read`` raise ``UnsupportedOperationError``; sequential
+      When ``False``, ``open``/``read`` raise ``UnsupportedFeatureError``; sequential
       access via ``stream_members`` still works. (The open-time fail-fast for a
       non-seekable source under ``streaming=False`` — which also consults this — lands
       with format detection in Phase 3.)
 
     Access-mode enforcement (independent of the flags above): a ``streaming=True`` reader
     is forward-only, so ``members``/``get``/``open``/``read`` all raise
-    ``UnsupportedOperationError`` — uniformly, not per-backend. Only a single pass of
+    ``ArchiveyUsageError`` — uniformly, not per-backend. Only a single pass of
     ``__iter__``/``stream_members``/``extract_all`` is allowed; ``scan_members()`` may
     finish or return that pass. ``members_report_if_available()`` is a scan-free,
     index-only peek. ``member in reader`` is identity-based and scan-free, so it works in
@@ -385,7 +384,7 @@ class BaseArchiveReader(ArchiveReader):
     """
 
     # Can an arbitrary member be opened out of order? When False, open()/read() raise
-    # UnsupportedOperationError and callers must use stream_members() instead.
+    # UnsupportedFeatureError and callers must use stream_members() instead.
     _SUPPORTS_RANDOM_ACCESS: bool = True
     # Is the full member list available without reading member data (e.g. a central
     # directory)? Drives members_report_if_available(); does not gate the streaming methods.
@@ -2099,7 +2098,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def _guard_forward_pass_entry(self, op: str) -> None:
         if self._streaming and self._forward_pass_started:
-            raise UnsupportedOperationError(
+            raise ArchiveyUsageError(
                 f"{op} is not available after a streaming reader's forward pass has "
                 f"started. Call scan_members() for the resolved member list, or "
                 f"members_report_if_available() for an index-only peek.",
@@ -2112,7 +2111,7 @@ class BaseArchiveReader(ArchiveReader):
     # --- Public API ---
 
     def _require_random_access(self, op: str) -> None:
-        """Raise ``UnsupportedOperationError`` if ``op`` (a random-access or
+        """Raise ``ArchiveyUsageError`` if ``op`` (a random-access or
         full-materialization operation) is not allowed on this reader.
 
         A ``streaming=True`` reader is forward-only: only a single pass of
@@ -2123,7 +2122,7 @@ class BaseArchiveReader(ArchiveReader):
         """
         self._state.require_open(op)
         if self._streaming:
-            raise UnsupportedOperationError(
+            raise ArchiveyUsageError(
                 f"{op} is not available on a streaming (forward-only) reader. "
                 f"Iterate with stream_members(), call scan_members() for the resolved "
                 f"member list, or members_report_if_available() for an index-only peek.",
@@ -2401,7 +2400,7 @@ class BaseArchiveReader(ArchiveReader):
         # open-time fail-fast for non-seekable sources).
         self._require_random_access("open()/read()")
         if not self._SUPPORTS_RANDOM_ACCESS:
-            raise UnsupportedOperationError(
+            raise UnsupportedFeatureError(
                 "This reader does not support random access (open()/read()); "
                 "iterate with stream_members() instead.",
             )

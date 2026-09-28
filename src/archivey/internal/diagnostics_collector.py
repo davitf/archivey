@@ -31,7 +31,7 @@ from archivey.diagnostics import (
     OnDiagnostic,
     validate_code_context,
 )
-from archivey.exceptions import DiagnosticRaisedError, UnsupportedOperationError
+from archivey.exceptions import ArchiveyUsageError, DiagnosticRaisedError
 from archivey.internal import logs
 
 if TYPE_CHECKING:
@@ -331,7 +331,7 @@ class DiagnosticCollector:
                     return replayed
                 emit_log._truncate(at)
             if thread_id in self._emitting_threads:
-                raise UnsupportedOperationError(
+                raise ArchiveyUsageError(
                     "Diagnostic callback/reentrancy: cannot drive another operation on "
                     "the same reader/stream while a diagnostic is being emitted."
                 )

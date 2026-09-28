@@ -509,7 +509,7 @@ def test_streaming_mode_is_uniform_across_formats(key: str, tmp_path: Path) -> N
     entry_id = "single-file" if key == "gz" else "basic"
     path = _archive(entry_id, key, tmp_path)
 
-    from archivey import UnsupportedOperationError
+    from archivey import ArchiveyUsageError
 
     with open_archive(path, streaming=True) as reader:
         for op in (
@@ -518,11 +518,11 @@ def test_streaming_mode_is_uniform_across_formats(key: str, tmp_path: Path) -> N
             lambda: reader.open("x"),
             lambda: reader.read("x"),
         ):
-            with pytest.raises(UnsupportedOperationError):
+            with pytest.raises(ArchiveyUsageError):
                 op()
 
         assert sum(1 for _ in reader) >= 0
-        with pytest.raises(UnsupportedOperationError):
+        with pytest.raises(ArchiveyUsageError):
             for _ in reader:
                 pass
 

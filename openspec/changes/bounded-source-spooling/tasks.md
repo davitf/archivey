@@ -3,7 +3,7 @@
 > **Split on 2026-09-26.** Tasks marked *(shipped)* landed in
 > `openspec/changes/archive/2026-09-26-rar-stream-spool-limit/`, which bounded RAR's
 > existing stream-source copy with `ArchiveyConfig.spool_limits` and raises
-> `SpoolLimitExceededError`. What is left is the non-seekable spool, `spool_dir` and the
+> `ResourceLimitError`. What is left is the non-seekable spool, `spool_dir` and the
 > pre-flight. `None` on `max_bytes` shipped as *no limit*; the "none" setting below is
 > `max_bytes=0`.
 
@@ -14,7 +14,10 @@
 > **The four design questions are settled** (`design.md` §Decisions the maintainer settled):
 > a 1 GiB default, a frozen `SpoolLimits` with an `UNLIMITED` classvar, a
 > `SpoolLimitExceededError` subclassing `ResourceLimitError`, and `streaming=True` reading
-> forward from the spooled file. They are inputs here, not implementation choices.
+> forward from the spooled file. They are inputs here, not implementation choices — except
+> the third: on 2026-09-27, before 0.2.0, `SpoolLimitExceededError` was folded into plain
+> `ResourceLimitError` (ADR 0012 amendment). Raise `ResourceLimitError`; do not re-add
+> the subclass.
 
 > **Re-derive the `archive-reading` "Explicit configuration object" block before archiving.**
 > `one-member-listing-per-reader` archived a version of that block adding
@@ -35,7 +38,7 @@
 ## 2. The spool primitive
 
 - [ ] 2.1 One internal helper performing a bounded spool: takes the limit, the directory, a
-      source and an optional known size; returns a path; raises `SpoolLimitExceededError` on
+      source and an optional known size; returns a path; raises `ResourceLimitError` on
       the limit; registers cleanup with the reader's close.
 - [x] 2.1a *(shipped)* Add `SpoolLimitExceededError` subclassing `ResourceLimitError`, and
       widen `ResourceLimitError`'s docstring to name `SpoolLimits`.
@@ -48,14 +51,14 @@
       the configured limit. Do **not** append a note when a spool happens: `CostReceipt`
       is an immutable open-time description and `format-rar` already forbids a post-open
       note. No diagnostic.
-- [ ] 2.5 Refusal path for the "none" setting, raising the same `SpoolLimitExceededError` —
+- [ ] 2.5 Refusal path for the "none" setting, raising the same `ResourceLimitError` —
       a limit of none is a limit of zero bytes. Keep `StreamNotSeekableError` for the
       non-seekable-source case, extending its message to name the setting.
 
 ## 3. Route the existing RAR materialization through it
 
 - [x] 3.1 *(shipped)* `RarReader._ensure_archive_path()` uses the primitive and raises
-      `SpoolLimitExceededError`.
+      `ResourceLimitError`.
 - [x] 3.2 *(shipped)* `RarReader._materialize_stream_volumes()` likewise, with the limit
       measured across the whole volume set rather than per volume.
 - [x] 3.3 *(shipped)* Confirm no behaviour change for path sources, for listing a stream
@@ -74,7 +77,7 @@
 ## 5. Tests
 
 - [ ] 5.1 Red-green for the P11 case: a compressed RAR member read from a `BytesIO` records
-      a `CostReceipt.notes` entry, and exceeds a low limit with `SpoolLimitExceededError`.
+      a `CostReceipt.notes` entry, and exceeds a low limit with `ResourceLimitError`.
       Verify by reverting the fix and watching each fail.
 - [x] 5.1a *(shipped)* Drive the **1 GiB default** boundary directly. No corpus archive
       comes near it (the largest RAR is 188 KiB), so nothing else will catch a wrong

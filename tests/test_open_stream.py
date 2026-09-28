@@ -13,8 +13,8 @@ from archivey import (
     ArchiveFormat,
     ArchiveStream,
     ArchiveyUsageError,
+    FormatDetectionError,
     StreamFormat,
-    UnsupportedFormatError,
     open_stream,
 )
 
@@ -64,7 +64,7 @@ def test_open_stream_rejects_detected_container(tmp_path: Path) -> None:
     path = tmp_path / "a.zip"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("a.txt", "hi")
-    with pytest.raises(UnsupportedFormatError, match="not a single-file"):
+    with pytest.raises(FormatDetectionError, match="not a single-file"):
         open_stream(path)
 
 

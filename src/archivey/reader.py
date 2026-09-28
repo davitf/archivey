@@ -98,7 +98,7 @@ class ArchiveReader(ABC):
 
     @abstractmethod
     def members(self) -> list[ArchiveMember]:
-        """All members as a list. May trigger a scan; raises ``UnsupportedOperationError``
+        """All members as a list. May trigger a scan; raises ``ArchiveyUsageError``
         on a streaming reader (use :meth:`scan_members` or
         :meth:`members_report_if_available` there). Raises terminal archive-level listing
         errors instead of returning an incomplete list."""
@@ -153,7 +153,7 @@ class ArchiveReader(ABC):
         """Look up a member by its normalized name, returning ``default`` if absent.
         This is the name-lookup entry point; :meth:`open`/:meth:`read` also accept a
         name directly. May trigger a scan; on a streaming reader raises
-        ``UnsupportedOperationError``. With duplicate member names, returns the last
+        ``ArchiveyUsageError``. With duplicate member names, returns the last
         (the one a sequential extraction would leave on disk)."""
         ...
 

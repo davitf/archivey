@@ -291,7 +291,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Files in `/proc` or `/sys` list `size` 0 and read content | **format** | The filesystem reports it; the walk crosses mount points (§3) |
 | Hardlinked files list as separate `FILE`s | **format** | The filesystem reports `st_ino` 0, or the other names are outside the root (§2.2) |
 | `created` is `None` on Linux | **library** | `os.stat` has no birth time on Linux |
-| `seek()` fails on a real file, or a second open raises `ConcurrentAccessError` | **archivey** | By design: the archive contract, until `MemberStreams.SEEKABLE` / `CONCURRENT` is declared (§6) |
+| `seek()` fails on a real file, or a second open raises `ArchiveyUsageError` | **archivey** | By design: the archive contract, until `MemberStreams.SEEKABLE` / `CONCURRENT` is declared (§6) |
 | `password=` or `encoding=` is accepted and has no effect | **archivey** | Dropped with `PASSWORD_ARGUMENT_UNUSED` / `ENCODING_ARGUMENT_UNUSED`; shared behaviour, not the directory's own |
 
 ## 6. Decisions

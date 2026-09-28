@@ -891,7 +891,7 @@ materialization, concurrent `open()` plus independent operations on different me
 streams are data-race-free on ordinary builds and on backend/runtime combinations covered
 by the required Linux CPython `3.13t` `free-threaded-concurrency` job; optional backends
 are not claimed covered until a dedicated free-threaded job can run them. The undeclared
-default is one live member stream (a second overlapping open raises `ConcurrentAccessError`),
+default is one live member stream (a second overlapping open raises `ArchiveyUsageError`),
 so accidental cross-thread stream sharing fails fast instead of racing. Iteration,
 materialization, extraction, `stream_members()`, and reader close remain single-owner,
 with explicit private child scopes allowing extraction to drive its pass and

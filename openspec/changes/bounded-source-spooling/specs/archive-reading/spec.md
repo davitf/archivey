@@ -28,7 +28,7 @@ not license it.
 | --- | --- |
 | Encrypted member, many candidates | Confirmation temp use bounded by a constant |
 | Backend can only serve via materialization | Strategy declared in format spec, not adopted silently |
-| Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `SpoolLimitExceededError` |
+| Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `ResourceLimitError` |
 | Non-seekable archive source spooled within the configured limit | Permitted; bounded by the limit and recorded in `CostReceipt.notes` |
 | Plaintext member data spooled proportional to member size | Forbidden; the spool limit does not license it |
 
@@ -117,7 +117,7 @@ its source (`format-rar`'s copy of a stream source for `unrar`, and a non-seekab
 spooled so a seek-requiring format can open it), totalled across a volume set and across
 attempts: a copy refused once SHALL stay refused for that reader without writing again.
 `None` SHALL disable the guard; `SpoolLimits.UNLIMITED` sets it to `None`. A copy over the
-limit SHALL raise `SpoolLimitExceededError`, a subclass of `ResourceLimitError`, naming
+limit SHALL raise `ResourceLimitError`, naming
 `SpoolLimits.max_bytes`, before any byte is written when the size is known, and otherwise
 before the written total passes the limit, with the partial copy removed. A path source
 is not copied and SHALL NOT be refused by it. `spool_dir` SHALL name the directory a spool is written to;
@@ -130,7 +130,7 @@ when configured"); like `listing_limits`, it holds for the reader's lifetime.
 reads from a callback are allowed. Starting another operation on the same
 emitting reader/stream SHALL be rejected: the reader's operation gate raises
 `ArchiveyUsageError`, and a re-entrant call that gets as far as emitting a diagnostic
-of its own raises `UnsupportedOperationError` from the collector; other readers OK.
+of its own raises `ArchiveyUsageError` from the collector; other readers OK.
 Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 (`diagnostics` / `reader-concurrency`).
 
