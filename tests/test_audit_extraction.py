@@ -99,3 +99,26 @@ def test_hardlink_to_directory_member_reports_an_accurate_error(
     assert "excluded" not in message
     assert "FILE member" not in message
     assert "director" in message.lower()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "AUDIT: a symlink with an empty stored target reaches os.symlink('') and "
+        "the archive-caused FileNotFoundError aborts a default extract() untyped"
+    ),
+)
+def test_empty_symlink_target_is_not_an_untyped_os_error(tmp_path: Path) -> None:
+    archive = tmp_path / "a.tar"
+    _build_tar(archive, [("s", "sym", ""), ("f", "file", b"data")])
+
+    # docs/extracting.md: "genuine I/O errors propagate unchanged". An empty target is
+    # a property of the archive, not of the filesystem, so it must be reported as a
+    # typed outcome (LINK_TARGET_UNAVAILABLE or an ArchiveyError), not an OSError.
+    report = archivey.extract(archive, tmp_path / "out")
+
+    by_name = {r.member.name: r for r in report.results}
+    link = by_name["s"]
+    assert link.error is None or isinstance(link.error, archivey.ArchiveyError)
+    assert by_name["f"].status is ExtractionStatus.EXTRACTED
