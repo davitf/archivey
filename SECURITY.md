@@ -23,8 +23,8 @@ payloads.
 [GitHub private vulnerability reporting](https://github.com/davitf/archivey/security/advisories/new)
 (Security → Advisories → Report a vulnerability).
 
-If that flow is unavailable, contact the maintainer privately via the contact
-information on the maintainer’s GitHub profile or the package metadata on PyPI.
+If that flow is unavailable, email the maintainer at
+[archivey@davitf.com](mailto:archivey@davitf.com).
 
 Include as much of the following as you can:
 
