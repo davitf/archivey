@@ -133,7 +133,8 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
   backups) and the highest-value *feature*, but the largest item (its own spec; ZIP
   local-header walk, TAR resync, single-file decodable-prefix). First fast-follow after
   `0.2.0`; ranks above `ArchivePath`/fsspec-write. (Backlog: `IDEAS.md`.)
-- **Fully-native ZIP parser** — VISION's "eventually ZIP" memory-safety differentiator +
+- **Fully-native ZIP parser**: archivey's own parser in place of stdlib `zipfile`, so
+  ZIP reading no longer inherits `zipfile`'s behaviour and bugs, plus
   salvage-via-local-headers. `zip-native-codec-streams` (item 4) captures most of the
   near-term compat value incrementally; the full central-directory/EOCD parser is a
   post-`0.2.0` change.

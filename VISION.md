@@ -26,12 +26,15 @@ feels like stdlib**.
 1. **Safe by default.** Extraction cannot be zip-slipped, symlink-escaped, or
    decompression-bombed unless the caller explicitly opts out. Safety is a *contract*
    (specced, tested, threat-modeled — see `dev-docs/threat-model.md`), not a feature flag.
-2. **Memory-safe parsing of hostile input.** The native-first strategy for 7z/RAR (and
-   eventually ZIP) is not purity for its own sake: pure-Python parsers can be *wrong*
-   but they cannot be *corrupted*. C archive parsers (libarchive et al.) have a long
-   CVE history of memory-safety bugs triggered by crafted archives. "Parse untrusted
-   archives without native-code parser attack surface" is a differentiator no
-   mainstream alternative offers.
+2. **Memory-safe parsing of hostile input.** Every container and header parser is
+   pure Python: archivey's own for 7z and RAR, the standard library's for ZIP and TAR.
+   That is not purity for its own sake: a pure-Python parser can be *wrong* but it
+   cannot be *corrupted*, while C archive parsers (libarchive et al.) have a long CVE
+   history of memory-safety bugs triggered by crafted archives. "Parse untrusted
+   archive structure without native-code parser attack surface" is a differentiator no
+   mainstream alternative offers. Decompression is the exception: it runs through
+   native codecs, so the known crash cases are isolated in a child process or designed
+   around, and the rest are listed as accepted limits in `docs/extracting.md`.
 
 Both claims must be *earned in public*: a written threat model, an adversarial corpus,
 coverage-guided fuzzing of every native parser, and a disclosure process — before the
