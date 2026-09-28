@@ -569,7 +569,7 @@ class TarReader(BaseArchiveReader):
                 byte_cap if byte_cap is not None and text_bytes <= byte_cap else None
             )
             batch: list[tarfile.TarInfo] = []
-            failure: CorruptionError | TruncatedError | None = None
+            failure: CorruptionError | None = None
             # The error boundary sits OUTSIDE the handle guard, so translation and
             # stamping never run under the shared-fileobj lock. An exception the
             # translator does not recognize (a genuine OSError from the source)
@@ -592,7 +592,7 @@ class TarReader(BaseArchiveReader):
                             # Snapshot the EOF probe now, while the last read is still
                             # the block tarfile stopped on.
                             self._capture_eof_probe(index + len(batch) > 0)
-            except (CorruptionError, TruncatedError) as exc:
+            except CorruptionError as exc:
                 # Hand out the headers this batch already parsed first, so a
                 # members_report() keeps the same salvaged prefix it would have had
                 # one header at a time. These two are the only errors the base ends

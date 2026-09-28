@@ -32,7 +32,6 @@ from archivey import (
     open_archive,
 )
 from archivey.cost import StreamCapability
-from archivey.exceptions import CorruptionError
 from archivey.types import (
     ArchiveFormat,
     CompressionAlgorithm,
@@ -41,6 +40,7 @@ from archivey.types import (
     StreamFormat,
 )
 from tests.conftest import requires
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.sample_archives import (
     CORPUS,
     FORMAT_KEYS,
@@ -196,34 +196,34 @@ def test_content_verdict_keeps_raising_after_a_seek_back(compression: int) -> No
         blob[at] ^= 0x01
     with open_archive(io.BytesIO(bytes(blob)), seekable_members=True) as ar:
         stream = ar.open("a.bin")
-        with pytest.raises(CorruptionError) as first:
+        with raises_corruption_not_truncation() as first:
             stream.read()
-        with pytest.raises(CorruptionError) as again:
+        with raises_corruption_not_truncation() as again:
             stream.read(10)
         assert again.value is first.value
         stream.seek(0)
         assert stream.read(10) == payload[:10]
-        with pytest.raises(CorruptionError) as after:
+        with raises_corruption_not_truncation() as after:
             stream.read()
         assert after.value is first.value
         stream.seek(0)
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             while stream.read(1000):
                 pass
         # A read that asks for exactly what is left returns in full, and still reaches
         # the damage: the seek gave up the digest check, so this gate is all there is.
         stream.seek(0)
-        with pytest.raises(CorruptionError) as whole:
+        with raises_corruption_not_truncation() as whole:
             stream.read(len(payload))
         assert whole.value is first.value
         stream.seek(0)
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             stream.readinto(bytearray(len(payload)))
         # Each raise resets the traceback to where the damage was found, so a retry
         # loop does not grow it (and the frames it keeps alive) without bound.
         depths = []
         for _ in range(20):
-            with pytest.raises(CorruptionError) as retry:
+            with raises_corruption_not_truncation() as retry:
                 stream.read()
             depths.append(len(traceback.extract_tb(retry.value.__traceback__)))
         assert len(set(depths)) == 1
@@ -252,7 +252,7 @@ def test_a_kept_verdict_does_not_keep_the_withheld_member_alive(
         # The caller's own readinto buffer is in the frames as an argument, as in any
         # traceback; it is theirs, not the withheld member.
         buffer = bytearray(len(payload))
-        with pytest.raises(CorruptionError) as caught:
+        with raises_corruption_not_truncation() as caught:
             if first_read == "read":
                 stream.read()
             elif first_read == "read-size":

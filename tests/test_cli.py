@@ -12,6 +12,7 @@ import pytest
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.main import _inject_default_list, main
 from archivey.exceptions import ArchiveyError
+from tests.corruption_util import raises_corruption_not_truncation
 
 
 def _zip(path: Path, entries: dict[str, bytes]) -> Path:
@@ -1142,14 +1143,13 @@ def test_truncated_zip_message_is_prose_not_repr(tmp_path: Path) -> None:
     import zipfile as zf
 
     from archivey import open_archive
-    from archivey.exceptions import CorruptionError
 
     buf = io.BytesIO()
     with zf.ZipFile(buf, "w") as archive:
         archive.writestr("a.txt", "hello")
     path = tmp_path / "truncated.zip"
     path.write_bytes(buf.getvalue()[:20])
-    with pytest.raises(CorruptionError) as caught:
+    with raises_corruption_not_truncation() as caught:
         open_archive(path)
     msg = str(caught.value)
     assert "BadZipFile" not in msg

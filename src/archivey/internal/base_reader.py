@@ -48,7 +48,6 @@ from archivey.exceptions import (
     LinkTargetNotFoundError,
     ReadError,
     ResourceLimitError,
-    TruncatedError,
     UnsupportedFeatureError,
     raw_message_of,
 )
@@ -460,7 +459,7 @@ class BaseArchiveReader(ArchiveReader):
         self._listed_by_name: dict[str, list[ArchiveMember]] = {}
         self._walk: Iterator[ArchiveMember] | None = None
         self._walk_done: bool = False
-        self._walk_error: CorruptionError | TruncatedError | None = None
+        self._walk_error: CorruptionError | None = None
         self._walk_failure: BaseException | None = None
         self._walk_pulling: bool = False
         self._walk_built: list[ArchiveMember] = []
@@ -1222,7 +1221,7 @@ class BaseArchiveReader(ArchiveReader):
                 for member in unread:
                     try:
                         self._resolve_link_target(member)
-                    except (CorruptionError, TruncatedError) as exc:
+                    except CorruptionError as exc:
                         self._report_damaged_link_target(member, exc)
                         continue
                     if member.link_target is not None:
@@ -1256,12 +1255,12 @@ class BaseArchiveReader(ArchiveReader):
                         self._state.release_child(child)
             else:
                 _resolve()
-        except (CorruptionError, TruncatedError):
+        except CorruptionError:
             if error is None:
                 raise
 
     def _report_damaged_link_target(
-        self, member: ArchiveMember, exc: CorruptionError | TruncatedError
+        self, member: ArchiveMember, exc: CorruptionError
     ) -> None:
         """Leave a link whose target data is damaged listed, targetless, and reported.
 
@@ -1346,7 +1345,7 @@ class BaseArchiveReader(ArchiveReader):
             except StopIteration:
                 self._end_walk(None)
                 return None
-            except (CorruptionError, TruncatedError) as exc:
+            except CorruptionError as exc:
                 self._end_walk(exc)
                 return None
             self._register_member(position, member, enforce_listing_limits=enforce)
@@ -1386,7 +1385,7 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_built.append(member)
         return member
 
-    def _end_walk(self, error: CorruptionError | TruncatedError | None) -> None:
+    def _end_walk(self, error: CorruptionError | None) -> None:
         """Record that the walk ended, and stamp last-entry-wins once, over what it listed.
 
         This is the only place ``is_current`` is stamped for duplicate names, whichever
@@ -2307,7 +2306,7 @@ class BaseArchiveReader(ArchiveReader):
                         next(gen)
                     except StopIteration:
                         break
-                    except (CorruptionError, TruncatedError):
+                    except CorruptionError:
                         assert self._materialized is not None
                         break
                 assert self._materialized is not None
@@ -2783,7 +2782,7 @@ class BaseArchiveReader(ArchiveReader):
             exc.member_name = member_name
         provenance = self._format_provenance
         if provenance is None or not isinstance(
-            exc, (TruncatedError, CorruptionError, ResourceLimitError)
+            exc, (CorruptionError, ResourceLimitError)
         ):
             return
         if provenance.probe_only:

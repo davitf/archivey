@@ -53,6 +53,7 @@ from archivey.internal.filters import (
     transform_strict,
 )
 from archivey.types import ArchiveMember, MemberType
+from tests.corruption_util import raises_corruption_not_truncation
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -869,7 +870,6 @@ def test_on_error_stop_continues_on_policy_block(tmp_path: Path) -> None:
 
 def test_on_error_stop_raises_on_member_failure(tmp_path: Path) -> None:
     # Genuine member failure (CRC mismatch) still raises immediately under STOP.
-    from archivey.exceptions import CorruptionError
     from tests.zip_corrupt import zip_with_flipped_cd_crc
 
     src = zip_with_flipped_cd_crc(
@@ -878,7 +878,7 @@ def test_on_error_stop_raises_on_member_failure(tmp_path: Path) -> None:
         corrupt_name="b.txt",
     )
     dest = tmp_path / "out"
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         extract(src, dest, on_error=OnError.STOP)
     assert (dest / "a.txt").read_bytes() == b"hello"
     assert not (dest / "b.txt").exists()
@@ -886,7 +886,6 @@ def test_on_error_stop_raises_on_member_failure(tmp_path: Path) -> None:
 
 def test_on_error_stop_blocks_then_raises_on_failure(tmp_path: Path) -> None:
     # Mixed archive under STOP: policy blocks continue; first real failure raises.
-    from archivey.exceptions import CorruptionError
     from tests.zip_corrupt import zip_with_flipped_cd_crc
 
     src = zip_with_flipped_cd_crc(
@@ -899,7 +898,7 @@ def test_on_error_stop_blocks_then_raises_on_failure(tmp_path: Path) -> None:
         corrupt_name="corrupt.txt",
     )
     dest = tmp_path / "out"
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         extract(src, dest, on_error=OnError.STOP)
     assert (dest / "good.txt").read_bytes() == b"good"
     assert not (dest / "corrupt.txt").exists()

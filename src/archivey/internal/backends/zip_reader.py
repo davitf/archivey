@@ -349,6 +349,7 @@ def _is_candidate_integrity_failure(
     The local header is not encrypted, so a damaged one is never the key's doing: it
     raises before decryption starts.
     """
+    # TruncatedError is a CorruptionError subclass, so it must be tested first.
     if isinstance(exc, TruncatedError):
         return payload_complete()
     return isinstance(exc, CorruptionError)
