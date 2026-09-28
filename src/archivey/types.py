@@ -338,7 +338,6 @@ class HashAlgorithm(str, Enum):
 
     CRC32 = "crc32"
     BLAKE2SP = "blake2sp"
-    ADLER32 = "adler32"
 
 
 def crc32_digest(value: int) -> bytes:
@@ -739,12 +738,6 @@ class ArchiveMember:
             raise AttributeError("member_id not set; member not yet registered")
         return self._member_id
 
-    @property
-    def archive_id(self) -> str:
-        if self._archive_id is None:
-            raise AttributeError("archive_id not set; member not yet registered")
-        return self._archive_id
-
     def modified_utc(self, tz_for_naive: tzinfo | None = None) -> datetime | None:
         """The modification time as a timezone-aware UTC ``datetime``, or ``None``.
 
@@ -909,7 +902,7 @@ class ExtractionPolicy(Enum):
     name that escapes the destination, carries a NUL, or names a device node. Those are
     universal. It *does* extract a name built to display as something else
     (``evil<U+202E>gnp.exe``), which ``STRICT``/``STANDARD`` refuse with
-    ``DeceptiveNameError``: such a member lands inside the destination under exactly its
+    ``FilterRejectionError``: such a member lands inside the destination under exactly its
     stored bytes, so the risk is to a human reading the directory afterwards, not to the
     filesystem. Choosing ``TRUSTED`` accepts that, which is what makes faithful
     round-tripping possible. See

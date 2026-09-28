@@ -84,21 +84,27 @@ not read, because it describes one frame and nothing says the file has one (§7)
 
 ### 2.3 Member data
 
-**zstd.** `ZstdCodec` opens `compression.zstd.open` or `backports.zstd.open`, the same API
-(ADR 0009). It reads every frame in turn, skips skippable frames and checks each content
-checksum. A frame that ends early raises `EOFError`, reported as `TruncatedError`; any
-`ZstdError` is `CorruptionError`, except the window refusal, which is
-`ResourceLimitError` (§4). A backward seek
-decodes again from the start, and the rewind report says so
-([`single-file.md`](single-file.md) §2.3).
+Both codecs run in archivey's engine as `FramedDecompressorStream`
+(`internal/streams/decompress.py`): one library decompressor per frame, and a new one
+only when the next bytes are a frame or skippable-frame magic. Anything else after a
+frame is trailing data, reported as `ARCHIVE_TRAILING_DATA` unless it is zeros
+([`single-file.md`](single-file.md) §2.3). The file-level readers the libraries offer
+(`compression.zstd.open`, `lz4.frame.open`) cannot do that: they take any bytes after a
+frame for the next frame and fail on them.
 
-**LZ4.** `Lz4Codec` opens `lz4.frame.open`, which reads concatenated frames and checks the
-content and block checksums when present. `EOFError` is `TruncatedError`; a `RuntimeError`
-whose message starts with "LZ4" is `CorruptionError`. Dependent blocks (`lz4 -BD`) decode
-normally. A backward seek decodes again from the start.
+**zstd.** The decompressor is `compression.zstd.ZstdDecompressor`, or `backports.zstd`'s
+before Python 3.14, the same API (ADR 0009). It skips skippable frames and checks each
+content checksum. A frame that ends early is `TruncatedError`; any `ZstdError` is
+`CorruptionError`, except the window refusal, which is `ResourceLimitError` (§4).
 
-Neither codec is decoded by archivey's own engine, so neither has a seek table. A seekable
-zstd reader using the frames as restart points is deferred (§7).
+**LZ4.** The decompressor is `lz4.frame.LZ4FrameDecompressor`, which checks the content
+and block checksums when present. A frame that ends early is `TruncatedError`; a
+`RuntimeError` whose message starts with "LZ4" is `CorruptionError`. Dependent blocks
+(`lz4 -BD`) decode normally.
+
+Neither codec records resume points, so a backward seek decodes again from the start and
+the rewind report says so ([`single-file.md`](single-file.md) §2.3). A seekable zstd
+reader using the frames as restart points is deferred (§7).
 
 ### 2.4 Extract
 
@@ -118,11 +124,11 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | A zstd frame behind a skippable frame | Detected and read |
 | `zstd --long=31` on a file | Reads: the window is sized to the input |
 | `zstd --long=31` from standard input (2 GiB window) | Reads under the default 2 GiB cap; `ResourceLimitError` under a smaller one |
-| A zstd file followed by `junk` | `CorruptionError: … Unknown frame descriptor`; `zstd -t` refuses it too |
+| A zstd file followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA`; `zstd -t` refuses it |
 | One bit flipped mid-file, `zstd` / `zstd --no-check` | `CorruptionError` from the checksum / **read with no error** |
 | `lz4`, `lz4 -BD`, two frames concatenated | Reads |
 | `lz4 --content-size` | Reads; `size=None` |
-| An LZ4 file followed by `junk` | `TruncatedError` |
+| An LZ4 file followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` |
 | An LZ4 frame behind a skippable frame, no extension | Not detected |
 | `lz4 -l` (legacy frame, magic `02 21 4c 18`) | **Not detected**; named `.lz4` it opens by extension and fails with `CorruptionError`, stamped `format_unconfirmed` |
 
@@ -170,7 +176,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | An `lz4 -l` file is not detected, and fails when named `.lz4` | **archivey** / **library** | The legacy magic is not registered, and `lz4.frame` does not read the legacy format. Tracked internally |
 | An LZ4 file starting with a skippable frame is not detected by content | **archivey** | The skippable-frame walk is zstd's only |
 | A damaged `--no-check` file reads with no error | **format** | No checksum (§1) |
-| Trailing junk is `CorruptionError` for zstd and `TruncatedError` for LZ4 | **library** | Each library's choice; the cross-codec picture is [`single-file.md`](single-file.md) §3 |
+| A file `zstd -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the last frame are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
 | A backward seek re-decodes from the start | **format** / **archivey** | No seek table for either (§7) |
 
 ## 6. Decisions
@@ -180,7 +186,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | zstd through `compression.zstd`, with `backports.zstd` before Python 3.14 (PR #24, ADR 0009) | The standard library's API, so the backport disappears with 3.13; truncation raises; backward seeks work | `zstandard`, which returned a short read with no error on a cut frame and could not seek backward; `pyzstd`, whose API became `compression.zstd` |
 | Walk skippable frames at detection, but require a regular frame (PR #270) | The seekable-zstd format puts a skippable frame first; a file of only skippable frames has no content | Registering the sixteen skippable magics as zstd, which would claim an empty file |
 | Keep the walk inside the peeked prefix | A skippable frame can declare 4 GiB, and seeing past it is not worth a longer read | Extending the peek |
-| LZ4 through `lz4.frame` | The maintained binding, reading concatenated frames | Writing a frame decoder |
+| LZ4 through `lz4.frame` | The maintained binding | Writing a frame decoder |
+| One library decompressor per frame, framed by magic in archivey's engine | Finds where the last frame ends, so bytes after it are reported rather than failing the read | `compression.zstd.open` and `lz4.frame.open`, which fail on them |
 | Do not report a frame's content size | It covers one frame, and proving there is one frame means reading to the end | Reporting it when present |
 
 ## 7. Open questions

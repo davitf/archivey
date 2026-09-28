@@ -29,14 +29,14 @@ from archivey.diagnostics import (
     DiagnosticPolicy,
 )
 from archivey.exceptions import (
+    ArchiveyUsageError,
     DiagnosticRaisedError,
     ReadError,
     ResourceLimitError,
     TruncatedError,
-    UnsupportedOperationError,
 )
 from archivey.internal.base_reader import BaseArchiveReader
-from archivey.measurement import enable_measurement
+from archivey.internal.measurement import enable_measurement
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires
@@ -244,7 +244,7 @@ def test_a_dropped_streaming_pass_is_finished_by_scan_members(
     with open_archive(_restart_archive(kind, tmp_path), streaming=True) as reader:
         walks = _count_walks(monkeypatch, reader)
         taken = _dropped(reader, how)
-        with pytest.raises(UnsupportedOperationError, match="scan_members"):
+        with pytest.raises(ArchiveyUsageError, match="scan_members"):
             list(reader)
         listed = reader.scan_members()
         assert all(a is b for a, b in zip(taken, listed[:2], strict=True))

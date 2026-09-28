@@ -193,7 +193,9 @@ See [`dev-docs/release-checklist.md`](dev-docs/release-checklist.md)
 (CHANGELOG triage, perf vs previous tag, docs, three-config tests, version bump,
 tag, publish). One-time repo rename / PyPI setup:
 [`dev-docs/release-repo-cutover.md`](dev-docs/release-repo-cutover.md).
-User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
+User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md). Pull requests do not edit
+it: the release PR writes each version's entry (new features, public API changes and
+security fixes one line each, other bug fixes summarized in one line).
 
 ## Tooling decisions
 
@@ -326,12 +328,14 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md).
   enforces this; `ArchiveStream` is the one listed exception.
 - **The CLI uses only public API.** Nothing under `src/archivey/cli/` imports from
   `archivey.internal`; `tests/test_cli_uses_public_api.py` fails on one that does. The
-  CLI needing something internal means the public API has a gap. Close the gap through
-  the ordinary `__all__` decision above, or in a public module that is not re-exported
-  (`archivey.terminal` holds the display helpers any front end needs), or do without:
-  the library's enum-spelling helpers are internal, so the CLI derives its option
-  choices from the enums and maps a parsed choice back to its member itself
-  (`src/archivey/cli/choices.py`).
+  one exception is `--track-io`'s import of `archivey.internal.measurement`, allowlisted
+  in that test: the CLI is also a debugging tool for the library, and IO measurement is
+  deliberately not public API. Otherwise, the CLI needing something internal means the
+  public API has a gap. Close the gap through the ordinary `__all__` decision above, or
+  in a public module that is not re-exported (`archivey.terminal` holds the display
+  helpers any front end needs), or do without: the library's enum-spelling helpers are
+  internal, so the CLI derives its option choices from the enums and maps a parsed
+  choice back to its member itself (`src/archivey/cli/choices.py`).
 - **Cost signals stay honest, and nothing silently re-decompresses.** `ListingCost` and
   `AccessCost` are promises a caller plans against, so a change that makes a path more
   expensive updates them. Reading two members out of one solid block must not decode the

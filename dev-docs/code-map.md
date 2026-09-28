@@ -21,8 +21,8 @@ src/archivey/
 ├── reader.py            ArchiveReader — the caller-facing read interface
 ├── types.py             Member, ArchiveInfo, ArchiveFormat, extraction policies/results, …
 ├── detection.py         FormatInfo, DetectionConfidence
-├── config.py cost.py measurement.py diagnostics.py exceptions.py
-│                       public value types: config, CostReceipt, IoStats,
+├── config.py cost.py diagnostics.py exceptions.py
+│                       public value types: config, CostReceipt,
 │                       Diagnostic, the error hierarchy
 ├── terminal.py          public, not re-exported: terminal-safe display of hostile text
 ├── cli/                 the CLI — a *consumer* of the public API, not a peer of it
@@ -126,7 +126,7 @@ Three things about this path are worth knowing before you debug it:
 | Member names, encoding, bidi, cross-platform safety | `internal/naming.py`; ADRs 0013, 0017 |
 | The error hierarchy or a translation | `exceptions.py` + the backend's translator; spec `error-handling` |
 | Warnings-as-data | `diagnostics.py` (public types) + `internal/diagnostics_collector.py` (emission) |
-| Cost or IO accounting | `cost.py` · `measurement.py` · `internal/measurement.py` · `streams/counting.py` |
+| Cost or IO accounting | `cost.py` · `internal/measurement.py` (not public: harness, tests, CLI `--track-io`) · `streams/counting.py` |
 | Concurrency, locking, `MemberStreams` | `internal/reader_state.py` + `streams/streamtools/locked.py`; spec `reader-concurrency` |
 | Format detection or a magic number | `internal/detection.py`, handbook [`topics/detection.md`](topics/detection.md); prefixed/SFX payloads: `internal/sfx.py` + `<fmt>_detect.py` validators, handbook [`topics/prefixed-archives.md`](topics/prefixed-archives.md) |
 | Adding a backend | `internal/registry.py` + a self-registering module in `backends/` |

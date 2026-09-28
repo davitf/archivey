@@ -1,5 +1,11 @@
 # Design — bounded source spooling
 
+
+> **Superseded on 2026-09-27:** `SpoolLimitExceededError` was folded into plain
+> `ResourceLimitError` before 0.2.0 (see the amendment to
+> `dev-docs/decisions/0012-usage-errors-outside-archiveyerror.md`). Where this file names
+> the subclass, read `ResourceLimitError`.
+
 Specs-first, following `seekable-gzip-and-block-writing`. This file carries the reasoning
 and the questions the proposal does not settle; the deltas carry only what is decided.
 

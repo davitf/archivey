@@ -164,8 +164,11 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
       10 KiB records, so "nothing but zeros" is the strongest rule that does not flag
       what `tar` itself produces. The check looks at most 1 MiB past the trailer, so a
       byte further out goes unseen; on a compressed tar that 1 MiB is decompressed to
-      inspect it. A tail that does not decompress (junk after the gzip stream, a missing
-      gzip footer) ends the check quietly rather than failing the listing.
+      inspect it. Bytes after the compressed stream itself (after the gzip or xz stream
+      ends) are reported the same way, with the codec's name as `format`; see
+      [Single-file compressors](#single-file-compressors). A tail that does not
+      decompress (a missing gzip footer) ends the check quietly rather than failing the
+      listing.
     - Truncation *inside* a member's data always raises `TruncatedError` during iteration,
       whatever the policy.
   - **Streaming caveat:** a corrupt header as the *final* block is caught in random-access
@@ -300,7 +303,7 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   to a temp directory) on the first member read that needs `unrar`, and removed on close.
   Stored members of a non-solid archive are read in place and need no copy. The copy is
   bounded by `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB):
-  over it, the read raises `SpoolLimitExceededError` before anything is written. Open from a
+  over it, the read raises `ResourceLimitError` before anything is written. Open from a
   path to avoid the copy. See [Access and cost](access-and-cost.md#non-seekable-sources).
 - Read-only — no RAR writer.
 
@@ -398,6 +401,22 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   bits after the last complete code raise `TruncatedError` on the next `read()` after
   delivering available bytes; zero-leftover cuts remain silent. Forward decode works on
   non-seekable sources; CLEAR boundaries provide seek points when seekability is declared.
+- **Bytes after the compressed stream** (a signature or checksum appended to a
+  download, a tool that pads its output) do not stop the read. For gzip, zlib, bzip2,
+  xz, lzip, LZMA Alone, zstd, LZ4 and Brotli, archivey returns the whole payload, then
+  emits one `ARCHIVE_TRAILING_DATA` whose `observed_bytes` is the offset of the first
+  appended byte. It is a warning under the default policy; under
+  `DiagnosticPolicy.strict()` the read that reaches it raises `DiagnosticRaisedError`.
+  Zero bytes after the end are padding and report nothing, as for TAR. A second stream
+  of the same codec (a concatenated `.gz`, `.bz2`, `.lzma`, `.zst` or `.lz4`) is more
+  data, not trailing bytes. `.xz` and `.lz` keep their size and seeks when the
+  appended bytes are within 1 MiB, unless they are crafted to hold thousands of fake
+  end markers; further out the index is not found and the size reads as unknown.
+  Brotli has no end marker the library reports, so archivey finds the end by decoding
+  the source again, which needs a seekable source: from a pipe, bytes after a Brotli
+  stream raise `CorruptionError`. The check applies to a bare compressed file and to a
+  compressed tar; inside a ZIP or 7z member the container's sizes decide. `.Z` is not
+  covered: it has no end marker, so appended bytes decode as more data.
 - `open_archive` decodes the first byte of a seekable source, so a file that is not
   the codec its name or detection claims (a `.gz` full of zeros, an empty `.bz2`) raises
   `CorruptionError` or `TruncatedError` from `open_archive` rather than from the first

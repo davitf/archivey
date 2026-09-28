@@ -28,7 +28,6 @@ this exact `ArchiveyError` hierarchy:
 ArchiveyError(Exception)
 ├── OpenError
 │   ├── FormatDetectionError
-│   ├── UnsupportedFormatError
 │   └── StreamNotSeekableError
 ├── ReadError
 │   ├── CorruptionError
@@ -37,49 +36,37 @@ ArchiveyError(Exception)
 │   └── LinkTargetNotFoundError
 ├── ExtractionError
 │   ├── FilterRejectionError
-│       ├── PathTraversalError
-│       ├── SymlinkEscapeError
-│       ├── SpecialFileError
-│       ├── UnportableNameError
-│       └── DeceptiveNameError
 │   ├── NameCollisionError            raised only under abort_on=
 │   └── NameRewrittenError            raised only under abort_on=
 ├── ResourceLimitError
-│   └── SpoolLimitExceededError
 ├── UnsupportedFeatureError
 ├── PackageNotInstalledError
-├── UnsupportedOperationError
 └── DiagnosticRaisedError
 ```
 
 Subclass boundaries SHALL keep their existing meanings:
 `UnsupportedFeatureError` / `PackageNotInstalledError` may occur at open or read
-time, `StreamNotSeekableError` is an `OpenError`, and
-`UnsupportedOperationError` describes an archive/backend/access-mode operation
-that cannot be provided, not a caller-code bug. `DiagnosticRaisedError` is direct
+time, and `StreamNotSeekableError` is an `OpenError`. `OpenError` means reading could
+not start (no recognized format, a non-seekable source the format needs to seek, a
+volume file that cannot be opened); a recognized archive whose header is damaged, cut
+short or encrypted raises a `ReadError` subclass, from `open_archive()` as from any
+later call. `DiagnosticRaisedError` is direct
 because advisory escalation can happen during detection, open, read, stream, or
 extraction. `ResourceLimitError` is direct because configurable resource caps can
 trip during listing materialization, extraction bomb guarding, opening a member's
 codec, or copying a stream source to temporary storage; it is not an
-`ExtractionError` subclass. `SpoolLimitExceededError` is the `SpoolLimits` trip, a
-`ResourceLimitError` of its own type so a caller can tell a refused copy from the other
-configured limits while `except ResourceLimitError` still catches it.
+`ExtractionError` subclass.
+
+A type SHALL be public only when a caller would act on it differently from its parent;
+anything finer goes in the message. So the checks behind `FilterRejectionError` (path
+traversal, symlink escape, special file, unportable name, deceptive name) share that one
+type, and a `SpoolLimits` trip is a plain `ResourceLimitError`.
 
 | Error split | Meaning |
 | --- | --- |
-| `UnsupportedOperationError` | Valid API call against a reader/backend/mode that cannot provide the requested operation: random access on `streaming=True`, write through read-only RAR. Post-close use is `ArchiveyUsageError` (below). |
-| `UnsupportedFeatureError` | Valid archive uses a recognized feature Archivey does not implement: unsupported ZIP method, AES ZIP entry, unknown 7z coder, a 7z coder graph that is not a tree of chains. |
+| `UnsupportedFeatureError` | Valid archive uses a recognized feature Archivey does not implement (unsupported ZIP method, unknown 7z coder, a 7z coder graph that is not a tree of chains, a raw CD sector image), or the archive or backend cannot serve a valid request (writing any format, a RAR password with a line break for `unrar`, `format=ArchiveFormat.UNKNOWN`). |
+| `PackageNotInstalledError` | A package or external tool the format or member needs is absent: at open for a format whose backend or single codec is missing (ISO without `pycdlib`), at read for one member's codec. |
 | `ResourceLimitError` | A configured resource limit was exceeded (`ListingLimits` materialization caps, `ExtractionLimits` bomb guards, a `DecoderLimits` cap on archive-declared decoder memory or key-derivation work, or `SpoolLimits`). |
-| `SpoolLimitExceededError` | The `SpoolLimits.max_bytes` cap refused a copy of the archive source to temporary storage. |
-
-The three name-related `FilterRejectionError` subclasses are kept apart because a caller
-triaging a batch of rejections acts differently on each:
-
-| Error split | Meaning |
-| --- | --- |
-| `PathTraversalError` | The name tries to reach **outside** the destination, or cannot name a path at all (`..`, absolute, NUL, unencodable). |
-| `UnportableNameError` | The name cannot be written **as spelled** on this platform, and the policy declined to rewrite it. |
-| `DeceptiveNameError` | The name is writable and stays inside the destination, but is built to **display as something other than what it is** — a bidi override or isolate. Nothing is wrong with the archive or the platform; the name is a lie. |
 
 #### Scenario: archive exception matrix
 
@@ -87,18 +74,18 @@ triaging a batch of rejections acts differently on each:
 | --- | --- |
 | Any open/read/extract/write failure detected by Archivey | Instance of `ArchiveyError`; `except ArchiveyError` catches it |
 | Diagnostic policy escalates | `DiagnosticRaisedError` is caught by `except ArchiveyError` |
-| Member name with a bidi override, extracted | `DeceptiveNameError`; caught by `except FilterRejectionError` and by `except ExtractionError` |
+| Member name with a bidi override, extracted | `FilterRejectionError` whose message names the override; caught by `except ExtractionError` |
+| Recognized archive with a damaged header, opened | `CorruptionError` or `TruncatedError` from `open_archive()`; not an `OpenError` |
 
 ### Requirement: Caller misuse remains outside ArchiveyError
 
 The system SHALL define `ArchiveyUsageError(Exception)` outside `ArchiveyError`
 for detected caller-code bugs. `except ArchiveyError` MUST NOT swallow misuse.
 
-`ConcurrentAccessError(ArchiveyUsageError)` SHALL be raised when a second member
-stream opens while another is live on a reader opened without
-`concurrent_members=True`. Its message SHALL include the recorded `open_archive()` call
-site (`file:line`) and SHALL name `concurrent_members=True` as the parameter that would
-have allowed the operation.
+`ArchiveyUsageError` SHALL be raised when a second member stream opens while another is
+live on a reader opened without `concurrent_members=True`. Its message SHALL include the
+recorded `open_archive()` call site (`file:line`) and SHALL name `concurrent_members=True`
+as the parameter that would have allowed the operation.
 
 `ArchiveyUsageError` SHALL also cover:
 
@@ -111,6 +98,11 @@ have allowed the operation.
 - using an `ArchiveMember` from another reader;
 - member I/O after a caller closes its supplied source early;
 - `open_archive(streaming=True, concurrent_members=True)`;
+- a random-access or second-pass call on a `streaming=True` reader (`members()`,
+  `get()`, `open()`, `read()`, a second `__iter__` / `stream_members()` /
+  `extract_all()`), since the caller chose the mode;
+- driving a reader or stream from inside a diagnostic callback it is emitting;
+- `open_stream()` given a `format=` that is not a compressed stream;
 - `open()` / `read()` of a resolved non-payload member (`DIRECTORY`, `ANTI`,
   `OTHER`). A symlink/hardlink that fails to resolve remains
   `LinkTargetNotFoundError` (`ArchiveyError`) — that is an archive property,
@@ -128,7 +120,7 @@ raise `io.UnsupportedOperation`.
 | Case | Expected |
 | --- | --- |
 | `except ArchiveyError` wraps code that raises `ArchiveyUsageError` | Usage error propagates past the handler |
-| Second overlapping member stream without `concurrent_members=True` | `ConcurrentAccessError` with open-site `file:line` naming `concurrent_members=True`; first stream still readable |
+| Second overlapping member stream without `concurrent_members=True` | `ArchiveyUsageError` with open-site `file:line` naming `concurrent_members=True`; first stream still readable |
 | Exclusive pass/materialization is active and conflicting public op begins | Later op raises `ArchiveyUsageError`; active op remains valid |
 | Operation/property after `reader.close()` | `ArchiveyUsageError`; already-open member stream follows lifecycle lease |
 | Repeated `reader.close()` | No error; no repeated backend teardown |
@@ -560,7 +552,7 @@ truthiness are not covered, there being no wrong type to find.
 | `extract_all(dest, members="notes.txt")` | `ArchiveyUsageError` naming the list spelling; not a clean extraction of nothing |
 | `extract_all(dest, members=0)` | `ArchiveyUsageError` at the call, before `dest` is created |
 | `stream_members(members=0)` | `ArchiveyUsageError` at the call, not on first `next()` |
-| `detect_format(src, budget=0)` | `ArchiveyUsageError` naming `budget`; never `AttributeError: 'int' object has no attribute 'max_tail_bytes'` |
+| `detect_format(src, budget=0)` | `ArchiveyUsageError` naming `budget`; never `AttributeError: 'int' object has no attribute 'max_prefix_bytes'` |
 | `reader.open(0)` | `ArchiveyUsageError`; never a message naming `_archive_id` |
 | `reader.open("absent.txt")` | `KeyError` — unchanged, and specified by `archive-reading` |
 | `open_archive(0)` | `TypeError: unsupported source type` — unchanged |

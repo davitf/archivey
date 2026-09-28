@@ -12,6 +12,7 @@ from __future__ import annotations
 import gzip
 import io
 import os
+import random
 import zlib
 from pathlib import Path
 
@@ -19,7 +20,7 @@ import pytest
 
 from archivey import open_archive
 from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
-from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.exceptions import CorruptionError, ReadError, TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
 from archivey.internal.streams.codecs import Codec, open_codec_stream
@@ -46,9 +47,21 @@ def _raw_deflate(data: bytes) -> bytes:
 def _assert_accelerator(stream: object) -> None:
     inner = getattr(stream, "_inner", None)
     # Length-verifying / ISIZE wraps sit outside the accelerator.
-    from archivey.internal.streams.codecs import _GzipTruncationCheckStream
+    from archivey.internal.streams.codecs import (
+        _GzipTruncationCheckStream,
+        _StdlibOnAcceleratorError,
+        _ZlibAdlerCheckStream,
+    )
 
-    while isinstance(inner, (VerifyingStream, _GzipTruncationCheckStream)):
+    while isinstance(
+        inner,
+        (
+            VerifyingStream,
+            _GzipTruncationCheckStream,
+            _StdlibOnAcceleratorError,
+            _ZlibAdlerCheckStream,
+        ),
+    ):
         inner = getattr(inner, "_inner", None)
     assert isinstance(inner, RapidgzipChildStream)
 
@@ -368,14 +381,12 @@ def test_verifying_stream_forwards_a_raw_error_on_the_draining_read() -> None:
     stream.close()  # content faults raise from read, never from close
 
 
-def test_standalone_zlib_midcut_may_short_read_through_rapidgzip_on_without_size() -> (
-    None
-):
-    """Accepted ON-without-size limitation: rapidgzip may silently short-read.
+def test_standalone_zlib_midcut_raises_through_rapidgzip_on_without_size() -> None:
+    """ON without a declared size: a cut zlib stream raises, never a silent short read.
 
-    ``ON`` bypasses the AUTO verifiable-size gate; without a declared length there is
-    no backstop. Either a short read or a translated error is acceptable — a raw
-    rapidgzip exception is not.
+    Where rapidgzip raises on the cut, the stream finishes with the standard library,
+    which names the cut (``TruncatedError``); where it returns a short prefix, the
+    Adler-32 check raises (``CorruptionError``).
     """
     pytest.importorskip("rapidgzip")
     full = zlib.compress(_SMALL * 100)
@@ -383,13 +394,127 @@ def test_standalone_zlib_midcut_may_short_read_through_rapidgzip_on_without_size
     # Adler trailer).
     cut = full[: max(len(full) // 2, 20)]
     on = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
-    try:
+    with pytest.raises((CorruptionError, TruncatedError)):
         with open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=on) as stream:
-            out = stream.read()
-    except CorruptionError:
-        return
-    # Silent short read: decompressed less than the full payload would have been.
-    assert len(out) < len(_SMALL * 100)
+            stream.read()
+
+
+# --- Adler-32 under rapidgzip ---------------------------------------------------------
+
+_ADLER_PAYLOAD = random.Random(0).randbytes(300_000) + bytes(200_000)
+
+
+def _flip(data: bytes, index: int) -> bytes:
+    out = bytearray(data)
+    out[index] ^= 0x01
+    return bytes(out)
+
+
+def _body_flip_the_stdlib_rejects(good: bytes) -> bytes:
+    """Flip a bit near the end of the body that the standard library rejects.
+
+    Chosen at run time: the compressed bytes depend on the zlib build (CPython on
+    Windows ships zlib-ng), and a flipped bit can land where it changes nothing.
+    """
+    for index in range(len(good) - 5, len(good) // 2, -1):
+        bad = _flip(good, index)
+        try:
+            zlib.decompress(bad)
+        except zlib.error:
+            return bad
+    raise AssertionError("no rejected body flip found")
+
+
+def _on_zlib(data: bytes):  # noqa: ANN202 - the codec's stream type
+    pytest.importorskip("rapidgzip")
+    on = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
+    return open_codec_stream(Codec.ZLIB, io.BytesIO(data), config=on)
+
+
+@pytest.mark.parametrize("where", ["trailer", "body"])
+def test_rapidgzip_zlib_damage_raises_from_the_adler_check(where: str) -> None:
+    """Damage rapidgzip does not report raises, never a clean read.
+
+    A flipped trailer bit decodes cleanly in rapidgzip; only the Adler-32 check catches
+    it. A flipped bit near the end of the body can make rapidgzip raise instead, and
+    the standard library then finishes the decode and names the damage itself.
+    """
+    good = zlib.compress(_ADLER_PAYLOAD)
+    if where == "trailer":
+        bad = _flip(good, len(good) - 1)
+    else:
+        bad = _body_flip_the_stdlib_rejects(good)
+    expected = codecs._StreamChecksumError if where == "trailer" else ReadError
+    with _on_zlib(bad) as stream:
+        with pytest.raises(expected):
+            stream.read()
+        # A re-read after a seek back raises too, never a clean read.
+        stream.seek(0)
+        with pytest.raises(ReadError):
+            stream.read()
+
+
+def test_rapidgzip_zlib_adler_check_survives_seeks() -> None:
+    """A seek forward reads through, so a reader that skips (TAR) is still checked."""
+    bad = _flip(zlib.compress(_ADLER_PAYLOAD), -1)
+    with _on_zlib(bad) as stream:
+        assert stream.read(10) == _ADLER_PAYLOAD[:10]
+        stream.seek(5)  # back: behind the frontier
+        assert stream.read(10) == _ADLER_PAYLOAD[5:15]
+        stream.seek(400_000)  # forward: read through
+        assert stream.tell() == 400_000
+        assert stream.read(10) == _ADLER_PAYLOAD[400_000:400_010]
+        with pytest.raises(codecs._StreamChecksumError):
+            stream.seek(0, io.SEEK_END)
+
+
+def test_rapidgzip_zlib_good_stream_seeks_anywhere() -> None:
+    good = zlib.compress(_ADLER_PAYLOAD)
+    with _on_zlib(good) as stream:
+        assert stream.seek(0, io.SEEK_END) == len(_ADLER_PAYLOAD)
+        stream.seek(123_456)
+        assert stream.read(100) == _ADLER_PAYLOAD[123_456:123_556]
+        stream.seek(0)
+        assert stream.read() == _ADLER_PAYLOAD
+
+
+def test_rapidgzip_zlib_concatenated_streams_pass_the_check() -> None:
+    """rapidgzip reads concatenated zlib streams whole; the trailer covers only the last,
+    so the mismatch is settled by the standard-library confirmation, which passes."""
+    both = zlib.compress(_ADLER_PAYLOAD) + zlib.compress(b"second stream")
+    with _on_zlib(both) as stream:
+        assert stream.read() == _ADLER_PAYLOAD + b"second stream"
+
+
+def test_tar_zz_member_damage_raises_under_rapidgzip_on(tmp_path: Path) -> None:
+    """The TAR reader skips member data by seeking and swallows decode failures in its
+    end scan; neither may hide an Adler-32 mismatch over the members it read."""
+    pytest.importorskip("rapidgzip")
+    import tarfile
+
+    from archivey import AcceleratorMode as PublicMode
+    from archivey import ArchiveyConfig
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name in ("a.bin", "b.bin"):
+            info = tarfile.TarInfo(name)
+            info.size = len(_ADLER_PAYLOAD)
+            tar.addfile(info, io.BytesIO(_ADLER_PAYLOAD))
+    path = tmp_path / "damaged.tar.zz"
+    path.write_bytes(_flip(zlib.compress(buf.getvalue()), -1))
+    config = ArchiveyConfig(use_rapidgzip=PublicMode.ON)
+    for streaming in (False, True):
+        with pytest.raises(CorruptionError):
+            with open_archive(path, streaming=streaming, config=config) as reader:
+                if streaming:
+                    for _, stream in reader.stream_members():
+                        if stream is not None:
+                            stream.read()
+                else:
+                    for member in reader.members():
+                        if member.is_file:
+                            reader.read(member)
 
 
 # --- 4.4 Bounded input ---------------------------------------------------------------

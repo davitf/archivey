@@ -55,6 +55,10 @@ _MATCHED: list[tuple[DiagnosticCode, DiagnosticContext]] = [
         DiagnosticCode.ARCHIVE_TRAILING_DATA,
         ArchiveEofContext(expected_marker="zeros_to_eof"),
     ),
+    (
+        DiagnosticCode.ARCHIVE_TRAILING_DATA,
+        ArchiveEofContext(expected_marker="end_of_stream"),
+    ),
 ]
 
 
@@ -91,10 +95,10 @@ _MISMATCHED = [
 def test_sibling_context_is_rejected(
     code: DiagnosticCode, context: DiagnosticContext
 ) -> None:
-    field_name, required = _SHARED_KIND_DISCRIMINATORS[code]
+    field_name, allowed = _SHARED_KIND_DISCRIMINATORS[code]
     with pytest.raises(ValueError, match=rf"^{code.name} requires {field_name}="):
         validate_code_context(code, context)
-    assert getattr(context, field_name) != required
+    assert getattr(context, field_name) not in allowed
 
 
 def test_mismatches_cover_all_four_shared_kinds() -> None:

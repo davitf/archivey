@@ -97,7 +97,7 @@ never handed past the boundary, so no wrapper a backend adds can reach it except
 ### Requirement: Access-mode enforcement — streaming is forward-only
 
 On `streaming=True`, `members()` / `get()` / `open()` / `read()` SHALL raise
-`UnsupportedOperationError` uniformly. No `__len__`/`__getitem__`
+`ArchiveyUsageError` uniformly. No `__len__`/`__getitem__`
 (`archive-reading`); `member in reader` is scan-free identity membership (both
 modes).
 
@@ -121,10 +121,10 @@ recovered member before propagating a terminal archive-level listing error
 
 | Case | Expected |
 | --- | --- |
-| `get` / `members` / `open` / `read` on `streaming=True` | `UnsupportedOperationError` |
+| `get` / `members` / `open` / `read` on `streaming=True` | `ArchiveyUsageError` |
 | First `__iter__` or `stream_members` | Yields in archive order |
 | Terminal archive error after prefix (either mode) | Prefix yielded; then raise |
-| Second forward-pass method after begin/complete | `UnsupportedOperationError` (all formats) |
+| Second forward-pass method after begin/complete | `ArchiveyUsageError` (all formats) |
 | Early `break` then `scan_members()` | Drains remainder; fully-resolved list or raise; later pass methods raise |
 | `scan_members()` then `stream_members()` on fresh streaming reader | List returned when complete; subsequent pass raises (any index topology) |
 | `members_report()` on streaming with terminal archive error after prefix | Report with prefix + `error`; pass consumed; no raise from `members_report` |
@@ -177,7 +177,7 @@ still raise.
 ### Requirement: Access mode × method behaviour summary
 
 The system SHALL behave per this canonical table (`✅` allowed,
-`⛔` → `UnsupportedOperationError`):
+`⛔` → `ArchiveyUsageError`):
 
 | Method | `streaming=False` | `streaming=True` |
 | --- | --- | --- |
@@ -201,7 +201,7 @@ composes with — does not replace — these rules.
 | Case | Expected |
 | --- | --- |
 | `scan_members()` either mode on clean archive | Fully-resolved list (RA ≡ `members()`; streaming finishes pass) |
-| Full streaming `__iter__`, then iterate again | Second → `UnsupportedOperationError` |
+| Full streaming `__iter__`, then iterate again | Second → `ArchiveyUsageError` |
 | RA `__iter__` on TAR rejected-header after prefix | Yields prefix members, then `CorruptionError` |
 | `members_report()` row present either mode | ✅ returns report |
 
@@ -360,8 +360,8 @@ docstring's pointer to `stream_members()`. A caller who wants to be *stopped* ha
 exists, so its measured work SHALL be reported through the separate `DetectionCostReceipt`
 (`detection-cost`) and SHALL NOT be folded into `CostReceipt` or `ArchiveInfo.cost`.
 
-The two SHALL share vocabulary where they describe the same thing — capability names, the
-kinds of work counted — so a caller reading both sees one cost model rather than two.
+The two SHALL share vocabulary where they describe the same thing — the kinds of work
+counted — so a caller reading both sees one cost model rather than two.
 
 #### Scenario: the two receipts stay separate
 
@@ -369,4 +369,4 @@ kinds of work counted — so a caller reading both sees one cost model rather th
 | --- | --- |
 | `open_archive` on a path, detection read 32 774 bytes | `ar.cost` unchanged by those bytes; the detection receipt carries them |
 | Standalone `detect_format` | A detection receipt exists; no `CostReceipt` does, because no archive was opened |
-| A caller comparing the two | Capability and work-kind names match; the totals are of different things and are not summed |
+| A caller comparing the two | Work-kind names match; the totals are of different things and are not summed |

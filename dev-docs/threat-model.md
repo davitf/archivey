@@ -789,30 +789,47 @@ any of them is built
 folder stream that `ExtractionLimits` counts, so the decoder's end-of-output check reads
 at most one byte from each branch and never drains one.
 
-### O21. A directory source changed by another process between listing and reading — open
+### O21. A directory source changed by another process between listing and reading — closed
 
 The directory reader lists a tree with `lstat` and never walks through a symlink, so the
 listing stays inside the root (Windows on Python 3.11 aside, where a junction may be
 walked: [`formats/directory.md`](formats/directory.md) §7). A member's data is opened
-later, by path, with plain `open()`. Whatever is at that path then is what the caller
-reads. If another process replaces a listed file with a symlink to a file outside the
-root, the read returns that file's bytes. If it replaces a listed directory with a
-symlink, reading a file under it does the same. A file replaced by a FIFO blocks `open()`
-until something writes to it. A file that grew reads past its listed `size`. None of this
-raises or emits a diagnostic.
+later, and another process can change the tree in between: replace a listed file or
+directory with a symlink out of the root, replace a file with a FIFO so `open()` blocks,
+or replace or resize a file so the read returns data the listing never described.
 
-*Open, in scope*, ruled by davi on 2026-09-27 (PR #496's decision card). A directory
-source is the exception to the published rule that other local processes are trusted
-([`docs/extracting.md`](../docs/extracting.md) §Trust boundaries): a caller may read a
-tree someone else can write to while archivey reads it (an upload staging folder, a
-shared drop folder), and a read must not leave the root. The fix is a pre-release item:
-open with `O_NOFOLLOW | O_NONBLOCK` through an `openat` walk from the root, `fstat` the
-handle, and refuse a mismatch with the listing's `(st_dev, st_ino)` and file type.
-Tracked internally.
+*In scope*, ruled by davi on 2026-09-27 (PR #496's decision card): a directory source is
+the exception to the published rule that other local processes are trusted
+([`docs/extracting.md`](../docs/extracting.md) §Trust boundaries), because a caller may
+read a tree someone else can write to (an upload staging folder, a shared drop folder).
 
-Pinned as today's behaviour, so a fix fails them:
-`tests/test_directory.py::test_a_file_swapped_for_a_symlink_after_listing_is_followed`,
-`::test_a_file_grown_after_listing_reads_at_its_new_length`. Handbook:
+*Closed.* On POSIX the reader opens each path component with `O_NOFOLLOW` relative to its
+parent's descriptor and the file with `O_NOFOLLOW | O_NONBLOCK`, so a symlink anywhere on
+the path fails with `ELOOP` and a FIFO does not block. It then `fstat`s the handle and
+refuses, with `OSError(ESTALE)`, anything that is not a regular file with the listing's
+`(st_dev, st_ino)` and listed size (a listed size of 0 is exempt, for procfs and sysfs).
+Windows has no `O_NOFOLLOW`; the identity check carries it there. A member listed with
+no identity (`st_ino` 0: some FUSE and network mounts, or a Windows path the identity
+stat could not reach) is checked on type and size alone, plus, on Windows, a
+reparse-point check on its final path component.
+
+What remains:
+- a same-size rewrite in place, and a change after the open. Both read the listed file,
+  inside the root.
+- a same-size replacement of an identity-less member. On POSIX the path still follows
+  no link, so this could only read a same-size hardlink to a file elsewhere on that
+  mount, on a filesystem that has hard links but no stable inode numbers.
+- on Windows, an identity-less member whose path is resolved with no `O_NOFOLLOW`. The
+  reparse check covers the leaf only and runs after the open, so a directory above it
+  swapped for a junction out of the root, or a swap that races the check, reads a
+  same-size file outside the root. Inferred from the code, not measured.
+
+Pinned by `tests/test_directory.py::test_a_file_swapped_for_a_symlink_after_listing_is_refused`,
+`::test_a_directory_swapped_for_a_symlink_after_listing_is_refused`,
+`::test_a_file_replaced_after_listing_is_refused`,
+`::test_a_file_swapped_for_a_fifo_after_listing_is_refused_without_blocking`,
+`::test_a_file_resized_after_listing_is_refused`,
+`::test_an_identityless_member_that_is_now_a_reparse_point_is_refused`. Handbook:
 [`formats/directory.md`](formats/directory.md) §2.3, §4.
 
 ## OPEN gaps — compatibility
@@ -874,7 +891,7 @@ materialization, concurrent `open()` plus independent operations on different me
 streams are data-race-free on ordinary builds and on backend/runtime combinations covered
 by the required Linux CPython `3.13t` `free-threaded-concurrency` job; optional backends
 are not claimed covered until a dedicated free-threaded job can run them. The undeclared
-default is one live member stream (a second overlapping open raises `ConcurrentAccessError`),
+default is one live member stream (a second overlapping open raises `ArchiveyUsageError`),
 so accidental cross-thread stream sharing fails fast instead of racing. Iteration,
 materialization, extraction, `stream_members()`, and reader close remain single-owner,
 with explicit private child scopes allowing extraction to drive its pass and

@@ -111,13 +111,13 @@ rather than quietly testing a GIL-ed interpreter.
 
 If you do not pass `concurrent_members=True`, the reader allows **one live member
 stream**. A second overlapping `open()` raises
-[`ConcurrentAccessError`][archivey.ConcurrentAccessError] rather than quietly returning
+[`ArchiveyUsageError`][archivey.ArchiveyUsageError] rather than quietly returning
 interleaved bytes:
 
 ```python
 with open_archive("photos.zip") as reader:      # no CONCURRENT declared
     s1 = reader.open("a.txt")
-    s2 = reader.open("b.txt")                   # raises ConcurrentAccessError
+    s2 = reader.open("b.txt")                   # raises ArchiveyUsageError
 ```
 
 That is the deliberate design: accidental cross-thread sharing fails loudly on the first
@@ -125,8 +125,7 @@ call instead of corrupting data on some later run. Capabilities are opt-in rathe
 always-on because the single-stream default is what lets a reader hold one decode
 position per archive, which is the cheap path for every format.
 
-Note that `ConcurrentAccessError` is an
-[`ArchiveyUsageError`][archivey.ArchiveyUsageError], which sits **outside** the
+Note that [`ArchiveyUsageError`][archivey.ArchiveyUsageError] sits **outside** the
 `ArchiveyError` tree.
 A broad `except ArchiveyError` around your archive handling will *not* swallow it — which
 is intended, because it reports a bug in the calling code, not a problem with the archive.
@@ -144,7 +143,8 @@ another thread that might still be reading it when the owner closes the reader.
 | --- | --- |
 | `open()` + reading **different** member streams | Yes, with `concurrent_members=True`, after materialization |
 | Reading the **same** member stream object | No — one owner per stream |
-| `members()` / `__iter__` / `scan_members()` | No — single-owner; materialize once, then share the result |
+| `members()` / `members_report()` / `scan_members()` | With `concurrent_members=True`, yes: one thread builds the list and the others wait for it. Otherwise no — single-owner; materialize once, then share the result |
+| `__iter__` | No — single-owner |
 | `extract_all()` / `stream_members()` | No — single-owner passes |
 | `close()` | Safe to call twice; not safe to race against in-flight opens |
 | Separate `ArchiveReader` objects | Yes — independent readers share no mutable state |

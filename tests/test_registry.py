@@ -29,7 +29,7 @@ from archivey import (
     list_supported_formats,
     open_archive,
 )
-from archivey.exceptions import UnsupportedFormatError
+from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
 from archivey.internal.base_reader import ReadBackend
 from archivey.internal.registry import BackendRegistry
 from archivey.internal.streams import codecs as codecs_module
@@ -128,7 +128,7 @@ def test_unknown_format_is_none(registry: BackendRegistry) -> None:
 def test_reader_for_missing_dependency_raises_with_hint(
     registry: BackendRegistry,
 ) -> None:
-    with pytest.raises(UnsupportedFormatError) as excinfo:
+    with pytest.raises(PackageNotInstalledError) as excinfo:
         registry.reader_for_format(ArchiveFormat.ISO)
     msg = str(excinfo.value)
     assert "a_package_that_does_not_exist_xyz" in msg
@@ -136,7 +136,7 @@ def test_reader_for_missing_dependency_raises_with_hint(
 
 
 def test_reader_for_unknown_format_raises(registry: BackendRegistry) -> None:
-    with pytest.raises(UnsupportedFormatError):
+    with pytest.raises(UnsupportedFeatureError):
         registry.reader_for_format(ArchiveFormat.SEVEN_Z)
 
 
@@ -282,7 +282,7 @@ def test_iso_none_without_pycdlib(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ArchiveFormat.ISO in list_known_formats()
 
     # Selecting it raises an install-hint error rather than crashing.
-    with pytest.raises(UnsupportedFormatError) as excinfo:
+    with pytest.raises(PackageNotInstalledError) as excinfo:
         open_archive(io.BytesIO(b"not an iso"), format=ArchiveFormat.ISO)
     assert "pycdlib" in str(excinfo.value)
 
@@ -307,7 +307,7 @@ def test_compressed_tar_none_when_stream_codec_missing(
     assert ArchiveFormat.TAR_ZST not in list_supported_formats()
 
     # Selecting it raises an install-hint error rather than failing later at decode time.
-    with pytest.raises(UnsupportedFormatError) as excinfo:
+    with pytest.raises(PackageNotInstalledError) as excinfo:
         open_archive(io.BytesIO(b"not a tar.zst"), format=ArchiveFormat.TAR_ZST)
     assert "backports.zstd" in str(excinfo.value)
 

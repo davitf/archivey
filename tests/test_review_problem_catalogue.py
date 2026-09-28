@@ -58,6 +58,8 @@ ARCHIVEY_NAMES = (
     "ArchiveFormat",
     "BaseArchiveReader",
     "BombTracker",
+    # Folded into ArchiveyUsageError before 0.2.0, and kept on purpose, like
+    # PeekableStream below: older catalogue prose can still reach for it.
     "ConcurrentAccessError",
     "CorruptionError",
     "CostReceipt",

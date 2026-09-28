@@ -34,8 +34,8 @@ from archivey.diagnostics import (
     ScanRaceContext,
 )
 from archivey.exceptions import (
-    PathTraversalError,
-    UnsupportedOperationError,
+    ArchiveyUsageError,
+    FilterRejectionError,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector, EmitLog
 from archivey.types import MemberType
@@ -400,7 +400,7 @@ def test_operational_reentrancy_rejected() -> None:
         )
 
     collector = DiagnosticCollector(on_diagnostic=cb)
-    with pytest.raises(UnsupportedOperationError, match="reentrancy"):
+    with pytest.raises(ArchiveyUsageError, match="reentrancy"):
         _emit_norm(collector)
 
 
@@ -619,7 +619,8 @@ def test_extraction_blocked_is_result_only(tmp_path: Path, on_error: OnError) ->
     )
     blocked = [r for r in report.results if r.status is ExtractionStatus.BLOCKED]
     assert blocked
-    assert isinstance(blocked[0].error, PathTraversalError)
+    assert isinstance(blocked[0].error, FilterRejectionError)
+    assert blocked[0].error.message.startswith("Path traversal")
     # No extraction-outcome code exists to be counted.
     assert not [
         code
@@ -641,7 +642,7 @@ def test_abort_on_blocked_member_stops_despite_continue(tmp_path: Path) -> None:
         zf.writestr("ok.txt", b"y")
     dest = tmp_path / "out"
     dest.mkdir()
-    with pytest.raises(PathTraversalError):
+    with pytest.raises(FilterRejectionError):
         extract(
             io.BytesIO(buf.getvalue()),
             dest,

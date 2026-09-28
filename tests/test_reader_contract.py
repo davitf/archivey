@@ -98,9 +98,9 @@ class _ForwardOnlyReader(BaseArchiveReader):
 def test_open_raises_without_random_access_capability() -> None:
     # streaming=False isolates the *capability* gate from the access-mode gate.
     reader = _ForwardOnlyReader(ArchiveFormat.TAR, False, "x.tar")
-    with pytest.raises(archivey.UnsupportedOperationError):
+    with pytest.raises(archivey.UnsupportedFeatureError):
         reader.open("a.txt")
-    with pytest.raises(archivey.UnsupportedOperationError):
+    with pytest.raises(archivey.UnsupportedFeatureError):
         reader.read("a.txt")
 
 
@@ -124,7 +124,7 @@ def test_streaming_disables_random_access_on_capable_backend() -> None:
         lambda: reader.open("a.txt"),
         lambda: reader.read("a.txt"),
     ):
-        with pytest.raises(archivey.UnsupportedOperationError):
+        with pytest.raises(archivey.ArchiveyUsageError):
             call()
     # A single forward pass is still allowed.
     assert [m.name for m in reader] == ["a.txt"]
@@ -229,13 +229,13 @@ def test_streaming_iteration_registers_member_ids() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")  # streaming=True
     (member,) = list(reader)
     assert member.member_id == 0
-    assert member.archive_id == reader._archive_id
+    assert member in reader
 
 
 def test_streaming_second_iter_raises() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, True, "x.zip")
     list(reader)
-    with pytest.raises(archivey.UnsupportedOperationError):
+    with pytest.raises(archivey.ArchiveyUsageError):
         list(reader)
 
 
@@ -252,6 +252,21 @@ def test_scan_members_equals_members_in_random_mode() -> None:
     reader = _IndexedReader(ArchiveFormat.ZIP, False, "x.zip")
     assert reader.scan_members() == reader.members()
     assert [m.name for m in reader] == ["a.txt"]
+
+
+def test_scan_members_usage_errors_name_scan_members() -> None:
+    """scan_members() runs members_report()'s body, but its errors name the call made."""
+    closed = _IndexedReader(ArchiveFormat.ZIP, False, "x.zip")
+    closed.close()
+    with pytest.raises(ArchiveyUsageError, match=r"^scan_members\(\) is not available"):
+        closed.scan_members()
+
+    streaming = _ForwardOnlyReader(ArchiveFormat.TAR, True, "x.tar")
+    pass_ = streaming.stream_members()
+    next(pass_)
+    with pytest.raises(ArchiveyUsageError, match="Cannot start 'scan_members'"):
+        streaming.scan_members()
+    pass_.close()
 
 
 # --- BaseException during materialization must not wedge the reader (review C1/Q1) --

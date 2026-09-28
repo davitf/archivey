@@ -2,6 +2,14 @@
 > struck, the exhaustive scan is deferred unless asked, and `ArchiveyConfig.detection_budget`
 > has landed. The spec deltas below still describe the struck parts and must be trimmed
 > before this change is archived. See the note at the top of `tasks.md`.
+>
+> **Trimmed on 2026-09-27.** The ZIP-tail budget and receipt fields (`max_tail_bytes`,
+> `max_seeks`, `tail_bytes`, `seeks`), `DetectionCapability` (`TAIL`, `SEEK`), the
+> detection spool and the `zip_tail` skip were removed from the library before 0.2.0, and
+> the `detection-cost` delta that would have put them back on archive is deleted. The
+> `format-detection`, `format-zip` and `archive-reading` deltas and the tasks below still
+> name them for the struck Block 2; a tail probe that is reopened adds its own fields as
+> an additive change.
 
 ## Why
 
@@ -89,8 +97,6 @@ tier detection accordingly instead of applying one rule to all of them.
 - `archive-reading` — `ArchiveyConfig` gains `detection_budget` (the freeze surface for
   the detection spend cap) and the exhaustive-scan requirement. Not a keyword on
   `open_archive` / `detect_format`, and not `exhaustive_prefix_scan`.
-- `detection-cost` — callers pass the budget via that config field; `#273`'s
-  `detect_format(..., budget=)` keyword is removed.
 
 ## Decisions
 

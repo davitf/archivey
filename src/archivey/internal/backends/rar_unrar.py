@@ -20,14 +20,17 @@ import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, cast
+from typing import BinaryIO
 
 from archivey.exceptions import (
     PackageNotInstalledError,
-    ReadError,
-    UnsupportedOperationError,
+    UnsupportedFeatureError,
 )
-from archivey.internal.external.cli import stat_identity, terminate_process
+from archivey.internal.external.cli import (
+    spawn_for_stdout,
+    stat_identity,
+    terminate_process,
+)
 from archivey.terminal import display_path
 
 # Inclusive major.minor floor. ``-n`` glob demux and ``-ver`` were checked
@@ -335,7 +338,7 @@ def _password_stdin_bytes(password: str | bytes) -> bytes:
         else password.encode("utf-8", errors="surrogateescape")
     )
     if b"\n" in raw or b"\r" in raw:
-        raise UnsupportedOperationError(
+        raise UnsupportedFeatureError(
             "A password containing a line break cannot be passed to unrar: it reads "
             "the password as one line and would silently use only the part before "
             "the break."
@@ -637,16 +640,12 @@ def open_unrar_p(
     if feed_password:
         assert password is not None and password != b"" and password != ""
         stdin_bytes = _password_stdin_bytes(password)
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE if feed_password else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            bufsize=1024 * 1024,
-        )
-    except OSError as exc:
-        raise PackageNotInstalledError(_NOT_INSTALLED_MSG) from exc
+    proc, stdout = spawn_for_stdout(
+        cmd,
+        name="unrar",
+        not_started=_NOT_INSTALLED_MSG,
+        stdin=subprocess.PIPE if feed_password else subprocess.DEVNULL,
+    )
     if stdin_bytes is not None:
         assert proc.stdin is not None
         try:
@@ -655,12 +654,4 @@ def open_unrar_p(
         except BrokenPipeError:
             # unrar exited before consuming the password; surface via exit-code mapping.
             pass
-    if proc.stdout is None:
-        terminate_process(proc)
-        # Defensive: Popen was asked for stdout=PIPE, so this should be unreachable. Typed
-        # anyway — every archive-read failure surfaces as an ArchiveyError, and a raw
-        # RuntimeError here would cross open_archive untranslated.
-        raise ReadError("unrar produced no stdout pipe")
-    # typeshed types Popen[bytes].stdout as IO[bytes], not BinaryIO; the pipe is opened
-    # in binary mode above, so it is one at runtime.
-    return proc, cast(BinaryIO, proc.stdout)
+    return proc, stdout

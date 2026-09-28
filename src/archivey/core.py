@@ -12,6 +12,7 @@ capability gates (password / seekability) → normalize stream origin →
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Collection
 
@@ -34,7 +35,6 @@ from archivey.exceptions import (
     FormatDetectionError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
-    UnsupportedFormatError,
 )
 from archivey.internal.arg_checks import (
     check_callable,
@@ -279,7 +279,7 @@ def open_archive(
       stream never seeks, with or without this flag.
     - ``concurrent_members=True`` — multiple member streams may be open at once
       (coordinated first-touch materialization, then worker fan-out; draining close).
-      Without it, a second overlapping ``open()`` raises ``ConcurrentAccessError``.
+      Without it, a second overlapping ``open()`` raises ``ArchiveyUsageError``.
 
     ``open_stream`` uses the same vocabulary for the single-stream case
     (``open_stream(..., seekable=True)``); concurrency is meaningless there, so it has
@@ -742,17 +742,23 @@ def _open_stream_from_source(
     stream_format = _resolve_stream_format(
         format, codec_input, collector, effective_config
     )
+    # Only an explicit format= can be UNCOMPRESSED: detection never returns a
+    # RAW_STREAM/UNCOMPRESSED pair, so this is the caller's mistake, not the input's.
     if stream_format is StreamFormat.UNCOMPRESSED:
-        raise UnsupportedFormatError(
+        raise ArchiveyUsageError(
             "open_stream requires a compressed stream format "
             f"(got {stream_format!r}); use open_archive for uncompressed containers."
         )
 
     codec = codec_for_stream_format(stream_format)
-    stream_config = stream_config_from_archivey(
-        effective_config,
-        streaming=False,
-        seekable=seekable and source_is_seekable,
+    # The codec stream is the whole source, so bytes after its end are reported.
+    stream_config = replace(
+        stream_config_from_archivey(
+            effective_config,
+            streaming=False,
+            seekable=seekable and source_is_seekable,
+        ),
+        report_trailing_data=True,
     )
     # A path goes to the codec as a path: it opens its own handles and can use
     # path-only accelerator features, and the source then never opens one.
@@ -800,7 +806,9 @@ def _resolve_stream_format(
 
     detected = detect_format_into(open_source, config=config, collector=collector)
     if detected.format.container is not ContainerFormat.RAW_STREAM:
-        raise UnsupportedFormatError(
+        # Detection found a container, not a compressed stream: to open_stream that is
+        # the same answer as finding nothing it can open.
+        raise FormatDetectionError(
             f"Detected {detected.format!r}, which is not a single-file compressed "
             "stream. Use open_archive for archive containers."
         )

@@ -140,19 +140,19 @@ null bytes, and names/link targets the platform filesystem encoding cannot repre
 `(dest / member.name).parent.resolve()` must remain within `dest.resolve()` to catch
 symlinked intermediate components without following a final-component symlink; link
 targets are rechecked as described in the symlink and hardlink requirements. These
-string checks SHALL raise typed `FilterRejectionError` subclasses, never a raw
+string checks SHALL raise `FilterRejectionError`, never a raw
 `UnicodeEncodeError`/`ValueError`.
 
 | Constraint | Violation type | Condition |
 | --- | --- | --- |
-| Path traversal | `PathTraversalError` | Any `..` component, escaping or internal |
-| Absolute path | `PathTraversalError` | Leading `/`, Windows drive path, or UNC path |
-| Null byte | `PathTraversalError` | `member.name` contains `\x00` |
-| Unrepresentable name | `PathTraversalError` | `member.name` cannot be encoded by the platform filesystem encoding |
-| Link-target NUL / unrepresentable | `SymlinkEscapeError` | SYMLINK/HARDLINK `link_target` contains `\x00` or cannot be encoded by the platform filesystem encoding |
-| Symlink escape | `SymlinkEscapeError` | SYMLINK whose fully resolved target escapes `dest` |
-| Hardlink escape | `SymlinkEscapeError` | HARDLINK whose target path resolves outside `dest` |
-| Special file | `SpecialFileError` | `MemberType.OTHER` device/FIFO/socket/etc. |
+| Path traversal | `FilterRejectionError` | Any `..` component, escaping or internal |
+| Absolute path | `FilterRejectionError` | Leading `/`, Windows drive path, or UNC path |
+| Null byte | `FilterRejectionError` | `member.name` contains `\x00` |
+| Unrepresentable name | `FilterRejectionError` | `member.name` cannot be encoded by the platform filesystem encoding |
+| Link-target NUL / unrepresentable | `FilterRejectionError` | SYMLINK/HARDLINK `link_target` contains `\x00` or cannot be encoded by the platform filesystem encoding |
+| Symlink escape | `FilterRejectionError` | SYMLINK whose fully resolved target escapes `dest` |
+| Hardlink escape | `FilterRejectionError` | HARDLINK whose target path resolves outside `dest` |
+| Special file | `FilterRejectionError` | `MemberType.OTHER` device/FIFO/socket/etc. |
 
 **Bidi overrides are rejected by the *policy*, not universally.** Every other
 constraint in this requirement makes the **write itself** dangerous or impossible — it
@@ -164,7 +164,7 @@ presentation property, and presentation is the axis `ExtractionPolicy` owns.
 The rejection therefore lives in the portable-name policy below, which means
 `ExtractionPolicy.TRUSTED` — defined as *faithful bytes, no name rejection or rewrite* —
 SHALL extract such a member unchanged, while `STRICT` (the default) and `STANDARD` SHALL
-reject it with `DeceptiveNameError`. Running after the caller filter also means a filter
+reject it with `FilterRejectionError`. Running after the caller filter also means a filter
 that renames the member rescues it, which is the natural remedy for a name that is a lie.
 
 Without this split a caller who wants the bytes — a mirroring tool, a format converter, a
@@ -195,20 +195,20 @@ read back.
 
 | Case | Expected |
 | --- | --- |
-| `"../evil"` or `"../../etc/passwd"` | `PathTraversalError`; no write; all policies |
-| `"foo/../bar"` | `PathTraversalError` under reject/raise behavior even if it would stay in root |
-| Leading `/`, Windows drive, UNC path | `PathTraversalError`; no write; all policies |
-| Earlier member creates symlink `foo` outside `dest`; later member writes `foo/x` | Parent resolution rejects `foo/x` with `PathTraversalError` |
-| Name with lone surrogate unencodable by the platform filesystem encoding | `PathTraversalError` before path resolution; never raw `UnicodeEncodeError` |
-| SYMLINK/HARDLINK `link_target` with `\x00` or unencodable surrogate | `SymlinkEscapeError`; never raw `ValueError`/`UnicodeEncodeError` |
+| `"../evil"` or `"../../etc/passwd"` | `FilterRejectionError`; no write; all policies |
+| `"foo/../bar"` | `FilterRejectionError` under reject/raise behavior even if it would stay in root |
+| Leading `/`, Windows drive, UNC path | `FilterRejectionError`; no write; all policies |
+| Earlier member creates symlink `foo` outside `dest`; later member writes `foo/x` | Parent resolution rejects `foo/x` with `FilterRejectionError` |
+| Name with lone surrogate unencodable by the platform filesystem encoding | `FilterRejectionError` before path resolution; never raw `UnicodeEncodeError` |
+| SYMLINK/HARDLINK `link_target` with `\x00` or unencodable surrogate | `FilterRejectionError`; never raw `ValueError`/`UnicodeEncodeError` |
 | Name using only `surrogateescape` round-trip low surrogates (`\udc80`–`\udcff`) | Accepted when otherwise safe (representable on disk) |
-| `MemberType.OTHER` | `SpecialFileError`; all policies |
+| `MemberType.OTHER` | `FilterRejectionError`; all policies |
 
 #### Scenario: bidi name matrix
 
 | Case | Expected |
 | --- | --- |
-| `"invoice‮cod.exe"` extracted under `STRICT` / `STANDARD` | `apply_name_policy` raises `DeceptiveNameError`; a `BLOCKED` result and no write |
+| `"invoice‮cod.exe"` extracted under `STRICT` / `STANDARD` | `apply_name_policy` raises `FilterRejectionError`; a `BLOCKED` result and no write |
 | The same member extracted under `TRUSTED` | **Extracts**, under the stored name, unmodified — faithful bytes |
 | `"a⁦b⁩.txt"` (isolates) extracted | Same split |
 | Symlink whose `link_target` contains U+202E | Same split |
@@ -216,7 +216,7 @@ read back.
 | `"‏דוח.pdf"` (RLM, a directional mark) extracted | Extracts; `MEMBER_NAME_BIDI_CONTROL` was reported at listing |
 | `"فهرس.txt"` (Arabic script, no controls) extracted | Extracts; no diagnostic, no rejection |
 | Any of the above listed rather than extracted | Name presented exactly as stored |
-| `DeceptiveNameError` under either `OnError` | `BLOCKED` result, like any other `FilterRejectionError`; extraction proceeds unless `AbortOn.BLOCKED_MEMBER` is set |
+| Bidi-override rejection under either `OnError` | `BLOCKED` result, like any other `FilterRejectionError`; extraction proceeds unless `AbortOn.BLOCKED_MEMBER` is set |
 
 ### Requirement: Filesystem refusal of a member name is a typed error
 
@@ -313,7 +313,7 @@ For `is_anti` members, extraction SHALL NOT write payload. It SHALL delete the
 destination only if this same extraction wrote that path (file or empty dir via
 `lstat`/`unlink`); otherwise it is a success no-op. Pre-existing, populated, or
 out-of-root paths MUST NOT be deleted. `MemberType.ANTI` SHALL NOT raise
-`SpecialFileError` (only `OTHER` does).
+`FilterRejectionError` (only `OTHER` does).
 
 A delete SHALL also release the destination's collision claim, so a later member
 resolving to the same key does not collide against content that no longer exists.
@@ -329,15 +329,15 @@ with the destination empty, or revise an already-deleted member to `OVERWRITTEN`
 | Earlier member this run wrote the path, then anti | Just-created file/empty dir removed |
 | Same case, then a later member with the same collision key | No collision: the delete released the claim |
 | Anti no-op (nothing written this run at that path) | Unrelated claims untouched |
-| `check_universal` on `ANTI` | No `SpecialFileError` for type alone |
-| `MemberType.OTHER` | Still `SpecialFileError` under all policies |
+| `check_universal` on `ANTI` | No `FilterRejectionError` for type alone |
+| `MemberType.OTHER` | Still `FilterRejectionError` under all policies |
 
 ### Requirement: Symlink Escape Re-Validated at Extraction Time
 
 The system SHALL validate a SYMLINK member after `os.symlink(link_target,
 dest_path)` creates the link on disk. It resolves the created link target with
 `Path.resolve()` and, if the resolved path escapes `dest`, immediately unlinks the
-new link and raises `SymlinkEscapeError`. Resolution failures from symlink loops
+new link and raises `FilterRejectionError`. Resolution failures from symlink loops
 or platform equivalents (`OSError` such as `ELOOP`, or `RuntimeError`) SHALL fail
 safe the same way: unlink the just-created link and reject the member.
 
@@ -349,9 +349,9 @@ escaping link.
 
 | Case | Expected |
 | --- | --- |
-| Created symlink resolves outside `dest` | Link is unlinked; `SymlinkEscapeError`; no later data written through it |
-| Chained symlink attack through earlier member | Post-creation resolution catches the escape and raises `SymlinkEscapeError` |
-| Cyclic links (`a -> b`, `b -> a`) make `Path.resolve()` raise | Just-created link is unlinked; `SymlinkEscapeError`; no uncaught OS/runtime error |
+| Created symlink resolves outside `dest` | Link is unlinked; `FilterRejectionError`; no later data written through it |
+| Chained symlink attack through earlier member | Post-creation resolution catches the escape and raises `FilterRejectionError` |
+| Cyclic links (`a -> b`, `b -> a`) make `Path.resolve()` raise | Just-created link is unlinked; `FilterRejectionError`; no uncaught OS/runtime error |
 
 ### Requirement: Hardlink Two-Pass Extraction
 
@@ -766,7 +766,7 @@ are the per-result outcome.
 | --- | --- |
 | User filter returns `None` | No `ExtractionResult`; no result-count impact (like a selector exclusion) |
 | Selector excludes member | No `ExtractionResult`; no result-count impact |
-| Member blocked by `PathTraversalError` under `CONTINUE` | Result is `BLOCKED` with matching error; no diagnostic emitted |
+| Member blocked by `FilterRejectionError` under `CONTINUE` | Result is `BLOCKED` with matching error; no diagnostic emitted |
 | Member write raises `OSError` under `CONTINUE` | Result is `FAILED` with matching error; no diagnostic emitted |
 | Member written successfully | Result is `EXTRACTED`, `path` points to created entry |
 | Existing destination under `OverwritePolicy.SKIP` | Result is `NOT_OVERWRITTEN`, `path=None` |

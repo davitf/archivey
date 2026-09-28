@@ -85,7 +85,7 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   single line, so everything from the first newline on would be discarded — a wrong
   password would decrypt, with nothing downstream able to tell. Archivey refuses it
   instead: reading any RAR member through `unrar`, from an archive that contains
-  anything encrypted, raises `UnsupportedOperationError`. That covers unencrypted
+  anything encrypted, raises `UnsupportedFeatureError`. That covers unencrypted
   members of such an archive too, because on a solid archive their data can sit behind
   an encrypted member's. An archive with nothing encrypted is unaffected — no password
   is handed to `unrar` at all. Watch for a password read from a file, which usually
@@ -121,6 +121,13 @@ these are bugs; all of them are stated so you can decide whether they matter to 
   raises there. From a pipe the failure still waits for the first read. Opening a
   `.bz2` costs one decoded block for this check.
   → [Single-file compressors](formats.md#single-file-compressors)
+- **Bytes after a compressed stream are reported, not refused.** A `.gz`, `.xz`, `.zst`
+  or other single-file codec followed by extra bytes reads its whole payload, then emits
+  `ARCHIVE_TRAILING_DATA` (raised under `DiagnosticPolicy.strict()`). The `xz`, `lzma`
+  and `zstd` command-line tools refuse such a file, so archivey reading it is not proof
+  the file is clean; check `reader.diagnostics` or use the strict policy. From a pipe,
+  bytes after a Brotli stream raise `CorruptionError`, because telling them from damage
+  needs a second read of the source. → [Single-file compressors](formats.md#single-file-compressors)
 - **`.Z` truncation is partly silent.** Only nonzero leftover bits raise; a cut on a
   code boundary stays quiet.
 - **`import archivey` patches pycdlib process-globally.** A hang-safety guard is

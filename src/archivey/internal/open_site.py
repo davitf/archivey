@@ -14,7 +14,7 @@ class OpenSite:
     """Where the caller invoked ``open_archive`` (outside archivey frames).
 
     Only the ``file:line`` is captured — that is all any consumer reads (the
-    ``ConcurrentAccessError`` breadcrumb). We deliberately do NOT retain a full
+    concurrent-open ``ArchiveyUsageError`` breadcrumb). We deliberately do NOT retain a full
     ``traceback.extract_stack()`` snapshot: it cost an unconditional stack format on
     every ``open_archive`` and held ``FrameSummary`` objects for the reader's whole
     lifetime, which the founding "open millions of archives" dedupe workload pays for
@@ -28,7 +28,7 @@ class OpenSite:
     def location(self) -> str:
         """``file:line``, ``/``-separated.
 
-        This lands in a ``ConcurrentAccessError`` message, which escapes itself, and a
+        This lands in an ``ArchiveyUsageError`` message, which escapes itself, and a
         native Windows filename would have every separator doubled by that escape — in
         the one string whose whole job is to be read and pasted back to find the call.
         """

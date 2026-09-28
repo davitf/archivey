@@ -505,7 +505,7 @@ handle + a lock + per-view positions) so the native readers support multiple
 concurrently-open member streams by construction, and a decided concurrency
 contract via `MemberStreams.CONCURRENT` (post-materialization fan-out; free-threaded
 correctness covered by the Linux `3.13t` CI job) — what is
-supported vs. what fails loudly as `ArchiveyUsageError` / `ConcurrentAccessError`,
+supported vs. what fails loudly as `ArchiveyUsageError`,
 never silent interleaving; see `dev-docs/investigations/parallel-reader.md` and
 the parallel-extraction entry in `IDEAS.md`.
 
@@ -610,7 +610,7 @@ from the original Phase 8); `create_archive()`; `CompressionSpec` model.
 >   writer-level `CompressionSpec` selects the outer codec.)
 > - *`password=` on formats whose writer can't encrypt* (stdlib zipfile cannot write
 >   encryption): must fail fast at `create()` — decide the error type
->   (`UnsupportedFeatureError` vs `UnsupportedOperationError`) and add a
+>   (`UnsupportedFeatureError` or `ArchiveyUsageError`) and add a
 >   SUPPORTS_PASSWORD-style WriteBackend field to enforce it centrally.
 
 ### Tests added

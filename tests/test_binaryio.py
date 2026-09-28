@@ -836,6 +836,17 @@ def test_ensure_bufferedio_close_is_idempotent() -> None:
     assert not inner.closed
 
 
+def test_ensure_bufferedio_close_after_raw_closed_does_not_raise() -> None:
+    """The owner closed the raw first (an outer reader closing a member stream that a
+    nested archive reads): the buffer's close must not raise from detach()'s flush."""
+    inner = CountingBytesIO(DATA)
+    buffered = ensure_bufferedio(inner)
+    assert buffered.read(4) == DATA[:4]
+    inner.close()
+    buffered.close()
+    assert buffered.closed is True
+
+
 def test_ensure_bufferedio_closed_is_true_after_close() -> None:
     """After detach, .closed must still answer True (#329 C10)."""
     inner = CountingBytesIO(DATA)

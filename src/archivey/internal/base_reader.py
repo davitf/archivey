@@ -26,7 +26,6 @@ from typing import (
 if TYPE_CHECKING:
     from archivey.internal.password import _PasswordCandidates
     from archivey.internal.registry import ContentProbe
-    from archivey.measurement import IoStats
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
 from archivey.cost import CostReceipt
@@ -51,7 +50,6 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
-    UnsupportedOperationError,
     raw_message_of,
 )
 from archivey.internal.arg_checks import (
@@ -70,6 +68,7 @@ from archivey.internal.listing_limits import ListingLimitTracker
 from archivey.internal.logs import backends as logger
 from archivey.internal.measurement import (
     ByteCounter,
+    IoStats,
     SeekCounter,
     measurement_enabled,
 )
@@ -354,14 +353,14 @@ class BaseArchiveReader(ArchiveReader):
       (it returns a report when ``True``, else ``None``). It does **not** gate the
       access-mode-enforced methods — those key off the ``streaming`` flag alone.
     - ``_SUPPORTS_RANDOM_ACCESS`` — can an arbitrary member be opened out of order?
-      When ``False``, ``open``/``read`` raise ``UnsupportedOperationError``; sequential
+      When ``False``, ``open``/``read`` raise ``UnsupportedFeatureError``; sequential
       access via ``stream_members`` still works. (The open-time fail-fast for a
       non-seekable source under ``streaming=False`` — which also consults this — lands
       with format detection in Phase 3.)
 
     Access-mode enforcement (independent of the flags above): a ``streaming=True`` reader
     is forward-only, so ``members``/``get``/``open``/``read`` all raise
-    ``UnsupportedOperationError`` — uniformly, not per-backend. Only a single pass of
+    ``ArchiveyUsageError`` — uniformly, not per-backend. Only a single pass of
     ``__iter__``/``stream_members``/``extract_all`` is allowed; ``scan_members()`` may
     finish or return that pass. ``members_report_if_available()`` is a scan-free,
     index-only peek. ``member in reader`` is identity-based and scan-free, so it works in
@@ -385,7 +384,7 @@ class BaseArchiveReader(ArchiveReader):
     """
 
     # Can an arbitrary member be opened out of order? When False, open()/read() raise
-    # UnsupportedOperationError and callers must use stream_members() instead.
+    # UnsupportedFeatureError and callers must use stream_members() instead.
     _SUPPORTS_RANDOM_ACCESS: bool = True
     # Is the full member list available without reading member data (e.g. a central
     # directory)? Drives members_report_if_available(); does not gate the streaming methods.
@@ -479,7 +478,7 @@ class BaseArchiveReader(ArchiveReader):
         self._unconfirmed_failure_emitted: bool = False
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
         self._forward_pass_started: bool = False
-        # When true, progressive registration enforces ListingLimits (scan_members).
+        # When true, progressive registration enforces ListingLimits (members_report).
         # stream_members leaves this false so iteration stays the unguarded escape hatch.
         self._progressive_enforce_listing_limits: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
@@ -825,7 +824,7 @@ class BaseArchiveReader(ArchiveReader):
         """Total decoded/output bytes counted while measurement was enabled, else 0.
 
         Distinct from :attr:`compressed_bytes_consumed` (compressed *input* pressure for
-        the live ratio guard). Internal / harness-facing — not on the public ABC.
+        the live ratio guard). Internal / harness-facing.
         """
         c = self._decompressed_counter
         return c.total if c is not None else 0
@@ -2034,7 +2033,7 @@ class BaseArchiveReader(ArchiveReader):
         """Resolve all links after a streaming forward pass reaches EOF or terminal damage."""
         if self._materialized is not None:
             return
-        # scan_members drains with enforcement: refuse to publish an over-limit report.
+        # members_report drains with enforcement: refuse to publish an over-limit report.
         if self._progressive_enforce_listing_limits:
             self._listing_tracker.assert_within_limits()
         self._finalize_links(
@@ -2099,7 +2098,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def _guard_forward_pass_entry(self, op: str) -> None:
         if self._streaming and self._forward_pass_started:
-            raise UnsupportedOperationError(
+            raise ArchiveyUsageError(
                 f"{op} is not available after a streaming reader's forward pass has "
                 f"started. Call scan_members() for the resolved member list, or "
                 f"members_report_if_available() for an index-only peek.",
@@ -2112,7 +2111,7 @@ class BaseArchiveReader(ArchiveReader):
     # --- Public API ---
 
     def _require_random_access(self, op: str) -> None:
-        """Raise ``UnsupportedOperationError`` if ``op`` (a random-access or
+        """Raise ``ArchiveyUsageError`` if ``op`` (a random-access or
         full-materialization operation) is not allowed on this reader.
 
         A ``streaming=True`` reader is forward-only: only a single pass of
@@ -2123,7 +2122,7 @@ class BaseArchiveReader(ArchiveReader):
         """
         self._state.require_open(op)
         if self._streaming:
-            raise UnsupportedOperationError(
+            raise ArchiveyUsageError(
                 f"{op} is not available on a streaming (forward-only) reader. "
                 f"Iterate with stream_members(), call scan_members() for the resolved "
                 f"member list, or members_report_if_available() for an index-only peek.",
@@ -2274,21 +2273,25 @@ class BaseArchiveReader(ArchiveReader):
             self._state.release_pass(token)
 
     def members_report(self) -> MemberListReport:
-        self._state.require_open("members_report()")
+        return self._members_report("members_report")
+
+    def _members_report(self, op: str) -> MemberListReport:
+        """``members_report()``, with usage errors naming ``op``, the method called."""
+        self._state.require_open(f"{op}()")
         if not self._streaming:
             if self._state.concurrent:
-                token = self._state.acquire_worker("members_report")
+                token = self._state.acquire_worker(op)
                 try:
                     return self._materialize_members().report
                 finally:
                     self._state.release_worker(token)
-            token = self._state.acquire_pass("members_report")
+            token = self._state.acquire_pass(op)
             try:
                 return self._materialize_members().report
             finally:
                 self._state.release_pass(token)
 
-        token = self._state.acquire_pass("members_report")
+        token = self._state.acquire_pass(op)
         try:
             if self._materialized is not None:
                 self._listing_tracker.assert_within_limits()
@@ -2316,38 +2319,10 @@ class BaseArchiveReader(ArchiveReader):
             self._state.release_pass(token)
 
     def scan_members(self) -> list[ArchiveMember]:
-        self._state.require_open("scan_members()")
-        token = self._state.acquire_pass("scan_members")
-        try:
-            if not self._streaming:
-                report = self._materialize_members().report
-                if report.error is not None:
-                    raise report.error
-                return list(report.members)
-            if self._materialized is not None:
-                self._listing_tracker.assert_within_limits()
-                report = self._materialized.report
-                if report.error is not None:
-                    raise report.error
-                return list(report.members)
-            # Enforce ListingLimits while draining; stream_members leaves this false.
-            self._progressive_enforce_listing_limits = True
-            try:
-                if not self._forward_pass_started:
-                    self._forward_pass_started = True
-                gen = self._begin_forward_pass()
-                for _ in gen:
-                    pass
-                assert self._materialized is not None
-                self._listing_tracker.assert_within_limits()
-                report = self._materialized.report
-                if report.error is not None:
-                    raise report.error
-                return list(report.members)
-            finally:
-                self._progressive_enforce_listing_limits = False
-        finally:
-            self._state.release_pass(token)
+        report = self._members_report("scan_members")
+        if report.error is not None:
+            raise report.error
+        return list(report.members)
 
     def members_report_if_available(self) -> MemberListReport | None:
         """Return the member-list report if it is available **without scanning**, else
@@ -2425,7 +2400,7 @@ class BaseArchiveReader(ArchiveReader):
         # open-time fail-fast for non-seekable sources).
         self._require_random_access("open()/read()")
         if not self._SUPPORTS_RANDOM_ACCESS:
-            raise UnsupportedOperationError(
+            raise UnsupportedFeatureError(
                 "This reader does not support random access (open()/read()); "
                 "iterate with stream_members() instead.",
             )
@@ -2816,17 +2791,15 @@ class BaseArchiveReader(ArchiveReader):
         elif provenance.chosen_by == "extension":
             self._mark_format_unconfirmed(exc, "extension")
 
-    def io_stats(self) -> "IoStats | None":
+    def io_stats(self) -> IoStats | None:
         """Return I/O counters if measurement is enabled, else ``None``.
 
-        Enable measurement via :func:`archivey.measurement.enable_measurement` around
-        the :func:`archivey.open_archive` call. Returns ``None`` when the reader was not
-        opened inside an ``enable_measurement()`` context.
+        Enable measurement with :func:`archivey.internal.measurement.enable_measurement`
+        around the :func:`archivey.open_archive` call. Returns ``None`` when the reader
+        was not opened inside an ``enable_measurement()`` context.
         """
         if not self._measure:
             return None
-        from archivey.measurement import IoStats
-
         c_bytes = self._compressed_input_counter
         return IoStats(
             bytes_decompressed=self.bytes_decompressed,

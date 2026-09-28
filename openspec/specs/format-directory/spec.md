@@ -84,7 +84,7 @@ intermediate storage.
 The directory reader SHALL enforce the same API-level constraints as real archive
 readers even where the filesystem could permit more. Without
 `MemberStreams.CONCURRENT`, a second overlapping member stream SHALL raise
-`ConcurrentAccessError`. Without `MemberStreams.SEEKABLE`, member streams SHALL
+`ArchiveyUsageError`. Without `MemberStreams.SEEKABLE`, member streams SHALL
 report `seekable() is False`, `seek()` SHALL raise `io.UnsupportedOperation`,
 and `tell()` remains available per `archive-reading`.
 
@@ -96,7 +96,7 @@ reader might refuse.
 
 | Case | Expected |
 | --- | --- |
-| One member stream is live, then another opens without `CONCURRENT` | `ConcurrentAccessError`, matching ZIP/TAR behavior |
+| One member stream is live, then another opens without `CONCURRENT` | `ArchiveyUsageError`, matching ZIP/TAR behavior |
 | Member stream obtained without `SEEKABLE` | `seekable() is False`; `seek()` raises `io.UnsupportedOperation` despite real file backing |
 | Same code later uses an archive reader | No dependency on directory-only leniency |
 

@@ -43,7 +43,7 @@ The 7-Zip backend SHALL expose these properties:
 | --- | --- |
 | Open a seekable 7z for listing | Header is parsed natively; full member list is available; no third-party reader imports |
 | Open from a non-seekable source | Open fails because 7z requires seek |
-| Attempt 7z write | `UnsupportedOperationError` (writing not implemented) |
+| Attempt 7z write | `UnsupportedFeatureError` (writing not implemented) |
 
 ### Requirement: Parse 7-Zip headers natively
 

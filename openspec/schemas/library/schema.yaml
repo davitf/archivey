@@ -80,7 +80,7 @@ artifacts:
       | Method | streaming=False | streaming=True |
       | --- | --- | --- |
       | `__iter__` | cached after first scan | single-use; second call raises |
-      | `members()` | full scan | raises UnsupportedOperationError |
+      | `members()` | full scan | raises ArchiveyUsageError |
 
       Bad pattern: five nearly identical #### Scenario blocks that only change one
       clause of the same matrix row.

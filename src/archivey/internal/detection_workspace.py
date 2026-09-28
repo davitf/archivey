@@ -13,13 +13,11 @@ The access-shape rule and the seeks it allows: ``dev-docs/topics/detection.md`` 
 from __future__ import annotations
 
 import os
-import tempfile
 from pathlib import Path
-from typing import BinaryIO, Callable, cast
+from typing import BinaryIO, Callable
 
 from archivey.detection_cost import (
     DetectionBudget,
-    DetectionCapability,
     DetectionCostReceipt,
     TierSkipReason,
 )
@@ -47,7 +45,7 @@ class PrefixWorkspace:
 
     Consumers ask for ranges relative to the archive origin (the position detection
     started from). The workspace decides whether that is a buffer slice, a delta read, or
-    (once, for the tail) a seek toward the end.
+    (for a content probe on a random-access source) a seek that it undoes.
     """
 
     def __init__(
@@ -70,8 +68,6 @@ class PrefixWorkspace:
         self._seekable_stream: BinaryIO | None = None
         self._peekable: ArchiveSource | None = None
         self._raw_forward: BinaryIO | None = None
-        self._spool: tempfile.SpooledTemporaryFile[bytes] | None = None
-        self._spool_abandoned = False
         self._source_exhausted = False
         # Set when a ``limit``-clamped ``candidate_view`` shortens a peek. Distinct
         # from source EOF: the scan records ``BUDGET_EXHAUSTED`` from this, because
@@ -86,18 +82,16 @@ class PrefixWorkspace:
             # backend chose, and hold it for the reader's lifetime.
             source = source.path
         # Total size of the underlying object from its own offset 0, when cheap. For an
-        # ``ArchiveSource`` that is its ``size_hint``, a caller's fsspec ``size`` included,
-        # as before the source existed; its ``size`` is the narrower fact, which is for
-        # clamping a read and would drop ``SIZE_KNOWN`` for a hint-sized stream.
+        # ``ArchiveSource`` that is its ``size_hint``, a caller's fsspec ``size`` included;
+        # its ``size`` is the narrower fact, which is for clamping a read and would leave
+        # a hint-sized stream with no known remaining length.
         self._total_size = (
             source.size_hint
             if isinstance(source, ArchiveSource)
             else source_byte_size(source)
         )
-        self._kind: str
 
         if isinstance(source, (str, Path)):
-            self._kind = "path"
             self._path_handle = open(source, "rb")
             self._owned_path = True
             self._entry_pos = 0
@@ -107,18 +101,13 @@ class PrefixWorkspace:
                 except (OSError, AttributeError):
                     pass
         elif isinstance(source, ArchiveSource) and not source.seekable():
-            self._kind = "peekable"
             self._peekable = source
             # The source's own replay prefix — the backend drains it, so never a copy.
         elif is_seekable(source):
-            self._kind = "seekable"
             self._seekable_stream = source
             self._entry_pos = source.tell()
         else:
-            self._kind = "forward"
             self._raw_forward = source
-            if budget.spool_non_seekable_up_to > 0:
-                self._begin_spool(source)
 
     @property
     def budget(self) -> DetectionBudget:
@@ -128,9 +117,8 @@ class PrefixWorkspace:
     def read_ceiling(self) -> int:
         """Most bytes from the origin any buffered tier may pull into the prefix.
 
-        The same prefix/far/scan maximum that bounds ``unique_bytes_read`` in
-        :meth:`~archivey.detection_cost.DetectionCostReceipt.within_budget`, so a tier
-        that stays under it cannot push the receipt over budget.
+        The largest of the prefix, far and scan limits: a tier that stays under it
+        cannot fetch more than the budget allows any buffered tier to read.
         """
         b = self._budget
         return max(b.max_prefix_bytes, b.max_far_bytes, b.max_scan_bytes)
@@ -158,49 +146,14 @@ class PrefixWorkspace:
     def buffered_length(self) -> int:
         return len(self._buf)
 
-    def capabilities(self) -> frozenset[DetectionCapability]:
-        """Capabilities supplied by this source under the active budget."""
-        caps: set[DetectionCapability] = {DetectionCapability.PREFIX}
-        remaining = self.remaining_known()
-        if remaining is not None:
-            caps.add(DetectionCapability.REMAINING_KNOWN)
-        # SIZE_KNOWN follows a measured total, not the transport kind — a fully-spooled
-        # pipe has an exact size even though it was not a path or seekable stream.
-        if self._total_size is not None and not self._spool_abandoned:
-            if self._kind in ("path", "seekable", "spool"):
-                caps.add(DetectionCapability.SIZE_KNOWN)
-
-        can_seek = self._kind in ("path", "seekable") or (
-            self._spool is not None and not self._spool_abandoned
-        )
-        if can_seek and self._budget.max_seeks > 0:
-            caps.add(DetectionCapability.SEEK)
-            if self._budget.max_tail_bytes > 0:
-                caps.add(DetectionCapability.TAIL)
-        # TAIL requires SEEK: a zero-seek budget withdraws both. The ZIP tail *tier* is
-        # not scheduled yet (max_tail_bytes is 0 on every preset); capability advertising
-        # is for callers that opt in via replace() ahead of prefixed-archive-detection.
-
-        # Paths, seekable streams and an ArchiveSource's replay prefix leave bytes
-        # available to a backend.
-        if self._kind in ("path", "peekable", "seekable", "spool") or (
-            self._spool is not None and not self._spool_abandoned
-        ):
-            caps.add(DetectionCapability.REREAD)
-        return frozenset(caps)
-
     def remaining_known(self) -> int | None:
         """Provable bytes from the archive origin, or ``None`` if not known.
 
         An overestimated total size never proves a later offset reachable — we only report
         a remaining length when it is measured from the entry position (or a short peek
         that hit EOF). The one unverified total is a caller's fsspec ``size`` attribute,
-        which is taken at its word here as it always was. An abandoned spool truncated
-        the pipe; more bytes may exist, so the buffered length is never reported as a
-        proven remaining size.
+        which is taken at its word here.
         """
-        if self._spool_abandoned:
-            return None
         if self._total_size is not None and self._entry_pos is not None:
             remaining = self._total_size - self._entry_pos
             return remaining if remaining >= 0 else None
@@ -224,9 +177,7 @@ class PrefixWorkspace:
             self._buf.extend(chunk)
             self._receipt.unique_bytes_read += len(chunk)
         if len(chunk) < needed:
-            # Abandoned spool: more bytes may still sit on the pipe; do not claim EOF.
-            if not self._spool_abandoned:
-                self._source_exhausted = True
+            self._source_exhausted = True
 
     def peek_range(self, origin: int, length: int) -> bytes:
         """Return ``length`` bytes starting at archive-relative ``origin``.
@@ -289,17 +240,13 @@ class PrefixWorkspace:
     def read_at(self, offset: int, length: int) -> bytes | None:
         """Absolute (archive-origin) range read for content-probe chain walks.
 
-        Random-access sources (path, successful spool, cheap seekable streams) seek to
+        Random-access sources (path, cheap seekable streams) seek to
         ``offset``, read ``length`` bytes, and restore the handle — they do **not** grow
         the prefix buffer through ``[0, offset)``. Non-seekable sources, and seekable
         streams whose seek is known to be expensive (:class:`~archivey.ArchiveStream`
         re-decode), grow the prefix under the smaller of
         :data:`PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` and :attr:`read_ceiling`, and return
-        ``None`` past that cap (recorded as ``BUDGET_EXHAUSTED``).
-
-        Probe seeks are intentionally independent of ``DetectionCapability.SEEK`` /
-        ``max_seeks``: that quota is reserved for the future ZIP tail tier (currently 0
-        on every preset). Short/empty on EOF.
+        ``None`` past that cap (recorded as ``BUDGET_EXHAUSTED``). Short/empty on EOF.
         """
         if offset < 0 or length < 0:
             return None
@@ -322,7 +269,7 @@ class PrefixWorkspace:
     def _cheap_random_access_handle(self) -> BinaryIO | None:
         """Handle for O(1) probe seeks, or ``None`` to fall back to capped buffering.
 
-        Paths and full spools are always cheap. A bare seekable stream (``BytesIO``,
+        Paths are always cheap. A bare seekable stream (``BytesIO``,
         file object) is treated as cheap. :class:`~archivey.ArchiveStream` is not:
         many codecs service a backward restore by re-decoding, so probes prefer the
         capped buffer path there. Richer "is this seek cheap?" pricing (round trips /
@@ -330,10 +277,6 @@ class PrefixWorkspace:
         """
         if self._path_handle is not None:
             return self._path_handle
-        if self._spool is not None and not self._spool_abandoned:
-            # typeshed types SpooledTemporaryFile apart from BinaryIO; at runtime it is
-            # a binary read/seek file object.
-            return cast(BinaryIO, self._spool)
         if self._seekable_stream is not None:
             if self._seek_is_expensive(self._seekable_stream):
                 return None
@@ -354,9 +297,9 @@ class PrefixWorkspace:
         try:
             data = read_exact(handle, length)
         finally:
-            # Spool (and any other shared handle) must leave the cursor at the end of the
-            # prefix buffer — `_fetch_forward` assumes that; an interrupted probe must not
-            # splice the next ensure from the probe offset.
+            # The handle must leave the cursor at the end of the prefix buffer —
+            # `_fetch_forward` assumes that; an interrupted probe must not splice the
+            # next ensure from the probe offset.
             handle.seek(restore)
         self._receipt.unique_bytes_read += len(data)
         return data
@@ -396,9 +339,6 @@ class PrefixWorkspace:
             if self._owned_path and self._path_handle is not None:
                 self._path_handle.close()
                 self._path_handle = None
-            if self._spool is not None:
-                self._spool.close()
-                self._spool = None
 
     def __enter__(self) -> PrefixWorkspace:
         return self
@@ -414,12 +354,6 @@ class PrefixWorkspace:
             end = len(self._buf) + nbytes
             peeked = self._peekable.peek(end)
             return peeked[len(self._buf) : end]
-        if self._spool is not None and not self._spool_abandoned:
-            # Same invariant as path/seekable: cursor at end of prefix after a probe seek.
-            expected = len(self._buf)
-            if self._spool.tell() != expected:
-                self._spool.seek(expected)
-            return read_exact(self._spool, nbytes)
         if self._path_handle is not None:
             # Path handle stays at the end of the buffer (forward-only growth).
             expected = len(self._buf)
@@ -428,8 +362,8 @@ class PrefixWorkspace:
             return read_exact(self._path_handle, nbytes)
         if self._seekable_stream is not None:
             assert self._entry_pos is not None
-            # Sequential growth: only seek when a prior tail read moved us. Never rewind
-            # to re-fetch bytes already in the buffer.
+            # Sequential growth: seek only when the stream is not at the end of the
+            # buffer. Never rewind to re-fetch bytes already in the buffer.
             expected = self._entry_pos + len(self._buf)
             if self._seekable_stream.tell() != expected:
                 self._seekable_stream.seek(expected)
@@ -437,53 +371,6 @@ class PrefixWorkspace:
         if self._raw_forward is not None:
             return read_exact(self._raw_forward, nbytes)
         return b""
-
-    def _begin_spool(self, source: BinaryIO) -> None:
-        """Spill a non-seekable source into a bounded temporary file."""
-        limit = self._budget.spool_non_seekable_up_to
-        spool: tempfile.SpooledTemporaryFile[bytes] = tempfile.SpooledTemporaryFile(
-            max_size=min(limit, 1 << 20),
-            mode="w+b",
-        )
-        remaining = limit
-        while remaining > 0:
-            chunk = source.read(min(65536, remaining))
-            if not chunk:
-                break
-            spool.write(chunk)
-            remaining -= len(chunk)
-            self._receipt.spooled_bytes += len(chunk)
-            self._receipt.unique_bytes_read += len(chunk)
-        if remaining == 0:
-            # Source may still have more — abandon spooling; tiers needing TAIL are
-            # unavailable. Keep the already-spooled prefix (including the one-byte
-            # look-ahead) usable as a forward buffer. Do not claim the truncated length
-            # as a proven remaining size — more bytes exist on the pipe.
-            extra = source.read(1)
-            if extra:
-                self._spool_abandoned = True
-                spool.seek(0)
-                self._buf = bytearray(spool.read())
-                self._buf.extend(extra)
-                spool.close()
-                self._spool = None
-                self._raw_forward = (
-                    None  # rest of the pipe is not available to detection
-                )
-                self._source_exhausted = False
-                self.record_skip("spool", TierSkipReason.BUDGET_EXHAUSTED)
-                return
-        spool.seek(0)
-        self._spool = spool
-        self._kind = "spool"
-        self._entry_pos = 0
-        try:
-            spool.seek(0, os.SEEK_END)
-            self._total_size = spool.tell()
-            spool.seek(0)
-        except OSError:
-            pass
-        self._raw_forward = None
 
 
 # candidate_origin_for_hit lives in archivey.internal.sfx (F13) — backends import sfx,

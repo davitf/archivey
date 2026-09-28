@@ -63,7 +63,7 @@ if availability.support is not FormatSupport.FULL:
   member that needs a missing codec raises `PackageNotInstalledError` when you read it.
   Only ZIP and 7z can be `PARTIAL`.
 - **`NONE`** — the format cannot be opened. `open_archive()` raises
-  `UnsupportedFormatError` naming the package: ISO without `pycdlib`, `.lz4` without
+  `PackageNotInstalledError` naming the package: ISO without `pycdlib`, `.lz4` without
   `lz4`, `.tar.zst` without a zstd backend.
 
 `missing` names each absent package with the `pip install` line that adds it, and is

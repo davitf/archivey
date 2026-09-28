@@ -33,6 +33,7 @@ from __future__ import annotations
 import stat
 import tarfile
 import threading
+from dataclasses import replace
 from datetime import datetime
 from io import BytesIO
 from typing import BinaryIO, Iterator, Literal, Mapping, cast
@@ -71,6 +72,7 @@ from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import (
     SINGLE_FILE_CODECS,
+    _StreamChecksumError,
     codec_for_stream_format,
     open_codec_stream,
 )
@@ -358,6 +360,11 @@ class TarReader(BaseArchiveReader):
         # must close. tarfile is always handed ``fileobj=``, so it never owns what it
         # reads; the source itself closes with the reader.
         self._owned_stream: BinaryIO | None = None
+        # The codec stream under ``_owned_stream``. ``ensure_bufferedio`` wraps it in a
+        # buffer that detaches on close rather than closing it, so it is closed here
+        # explicitly: left to the garbage collector, a stream held by a failed open's
+        # traceback kept its rapidgzip child process running.
+        self._owned_codec_stream: BinaryIO | None = None
         # Shared-handle lock: CONCURRENT readers serialize every shared-fileobj op;
         # streaming readers also take a lock (exclusive / normally uncontended) so the
         # same critical-section shape covers init, progressive walk, extractfile, EOF,
@@ -388,9 +395,14 @@ class TarReader(BaseArchiveReader):
 
     def _release_owned_stream(self) -> None:
         """Close a stream this reader opened, if any. Safe to call more than once."""
-        if self._owned_stream is not None:
-            self._owned_stream.close()
-            self._owned_stream = None
+        try:
+            if self._owned_stream is not None:
+                self._owned_stream.close()
+                self._owned_stream = None
+        finally:
+            if self._owned_codec_stream is not None:
+                self._owned_codec_stream.close()
+                self._owned_codec_stream = None
 
     def _open_tarfile(
         self,
@@ -417,10 +429,15 @@ class TarReader(BaseArchiveReader):
             stream = open_codec_stream(
                 codec,
                 codec_source,
-                config=stream_config_from_archivey(
-                    self._config,
-                    streaming=streaming,
-                    seekable=MemberStreams.SEEKABLE in member_streams,
+                # The codec stream is the whole file, so bytes after its end are
+                # reported, as bytes after the TAR trailer are.
+                config=replace(
+                    stream_config_from_archivey(
+                        self._config,
+                        streaming=streaming,
+                        seekable=MemberStreams.SEEKABLE in member_streams,
+                    ),
+                    report_trailing_data=True,
                 ),
                 stamp=lambda exc: self._stamp_error_context(exc),
                 collector=self._diagnostics_collector,
@@ -428,6 +445,7 @@ class TarReader(BaseArchiveReader):
             # tarfile can mis-handle a short read() (fewer bytes than requested) from a
             # decompressor; a BufferedReader in front guarantees full-sized reads. The cast
             # is typeshed's split: BufferedIOBase is not BinaryIO there, but is at runtime.
+            self._owned_codec_stream = stream
             self._owned_stream = cast("BinaryIO", ensure_bufferedio(stream))
             return self._tarfile_open(
                 fileobj=self._wrap_eof_probe(self._owned_stream, streaming),
@@ -753,7 +771,10 @@ class TarReader(BaseArchiveReader):
         compressed stream, and the codec refuses both. Every member was already read
         whole, and before this scan ran unconditionally such an archive listed without
         complaint, so a decode failure out here must not turn a good listing into an
-        error. It is not trailing tar data either, so it is not reported as that.
+        error. It is not trailing tar data either, so it is not reported as that. The one
+        exception is a :class:`_StreamChecksumError`: a codec checksum that covers the
+        whole decoded stream (zlib's Adler-32 under rapidgzip) failed, so the members
+        already read are damaged, and that raises.
         """
         fileobj = self._tar.fileobj
         if fileobj is None:
@@ -764,6 +785,10 @@ class TarReader(BaseArchiveReader):
             try:
                 with self._translated_errors(), self._handle_guard():
                     chunk = fileobj.read(want)
+            except _StreamChecksumError:
+                # The codec's whole-stream checksum covers the members already read,
+                # so this is damage to them, not a tail that failed to decode.
+                raise
             except ReadError:
                 return
             if not chunk:

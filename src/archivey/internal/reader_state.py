@@ -49,7 +49,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from archivey.exceptions import ArchiveyUsageError, ConcurrentAccessError
+from archivey.exceptions import ArchiveyUsageError
 from archivey.types import MemberStreams
 
 if TYPE_CHECKING:
@@ -365,7 +365,7 @@ class ReaderState:
     def reserve_live_stream(self) -> LiveStreamReservation:
         """Take a live-stream lease before the stream object exists.
 
-        Raises :class:`~archivey.exceptions.ConcurrentAccessError` under the same
+        Raises :class:`~archivey.exceptions.ArchiveyUsageError` under the same
         rules as :meth:`acquire_live_stream` (including the concurrent / internal-open
         bypass). The lease is held until :meth:`bind_live_stream` or
         :meth:`release_reservation`.
@@ -376,7 +376,7 @@ class ReaderState:
                 if self._live_streams or self._reservations:
                     site = self.open_site
                     loc = site.location if site is not None else "<unknown>"
-                    raise ConcurrentAccessError(
+                    raise ArchiveyUsageError(
                         "A member stream is already open on this reader. Close it "
                         "before opening another, or reopen the archive with "
                         "concurrent_members=True "

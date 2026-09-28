@@ -8,9 +8,9 @@ The system SHALL write an archive source to temporary storage only when an opera
 requires it, and SHALL bound every such spool by the one configured limit,
 `ArchiveyConfig.spool_limits`. `archive-reading` defines that limit — its settings, its
 1 GiB default, and the refusal before or during the write — and `error-handling` defines
-`SpoolLimitExceededError`, the `ResourceLimitError` it raises. This requirement adds the
-spool of a **non-seekable** source to what that limit governs, and the directory the
-spool is written to.
+`ResourceLimitError`, which it raises. This requirement adds the spool of a
+**non-seekable** source to what that limit governs, and the directory the spool is
+written to.
 
 The system SHALL NOT expose *why* a spool was needed as a configuration axis. Materializing
 a seekable source for an external binary that accepts only a filesystem path, and
@@ -18,7 +18,7 @@ materializing a non-seekable source so a seek-requiring format can read it, are 
 operation at the same cost with the same remedy, and SHALL be governed by the same limit.
 
 A non-seekable source's size is not known in advance, so its spool SHALL be bounded during
-the write: over the limit it SHALL raise `SpoolLimitExceededError` and SHALL remove the
+the write: over the limit it SHALL raise `ResourceLimitError` and SHALL remove the
 partial temporary file before raising.
 
 The system SHALL allow the caller to name the directory used for spooling.
@@ -28,7 +28,7 @@ The system SHALL allow the caller to name the directory used for spooling.
 | Case | Expected |
 | --- | --- |
 | Non-seekable source, seek-requiring format, spool within the limit | Spooled; the open-time caveat already named the bound |
-| Non-seekable source, seek-requiring format, spool over the limit | `SpoolLimitExceededError` during the write; partial file removed |
+| Non-seekable source, seek-requiring format, spool over the limit | `ResourceLimitError` during the write; partial file removed |
 | Non-seekable source, limit is unlimited | Spooled whatever the size; still recorded in `CostReceipt.notes` |
 | Caller names a spool directory | That directory is used; the platform default is not consulted |
 | Reader closed | Temporary file or directory removed |
@@ -192,7 +192,7 @@ is outside them.
 | `streaming=False` on non-seekable source, backend reads front to back | Error at open (before member data) naming `streaming=True` — library does not buffer on its own initiative |
 | Either mode on non-seekable source, backend needs seek, spooling set to none | Same error and same message in both modes, naming a seekable source (buffer to disk or a `BytesIO`) and the setting that would permit a spool |
 | Either mode on non-seekable source, backend needs seek, spool within the limit | Opens; the source is materialized at open and the spool is in `CostReceipt.notes` |
-| Non-seekable source, backend needs seek, archive over the spool limit | `SpoolLimitExceededError` |
+| Non-seekable source, backend needs seek, archive over the spool limit | `ResourceLimitError` |
 | Seekable stream source, either mode | Full-count `read(n)` at the source boundary, by whichever of the two the source needs: one that is not already buffered gets a fixed-size `io.BufferedReader` (bounded readahead only), and one that already is (a `BytesIO`, an `open()` handle) is borrowed as it stands, with no readahead added. Never materialized to memory or disk |
 | Non-seekable stream source, `streaming=True` | The stream the source boundary returns gives full-count `read(n)` with **zero** read-ahead of its own: `seekable()` stays `False`, and a `read(n)` on *that stream* takes exactly `n` bytes from the source. Codec layers above the boundary may still buffer — `DecompressorStream` wraps its input in a `BufferedReader`, so an end-to-end `read(20)` on a compressed non-seekable open takes `io.DEFAULT_BUFFER_SIZE` from the source (8 KiB through 3.13, 128 KiB from 3.14) |
 | Non-seekable stream that is already `io.BufferedReader` | Nothing is stacked in front of it; the caller's buffer already supplies full-count. `fileno()` stays intact through the borrow wrapper |

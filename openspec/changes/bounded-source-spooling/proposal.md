@@ -1,5 +1,11 @@
 # One spool limit, and a bound on the spool that already happens
 
+
+> **Superseded on 2026-09-27:** `SpoolLimitExceededError` was folded into plain
+> `ResourceLimitError` before 0.2.0 (see the amendment to
+> `dev-docs/decisions/0012-usage-errors-outside-archiveyerror.md`). Where this file names
+> the subclass, read `ResourceLimitError`.
+
 > **Split on 2026-09-26: the bound on the spool that already happens has shipped.**
 > `openspec/changes/archive/2026-09-26-rar-stream-spool-limit/` added
 > `ArchiveyConfig.spool_limits` (a frozen `SpoolLimits` with `max_bytes`, default 1 GiB,

@@ -41,7 +41,6 @@ from archivey.exceptions import (
     NameCollisionError,
     NameRewrittenError,
     ResourceLimitError,
-    SymlinkEscapeError,
 )
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
@@ -1432,7 +1431,7 @@ class ExtractionCoordinator:
                 dest_path.unlink()
             except OSError:
                 pass
-            raise SymlinkEscapeError(
+            raise FilterRejectionError(
                 "Symlink target escapes destination",
                 member_name=transformed.name,
                 link_target=target,

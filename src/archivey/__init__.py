@@ -11,7 +11,6 @@ Public surface layout (this package root only — not ``internal`` / ``cli``):
 - :mod:`archivey.cost` — listing/access cost receipt
 - :mod:`archivey.diagnostics` — advisory codes, summaries, extraction reports
 - :mod:`archivey.exceptions` — error hierarchy
-- :mod:`archivey.measurement` — optional I/O counters
 - :mod:`archivey.detection_cost` — detection budgets and receipts; public, not re-exported
 - :mod:`archivey.terminal` — terminal-safe display helpers; public, not re-exported
 
@@ -87,9 +86,7 @@ from archivey.diagnostics import (
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
-    ConcurrentAccessError,
     CorruptionError,
-    DeceptiveNameError,
     DiagnosticRaisedError,
     EncryptionError,
     ExtractionError,
@@ -100,21 +97,13 @@ from archivey.exceptions import (
     NameRewrittenError,
     OpenError,
     PackageNotInstalledError,
-    PathTraversalError,
     ReadError,
     ResourceLimitError,
-    SpecialFileError,
-    SpoolLimitExceededError,
     StreamNotSeekableError,
-    SymlinkEscapeError,
     TruncatedError,
-    UnportableNameError,
     UnsupportedFeatureError,
-    UnsupportedFormatError,
-    UnsupportedOperationError,
 )
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.measurement import IoStats, enable_measurement
 from archivey.reader import ArchiveReader, MemberSelector
 from archivey.types import (
     AbortOn,
@@ -199,8 +188,6 @@ __all__ = [
     "ListingCost",
     "AccessCost",
     "StreamCapability",
-    "IoStats",
-    "enable_measurement",
     "Diagnostic",
     "DiagnosticCode",
     "DiagnosticContext",
@@ -211,10 +198,8 @@ __all__ = [
     "DiagnosticRaisedError",
     "ArchiveyError",
     "ArchiveyUsageError",
-    "ConcurrentAccessError",
     "OpenError",
     "FormatDetectionError",
-    "UnsupportedFormatError",
     "StreamNotSeekableError",
     "ReadError",
     "CorruptionError",
@@ -223,18 +208,11 @@ __all__ = [
     "LinkTargetNotFoundError",
     "ExtractionError",
     "FilterRejectionError",
-    "PathTraversalError",
-    "SymlinkEscapeError",
-    "SpecialFileError",
-    "UnportableNameError",
-    "DeceptiveNameError",
     "NameCollisionError",
     "NameRewrittenError",
     "ResourceLimitError",
-    "SpoolLimitExceededError",
     "UnsupportedFeatureError",
     "PackageNotInstalledError",
-    "UnsupportedOperationError",
 ]
 
 # Eager backend registration so list_supported_formats / format_availability work
@@ -247,10 +225,10 @@ def _pin_public_module() -> None:
 
     Public data types are defined in public modules (:mod:`archivey.types`,
     :mod:`archivey.detection`, …), so their ``__module__`` is already a stable path and
-    this leaves them alone. Six names in ``__all__`` are still defined under
+    this leaves them alone. Five names in ``__all__`` are still defined under
     ``archivey.internal``: ``ArchiveStream`` (an implementation class on the internal
-    stream base, never pickled) and five functions (``detect_format``, the three registry
-    queries, ``enable_measurement``). ``pickle`` records a class's or function's
+    stream base, never pickled) and four functions (``detect_format`` and the three
+    registry queries). ``pickle`` records a class's or function's
     ``__module__``, so a persisted reference to one would otherwise name an internal path
     that could then never move without breaking the caller's data. Pinned here, it names
     ``archivey``, which is stable, and ``repr()``, ``help()`` and ``inspect.getmodule``

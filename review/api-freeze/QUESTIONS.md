@@ -98,7 +98,7 @@ The maintainer answered each question in the project thread, one at a time.
 | Q4 | (a) drop `collector=` from `detect_format` | |
 | Q5 | **(c) delete** the `WriteError` class | the third option offered in the thread, not in the file above |
 | Q6 | (a) document the two report scopes, one pinning test | |
-| Q7 | (a) add the missing table rows | whether every exception type is needed is a follow-up after 0.2.0, tracked internally |
+| Q7 | (a) add the missing table rows | whether every exception type is needed is a follow-up after 0.2.0, tracked internally. **Superseded 2026-09-27:** done before 0.2.0 instead, PR #506 (27 → 18 classes) |
 
 All seven are implemented in the fix PR that follows this one, together with D0-1 (the
 page) and the Low docstring findings.

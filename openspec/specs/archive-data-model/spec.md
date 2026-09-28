@@ -212,8 +212,6 @@ class ArchiveMember:
     @property
     def member_id(self) -> int: ...
     @property
-    def archive_id(self) -> str: ...
-    @property
     def is_file(self) -> bool: ...
     @property
     def is_dir(self) -> bool: ...
@@ -254,9 +252,10 @@ supersede their targets per `format-7z`. Unavailable values SHALL be `None`;
 `name` follows normalization while `raw_name` preserves stored bytes; timestamp
 timezone semantics are preserved; digest keys name their real algorithms; there
 is no `crc32` alias. Sizes, link targets, hashes, and diagnostics MAY be
-completed in place during streaming. `member_id` / `archive_id` preserve source
-identity, convenience properties are derived, and `replace()` creates an edited
-copy. `hashes`, `diagnostics`, and `extra` SHALL be excluded from equality.
+completed in place during streaming. `member_id` and the reader that listed the
+member preserve source identity (`member in reader`), convenience properties are
+derived, and `replace()` creates an edited copy. `hashes`, `diagnostics`, and
+`extra` SHALL be excluded from equality.
 `extra` SHALL be a `MemberExtra`: a `dict[str, object]` subclass whose
 `__getitem__` is overloaded once per known key, with a `str → object` fallback.
 Known keys carry their declared types on a subscript read; unknown keys

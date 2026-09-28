@@ -1,5 +1,13 @@
 # D. The error tree at the boundary
 
+**Superseded 2026-09-27 (exception types).** davi asked for the exception-type review
+before 0.2.0 after all, and approved all six of its calls: 27 classes became 18 in
+PR #506. The five `FilterRejectionError` subclasses (including `DeceptiveNameError`),
+`SpoolLimitExceededError`, `ConcurrentAccessError`, `UnsupportedOperationError` and
+`UnsupportedFormatError` are gone; the reasoning is in the amendment to
+`dev-docs/decisions/0012-usage-errors-outside-archiveyerror.md`. The analysis below is
+kept as written.
+
 26 classes in `archivey.exceptions`, all exported, all now on `docs/api.md` in tree
 order (`#465`). The contract (`CONTRIBUTING.md`, ADR 0012, and since `#465` the guide's
 "What is translated, and what passes through") is: recognised library and codec

@@ -226,7 +226,7 @@ shipped in `openspec/changes/archive/2026-09-26-rar-stream-spool-limit/` (mainta
 ruling 2026-09-26: "let's add a cap, it would be a config field"):
 `ArchiveyConfig.spool_limits` carries a frozen `SpoolLimits` whose `max_bytes` defaults to
 1 GiB, measured across a whole volume set. An archive over it raises
-`SpoolLimitExceededError` (a `ResourceLimitError`) before anything is written. When the
+`ResourceLimitError` before anything is written. When the
 size is not known up front, the copy stops at the limit, the partial file is removed, and
 later reads on that reader are refused without copying again. `None`
 (`SpoolLimits.UNLIMITED`) removes the limit, and the open-time caveat names the limit in

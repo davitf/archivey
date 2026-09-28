@@ -103,27 +103,20 @@ spec for lifecycle, retention, and policy.
 ::: archivey.AccessCost
 ::: archivey.StreamCapability
 
-## Measurement
-
-::: archivey.IoStats
-::: archivey.enable_measurement
-
 ## Errors
 
 archivey's exceptions have two roots. `ArchiveyError` covers problems with the archive
 or its environment. `ArchiveyUsageError` covers mistakes in the calling code and is
 deliberately outside that tree, so `except ArchiveyError` does not hide them. The
 entries below follow the class tree: each group starts with its base class, except the
-group from `ResourceLimitError` to `DiagnosticRaisedError`. Those five are direct
-subclasses of `ArchiveyError` and unrelated to each other; `SpoolLimitExceededError`,
-listed after `ResourceLimitError`, is the one subclass among them.
+group from `ResourceLimitError` to `DiagnosticRaisedError`. Those four are direct
+subclasses of `ArchiveyError` and unrelated to each other.
 [Errors and diagnostics](errors-and-diagnostics.md) explains which one to catch.
 
 ::: archivey.ArchiveyError
 
 ::: archivey.OpenError
 ::: archivey.FormatDetectionError
-::: archivey.UnsupportedFormatError
 ::: archivey.StreamNotSeekableError
 
 ::: archivey.ReadError
@@ -134,23 +127,15 @@ listed after `ResourceLimitError`, is the one subclass among them.
 
 ::: archivey.ExtractionError
 ::: archivey.FilterRejectionError
-::: archivey.PathTraversalError
-::: archivey.SymlinkEscapeError
-::: archivey.SpecialFileError
-::: archivey.UnportableNameError
-::: archivey.DeceptiveNameError
 ::: archivey.NameCollisionError
 ::: archivey.NameRewrittenError
 
 ::: archivey.ResourceLimitError
-::: archivey.SpoolLimitExceededError
 ::: archivey.UnsupportedFeatureError
 ::: archivey.PackageNotInstalledError
-::: archivey.UnsupportedOperationError
 ::: archivey.DiagnosticRaisedError
 
 ::: archivey.ArchiveyUsageError
-::: archivey.ConcurrentAccessError
 
 ## Detection cost
 
@@ -169,7 +154,6 @@ are stable under the same rule as the rest of this page.
 ::: archivey.detection_cost.DetectionCostReceipt
 ::: archivey.detection_cost.TierSkip
 ::: archivey.detection_cost.TierSkipReason
-::: archivey.detection_cost.DetectionCapability
 
 ## Front-end helpers
 

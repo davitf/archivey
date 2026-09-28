@@ -14,7 +14,7 @@ use, free-threaded correctness, and pass ownership.
 | --- | --- |
 | `archive-reading` | Declares the capability booleans, default single-live-stream gate, public lifecycle |
 | `access-mode-and-cost` | `streaming=True` remains forward-only; concurrency is a random-access concern |
-| `error-handling` | `ConcurrentAccessError`, `ArchiveyUsageError` shapes |
+| `error-handling` | `ArchiveyUsageError` shapes |
 | `packaging-and-extras` | Free-threaded CI / supported-capability documentation |
 | `format-tar` / `format-iso` / `format-zip` | Per-backend handle-lock compliance |
 | `testing-contract` | Multi-thread / `3.13t` coverage expectations |
@@ -72,10 +72,10 @@ contract neither requires one decoder per open nor promises elimination of
 redundant decompression.
 
 **Reader-wide operation ownership.** Distinct reader-wide passes (`__iter__`,
-`stream_members`, `extract_all`) and `scan_members` /
-`members_report_if_available` initialization remain single-owner and cannot overlap
-one another or the random worker seam. Under `CONCURRENT`, first-touch
-materialization is coordinated (wait/share) and `reader.close()` drains
+`stream_members`, `extract_all`) and `members_report_if_available` initialization
+remain single-owner and cannot overlap one another or the random worker seam. Under
+`CONCURRENT`, first-touch materialization through `members()`, `members_report()` or
+`scan_members()` is coordinated (wait/share) and `reader.close()` drains
 in-flight worker calls rather than rejecting them. The base reader SHALL
 represent ownership with an explicit unforgeable root token, not thread
 identity. Private helpers MAY receive that token to enter child scopes:

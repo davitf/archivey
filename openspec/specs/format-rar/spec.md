@@ -45,7 +45,7 @@ The RAR backend SHALL expose these properties:
 | --- | --- |
 | Open non-header-encrypted RAR without `unrar`/`rar` | Listing and metadata still work through the native parser |
 | Open from a non-seekable source | Open fails because RAR header parsing requires seek |
-| Attempt to create/write RAR | `UnsupportedOperationError` |
+| Attempt to create/write RAR | `UnsupportedFeatureError` |
 
 ### Requirement: Parse RAR headers natively (RAR 1.5 through RAR5)
 
@@ -319,7 +319,7 @@ only under that scheme.
 The copy SHALL be bounded by `ArchiveyConfig.spool_limits` (`archive-reading`), measured
 across the whole volume set, file volumes of a mixed set included. The archive size is
 known before the copy, so an archive over `SpoolLimits.max_bytes` SHALL raise
-`SpoolLimitExceededError` (a `ResourceLimitError`) before any byte is written and before
+`ResourceLimitError` before any byte is written and before
 `unrar` is spawned. Where the size is not known up front, the copy SHALL stop before its
 total passes the limit and SHALL remove what it wrote. The limit SHALL hold for the
 reader, not for each attempt: once a copy has been refused, a later read that needs it
@@ -358,8 +358,8 @@ desynchronize sizes).
 | Ordered stream volumes, listing only | No temp directory is created |
 | Solid `stream_members()` pass, no member read | Nothing is written, even from a stream source |
 | Ordered stream volumes, first compressed read | The whole set is written once; later reads reuse it; close removes it |
-| Stream source over `SpoolLimits.max_bytes` | `SpoolLimitExceededError` naming the field; no temp file or directory; no `unrar` spawn |
-| Volume set, each volume within the limit, total over it | `SpoolLimitExceededError`; the limit weighs the total |
+| Stream source over `SpoolLimits.max_bytes` | `ResourceLimitError` naming the field; no temp file or directory; no `unrar` spawn |
+| Volume set, each volume within the limit, total over it | `ResourceLimitError`; the limit weighs the total |
 | Stream source of unknown size refused mid-copy, then another compressed read | The same refusal, with no second temp file |
 | Stream source, `max_bytes=0` | Stored members of a non-solid archive read; a member needing `unrar` is refused |
 | Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
