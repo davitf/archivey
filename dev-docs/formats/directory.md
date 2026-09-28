@@ -129,7 +129,8 @@ the cached data and lists as `FILE`, not as vanished.
 
 **Races.** `FileNotFoundError` from `scandir` skips that directory with
 `SCAN_DIRECTORY_VANISHED`; from `lstat` or `readlink` it skips that entry with
-`SCAN_ENTRY_VANISHED`. The diagnostic carries the relative path and the entry kind, never
+`SCAN_ENTRY_VANISHED`. A subdirectory swapped for something else before its scan
+fails the listing instead (§4). The diagnostic carries the relative path and the entry kind, never
 a `DirEntry`, `Path` or exception, and attaches to the reader, not to a member. Under a
 `RAISE` policy the diagnostic halts the walk. Every other `OSError` propagates unchanged.
 On Windows the cached stat means an entry replaced (not removed) in the window can still
@@ -267,6 +268,13 @@ to:
 
 - **swap a listed file or directory for a symlink**, so a read returns a file outside the
   root that the caller never listed. The open follows no link and fails (§2.3).
+- **swap a listed subdirectory, or a directory above it, for a symlink before the walk
+  scans it**, so the listing shows names, sizes and times from outside the root. On
+  POSIX the walk opens each subdirectory with `O_NOFOLLOW | O_DIRECTORY`, checks the
+  handle is the `(st_dev, st_ino)` its parent's scan recorded, and scans and `lstat`s
+  through that handle. A symlink in its place fails the open; a directory reached
+  through a swapped parent fails the identity check with `OSError(ESTALE)`. Either
+  fails the listing, as a refused read fails the read.
 - **swap a file for a FIFO**, so the read blocks. The open does not block and refuses a
   handle that is not a regular file.
 - **replace or resize a file after the walk**, so a read returns data the listing never
