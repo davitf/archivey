@@ -292,7 +292,10 @@ xz check each block, and the last block's check can also be reached in the scan,
 those codecs report a failed check the same way as junk after the stream. On a
 `.tar.bz2` or `.tar.xz` a tail that fails to decode SHALL therefore emit
 `DIGEST_UNVERIFIABLE` (`reason="trailing_decode_failed"`) instead of ending the scan
-silently.
+silently. Where that check is reached depends on how far the codec has read ahead
+when the last member's bytes are delivered, not on the archive: when it is reached
+during the member read, the read SHALL raise `CorruptionError` instead. Either way the
+failure SHALL NOT pass silently.
 
 The code is not a truncation: nothing is truncated, the file is *longer* than the
 listing accounts for.
@@ -313,7 +316,8 @@ listing accounts for.
 | `.tar.gz`, junk inside the gzip stream after the trailer | Tail decompressed, at most 1 MiB; `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
 | `.tar.gz`, junk after the gzip stream or a missing gzip footer | No diagnostic, no error | No diagnostic, no error |
 | `.tar.gz` / `.tar.zst` / `.tar.lz4`, a member byte damaged, stream checksum reached within 1 MiB of the trailer | `CorruptionError` | `CorruptionError` |
-| `.tar.bz2` / `.tar.xz`, the last block's check failing within 1 MiB of the trailer, or junk after the stream | `DIGEST_UNVERIFIABLE` | Raises on `DIGEST_UNVERIFIABLE` |
+| `.tar.bz2` / `.tar.xz`, the last block's check failing, reached in the trailing scan (within 1 MiB of the trailer), or junk after the stream | `DIGEST_UNVERIFIABLE` | Raises on `DIGEST_UNVERIFIABLE` |
+| `.tar.bz2` / `.tar.xz`, the same failing check reached while the last member is read (decided by the codec's read-ahead, so by member size) | `CorruptionError` from the read | `CorruptionError` from the read |
 
 ### Requirement: Decode TAR member names as UTF-8 by default
 

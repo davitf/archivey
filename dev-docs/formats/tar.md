@@ -168,6 +168,9 @@ In random-access mode the fileobj is wrapped in `_EofProbeStream`, which does tw
      with the same "Invalid data stream" as any bad bzip2 input; a junk tail gives
      both too. So on those two a tail that does not decode is `DIGEST_UNVERIFIABLE`
      (`reason="trailing_decode_failed"`): it may be a failed check over the members.
+     The same check can instead be reached while the last member is read, when the
+     codec has already read to the stream's end; that read raises `CorruptionError`.
+     Which one happens depends on the codec's input chunking, so on member size.
 
   Streaming has no probe, so it runs steps 2 and 3 only, and a rejected header that is
   the file's last block reads there as a missing trailer

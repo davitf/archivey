@@ -1219,10 +1219,12 @@ class TarReader(BaseArchiveReader):
         damaged, and that raises. A ``tar -b128`` record pads 64 KiB past the trailer,
         so this scan is often where the checksum is reached.
 
-        bzip2 and xz check each block, and the last block's check is reached here too,
-        but neither codec reports a failed check differently from junk after the
+        bzip2 and xz check each block, and the last block's check can be reached here
+        too, but neither codec reports a failed check differently from junk after the
         stream. A decode failure on those is therefore ``DIGEST_UNVERIFIABLE``, not
-        silence: the members already read may be damaged, and nothing can say.
+        silence: the members already read may be damaged, and nothing can say. When the
+        codec had already read to the stream's end during the last member's read, the
+        check fails there instead, as ``CorruptionError`` from that read.
 
         When the scan stops at its bound with the compressed stream not yet at its end,
         that checksum was never checked, and ``DIGEST_UNVERIFIABLE`` says so.
@@ -1275,19 +1277,20 @@ class TarReader(BaseArchiveReader):
         if reason == "trailing_scan_limit":
             what = (
                 f"continues more than {_MAX_TRAILING_SCAN} bytes past the "
-                "end-of-archive marker, and the scan stopped there"
+                "end-of-archive marker, and the scan stopped there: the stream's "
+                "checksum, if it carries one, was not checked"
             )
         else:
             what = (
-                "fails to decode past the end-of-archive marker, which this codec "
-                "reports the same way for a failed check as for junk after the stream"
+                "fails to decode past the end-of-archive marker: this codec reports a "
+                "failed check the same way as junk after the stream, so whether the "
+                "checksum passed cannot be told"
             )
         self._diagnostics_collector.emit(
             code=DiagnosticCode.DIGEST_UNVERIFIABLE,
             message=(
-                f"The {stream.value} stream around this TAR archive {what}: the "
-                "stream's checksum, if it carries one, was not checked, so damage to "
-                "the members already read may go unseen."
+                f"The {stream.value} stream around this TAR archive {what}, so damage "
+                "to the members already read may go unseen."
             ),
             context=DigestContext(
                 archive_name=self._archive_name,

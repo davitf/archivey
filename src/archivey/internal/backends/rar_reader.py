@@ -2435,7 +2435,10 @@ class RarReader(BaseArchiveReader):
             and not raw.flags & _RAR3_FILE_UNICODE,
         )
         refusal = unrar_member_refusal(mask_name)
-        if refusal is not None or mask_name is None:
+        # ``mask_name is None`` always comes with a refusal; it is tested here so the
+        # checkers narrow it before ``open_unrar_p``, where ``member=None`` means "no
+        # ``-n`` mask at all", every member piped.
+        if mask_name is None or refusal is not None:
             # unar addresses entries by index, so none of these reasons apply to it.
             raise UnsupportedFeatureError(
                 f"RAR member {quoted(member.name)} cannot be read through unrar: "

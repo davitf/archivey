@@ -8,6 +8,7 @@ for removal. The promise each test checks is named in its docstring.
 from __future__ import annotations
 
 import io
+import random
 import signal
 import sys
 import tarfile
@@ -577,3 +578,51 @@ def test_untyped_block_check_after_trailer_is_reported(
 
     assert DiagnosticCode.DIGEST_UNVERIFIABLE in _drained(damaged)
     assert DiagnosticCode.DIGEST_UNVERIFIABLE not in _drained(clean)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("codec", ["bz2", "xz"])
+def test_untyped_block_check_is_never_silent(codec: str, streaming: bool) -> None:
+    """format-tar: the same failed bzip2/xz check has two outcomes, never silence.
+
+    With only ``tarfile``'s own record padding, whether the check is reached while
+    the member is read (``CorruptionError`` from ``read()``) or in the trailing scan
+    (``DIGEST_UNVERIFIABLE``) depends on where the codec's input chunking lands, so
+    the member size decides it. Neither arm is silent.
+    """
+    fmt = ArchiveFormat.TAR_BZ2 if codec == "bz2" else ArchiveFormat.TAR_XZ
+    outcomes: set[str] = set()
+    for size in range(1000, 25_000, 1000):
+        payload = random.Random(7).randbytes(size)
+        tar = io.BytesIO()
+        with tarfile.open(fileobj=tar, mode="w") as t:
+            info = tarfile.TarInfo("a")
+            info.size = size
+            t.addfile(info, io.BytesIO(payload))
+        _clean, damaged = _bad_last_block_check(codec, tar.getvalue())
+        try:
+            with open_archive(
+                io.BytesIO(damaged), format=fmt, streaming=streaming
+            ) as ar:
+                _drain_closing(ar)
+                counts = ar.diagnostics.counts
+        except CorruptionError:
+            outcomes.add("raised")
+            continue
+        assert DiagnosticCode.DIGEST_UNVERIFIABLE in counts, f"silent at {size}"
+        outcomes.add("reported")
+    if not streaming:
+        # Random access shows the dependence on size; streaming raises on every size
+        # in this sweep.
+        assert outcomes == {"raised", "reported"}
+
+
+def _drain_closing(ar) -> None:
+    """``_drain``, closing the pass even when a read raises."""
+    members = ar.stream_members()
+    try:
+        for _member, stream in members:
+            if stream is not None:
+                stream.read()
+    finally:
+        members.close()
