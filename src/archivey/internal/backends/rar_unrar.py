@@ -383,14 +383,15 @@ def _unrar_mask_for(member: str) -> str:
     a cost paid inside the subprocess.
 
     Substituting ``?`` for ``*`` removes it. ``?`` matches exactly one character, so
-    the mask is fixed-length: it still matches the member itself (same length, a ``?``
-    wherever the name had a ``*``) and it matches a subset of what the ``*`` mask did,
-    which only ever means fewer siblings to skip. With no ``*`` left there is nothing
-    for either matcher to backtrack on. ``dev-docs/formats/rar.md`` §6 has the numbers.
+    the mask is fixed-length and still matches the member itself (same length, a
+    ``?`` wherever the name had a ``*``). With no ``*`` left there is nothing for
+    either matcher to backtrack on. ``dev-docs/formats/rar.md`` §6 has the numbers.
 
     Whatever this returns is the mask ``unrar`` actually sees, so the skip in
-    ``RarReader._unrar_glob_prefix`` must be sized against this string and not
-    against the presented name.
+    ``RarReader._unrar_selection`` is sized against this string and not against
+    the presented name. The siblings it selects are mostly a subset of what the
+    ``*`` mask selected, but not always: unrar's DOS extension rule lets ``*.``
+    refuse ``..`` where ``?.`` selects it.
     """
     return member.replace("*", "?")
 
@@ -414,48 +415,51 @@ def _member_include_switch(member: str | bytes) -> str | bytes:
     ``unrar`` masks treat ``*`` and ``?`` as wildcards with no escape (``[]`` are
     literal, ``\\`` does not escape). A name whose globs are confined to the
     basename and that contains no backslash is still passed as a mask, via
-    :func:`_unrar_mask_for`, which narrows ``*`` to ``?``;
-    ``RarReader._open_member`` skips other matching members using the parsed
-    member list and :func:`_unrar_mask_match`. A glob in a directory component,
+    :func:`_unrar_mask_for`, which narrows ``*`` to ``?``. Any mask can select
+    more than its own member (a duplicate name, a glob, a name ``unrar`` cuts
+    short), so ``RarReader._open_member`` skips the others using the parsed
+    member list and :func:`unrar_mask_selects`. A glob in a directory component,
     or a backslash in the presented name, raises ``UnsupportedFeatureError``
-    instead — :func:`_unrar_mask_match` is not faithful there, and Windows
-    ``unrar`` treats ``\\`` as a separator (see :func:`_unrar_glob_demux_ok`).
+    instead (see :func:`_unrar_glob_demux_ok`).
     """
     if isinstance(member, bytes):
         return b"-n./" + member.replace(b"*", b"?")
+    if sys.platform != "win32":
+        # UTF-8 whatever this process's filesystem encoding is: the child runs
+        # under a UTF-8 locale (:func:`_unrar_env`) and decodes argv with it.
+        return b"-n./" + _unrar_mask_for(member).encode("utf-8")
     return "-n./" + _unrar_mask_for(member)
 
 
 def unrar_member_argument(
-    presented: str, stored: bytes | None, *, stored_is_8bit: bool
+    view: str | None, stored: bytes | None, *, stored_is_8bit: bool
 ) -> str | bytes | None:
     """The name to build ``unrar``'s ``-n`` mask from: text, the stored bytes, or none.
 
-    ``unrar`` turns a mask from argv into characters with the C library's multibyte
-    conversion, and does the same to an 8-bit RAR3 name (one without the Unicode
-    flag) read from the header. Handing it the stored bytes therefore matches in
-    every locale; measured on 7.00 under ``C``, ``POSIX`` and ``C.UTF-8`` with
-    ``caf\\xe9.txt``. The name archivey presents is those bytes decoded (as
-    windows-1252, say), and its UTF-8 form never matches.
+    ``view`` is the member's name as ``unrar`` reads it (:func:`unrar_member_view`).
+    That is the text to match, and it is not always the name archivey presents: a
+    RAR5 name that is not valid UTF-8 is cut at its first bad byte, and a RAR3
+    Unicode name keeps the code unit its writer truncated. A trailing separator is
+    dropped, since a mask ending in one selects whole directories.
 
-    A RAR5 name, and a RAR3 name with the Unicode flag, are Unicode in the header
-    and ``unrar`` compares them as such, so their UTF-8 text is the mask; the
-    child runs under a UTF-8 locale for that (:func:`_unrar_env`).
+    ``unrar`` turns a mask from argv into characters with the same conversion it
+    applies to an 8-bit RAR3 name (one without a Unicode field) read from the
+    header. Handing it the stored bytes therefore matches in every locale; measured
+    on 7.00 under ``C``, ``POSIX`` and ``C.UTF-8`` with ``caf\\xe9.txt``. Windows
+    argv is Unicode, not bytes, so there the view (the OEM reading of the bytes,
+    :func:`_windows_unrar_8bit_name`) is the mask.
 
-    Windows argv is Unicode, not bytes. Windows ``unrar`` reads an 8-bit name as
-    OEM text, not as the name archivey presents, so the mask there is the stored
-    bytes put through that same conversion (:func:`_windows_unrar_8bit_name`).
-    ``None`` means the conversion failed, so there is no mask to give;
-    :func:`unrar_member_refusal` turns that into a reason. Backslashes are
-    separators in RAR3's stored bytes and ``/`` in the presented name; the bytes
-    follow the name.
+    ``None`` means there is no mask to give; :func:`unrar_member_refusal` turns
+    that into a reason. Backslashes are separators in RAR3's stored bytes and
+    ``/`` in the mask; the bytes follow the name.
     """
-    if not stored_is_8bit or stored is None:
-        return presented
+    if stored_is_8bit and stored is not None and sys.platform != "win32":
+        return stored.replace(b"\\", b"/").rstrip(b"/")
+    if view is None:
+        return None
     if sys.platform == "win32":
-        text = _windows_unrar_8bit_name(stored)
-        return None if text is None else text.replace("\\", "/").rstrip("/")
-    return stored.replace(b"\\", b"/").rstrip(b"/")
+        view = view.replace("\\", "/")
+    return view.rstrip("/")
 
 
 def _windows_unrar_8bit_name(stored: bytes) -> str | None:
@@ -473,8 +477,8 @@ def _windows_unrar_8bit_name(stored: bytes) -> str | None:
     ANSI code page lacks, and ``MultiByteToWideChar`` with no flags maps an
     undefined byte to the code page's default character, where the codec would
     raise or substitute ``U+FFFD``. Reproducing the loss exactly is what keeps the
-    mask on ``unrar``'s own name. Two names the loss makes equal are then the
-    duplicate-name case ``dev-docs/formats/rar.md`` §7 records.
+    mask on ``unrar``'s own name. Two names the loss makes equal are then read by
+    position, as duplicate names are.
     """
     if stored.isascii():
         return stored.decode("ascii")
@@ -585,6 +589,13 @@ def unrar_member_refusal(member: str | bytes | None) -> str | None:
             "its stored name contains a NUL character, which cannot be passed to a "
             "subprocess"
         )
+    if isinstance(member, str) and any(0xD800 <= ord(c) <= 0xDFFF for c in member):
+        # unrar decodes an encoded surrogate in a RAR5 name, but no argv encoding
+        # can carry one back to it.
+        return (
+            "unrar reads its name with a UTF-16 surrogate in it, which cannot be "
+            "passed back to unrar as a mask"
+        )
     if (
         isinstance(member, str)
         and not member.isascii()
@@ -602,10 +613,10 @@ def _unrar_glob_demux_ok(presented: str) -> bool:
     """True when archivey will demux this glob name from an ``unrar -n`` pipe.
 
     Only a glob confined to the basename, with no backslash. A glob in a
-    directory component, or a ``\\`` anywhere, makes :func:`_unrar_mask_match`
-    over-match unrar 7.00, so the skip would land inside the target and a valid
-    archive would be reported truncated. Those names stay
-    ``UnsupportedFeatureError`` until the matcher is a source-faithful port.
+    directory component lets ``?`` match a separator, and ``\\`` is a separator
+    to Windows ``unrar`` and a literal on Linux. :func:`unrar_mask_selects`
+    follows both, but they are untested against Windows ``unrar``, so those names
+    stay ``UnsupportedFeatureError``.
     """
     if "\\" in presented:
         return False
@@ -615,80 +626,449 @@ def _unrar_glob_demux_ok(presented: str) -> bool:
     return "*" not in parent and "?" not in parent
 
 
-def _unrar_component_match(name: str, mask: str) -> bool:
-    """Match one path component against a ``?``-only ``unrar`` mask.
+# --- how unrar reads a member name, and which members a -n mask selects -------
+#
+# A named read gets every payload member whose name the ``-n`` mask selects,
+# concatenated in archive order. Sizing the skip past the earlier ones needs the
+# same answer unrar computes, so the functions below reproduce, from the unrar 7
+# sources, the steps between the stored header bytes and that answer:
+# ``UtfToWide`` / ``CharToWide`` (the name as wide text), ``ConvertFileHeader``
+# (separators and per-platform substitutions), ``ConvertPath`` (leading ``./``,
+# ``../`` and drive prefixes dropped, on the name and on the mask), and
+# ``CmpName`` with ``MATCH_WILDSUBPATH`` (the comparison). Each step is checked
+# against unrar 7.00 by ``tests/test_rar_unrar_names.py``. Where a step cannot be
+# reproduced here, the view is ``None`` and the caller refuses the read.
 
-    Every mask reaching here is built by :func:`_unrar_mask_for`, which leaves no
-    ``*`` behind, so matching is a fixed-length walk with no backtracking: equal
-    lengths, and each mask character either is ``?`` or equals the name character.
-    Measured against ``unrar`` 7.00, ``?`` consumes exactly one character — it does
-    not match the empty string and there is no DOS-style extension special case.
+# ``MAXPATHSIZE``: a RAR5 name is read to at most this many bytes.
+_UNRAR_MAX_NAME_BYTES = 0x10000
+# ``MappedStringMark`` and ``MapAreaStart`` in unrar's ``CharToWideMap``.
+_UNRAR_MAPPED_MARK = "\ufffe"
+_UNRAR_MAP_AREA = 0xE000
+# RAR 1.5-4 hosts ``unrar`` treats as Unix (``HSYS_UNIX``): Unix and BeOS. MS-DOS,
+# OS/2, Win32 and Mac OS are ``HSYS_WINDOWS``.
+_RAR3_HSYS_UNIX = frozenset({3, 5})
+_RAR3_HSYS_WINDOWS = frozenset({0, 1, 2, 4})
+# ``rar_parser`` maps a RAR5 host to these RAR3-style values.
+_RAR5_HOST_WINDOWS = 2
+_RAR5_HOST_UNIX = 3
 
-    ``[`` and ``]`` are ordinary characters here, unlike :mod:`fnmatch`; ``\\`` does
-    not escape; and ``?`` matches any single character, newline included.
 
-    A ``*`` in the mask would mean :func:`_unrar_mask_for` was bypassed and the skip
-    is about to be sized against a mask ``unrar`` never saw, so it is a bug rather
-    than something to match.
+def _unrar_utf_to_wide(data: bytes) -> str:
+    """``UtfToWide`` as ``unrar`` 7 applies it to a RAR5 name.
 
-    On Windows the comparison folds case per character. Whole-string
-    ``str.casefold()`` is not length-preserving (``ß`` → ``ss``), and ``?`` is
-    length-sensitive, so folding the strings first would desync the skip from
-    Windows ``unrar``, which folds via ``toupperw`` one character at a time.
+    It is looser than Python's UTF-8 codec. It stops at a NUL byte and at the
+    first malformed sequence, keeping what came before (``b"ab\\xffcd"`` is
+    ``"ab"``). It accepts overlong forms (``b"\\xc1\\x81"`` is ``"A"``) and encoded
+    surrogates, and it drops a four-byte sequence above U+10FFFF without stopping.
     """
-    if "*" in mask:
-        raise AssertionError(
-            "unrar mask still contains '*'; build it with _unrar_mask_for"
-        )
-    if len(name) != len(mask):
-        return False
+    data = data[:_UNRAR_MAX_NAME_BYTES]
+    if b"\0" not in data:
+        try:
+            # Every sequence Python's codec accepts, unrar decodes the same way.
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+    size = len(data)
+
+    def continuation(at: int) -> int | None:
+        byte = data[at] if at < size else 0
+        return byte & 0x3F if byte & 0xC0 == 0x80 else None
+
+    out: list[str] = []
+    pos = 0
+    while pos < size and data[pos] != 0:
+        lead = data[pos]
+        pos += 1
+        if lead < 0x80:
+            code = lead
+        else:
+            if lead >> 5 == 6:
+                count, code = 1, lead & 0x1F
+            elif lead >> 4 == 14:
+                count, code = 2, lead & 0x0F
+            elif lead >> 3 == 30:
+                count, code = 3, lead & 0x07
+            else:
+                break
+            tail = [continuation(pos + index) for index in range(count)]
+            if None in tail:
+                break
+            for bits in tail:
+                assert bits is not None
+                code = code << 6 | bits
+            pos += count
+            if code > 0x10FFFF:
+                continue
+        out.append(chr(code))
+    return "".join(out)
+
+
+def _glibc_utf8_width(data: bytes, pos: int) -> int | None:
+    """Length of the UTF-8 sequence glibc's ``mbrtowc`` accepts at ``pos``, or ``None``.
+
+    Python's strict codec accepts exactly the same sequences up to U+10FFFF. glibc
+    also accepts longer forms above it, which Python does not decode; for those
+    this returns ``-1`` so the caller can give up rather than guess.
+    """
+    lead = data[pos]
+    if lead < 0x80:
+        return 1
+    for width in (2, 3, 4):
+        try:
+            if len(data[pos : pos + width].decode("utf-8")) == 1:
+                return width
+        except UnicodeDecodeError:
+            continue
+    # glibc decodes up to U+7FFFFFFF: F4 90.. to F7 as four bytes, F8-FB as five
+    # and FC-FD as six, each refusing an overlong form.
+    widths = {0xF4: 4, 0xF5: 4, 0xF6: 4, 0xF7: 4, 0xF8: 5, 0xF9: 5, 0xFA: 5, 0xFB: 5}
+    width = widths.get(lead, 6 if lead in (0xFC, 0xFD) else 0)
+    tail = data[pos + 1 : pos + width]
+    if width and len(tail) == width - 1 and all(b & 0xC0 == 0x80 for b in tail):
+        return -1
+    return None
+
+
+def _unrar_posix_char_to_wide(data: bytes) -> str | None:
+    """``CharToWide`` with ``CharToWideMap`` under the UTF-8 locale unrar runs in.
+
+    Valid UTF-8 decodes as such. When any byte does not, every byte that does not
+    is mapped to U+E000 plus its value, and U+FFFE marks the string once, just
+    before the first mapped byte. ``unrar lb`` on Linux shows ``caf\\xe9.txt`` as
+    ``"caf\\ufffe\\ue0e9.txt"``.
+    """
+    if _utf8_locale_name() is None:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    out: list[str] = []
+    mapped = False
+    pos = 0
+    while pos < len(data):
+        width = _glibc_utf8_width(data, pos)
+        if width == -1:
+            return None
+        if width is None:
+            if not mapped:
+                out.append(_UNRAR_MAPPED_MARK)
+                mapped = True
+            out.append(chr(_UNRAR_MAP_AREA + data[pos]))
+            pos += 1
+            continue
+        out.append(data[pos : pos + width].decode("utf-8"))
+        pos += width
+    return "".join(out)
+
+
+def unrar_char_to_wide(data: bytes) -> str | None:
+    """An 8-bit name, or an ``-n`` mask given as bytes, as ``unrar`` reads it.
+
+    This is ``ArcCharToWide`` with ``ACTW_OEM`` for a RAR 1.5-4 name, and the argv
+    conversion for a mask; both go through the same ``CharToWide``, so stored bytes
+    given as the mask read back as the name does. ``None`` when this host's
+    conversion cannot be reproduced.
+    """
+    data = data.split(b"\0", 1)[0]
+    if data.isascii():
+        return data.decode("ascii")
     if sys.platform == "win32":
-        return all(m == "?" or m.upper() == n.upper() for n, m in zip(name, mask))
-    return all(m == "?" or m == n for n, m in zip(name, mask))
+        return _windows_unrar_8bit_name(data)
+    if sys.platform == "darwin":
+        # unrar's macOS build converts with ``UtfToWide`` rather than the locale.
+        return _unrar_utf_to_wide(data)
+    return _unrar_posix_char_to_wide(data)
 
 
-def _unrar_mask_match(name: str, mask: str) -> bool:
-    """Match ``name`` the way ``unrar -n`` does.
+def _windows_precomposed(text: str) -> str:
+    """``ConvertToPrecomposed``: ``FoldStringW(MAP_PRECOMPOSED)``, unchanged on failure."""
+    if text.isascii():
+        return text
+    if sys.platform == "win32":
+        import ctypes
 
-    No wildcards: exact path (``./`` already stripped by the caller of ``-n./``).
-    With ``?`` (the only wildcard :func:`_unrar_mask_for` leaves in a mask):
-    ``MATCH_WILDSUBPATH`` — the last mask component matches the basename at any
-    depth, and a non-wildcard directory prefix constrains which subtrees. ``[]``
-    are literal (unlike Python ``fnmatch``). On Windows, ``unrar`` folds case; we
-    do too so the skip stays aligned with the pipe.
+        fold_string = ctypes.windll.kernel32.FoldStringW
+        map_precomposed = 0x20
+        size = fold_string(map_precomposed, text, -1, None, 0)
+        if size > 0:
+            buffer = ctypes.create_unicode_buffer(size)
+            if fold_string(map_precomposed, text, -1, buffer, size) != 0:
+                return buffer.value
+    return text
 
-    Not a source-faithful port: a glob in a directory component over-matches
-    (``d?/x.txt`` vs ``aaa/x.txt``), and folding ``\\`` to ``/`` collides a
-    Linux literal backslash with a separator. Callers must refuse those names
-    via :func:`_unrar_glob_demux_ok` before using this to size a skip.
 
-    Exact (no-wildcard) names still whole-string ``casefold`` on Windows, where
-    a length change cannot desync a ``?``. Wildcard components fold per
-    character inside :func:`_unrar_component_match` so ``ß`` vs ``?`` stays
-    one-to-one. Non-BMP vs UTF-16 code-unit counting remains a residual; the
-    CRC check is the net.
+def unrar_member_view(
+    *,
+    rar5: bool,
+    stored: bytes | None,
+    rar3_unicode_name: str | None,
+    host_os: int | None,
+    file_version: int | None,
+) -> str | None:
+    """A member's name as ``unrar`` compares it with an ``-n`` mask, or ``None``.
+
+    ``stored`` is the header's name bytes (for RAR 1.5-4, the 8-bit field);
+    ``rar3_unicode_name`` is the decoded Unicode field when there is one. The
+    separator is ``/``, or ``\\`` on Windows. ``None`` means this host's reading
+    of the name cannot be reproduced (:func:`unrar_char_to_wide`).
     """
-    if mask.startswith("./"):
-        mask = mask[2:]
-    name = name.replace("\\", "/")
-    mask = mask.replace("\\", "/")
-    if "*" not in mask and "?" not in mask:
-        if sys.platform == "win32":
-            return name.casefold() == mask.casefold()
-        return name == mask
-    mask_dir, mask_base = mask.rsplit("/", 1) if "/" in mask else ("", mask)
-    name_base = name.rsplit("/", 1)[-1]
-    if not _unrar_component_match(name_base, mask_base):
+    if stored is None:
+        return None
+    if rar5:
+        text: str | None = _unrar_utf_to_wide(stored)
+        if file_version:
+            # FHEXTRA_VERSION appends ``;n`` after the name is decoded.
+            text = f"{text};{file_version}"
+        hsys_unix = host_os == _RAR5_HOST_UNIX
+        hsys_windows = host_os == _RAR5_HOST_WINDOWS
+    else:
+        text = rar3_unicode_name or unrar_char_to_wide(stored)
+        hsys_unix = host_os in _RAR3_HSYS_UNIX
+        hsys_windows = host_os in _RAR3_HSYS_WINDOWS
+    if text is None:
+        return None
+    windows = sys.platform == "win32"
+    # ``TruncateAtZero`` runs last, but no step before it moves a NUL.
+    text = text.split("\0", 1)[0]
+    if windows and hsys_unix:
+        text = _windows_precomposed(text)
+    if rar5 and (windows or hsys_windows):
+        text = text.replace("\\", "_")
+    if windows:
+        text = text.replace(":", "_")
+    if not rar5:
+        text = text.replace("\\", "/")
+    return text.replace("/", "\\") if windows else text
+
+
+def unrar_mask_view(mask: str | bytes) -> str | None:
+    """The ``-n`` value (``./`` plus ``mask``) as ``unrar`` reads it from argv."""
+    if isinstance(mask, bytes):
+        text = unrar_char_to_wide(mask.replace(b"*", b"?"))
+        return None if text is None else "./" + text
+    return "./" + _unrar_mask_for(mask)
+
+
+def _unrar_is_div(char: str) -> bool:
+    if sys.platform == "win32":
+        return char in ("\\", "/")
+    return char == "/"
+
+
+def _unrar_convert_path_offset(text: str) -> int:
+    """``ConvertPath``: where the name starts once leading path parts are dropped.
+
+    Drops everything up to the last ``/../`` (or a trailing ``/..``), then any run
+    of ``./``, ``../`` and, on Windows, drive and UNC prefixes. ``../ab`` and
+    ``ab`` are therefore the same name to ``unrar``.
+    """
+    size = len(text)
+    windows = sys.platform == "win32"
+    if (
+        not text
+        or text[0] not in ("./\\" if windows else "./")
+        and not (windows and size > 1 and text[1] == ":")
+        and "/.." not in text
+        and not (windows and "\\.." in text)
+    ):
+        # Nothing to drop, which is every ordinary name.
+        return 0
+
+    def at(index: int) -> str:
+        return text[index] if index < size else "\0"
+
+    dest = 0
+    for index in range(size):
+        if (
+            _unrar_is_div(text[index])
+            and at(index + 1) == "."
+            and at(index + 2) == "."
+            and (_unrar_is_div(at(index + 3)) or at(index + 3) == "\0")
+        ):
+            dest = index + 3 if at(index + 3) == "\0" else index + 4
+    while dest < size:
+        index = dest
+        if windows and index + 1 < size and text[index + 1] == ":":
+            index += 2
+        if _unrar_is_div(at(index)) and _unrar_is_div(at(index + 1)):
+            slashes = 0
+            for scan in range(index + 2, size):
+                if _unrar_is_div(text[scan]):
+                    slashes += 1
+                    if slashes == 2:
+                        index = scan + 1
+                        break
+        for scan in range(index, size):
+            if _unrar_is_div(text[scan]):
+                index = scan + 1
+            elif text[scan] != ".":
+                break
+        if index == dest:
+            break
+        dest = index
+    return dest
+
+
+def _unrar_name_pos(text: str) -> int:
+    """``PointToName``: where the last path component starts."""
+    for index in range(len(text) - 1, -1, -1):
+        if _unrar_is_div(text[index]):
+            return index + 1
+    if sys.platform == "win32" and len(text) > 1 and text[1] == ":":
+        return 2
+    return 0
+
+
+def _unrar_fold(char: str) -> str:
+    """``touppercw``: identity on Unix; one character's upper case on Windows."""
+    if sys.platform != "win32":
+        return char
+    upper = char.upper()
+    return upper if len(upper) == 1 else char
+
+
+def _unrar_fold_all(text: str) -> str:
+    if sys.platform != "win32":
+        return text
+    return "".join(_unrar_fold(char) for char in text)
+
+
+def _unrar_same(left: str, right: str) -> bool:
+    if len(left) != len(right):
         return False
-    if not mask_dir:
+    if sys.platform != "win32":
+        return left == right
+    return all(_unrar_fold(a) == _unrar_fold(b) for a, b in zip(left, right))
+
+
+def _unrar_match(pattern: str, string: str) -> bool:
+    """unrar's ``match()`` for a pattern with ``?`` as its only wildcard.
+
+    ``?`` takes exactly one character. A ``.`` in the pattern may also stand for
+    nothing where the string ends or has a ``\\``, so the mask ``a.`` selects the
+    member ``a``. With no ``*`` there is nothing to backtrack over, so this is a
+    single walk.
+    """
+    p = s = 0
+    while True:
+        s_char = _unrar_fold(string[s]) if s < len(string) else "\0"
+        p_char = _unrar_fold(pattern[p]) if p < len(pattern) else "\0"
+        p += 1
+        if p_char == "\0":
+            return s_char == "\0"
+        if p_char == "?":
+            if s_char == "\0":
+                return False
+        elif p_char == "*":
+            raise AssertionError(
+                "unrar mask still contains '*'; build it with _unrar_mask_for"
+            )
+        elif p_char != s_char:
+            if p_char == "." and s_char in ("\0", "\\", "."):
+                continue
+            return False
+        s += 1
+
+
+def _unrar_is_wild(text: str) -> bool:
+    return "*" in text or "?" in text
+
+
+def _unrar_cmp_name(wild: str, name: str) -> bool:
+    """``CmpName(wild, name, MATCH_WILDSUBPATH)``."""
+    name_pos = _unrar_name_pos(name)
+    wild_pos = _unrar_name_pos(wild)
+    # A mask selects everything below the path it names: ``ab`` selects ``ab/x``,
+    # and, because both separators are tested on every platform, ``ab\\x``.
+    if _unrar_same(name[: len(wild)], wild) and (
+        len(name) == len(wild) or name[len(wild)] in ("\\", "/")
+    ):
         return True
-    if "*" not in mask_dir and "?" not in mask_dir:
-        name_dir = name.rsplit("/", 1)[0] if "/" in name else ""
-        if sys.platform == "win32":
-            name_dir = name_dir.casefold()
-            mask_dir = mask_dir.casefold()
-        return name_dir == mask_dir or name_dir.startswith(mask_dir + "/")
-    return True
+    if _unrar_is_wild(wild[:wild_pos]):
+        return _unrar_match(wild, name)
+    if _unrar_is_wild(wild):
+        if wild_pos > 0 and not _unrar_same(name[:wild_pos], wild[:wild_pos]):
+            return False
+    elif wild_pos != name_pos or not _unrar_same(name[:wild_pos], wild[:wild_pos]):
+        return False
+    return _unrar_match(wild[wild_pos:], name[name_pos:])
+
+
+def unrar_mask_selects(mask_view: str, name_view: str) -> bool:
+    """True when ``unrar p -n<mask_view>`` emits a file member named ``name_view``.
+
+    ``CommandData::CheckArgs`` for a file: both strings go through ``ConvertPath``
+    and are compared with ``CmpName``. A mask ending in a separator selects
+    whole directories and is never built here.
+    """
+    if sys.platform == "win32":
+        mask_view = mask_view.replace("/", "\\")
+    if mask_view and _unrar_is_div(mask_view[-1]):
+        raise AssertionError("a mask ending in a separator is never passed to unrar")
+    mask = mask_view[_unrar_convert_path_offset(mask_view) :]
+    name = name_view[_unrar_convert_path_offset(name_view) :]
+    if sys.platform == "win32":
+        mask, name = _as_utf16_units(mask), _as_utf16_units(name)
+    return _unrar_cmp_name(mask, name)
+
+
+def _as_utf16_units(text: str) -> str:
+    """``text`` with each character above U+FFFF as its two UTF-16 code units.
+
+    Windows ``wchar_t`` is a code unit, so there ``?`` takes half of such a
+    character.
+    """
+    if all(ord(char) <= 0xFFFF for char in text):
+        return text
+    return text.encode("utf-16-le", "surrogatepass").decode(
+        "utf-16-le", "surrogatepass"
+    )
+
+
+def unrar_mask_is_usable(mask_view: str) -> bool:
+    """True when the mask names something once ``unrar`` drops its leading parts.
+
+    An empty remainder or one ending in a separator selects every member, or
+    whole directories, instead of one name.
+    """
+    if sys.platform == "win32":
+        mask_view = mask_view.replace("/", "\\")
+    rest = mask_view[_unrar_convert_path_offset(mask_view) :]
+    return bool(rest) and not _unrar_is_div(rest[-1])
+
+
+def unrar_selection_keys(view: str) -> tuple[str, ...]:
+    """Keys under which a member must be indexed so an exact mask can find it.
+
+    An exact mask (no ``?``) selects a name only when, after ``ConvertPath``, it
+    equals the name up to trailing dots, or equals the part of the name before
+    one of its separators. The keys are those strings, folded on Windows. The
+    index is a filter: :func:`unrar_mask_selects` still decides.
+    """
+    name = view[_unrar_convert_path_offset(view) :]
+    folded = _unrar_fold_all(name)
+    keys = {folded.rstrip(".")}
+    for separator in ("/", "\\"):
+        index = folded.find(separator)
+        while index != -1:
+            keys.add(folded[:index])
+            index = folded.find(separator, index + 1)
+    return tuple(keys)
+
+
+def unrar_mask_keys(mask_view: str) -> tuple[str, ...] | None:
+    """Keys to look an exact mask up by (:func:`unrar_selection_keys`), or ``None``.
+
+    ``None`` for a mask with ``?``, which has to be tested against every member.
+    """
+    if sys.platform == "win32":
+        mask_view = mask_view.replace("/", "\\")
+    mask = mask_view[_unrar_convert_path_offset(mask_view) :]
+    if _unrar_is_wild(mask):
+        return None
+    folded = _unrar_fold_all(mask)
+    return (folded, folded.rstrip("."))
 
 
 def decompress_rar3_blob(

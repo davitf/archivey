@@ -253,10 +253,10 @@ class ReadBackend(ABC):
     SUPPORTS_PASSWORD: bool = False
     # Whether this backend applies a caller-supplied `encoding=` when decoding member
     # names. False for backends that decode names some other way — 7z stores UTF-16LE,
-    # RAR decodes in its native parser, the directory and single-file names come from the
-    # filesystem — so open_archive() can record ENCODING_ARGUMENT_UNUSED instead of the
-    # backend silently `del encoding`-ing it, which is how five of them used to differ
-    # from ZIP and TAR with no signal at all.
+    # the directory and single-file names come from the filesystem — so open_archive()
+    # can record ENCODING_ARGUMENT_UNUSED instead of the backend silently
+    # `del encoding`-ing it, which is how five of them used to differ from ZIP and TAR
+    # with no signal at all.
     USES_ENCODING: bool = False
     # Name of the optional dependency this backend needs (e.g. "pycdlib"); the registry
     # derives availability centrally from whether it imports. ``None`` for core backends.

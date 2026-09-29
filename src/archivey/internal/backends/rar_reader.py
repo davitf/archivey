@@ -34,8 +34,9 @@ import subprocess
 import tempfile
 import threading
 import zlib
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Literal
@@ -61,7 +62,6 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import (
-    _RAR3_FILE_UNICODE,
     RAR5_ID,
     RAR_ID,
     DamagedServiceHeader,
@@ -70,7 +70,7 @@ from archivey.internal.backends.rar_parser import (
     RarKdfCache,
     RarMemberInfo,
     _check_rar5_password,
-    _decode_name,
+    _decode_comment_text,
     _Rar3Comment,
     convert_blake2sp_to_mac,
     convert_crc_to_mac,
@@ -85,13 +85,17 @@ from archivey.internal.backends.rar_unar import (
 )
 from archivey.internal.backends.rar_unrar import (
     _unrar_glob_demux_ok,
-    _unrar_mask_for,
-    _unrar_mask_match,
     decompress_rar3_blob,
     find_rarlab_unrar,
     open_unrar_p,
+    unrar_mask_is_usable,
+    unrar_mask_keys,
+    unrar_mask_selects,
+    unrar_mask_view,
     unrar_member_argument,
     unrar_member_refusal,
+    unrar_member_view,
+    unrar_selection_keys,
 )
 from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
@@ -558,6 +562,26 @@ def _psw_check_usable(enc: RarEncryptionInfo) -> bool:
     )
 
 
+@dataclass(slots=True)
+class _UnrarNames:
+    """Every payload member's name as ``unrar`` reads it, to size an ``-n`` skip.
+
+    Built once per reader, the first time a member is read through ``unrar``, so
+    each later read looks its mask up rather than walking every member.
+    """
+
+    # By position in the member list: the name ``unrar_member_view`` gives, or
+    # ``None`` for a member that is not a payload file or whose name this host
+    # cannot reproduce.
+    views: list[str | None]
+    # ``id(member)`` to its position.
+    positions: dict[int, int]
+    # ``unrar_selection_keys`` of each known view, to its payload positions.
+    by_key: dict[str, list[int]]
+    # Payload positions whose view is ``None``, ascending.
+    unknown: list[int]
+
+
 @contextmanager
 def _close_on_error(owned: BinaryIO) -> Iterator[None]:
     """Close ``owned`` if the block raises.
@@ -877,7 +901,8 @@ class RarReader(BaseArchiveReader):
             member_streams=member_streams,
             open_site=open_site,
         )
-        del encoding  # RAR names are decoded by the native parser.
+        # Applied to RAR 1.5-4 names stored as 8-bit bytes; RAR5 names are UTF-8.
+        self._encoding = encoding
         self._source = source
         self._passwords = passwords or _PasswordCandidates()
         # The candidate each RAR5 encryption record's PswCheck accepted, keyed by the
@@ -893,6 +918,7 @@ class RarReader(BaseArchiveReader):
         # The first member whose PswCheck can judge a candidate, found once on first
         # use; ``False`` until looked for, ``None`` when there is none.
         self._archive_check_member: ArchiveMember | None | Literal[False] = False
+        self._unrar_names_cache: _UnrarNames | None = None
         self._volume_count = max(source.volume_count, volume_count)
         self._temp_path: Path | None = None
         self._temp_dir: Path | None = None
@@ -1254,6 +1280,7 @@ class RarReader(BaseArchiveReader):
                         password=password,
                         max_members=max_members,
                         kdf_cache=self._kdf_cache,
+                        name_encoding=self._encoding,
                     )
                 finally:
                     for handle in handles:
@@ -1277,6 +1304,7 @@ class RarReader(BaseArchiveReader):
                         password=password,
                         max_members=max_members,
                         kdf_cache=self._kdf_cache,
+                        name_encoding=self._encoding,
                     )
                 finally:
                     for view in views:
@@ -1293,6 +1321,7 @@ class RarReader(BaseArchiveReader):
                         password=password,
                         max_members=max_members,
                         kdf_cache=self._kdf_cache,
+                        name_encoding=self._encoding,
                     )
 
             view = self._shared.view(0)
@@ -1303,6 +1332,7 @@ class RarReader(BaseArchiveReader):
                     password=password,
                     max_members=max_members,
                     kdf_cache=self._kdf_cache,
+                    name_encoding=self._encoding,
                 )
                 if archive.needs_next_volume or archive.is_volume:
                     raise TruncatedError(
@@ -1648,7 +1678,7 @@ class RarReader(BaseArchiveReader):
             return None
         if unpacked is None or zlib.crc32(unpacked) & 0xFFFF != comment.crc16:
             return None
-        return _decode_name(unpacked)
+        return _decode_comment_text(unpacked)
 
     def _to_member(self, info: RarMemberInfo, index: int) -> ArchiveMember:
         """Type one member. ``index`` is its position in the walk, the id registration
@@ -2332,39 +2362,116 @@ class RarReader(BaseArchiveReader):
         )
         return
 
-    def _unrar_glob_prefix(
-        self, target: ArchiveMember, presented: str, *, version_control: bool
-    ) -> int:
-        """Unpacked bytes of earlier payload members that the ``-n`` mask also matches.
-
-        ``unrar`` emits those members concatenated, in archive order, with no
-        headers. Zero when the presented name has no glob characters. History
-        rows are omitted unless ``version_control`` is set, matching ``unrar``
-        (``-ver`` is passed only for a history-row target).
-
-        Matched against :func:`_unrar_mask_for` of the presented name, not the
-        name itself: that is the string ``unrar`` was given, and sizing the skip
-        against a wider mask would step past bytes the pipe never carried.
-        """
-        if "*" not in presented and "?" not in presented:
-            return 0
-        mask = _unrar_mask_for(presented)
-        prefix = 0
-        for member in self._members:
+    def _unrar_names(self) -> _UnrarNames:
+        names = self._unrar_names_cache
+        if names is not None:
+            return names
+        rar5 = self._archive.version == 5
+        views: list[str | None] = []
+        positions: dict[int, int] = {}
+        by_key: dict[str, list[int]] = {}
+        unknown: list[int] = []
+        for position, member in enumerate(self._members):
+            positions[id(member)] = position
             raw = member._raw
             if not isinstance(raw, RarMemberInfo) or not raw.is_payload_file():
+                views.append(None)
                 continue
+            view = unrar_member_view(
+                rar5=rar5,
+                stored=raw.orig_filename,
+                rar3_unicode_name=raw.rar3_unicode_name,
+                host_os=raw.host_os,
+                file_version=raw.file_version,
+            )
+            views.append(view)
+            if view is None:
+                unknown.append(position)
+                continue
+            for key in unrar_selection_keys(view):
+                by_key.setdefault(key, []).append(position)
+        names = _UnrarNames(views, positions, by_key, unknown)
+        self._unrar_names_cache = names
+        return names
+
+    def _unrar_selection(
+        self, target: ArchiveMember, mask_view: str, *, version_control: bool
+    ) -> tuple[int, bool]:
+        """Where ``target``'s bytes start in the ``unrar -n`` pipe, and whether it ends there.
+
+        ``unrar p`` emits every payload member the mask selects, concatenated in
+        archive order with no headers: a glob, a duplicate name, two names ``unrar``
+        cuts or converts to the same text, a mask that names a directory prefix of
+        another member. The first value is the unpacked size of the members before
+        the target; the second is True when any other member is selected, so the read
+        must stop at the target's size. History rows are left out unless
+        ``version_control`` is set, as ``unrar`` leaves them out without ``-ver``.
+
+        Raises ``UnsupportedFeatureError`` when the answer is not known: the mask
+        does not select the target itself, or an earlier member's name cannot be
+        read the way ``unrar`` reads it on this host.
+        """
+        names = self._unrar_names()
+        target_position = names.positions[id(target)]
+        keys = unrar_mask_keys(mask_view)
+        candidates: Iterable[int]
+        if keys is None:
+            candidates = range(len(self._members))
+        else:
+            found: set[int] = set()
+            for key in keys:
+                found.update(names.by_key.get(key, ()))
+            candidates = sorted(found)
+        prefix = 0
+        others = False
+        selects_target = False
+        for position in candidates:
+            view = names.views[position]
+            if view is None:
+                continue
+            raw = self._members[position]._raw
+            assert isinstance(raw, RarMemberInfo)
             if raw.is_file_version_history() and not version_control:
                 continue
-            if not _unrar_mask_match(_presented_filename(raw), mask):
+            if not unrar_mask_selects(mask_view, view):
                 continue
-            if member is target:
-                return prefix
-            prefix += _member_stream_size(member)
-        # _open_member is only reached for payload files, so the target is in
-        # this walk; identity (``is``) is what makes the skip land on it.
-        raise AssertionError(
-            "glob target missing from the payload walk; skip uses member identity"
+            if position == target_position:
+                selects_target = True
+                continue
+            others = True
+            if position < target_position:
+                prefix += _member_stream_size(self._members[position])
+        if not selects_target:
+            raise self._unrar_name_refused(
+                target,
+                "the name unrar reads for it cannot be given back to unrar as a mask",
+            )
+        for position in names.unknown:
+            raw = self._members[position]._raw
+            assert isinstance(raw, RarMemberInfo)
+            if raw.is_file_version_history() and not version_control:
+                continue
+            if position < target_position:
+                raise self._unrar_name_refused(
+                    target,
+                    "an earlier member's name cannot be read the way unrar reads it "
+                    "on this system, so the bytes unrar may send before this member "
+                    "cannot be sized",
+                )
+            others = True
+        return prefix, others
+
+    def _unrar_name_refused(
+        self, member: ArchiveMember, reason: str
+    ) -> UnsupportedFeatureError:
+        # unar addresses entries by index, so none of these reasons apply to it.
+        return UnsupportedFeatureError(
+            f"RAR member {quoted(member.name)} cannot be read through unrar: "
+            f"{reason}. Set ArchiveyConfig.rar_decompressor to 'unar' to read "
+            "it by position instead.",
+            archive_name=self._archive_name,
+            member_name=member.name,
+            source_format=ArchiveFormat.RAR,
         )
 
     def _solid_prefix(self, target: ArchiveMember) -> int:
@@ -2376,7 +2483,7 @@ class RarReader(BaseArchiveReader):
         member-stream ``tell()`` is the whole re-decode cost.
 
         History rows are counted even without ``-ver``. That is not an oversight
-        relative to :meth:`_unrar_glob_prefix`, which skips them unless
+        relative to :meth:`_unrar_selection`, which skips them unless
         ``version_control``: ``-ver`` controls what unrar *emits*, not what it
         *decodes*, and a solid chain must decompress history to reach later
         members. This value is a ``RewindWarning.min_redecode_bytes`` floor, not
@@ -2417,41 +2524,52 @@ class RarReader(BaseArchiveReader):
         if self._unar_policy is not None:
             return self._open_member_with_unar(member, raw, self._unar_policy)
 
-        # unrar addresses the member by its presented name (``path`` or ``path;n``) via a
-        # ``-n`` include mask (see open_unrar_p); a history row needs ``-ver``. Do not use
-        # the normalized ``member.name`` (may differ on separators).
+        # unrar addresses the member by name (``path`` or ``path;n``) through a ``-n``
+        # include mask (see open_unrar_p); a history row needs ``-ver``. The mask is
+        # built from the name as unrar reads it, which is not always the presented
+        # ``member.name``: unrar cuts a RAR5 name at its first byte that is not
+        # UTF-8, and an 8-bit RAR3 name goes to unrar as its stored bytes (on
+        # Windows, as unrar's own OEM reading of them).
         presented = _presented_filename(raw)
         version_control = raw.is_file_version_history()
-        glob_mask = "*" in presented or "?" in presented
-        # An 8-bit RAR3 name goes to unrar as its stored bytes (on Windows, as
-        # unrar's own OEM reading of them); everything else as the presented text.
-        # The glob skip below is sized on the presented text, which for an 8-bit
-        # name is the same bytes decoded one character apiece; Windows unrar's
-        # reading matches that count only under a single-byte OEM code page.
+        names = self._unrar_names()
+        view = names.views[names.positions[id(member)]]
         mask_name = unrar_member_argument(
-            presented,
+            view,
             raw.orig_filename,
-            stored_is_8bit=self._archive.version == 4
-            and not raw.flags & _RAR3_FILE_UNICODE,
+            stored_is_8bit=self._archive.version == 4 and raw.rar3_unicode_name is None,
         )
         refusal = unrar_member_refusal(mask_name)
+        if refusal is None and (
+            "\0" in presented
+            or (raw.orig_filename is not None and b"\0" in raw.orig_filename)
+        ):
+            # unrar cuts the name at the NUL; the name is refused rather than read
+            # through the part before it.
+            refusal = unrar_member_refusal("\0")
+        mask_view = None if mask_name is None else unrar_mask_view(mask_name)
+        if refusal is None and (
+            mask_view is None or not unrar_mask_is_usable(mask_view)
+        ):
+            refusal = (
+                "unrar reads its name as empty, or as a path with no name in it"
+                if view is not None
+                else "its name cannot be read the way unrar reads it on this system"
+            )
         # ``mask_name is None`` always comes with a refusal; it is tested here so the
         # checkers narrow it before ``open_unrar_p``, where ``member=None`` means "no
         # ``-n`` mask at all", every member piped.
-        if mask_name is None or refusal is not None:
-            # unar addresses entries by index, so none of these reasons apply to it.
-            raise UnsupportedFeatureError(
-                f"RAR member {quoted(member.name)} cannot be read through unrar: "
-                f"{refusal}. Set ArchiveyConfig.rar_decompressor to 'unar' to read "
-                "it by position instead.",
-                archive_name=self._archive_name,
-                member_name=member.name,
-                source_format=ArchiveFormat.RAR,
-            )
+        if mask_name is None or mask_view is None or refusal is not None:
+            raise self._unrar_name_refused(member, refusal or "no mask")
+        glob_mask = "?" in mask_view
         # ``\\`` is a separator to Windows unrar and a literal on Linux; the
         # same ``-n./`` mask therefore matches a different set. Refuse rather
         # than report a valid member truncated (Windows CI on ``a\\b_TGT.txt``).
-        if "\\" in presented or (glob_mask and not _unrar_glob_demux_ok(presented)):
+        if (
+            "\\" in presented
+            or "\\" in mask_view
+            or (glob_mask and not _unrar_glob_demux_ok(mask_view[2:]))
+        ):
             raise UnsupportedFeatureError(
                 "RAR member names that contain a backslash or a glob in a "
                 "directory component cannot be read through unrar; the "
@@ -2461,10 +2579,14 @@ class RarReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
-        glob_prefix = self._unrar_glob_prefix(
-            member, presented, version_control=version_control
+        glob_prefix, shares_mask = self._unrar_selection(
+            member, mask_view, version_control=version_control
         )
-        if glob_prefix and not self._config.rar_allow_glob_member_concatenation:
+        if (
+            glob_mask
+            and glob_prefix
+            and not self._config.rar_allow_glob_member_concatenation
+        ):
             # unrar decompresses every earlier match before the target and emits
             # them concatenated. The skip below returns the right bytes, but the
             # decode has already happened and ExtractionLimits do not reach
@@ -2493,7 +2615,11 @@ class RarReader(BaseArchiveReader):
             # still goes to unrar. That is bounded separately, by narrowing
             # the mask itself. This bounds the payload, not the match.
             #
-            # The predicate is deliberately `_unrar_glob_prefix`'s own answer and
+            # A mask with no glob that still selects earlier members (a duplicate
+            # name, or two names unrar reads the same way) is read by position
+            # without this refusal: its name is not an include mask.
+            #
+            # The predicate is deliberately `_unrar_selection`'s own answer and
             # not a second walk: which siblings match is decided by the mask
             # actually handed to unrar, which that function owns. Recomputing it
             # from the presented name here would refuse archives that read fine
@@ -2552,7 +2678,7 @@ class RarReader(BaseArchiveReader):
             # prefix skip failed; close is idempotent.
             with _close_on_error(owned):
                 tracked = self._track_decompressed(owned)
-                if glob_mask:
+                if glob_mask or shares_mask:
                     return _bounded_member_pipe(
                         tracked,
                         prefix=glob_prefix,
@@ -2885,6 +3011,7 @@ class RarReadBackend(ReadBackend):
     SFX_MAGIC: tuple[MagicSignature, ...] = MAGIC
     SFX_HIT_VALIDATOR = staticmethod(validate_rar_main_header)
     SUPPORTS_PASSWORD = True
+    USES_ENCODING = True  # for RAR 1.5-4 names stored as 8-bit bytes
     SUPPORTS_STREAMING_NON_SEEKABLE = False
     OPTIONAL_DEPENDENCY = None
 
