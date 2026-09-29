@@ -17,9 +17,10 @@ from tests.zipcrypto import _encrypt, _Keys
 
 def test_keystream_table_matches_formula() -> None:
     keys = _Keys(b"")
+    table = zipcrypto._keystream_table()
     for k2 in range(0x10000):
         keys.k2 = k2 | 0x5A5A0000  # high bits must not matter
-        assert zipcrypto._KEYSTREAM_TABLE[k2] == keys.keystream_byte()
+        assert table[k2] == keys.keystream_byte()
 
 
 @pytest.mark.parametrize("password", [b"", b"x", b"correct horse battery staple"])

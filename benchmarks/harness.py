@@ -47,8 +47,8 @@ Comparing two revisions (read this before believing a wall-time delta):
 - Structural fields (``bytes_decompressed``, ``source_seek_count``) are exact and need
   none of this: diff them directly.
 
-Formats covered here: ZIP (deflate / LZMA / WinZip AES), TAR, gzip, ``.Z``
-(text-like and a long zero run, which builds long LZW dictionary entries),
+Formats covered here: ZIP (deflate / LZMA / WinZip AES / ZipCrypto), TAR, gzip,
+``.Z`` (text-like and a long zero run, which builds long LZW dictionary entries),
 tar.gz/tar.bz2 (+ accelerators), in-ZIP accelerated deflate, solid 7z, and RAR
 data paths on committed fixtures when RARLAB ``unrar`` is present (large solid
 RAR when the ``rar`` writer can build one). Listing wall peers: ``zipfile`` /
@@ -80,6 +80,7 @@ from archivey.internal.measurement import enable_measurement
 from benchmarks.fixtures import (
     SCALES,
     ZIP_AES_PASSWORD,
+    ZIPCRYPTO_PASSWORD,
     FixtureSet,
     materialize_fixtures,
 )
@@ -642,6 +643,23 @@ def run_cases(
                 notes="WinZip AES-256 AE-2; requires [crypto]",
             )
         )
+
+    # --- ZIP ZipCrypto (pure-Python decrypt loop; STORED so the cipher dominates) ---
+    _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+        lambda: _op_read_all(fixtures.zipcrypto_path, password=ZIPCRYPTO_PASSWORD)
+    )
+    results.append(
+        CaseResult(
+            "zipcrypto_read_all",
+            "zip",
+            "read_all",
+            _m_wall,
+            bdec,
+            seeks,
+            unpacked_bytes=unpacked,
+            notes="ZipCrypto STORED member; times the pure-Python decrypt loop",
+        )
+    )
 
     # --- In-ZIP accelerated deflate (forced ON/OFF; mirrors tar.gz accelerator cases) ---
     # AUTO would decline below RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE; ON exercises the
