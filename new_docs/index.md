@@ -49,5 +49,21 @@ with archive.open("holiday/video.mp4") as stream, open("video.mp4", "wb") as out
     shutil.copyfileobj(stream, out)
 ```
 
-On some archives, reading members out of order is slow. The next section shows how to read
-them all in one pass, and [Solid archives](solid.md) explains why.
+On some archives, reading a member means first decompressing the members stored before it, so
+reading them out of order gets slow. [Solid archives](solid.md) explains when this happens. The
+next section shows how to avoid it by reading them all in one pass.
+
+## Read everything in one pass
+
+```python
+with archivey.open_archive("backup.tar.gz") as archive:
+    for member, stream in archive.stream_members():
+        if stream is None:
+            continue  # a directory or a link
+        process(member.name, stream.read())
+```
+
+`stream_members` goes through the archive in the order it is stored and gives you each member
+with a stream of its contents. It reads each member once, so it is never slower than reading
+them by name, and on some archives it is much faster. Directories and links come with `None` in
+place of a stream, and each stream works only until the loop moves on.
