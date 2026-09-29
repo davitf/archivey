@@ -24,7 +24,7 @@ Authoritative contracts: `openspec/specs/`.
 
 ## The reader interface
 
-::: archivey.StreamingArchiveReader
+::: archivey.ForwardArchiveReader
 ::: archivey.ArchiveReader
 ::: archivey.ArchiveStream
 ::: archivey.MemberSelector

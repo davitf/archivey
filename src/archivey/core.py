@@ -85,7 +85,7 @@ from archivey.internal.volumes import (
     is_sfx_stub_name,
     resolve_source,
 )
-from archivey.reader import ArchiveReader, StreamingArchiveReader
+from archivey.reader import ArchiveReader, ForwardArchiveReader
 from archivey.terminal import display_path
 from archivey.types import (
     AbortOn,
@@ -254,7 +254,7 @@ def _follow_stub_volume(
 
 # Two overloads carry the access mode into the return type: the default
 # ``streaming=False`` gives the full ``ArchiveReader``, while ``streaming=True`` or a
-# flag known only at run time gives ``StreamingArchiveReader``, which lacks the
+# flag known only at run time gives ``ForwardArchiveReader``, which lacks the
 # random-access methods, so a type checker flags a call that would raise.
 @overload
 def open_archive(
@@ -281,7 +281,7 @@ def open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
-) -> StreamingArchiveReader: ...
+) -> ForwardArchiveReader: ...
 
 
 def open_archive(
@@ -294,7 +294,7 @@ def open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
-) -> StreamingArchiveReader:
+) -> ForwardArchiveReader:
     """Open an archive for reading.
 
     ``streaming=False`` (the default) opens for random access and fails fast at open
@@ -302,7 +302,7 @@ def open_archive(
     access (works on any source, but disables random-access methods).
 
     The return type follows the access mode: :class:`~archivey.ArchiveReader` for the
-    default ``streaming=False``, and :class:`~archivey.StreamingArchiveReader`, which
+    default ``streaming=False``, and :class:`~archivey.ForwardArchiveReader`, which
     lacks ``members()``, ``get()``, ``open()`` and ``read()``, for ``streaming=True``
     or a flag whose value is known only at run time. A type checker then flags a
     random-access call on a streaming reader. Every reader is an ``ArchiveReader`` at
@@ -873,7 +873,7 @@ def extract(
 
     The one-shot extraction API (see ``safe-extraction``). It deliberately has **no**
     member-selection parameter — selecting a subset requires the member list, which would
-    force a reopen; use :meth:`StreamingArchiveReader.extract_all` with ``members=`` on
+    force a reopen; use :meth:`ForwardArchiveReader.extract_all` with ``members=`` on
     an already open reader instead. Extraction is safe-by-default: ``ExtractionPolicy.STRICT`` and
     ``OverwritePolicy.ERROR``, with the decompression-bomb guards active.
 

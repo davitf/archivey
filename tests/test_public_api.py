@@ -35,15 +35,15 @@ def test_open_archive_returns_an_archive_reader(tmp_path) -> None:
 
 
 # The four methods a streaming reader refuses at run time, which the narrower
-# ``StreamingArchiveReader`` type leaves out so a type checker refuses them too.
+# ``ForwardArchiveReader`` type leaves out so a type checker refuses them too.
 _RANDOM_ACCESS_METHODS = {"members", "get", "open", "read"}
 
 
-def test_streaming_reader_type_leaves_out_exactly_the_random_access_methods() -> None:
-    assert issubclass(archivey.ArchiveReader, archivey.StreamingArchiveReader)
+def test_forward_reader_type_leaves_out_exactly_the_random_access_methods() -> None:
+    assert issubclass(archivey.ArchiveReader, archivey.ForwardArchiveReader)
     streaming_api = {
         name
-        for name in dir(archivey.StreamingArchiveReader)
+        for name in dir(archivey.ForwardArchiveReader)
         if not name.startswith("_") or name in ("__iter__", "__contains__")
     }
     full_api = {
@@ -67,19 +67,19 @@ _OPEN_ARCHIVE_TYPING_SAMPLE = """\
 from typing import assert_type
 
 import archivey
-from archivey import ArchiveReader, StreamingArchiveReader
+from archivey import ArchiveReader, ForwardArchiveReader
 
 
 def check(flag: bool) -> None:
     assert_type(archivey.open_archive("a.zip"), ArchiveReader)
     assert_type(archivey.open_archive("a.zip", streaming=False), ArchiveReader)
-    assert_type(archivey.open_archive("a.zip", streaming=True), StreamingArchiveReader)
-    assert_type(archivey.open_archive("a.zip", streaming=flag), StreamingArchiveReader)
+    assert_type(archivey.open_archive("a.zip", streaming=True), ForwardArchiveReader)
+    assert_type(archivey.open_archive("a.zip", streaming=flag), ForwardArchiveReader)
     with archivey.open_archive("a.zip") as full:
         assert_type(full, ArchiveReader)
         full.members()
     with archivey.open_archive("a.zip", streaming=True) as forward:
-        assert_type(forward, StreamingArchiveReader)
+        assert_type(forward, ForwardArchiveReader)
         forward.members()
 """
 
@@ -180,7 +180,7 @@ def test_io_measurement_is_not_public() -> None:
         assert not hasattr(archivey, name)
     assert importlib.util.find_spec("archivey.measurement") is None
     assert "io_stats" not in vars(archivey.ArchiveReader)
-    assert "io_stats" not in vars(archivey.StreamingArchiveReader)
+    assert "io_stats" not in vars(archivey.ForwardArchiveReader)
     assert "io_stats" in vars(BaseArchiveReader)
 
 
@@ -200,7 +200,7 @@ def test_public_interface_hides_internal_hooks() -> None:
         "_close_archive",
     }
     public_names = set(vars(archivey.ArchiveReader)) | set(
-        vars(archivey.StreamingArchiveReader)
+        vars(archivey.ForwardArchiveReader)
     )
     leaked = internal_hooks & public_names
     assert not leaked, f"internal hooks leaked onto the public ArchiveReader: {leaked}"

@@ -36,21 +36,22 @@ MemberSelector = (
 )
 
 
-class StreamingArchiveReader(ABC):
-    """An open archive, read in one forward pass: the methods every reader supports.
+class ForwardArchiveReader(ABC):
+    """An open archive that the code reads in one forward pass.
 
-    ``open_archive(..., streaming=True)`` is typed to return this class, so a type
-    checker flags a call to :meth:`~ArchiveReader.members`, :meth:`~ArchiveReader.get`,
-    :meth:`~ArchiveReader.open` or :meth:`~ArchiveReader.read` on a streaming reader,
-    which would raise ``ArchiveyUsageError`` at run time. What remains reads the archive
-    in one pass: iterate the reader, :meth:`stream_members`, :meth:`extract_all`, or
-    :meth:`scan_members` for the member list.
+    It has every reader method except :meth:`~ArchiveReader.members`,
+    :meth:`~ArchiveReader.get`, :meth:`~ArchiveReader.open` and
+    :meth:`~ArchiveReader.read`, which need random access. Iterate it, call
+    :meth:`stream_members` or :meth:`extract_all`, or call :meth:`scan_members` for
+    the member list.
 
-    A random-access reader is an :class:`ArchiveReader`, a subclass, so annotate a
-    function with this type when it takes a reader of either kind and only makes one
-    pass. The check is static only: every reader is an ``ArchiveReader`` at run time,
-    and a streaming one still raises from the random-access methods. The single-pass
-    rule (a second pass on a streaming reader raises) is not visible to a type checker.
+    ``open_archive(..., streaming=True)`` returns this type, so a type checker flags
+    those four calls, which would raise ``ArchiveyUsageError`` at run time. The default
+    ``open_archive()`` returns :class:`ArchiveReader`, which adds the four, so a
+    function annotated with ``ForwardArchiveReader`` accepts a reader of either mode.
+
+    The check is static only: every reader is an ``ArchiveReader`` at run time. A
+    second pass on a streaming reader still raises, and no type checker can see that.
     Use in a ``with`` block.
 
     **Listing APIs** (easy to mix up):
@@ -218,11 +219,11 @@ class StreamingArchiveReader(ABC):
     def __exit__(self, *args: object) -> None: ...
 
 
-class ArchiveReader(StreamingArchiveReader):
+class ArchiveReader(ForwardArchiveReader):
     """The public, read-only interface to an archive opened for random access.
 
     Returned by :func:`archivey.open_archive` with the default ``streaming=False``.
-    It has every method of :class:`StreamingArchiveReader`, documented above, and adds
+    It has every method of :class:`ForwardArchiveReader`, documented above, and adds
     the four below for lookup and random member access. Annotate against this type
     when the code needs those methods; concrete machinery lives in the internal
     ``BaseArchiveReader`` helper. Use in a ``with`` block.
@@ -231,8 +232,8 @@ class ArchiveReader(StreamingArchiveReader):
     @abstractmethod
     def members(self) -> list[ArchiveMember]:
         """All members as a list. May trigger a scan; raises ``ArchiveyUsageError``
-        on a streaming reader (use :meth:`~StreamingArchiveReader.scan_members` or
-        :meth:`~StreamingArchiveReader.members_report_if_available` there). Raises
+        on a streaming reader (use :meth:`~ForwardArchiveReader.scan_members` or
+        :meth:`~ForwardArchiveReader.members_report_if_available` there). Raises
         terminal archive-level listing errors instead of returning an incomplete
         list."""
         ...
@@ -260,15 +261,15 @@ class ArchiveReader(StreamingArchiveReader):
         compressed tar): members share one compression run, so opening one decodes
         every member before it. Doing that for each member in turn is quadratic in the
         archive size. Nothing warns about it — prefer
-        :meth:`~StreamingArchiveReader.stream_members`, which decodes the run once."""
+        :meth:`~ForwardArchiveReader.stream_members`, which decodes the run once."""
         ...
 
     @abstractmethod
     def read(self, member: str | ArchiveMember) -> bytes:
         """Read a member's full contents as ``bytes`` (unbounded — prefer :meth:`open`
-        or :meth:`~StreamingArchiveReader.stream_members` for anything not known to be small).
+        or :meth:`~ForwardArchiveReader.stream_members` for anything not known to be small).
 
         Carries :meth:`open`'s solid-archive cost: on a ``SOLID`` archive this decodes
         every member preceding the requested one, so a loop over all members is
-        quadratic. Use :meth:`~StreamingArchiveReader.stream_members` for that."""
+        quadratic. Use :meth:`~ForwardArchiveReader.stream_members` for that."""
         ...
