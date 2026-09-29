@@ -42,3 +42,13 @@ raises. With `seekable_members=True`, streams from `open` can seek. Moving backw
 compressed data can mean decompressing the member again from its start. Reading a member from
 start to end also checks it against the checksum the archive stores, and a seek gives that
 check up. If you'll seek a lot, extracting the member to a file first is often faster.
+
+## Several members at once
+
+By default only one member stream can be open at a time, and opening a second while the first
+is still open raises. A thread pool that reads different members at once needs
+`concurrent_members=True`. Reads stay correct, but they aren't always faster. Switching between
+streams is like a seek: the reader jumps to another place in the file, and on a solid archive a
+newly opened stream may first have to decompress the members stored before it. Opening the
+archive once per worker can be faster, at the cost of reading the archive's index once per
+worker.
