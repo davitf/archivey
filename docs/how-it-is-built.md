@@ -12,7 +12,13 @@ Archivey is a work in progress, and so is the process described here.
 
 The maintainer decides. The agents write, test and review.
 
-The maintainer sets the scope, the architecture and the public API, and rules on every
+The maintainer designed the fundamental building blocks and the public API: one opener,
+one reader and one member model for every format; streaming as the default way to read,
+with a member's bytes decoded as you read them; and the modes you declare at open, such
+as `streaming=True` for a pipe, `seekable_members=True` and `concurrent_members=True`.
+[How it works](how-it-works.md) explains those choices.
+
+The maintainer also sets the scope and the architecture, and rules on every
 trade-off the agents cannot settle from the code: how strict a default is, how much
 memory a decoder may use, what a damaged archive should do. Some examples of those
 rulings:
@@ -24,7 +30,7 @@ rulings:
 - The integrity guarantee covers a member read from start to end. A read that seeks is
   best effort, because a seek trusts the format's own index.
 
-The maintainer also reads code, especially to check the architecture and the tricky
+The maintainer reads code as well, especially to check the architecture and the tricky
 parts. Decisions are recorded in the repository as architecture decision records,
 behaviour specs and archived change proposals.
 
