@@ -180,7 +180,8 @@ def _filter_encode(data: bytes, lzma_filter: dict[str, int]) -> bytes:
 
 def test_long_filter_chain_does_not_escape_as_recursion_error() -> None:
     # Each filter-only coder becomes one nested FilterStream, so read() recurses per
-    # coder. The parser refuses more than 64 coders per folder, as 7-Zip does.
+    # coder. The parser refuses more than 64 coders per folder, as 7-Zip 26.03 does
+    # (``k_Scan_NumCoders_MAX`` in CPP/7zip/Archive/7z/7zIn.cpp).
     payload = bytes(100)  # Delta over zeros is zeros, so every layer is valid.
     count = 300
     header = _header(
@@ -239,6 +240,45 @@ def test_folder_past_the_7zip_coder_limit_is_unsupported() -> None:
     data, _ = _delta_chain_archive(65)
     with pytest.raises(UnsupportedFeatureError, match="coder count 65"):
         _read_only_member(data)
+
+
+def _two_coder_in_stream_archive(first_in: int, second_in: int) -> bytes:
+    # Coder 0's in-stream 0 reads coder 1's output; every other in-stream is packed.
+    total_in = first_in + second_in
+    coders = [
+        _coder(_COPY, num_in=first_in, num_out=1),
+        _coder(_COPY, num_in=second_in, num_out=1),
+    ]
+    packed = list(range(1, total_in))
+    header = _header(
+        folders=[_folder(coders, bind_pairs=[(0, 1)], packed=packed)],
+        coder_unpack_sizes=[[1, 1]],
+        pack_sizes=[1] * len(packed),
+        names=["a"],
+    )
+    return _archive(bytes(len(packed)), header)
+
+
+def _member_count(data: bytes) -> int:
+    with open_archive(_bio(data)) as reader:
+        return len(reader.members())
+
+
+def test_folder_at_the_7zip_in_stream_limit_lists() -> None:
+    # 7-Zip caps the running in-stream total of a folder at 64, not only each coder.
+    assert _member_count(_two_coder_in_stream_archive(63, 1)) == 1
+
+
+def test_folder_past_the_7zip_in_stream_limit_is_unsupported() -> None:
+    data = _two_coder_in_stream_archive(63, 2)
+    with pytest.raises(UnsupportedFeatureError, match="folder in-stream count 65"):
+        _member_count(data)
+
+
+def test_coder_past_the_7zip_in_stream_limit_is_unsupported() -> None:
+    data = _two_coder_in_stream_archive(65, 1)
+    with pytest.raises(UnsupportedFeatureError, match="coder in-stream count 65"):
+        _member_count(data)
 
 
 # ---------------------------------------------------------------------------

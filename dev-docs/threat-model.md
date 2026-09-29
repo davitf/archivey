@@ -577,8 +577,10 @@ Pack streams keep the header-size bound only — a BCJ2 folder has four, so
 graphs (coders, in/out streams) keep their own cap. That cap was `_MAX_NUM_STREAMS`
 (65536) until an audit found that 65,536 coders let a small header drive the planner
 and nested decode streams into a raw `RecursionError`. It is now 7-Zip's own limit
-of 64 (`k_Scan_NumCoders_MAX`, `k_Scan_NumCodersStreams_in_Folder_MAX`), refused as
-`UnsupportedFeatureError`. Found on PR #315 (S2-F1); Linear ARC-50.
+of 64 coders and 64 in-streams per folder (`k_Scan_NumCoders_MAX`,
+`k_Scan_NumCodersStreams_in_Folder_MAX` in `CPP/7zip/Archive/7z/7zIn.cpp`, 7-Zip
+26.03), refused as `UnsupportedFeatureError`; out-streams keep the same 64, where
+7-Zip requires exactly one per coder. Found on PR #315 (S2-F1); Linear ARC-50.
 
 ### O14. 7z encoded-header decode had no nesting limit — closed
 
