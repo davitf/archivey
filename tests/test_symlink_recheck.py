@@ -319,6 +319,81 @@ def test_abort_on_blocked_member_stops_on_a_revised_link(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
+def test_a_revised_link_does_not_stop_the_run_under_on_error_stop(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # The revision is a policy block, not a failure, so OnError.STOP goes on.
+    dest, results = _extract(
+        tmp_path,
+        [("l", "sym", "a/../secret"), ("a", "sym", "."), ("f", "file", b"x")],
+        streaming=streaming,
+        on_error="stop",
+    )
+
+    _assert_blocked_as_escape(results["l"])
+    assert results["a"].status is ExtractionStatus.EXTRACTED
+    assert results["f"].status is ExtractionStatus.EXTRACTED
+    assert (dest / "f").read_bytes() == b"x"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "prefix", ["", "/", "/."], ids=["plain", "double-slash", "dot"]
+)
+def test_an_absolute_target_inside_the_destination_is_rechecked(
+    tmp_path: Path, streaming: bool, prefix: str
+) -> None:
+    # An absolute target that lands inside the destination passes when created;
+    # its components are the destination's own paths, not the link directory's.
+    # POSIX leaves a leading ``//`` to the implementation, and Linux and macOS read
+    # it as ``/``.
+    dest_root = (tmp_path / "out").resolve()
+    dest, results = _extract(
+        tmp_path,
+        [("l", "sym", f"{prefix}{dest_root}/a/../secret"), ("a", "sym", ".")],
+        streaming=streaming,
+    )
+
+    _assert_blocked_as_escape(results["l"])
+    assert _escaping_links(dest) == []
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [("L", "l"), ("é", "é")],
+    ids=["case", "normalization"],
+)
+def test_links_whose_names_differ_only_by_folding_are_both_rechecked(
+    tmp_path: Path, streaming: bool, first: str, second: str
+) -> None:
+    # TRUSTED keeps both names, and a case-sensitive filesystem that does not
+    # normalize holds both links. Recording the second must not forget the first.
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / first).touch()
+    folds = (dest / second).exists()
+    (dest / first).unlink()
+    if folds:
+        pytest.skip("the filesystem folds these two names into one")
+    dest, results = _extract(
+        tmp_path,
+        [
+            (first, "sym", "a/../secret"),
+            (second, "sym", "b/../secret"),
+            ("a", "sym", "."),
+            ("b", "sym", "."),
+        ],
+        streaming=streaming,
+        policy="trusted",
+    )
+
+    _assert_blocked_as_escape(results[first])
+    _assert_blocked_as_escape(results[second])
+    assert _escaping_links(dest) == []
+
+
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize(
     "entries",
     [

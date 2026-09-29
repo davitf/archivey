@@ -23,15 +23,17 @@ A regular file or a directory created where nothing was does not move a resoluti
 
 The recorded set is closed under prefixes, as far as the link's own directory: every
 path the walk visits is reached by appending one component to a path it visited
-before, or to an ancestor of the link. So a change at ``d`` is enough to find every
-link whose walk went through ``d/x``: it went through ``d`` too. A change to an
-ancestor of the link itself needs no entry, because removing that ancestor removes
-the link.
+before, to an ancestor of the link, or to the destination root (an absolute target
+re-enters there). So a change at ``d`` is enough to find every link whose walk went
+through ``d/x``: it went through ``d`` too. A change to an ancestor of the link itself
+needs no entry, because removing that ancestor removes the link.
 
-Paths are keyed by component, normalized to NFC and case-folded. On a case-sensitive
-filesystem this can report a change for a link that did not depend on it; the recheck
-then finds nothing, and costs one resolution. The opposite mistake would miss an escape
-on a case-insensitive one.
+The dependency index keys paths by component, normalized to NFC and case-folded. On a
+case-sensitive filesystem a change can then reach a link that did not depend on it;
+the recheck finds nothing, and costs one resolution. The opposite mistake would miss
+an escape on a case-insensitive one. That argument covers the index only: the map from
+a path to the link recorded there is keyed on the exact path, because there a false
+match forgets a link instead of rechecking one.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ import stat
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
-from typing import Callable
+from typing import Callable, Sequence
 
 # More symlink follows than any supported kernel allows in one resolution (Linux 40,
 # macOS and FreeBSD 32, Windows 63 reparse points). A walk stops there: the OS
@@ -110,9 +112,15 @@ class LinkWatch:
     """The dependency index for one extraction run. Not thread-safe."""
 
     def __init__(self, dest_root: Path, budget: int | None) -> None:
-        self._root_parts = dest_root.parts
+        # Folded like the index, so a walk that reaches the root by another spelling
+        # (``/TMP/out`` on a case-insensitive filesystem) still knows it is inside.
+        self._root_parts = tuple(_key(part) for part in dest_root.parts)
         self._root = _Node()
-        self._by_key: dict[Key, WatchedLink] = {}
+        # The link recorded at each physical path. Keyed on the exact path, unlike the
+        # index: two links whose names differ only by case or normalization are two
+        # entries on a filesystem that keeps them apart, and forgetting one when the
+        # other is recorded would leave it unwatched.
+        self._by_path: dict[Path, WatchedLink] = {}
         self._changed: dict[Path, None] = {}
         # Rechecks left before the run must stop (``None``: no bound). Each change can
         # recheck every link that depends on it, so a path changed many times with
@@ -125,21 +133,20 @@ class LinkWatch:
     def track(self, dest_path: Path, target: str, result_index: int) -> None:
         """Record a symlink just created at ``dest_path`` and report it as a change."""
         path = self._physical(dest_path)
-        key = self._rel_key(path)
-        if key is None:
+        if self._folded_key(path) is None:
             return
         try:
             st = os.lstat(path)
         except OSError:
             return
-        previous = self._by_key.pop(key, None)
+        previous = self._by_path.pop(path, None)
         if previous is not None:
             self._unregister(previous)
         link = WatchedLink(
             path, target, dest_path, result_index, (st.st_dev, st.st_ino)
         )
         self._register(link)
-        self._by_key[key] = link
+        self._by_path[path] = link
         self._changed[path] = None
 
     def note_change(self, dest_path: Path) -> None:
@@ -199,11 +206,11 @@ class LinkWatch:
         return outcome
 
     def _enqueue_dependents(self, path: Path, queue: dict[WatchedLink, None]) -> None:
-        key = self._rel_key(path)
+        key = self._folded_key(path)
         if key is None:
             return
         # The link recorded at this path, if the change replaced or removed it.
-        own = self._by_key.get(key)
+        own = self._by_path.get(path)
         if own is not None and not self._is_live(own):
             self._forget(own)
         node = self._root
@@ -236,9 +243,8 @@ class LinkWatch:
 
     def _forget(self, link: WatchedLink) -> None:
         self._unregister(link)
-        key = self._rel_key(link.path)
-        if key is not None and self._by_key.get(key) is link:
-            del self._by_key[key]
+        if self._by_path.get(link.path) is link:
+            del self._by_path[link.path]
 
     def _register(self, link: WatchedLink) -> None:
         link.nodes = self._walk(link.path, link.target)
@@ -269,9 +275,28 @@ class LinkWatch:
         # Index nodes for ``cur`` from the root down, or ``None`` while ``cur`` is not
         # inside the destination.
         nodes = self._nodes_for(cur)
-        pending = _components(target)
+        pending: list[str] = []
         visited: dict[int, _Node] = {}
         follows = 0
+
+        def push(target: str) -> None:
+            """Queue ``target``, read from ``cur``: the link's own target first, then
+            each followed link's target, by the same rule."""
+            nonlocal cur, nodes
+            if PurePath(target).anchor:
+                # Absolute, or on Windows drive- or root-relative. Joined the way
+                # pathlib joins it, which is what the creation check resolves, so the
+                # walk restarts from the anchor and ``..`` components survive.
+                joined = PurePath(*cur).joinpath(target)
+                # POSIX leaves a leading ``//`` to the implementation; Linux and macOS
+                # read it as ``/``, and the root comparison needs the same spelling.
+                cur = ["/" if joined.anchor == "//" else joined.anchor]
+                nodes = self._nodes_for(cur)
+                pending.extend(reversed(joined.parts[1:]))
+            else:
+                pending.extend(_components(target))
+
+        push(target)
         while pending:
             comp = pending.pop()
             if comp in ("", "."):
@@ -289,7 +314,7 @@ class LinkWatch:
                 node = nodes[-1].child(comp)
                 nodes.append(node)
                 visited[id(node)] = node
-            elif len(cur) == n and tuple(cur) == self._root_parts:
+            elif len(cur) == n and self._under_root(cur):
                 nodes = [self._root]
             path = os.path.join(*cur)
             try:
@@ -308,17 +333,12 @@ class LinkWatch:
                 nodes.pop()
                 if not nodes:
                     nodes = None
-            anchor = PurePath(link_target).anchor
-            if anchor:
-                cur = [anchor]
-                nodes = self._nodes_for(cur)
-                link_target = link_target[len(anchor) :]
-            pending.extend(_components(link_target))
+            push(link_target)
         return list(visited.values())
 
     def _nodes_for(self, parts: list[str]) -> list[_Node] | None:
         n = len(self._root_parts)
-        if tuple(parts[:n]) != self._root_parts:
+        if not self._under_root(parts):
             return None
         nodes = [self._root]
         for part in parts[n:]:
@@ -327,10 +347,18 @@ class LinkWatch:
 
     # --- paths -------------------------------------------------------------------
 
-    def _rel_key(self, path: Path) -> Key | None:
+    def _under_root(self, parts: Sequence[str]) -> bool:
+        """Whether ``parts`` is the destination root or a path under it."""
+        n = len(self._root_parts)
+        return len(parts) >= n and all(
+            _key(part) == root for part, root in zip(parts, self._root_parts)
+        )
+
+    def _folded_key(self, path: Path) -> Key | None:
+        """``path``'s index key: its components under the root, folded."""
         parts = path.parts
         n = len(self._root_parts)
-        if parts[:n] != self._root_parts or len(parts) == n:
+        if not self._under_root(parts) or len(parts) == n:
             return None
         return tuple(_key(part) for part in parts[n:])
 

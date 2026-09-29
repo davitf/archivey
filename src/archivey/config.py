@@ -253,7 +253,9 @@ class ExtractionLimits:
 
     It also bounds, separately, how many times one extraction rechecks a symlink
     because a later member changed a path the link resolves through. Only a hostile
-    archive comes near it, and crossing it stops the extraction the same way.
+    archive comes near it, and crossing it stops the extraction the same way. ``None``
+    removes both bounds, so a hostile archive can then make the rechecks take time
+    quadratic in its size.
     """
 
     UNLIMITED: ClassVar[ExtractionLimits]

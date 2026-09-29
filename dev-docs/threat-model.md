@@ -870,7 +870,11 @@ end-of-run sweep and not a refusal of `a/../x` targets.
   walks its target the way `os.path.realpath` does and records every destination path
   the walk `lstat`s: components that do not exist yet, directories it went through, and
   the components of every link it followed on the way (at most 64 follows, more than
-  any kernel allows). Only the state of those paths decides where the link resolves.
+  any kernel allows). An absolute target, the link's own or a followed one's, is walked
+  from its anchor, so one that re-enters the destination by name is recorded there.
+  Only the state of those paths decides where the link resolves. The index folds case
+  and Unicode normalization, which can only cause extra rechecks; the record of which
+  link sits at which path does not, so `L` and `l` under `TRUSTED` are both watched.
 - **What counts as a change.** A symlink created at a path, and a symlink or directory
   removed or replaced there: `REPLACE` and `RENAME`'s directory case in
   `_prepare_destination`, a streaming pass replacing or dropping a superseded copy, a 7z
@@ -908,9 +912,10 @@ What remains:
   paths recorded when an archive link goes through them, but they are never rechecked
   or removed: they are the caller's. An archive member can still make such a link
   escape by creating a path it goes through.
-- **Windows.** The walk splits targets on both separators and follows what `os.readlink`
-  returns, but it has not been run there: creating symlinks needs a privilege, and the
-  tests skip on Windows. The creation check is unchanged and still runs.
+- **Windows.** The walk splits targets on both separators, joins drive- and
+  root-relative targets the way `pathlib` does, and follows what `os.readlink` returns,
+  but it has not been run there: creating symlinks needs a privilege, and the tests skip
+  on Windows. The creation check is unchanged and still runs.
 - **A link the filesystem refuses to remove.** Its result says `BLOCKED` and a warning is
   logged, as for a link that escapes when it is created.
 
