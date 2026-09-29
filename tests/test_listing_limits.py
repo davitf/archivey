@@ -329,7 +329,9 @@ def test_tar_drops_the_link_name_of_a_member_that_is_not_a_link(tmp_path: Path) 
     with tarfile.open(tar_path, "w", format=tarfile.GNU_FORMAT) as tf:
         for i in range(20):
             info = tarfile.TarInfo(name=f"f{i}")
-            info.linkname = "l" * 100_000
+            # Under the cap on its own: tarfile reads a long link name whole, and a
+            # header larger than max_metadata_bytes is refused before that read.
+            info.linkname = "l" * 99_000
             tf.addfile(info)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=100_000))
     with open_archive(tar_path, config=cfg) as reader:

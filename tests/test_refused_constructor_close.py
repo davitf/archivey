@@ -271,6 +271,9 @@ _CLOSE_STATE_FIRST = {
         "assigns every field close() reads before DelegatingStream.__init__"
     ),
     "archivey.internal.backends.rar_reader._RespawnStream": "plain assignments only",
+    "archivey.internal.backends.sevenzip_pipeline._DecodedPastSizeCheck": (
+        "plain assignments only"
+    ),
     "archivey.internal.external.unar.UnarOutputStream": (
         "assigns every field close() reads before DelegatingStream.__init__"
     ),

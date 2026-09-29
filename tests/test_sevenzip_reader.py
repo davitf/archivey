@@ -1702,10 +1702,15 @@ def test_files_info_count_is_bounded_against_header_size() -> None:
         _read_files_info(cur, max_members=None)
 
 
+# The parser's old per-folder coder-graph cap. It once also bounded unpack streams,
+# pack streams and folders, which rejected legitimate archives with more members
+# (review F1/F2). The tests below keep it as the member count those regressions need.
+_MAX_NUM_STREAMS = 65536
+
+
 def test_num_unpack_streams_count_is_bounded() -> None:
     """``kNumUnPackStream`` is not bounded by remaining header bytes (S2-F1 / O13)."""
     from archivey.internal.backends.sevenzip_parser import (
-        _MAX_NUM_STREAMS,
         PlainHeader,
         parse_header_block,
     )
@@ -1990,8 +1995,6 @@ def above_stream_cap_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
     writer's own banner, so a failure on a runner nobody measured says which
     writer produced it.
     """
-    from archivey.internal.backends.sevenzip_parser import _MAX_NUM_STREAMS
-
     src = tmp_path_factory.mktemp("above-stream-cap") / "many"
     src.mkdir()
     for i in range(_MAX_NUM_STREAMS + 1):
@@ -2019,7 +2022,7 @@ def test_archives_above_stream_cap_still_open(
 ) -> None:
     """A 7z above ``_MAX_NUM_STREAMS`` must still open, solid or not.
 
-    That cap is structural (per-folder coders). Applying it to unpack streams
+    That cap was structural (per-folder coders). Applying it to unpack streams
     rejected ordinary solid 7-Zip output (review F1); applying it to pack
     streams / folders rejected non-solid output (review F2). ``max_members``
     is the liftable budget and fires at parse, not after allocating the table.
@@ -2044,7 +2047,6 @@ def test_archives_above_stream_cap_still_open(
     """
     from archivey.config import ListingLimits
     from archivey.exceptions import ResourceLimitError
-    from archivey.internal.backends.sevenzip_parser import _MAX_NUM_STREAMS
     from archivey.internal.backends.sevenzip_pipeline import parse_sevenzip_archive
 
     n = _MAX_NUM_STREAMS + 1

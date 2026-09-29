@@ -209,9 +209,10 @@ class BombTracker:
         self._refunded_bytes += member_bytes
 
     def count(self, chunk_bytes: int) -> None:
+        """Count a chunk that is about to be written; raise instead if it may not be."""
+        self._check_cumulative_bytes(chunk_bytes)
         self._total_bytes += chunk_bytes
         self._member_bytes += chunk_bytes
-        self._check_cumulative_bytes()
 
         # Per-member ratio: activates on THIS member's output; a per-member failure
         # (skippable under OnError.CONTINUE).
@@ -243,16 +244,23 @@ class BombTracker:
         destination's mount points fall, not on the archive, and a ratio abort would
         blame the archive for it.
         """
+        self._check_cumulative_bytes(chunk_bytes)
         self._copied_bytes += chunk_bytes
-        self._check_cumulative_bytes()
 
-    def _check_cumulative_bytes(self) -> None:
-        # Cumulative byte guard (always-stop).
+    def _check_cumulative_bytes(self, chunk_bytes: int) -> None:
+        """Cumulative byte guard (always-stop), checked before ``chunk_bytes`` is written.
+
+        Both callers count a chunk before they write it, so a refused chunk never
+        reaches the destination and is not counted. The message says what is on disk
+        and what the refused write would have made it.
+        """
         written = self.total_bytes - self._refunded_bytes
-        if self._max_bytes is not None and written > self._max_bytes:
+        would_be = written + chunk_bytes
+        if self._max_bytes is not None and would_be > self._max_bytes:
             raise _AlwaysStopResourceLimitError(
                 f"Extraction limit reached: max_extracted_bytes={self._max_bytes} "
-                f"(written {written} bytes)"
+                f"(written {written} bytes; the next {chunk_bytes}-byte chunk would "
+                f"make {would_be})"
             )
 
     def _check_archive_ratio(self) -> None:
@@ -381,6 +389,10 @@ class ExtractionCoordinator:
         # The reader ``run()`` is extracting from, for the one read ``_transform`` makes
         # on it: an accepted link's target. Set per ``run()``.
         self._reader: BaseArchiveReader | None = None
+        # The run's destination as given, and the entries this run has written under
+        # it (the pass's own ``written_paths``), for ``_makedirs``. Set per ``run()``.
+        self._dest = Path()
+        self._written_paths: set[Path] = set()
 
     # --- entry point ---------------------------------------------------------------
 
@@ -433,12 +445,14 @@ class ExtractionCoordinator:
         members_total = len(all_members) if all_members is not None else None
         total_estimate = self._estimate_total_bytes(all_members)
 
-        # Extract-prep materialization: enforce ListingLimits before writing.
-        # Indexed backends may already have been peeked via members_report_if_available();
-        # scan-required backends (TAR, directory) would otherwise walk via unguarded
-        # stream_members() and never hit listing caps.
-        if not forward_only:
-            reader._get_members_registered(enforce_listing_limits=True)
+        # Extract-prep: enforce ListingLimits. Indexed backends may already have been
+        # peeked via members_report_if_available(); scan-required backends (TAR,
+        # directory) would otherwise walk via unguarded stream_members() and never hit
+        # listing caps. The reader decides how: most list everything first; TAR
+        # enforces the limits as members arrive in its one pass (_extraction_listing).
+        listing = (
+            contextlib.nullcontext() if forward_only else reader._extraction_listing()
+        )
 
         # The pass is driven through the public stream_members(), which applies the
         # selection (skipped members never surface here — they are invisible to progress
@@ -464,6 +478,8 @@ class ExtractionCoordinator:
         # source member_id -> list of on-disk paths holding that source's content.
         source_paths: dict[int, list[Path]] = {}
         written_paths: set[Path] = set()
+        self._dest = dest
+        self._written_paths = written_paths
         # O2 collision map: casefold(NFC(relpath)) key (exact under TRUSTED) -> the claim
         # (written path + claiming member's result index). Tracks non-directory members
         # written THIS run so a second member resolving to the same key is a deterministic
@@ -484,22 +500,23 @@ class ExtractionCoordinator:
         )
 
         try:
-            self._run_pass(
-                reader,
-                stream_selector,
-                dest,
-                dest_root,
-                tracker,
-                results,
-                source_paths,
-                written_paths,
-                collision_map,
-                orphans,
-                forward_only,
-                members_total,
-                total_estimate,
-                selected_total,
-            )
+            with listing:
+                self._run_pass(
+                    reader,
+                    stream_selector,
+                    dest,
+                    dest_root,
+                    tracker,
+                    results,
+                    source_paths,
+                    written_paths,
+                    collision_map,
+                    orphans,
+                    forward_only,
+                    members_total,
+                    total_estimate,
+                    selected_total,
+                )
         except _AbortExtraction as abort:
             # An abort_on trigger fired: no report is returned, and output already
             # written for earlier members stays on disk (same as OnError.STOP). Nothing
@@ -1066,7 +1083,7 @@ class ExtractionCoordinator:
                 return ExtractionResult(
                     original, None, ExtractionStatus.NOT_OVERWRITTEN, None
                 )
-            os.makedirs(dest_path, exist_ok=True)
+            self._makedirs(dest_path, transformed)
             self._apply_metadata(dest_path, transformed)
             if not existed:
                 written_paths.add(dest_path)
@@ -1335,7 +1352,7 @@ class ExtractionCoordinator:
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
 
-        os.makedirs(dest_path.parent, exist_ok=True)
+        self._makedirs(dest_path.parent, transformed)
         if stream is None and self._retyped:
             # The pass yielded this member as a link, with no data stream, before its
             # data showed it is a file. Random access opens it now. A forward-only pass
@@ -1397,7 +1414,7 @@ class ExtractionCoordinator:
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
 
-        os.makedirs(dest_path.parent, exist_ok=True)
+        self._makedirs(dest_path.parent, transformed)
         # A symlink is target-independent: create it even if the target was filtered out,
         # appears later, or lies outside the archive — it may dangle. Only the escape
         # check below constrains it. An os.symlink failure (unsupported FS) propagates as
@@ -1457,13 +1474,29 @@ class ExtractionCoordinator:
                 member_name=transformed.name,
                 link_target=original.link_target,
             )
+        if source.type is not MemberType.FILE:
+            # `link_target_member` is the end of the link chain (a hardlink to a
+            # symlink to a file ends at the file), so anything but a file here cannot
+            # share an inode. Only a FILE source is recorded in `source_paths`. Without
+            # this check, the member went down the branches below for a source that
+            # was not written, and the error said the source was excluded.
+            reason = (
+                "a directory, and a hard link to a directory cannot be created"
+                if source.type is MemberType.DIRECTORY
+                else f"a {source.type.value}, not a regular file"
+            )
+            raise ExtractionError(
+                f"Hardlink target {quoted(source.name)} is {reason}",
+                member_name=transformed.name,
+                link_target=source.name,
+            )
 
         if source.member_id in source_paths:
             if not self._prepare_destination(transformed, dest_path, atomic=True):
                 return ExtractionResult(
                     original, None, ExtractionStatus.NOT_OVERWRITTEN, None
                 )
-            os.makedirs(dest_path.parent, exist_ok=True)
+            self._makedirs(dest_path.parent, transformed)
             self._place_link(
                 source_paths, source.member_id, dest_path, transformed, tracker
             )
@@ -1677,7 +1710,7 @@ class ExtractionCoordinator:
         if writer is None or writer_path is None:
             return  # every link's destination already exists under SKIP: nothing to write
 
-        os.makedirs(writer_path.parent, exist_ok=True)
+        self._makedirs(writer_path.parent, writer.transformed)
         self._write_file_atomic(stream, writer_path, writer.transformed, tracker)
         source_paths.setdefault(source_member.member_id, []).append(writer_path)
         result = ExtractionResult(
@@ -1745,7 +1778,7 @@ class ExtractionCoordinator:
                         ),
                     )
                     continue
-                os.makedirs(resolved.parent, exist_ok=True)
+                self._makedirs(resolved.parent, orphan.transformed)
                 self._place_link(
                     source_paths, source_id, resolved, orphan.transformed, tracker
                 )
@@ -1844,6 +1877,35 @@ class ExtractionCoordinator:
                 f"Destination exists and is not a directory: {display_path(dest)}"
             )
         dest.mkdir(parents=True, exist_ok=True)
+
+    def _makedirs(self, path: Path, member: ArchiveMember) -> None:
+        """``os.makedirs(path, exist_ok=True)`` for ``member``, typed when the archive
+        itself is in the way.
+
+        A file member ``d`` followed by ``d/f`` (or a directory ``d/y``) cannot both be
+        extracted, and the conflict is in the archive, not in the filesystem. So when
+        creating the directories fails and one of the components is a non-directory
+        that this run wrote, the member gets an ``ExtractionError`` that names that
+        component, a per-member failure like any other. Any other failure propagates
+        unchanged: a non-directory that was in ``dest`` before the run is a filesystem
+        condition, and ``OverwritePolicy`` governs a member's own destination only,
+        never its parents.
+        """
+        try:
+            os.makedirs(path, exist_ok=True)
+        except (FileExistsError, NotADirectoryError, FileNotFoundError) as exc:
+            # FileNotFoundError too: Windows can report a directory created under a file
+            # as a missing path. Nearest the root first, because that component is the
+            # one that stops the rest.
+            for component in (*reversed(path.parents), path):
+                if component in self._written_paths and not component.is_dir():
+                    raise ExtractionError(
+                        f"Cannot create {quoted(member.name)}: "
+                        f"{quoted(self._rel_name(self._dest, component))} is a "
+                        "non-directory already extracted from this archive",
+                        member_name=member.name,
+                    ) from exc
+            raise
 
     def _prepare_destination(
         self, member: ArchiveMember, dest_path: Path, *, atomic: bool = False

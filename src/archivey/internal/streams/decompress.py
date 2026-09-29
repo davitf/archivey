@@ -17,13 +17,14 @@ from collections.abc import Callable, Mapping
 from typing import BinaryIO, NoReturn, Protocol
 
 from archivey.config import DecoderLimits
-from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
+from archivey.exceptions import ResourceLimitError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
     SeekPoint,
+    gzip_corruption,
 )
 from archivey.internal.streams.ppmd_child import (
     PpmdChildAllocationError,
@@ -192,7 +193,8 @@ class GzipDecoder(BaseDecoder):
                 # CorruptionError here so a raw GzipDecompressorStream is consistent
                 # with flush() and does not leak zlib.error (GzipCodec.translate maps
                 # it too, but the decoder must stand on its own).
-                raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+                # A failed CRC-32/ISIZE check is a _StreamChecksumError.
+                raise gzip_corruption(e) from e
             if produced:
                 output.append(produced)
                 produced_total += len(produced)
@@ -244,7 +246,7 @@ class GzipDecoder(BaseDecoder):
                     if not self._decomp.eof:
                         out.extend(self._decomp.flush())
                 except zlib.error as e:
-                    raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+                    raise gzip_corruption(e) from e
                 if not self._decomp.eof:
                     self._pending_error = TruncatedError("gzip stream is truncated")
                     return DecodeOut(bytes(out))
@@ -267,7 +269,7 @@ class GzipDecoder(BaseDecoder):
                 out.extend(self._decomp.decompress(self._decomp.unconsumed_tail))
             out.extend(self._decomp.flush())
         except zlib.error as e:
-            raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+            raise gzip_corruption(e) from e
         if not self._decomp.eof:
             self._pending_error = TruncatedError("gzip stream is truncated")
         else:

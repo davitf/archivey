@@ -61,7 +61,11 @@ from archivey.internal.password import wrong_password_error
 from archivey.internal.sfx import SFX_MAX, describe_scan_miss, scan_for_magic
 from archivey.internal.streams.crypto import AesParams, open_aes_decrypt_stage
 from archivey.internal.streams.streamtools import read_exact
-from archivey.internal.timestamps import filetime_to_datetime, unix32_to_datetime
+from archivey.internal.timestamps import (
+    TimestampIssue,
+    filetime_to_datetime,
+    unix32_to_datetime,
+)
 from archivey.terminal import quoted
 
 
@@ -320,6 +324,10 @@ class RarMemberInfo:
     # above is then what was read rather than all there was. There is no count of
     # the rest: counting it would mean walking it, which is the cost the cap avoids.
     header_walk_stop_reason: str | None = None
+    # Stored times that were present but invalid, and so left ``None``. The reader
+    # turns each into a ``MEMBER_TIMESTAMP_INVALID`` diagnostic. Empty (the shared
+    # tuple) for every well-formed header.
+    timestamp_issues: tuple[TimestampIssue, ...] = ()
 
     @property
     def skipped_header_records_truncated(self) -> bool:
@@ -781,7 +789,16 @@ def _load_vstr(buf: bytes | bytearray | memoryview, pos: int) -> tuple[bytes, in
     return _load_bytes(buf, slen, pos)
 
 
-def _parse_dos_time(stamp: int) -> datetime:
+def _parse_dos_time(stamp: int) -> datetime | None:
+    """A DOS date/time word as a naive datetime, or ``None`` when it names no date.
+
+    Zero is the unset value, as in ZIP. Any other word that is not a real date (month
+    13, day 0, 25 o'clock) is also ``None``; the caller reports it through
+    :func:`_dos_time_issue`. It is not clamped to a nearby date, because a clamped
+    date is a fabricated one that nothing downstream could tell from a real one.
+    """
+    if stamp == 0:
+        return None
     sec = (stamp & 0x1F) * 2
     stamp >>= 5
     minute = stamp & 0x3F
@@ -796,13 +813,17 @@ def _parse_dos_time(stamp: int) -> datetime:
     try:
         return datetime(year, month, day, hour, minute, sec)
     except ValueError:
-        month = max(1, min(month, 12))
-        mday = (0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-        day = max(1, min(day, mday[month]))
-        hour = min(hour, 23)
-        minute = min(minute, 59)
-        sec = min(sec, 59)
-        return datetime(year, month, day, hour, minute, sec)
+        return None
+
+
+def _dos_time_issue(stamp: int, field: str, filename: str) -> TimestampIssue:
+    """The report for a nonzero DOS word :func:`_parse_dos_time` could not use."""
+    return TimestampIssue(
+        field=field,
+        source="dos",
+        value_repr=f"0x{stamp:08x}",
+        message=f"Invalid RAR DOS timestamp for {quoted(filename)}: 0x{stamp:08x}",
+    )
 
 
 def _load_unixtime(
@@ -813,16 +834,22 @@ def _load_unixtime(
 
 
 def _load_windowstime(
-    buf: bytes | bytearray | memoryview, pos: int
+    buf: bytes | bytearray | memoryview,
+    pos: int,
+    *,
+    filename: str = "",
+    field: str = "mtime",
+    issues: list[TimestampIssue] | None = None,
 ) -> tuple[datetime | None, int]:
     lo, pos = _load_le32(buf, pos)
     hi, pos = _load_le32(buf, pos)
     ticks = (hi << 32) | lo
     # Shared FILETIME helper. ticks=0 → None is that helper's ZIP unset
-    # rule, accepted for RAR (do not revive 1601-01-01). Discard
-    # TimestampIssue: listing still swallows out-of-range values rather
-    # than emitting a diagnostic.
-    dt, _issue = filetime_to_datetime(ticks, "", field="mtime")
+    # rule, accepted for RAR (do not revive 1601-01-01). An out-of-range value
+    # is ``None`` plus an issue, which the reader reports; listing continues.
+    dt, issue = filetime_to_datetime(ticks, filename, field=field)
+    if issue is not None and issues is not None:
+        issues.append(issue)
     return dt, pos
 
 
@@ -1634,12 +1661,17 @@ def _parse_rar3_file_header(
     if flags & _RAR3_FILE_SALT:
         _salt, pos = _load_bytes(hdata, 8, pos)
 
+    timestamp_issues: list[TimestampIssue] = []
+    if mtime is None and dos_stamp != 0:
+        timestamp_issues.append(_dos_time_issue(dos_stamp, "mtime", filename))
     ctime: datetime | None = None
     atime: datetime | None = None
     if flags & _RAR3_FILE_EXTTIME:
-        xt_mtime, ctime, atime, pos = _parse_rar3_ext_time(hdata, pos, mtime)
-        if xt_mtime is not None:
-            mtime = xt_mtime
+        # An EXTTIME mtime only refines the header's DOS word, so it is ``None``
+        # exactly when that word was: it adds no report of its own.
+        mtime, ctime, atime, pos = _parse_rar3_ext_time(
+            hdata, pos, mtime, filename=filename, issues=timestamp_issues
+        )
     # else: keep DOS mtime (spec: RAR4 naive wall-clock)
 
     # CRC covers through the file-header fields; old comment subblocks (if any) follow.
@@ -1656,6 +1688,9 @@ def _parse_rar3_file_header(
         mtime=None if is_service else mtime,
         ctime=None if is_service else ctime,
         atime=None if is_service else atime,
+        timestamp_issues=()
+        if is_service or not timestamp_issues
+        else tuple(timestamp_issues),
         mode=mode,
         host_os=host_os,
         flags=flags,
@@ -1678,35 +1713,66 @@ def _parse_rar3_file_header(
     return member, crc_pos
 
 
+# Ten digits hold any 32-bit number; a longer run is not treated as a version.
+_RAR3_MAX_VERSION_DIGITS = 10
+
+
 def _rar3_split_file_version(filename: str) -> tuple[str, int | None]:
     """Split a RAR3 ``path;n`` version suffix into ``(path, n)``.
 
     RAR3 stores the version in the header name when ``FILE_VERSION`` is set.
     Returns ``(filename, None)`` when no trailing decimal ``;n`` is present.
+
+    Only ASCII digits count, at most :data:`_RAR3_MAX_VERSION_DIGITS` of them.
+    ``str.isdigit`` also accepts ``²`` and other Unicode digits that ``int`` then
+    rejects, and ``int`` refuses a string of more than 4300 digits. Either would
+    raise a bare ``ValueError`` out of ``open_archive``. A suffix that fails the
+    test stays part of the name, as ``unrar vt -ver`` also shows it.
     """
     stem, sep, ver = filename.rpartition(";")
-    if not sep or not ver.isdigit():
+    if (
+        not sep
+        or not 0 < len(ver) <= _RAR3_MAX_VERSION_DIGITS
+        or not ver.isascii()
+        or not ver.isdigit()
+    ):
         return filename, None
     return stem, int(ver)
 
 
 def _parse_rar3_ext_time(
-    data: bytes, pos: int, dos_mtime: datetime | None
+    data: bytes,
+    pos: int,
+    dos_mtime: datetime | None,
+    *,
+    filename: str = "",
+    issues: list[TimestampIssue] | None = None,
 ) -> tuple[datetime | None, datetime | None, datetime | None, int]:
     """Parse RAR3 EXTTIME. Returns ``(mtime, ctime, atime, pos)``.
 
     Nibble order is UnRAR / rarfile, not a guess: flags>>12 mtime (refines the
     header DOS stamp), >>8 ctime, >>4 atime, low nibble arctime. arctime has no
     ``ArchiveMember`` field and is walked only so the cursor stays aligned.
+
+    Without the mtime nibble's present bit, ``dos_mtime`` is returned unchanged.
     """
     flags = 0
     if pos + 2 <= len(data):
         flags = _S_SHORT.unpack_from(data, pos)[0]
         pos += 2
 
-    mtime, pos = _parse_rar3_xtime(flags >> 12, data, pos, dos_mtime)
-    ctime, pos = _parse_rar3_xtime(flags >> 8, data, pos, None)
-    atime, pos = _parse_rar3_xtime(flags >> 4, data, pos, None)
+    mtime = dos_mtime
+    if flags >> 12 & 8:
+        mtime, pos = _parse_rar3_xtime(
+            flags >> 12, data, pos, dos_mtime, base_in_header=True
+        )
+    ctime, pos = _parse_rar3_xtime(
+        flags >> 8, data, pos, None, field=("ctime", filename, issues)
+    )
+    atime, pos = _parse_rar3_xtime(
+        flags >> 4, data, pos, None, field=("atime", filename, issues)
+    )
+    # arctime is walked for the cursor only, so a bad one has no field to report.
     _, pos = _parse_rar3_xtime(flags, data, pos, None)
     return mtime, ctime, atime, pos
 
@@ -1716,14 +1782,29 @@ def _parse_rar3_xtime(
     data: bytes,
     pos: int,
     basetime: datetime | None,
+    *,
+    base_in_header: bool = False,
+    field: tuple[str, str, list[TimestampIssue] | None] | None = None,
 ) -> tuple[datetime | None, int]:
+    """One EXTTIME slot: ``(time, pos)``.
+
+    The mtime slot refines the header's DOS word (``base_in_header``, with that
+    word's value as ``basetime``); every other slot stores its own DOS word first.
+    ``field`` is ``(name, filename, issues)`` for a slot whose invalid word is
+    reported. The remainder bytes are consumed either way, so the cursor stays
+    aligned when the base time is invalid.
+    """
     if not (flag & 8):
         return None, pos
-    if basetime is None:
+    if not base_in_header:
         if pos + 4 > len(data):
             return None, pos
         stamp, pos = _load_le32(data, pos)
         basetime = _parse_dos_time(stamp)
+        if basetime is None and stamp != 0 and field is not None:
+            name, filename, issues = field
+            if issues is not None:
+                issues.append(_dos_time_issue(stamp, name, filename))
 
     rem = 0
     cnt = flag & 3
@@ -1733,6 +1814,8 @@ def _parse_rar3_xtime(
         b, pos = _load_byte(data, pos)
         rem = (b << 16) | (rem >> 8)
 
+    if basetime is None:
+        return None, pos
     if flag & 4 and basetime.second < 59:
         basetime = basetime.replace(second=basetime.second + 1)
 
@@ -2449,6 +2532,7 @@ def _parse_rar5_file_block(
     ctime: datetime | None = None
     atime: datetime | None = None
     skipped_records: list[tuple[str, int | None, str]] = []
+    timestamp_issues: list[TimestampIssue] = []
     # Why the walk stopped, or ``None`` if it ran to the end. Four exits reach it
     # and they are not the same fault, so the diagnostic must not name one of them
     # for all four: a single zero-size record is not "more than sixteen malformed".
@@ -2510,7 +2594,13 @@ def _parse_rar5_file_block(
             try:
                 if xtype == _RAR5_XFILE_TIME:
                     mtime, ctime, atime = _parse_rar5_xtime(
-                        xdata, xpos, mtime, ctime, atime
+                        xdata,
+                        xpos,
+                        mtime,
+                        ctime,
+                        atime,
+                        filename=filename,
+                        issues=timestamp_issues,
                     )
                 elif xtype == _RAR5_XFILE_ENCRYPTION:
                     # Deliberately *not* skippable. Dropping this record would
@@ -2606,6 +2696,7 @@ def _parse_rar5_file_block(
         file_version=file_version,
         skipped_header_records=tuple(skipped_records),
         header_walk_stop_reason=stop_reason,
+        timestamp_issues=tuple(timestamp_issues) if timestamp_issues else (),
     )
 
 
@@ -2637,20 +2728,30 @@ def _parse_rar5_xtime(
     current_mtime: datetime | None,
     current_ctime: datetime | None = None,
     current_atime: datetime | None = None,
+    *,
+    filename: str = "",
+    issues: list[TimestampIssue] | None = None,
 ) -> tuple[datetime | None, datetime | None, datetime | None]:
+    """Apply one RAR5 time extra. A FILETIME out of ``datetime``'s range is
+    ``None`` and, when ``issues`` is given, is recorded there."""
     tflags, pos = load_vint(xdata, pos)
-    ldr = _load_windowstime
-    if tflags & _RAR5_XTIME_UNIXTIME:
-        ldr = _load_unixtime
+
+    def ldr(field: str, at: int) -> tuple[datetime | None, int]:
+        if tflags & _RAR5_XTIME_UNIXTIME:
+            return _load_unixtime(xdata, at)
+        return _load_windowstime(
+            xdata, at, filename=filename, field=field, issues=issues
+        )
+
     mtime = current_mtime
     ctime = current_ctime
     atime = current_atime
     if tflags & _RAR5_XTIME_HAS_MTIME:
-        mtime, pos = ldr(xdata, pos)
+        mtime, pos = ldr("mtime", pos)
     if tflags & _RAR5_XTIME_HAS_CTIME:
-        ctime, pos = ldr(xdata, pos)
+        ctime, pos = ldr("ctime", pos)
     if tflags & _RAR5_XTIME_HAS_ATIME:
-        atime, pos = ldr(xdata, pos)
+        atime, pos = ldr("atime", pos)
     if tflags & _RAR5_XTIME_UNIXTIME_NS:
         mtime, pos = _apply_rar5_unix_ns(
             xdata, pos, mtime, present=bool(tflags & _RAR5_XTIME_HAS_MTIME)

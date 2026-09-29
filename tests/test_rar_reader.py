@@ -268,7 +268,9 @@ def test_refused_second_open_does_not_spawn_unrar(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -313,7 +315,9 @@ def test_seekable_members_respawns_unrar_on_backward_seek(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -540,7 +544,9 @@ def test_seekable_unrar_respawns_while_process_still_running(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -566,7 +572,9 @@ def test_seekable_members_does_not_respawn_on_stored_direct_slice(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -604,7 +612,9 @@ def test_solid_symlink_demux_and_link_targets(
     original = rar_reader.open_unrar_p
 
     def spy(archive_path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(archive_path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -671,7 +681,9 @@ def test_solid_hardlink_demux_and_targets(monkeypatch: pytest.MonkeyPatch) -> No
     original = rar_reader.open_unrar_p
 
     def spy(archive_path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(archive_path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -3652,7 +3664,9 @@ def test_wildcard_member_name_reads_its_own_bytes(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -3782,7 +3796,9 @@ def test_seekable_wildcard_respawn_still_skips_glob_prefix(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -3819,7 +3835,9 @@ def test_wildcard_dirglob_and_backslash_names_are_refused(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
