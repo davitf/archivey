@@ -442,13 +442,37 @@ def unrar_member_argument(
     and ``unrar`` compares them as such, so their UTF-8 text is the mask; the
     child runs under a UTF-8 locale for that (:func:`_unrar_env`).
 
-    Windows argv is Unicode, not bytes, so the text is used there. Backslashes are
-    separators in RAR3's stored bytes and ``/`` in the presented name; the bytes
-    follow the name.
+    Windows argv is Unicode, not bytes. Windows ``unrar`` reads an 8-bit name as
+    OEM text, not as the name archivey presents, so the mask there is the stored
+    bytes put through that same conversion (:func:`_windows_unrar_8bit_name`).
+    Backslashes are separators in RAR3's stored bytes and ``/`` in the presented
+    name; the bytes follow the name.
     """
-    if not stored_is_8bit or stored is None or sys.platform == "win32":
+    if not stored_is_8bit or stored is None:
         return presented
+    if sys.platform == "win32":
+        return (
+            _windows_unrar_8bit_name(stored).replace("\\", "/").rstrip("/") or presented
+        )
     return stored.replace(b"\\", b"/").rstrip(b"/")
+
+
+def _windows_unrar_8bit_name(stored: bytes) -> str:
+    """An 8-bit RAR3 name as Windows ``unrar`` sees it.
+
+    ``unrar`` 7.00 (``ArcCharToWide`` with ``ACTW_OEM``) converts the stored bytes
+    with ``OemToCharBuffA`` and then ``MultiByteToWideChar(CP_ACP)``. Both are the
+    system code pages, which the child shares, so the same two calls here give the
+    text its mask must match. Under OEM 437 the ``\\xe9`` of ``caf\\xe9s.txt`` is
+    ``Θ``, not the ``é`` archivey presents (Windows CI).
+    """
+    if sys.platform == "win32" and not stored.isascii():
+        import ctypes
+
+        buffer = ctypes.create_string_buffer(stored, len(stored))
+        ctypes.windll.user32.OemToCharBuffA(buffer, buffer, len(stored))
+        stored = buffer.raw
+    return stored.decode("mbcs", "replace")
 
 
 # Locale names that select UTF-8, tried in order for unrar's environment. glibc

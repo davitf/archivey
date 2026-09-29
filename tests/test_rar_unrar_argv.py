@@ -245,7 +245,9 @@ def test_8bit_name_mask_is_the_stored_bytes() -> None:
         "dir/café.txt", b"dir\\caf\xe9.txt", stored_is_8bit=True
     )
     if sys.platform == "win32":
-        assert argument == "dir/café.txt"  # Windows argv is Unicode
+        # Windows argv is Unicode; the byte goes through the OEM code page as
+        # unrar converts it, not through archivey's windows-1252 guess.
+        assert argument == "dir/" + rar_unrar._windows_unrar_8bit_name(b"caf\xe9.txt")
     else:
         assert argument == b"dir/caf\xe9.txt"
     assert (
