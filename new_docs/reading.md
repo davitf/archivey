@@ -15,3 +15,21 @@ compressed TAR is solid, and so are most 7z archives, since 7-Zip creates solid 
 default. RAR archives are solid only when created with that option. On a solid archive,
 reading members by name can decompress the same data again and again. `stream_members`
 decompresses it once.
+
+## Reading once
+
+```python
+with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
+    for member, stream in archive.stream_members():
+        ...
+```
+
+`streaming=True` is a promise to read the archive once, from start to end. When set, `open`,
+`read` and `members()` raise, so an out-of-order read fails right away instead of quietly
+costing time. If you plan to read an archive in one pass, setting it catches that mistake,
+even on an ordinary file. You get one pass, through `stream_members` or `extract_all`, and it
+is used up even if you leave the loop early.
+
+A pipe, a socket or an HTTP response can only be read this way. Only TAR archives and single
+compressed files can come from one. ZIP, 7z, RAR and ISO keep their index at the end of the
+file, or jump around in it, so they need a file or another source that can seek.
