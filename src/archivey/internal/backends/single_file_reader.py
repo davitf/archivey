@@ -12,7 +12,7 @@ the shared codec layer.
 The backend is codec-agnostic; adding a standalone codec is "add codec + enum +
 detection" — no new backend class (see ``format-single-file-compressors``). Basic
 ZST/LZ4 read is already here; remaining seekable-index / accelerator work for those
-codecs is tracked under Phase 8 in ``PLAN.md``.
+codecs is an idea in ``dev-docs/IDEAS.md`` ("Efficient seekable zstd").
 """
 
 from __future__ import annotations

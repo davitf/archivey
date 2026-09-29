@@ -269,9 +269,9 @@ when listing ends in terminal damage.
 
 ### The integrity guarantee
 
-**Read a member to its end and Archivey checks it.** Where the archive stores a
-checksum or an authentication tag, a full read verifies it and raises if it does not
-match. Stop early and nothing is checked. Errors always come from `read()`, never from
+**Read a member from its start to its end, with no seek, and Archivey checks it.**
+Where the archive stores a checksum or an authentication tag, that read verifies it and
+raises if it does not match. Stop early and nothing is checked. Errors always come from `read()`, never from
 `close()` — so a `finally` block can't mask one.
 
 "To its end" means `read(-1)`, reading until `read()` returns `b""`, or — for a member
@@ -290,8 +290,13 @@ What that does and does not promise:
   member fails mid-stream, some of what you already read is probably fine — but we
   can't tell you which part, or how much. Treat the prefix as unverified: not
   known-good, not known-bad.
-- **A full-length return means the checksum matched.** Trust it as far as you trust
-  that digest.
+- **A full-length return from a read with no seek means the checksum matched.** Trust
+  it as far as you trust that digest.
+- **After a seek, checking is best effort.** Whatever is decoded is still checked, and
+  damage it reaches still raises. But a seek into a `.xz` or `.lz` file jumps by the
+  file's own index, and a crafted index can send it to the wrong bytes with no error.
+  Checking that would mean decoding everything before the target, which is the cost a
+  seek exists to avoid. When the bytes must be right, read from the start.
 - **Once a stream has raised, it keeps raising.** Every later `read()` raises the same
   error. A seek back works and the bytes before the damage read again, but the read
   that reaches the end raises the error again, so seeking back cannot hand you the
@@ -315,9 +320,9 @@ except archivey.ReadError:
     ...  # buf holds everything that was readable; the member is damaged
 ```
 
-If you need certainty regardless of how you read — partial reads, seeks, or "never
-hand me unverified bytes" — `VerificationMode.STRICT` verifies a whole member before
-returning any of it.
+Archivey has no mode that verifies a whole member before returning any of it. If you
+need "never hand me unverified bytes", read the member to its end into a buffer or a
+temporary file, and use the bytes only after that read finishes without raising.
 
 #### What each call does
 

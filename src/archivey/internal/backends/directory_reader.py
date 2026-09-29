@@ -94,10 +94,21 @@ def _identity_stat(path: str) -> os.stat_result:
 # component; Windows has neither and relies on the identity check.
 _HAS_NOFOLLOW = hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+# The walk scans each subdirectory through a descriptor opened with `O_NOFOLLOW` (by
+# path, or component by component with `openat` when the listing has no identity to
+# check), lists it with `os.scandir(fd)` and reads links in it with `readlinkat`. Where
+# any of those is missing it scans by path.
+_SCAN_BY_FD = (
+    _HAS_NOFOLLOW and os.scandir in os.supports_fd and os.readlink in os.supports_dir_fd
+)
 
 
 class _Identity(NamedTuple):
-    """A FILE member's ``(st_dev, st_ino)`` from the listing, carried in its ``_raw``."""
+    """An entry's ``(st_dev, st_ino)`` from the listing.
+
+    A FILE member carries it in its ``_raw``; the walk keeps one per subdirectory it
+    has yet to scan.
+    """
 
     dev: int
     ino: int
@@ -112,7 +123,7 @@ def _file_attributes(path: str) -> int:
     return getattr(os.lstat(path), "st_file_attributes", 0)
 
 
-def _changed_since_listing(name: str, what: str) -> OSError:
+def _changed_since_listing(name: str, what: str, action: str = "reading") -> OSError:
     """The refusal for a member whose path no longer holds the file the walk listed.
 
     The message is left unescaped: it is a plain OSError, and the print site escapes a
@@ -121,7 +132,7 @@ def _changed_since_listing(name: str, what: str) -> OSError:
     """
     return OSError(
         errno.ESTALE,
-        f"{quoted(name)} {what} since the directory was listed; not reading it",
+        f"{quoted(name)} {what} since the directory was listed; not {action} it",
     )
 
 
@@ -184,19 +195,22 @@ class DirectoryReader(BaseArchiveReader):
         # `first_names` maps a multiply-linked file's (st_dev, st_ino) to the first name
         # the walk gave it, so later names list as HARDLINK members pointing there, the
         # way a tar records them. It lives for one walk: each pass decides afresh.
-        pending: list[tuple[ArchiveMember, Path]] = []
+        pending: list[tuple[ArchiveMember, Path, _Identity | None]] = []
         first_names: dict[tuple[int, int], str] = {}
-        yield from self._scan_level(self._root, "", pending, first_names)
+        yield from self._scan_level(self._root, "", None, pending, first_names)
         while pending:
-            member, path = pending.pop()
+            member, path, identity = pending.pop()
             yield member
-            yield from self._scan_level(path, member.name, pending, first_names)
+            yield from self._scan_level(
+                path, member.name, identity, pending, first_names
+            )
 
     def _scan_level(
         self,
         directory: Path,
         rel_prefix: str,
-        pending: list[tuple[ArchiveMember, Path]],
+        expected: _Identity | None,
+        pending: list[tuple[ArchiveMember, Path, _Identity | None]],
         first_names: dict[tuple[int, int], str],
     ) -> Iterator[ArchiveMember]:
         """Yield one directory's non-directory entries; push its subdirectories.
@@ -206,6 +220,15 @@ class DirectoryReader(BaseArchiveReader):
         only when this generator is exhausted: a caller that stops early (``break``,
         ``islice``, a peek with ``next``) leaves them off the stack and silently loses
         those subtrees, so drain it before reading ``pending``.
+
+        ``expected`` is the subdirectory's identity from its parent's scan (``None``
+        for the root, and where the filesystem reports ``st_ino`` 0). Another process can
+        swap a listed subdirectory for a symlink out of the root before the walk gets
+        to it, and scanning that path would list the target's entries as members
+        (threat-model O21). So where the platform allows it the subdirectory is opened
+        with ``O_NOFOLLOW`` and scanned through that descriptor, and a descriptor that
+        is not the listed directory is refused with ``OSError(ESTALE)``, as a read of a
+        replaced file is, and so is a symlink in its place.
         """
         # os.scandir yields DirEntry objects whose stat() is cached, so we avoid a
         # separate os.stat()/os.lstat() syscall per entry.
@@ -218,8 +241,14 @@ class DirectoryReader(BaseArchiveReader):
         # `openspec/project.md` — no silent guesses — and `error-handling`'s rule that
         # genuine I/O errors are never swallowed or reclassified).
         try:
-            with os.scandir(directory) as it:
-                entries = sorted(it, key=lambda e: e.name)
+            dir_fd = self._open_listed_directory(directory, rel_prefix, expected)
+            try:
+                with os.scandir(directory if dir_fd is None else dir_fd) as it:
+                    entries = sorted(it, key=lambda e: e.name)
+            except BaseException:
+                if dir_fd is not None:
+                    os.close(dir_fd)
+                raise
         except FileNotFoundError:
             relative = rel_prefix.rstrip("/") or "."
             self._diagnostics_collector.emit(
@@ -234,12 +263,40 @@ class DirectoryReader(BaseArchiveReader):
             )
             return
 
+        # Entries scanned through a descriptor are inspected through it too (`lstat`
+        # and `readlink` relative to it), so they come from the directory that was
+        # checked, whatever happens to its path meanwhile. So `dir_fd` must stay open
+        # until the last entry is inspected: `os.scandir(fd)` dups the descriptor for
+        # its own iterator, and closing that iterator leaves `dir_fd` open, but each
+        # `DirEntry` resolves `stat()` through `dir_fd` itself. Closed any earlier, an
+        # entry's `stat()` fails with `EBADF`, or runs in whatever directory reused the
+        # number.
+        try:
+            yield from self._scan_entries(
+                entries, directory, dir_fd, rel_prefix, pending, first_names
+            )
+        finally:
+            if dir_fd is not None:
+                os.close(dir_fd)
+
+    def _scan_entries(
+        self,
+        entries: list[os.DirEntry[str]],
+        directory: Path,
+        dir_fd: int | None,
+        rel_prefix: str,
+        pending: list[tuple[ArchiveMember, Path, _Identity | None]],
+        first_names: dict[tuple[int, int], str],
+    ) -> Iterator[ArchiveMember]:
+        """The body of `_scan_level`, for one directory's sorted entries."""
         # Emit all non-directory entries at this level now; the subdirectories are
         # collected and handed to the walk's stack, so a directory's own files come
         # before anything inside its children.
-        subdirs: list[tuple[ArchiveMember, Path]] = []
+        subdirs: list[tuple[ArchiveMember, Path, _Identity | None]] = []
         for entry in entries:
             rel_path = rel_prefix + entry.name
+            # Scanned through a descriptor, `entry.path` is the bare name.
+            entry_path = os.path.join(directory, entry.name)
             # `stat` and `readlink` race the same window on the same entry — listed by
             # scandir, gone before we inspect it — so both sit inside the one guard.
             #
@@ -255,18 +312,18 @@ class DirectoryReader(BaseArchiveReader):
             try:
                 st = entry.stat(follow_symlinks=False)
                 if _STAT_LACKS_IDENTITY and stat.S_ISREG(st.st_mode):
-                    st = self._stat_with_identity(entry.path, st)
+                    st = self._stat_with_identity(entry_path, st)
                 is_symlink = stat.S_ISLNK(st.st_mode)
                 is_junction = not is_symlink and _is_junction(entry)
                 link_target = (
-                    self._read_link_target(entry.path)
+                    self._read_link_target(entry_path, entry.name, dir_fd)
                     if is_symlink or is_junction
                     else None
                 )
             except FileNotFoundError:
                 self._diagnostics_collector.emit(
                     code=DiagnosticCode.SCAN_ENTRY_VANISHED,
-                    message=f"Entry vanished during scan, skipping: {quoted(entry.path)}",
+                    message=f"Entry vanished during scan, skipping: {quoted(entry_path)}",
                     context=ScanRaceContext(
                         archive_name=self._archive_name,
                         relative_path=rel_path,
@@ -293,7 +350,8 @@ class DirectoryReader(BaseArchiveReader):
                 member = self._make_member(
                     rel_path + "/", st, MemberType.DIRECTORY, None
                 )
-                subdirs.append((member, Path(entry.path)))
+                identity = _Identity(st.st_dev, st.st_ino) if st.st_ino else None
+                subdirs.append((member, Path(entry_path), identity))
             elif stat.S_ISREG(st.st_mode):
                 first_name = None
                 # st_ino 0 is "no identity" (Windows' scandir data, some FUSE and
@@ -319,6 +377,67 @@ class DirectoryReader(BaseArchiveReader):
 
         pending.extend(reversed(subdirs))
 
+    def _open_listed_directory(
+        self, directory: Path, rel_prefix: str, expected: _Identity | None
+    ) -> int | None:
+        """A descriptor on the directory the listing saw at ``directory``, or ``None``.
+
+        ``None`` means the level is scanned by path: the root (``rel_prefix`` is
+        empty; the caller chose it, and it may be a symlink), or a platform without
+        the calls the descriptor walk needs (`_SCAN_BY_FD`). Otherwise nothing on the
+        way is followed. With the listing's identity, the path is opened with
+        ``O_NOFOLLOW | O_DIRECTORY``, so a symlink put in its place fails, and the
+        handle must be the listed directory: a directory above it swapped for a
+        symlink resolves the path elsewhere, which the identity catches. A directory
+        listed with no identity (``st_ino`` 0: some FUSE and network mounts) has
+        nothing to compare, so it is opened one component at a time from the root
+        instead, each with ``O_NOFOLLOW``, and a symlink anywhere on the path fails.
+
+        A symlink in the way fails in the kernel (``ENOTDIR`` on Linux, ``ELOOP``
+        elsewhere); that is reported like a replaced directory, with the kernel's
+        error as the cause. Every other ``OSError`` propagates unchanged, in
+        particular ``FileNotFoundError``, which `_scan_level` reports as a vanished
+        directory.
+        """
+        if not _SCAN_BY_FD or not rel_prefix:
+            return None
+        name = rel_prefix.rstrip("/")
+        try:
+            if expected is None:
+                return self._open_directory_nofollow(name)
+            fd = os.open(
+                directory, os.O_RDONLY | _O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+        except OSError as exc:
+            if exc.errno in (errno.ENOTDIR, errno.ELOOP):
+                raise _changed_since_listing(name, "was replaced", "scanning") from exc
+            raise
+        try:
+            st = os.fstat(fd)
+            if (st.st_dev, st.st_ino) != expected:
+                raise _changed_since_listing(name, "was replaced", "scanning")
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def _open_directory_nofollow(self, name: str) -> int:
+        """POSIX: open directory ``name`` under the root one component at a time."""
+        fd = os.open(self._root, os.O_RDONLY | _O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            for component in name.split("/"):
+                next_fd = os.open(
+                    component,
+                    os.O_RDONLY | _O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=fd,
+                )
+                os.close(fd)
+                fd = next_fd
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
     @staticmethod
     def _stat_with_identity(path: str, cached: os.stat_result) -> os.stat_result:
         """Windows only: re-stat a regular file for st_ino, st_dev and st_nlink.
@@ -337,15 +456,20 @@ class DirectoryReader(BaseArchiveReader):
             return cached
 
     @staticmethod
-    def _read_link_target(path: str) -> str:
+    def _read_link_target(path: str, name: str, dir_fd: int | None) -> str:
         """The symlink/junction target, with separators normalized like member names.
+
+        ``name`` is read relative to ``dir_fd`` when the level was scanned through one,
+        and ``path`` is read otherwise.
 
         On Windows ``os.readlink`` returns the target with ``\\`` separators; convert
         them to ``/`` so link targets live in the same namespace as member names (where
         the separator conversion is likewise applied only for Windows-origin paths — on
         POSIX a backslash is a literal filename character and is kept).
         """
-        target = os.readlink(path)
+        target = (
+            os.readlink(path) if dir_fd is None else os.readlink(name, dir_fd=dir_fd)
+        )
         if os.name == "nt":
             target = target.replace("\\", "/")
         return target

@@ -26,7 +26,7 @@ layer; what differs is on [`tar.md`](tar.md) §2.3.
 | | |
 | --- | --- |
 | Read | Yes, ten codecs, one reader (`SingleFileReader`). Each is `ContainerFormat.RAW_STREAM` plus a `StreamFormat` (`ArchiveFormat.GZ`, …) |
-| Write | **Not shipped**, for any format (`PLAN.md` phase 9) |
+| Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | Any. Random access needs a seekable source; a pipe needs `streaming=True` and gives one forward pass. `start_offset` is refused |
 | Listing cost | `INDEXED`. The one member is built at open without decoding; the few fields that need the source come from its header or its end (§2.2) |
 | Access cost | `DIRECT` — one member, nothing solid in front of it |

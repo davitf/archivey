@@ -23,8 +23,8 @@ payloads.
 [GitHub private vulnerability reporting](https://github.com/davitf/archivey/security/advisories/new)
 (Security → Advisories → Report a vulnerability).
 
-If that flow is unavailable, contact the maintainer privately via the contact
-information on the maintainer’s GitHub profile or the package metadata on PyPI.
+If that flow is unavailable, email the maintainer at
+[archivey@davitf.com](mailto:archivey@davitf.com).
 
 Include as much of the following as you can:
 
@@ -56,6 +56,12 @@ In scope (non-exhaustive):
 - Failure to translate corrupt/truncated input into typed `ArchiveyError`s on
   the defended (non-accelerator) parse path
 
+The [known and accepted limits](https://davitf.github.io/archivey/extracting/#known-and-accepted-limits)
+(a crash inside an in-process native decoder, untranslated `MemoryError`, no CPU or
+time bound, accelerators on by default, a crafted `.xz`/`.lz` index after a seek, and
+the Windows directory-source gap) are documented trade-offs, not vulnerabilities. A
+report that one of them reaches further than the page says is in scope.
+
 Out of scope for private security reports (use ordinary GitHub issues):
 
 - Feature requests, docs typos, and non-security compatibility bugs
@@ -68,14 +74,15 @@ Out of scope for private security reports (use ordinary GitHub issues):
 ## Hardening notes for callers
 
 Guidance for processing untrusted archives — accelerators and the defended fuzz
-surface, `unrar` in your deployment's trust boundary, and extracting to a scratch
-directory before promoting — lives in the user guide, next to the policies it
+surface, the external RAR program (`unrar`, `rar` or `unar`, and the password `unar`
+takes on its command line) in your deployment's trust boundary, and extracting to a
+scratch directory before promoting — lives in the user guide, next to the policies it
 qualifies:
 
 - [Safe extraction](https://davitf.github.io/archivey/extracting/) — trust
   boundaries, what is enforced, policies, limits, and the hardening notes
-- [`dev-docs/threat-model.md`](dev-docs/threat-model.md) — the maintainer gap
-  register
+- [`dev-docs/threat-model.md`](dev-docs/threat-model.md) — the threat model:
+  attackers, trust boundaries, defended properties and accepted non-guarantees
 
 ## Response Process
 

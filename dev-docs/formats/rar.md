@@ -10,7 +10,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | | |
 | --- | --- |
 | Read | Yes — metadata natively, member data through RARLAB `unrar` or `rar` |
-| Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
+| Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
 | Source | Seekable only, in both access modes |
 | Listing cost | `INDEXED` — RAR5 with QO: read the copies, skip matching FILE headers on the walk (§1.1). Otherwise a header-to-header walk cached at open (§1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
@@ -689,6 +689,8 @@ refused before the temp file exists, with `ResourceLimitError` naming
 documented), and `"auto"`, the default since the maintainer chose it on 2026-09-26,
 picks RARLAB `unrar` when installed, `unar` otherwise, once per reader. So the "never a
 probe of `PATH`" line in the reasoning below no longer holds for `unar`. Measurements and the reasons are in
+[`alternative-rar-decompressors.md`](../investigations/alternative-rar-decompressors.md)
+§2026-09-26 measurements, and the upstream defect in
 [`known-issues.md`](../known-issues.md) §MacPaw `unar`; the process layer is
 `internal/external/`, the RAR policy `internal/backends/rar_unar.py`. CI's macOS leg now
 runs the fixture parity test against the Homebrew bottle. The upstream report is still
@@ -714,7 +716,11 @@ Any RAR4 archive in the wild today was written by something older than a current
 buffer in place after hashing it. `hashlib.sha1` does not, so `_Rar3Sha1` hashes
 correctly and then corrupts a reused `bytearray` seed so the next of the 0x4000×16
 rounds matches WinRAR. Seed ≤ 64 bytes (a password of 28 UTF-16 code units plus the
-8-byte salt) never hits it. [`known-issues.md`](../known-issues.md).
+8-byte salt) never hits it. Ported from `rarfile` 4.3 `Rar3Sha1`. The committed `-hp`
+fixtures use `header_password` (UTF-16LE plus salt is 38 bytes), so listing them never
+reaches the mutation; `tests/test_rar_parser.py` pins it instead (the digest of the original
+bytes, the seed mutated afterwards, and a long-password string-to-key checked against
+`rarfile`).
 
 **The writer being trialware is also why the corpus fixtures are committed.** The declarative corpus builds each entry
 in every format it declares, and eight entries declare `rar`. All eight ran **nowhere**:

@@ -2242,7 +2242,7 @@ def test_bcj_member_whose_length_is_not_a_whole_number_of_blocks(
     IA64 is the one that was broken: pybcj's decoder dropped the final incomplete
     16-byte block, so a 2911-byte member came back as 2896 bytes and archivey
     raised ``TruncatedError`` on an archive 7-Zip writes and reads back fine
-    (dev-docs/known-issues.md). 2911 is not a multiple of any filter's block size,
+    (dev-docs/investigations/pybcj-upstream-report.md). 2911 is not a multiple of any filter's block size,
     so the same payload covers the other five through the liblzma path.
     """
     payload = (_BCJ_CODE_PATTERN * 200)[:2911]
@@ -2264,7 +2264,7 @@ def test_bcj_decoder_accepts_an_unpack_size_above_two_gib() -> None:
     pybcj takes the stream size as a C signed ``int``, so ``BCJDecoder(2**31)``
     raised a bare ``OverflowError`` — not even an ``ArchiveyError`` — before any byte
     was read, on archives 7-Zip writes with ``-m0=BCJ -m1=LZMA`` and reads back fine
-    (dev-docs/known-issues.md). The declared size no longer reaches the filter at
+    (dev-docs/investigations/pybcj-upstream-report.md). The declared size no longer reaches the filter at
     all, so the same bytes decode the same way whatever it says; this pins that
     without building a 2 GiB fixture.
     """
@@ -2581,7 +2581,8 @@ def test_aes_ppmd_wrong_key_moves_on_to_the_next_password(tmp_path: Path) -> Non
     """A wrong key whose garbage stops PPMd short is a wrong key, not a crash.
 
     ``wrong856`` used to end password iteration with pyppmd's ``MemoryError`` before
-    ``secret`` was tried (``dev-docs/known-issues.md``). Run in a child process like
+    ``secret`` was tried (``dev-docs/investigations/ppmd-native-investigation-results.md``
+    §K.4). Run in a child process like
     the other PPMd garbage decodes.
     """
     import base64

@@ -26,7 +26,7 @@ tracks visited extents — see :func:`_install_pycdlib_directory_cycle_guard`. I
 confined to pycdlib and transparent on well-formed images, but a program that also uses
 pycdlib directly in the same process will see archivey's guarded ``deque`` there too. This
 is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever; see
-``dev-docs/known-issues.md``. The same import wraps ``pycdlib.rockridge.RockRidge.parse``
+``dev-docs/formats/iso.md`` §4. The same import wraps ``pycdlib.rockridge.RockRidge.parse``
 (:func:`_install_pycdlib_system_use_filter`), but the wrapper acts only inside this
 module's own ``open_fp`` call, so other users of pycdlib see no change.
 """

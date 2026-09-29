@@ -150,7 +150,7 @@ format and the second branch above is unreachable — the write half of the
 registry is ABC scaffolding, not a shipped path. There is no `archivey.create`.
 The writer surface is parked in
 [`archive-writing-design.md`](../../../dev-docs/investigations/archive-writing-design.md)
-until `PLAN.md` phase 9.
+until an OpenSpec change for writing takes it up.
 
 #### Scenario: backend ABC matrix
 

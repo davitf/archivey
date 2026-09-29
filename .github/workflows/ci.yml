@@ -251,8 +251,9 @@ jobs:
       # only for tar, digest *values* never). Two assertion arms in the test were wrong.
       # See dev-docs/investigations/rar-corpus-sweep-diagnosis.md.
       #
-      # unar (The Unarchiver's XADMaster) is the opt-in second RAR data program
-      # (ArchiveyConfig.rar_decompressor="unar"). tests/test_rar_unar.py compares it
+      # unar (The Unarchiver's XADMaster) is the second RAR data program: the default
+      # rar_decompressor="auto" uses it when no RARLAB program is installed, and
+      # rar_decompressor="unar" selects it. tests/test_rar_unar.py compares it
       # with unrar on every committed fixture and skips without it. Linux gets
       # Ubuntu's 1.10.1; macOS gets the Homebrew bottle (XADMaster 1.10.8), which is
       # the build macOS users install. Windows has no packaged unar.

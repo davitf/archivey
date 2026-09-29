@@ -12,8 +12,10 @@ Deep dive (code citations, issue table, repros):
 
 Archivey product mitigation (empty→stdlib fallback + single-member ISIZE backstop):
 **implemented** in `_GzipTruncationCheckStream` (OpenSpec change
-`rapidgzip-truncation-investigation`). Accelerator shutdown / dual-load /
-Python-source `terminate()` / truncated-DEFLATE abort: `dev-docs/known-issues.md` (Bugs 1–4).
+`rapidgzip-truncation-investigation`). The two defects archivey fixed on its side
+(closing accelerators at finalization, one accelerator library per process) are §6 and
+§7 below. The two live upstream defects (a raising Python source, a truncated DEFLATE
+stream) are Bugs 3 and 4 in `dev-docs/known-issues.md`.
 
 Pinned: **rapidgzip 0.16.0** ≡ librapidarchive `1221a30` (`[version] Bump rapidgzip
 version to 0.16.0`). Soft-EOF paths unchanged on inspected HEAD.
@@ -26,6 +28,7 @@ version to 0.16.0`). Soft-EOF paths unchanged on inspected HEAD.
 | --- | --- |
 | Soft EOF on truncated gzip / empty-short success | **by design** (not a bug) — Archivey limitation; mitigate with empty→stdlib + ISIZE. macOS raises more often than Linux/Windows but still silent at cut=10. |
 | `std::terminate` on a truncated DEFLATE stream | **bug-class** — contained by a child process; known-issues Bug 4 + §2 below |
+| Worker threads outlive an unclosed object; two libraries in one process | fixed in archivey; §6 and §7 below |
 
 ## 1. Soft EOF on truncated input (by design — Archivey limitation)
 
@@ -90,9 +93,10 @@ destructor must not throw, and the input is only short, not hostile.
 
 | Related Archivey notes | |
 | --- | --- |
-| Bug 1 — must `close()` accelerators | `known-issues.md` |
-| Bug 3 — Python source raises → terminate | `known-issues.md` |
-| Bug 4 — truncated DEFLATE → terminate | `known-issues.md` |
+| Bug 1: must `close()` accelerators | §6 below |
+| Bug 2: rapidgzip and indexed_bzip2 in one process | §7 below, ADR 0008 |
+| Bug 3: Python source raises → terminate | `known-issues.md` |
+| Bug 4: truncated DEFLATE → terminate | `known-issues.md` |
 
 Soft EOF (§1) is separate from this abort class.
 
@@ -125,3 +129,98 @@ Draft body: `UPSTREAM_TRUNCATION_REPORT.md` §7. **Not filing now.**
 Shares soft-EOF shape for very short prefixes; mid-stream more often raises than gzip.
 No ISIZE twin; container CRC covers archive members. Document only unless bare `.bz2`
 parity is required.
+
+---
+
+## 6. Bug 1: an accelerator object must be closed, not only joined (fixed in archivey)
+
+With the `[seekable]` accelerators installed, a process that used them could abort with
+SIGABRT (exit code 134) at interpreter shutdown, after all work had completed, with either
+of:
+
+```
+Detected Python finalization from running rapidgzip thread.
+terminate called without an active exception
+```
+```
+malloc: *** error for object 0x...: pointer being freed was not allocated
+```
+
+The first message is this bug; the second is Bug 2 (§7).
+
+`rapidgzip` and `indexed_bzip2` spawn C++ worker threads (`std::thread`s, invisible to
+Python's `threading` module). Each installs a guard that calls `std::terminate()` if a
+worker thread is still running when the interpreter is finalizing. `join_threads()` does
+not stop the worker thread; only `close()` does (the library's own message says to "close
+all … objects"). So a stream finalized without being closed aborts, on every platform.
+Measured by `tests/test_accelerator_shutdown.py` (rapidgzip, both codecs ×
+intact/corrupt/truncated × cleanup, each in its own subprocess). The input variant is
+irrelevant; only finalization matters:
+
+| Cleanup strategy | Result |
+|---|---|
+| **closed**: `read()`, then `join_threads()` + `close()` during the run | clean |
+| **raw cycle_gc**: raw object reclaimed by the cyclic GC mid-run, never closed | **abort** |
+| **raw unclosed**: raw object finalized at interpreter shutdown, never closed | **abort** |
+| **guarded cycle_gc / unclosed**: same two paths, but a `weakref.finalize` guard closes the object on finalization | clean |
+
+A guard that called `join_threads()` only was tried and is not enough.
+
+**What archivey does.** `_AcceleratorStream` (in `archivey.internal.streams.codecs`) wraps
+every accelerator object and installs a `weakref.finalize` guard that closes the raw object
+exactly once: when the wrapper is collected (cyclically or not) or at interpreter exit. The
+guard holds a strong reference, so the close always runs before the object is freed.
+`close()` on the wrapper triggers the same guard early.
+
+**The canary.** `tests/test_accelerator_shutdown.py` asserts the contract: the closed case
+and the two guarded finalization paths exit cleanly on every platform (if they ever abort,
+archivey's own cleanup is broken), while the raw `cycle_gc` and `unclosed` paths abort. If a
+later `rapidgzip` release stops aborting on a raw, never-closed object (for example because
+it closes or joins in its destructor), the raw-case assertions fail. That is the signal
+that the close-on-finalize guard is no longer load-bearing and the wrapper could be
+simplified.
+
+## 7. Bug 2: rapidgzip and indexed_bzip2 cannot share a process (fixed in archivey)
+
+With Bug 1 fixed, macOS still aborted, as a `malloc … pointer being freed was not
+allocated` heap corruption, and only when both `rapidgzip` and `indexed_bzip2` were
+importable. `scripts/dual_accelerator_repro.py` isolates it (no archivey, no pytest):
+decompressing through both libraries in one process crashes about 100% of the time on
+macOS, while using either one alone, even with both imported, never crashes. The two
+libraries are by the same author and statically bundle a large overlapping C++ core. On
+macOS, dyld coalesces their duplicate weak C++ symbols across the two dynamic libraries, so
+one module's allocator can free the other's objects.
+
+**What archivey does.** It uses only `rapidgzip`. Its Python package bundles the
+specialized bzip2 decoder as `rapidgzip.IndexedBzip2File`, so archivey routes both gzip and
+bzip2 through rapidgzip and never imports the standalone `indexed_bzip2` package. The
+`[seekable]` extra depends on `rapidgzip` alone (ADR 0008).
+`tests/test_accelerator_shutdown.py::test_archivey_uses_single_accelerator_library`
+decompresses both codecs through archivey in a subprocess and asserts `indexed_bzip2` is
+never imported.
+
+This matches the library author's own guidance, from
+[mxmlnkn/librapidarchive](https://github.com/mxmlnkn/librapidarchive):
+
+> I am not sure how well the rapidgzip and indexed_bzip2 Python modules work when loaded at the
+> same time. There may be name collisions resulting in problems. … Currently, I am sidestepping
+> this issue in ratarmount by including indexed_bzip2 in the rapidgzip Python package because it
+> is trivial and low-overhead to do so. **So, if you need to use both, depend on rapidgzip for
+> now.**
+
+rapidgzip can decode bzip2 two ways: `rapidgzip.IndexedBzip2File` (the specialized
+indexed_bzip2 code bundled into the rapidgzip package, with full feature and performance
+parity) and `rapidgzip.RapidgzipFile` opening a `.bz2` directly (a generic algorithm that,
+per the author, "has more memory overhead and might be slightly slower"). Archivey uses
+`IndexedBzip2File` for parity with the standalone package.
+
+## 8. Debugging tools
+
+- `scripts/dual_accelerator_repro.py` confirms the two-library crash (§7) and that routing
+  both codecs through rapidgzip alone is safe.
+- `scripts/accel_leak_trace.py` runs the test suite with the accelerators force-enabled,
+  records each accelerator stream's creation stack, and reports any left unclosed at
+  shutdown. Per-test process and owning-stream leaks are a different gate:
+  `tests/leak_oracle.py`.
+- `scripts/macos_accelerator_debug.py` characterises the finalization behaviour (§6) across
+  raw and guarded objects × cleanup strategies, each in its own subprocess.

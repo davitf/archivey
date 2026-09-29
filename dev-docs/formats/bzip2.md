@@ -260,7 +260,9 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
   (github.com/dsnet/compress, `doc/bzip2-format.pdf`) describe the block and stream
   layout, and `bzip2` 1.0.8's source is the reference implementation
 - [`rapidgzip`](https://github.com/mxmlnkn/rapidgzip), version 0.16, `IndexedBzip2File`
-- Registers: [`known-issues.md`](../known-issues.md) (accelerator bugs 1 to 3) ·
+- Registers: [`known-issues.md`](../known-issues.md) (rapidgzip Bug 3) ·
+  [`rapidgzip-upstream-report.md`](../investigations/rapidgzip-upstream-report.md) (Bugs 1
+  and 2) ·
   [`threat-model.md`](../threat-model.md) O5, O11
 - Decisions: [ADR 0008](../decisions/0008-single-accelerator-rapidgzip.md) ·
   [`library-analysis.md`](../library-analysis.md) §bzip2

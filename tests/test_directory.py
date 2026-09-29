@@ -6,6 +6,7 @@ import errno
 import io
 import logging
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -593,7 +594,13 @@ def _scandir_raising_for(target: Path, exc: OSError):
     real_scandir = os.scandir
 
     def wrapper(path=None):
-        if path is not None and Path(path) == target:
+        # The walk scans a subdirectory through a descriptor where the platform
+        # allows it, so match a descriptor by the directory it is open on.
+        if isinstance(path, int):
+            hit = os.path.samestat(os.fstat(path), os.stat(target))
+        else:
+            hit = path is not None and Path(path) == target
+        if hit:
             raise exc
         return real_scandir(path)
 
@@ -921,6 +928,95 @@ def test_a_directory_swapped_for_a_symlink_after_listing_is_refused(
         _swap_in_symlink(root / "sub", outside)
         with pytest.raises(OSError):
             reader.read(member)
+
+
+def _walk_swapping(
+    root: Path, after: str, swap: Path, target: Path, listed: list[str]
+) -> None:
+    """List ``root`` lazily into ``listed``, swapping ``swap`` for a symlink after ``after``.
+
+    ``listed`` is the caller's, so what the walk yielded before it raised stays visible.
+    """
+    with open_archive(root, streaming=True) as reader:
+        for member, _stream in reader.stream_members():
+            listed.append(member.name)
+            if member.name == after:
+                shutil.rmtree(swap)
+                swap.symlink_to(target, target_is_directory=True)
+
+
+def _outside_tree(tmp_path: Path) -> Path:
+    outside = tmp_path / "outside"
+    (outside / "deeper").mkdir(parents=True)
+    (outside / "secret.txt").write_bytes(b"outside the root")
+    (outside / "deeper" / "secret.txt").write_bytes(b"outside the root")
+    return outside
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX O_NOFOLLOW walk")
+def test_a_directory_swapped_for_a_symlink_before_its_scan_is_refused(
+    tmp_path: Path,
+) -> None:
+    # The walk yields `sub/` before it scans it; a swap in that window must not list
+    # the symlink target's entries as members of `sub/` (threat-model O21).
+    root = tmp_path / "root"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub" / "b.txt").write_bytes(b"inside")
+    outside = _outside_tree(tmp_path)
+    listed: list[str] = []
+    with pytest.raises(OSError, match="was replaced") as excinfo:
+        _walk_swapping(root, "sub/", root / "sub", outside, listed)
+    assert excinfo.value.errno == errno.ESTALE
+    # The kernel's refusal of the symlink is kept as the cause.
+    assert isinstance(excinfo.value.__cause__, OSError)
+    assert excinfo.value.__cause__.errno in (errno.ENOTDIR, errno.ELOOP)
+    assert listed == ["sub/"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX O_NOFOLLOW walk")
+def test_a_parent_swapped_for_a_symlink_before_a_subdirectory_scan_is_refused(
+    tmp_path: Path,
+) -> None:
+    # `sub/` is scanned and `sub/deeper/` listed, then `sub/` is swapped for a link to
+    # a tree with a `deeper/` of its own: the path `sub/deeper` now resolves outside
+    # the root with no symlink as its last component, so only the identity comparison
+    # can refuse it.
+    root = tmp_path / "root"
+    (root / "sub" / "deeper").mkdir(parents=True)
+    (root / "sub" / "b.txt").write_bytes(b"inside")
+    outside = _outside_tree(tmp_path)
+    listed: list[str] = []
+    with pytest.raises(OSError, match="was replaced") as excinfo:
+        _walk_swapping(root, "sub/deeper/", root / "sub", outside, listed)
+    assert excinfo.value.errno == errno.ESTALE
+    assert excinfo.value.__cause__ is None
+    assert listed == ["sub/", "sub/b.txt", "sub/deeper/"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX O_NOFOLLOW walk")
+def test_a_parent_swap_is_refused_on_a_filesystem_without_identities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A filesystem that reports st_ino 0 (some FUSE and network mounts) leaves no
+    # identity to compare, so the subdirectory is opened one component at a time
+    # from the root and the swapped-in symlink above it fails the walk.
+    from archivey.internal.backends.directory_reader import DirectoryReader
+
+    real_open = DirectoryReader._open_listed_directory
+
+    def without_identity(self, directory, rel_prefix, expected):
+        return real_open(self, directory, rel_prefix, None)
+
+    monkeypatch.setattr(DirectoryReader, "_open_listed_directory", without_identity)
+    root = tmp_path / "root"
+    (root / "sub" / "deeper").mkdir(parents=True)
+    (root / "sub" / "b.txt").write_bytes(b"inside")
+    outside = _outside_tree(tmp_path)
+    listed: list[str] = []
+    with pytest.raises(OSError, match="was replaced") as excinfo:
+        _walk_swapping(root, "sub/deeper/", root / "sub", outside, listed)
+    assert excinfo.value.errno == errno.ESTALE
+    assert listed == ["sub/", "sub/b.txt", "sub/deeper/"]
 
 
 def test_a_file_replaced_after_listing_is_refused(tmp_path: Path) -> None:

@@ -15,7 +15,7 @@ pip install archivey[all]            # both of the above
 There are four extras and no per-format ones — member codecs are shared across
 containers, so a format name would be the wrong thing to install. On a free-threaded
 build use `archivey[free-threaded]`; see
-[Platforms and threading](support-matrix.md#free-threaded-python-313t-and-later).
+[Platforms and threading](support-matrix.md#free-threaded-python-313t).
 
 RAR **member data** also needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH`
 (listing works without it). How to get that binary is below; format quirks live on
@@ -153,4 +153,4 @@ user contribution, not the current official binary.
 
 Use `archivey[free-threaded]` on 3.13t and later: it is the measured subset of extras
 that leaves the GIL disabled. See
-[Platforms and threading](support-matrix.md#free-threaded-python-313t-and-later).
+[Platforms and threading](support-matrix.md#free-threaded-python-313t).

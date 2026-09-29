@@ -40,7 +40,7 @@ meaningful only once everything else is addressed), and the parked-from-archive
 table. `STATUS.md` records the intended ordering.
 
 Note that an empty `review/` does **not** mean `0.2.0` is ready: the release bundle
-(`PLAN.md` item 6 — packaging finalize, the free-threading support statement, the
+(packaging finalize, the free-threading support statement, the
 migration guide) was never a review item and is still outstanding.
 
 ## Archive (complete & addressed)
