@@ -880,6 +880,58 @@ why none was taken yet:
 - A narrower refusal to evaluate with it: refuse `..` only when the component before it
   does not exist on disk when the link is created.
 
+*Where the code is.*
+- `internal/extraction.py` `_write_symlink` creates the link and runs the one
+  re-validation, the `(dest_path.parent / target).resolve()` after `os.symlink`.
+- `internal/filters.py` `check_universal` is the lexical check at planning time, plus
+  the resolve of the member's real parent that blocks writes through a link.
+- `_prepare_destination` is where `OverwritePolicy.REPLACE` `rmtree`s a real directory
+  before putting something else at its path.
+
+*Measured (2026-09-28).* Both `streaming=False` and `streaming=True`:
+
+| Archive | Result |
+|---|---|
+| `l -> a/../secret`, `a -> .` | Both `EXTRACTED`; `l` escapes |
+| `l -> a/..`, `a -> .`, then file `l/pwned` | `l/pwned` is `BLOCKED` ("Member resolves outside the destination root"), nothing written outside |
+| `d/l -> ../a/../../secret`, then `a -> d` | Caught already: the target escapes lexically from `d/` |
+
+So the gap is a link left on disk, not a write outside the destination.
+
+*What makes it possible.* When a link is created, the resolve walks some components that
+do not exist yet, and Python's non-strict `resolve()` then treats a `..` after them
+lexically. A later member creates one of those components as a symlink. The same thing
+happens if a directory the walk went *through* is later replaced (`REPLACE` + `rmtree`)
+by a symlink.
+
+*Sketch of the incremental recheck (not built, not measured).*
+- When a link is created and passes, record the set of destination paths its resolution
+  depended on: every component the walk visited that did not exist, and every existing
+  directory it went through. Following an existing link adds that link's own
+  dependencies.
+- Keep a map from path to the links that depend on it.
+- When any member creates or replaces something at a path in the map, recheck those
+  links against the live tree. Remove any that now escape, and change their result to
+  `BLOCKED`.
+- The recheck happens at the moment the escape would appear, so it is never live on
+  disk, and it works in a streaming pass because it needs only links already created.
+
+Costs and pitfalls to settle:
+- The dependency set of a link through a chain of links.
+- A rename under `OverwritePolicy.RENAME`.
+- Links created by the orphan second pass.
+- Memory proportional to the links created, so it needs a bound or an argument against
+  `ListingLimits`.
+- Rewriting a result that progress callbacks already reported as `EXTRACTED`.
+
+*A fix is done when:*
+- the O22 test passes in both modes;
+- no escaping link is on disk at any point a later member could observe, not only at the
+  end;
+- no legitimate `a/../x` target is refused;
+- symlink-heavy extraction (for example a `node_modules`-shaped tree) stays linear in
+  link count.
+
 ## OPEN gaps — compatibility
 
 ### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed

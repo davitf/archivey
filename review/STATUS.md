@@ -105,6 +105,7 @@ paid W1–W9 and the Q13/O-23 follow-ons (`#233`–`#236`) landed.
 
 | Review | Archived as | Closing work |
 |--------|-------------|--------------|
+| Extraction and backend security audit | [`archive/2026-09-29-extraction-audit/`](archive/2026-09-29-extraction-audit/SUMMARY.md) | Reproducers and fixes in **#512**; deferred items (O22, `rar.md` §7, `IDEAS.md`) and next-audit seeds in its SUMMARY. |
 | `simplicity-consistency/` (Topic 9) | [`archive/2026-08-15-simplicity-consistency/`](archive/2026-08-15-simplicity-consistency/) | Findings #230/#231; W1–W9 in **#232** (six OpenSpec changes + ADRs 0015–0017); expansions **#233–#236**. Guardrails in `tests/test_review_simplicity_consistency.py`. **O2b/O2c** → `IDEAS.md`. |
 | `debt-ledger/` | `archive/2026-07-28-debt-ledger/` | T7 audit ([`corpus-matrix.md`](archive/2026-07-28-debt-ledger/corpus-matrix.md)) + T4 `members_report_if_available` multithread tests |
 | `performance/` | `archive/2026-07-28-performance/` | Q4 decided: verification stays unconditional, no skip knob |

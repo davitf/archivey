@@ -947,6 +947,57 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   ANSI). That conversion can be lossy, so two 8-bit names it makes equal are the
   duplicate-name case (b).
 
+  *For whoever takes this on.* Measured on Linux with `unrar` 7.00, running
+  `unrar p -inul -n./<mask> -- archive` by hand (2026-09-28):
+
+  | Stored name | UTF-8 text as mask | Stored bytes as mask |
+  |---|---|---|
+  | RAR3/4 8-bit (`caf\xe9.txt`) | fails in every locale | matches in every locale (C, POSIX, C.UTF-8) |
+  | RAR5, or RAR3 Unicode-flagged, non-ASCII | matches only under a UTF-8 locale | same bytes, same result |
+  | RAR5 invalid UTF-8 (`\xff`, `ab\xffcd.txt`) | fails | fails; `unrar vb` lists the name cut at the first bad byte (`""`, `ab`) |
+  | two members with the same name | matches both | matches both |
+
+  Those rows are why the mask is now the stored bytes (text on Windows) and why the child
+  gets `LC_ALL` set to a UTF-8 locale. The code is in `rar_unrar.py`:
+  `unrar_member_argument`, `_windows_unrar_8bit_name`, `unrar_member_refusal`,
+  `_probe_utf8_locale` and `_unrar_env`, and the refusal is raised from
+  `RarReader._open_member`.
+
+  Ideas the maintainer raised, and what the measurements say about them:
+  - **Invalid bytes as `?` wildcards,** reusing the glob-name machinery
+    (`_unrar_mask_for` narrows `*` to `?`; `RarReader._unrar_glob_prefix` sizes the skip
+    past earlier matches). As stated, it does not match: `unrar` does not substitute a
+    bad byte, it cuts the name there, so the length changes. Its variant does: use the
+    prefix `unrar` actually sees (`ab`) as the mask, and let the existing skip logic
+    step past earlier members that match that prefix exactly. An empty prefix (a name
+    that starts with a bad byte) needs its own answer.
+  - **Duplicate names by position:** `unrar p` with a shared mask emits each match in
+    archive order, and every match's size is known from its header. So the Nth copy is
+    the bytes after the first N-1 matches' sizes. That is the same arithmetic the glob
+    skip already does. The solid path's `SolidBlockReader` demuxes an unnamed pipe the
+    same way.
+  - **Per-member fallback to `unar`** for exactly these members, and maybe for the
+    refused glob names too (the `rar_allow_glob_member_concatenation` refusal). The
+    maintainer: `auto` "is exactly picking the best tool for each job", and the C1 rule
+    that `auto` decides once "is not something I remember choosing". The fallback would
+    replace the `UnsupportedFeatureError` raised in `RarReader._open_member`. Caveats:
+    `unar` puts the password on its command line (C1), and `unar` has limits of its own
+    on some solid archives (§3). So a fallback can itself refuse, and must say which tool
+    refused.
+
+  Other facts to carry:
+  - The glob skip is sized on the presented text. On Windows that matches `unrar`'s
+    reading of an 8-bit name only under a single-byte OEM code page, so a DBCS OEM
+    (cp932) can mis-size it.
+  - `_probe_utf8_locale` is unverified on macOS/BSD. If it fails there, non-ASCII names
+    are refused rather than misread.
+  - `unrar vb` lists `emoji_😀.txt` in `tests/fixtures/rar/encoding__rar4.rar` as
+    `emoji_.txt`, yet both tools read that member. Probably the unnamed solid path;
+    check it before relying on name matching for non-BMP names.
+  - `tests/test_audit_rar_iso_dir.py` has RAR5/RAR3 header rewriters with CRC fix-up
+    (`_rar5_parse`, `_rar5_build`, `_rar3_parse`, `_rar3_build`) for building these
+    cases from committed fixtures, since `rar` 7.00 cannot write RAR4.
+
 - **Open: should a RAR dictionary size count against `DecoderLimits`?** Every
   in-process codec checks the dictionary or window its header declares against
   `max_decoder_memory`; RAR does not, because `unrar` or `unar` decodes it in another
@@ -959,6 +1010,22 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   and `unar`'s peak memory on that shape first, then either check the size before
   spawning (as 7z and xz do) or keep RAR out of the cap. `docs/extracting.md` §Limits
   and the `DecoderLimits` docstring say RAR is not covered today.
+
+  *For whoever takes this on.*
+  - **Where the size is.** In a RAR5 FILE header it is in the compression-information
+    vint, which `rar_parser.py` already reads (`compress_info`, near the
+    `_RAR5_COMPR_SOLID` check). Bits 10–14 are the exponent `N` of `128 KiB << N`, and
+    RAR 7 adds a fraction in bits 15–19, as the audit test patches it. Check both
+    against RARLAB's technote before relying on them. RAR3/4 keeps the size in the file
+    flags (`0x00E0`, where all three bits set means a directory, `_RAR3_FILE_DIRECTORY`).
+  - **The case to measure.** A nonsolid member declaring a 4 GiB dictionary *and* a
+    multi-GiB unpacked size, plus a solid archive whose first member declares the large
+    dictionary. Measure both with `unrar` and `unar`. Peak RSS is enough:
+    `/usr/bin/time -v unrar p -inul archive.rar >/dev/null`, or run the read under
+    `prlimit --as=` to see whether it fails or degrades.
+  - **If the answer is to check it,** put the check where the member is spawned, so both
+    tools are covered, with the same error and message shape as `check_decoder_memory`.
+    Remove the xfail from the audit test.
 
 - **Does the glob-concatenation refusal earn its keep?** It ships and is decided (§6):
   a member whose stored name is an include mask matching earlier members is refused by

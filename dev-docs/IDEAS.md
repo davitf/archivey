@@ -577,6 +577,41 @@
   `tests/test_audit_tar_streams.py::test_unix_compress_dictionary_memory_is_bounded`
   (strict xfail).
 
+  *Where the code is and what constrains it.*
+  - **Code:** `internal/streams/unix_compress.py`, `LzwState`. The dictionary is a plain
+    `list[bytes]`: the KwKwK case builds `prev_entry + prev_entry[:1]`, each new entry
+    is `dictionary.append(prev_entry + entry[:1])`, and a CLEAR truncates with
+    `del dictionary[starting_code:]`.
+  - **Seek:** seek points are placed only at CLEAR boundaries (`_points_for_units`), where
+    the dictionary is empty, so no dictionary state is snapshotted and changing its
+    representation does not touch seeking.
+  - **Implementation:** the usual one is parallel `prefix: array('H')` and
+    `suffix: bytearray` for every code, plus a cache of full expansions for entries up
+    to the length cap. A longer entry is built by walking prefixes into a reversed
+    `bytearray`. Keeping each entry's length alongside makes the walk a single
+    preallocation.
+  - **Differential test:** `ncompress` is a dev dependency (`tests/test_codecs.py` uses
+    it via `requires("ncompress")`), so real compressor output, the all-zeros file
+    included, can be checked against the new decoder.
+  - **Benchmark:** the harness has no `.Z` workload today. Add one (text-like data and a
+    long zero run) before comparing, and hold the hybrid to the current decoder's speed
+    on the text case.
+
+- **Empty trailing bzip2 stream under the accelerator** — a `.tar.bz2` made as
+  `bzip2 -c a.tar; bzip2 -c /dev/null` (a data stream followed by an *empty* bzip2
+  stream) reports `ARCHIVE_TRAILING_DATA` ("the bzip2 stream ends before the file
+  does") when the bzip2 accelerator is on, so `DiagnosticPolicy.strict()` refuses it.
+  With the accelerator off it is clean. `pbzip2`-style files, whose streams all carry
+  data, are clean both ways. Found 2026-09-29 while re-checking PR #512; it was already
+  on `main` before that PR. The message comes from
+  `internal/streams/decompressor_stream.py` (the "stream ends before the file does"
+  emit). Likely cause: the accelerator stops at a stream with no blocks and hands the
+  rest back as trailing bytes, where stdlib `bz2` decodes it as an empty stream.
+  Candidate fix: treat a bare `BZh` header plus end-of-stream marker as an empty stream
+  rather than trailing data, and add the case to the multi-stream bzip2 tests.
+
+
+
 - **Tell a real LZMA dictionary size from decrypted garbage** — under ZipCrypto, a wrong
   password that passes the one-byte check decrypts a ZIP LZMA or PPMd member's codec
   properties to garbage, and about one such garbage properties blob in five declares a
