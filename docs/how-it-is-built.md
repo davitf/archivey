@@ -50,8 +50,8 @@ AI makes mistakes, so the review process is essential for catching them.
 3. Anything the agents cannot settle from the code goes to the maintainer as a decision.
 4. Sometimes the maintainer reviews the change directly.
 5. The change is merged only when review and CI pass and we are happy with it. The
-   maintainer merges anything tricky. Under rules the maintainer set, an agent may merge
-   a straightforward change once its review approves it and CI is green.
+   maintainer merges anything tricky. An agent may merge a straightforward change once
+   its review approves it and CI is green.
 
 Even then, problems and cases nobody thought of creep in. So we also run full-code
 reviews: reviews over the whole codebase rather than one change, each with its own
