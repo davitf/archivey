@@ -104,8 +104,9 @@ do.
   can miss the same thing.
 - The fuzzing does not yet run at OSS-Fuzz scale. That is planned after the first
   release.
-- Archivey has one maintainer. If you use it on untrusted input, read
-  [Extracting](extracting.md) and [Gotchas](gotchas.md) first.
+- Archivey has one maintainer, so we cannot promise that it has no security bugs. If
+  you process untrusted archives, take the precautions you would with any other library,
+  such as running it with limited privileges.
 
 ## Review it yourself
 
