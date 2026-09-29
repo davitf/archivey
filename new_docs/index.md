@@ -50,7 +50,7 @@ with archive.open("holiday/video.mp4") as stream, open("video.mp4", "wb") as out
 ```
 
 On some archives, reading a member means first decompressing the members stored before it, so
-reading them out of order gets slow. [Solid archives](solid.md) explains when this happens. The
+reading them out of order gets slow. [Solid archives](reading.md#solid-archives) explains when this happens. The
 next section shows how to avoid it by reading them all in one pass.
 
 ## Read everything in one pass
