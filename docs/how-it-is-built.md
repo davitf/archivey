@@ -3,8 +3,8 @@
 Almost all of archivey's code, tests and documentation are written by AI coding agents,
 mostly Claude Code and Cursor. The maintainer designs the library, makes the decisions,
 directs the work and reviews it, but writes very little of the code by hand. This page
-explains who decides what, how the code is checked, where AI makes mistakes, and what
-that means for you.
+explains who decides what, how a change gets made and checked, and what that means for
+you.
 
 Archivey is a work in progress, and so is the process described here.
 
@@ -31,9 +31,28 @@ behaviour specs and archived change proposals.
 The agents do the rest. They write the code and the tests, build the test archives, run
 investigations, review each other's work, and write the docs you are reading.
 
+## How a change gets made
+
+AI makes mistakes, so the review process is essential for catching them.
+
+1. An agent writes the change, with tests.
+2. A separate AI session reviews it, starting from the diff and the repository alone,
+   not from the session that wrote the code. Each finding gets a fix or a stated reason,
+   and the fixes are reviewed too.
+3. Anything the agents cannot settle from the code goes to the maintainer as a decision.
+4. Sometimes the maintainer reviews the change directly.
+5. The change is merged only when we are happy with it.
+
+Even then, problems and cases nobody thought of creep in. So we also run full-code
+reviews: reviews over the whole codebase rather than one change, each with its own
+goal, such as finding bugs, finding redundant, dead or unclear code, or evaluating the
+public API. A recent bug hunt over extraction and every backend found about 40 bugs;
+each got a reproducer test first, and then a fix
+([PR 512](https://github.com/davitf/archivey/pull/512)).
+
 ## How the code is checked
 
-No single check is trusted on its own. Each one catches things the others miss.
+Besides review, these checks run on the code. Each one catches things the others miss.
 
 - **Tests.** More than 7,500 tests run on Linux, macOS and Windows, on Python 3.11 to
   3.14 and a free-threaded build. They include a corpus of archives written by the real
@@ -43,15 +62,6 @@ No single check is trusted on its own. Each one catches things the others miss.
   garbage) and must either succeed or fail with a typed error, never crash or hang.
   Property-based tests cover the path-safety logic. A coverage-guided fuzzer (Atheris)
   runs over the 7z, RAR, ZIP, TAR and ISO parsers and every codec on each pull request.
-- **Review of changes.** Pull requests are reviewed by a separate AI session that
-  starts from the diff and the repository alone, not by the session that wrote the code.
-  Each finding gets a fix or a stated reason, and fixes are reviewed too.
-- **Full-code reviews.** Diff review sees only what changed. So we also run several
-  reviews over the whole codebase, each with its own goal: finding bugs, finding
-  redundant, dead or unclear code, and evaluating the public API. A recent bug hunt over
-  extraction and every backend found about 40 bugs; each got a reproducer test first,
-  and then a fix
-  ([PR 512](https://github.com/davitf/archivey/pull/512)).
 - **A threat model.** The known security gaps are written down with their status, from
   metadata bombs to a directory swapped for a symlink while it is being listed. The
   limits we accept rather than fix are published, not hidden.
@@ -80,29 +90,6 @@ do.
   and a benchmark gate in CI keeps the numbers, so a change that makes things worse
   shows up.
 
-## What AI gets wrong
-
-AI output reads as confident whether or not it is right. So the process assumes any
-single pass may be wrong, and relies on independent reviews, tests and measurements
-rather than on any one agent. These are the kinds of mistakes it catches:
-
-- **Trusting the input.** A whole-codebase review found eleven blocking bugs, and six
-  had the same shape: a number read from an archive header sized an allocation before
-  anything checked it. The tests for that code were passing.
-- **Code that looks right and is not.** A limit of 65,536 substreams would have rejected
-  real solid 7z archives. A slicing change did 273 times the seeks of the code it
-  replaced. Review caught both before they merged.
-- **Fixes that break something else.** Over one stretch of 38 pull requests, 67 of the
-  70 findings raised after a first review round were caused by the previous round's fix.
-  That is why fixes get reviewed as well.
-- **Docs that promise more than the code does.** Over the same stretch, 37% of review
-  findings were docs, specs or comments that were stale or overclaimed. The published
-  integrity guarantee once implied that seeking reads were verified; a review of the
-  top-level docs caught it, and the guarantee now says exactly what is checked.
-- **Wrong bookkeeping.** Progress on one whole-codebase review was reported as 24% when
-  the truth was 12%, and the largest, most exposed parser was marked as read when no one
-  had opened it. Now every file read gets its own marker, and a script counts them.
-
 ## What this does not promise
 
 - The maintainer does not read every line. The line-by-line reading is done by agents,
@@ -115,5 +102,6 @@ rather than on any one agent. These are the kinds of mistakes it catches:
   [Extracting](extracting.md) and [Gotchas](gotchas.md), and report security problems
   as [SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md) describes.
 
-The history is public: pull requests, their review threads and the decisions behind them
-are on GitHub.
+You don't have to take this page's word for it. The history is public: every
+[pull request](https://github.com/davitf/archivey/pulls?q=is%3Apr), its review threads and
+the decisions behind it are on GitHub.
