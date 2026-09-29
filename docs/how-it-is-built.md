@@ -99,9 +99,17 @@ do.
 - The fuzzing does not yet run at OSS-Fuzz scale. That is planned after the first
   release.
 - Archivey has one maintainer. If you use it on untrusted input, read
-  [Extracting](extracting.md) and [Gotchas](gotchas.md), and report security problems
-  as [SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md) describes.
+  [Extracting](extracting.md) and [Gotchas](gotchas.md) first.
+
+## Review it yourself
 
 You don't have to take this page's word for it. The history is public: every
 [pull request](https://github.com/davitf/archivey/pulls?q=is%3Apr), its review threads and
 the decisions behind it are on GitHub.
+
+We welcome your own reviews, whether you read the code yourself or point an agent at it.
+Bug reports, questions and pull requests are welcome; see
+[CONTRIBUTING.md](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md). If you
+find a security problem, report it privately as
+[SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md) describes,
+rather than in a public issue.
