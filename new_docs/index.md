@@ -27,7 +27,27 @@ with archivey.open_archive("photos.zip") as archive:
         print(member.name, member.size)
 ```
 
-`open_archive` works out the format from the file's contents, so the same code opens a `.7z`
+`open_archive` identifies the format from the file's contents, so the same code opens a `.7z`
 or a `.tar.gz`. Each entry in the archive, whether a file, a directory or a link, is a
 *member*, as in `zipfile` and `tarfile`. [`ArchiveMember`](api.md#archivey.ArchiveMember)
 lists everything a member carries.
+
+## Read a member
+
+```python
+with archivey.open_archive("photos.zip") as archive:
+    data = archive.read("holiday/beach.jpg")
+```
+
+`read` returns the whole member as bytes. For a large member, `open` gives you a file object
+to read in pieces:
+
+```python
+import shutil
+
+with archive.open("holiday/video.mp4") as stream, open("video.mp4", "wb") as out:
+    shutil.copyfileobj(stream, out)
+```
+
+On some archives, reading members out of order is slow. The next section shows how to read
+them all in one pass, and [Solid archives](solid.md) explains why.
