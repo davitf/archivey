@@ -264,8 +264,8 @@ hardlink or symlink in a streaming pass resolves against members already seen.
 **A hardlink resolves to an earlier member only, in both modes.** A hardlink is a
 reference to a file already archived: tarfile's `_find_link_target` searches only the
 members before the link and takes the last match, and `tar(1)` links to what it has
-already written. `TarReader._lookup_link_target_for_member` refuses the base's forward
-fallback, so a hardlink whose only same-named member comes after it has no
+already written. `TarReader._HARDLINK_FORWARD_FALLBACK = False` turns off the base's
+forward fallback, so a hardlink whose only same-named member comes after it has no
 `link_target_member`, and opening or extracting it raises `LinkTargetNotFoundError`, in
 random access as in a streaming pass. A symlink is a path, not a reference, and resolves
 to the last member of that name either way.

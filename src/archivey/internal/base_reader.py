@@ -389,6 +389,10 @@ class BaseArchiveReader(ArchiveReader):
     # Is the full member list available without reading member data (e.g. a central
     # directory)? Drives members_report_if_available(); does not gate the streaming methods.
     _MEMBER_LIST_UPFRONT: bool = True
+    # May a hardlink whose name has no earlier match resolve to the last member of that
+    # name after it? A backend whose format defines hardlinks as backward references
+    # (TAR) sets False.
+    _HARDLINK_FORWARD_FALLBACK: bool = True
 
     def __init__(
         self,
@@ -2024,14 +2028,12 @@ class BaseArchiveReader(ArchiveReader):
         self,
         member: ArchiveMember,
         by_name_lists: Mapping[str, list[ArchiveMember]],
-        *,
-        allow_forward_fallback: bool = True,
     ) -> ArchiveMember | None:
         if member.type == MemberType.HARDLINK:
             return self._lookup_hardlink_target(
                 member,
                 by_name_lists,
-                allow_forward_fallback=allow_forward_fallback,
+                allow_forward_fallback=self._HARDLINK_FORWARD_FALLBACK,
             )
         return self._lookup_link_target(member, by_name_lists)
 

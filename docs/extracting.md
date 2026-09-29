@@ -159,6 +159,10 @@ overwrite conflicts under `ERROR`). A policy **block** — an unsafe member refu
 universal path-safety check or a policy filter — is always recorded as `BLOCKED` and
 extraction continues, under either `STOP` or `CONTINUE`.
 
+A TAR archive has no index, so its extraction is one forward pass in either access
+mode. It does not fail closed: when a TAR is corrupt or truncated partway, the members
+read before the fault are already written, and then the call raises.
+
 To abort the whole archive on the first unsafe member (fail-closed strict security),
 pass `abort_on`:
 
@@ -243,9 +247,9 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   (`ListingLimits`) on `members()` / `scan_members()` / extract-prep materialization.
   Trips raise `ResourceLimitError`. A TAR extraction does not list first: it checks
   the limits as each member arrives in its one pass, so members before the one that
-  crosses a cap are already written when it raises. `stream_members()` / `streaming=True` stay
-  unguarded by design, except on 7z and RAR where `max_members` is checked at
-  `open_archive`. Raise `listing_limits.max_members` to open a larger 7z or
+  crosses a cap are already written when it raises. A damaged TAR behaves the same
+  way (see above). `stream_members()` / `streaming=True` stay unguarded by design,
+  except on 7z and RAR where `max_members` is checked at `open_archive`. Raise `listing_limits.max_members` to open a larger 7z or
   RAR. That parse bound is a member count, not a byte budget:
   `max_metadata_bytes` still fires when the list is materialized. RAR also
   checks it at `open_archive` against the declared sizes of compressed
