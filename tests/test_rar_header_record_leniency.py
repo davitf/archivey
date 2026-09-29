@@ -27,7 +27,7 @@ from archivey import (
     MemberHeaderRecordContext,
     open_archive,
 )
-from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.exceptions import TruncatedError
 from archivey.internal.backends import rar_unrar
 from archivey.internal.backends.rar_parser import (
     _MAX_DAMAGED_SERVICE_HEADERS,
@@ -38,6 +38,7 @@ from archivey.internal.backends.rar_parser import (
 from archivey.internal.streams import verify
 from archivey.types import HashAlgorithm, MemberType
 from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
+from tests.corruption_util import raises_corruption_not_truncation
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -205,7 +206,7 @@ def test_a_short_encryption_record_still_refuses_the_archive(tmp_path: Path) -> 
     path = tmp_path / "short_crypt.rar"
     path.write_bytes(_shrink_record(data, record, new_size=3))
 
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         with open_archive(path, password="password") as archive:
             archive.members()
 
@@ -784,7 +785,7 @@ def test_a_cut_short_stored_member_that_is_encrypted_is_refused(
         (member,) = [m for m in archive.members() if m.is_file]
         assert member._raw.encryption_unknown, "the CRYPT record was never reached"
         assert HashAlgorithm.CRC32 in member.hashes
-        with pytest.raises(CorruptionError, match="do not match the checksum"):
+        with raises_corruption_not_truncation(match="do not match the checksum"):
             archive.read(member)
 
 
@@ -806,7 +807,7 @@ def test_a_cut_short_stored_member_with_no_checksum_left_is_refused(
     with open_archive(path) as archive:
         (member,) = [m for m in archive.members() if m.is_file]
         assert not member.hashes, "the cut took the only digest with it"
-        with pytest.raises(CorruptionError) as raised:
+        with raises_corruption_not_truncation() as raised:
             archive.read(member)
         assert "no usable checksum survived" in str(raised.value)
         # The cause, not a way out. This branch used to raise
@@ -834,7 +835,7 @@ def test_a_checksum_this_install_cannot_compute_does_not_count_as_survival(
     with open_archive(path) as archive:
         (member,) = [m for m in archive.members() if m.is_file]
         assert HashAlgorithm.CRC32 in member.hashes, "the digest is there to be had"
-        with pytest.raises(CorruptionError, match="no usable checksum survived"):
+        with raises_corruption_not_truncation(match="no usable checksum survived"):
             archive.read(member)
 
 

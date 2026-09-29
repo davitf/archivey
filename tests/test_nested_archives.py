@@ -592,8 +592,8 @@ def test_ppmd_child_decodes_a_7z_nested_in_a_ppmd_7z(tmp_path: Path) -> None:
             zf.writestr(data, name)
         return buf.getvalue()
 
-    # A child is used only past the limit and only for a member fed in pieces: a
-    # member whose whole pack arrives in one read is decoded in-process safely.
+    # Each member's pack is well past the 1024-byte limit, so each level decodes in
+    # a child, however much of the pack one read happens to carry.
     payload = b"the quick brown fox " * 5000 + random.Random(3).randbytes(1_000_000)
     path = tmp_path / "outer.zip"
     path.write_bytes(

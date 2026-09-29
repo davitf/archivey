@@ -129,6 +129,17 @@ class ListingLimitTracker:
             self._check_metadata(next_bytes)
         self.metadata_bytes = next_bytes
 
+    def account_retained_bytes(self, nbytes: int, *, enforce: bool = True) -> None:
+        """Add metadata a backend retains for a member outside its public fields.
+
+        TAR keeps a sparse member's map on the ``TarInfo`` it reads the data through,
+        where :func:`member_metadata_bytes` cannot see it.
+        """
+        next_bytes = self.metadata_bytes + nbytes
+        if enforce:
+            self._check_metadata(next_bytes)
+        self.metadata_bytes = next_bytes
+
     def assert_within_limits(self) -> None:
         """Re-check accumulated totals (e.g. when returning a previously built cache)."""
         self._check_members(self.member_count)

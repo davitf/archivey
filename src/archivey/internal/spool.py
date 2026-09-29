@@ -35,6 +35,9 @@ class SpoolBudget:
     Once the budget has refused, every later call refuses at once without writing.
     Without that, a source of unknown size would cost a full ``max_bytes`` write on
     each read that retried the copy.
+
+    ``remedy`` is the refusal's last sentence: what the caller can do instead. The
+    default fits a stream source, which a path would avoid copying.
     """
 
     def __init__(
@@ -44,9 +47,14 @@ class SpoolBudget:
         what: str,
         archive_name: str | None,
         source_format: ArchiveFormat,
+        remedy: str = (
+            "Open the archive from a file path, which is read in place, or raise the "
+            "limit (None removes it)."
+        ),
     ) -> None:
         self._limit = limits.max_bytes
         self._what = what
+        self._remedy = remedy
         self._archive_name = archive_name
         self._source_format = source_format
         self._written = 0
@@ -105,8 +113,7 @@ class SpoolBudget:
         return ResourceLimitError(
             f"Spool limit reached: {self._what}, and the copy would be {size}, over "
             f"SpoolLimits.max_bytes={self._limit} (ArchiveyConfig.spool_limits). "
-            f"Open the archive from a file path, which is read in place, or raise "
-            f"the limit (None removes it).",
+            f"{self._remedy}",
             archive_name=self._archive_name,
             source_format=self._source_format,
         )

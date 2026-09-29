@@ -48,7 +48,6 @@ from archivey.exceptions import (
     LinkTargetNotFoundError,
     ReadError,
     ResourceLimitError,
-    TruncatedError,
     UnsupportedFeatureError,
     raw_message_of,
 )
@@ -73,6 +72,7 @@ from archivey.internal.measurement import (
     measurement_enabled,
 )
 from archivey.internal.naming import (
+    emit_link_target_bidi_control,
     emit_member_name_bidi_control,
     link_target_name_keys,
     resolve_link_target_name,
@@ -389,6 +389,10 @@ class BaseArchiveReader(ArchiveReader):
     # Is the full member list available without reading member data (e.g. a central
     # directory)? Drives members_report_if_available(); does not gate the streaming methods.
     _MEMBER_LIST_UPFRONT: bool = True
+    # May a hardlink whose name has no earlier match resolve to the last member of that
+    # name after it? A backend whose format defines hardlinks as backward references
+    # (TAR) sets False.
+    _HARDLINK_FORWARD_FALLBACK: bool = True
 
     def __init__(
         self,
@@ -460,7 +464,7 @@ class BaseArchiveReader(ArchiveReader):
         self._listed_by_name: dict[str, list[ArchiveMember]] = {}
         self._walk: Iterator[ArchiveMember] | None = None
         self._walk_done: bool = False
-        self._walk_error: CorruptionError | TruncatedError | None = None
+        self._walk_error: CorruptionError | None = None
         self._walk_failure: BaseException | None = None
         self._walk_pulling: bool = False
         self._walk_built: list[ArchiveMember] = []
@@ -1222,7 +1226,7 @@ class BaseArchiveReader(ArchiveReader):
                 for member in unread:
                     try:
                         self._resolve_link_target(member)
-                    except (CorruptionError, TruncatedError) as exc:
+                    except CorruptionError as exc:
                         self._report_damaged_link_target(member, exc)
                         continue
                     if member.link_target is not None:
@@ -1256,12 +1260,12 @@ class BaseArchiveReader(ArchiveReader):
                         self._state.release_child(child)
             else:
                 _resolve()
-        except (CorruptionError, TruncatedError):
+        except CorruptionError:
             if error is None:
                 raise
 
     def _report_damaged_link_target(
-        self, member: ArchiveMember, exc: CorruptionError | TruncatedError
+        self, member: ArchiveMember, exc: CorruptionError
     ) -> None:
         """Leave a link whose target data is damaged listed, targetless, and reported.
 
@@ -1346,7 +1350,7 @@ class BaseArchiveReader(ArchiveReader):
             except StopIteration:
                 self._end_walk(None)
                 return None
-            except (CorruptionError, TruncatedError) as exc:
+            except CorruptionError as exc:
                 self._end_walk(exc)
                 return None
             self._register_member(position, member, enforce_listing_limits=enforce)
@@ -1386,7 +1390,7 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_built.append(member)
         return member
 
-    def _end_walk(self, error: CorruptionError | TruncatedError | None) -> None:
+    def _end_walk(self, error: CorruptionError | None) -> None:
         """Record that the walk ended, and stamp last-entry-wins once, over what it listed.
 
         This is the only place ``is_current`` is stamped for duplicate names, whichever
@@ -1534,6 +1538,18 @@ class BaseArchiveReader(ArchiveReader):
             raise report.error
         return list(report.members)
 
+    def _extraction_listing(self) -> ContextManager[None]:
+        """Apply ``ListingLimits`` for an extraction over this random-access reader.
+
+        Called by the extraction coordinator before its pass, which it runs inside the
+        returned context. The default lists every member first, with the limits
+        enforced, so nothing is written from an archive over them. A backend whose
+        listing is itself a scan of the data may instead enforce them as members
+        arrive during the pass (TAR), and not decode the archive twice.
+        """
+        self._get_members_registered(enforce_listing_limits=True)
+        return nullcontext()
+
     def _account_archive_comment(self, *, enforce: bool) -> None:
         comment = self._get_archive_info().comment
         self._listing_tracker.account_archive_comment(comment, enforce=enforce)
@@ -1563,8 +1579,42 @@ class BaseArchiveReader(ArchiveReader):
                 member=member,
                 archive_name=self._archive_name,
             )
+            # A target the header carries is known now. A target stored as member data
+            # is checked when it is read (`_resolve_link_target`), so each member is
+            # checked once either way.
+            emit_link_target_bidi_control(
+                self._diagnostics_collector,
+                member=member,
+                archive_name=self._archive_name,
+            )
             self._walk_presented = idx + 1
+        if member.type is MemberType.SYMLINK and member.link_target == "":
+            # A target the header carries (TAR, RAR5, ISO Rock Ridge) is set while the
+            # member is typed, so this is the first place every backend's passes share.
+            # Emit first and clear after: a strict policy that raises here leaves the
+            # member as it was, so a walk started over reports it again.
+            self._emit_empty_link_target(member)
+            member.link_target = None
+            member._link_target_resolved = True
         self._listing_tracker.account_member(member, enforce=enforce_listing_limits)
+
+    def _emit_empty_link_target(self, member: ArchiveMember) -> None:
+        """Report a symlink whose stored target is the empty string.
+
+        No filesystem takes an empty path as a link target, so the archive records no
+        target for this link, the same as a writer that stored none. It is presented
+        the same way: ``link_target`` unset, and extraction records
+        ``LINK_TARGET_UNAVAILABLE`` for it instead of passing ``""`` to ``os.symlink``.
+        """
+        self._emit_link_target_unavailable(
+            member,
+            reason="target_empty",
+            message=(
+                f"The symlink target of {quoted(member.name)} is stored as an empty "
+                f"string; leaving link_target unset."
+            ),
+            target_in_archive=False,
+        )
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
         """Populate ``link_target`` from member data when needed. Base is a no-op."""
@@ -1583,6 +1633,18 @@ class BaseArchiveReader(ArchiveReader):
         if member.link_target is not None or member._link_target_resolved:
             return
         self._ensure_link_target(member)
+        if member.type is MemberType.SYMLINK and member.link_target == "":
+            # A target stored as member data (ZIP, 7z) of zero bytes. Cleared
+            # before the emit, the reverse of `_register_member`: if a strict policy
+            # raises here, the memo below stays unset and a later lookup reads the
+            # member again and reports it again.
+            member.link_target = None
+            self._emit_empty_link_target(member)
+        emit_link_target_bidi_control(
+            self._diagnostics_collector,
+            member=member,
+            archive_name=self._archive_name,
+        )
         # After, not before: a hook that raised did not look and come back empty, it
         # never finished. `_finalize_links` reports a CorruptionError / TruncatedError
         # here and lists the link without a target, so marking it resolved on the way
@@ -1966,14 +2028,12 @@ class BaseArchiveReader(ArchiveReader):
         self,
         member: ArchiveMember,
         by_name_lists: Mapping[str, list[ArchiveMember]],
-        *,
-        allow_forward_fallback: bool = True,
     ) -> ArchiveMember | None:
         if member.type == MemberType.HARDLINK:
             return self._lookup_hardlink_target(
                 member,
                 by_name_lists,
-                allow_forward_fallback=allow_forward_fallback,
+                allow_forward_fallback=self._HARDLINK_FORWARD_FALLBACK,
             )
         return self._lookup_link_target(member, by_name_lists)
 
@@ -2307,7 +2367,7 @@ class BaseArchiveReader(ArchiveReader):
                         next(gen)
                     except StopIteration:
                         break
-                    except (CorruptionError, TruncatedError):
+                    except CorruptionError:
                         assert self._materialized is not None
                         break
                 assert self._materialized is not None
@@ -2783,7 +2843,7 @@ class BaseArchiveReader(ArchiveReader):
             exc.member_name = member_name
         provenance = self._format_provenance
         if provenance is None or not isinstance(
-            exc, (TruncatedError, CorruptionError, ResourceLimitError)
+            exc, (CorruptionError, ResourceLimitError)
         ):
             return
         if provenance.probe_only:

@@ -57,6 +57,7 @@ from archivey.types import (
     MemberType,
 )
 from tests.conftest import requires, requires_binary
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -267,7 +268,9 @@ def test_refused_second_open_does_not_spawn_unrar(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -312,7 +315,9 @@ def test_seekable_members_respawns_unrar_on_backward_seek(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -539,7 +544,9 @@ def test_seekable_unrar_respawns_while_process_still_running(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -565,7 +572,9 @@ def test_seekable_members_does_not_respawn_on_stored_direct_slice(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -603,7 +612,9 @@ def test_solid_symlink_demux_and_link_targets(
     original = rar_reader.open_unrar_p
 
     def spy(archive_path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(archive_path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -670,7 +681,9 @@ def test_solid_hardlink_demux_and_targets(monkeypatch: pytest.MonkeyPatch) -> No
     original = rar_reader.open_unrar_p
 
     def spy(archive_path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(archive_path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -883,7 +896,7 @@ def test_rar5_tweaked_digest_checked_with_the_password_that_matched() -> None:
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
         member._raw = dataclasses.replace(raw, blake2sp_hash=bytes(32))
-        with pytest.raises(CorruptionError, match="blake2sp"):
+        with raises_corruption_not_truncation(match="blake2sp"):
             reader.read(member)
 
 
@@ -1088,7 +1101,7 @@ def test_blake2sp_corrupt_payload_raises(tmp_path: Path) -> None:
     with open_archive(corrupt) as archive:
         member = next(m for m in archive.members() if m.is_file)
         assert HashAlgorithm.BLAKE2SP in member.hashes
-        with pytest.raises(CorruptionError, match="blake2sp"):
+        with raises_corruption_not_truncation(match="blake2sp"):
             archive.read(member)
 
 
@@ -1812,7 +1825,7 @@ def test_rar3_mismatched_split_continuation_is_corruption() -> None:
         b"b.txt", flags=_RAR3_FILE_SPLIT_BEFORE, pack_lo=0, unp_lo=0
     )
     blob = RAR_ID + main_hdr + first + forged + end_hdr
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         parse_rar_archive(io.BytesIO(blob))
 
 
@@ -1827,7 +1840,7 @@ def test_rar3_same_name_split_before_without_split_after_is_corruption() -> None
         b"a.txt", flags=_RAR3_FILE_SPLIT_BEFORE, pack_lo=0, unp_lo=0
     )
     blob = RAR_ID + main_hdr + first + cont + end_hdr
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         parse_rar_archive(io.BytesIO(blob))
 
 
@@ -1847,7 +1860,7 @@ def test_rar3_split_after_then_different_name_is_corruption() -> None:
         b"b.txt", flags=_RAR3_FILE_SPLIT_BEFORE, pack_lo=0, unp_lo=0
     )
     blob = RAR_ID + main_hdr + first + forged + end_hdr
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         parse_rar_archive(io.BytesIO(blob))
 
 
@@ -1896,7 +1909,7 @@ def test_rar5_hostile_packed_size_is_corruption() -> None:
     main = block(vint(1) + vint(0) + vint(0))  # MAIN, no flags, main_flags=0
     hostile = block(vint(99) + vint(0x02) + vint(1 << 70))  # unknown + DATA + huge
     blob = RAR5_ID + main + hostile
-    with pytest.raises(CorruptionError, match="seekable range|packed size"):
+    with raises_corruption_not_truncation(match="seekable range|packed size"):
         parse_rar_archive(io.BytesIO(blob))
 
 
@@ -3424,9 +3437,9 @@ def test_load_vint_single_and_multi_byte() -> None:
     assert load_vint(b"\xff" + bytes([0x80 | 1, 0x02]), 1) == (1 + (2 << 7), 3)
     # Maximum-length valid vint: 10 continuation bytes + terminator.
     assert load_vint(b"\x80" * 10 + b"\x01", 0) == (1 << 70, 11)
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         load_vint(b"", 0)
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         load_vint(b"\x80" * 11, 0)
 
 
@@ -3651,7 +3664,9 @@ def test_wildcard_member_name_reads_its_own_bytes(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -3781,7 +3796,9 @@ def test_seekable_wildcard_respawn_still_skips_glob_prefix(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -3818,7 +3835,9 @@ def test_wildcard_dirglob_and_backslash_names_are_refused(
     original = rar_reader.open_unrar_p
 
     def spy(path: Path, **kwargs: object):
-        spawns.append(kwargs.get("member"))
+        member = kwargs.get("member")
+        # An 8-bit RAR3 name is passed as its stored bytes (ASCII in these fixtures).
+        spawns.append(member.decode() if isinstance(member, bytes) else member)
         return original(path, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
@@ -3961,7 +3980,7 @@ def test_unrar_owned_stream_maps_exit_11_to_encryption_error() -> None:
 @pytest.mark.parametrize("rc", [2, 3])
 def test_unrar_owned_stream_maps_fatal_crc_when_no_hash(rc: int) -> None:
     """F4: exits 2/3 map to CorruptionError when archivey has no verifiable hash."""
-    with pytest.raises(CorruptionError, match="fatal or CRC"):
+    with raises_corruption_not_truncation(match="fatal or CRC"):
         _close_unrar_owned(rc=rc, named_member=True, has_verifiable_hash=False)
 
 
@@ -4025,7 +4044,7 @@ def test_unrar_owned_stream_encrypted_empty_maps_to_encryption_error_on_close(
 
 def test_unrar_owned_stream_maps_exit_10_for_named_open() -> None:
     """F4: exit 10 (no files matched) on a named ``-n`` open is CorruptionError."""
-    with pytest.raises(CorruptionError, match="no matching member"):
+    with raises_corruption_not_truncation(match="no matching member"):
         _close_unrar_owned(rc=10, named_member=True, has_verifiable_hash=False)
 
 

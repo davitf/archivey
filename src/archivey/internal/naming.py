@@ -95,6 +95,45 @@ def emit_member_name_bidi_control(
     )
 
 
+def emit_link_target_bidi_control(
+    collector: DiagnosticCollector,
+    *,
+    member: ArchiveMember,
+    archive_name: str | None = None,
+) -> None:
+    """Emit ``MEMBER_NAME_BIDI_CONTROL`` when a link's stored target carries a bidi
+    control, with ``field="link_target"``.
+
+    The same characters, the same code and the same context as for a name: a target is
+    displayed to a person as a path, and the same disguise works on it. The caller runs
+    this once per member, when the target becomes known.
+    """
+    target = member.link_target
+    if target is None or target.isascii():
+        return
+    found = [char for char in target if char in BIDI_CONTROLS]
+    if not found:
+        return
+    collector.emit(
+        code=DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
+        message=(
+            f"Link target of {quoted(member.name)} contains a bidirectional control "
+            f"character: {quoted(target)}"
+        ),
+        context=MemberNameControlsContext(
+            archive_name=archive_name,
+            member_name=member.name,
+            member_id=member._member_id,
+            raw_name_base64=raw_name_to_base64(member.raw_name),
+            controls=",".join(f"U+{ord(char):04X}" for char in found),
+            field="link_target",
+        ),
+        member=member,
+        attach_to_member=True,
+        logger=logger,
+    )
+
+
 def _is_usable_stem(stem: str) -> bool:
     """Whether a stripped stem is a filename rather than a path-navigation spelling.
 

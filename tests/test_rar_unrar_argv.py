@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from archivey import open_archive
-from archivey.exceptions import PackageNotInstalledError
+from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
 from archivey.internal.backends import rar_unrar
 from archivey.terminal import display_path
 from tests.conftest import requires_binary
@@ -233,3 +233,92 @@ def test_real_hung_unrar_costs_one_probe_timeout(
         with pytest.raises(PackageNotInstalledError, match="0.2 seconds"):
             rar_unrar.find_rarlab_unrar()
     assert spawned == 1
+
+
+# --- the member name in argv, and the child's locale -------------------------
+
+
+def test_8bit_name_mask_is_the_stored_bytes() -> None:
+    """``*`` narrows to ``?`` byte for byte; the stored bytes are not re-encoded."""
+    assert rar_unrar._member_include_switch(b"caf\xe9*.txt") == b"-n./caf\xe9?.txt"
+    argument = rar_unrar.unrar_member_argument(
+        "dir/café.txt", b"dir\\caf\xe9.txt", stored_is_8bit=True
+    )
+    if sys.platform == "win32":
+        # Windows argv is Unicode; the byte goes through the OEM code page as
+        # unrar converts it, not through archivey's windows-1252 guess.
+        assert argument == "dir/" + rar_unrar._windows_unrar_8bit_name(b"caf\xe9.txt")
+    else:
+        assert argument == b"dir/caf\xe9.txt"
+    assert (
+        rar_unrar.unrar_member_argument(
+            "café.txt", b"caf\xc3\xa9.txt", stored_is_8bit=False
+        )
+        == "café.txt"
+    )
+
+
+def test_unconvertible_windows_8bit_name_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No mask is better than a guessed one: a miss reads as truncated data."""
+    monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
+    monkeypatch.setattr(rar_unrar, "_windows_unrar_8bit_name", lambda stored: None)
+    argument = rar_unrar.unrar_member_argument(
+        "café.txt", b"caf\xe9.txt", stored_is_8bit=True
+    )
+    assert argument is None
+    reason = rar_unrar.unrar_member_refusal(argument)
+    assert reason is not None
+    assert "code pages" in reason
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows code-page conversion")
+def test_windows_8bit_name_keeps_every_byte_as_unrar_does() -> None:
+    """Every high byte converts to one character, never ``U+FFFD``, on OEM 437/ANSI 1252.
+
+    ``MultiByteToWideChar`` with no flags maps a byte the ANSI code page leaves
+    undefined to that code page's default character; ``unrar`` makes the same call.
+    """
+    import ctypes
+
+    if (ctypes.windll.kernel32.GetOEMCP(), ctypes.windll.kernel32.GetACP()) != (
+        437,
+        1252,
+    ):
+        pytest.skip("expectations are for OEM 437 and ANSI 1252")
+    for byte in range(0x80, 0x100):
+        text = rar_unrar._windows_unrar_8bit_name(b"a" + bytes([byte]))
+        assert text is not None
+        assert len(text) == 2
+        assert "\ufffd" not in text
+    assert rar_unrar._windows_unrar_8bit_name(b"caf\xe9s.txt") != "cafés.txt"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX locale behaviour")
+def test_unrar_child_runs_under_a_utf8_locale(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LC_ALL", "C")
+    if rar_unrar._utf8_locale_name() is None:
+        pytest.skip("no UTF-8 locale on this system")
+    env = rar_unrar._unrar_env()
+    assert env is not None
+    assert env["LC_ALL"] in rar_unrar._UTF8_LOCALE_NAMES
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX locale behaviour")
+def test_non_ascii_name_without_a_utf8_locale_is_refused_before_spawning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a UTF-8 locale the mask would not match and the read would look
+    truncated; the refusal names ``unar`` instead, and nothing is spawned."""
+    monkeypatch.setattr(rar_unrar, "_utf8_locale_name", lambda: None)
+    monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", lambda: "/stub/unrar")
+
+    def no_popen(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("unrar must not be spawned")
+
+    monkeypatch.setattr(subprocess, "Popen", no_popen)
+    assert rar_unrar.unrar_member_refusal("plain.txt") is None
+    assert rar_unrar.unrar_member_refusal(b"caf\xe9.txt") is None
+    with pytest.raises(UnsupportedFeatureError, match="UTF-8 locale"):
+        rar_unrar.open_unrar_p("a.rar", member="café.txt")

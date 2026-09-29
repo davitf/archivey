@@ -32,7 +32,6 @@ from archivey.detection_cost import (
     DetectionBudget,
 )
 from archivey.exceptions import (
-    CorruptionError,
     FormatDetectionError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -70,6 +69,7 @@ from archivey.internal.streams.brotli_framing import (
 from archivey.internal.streams.streamtools.slice import SlicingStream
 from archivey.types import ArchiveFormat
 from tests.conftest import requires, requires_binary
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.detection_cost_util import within_budget
 from tests.streams_util import NonSeekableBytesIO, brotli_compressed_metablock_header
 from tests.test_detection_workspace import InstrumentedBytesIO
@@ -458,13 +458,15 @@ def test_find_signature_offset_falls_back_to_a_truncated_magic() -> None:
 
 
 def test_find_signature_offset_reports_the_scan_window_on_a_miss() -> None:
-    with pytest.raises(CorruptionError, match="no signature within the 1000-byte"):
+    with raises_corruption_not_truncation(match="no signature within the 1000-byte"):
         find_signature_offset(io.BytesIO(b"\x90" * 1000), limit=1000)
 
 
 def test_find_signature_offset_names_the_candidate_cap() -> None:
     data = MAGIC_7Z * (MAX_VALIDATED_CANDIDATES + 1)
-    with pytest.raises(CorruptionError, match="stopped after 256 rejected candidates"):
+    with raises_corruption_not_truncation(
+        match="stopped after 256 rejected candidates"
+    ):
         find_signature_offset(io.BytesIO(b"MZ" + data), limit=2 + len(data))
 
 
@@ -477,7 +479,7 @@ def test_forced_format_truncated_7z_names_the_truncation() -> None:
 
 
 def test_forced_format_crc_damaged_7z_names_the_crc() -> None:
-    with pytest.raises(CorruptionError, match="7z signature header CRC mismatch"):
+    with raises_corruption_not_truncation(match="7z signature header CRC mismatch"):
         open_archive(
             io.BytesIO(_STUB + _crc_damaged_sevenzip_signature()),
             format=ArchiveFormat.SEVEN_Z,
@@ -495,19 +497,19 @@ def test_forced_format_empty_7z_behind_a_stub_opens() -> None:
 def test_forced_format_crc_damaged_rar4_names_the_crc() -> None:
     payload = bytearray((_RAR_FIXTURES / "basic_nonsolid__rar4.rar").read_bytes())
     payload[len(RAR_ID)] ^= 0xFF
-    with pytest.raises(CorruptionError, match="RAR3 MAIN header CRC mismatch"):
+    with raises_corruption_not_truncation(match="RAR3 MAIN header CRC mismatch"):
         open_archive(io.BytesIO(_STUB + bytes(payload)), format=ArchiveFormat.RAR)
 
 
 def test_forced_format_crc_damaged_rar5_names_the_crc() -> None:
     payload = bytearray((_RAR_FIXTURES / "basic_nonsolid__.rar").read_bytes())
     payload[len(RAR5_ID)] ^= 0xFF
-    with pytest.raises(CorruptionError, match="RAR5 header CRC mismatch"):
+    with raises_corruption_not_truncation(match="RAR5 header CRC mismatch"):
         open_archive(io.BytesIO(_STUB + bytes(payload)), format=ArchiveFormat.RAR)
 
 
 def test_forced_format_rar_miss_names_the_scan_window() -> None:
-    with pytest.raises(CorruptionError, match="no signature within the"):
+    with raises_corruption_not_truncation(match="no signature within the"):
         open_archive(io.BytesIO(b"MZ" + b"\x90" * 1000), format=ArchiveFormat.RAR)
 
 
@@ -567,7 +569,7 @@ def test_no_7z_magic_within_the_window_raises_rather_than_listing_nothing(
 ) -> None:
     path = tmp_path / "not-an-archive.exe"
     path.write_bytes(b"MZ" + b"\x90" * 200_000)
-    with pytest.raises(CorruptionError, match="Not a 7z archive"):
+    with raises_corruption_not_truncation(match="Not a 7z archive"):
         open_archive(path, format=ArchiveFormat.SEVEN_Z)
 
 
@@ -641,7 +643,7 @@ def test_start_offset_is_believed_rather_than_rescanned(tmp_path: Path) -> None:
     with _open_with(path, start_offset=len(stub)) as archive:
         assert {m.name for m in archive.members() if m.is_file} == set(_FILES)
 
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         _open_with(path)
 
 

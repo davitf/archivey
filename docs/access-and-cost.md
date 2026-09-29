@@ -198,7 +198,12 @@ A seekable stream is not that pipe case. RAR still needs a filesystem path for c
 member data (RARLAB `unrar` or `rar`, or `unar`), so a `BytesIO` or file object may be copied to a
 temp file when a compressed member is read. `archive.cost.notes` states that caveat at
 open, with the limit that bounds it; when the limit already rules the copy out, the note
-says such a read will be refused instead. Path sources do not copy.
+says such a read will be refused instead. Path sources do not copy, with one exception
+the notes also state: a RAR with a prefix before it (an SFX stub, say) read with
+`rar_decompressor="unar"`, which does not look past a prefix, is copied from where the
+RAR starts, within the same limit. `rar_decompressor="unrar"` reads it in place. (A
+list of RAR volume files is linked into a temp directory when the files are not side by
+side, and copied within the limit only where the system allows no link.)
 
 The copy is of the whole archive (every volume, for a volume set), it happens on the
 first member read that goes through `unrar` rather than at open, and it is removed when

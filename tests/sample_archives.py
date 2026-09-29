@@ -248,12 +248,13 @@ _HARDLINKS_DUP = (
     F("file1.txt", b"Newer contents!!"),
 )
 
-# Forward/chained links. v2 semantics (archive-reading, link resolution): a hardlink
-# with no earlier same-named target falls back to a later one on a re-readable source,
-# so the forward hardlink `b` resolves through `d` to `a_file` rather than dangling.
+# Forward/chained links. A TAR hardlink refers to an earlier member only (format-tar,
+# as stdlib tarfile and tar(1) read it), so the forward hardlink `b` has no target in
+# either mode and reading it raises; the forward symlink `c` is a path and resolves
+# through `d` to `a_file`.
 _HARDLINKS_FORWARD = (
     F("a_file.txt", b"Hello!"),
-    H("b_forward_hardlink.txt", "d_hardlink.txt", link_contents=b"Hello!"),
+    H("b_forward_hardlink.txt", "d_hardlink.txt", expect_read_error=True),
     S("c_forward_symlink.txt", "d_hardlink.txt", link_contents=b"Hello!"),
     H("d_hardlink.txt", "a_file.txt", link_contents=b"Hello!"),
     H("e_double_hardlink.txt", "d_hardlink.txt", link_contents=b"Hello!"),

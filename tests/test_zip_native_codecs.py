@@ -19,7 +19,6 @@ from archivey import open_archive
 from archivey.exceptions import (
     CorruptionError,
     PackageNotInstalledError,
-    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.streams import codecs as codecs_module
@@ -184,7 +183,7 @@ def test_zip_corrupt_deflate_body_raises_corruption() -> None:
     data = _build_minimal_zip(b"bad.txt", bytes(corrupt), _PAYLOAD, 8)
     with open_archive(io.BytesIO(data)) as ar:
         (member,) = ar.members()
-        with pytest.raises((CorruptionError, TruncatedError)):
+        with pytest.raises(CorruptionError):
             ar.read(member)
 
 

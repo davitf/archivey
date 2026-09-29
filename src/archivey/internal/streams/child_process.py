@@ -15,7 +15,7 @@ from __future__ import annotations
 import signal
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import IO
 
@@ -41,17 +41,26 @@ def python_argv(script: Path, fail: StartFailure) -> list[str]:
 
 
 def spawn(
-    argv: list[str],
+    argv: Sequence[str | bytes],
     fail: StartFailure,
     *,
     stdin: int | IO[bytes],
     stderr: int | IO[bytes],
     bufsize: int = -1,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.Popen[bytes]:
-    """Start ``argv`` with its stdout on a pipe. An ``OSError`` raises ``fail(str(exc))``."""
+    """Start ``argv`` with its stdout on a pipe. An ``OSError`` raises ``fail(str(exc))``.
+
+    ``env`` replaces the child's environment; ``None`` inherits this process's.
+    """
     try:
         return subprocess.Popen(
-            argv, stdin=stdin, stdout=subprocess.PIPE, stderr=stderr, bufsize=bufsize
+            argv,
+            stdin=stdin,
+            stdout=subprocess.PIPE,
+            stderr=stderr,
+            bufsize=bufsize,
+            env=env,
         )
     except OSError as exc:
         raise fail(str(exc)) from exc

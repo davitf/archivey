@@ -467,7 +467,7 @@ escape hatch there.
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` |
 | RAR archive whose compressed RAR 1.5/2.x comments declare more than `max_metadata_bytes` in total | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
 | `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
-| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z and RAR), which raise at `open_archive`, and RAR's compressed-comment budget, which also raises there |
+| `stream_members()` / `streaming=True` over an archive that would fail `members()` under defaults | Iteration proceeds without listing-limit errors, except formats that already applied `max_members` at parse (7z and RAR), which raise at `open_archive`, RAR's compressed-comment budget, which also raises there, and a TAR extended header declaring more than the whole `max_metadata_bytes` |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 
 ### Requirement: Listing metadata-byte accounting
@@ -487,7 +487,8 @@ mirror an allocator — but the weight MUST NOT under-count UTF-8 size:
 - `extra`: lengths of `str` / `bytes` values under the same rules; for a one-level
   `dict` value, its `str` / `bytes` keys and values (archive-sized text such as TAR's
   PAX keywords). Top-level `extra` keys are format-defined literals and are not counted
-- Exclude: `_raw`, `hashes`, diagnostics, Python object overhead
+- Exclude: `_raw` (apart from a TAR sparse map, below), `hashes`, diagnostics, Python
+  object overhead
 
 A field filled in after its member was registered SHALL be weighed when it is filled
 in, under the same enforcement as registration. The case that exists is a symlink
@@ -501,6 +502,16 @@ bound. The case that exists is RAR 1.5/2.x compressed old-style comments, each d
 by a separate `unrar` process: `format-rar` sums their declared unpacked sizes at
 `open_archive` and refuses the archive before decoding any. That check is separate
 from the running total above; the decoded comments are weighed again at registration.
+
+A TAR sparse member's map is retained on `_raw` (the member's data is read through it),
+and the archive sizes it: a few kilobytes of compressed PAX sparse 1.0 map hold millions
+of entries. It SHALL be weighed at registration, 24 bytes per entry.
+
+A TAR extended header (PAX `x` / `g`, GNU long name or link name) is read whole by the
+parser before any member is registered, so its declared size SHALL be weighed first: one
+that declares more than is left of `max_metadata_bytes` in an enforcing listing, or more
+than the whole cap in any walk (`stream_members()` and `streaming=True` included), SHALL
+raise `ResourceLimitError` naming `max_metadata_bytes` without reading its data.
 
 #### Scenario: metadata accounting matrix
 
@@ -704,7 +715,7 @@ that one `open()` operation.
 | Absolute / `..`-escaping symlink | `link_target_member is None`; open → `LinkTargetNotFoundError` |
 | Duplicate names, hardlink | Most recent occurrence strictly before the link |
 | Duplicate names, symlink (RA) | Last occurrence overall |
-| Hardlink source only later | RA falls back to later member; streaming cannot resolve |
+| Hardlink source only later | TAR: no target in either mode (`LinkTargetNotFoundError`), since a TAR hardlink refers to an earlier member (`format-tar`). Other formats: RA falls back to the later member; streaming cannot resolve |
 | Two distinct same-named members on one chain | Not a cycle (id-based tracking) |
 
 ### Requirement: Context-manager and close lifecycle
@@ -1017,7 +1028,9 @@ without writing again. `None` SHALL disable the guard; `SpoolLimits.UNLIMITED` s
 `None`. A copy over the limit SHALL raise `ResourceLimitError`, naming
 `SpoolLimits.max_bytes`, before any byte is written when the size is known, and otherwise
 before the written total passes the limit, with the partial copy removed. A path source
-is not copied and SHALL NOT be refused by it.
+that is read in place is not copied and SHALL NOT be refused by it; a path source that
+has to be copied (`format-rar`: a prefixed archive read with `unar`, or explicit volume
+files that cannot be linked side by side) is bounded like a stream source.
 `read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
 the format stores as member data (see "Link targets stored as member data are read only
 when configured"); like `listing_limits`, it holds for the reader's lifetime.

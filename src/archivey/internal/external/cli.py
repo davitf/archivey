@@ -22,7 +22,7 @@ import shutil
 import subprocess
 import threading
 from abc import abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import IO, BinaryIO, cast
 
@@ -212,17 +212,20 @@ def terminate_process(proc: subprocess.Popen[bytes] | None) -> None:
 
 
 def spawn_for_stdout(
-    cmd: list[str],
+    cmd: Sequence[str | bytes],
     *,
     name: str,
     not_started: str,
     stdin: int | IO[bytes] = subprocess.DEVNULL,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """Start ``cmd`` with stdout on a pipe and stderr discarded; return ``(proc, stdout)``.
 
     A program that cannot start raises ``PackageNotInstalledError(not_started)``. The
     caller owns the process until a :class:`ProcessOutputStream` takes it: nothing
     reaps it if the caller raises before that constructor's ``try`` is reached.
+    ``env`` replaces the child's environment; ``None`` inherits this process's. An
+    argument may be ``bytes`` on POSIX, where argv is bytes.
     """
     proc = spawn(
         cmd,
@@ -230,6 +233,7 @@ def spawn_for_stdout(
         stdin=stdin,
         stderr=subprocess.DEVNULL,
         bufsize=1024 * 1024,
+        env=env,
     )
     if proc.stdout is None:
         terminate_process(proc)

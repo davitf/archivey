@@ -65,6 +65,17 @@ with archivey.open_archive("photos.tar.gz") as reader:
 [Safe extraction](https://davitf.github.io/archivey/extracting/) ·
 [API reference](https://davitf.github.io/archivey/api/)
 
+## How it is built
+
+Almost all of archivey's code, tests and documentation are written by AI coding agents
+(Claude Code and Cursor). The maintainer designs the library, makes the decisions,
+directs the work and reviews the code, especially the architecture and the tricky parts.
+Changes are tested on Linux, macOS and Windows and reviewed by a separate AI session
+that reads them from zero, and several reviews of the whole codebase hunt for bugs,
+unclear or dead code, and API problems. If you are wary of AI-written code, that is
+reasonable: [How it is built](https://davitf.github.io/archivey/how-it-is-built/) says
+how changes are made and checked, and what the process does not promise.
+
 ## Contributing and security
 
 - **[CONTRIBUTING.md](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md)** — coding / testing standards

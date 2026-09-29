@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from typing import TextIO
 
-from archivey import ExtractionProgress
+from archivey import ArchiveReader, ExtractionProgress
 from archivey.cli.common import open_for_cli, reject_salvage
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import (
@@ -19,7 +19,8 @@ from archivey.cli.format import escape_member_name, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
-from archivey.exceptions import ArchiveyError
+from archivey.exceptions import ArchiveyError, LinkTargetNotFoundError
+from archivey.types import ArchiveMember, MemberType
 
 
 def run_test(
@@ -70,6 +71,7 @@ def run_test(
         bytes_done = 0
         files_done = 0
         saw_selected = False
+        pending_links: list[ArchiveMember] = []
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)
             # count as FAIL and still reach the summary (F4). Once the generator raises,
@@ -87,6 +89,11 @@ def run_test(
                     continue
 
                 saw_selected = True
+                if stream is None and _link_needs_verification(member):
+                    # Verified after the pass: the reader refuses an open() while
+                    # stream_members() is running.
+                    pending_links.append(member)
+                    continue
                 if stream is None:
                     # Directories / links / non-file: no body to verify — omit from counts
                     # so "N OK" matches unzip -t style (files only).
@@ -144,6 +151,24 @@ def run_test(
             if on_progress is not None:
                 on_progress.close()
 
+        # Counted only now: the index can be read before listing has looked at the
+        # link targets, so which links need this is known only once the pass is over.
+        if members_total is not None:
+            members_total += len(pending_links)
+        for link in pending_links:
+            try:
+                _verify_link(reader, link)
+            except (ArchiveyError, OSError) as exc:
+                failed += 1
+                print(
+                    f"FAIL {escape_member_name(link.name)}: {format_error_detail(exc)}",
+                    file=err,
+                )
+            else:
+                ok += 1
+                if verbose:
+                    print(f"OK   {escape_member_name(link.name)}", file=err)
+
         # Streaming + patterns: no pre-scan — empty selection if nothing was yielded.
         if patterns and members_for_filter is None and not saw_selected:
             warn_unmatched_includes(patterns, err=err)
@@ -153,6 +178,38 @@ def run_test(
     # An untested remainder is an incomplete verification, whatever ended the stream.
     not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)
     return EXIT_FAIL if failed or not_tested else EXIT_OK
+
+
+def _link_needs_verification(member: ArchiveMember) -> bool:
+    """Whether ``member`` is a symlink whose stored target has not been read cleanly.
+
+    A ZIP, 7z or RAR4 symlink keeps its target in the member's data. Listing reads and
+    checks that data, so a link listed with a target has passed its check. A link
+    listed without one either records no target at all (``_link_target_absent``: not
+    a fault, and ``extract`` reports it as ``LINK_TARGET_UNAVAILABLE``) or has a
+    target that the read could not produce: damaged, encrypted, or out of reach.
+    ``extract`` fails the second kind, so ``test`` does too.
+    """
+    return (
+        member.type is MemberType.SYMLINK
+        and member.link_target is None
+        and not member._link_target_absent
+    )
+
+
+def _verify_link(reader: ArchiveReader, member: ArchiveMember) -> None:
+    """Read ``member``'s stored target again, raising what the read raises.
+
+    ``open()`` reads a link's target before it follows the link, and that read raises
+    the fault that listing only reported. Once the target is read, the rest is about
+    where the link points, not about this member's data: a target outside the archive
+    is not a fault, and a target inside it is verified as a member of its own.
+    """
+    try:
+        reader.open(member).close()
+    except LinkTargetNotFoundError:
+        if member.link_target is None:
+            raise
 
 
 def _not_tested(*, ok: int, failed: int, members_total: int | None) -> int:

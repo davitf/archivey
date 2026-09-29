@@ -28,6 +28,7 @@ from archivey.internal.streams.decompressor_stream import DecompressorStream
 from archivey.internal.streams.rapidgzip_child import RapidgzipChildStream
 from archivey.internal.streams.streamtools import SlicingStream
 from archivey.internal.streams.verify import VerifyingStream
+from tests.corruption_util import raises_corruption_not_truncation
 
 # Large enough that compressed size exceeds the AUTO threshold for less-compressible
 # payloads; used when a test needs AUTO to select rapidgzip.
@@ -287,7 +288,7 @@ def test_corrupt_deflate_zlib_body_translates_to_corruption(
     corrupt[10:40] = b"\x00" * 30
     on = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
     with open_codec_stream(codec, io.BytesIO(bytes(corrupt)), config=on) as stream:
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             stream.read()
 
 
@@ -318,7 +319,7 @@ def test_standalone_zlib_midcut_raises_with_expected_size_on_accelerator() -> No
     # *and* would previously re-raise from VerifyingStream.close on context exit.
     stream = open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=on)
     try:
-        with pytest.raises((TruncatedError, CorruptionError)):
+        with pytest.raises(CorruptionError):
             data = stream.read()
             stream.close()
             assert len(data) < len(payload)
@@ -326,7 +327,7 @@ def test_standalone_zlib_midcut_raises_with_expected_size_on_accelerator() -> No
         if not stream.closed:
             try:
                 stream.close()
-            except (TruncatedError, CorruptionError):
+            except CorruptionError:
                 pass
 
 
@@ -394,7 +395,7 @@ def test_standalone_zlib_midcut_raises_through_rapidgzip_on_without_size() -> No
     # Adler trailer).
     cut = full[: max(len(full) // 2, 20)]
     on = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
-    with pytest.raises((CorruptionError, TruncatedError)):
+    with pytest.raises(CorruptionError):
         with open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=on) as stream:
             stream.read()
 
@@ -505,7 +506,7 @@ def test_tar_zz_member_damage_raises_under_rapidgzip_on(tmp_path: Path) -> None:
     path.write_bytes(_flip(zlib.compress(buf.getvalue()), -1))
     config = ArchiveyConfig(use_rapidgzip=PublicMode.ON)
     for streaming in (False, True):
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             with open_archive(path, streaming=streaming, config=config) as reader:
                 if streaming:
                     for _, stream in reader.stream_members():

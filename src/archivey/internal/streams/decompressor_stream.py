@@ -20,14 +20,13 @@ from __future__ import annotations
 import bisect
 import io
 import os
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import (
     Any,
     BinaryIO,
     Callable,
     Generic,
-    Iterator,
     NoReturn,
     Protocol,
     Sequence,
@@ -39,10 +38,38 @@ from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, SeekIndexCon
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
+    nothing_held,
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.streamtools import ReadOnlyIOStream, ensure_bufferedio
+
+
+class _StreamChecksumError(CorruptionError):
+    """A whole-stream checksum failed after the stream's bytes were delivered.
+
+    Internal: callers see a :class:`CorruptionError`. A reader that tolerates a decode
+    failure past the end of its own data (the TAR end-of-archive scan) re-raises this
+    one, because the checksum covers bytes it has already handed out. Raised for a
+    checksum over the whole decoded stream (or a member of it): gzip CRC-32 and ISIZE,
+    zlib Adler-32, the zstd and lz4 content checksums, lzip CRC-32 and data size. Not
+    for a check that covers one block, and not for xz, whose integrity-check failure
+    liblzma reports with the same message as any corrupt input.
+    """
+
+
+def gzip_corruption(exc: Exception, label: str = "gzip") -> CorruptionError:
+    """The error for a ``zlib.error`` from a gzip or zlib stream.
+
+    zlib names a failed trailer check "incorrect data check" (the gzip CRC-32 or the
+    zlib Adler-32) or "incorrect length check" (gzip ISIZE); both cover the whole
+    member, so they are :class:`_StreamChecksumError`. Anything else is damage to
+    the deflate body itself.
+    """
+    text = str(exc)
+    if "incorrect data check" in text or "incorrect length check" in text:
+        return _StreamChecksumError(f"Error reading {label} stream: {exc!r}")
+    return CorruptionError(f"Error reading {label} stream: {exc!r}")
 
 
 @dataclass(order=True)
@@ -234,6 +261,12 @@ def _compressed_feed_size(max_length: int) -> int:
 
 
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
+
+
+# What ``_deferring_raises`` enters without a collector: nothing is ever held.
+_NO_DEFERRAL: AbstractContextManager[Callable[[], Exception | None]] = nullcontext(
+    nothing_held
+)
 
 
 # Upper bound on a stream's seek table, in entries. A seek table is an optimisation, so
@@ -770,8 +803,9 @@ class DecompressorStream(ReadOnlyIOStream):
             self._diagnostics_collector, self._codec_name or "compressed", offset
         )
 
-    @contextmanager
-    def _deferring_raises(self) -> Iterator[Callable[[], Exception | None]]:
+    def _deferring_raises(
+        self,
+    ) -> AbstractContextManager[Callable[[], Exception | None]]:
         """Hold escalated reports until this operation's state is consistent.
 
         See the class docstring. Without a collector there is nothing to hold: the
@@ -779,10 +813,8 @@ class DecompressorStream(ReadOnlyIOStream):
         """
         collector = self._diagnostics_collector
         if collector is None:
-            yield lambda: None
-            return
-        with collector.deferring_raises() as pending:
-            yield pending
+            return _NO_DEFERRAL
+        return collector.deferring_raises()
 
     def readall(self) -> bytes:
         if self._spent is not None:
@@ -835,6 +867,22 @@ class DecompressorStream(ReadOnlyIOStream):
         if self._spent is not None and not self._buffer:
             self._raise_spent()
         with self._deferring_raises() as pending:
+            if not self._buffer and not self._eof:
+                # Common case: nothing buffered and one decode fills the request. Hand
+                # that chunk back as is, skipping the extend / slice / delete copies
+                # through ``_buffer`` (each a full copy of the output). A short or
+                # over-long chunk takes the buffered loop below, unchanged. So does a
+                # chunk decoded while a raise was held: returning it would leave this
+                # block and drop the raise, so the chunk stays buffered, unconsumed,
+                # and the raise propagates below.
+                chunk = self._read_decompressed_chunk(n)
+                if len(chunk) == n and pending() is None:
+                    self._pos += n
+                    return chunk
+                self._buffer.extend(chunk)
+                # ``_buffer`` holds it now. A raise below keeps this frame alive on
+                # its traceback, which must not pin a second copy of the bytes.
+                chunk = b""
             while len(self._buffer) < n and not self._eof:
                 need = n - len(self._buffer)
                 self._buffer.extend(self._read_decompressed_chunk(need))

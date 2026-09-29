@@ -17,13 +17,14 @@ from collections.abc import Callable, Mapping
 from typing import BinaryIO, NoReturn, Protocol
 
 from archivey.config import DecoderLimits
-from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
+from archivey.exceptions import ResourceLimitError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
     SeekPoint,
+    gzip_corruption,
 )
 from archivey.internal.streams.ppmd_child import (
     PpmdChildAllocationError,
@@ -155,11 +156,14 @@ class GzipDecoder(BaseDecoder):
         else:
             data = self._decomp.unconsumed_tail + chunk
 
-        output = bytearray()
+        # Output pieces, joined once at the end: one ``decompress`` call is the common
+        # case, and ``b"".join`` hands a lone piece back without copying it.
+        output: list[bytes] = []
+        produced_total = 0
         while True:
             if self._pending_error is not None or self._finished:
                 break
-            if max_length >= 0 and len(output) >= max_length:
+            if max_length >= 0 and produced_total >= max_length:
                 if self._between_members and data:
                     self._retained = data
                 break
@@ -176,7 +180,7 @@ class GzipDecoder(BaseDecoder):
             if not data:
                 break
 
-            limit = max_length - len(output) if max_length >= 0 else -1
+            limit = max_length - produced_total if max_length >= 0 else -1
             if limit == 0:
                 break
             try:
@@ -189,8 +193,11 @@ class GzipDecoder(BaseDecoder):
                 # CorruptionError here so a raw GzipDecompressorStream is consistent
                 # with flush() and does not leak zlib.error (GzipCodec.translate maps
                 # it too, but the decoder must stand on its own).
-                raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
-            output.extend(produced)
+                # A failed CRC-32/ISIZE check is a _StreamChecksumError.
+                raise gzip_corruption(e) from e
+            if produced:
+                output.append(produced)
+                produced_total += len(produced)
 
             if self._decomp.eof:
                 data = self._decomp.unused_data
@@ -200,11 +207,11 @@ class GzipDecoder(BaseDecoder):
             # More compressed input remains under a max_length cap — leave it in
             # unconsumed_tail for the next feed (do not copy into _retained).
             data = self._decomp.unconsumed_tail
-            if data and produced and (max_length < 0 or len(output) < max_length):
+            if data and produced and (max_length < 0 or produced_total < max_length):
                 continue
             break
 
-        return DecodeOut(bytes(output))
+        return DecodeOut(b"".join(output))
 
     def flush(self) -> DecodeOut:
         if self._finished:
@@ -239,7 +246,7 @@ class GzipDecoder(BaseDecoder):
                     if not self._decomp.eof:
                         out.extend(self._decomp.flush())
                 except zlib.error as e:
-                    raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+                    raise gzip_corruption(e) from e
                 if not self._decomp.eof:
                     self._pending_error = TruncatedError("gzip stream is truncated")
                     return DecodeOut(bytes(out))
@@ -262,7 +269,7 @@ class GzipDecoder(BaseDecoder):
                 out.extend(self._decomp.decompress(self._decomp.unconsumed_tail))
             out.extend(self._decomp.flush())
         except zlib.error as e:
-            raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+            raise gzip_corruption(e) from e
         if not self._decomp.eof:
             self._pending_error = TruncatedError("gzip stream is truncated")
         else:
@@ -1130,10 +1137,13 @@ class PpmdDecoder(BaseDecoder):
         if self._held is not None:
             self._held += chunk
             limit = self._in_process_max_input
-            if self._pack_complete() is True:
-                chunk = self._release_held(in_child=False)
-            elif limit is not None and len(self._held) > limit:
+            # The limit is checked first: a member past it goes to a child even when
+            # its whole pack arrived in this one feed. How much one feed carries is up
+            # to the caller's read size, which must not decide where a member decodes.
+            if limit is not None and len(self._held) > limit:
                 chunk = self._release_to_child(limit)
+            elif self._pack_complete() is True:
+                chunk = self._release_held(in_child=False)
             else:
                 return DecodeOut(b"")
         # Honour both the container unpack_size cap and the stream-layer read budget.

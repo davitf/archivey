@@ -274,7 +274,9 @@ How surfaces interact:
 There is no extract-all flag to force writing non-current revisions; callers that need those bytes use `open`/`read` (or a future opt-in).
 
 A streaming pass learns that a member is shadowed only when the later same-name member
-arrives. At that point it SHALL report the earlier member `SUPERSEDED`, before the later
+arrives. So does a random-access TAR extraction, which is one forward pass too
+(`format-tar`); everything below about a streaming pass holds for it, except that it can
+read a hardlink's source again. At that point it SHALL report the earlier member `SUPERSEDED`, before the later
 member reaches the filter, and stop counting it against `max_entries` and
 `max_extracted_bytes`. Its bytes stay counted while a hardlink written in between still
 holds them, and the archive-wide ratio still counts its decoded bytes. What the
@@ -387,6 +389,7 @@ source is written, with one read and one bomb-limit count for the source bytes.
 | First selected link destination exists under `OverwritePolicy.SKIP` | That link result is `NOT_OVERWRITTEN`; content moves to the next allowed link; all skipped means no write |
 | Excluded source on a forward-only stream | Per-member failure: `STOP` raises; `CONTINUE` records `FAILED` and proceeds |
 | HARDLINK appears before its also-selected source | After the pass it links to the extracted source inode; source bytes read and counted once |
+| HARDLINK whose resolved source is not a FILE (e.g. a DIRECTORY member) | Per-member `ExtractionError` naming the source's type (for a directory: a hard link to one cannot be created); the source itself still extracts |
 
 ### Requirement: Policy-Specific Metadata Transforms
 
@@ -680,8 +683,11 @@ omission is reported through the diagnostics channel
 (`SYMLINK_TARGET_UNAVAILABLE`, an archive-integrity code), which is where an anomaly in
 the archive's own metadata belongs; the extraction result records only what extraction
 did about it. This is not confined to one cause: a writer that discarded the target
-(7-Zip records none for a directory reparse point), a reparse buffer that names nothing
-and a member carrying no data at all leave extraction with the same nothing to write.
+(7-Zip records none for a directory reparse point), a reparse buffer that names nothing,
+a member carrying no data at all and a stored target that is the empty string leave
+extraction with the same nothing to write. No filesystem accepts an empty link target, so
+the reader SHALL list such a link with `link_target=None` and report it as it reports the
+other causes, rather than presenting `""`.
 
 What the archive records is the condition, not whether this read produced a target.
 An unset `link_target` has two other causes, and in both the archive carries a target
@@ -822,6 +828,7 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | Corrupt member under `CONTINUE` | Partial output removed; `FAILED` result; later members continue |
 | Default `STOP` member failure (e.g. `CorruptionError`) | Original error propagates immediately; failing partial file removed; earlier outputs remain |
 | Filesystem `OSError` while writing under `CONTINUE` | Partial output removed; `FAILED` result; extraction proceeds |
+| A member under a non-directory this run extracted (file `d`, then `d/f` or directory `d/y`) | Per-member `ExtractionError` naming `d`, not a raw `OSError`; a non-directory already in `dest` before the run stays a filesystem `OSError` |
 | Cumulative bytes/live ratio/max entries exceed limit under any `OnError` | `ResourceLimitError` propagates and halts; no later member processed |
 | Mixed good/corrupt/blocked archive under `CONTINUE` | Extractable members written; report includes `EXTRACTED` plus `FAILED`/`BLOCKED`; no per-member exception escapes |
 | Reading diagnostic resolves to `RAISE` under `CONTINUE` (e.g. `MEMBER_TIMESTAMP_INVALID`) | `DiagnosticRaisedError` halts; no report returned |

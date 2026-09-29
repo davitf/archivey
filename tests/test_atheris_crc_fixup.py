@@ -15,6 +15,7 @@ from tests.atheris_fuzz.crc_fixup import (
     fixup_sevenzip_header_crcs,
     fixup_zip_local_and_cd_crc,
 )
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.sample_archives import CORPUS, corpus_archive_path
 
 
@@ -45,7 +46,7 @@ def test_fixup_sevenzip_restores_crcs_after_bitflip(basic_7z: bytes) -> None:
     broken = bytes(data)
 
     # Without fixup the next-header CRC must fail.
-    with pytest.raises(CorruptionError, match="next header CRC"):
+    with raises_corruption_not_truncation(match="next header CRC"):
         parse_sevenzip_archive(io.BytesIO(broken))
 
     fixed = fixup_sevenzip_header_crcs(broken, broken=False)
@@ -71,7 +72,7 @@ def test_fixup_sevenzip_broken_mode_still_rejects(basic_7z: bytes) -> None:
     flipped = bytearray(basic_7z)
     flipped[start] ^= 0x02
     fixed_broken = fixup_sevenzip_header_crcs(bytes(flipped), broken=True)
-    with pytest.raises(CorruptionError, match="next header CRC"):
+    with raises_corruption_not_truncation(match="next header CRC"):
         parse_sevenzip_archive(io.BytesIO(fixed_broken))
 
 
@@ -186,7 +187,7 @@ def test_fixup_rar5_restores_crcs_after_bitflip(basic_rar5: bytes) -> None:
     flipped = bytearray(basic_rar5)
     flipped[24] ^= 0x01
     broken = bytes(flipped)
-    with pytest.raises(CorruptionError, match="RAR5 header CRC"):
+    with raises_corruption_not_truncation(match="RAR5 header CRC"):
         parse_rar_archive(io.BytesIO(broken))
 
     fixed = fixup_rar_header_crcs(broken, broken=False)
@@ -200,7 +201,7 @@ def test_fixup_rar5_broken_mode_still_rejects(basic_rar5: bytes) -> None:
     from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
 
     fixed_broken = fixup_rar_header_crcs(basic_rar5, broken=True)
-    with pytest.raises(CorruptionError, match="RAR5 header CRC"):
+    with raises_corruption_not_truncation(match="RAR5 header CRC"):
         parse_rar_archive(io.BytesIO(fixed_broken))
 
 
@@ -212,7 +213,7 @@ def test_fixup_rar3_restores_crcs_after_bitflip(basic_rar4: bytes) -> None:
     flipped = bytearray(basic_rar4)
     flipped[7] ^= 0xFF
     broken = bytes(flipped)
-    with pytest.raises(CorruptionError, match="RAR3 .*CRC"):
+    with raises_corruption_not_truncation(match="RAR3 .*CRC"):
         parse_rar_archive(io.BytesIO(broken))
 
     fixed = fixup_rar_header_crcs(broken, broken=False)

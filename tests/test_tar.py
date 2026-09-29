@@ -21,6 +21,7 @@ from archivey import (
     CompressionAlgorithm,
     CompressionMethod,
     ExtractionLimits,
+    ListingLimits,
     MemberType,
     extract,
     open_archive,
@@ -32,7 +33,6 @@ from archivey.diagnostics import (
     DiagnosticPolicy,
 )
 from archivey.exceptions import (
-    CorruptionError,
     DiagnosticRaisedError,
     ReadError,
     ResourceLimitError,
@@ -42,6 +42,10 @@ from archivey.exceptions import (
 from archivey.internal.backends import tar_reader as tar_reader_module
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
 from tests.conftest import requires_zstd, zstd_backend
+from tests.corruption_util import (
+    is_corruption_not_truncation,
+    raises_corruption_not_truncation,
+)
 from tests.streams_util import (
     FactSizedReadRecorder,
     NonSeekableBytesIO,
@@ -598,14 +602,14 @@ def test_members_report_recovers_prefix_on_corrupt_header() -> None:
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         report = ar.members_report()
         assert report.error is not None
-        assert isinstance(report.error, CorruptionError)
+        assert is_corruption_not_truncation(report.error)
         names = [m.name for m in report.members]
         assert names == ["a.txt"]
         assert ar.members_report_if_available() is report
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             ar.members()
         yielded: list[str] = []
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             for member in ar:
                 yielded.append(member.name)
         assert yielded == names
@@ -644,12 +648,12 @@ def test_members_report_streaming_corrupt_header_yield_then_raise() -> None:
         streaming=True,
     ) as ar:
         yielded: list[str] = []
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             for member, _stream in ar.stream_members():
                 yielded.append(member.name)
         assert yielded == ["a.txt"]
         report = ar.members_report()
-        assert isinstance(report.error, CorruptionError)
+        assert is_corruption_not_truncation(report.error)
         assert [m.name for m in report.members] == yielded
 
 
@@ -739,7 +743,7 @@ def test_corrupt_final_header_raises_corruption_by_default() -> None:
     # the block tarfile stopped on and raises CorruptionError — even under the default
     # (non-strict) config, because a non-null block there is unambiguous corruption.
     data = _tar_corrupt_final_header()
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.members()
 
@@ -748,7 +752,7 @@ def test_corrupt_mid_header_raises_corruption_by_default() -> None:
     # A rejected non-first header with valid data still following: caught by default in
     # both access modes.
     data = _tar_corrupt_mid_header()
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.members()
 
@@ -757,7 +761,7 @@ def test_corrupt_mid_header_streaming_raises_corruption() -> None:
     # Streaming has no probe, but a rejected mid-archive header leaves valid bytes after
     # the stop, so the trailing-block heuristic still surfaces it as corruption.
     data = _tar_corrupt_mid_header()
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         with open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
         ) as ar:
@@ -781,15 +785,15 @@ def test_corrupt_final_header_streaming_warns_not_corruption(
 
 
 def test_corrupt_final_header_extract_raises(tmp_path: Path) -> None:
-    # Extraction surfaces the corruption too. Random access materializes the member list
-    # (which runs the EOF check) before writing, so a corrupt archive fails closed — no
-    # partial output on disk.
+    # Extraction surfaces the corruption too. Random access extracts in one pass, as
+    # streaming does, so the EOF check runs after the members before the damage are
+    # written: those stay on disk, whole, and the call still raises.
     data = _tar_corrupt_final_header()
     dest = tmp_path / "out"
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.extract_all(dest)
-    assert not (dest / "hello.txt").exists()
+    assert (dest / "hello.txt").read_bytes() == b"hello world"
 
 
 def test_corrupt_final_header_sparse_raises_corruption() -> None:
@@ -797,7 +801,7 @@ def test_corrupt_final_header_sparse_raises_corruption() -> None:
     # offset_data+roundup(size) check miss the stop block, so a rejected final header
     # after a GNU sparse member warned as absent instead of raising CorruptionError.
     data = _tar_corrupt_final_header_sparse()
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
             ar.members()
 
@@ -935,7 +939,7 @@ def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:
 
     path = tmp_path / "bad.tar.gz"
     path.write_bytes(gzip.compress(_tar_corrupt_final_header()))
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         with open_archive(path) as ar:
             ar.members()
 
@@ -944,7 +948,7 @@ def test_corrupt_mid_header_raise_disposition_still_corruption() -> None:
     # A RAISE disposition does not change the type for a rejected header: the nonzero
     # case escalates as CorruptionError, which outranks DiagnosticRaisedError.
     data = _tar_corrupt_mid_header()
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         with open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
@@ -967,7 +971,7 @@ def test_corrupt_final_header_ignore_disposition_still_raises() -> None:
             DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: DiagnosticDisposition.IGNORE
         }
     )
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         with open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
@@ -982,7 +986,7 @@ def test_corrupt_mid_header_streaming_extract_writes_then_raises(
     # Streaming extract writes salvageable members, then raises at end-of-pass.
     data = _tar_corrupt_mid_header()
     dest = tmp_path / "out"
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         with open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
         ) as ar:
@@ -1022,7 +1026,7 @@ def test_corrupt_tar_header_raises() -> None:
     raw = bytearray(_build_tar())
     # Corrupt the checksum field (offset 148, 8 bytes) of the first header.
     raw[148:156] = b"\xff\xff\xff\xff\xff\xff\xff\xff"
-    with pytest.raises(CorruptionError) as excinfo:
+    with raises_corruption_not_truncation() as excinfo:
         with open_archive(io.BytesIO(bytes(raw)), format=ArchiveFormat.TAR) as ar:
             ar.members()
     assert isinstance(excinfo.value.__cause__, tarfile.ReadError)
@@ -1063,7 +1067,7 @@ def test_corrupt_path_open_releases_owned_handle(
 
     monkeypatch.setattr(builtins, "open", tracking_open)
     kept: list[Exception] = []
-    with pytest.raises(CorruptionError) as excinfo:
+    with raises_corruption_not_truncation() as excinfo:
         open_archive(path, format=ArchiveFormat.TAR)
     kept.append(
         excinfo.value
@@ -1079,7 +1083,7 @@ def test_corrupt_compressed_tar_surfaces_codec_corruption(tmp_path: Path) -> Non
     raw = bytearray(_build_tar("w:gz"))
     raw[len(raw) // 2] ^= 0xFF  # flip a byte inside the deflate stream
     path.write_bytes(bytes(raw))
-    with pytest.raises(CorruptionError):
+    with raises_corruption_not_truncation():
         with open_archive(path) as ar:
             for _member, stream in ar.stream_members():
                 if stream is not None:
@@ -1614,8 +1618,12 @@ def test_extended_header_size_does_not_drive_the_allocation(
         else ReadSizeRecorder(data, advertise_size=length == "hint")
     )
 
-    with pytest.raises(CorruptionError):
-        with open_archive(source, format=ArchiveFormat.TAR) as reader:
+    # Without a metadata cap: with one, the declared size is refused before any read
+    # (``test_extended_header_over_the_metadata_cap_is_refused_unread``), and the read
+    # bound is what this pins.
+    config = ArchiveyConfig(listing_limits=ListingLimits.UNLIMITED)
+    with raises_corruption_not_truncation():
+        with open_archive(source, format=ArchiveFormat.TAR, config=config) as reader:
             reader.members()
 
     assert source.requested, "the source was never read"
@@ -1630,6 +1638,24 @@ def test_extended_header_size_does_not_drive_the_allocation(
     assert max(source.requested) <= bound, (
         f"asked the source for {max(source.requested)} bytes "
         f"from a {len(data)}-byte archive"
+    )
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", [b"x", b"L"])
+def test_extended_header_over_the_metadata_cap_is_refused_unread(
+    typeflag: bytes, streaming: bool
+) -> None:
+    """An extended header declaring more than ``max_metadata_bytes`` is refused from
+    its size field, before tarfile reads its data whole: the read would cost what
+    the header declares, not what the cap allows."""
+    data = _tar_with_oversized_metadata_header(typeflag, 6 * 1024**3)
+    source = ReadSizeRecorder(data, advertise_size=False)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        with open_archive(source, format=ArchiveFormat.TAR, streaming=streaming):
+            pass
+    assert max(source.requested) <= max(
+        DEFAULT_UNKNOWN_LENGTH_READ_STEP, io.DEFAULT_BUFFER_SIZE, 10240
     )
 
 
@@ -1909,3 +1935,179 @@ def test_pre_1970_pax_atime_lists_its_date(tmp_path: Path) -> None:
         assert ar.get("old.txt").accessed == datetime(
             1969, 12, 31, 23, 59, 58, 500_000, tzinfo=timezone.utc
         )
+
+
+def _tar_hardlink_then_target() -> bytes:
+    """``h`` is a hardlink to ``t``; the only ``t`` comes after it, and an earlier
+    ``u`` that a later ``u`` replaces is linked from ``hu`` between the two."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        for name, data in (("u", b"FIRST-U"),):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+        for name, target in (("h", "t"), ("hu", "u")):
+            link = tarfile.TarInfo(name)
+            link.type = tarfile.LNKTYPE
+            link.linkname = target
+            t.addfile(link)
+        for name, data in (("t", b"LATER-T"), ("u", b"LATER-U")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_hardlink_resolves_to_an_earlier_member_only(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """A TAR hardlink refers to a file archived before it: tarfile's own lookup
+    searches only the members before the link and takes the last match, and
+    ``tar(1)`` links to what it already wrote. So ``h -> t`` with ``t`` only later has
+    no target, and ``hu -> u`` is the first ``u``, not the later one. Random access
+    and a streaming pass agree."""
+    from archivey import ExtractionStatus, OnError
+    from archivey.exceptions import LinkTargetNotFoundError
+
+    data = _tar_hardlink_then_target()
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        report = reader.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
+        listed = {m.name: m for m in reader.members_report().members}
+    by_name = {r.member.name: r for r in report.results}
+    assert listed["h"].link_target_member is None
+    assert by_name["h"].status is ExtractionStatus.FAILED
+    assert isinstance(by_name["h"].error, LinkTargetNotFoundError)
+    assert listed["hu"].link_target_member is not None
+    assert listed["hu"].link_target_member.member_id == 0
+    assert (tmp_path / "out" / "hu").read_bytes() == b"FIRST-U"
+    assert (tmp_path / "out" / "t").read_bytes() == b"LATER-T"
+    if not streaming:
+        with open_archive(io.BytesIO(data)) as reader:
+            with pytest.raises(LinkTargetNotFoundError):
+                reader.read("h")
+
+
+@pytest.mark.parametrize("codec", ["gz", "bz2", "xz"])
+def test_extract_compressed_tar_decodes_once(tmp_path: Path, codec: str) -> None:
+    """``archivey.extract`` on a compressed tar reads it in one forward pass: the
+    listing limits are enforced as members arrive rather than by listing the whole
+    archive first, so no seek goes back and ``STREAM_REWIND_REDECOMPRESSES``, set to
+    ``RAISE``, never fires. A 2 MiB member makes a rewind large enough to report."""
+    import bz2
+    import gzip
+    import lzma
+
+    import archivey
+    from archivey.diagnostics import DiagnosticDisposition, DiagnosticPolicy
+
+    payload = bytes(range(256)) * (8 * 1024)
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as t:
+        for name in ("a.bin", "b.bin"):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            t.addfile(info, io.BytesIO(payload))
+        link = tarfile.TarInfo("h.bin")
+        link.type = tarfile.LNKTYPE
+        link.linkname = "a.bin"
+        t.addfile(link)
+    compress = {"gz": gzip.compress, "bz2": bz2.compress, "xz": lzma.compress}[codec]
+    archive = tmp_path / f"x.tar.{codec}"
+    archive.write_bytes(compress(raw.getvalue()))
+    config = ArchiveyConfig(
+        diagnostic_policy=DiagnosticPolicy(
+            overrides={
+                DiagnosticCode.STREAM_REWIND_REDECOMPRESSES: DiagnosticDisposition.RAISE
+            }
+        )
+    )
+    report = archivey.extract(archive, tmp_path / "out", config=config)
+    assert len(report.results) == 3
+    for name in ("a.bin", "b.bin", "h.bin"):
+        assert (tmp_path / "out" / name).read_bytes() == payload
+    assert DiagnosticCode.STREAM_REWIND_REDECOMPRESSES not in report.diagnostics.counts
+
+
+def test_extract_enforces_listing_limits_as_members_arrive(tmp_path: Path) -> None:
+    """Without listing first, ``max_members`` still refuses the extraction, at the
+    member that crosses it, before that member is written."""
+    import archivey
+
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as t:
+        for i in range(5):
+            info = tarfile.TarInfo(f"f{i}")
+            info.size = 1
+            t.addfile(info, io.BytesIO(b"x"))
+    archive = tmp_path / "x.tar"
+    archive.write_bytes(raw.getvalue())
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=3))
+    with pytest.raises(ResourceLimitError, match="max_members"):
+        archivey.extract(archive, tmp_path / "out", config=config)
+    assert not (tmp_path / "out" / "f3").exists()
+
+
+class _CountingRaw(io.RawIOBase):
+    """A raw source that counts the bytes read from it; seekable or not."""
+
+    def __init__(self, data: bytes, *, seekable: bool) -> None:
+        self._inner = io.BytesIO(data)
+        self._seekable = seekable
+        self.read_bytes = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        n = self._inner.readinto(buffer)
+        self.read_bytes += n
+        return n
+
+    def seekable(self) -> bool:
+        return self._seekable
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        if not self._seekable:
+            raise io.UnsupportedOperation("seek")
+        return self._inner.seek(offset, whence)
+
+    def tell(self) -> int:
+        if not self._seekable:
+            raise io.UnsupportedOperation("tell")
+        return self._inner.tell()
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_pass_reads_no_member_data_the_consumer_does_not_reach(
+    streaming: bool,
+) -> None:
+    """Skipping a member is lazy. A consumer that takes the first member and stops
+    causes no read of that member's data area, in a streaming pass (whose skip reads
+    through the data, but only before the next header) and in the random-access one
+    pass. Taking the second member of a forward-only source reads through the first."""
+    big = 4 * 2**20
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        for name, size in (("a", big), ("b", 10), ("c", 10)):
+            info = tarfile.TarInfo(name)
+            info.size = size
+            t.addfile(info, io.BytesIO(b"x" * size))
+    data = buf.getvalue()
+
+    def reads_after(members_taken: int) -> int:
+        raw = _CountingRaw(data, seekable=not streaming)
+        with open_archive(
+            io.BufferedReader(raw), format=ArchiveFormat.TAR, streaming=streaming
+        ) as reader:
+            it = iter(reader.stream_members())
+            for _ in range(members_taken):
+                next(it)
+            it.close()  # type: ignore[attr-defined]
+        return raw.read_bytes
+
+    assert reads_after(1) < 1 * 2**20
+    if streaming:
+        assert reads_after(2) >= big
+    else:
+        assert reads_after(2) < 1 * 2**20  # random access seeks past the data

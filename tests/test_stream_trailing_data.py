@@ -24,13 +24,14 @@ import pytest
 
 from archivey import AcceleratorMode, ArchiveyConfig, DiagnosticPolicy, open_archive
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
-from archivey.exceptions import CorruptionError, DiagnosticRaisedError
+from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
 )
 from archivey.types import HashAlgorithm
 from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (
     NonSeekableBytesIO,
     make_lzip_member,
@@ -168,7 +169,7 @@ def test_brotli_on_a_pipe_cannot_tell_appended_bytes_from_damage() -> None:
     with open_archive(source, streaming=True, format=_format(".br")) as reader:
         for _member, stream in reader.stream_members():
             assert stream is not None
-            with pytest.raises(CorruptionError):
+            with raises_corruption_not_truncation():
                 stream.read()
 
 
@@ -205,7 +206,7 @@ def test_brotli_damage_is_still_corruption(tmp_path: Path) -> None:
         pytest.fail("no rejected flip found")
     path = _write(tmp_path, ".br", bytes(damaged))
     with open_archive(path, format=_format(".br")) as reader:
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             reader.read(reader.members()[0])
 
 
@@ -499,6 +500,134 @@ def test_the_bzip2_accelerator_reports_the_same_offset(tmp_path: Path) -> None:
         assert reader.read(reader.members()[0]) == _PAYLOAD
         (report,) = _reports(reader)
     assert report.observed_bytes == len(compressed) + 3
+
+
+# An empty bzip2 stream is what ``bzip2 -c /dev/null`` writes. A file made by
+# concatenating one with other streams is valid (``bzip2 -t`` accepts it), wherever it
+# falls, so it is part of the data and not trailing bytes. These layouts put the empty
+# streams after, before and between the data streams.
+_BZ2_EMPTY = bz2.compress(b"")
+_BZ2_LAYOUTS: dict[str, Callable[[bytes], bytes]] = {
+    "data-then-empty": lambda d: bz2.compress(d) + _BZ2_EMPTY,
+    "data-then-three-empty": lambda d: bz2.compress(d) + _BZ2_EMPTY * 3,
+    "empty-then-data": lambda d: _BZ2_EMPTY + bz2.compress(d),
+    "empty-between-data": lambda d: (
+        bz2.compress(d[: len(d) // 2]) + _BZ2_EMPTY + bz2.compress(d[len(d) // 2 :])
+    ),
+    "empty-and-padding-after-data": lambda d: (
+        bz2.compress(d) + _BZ2_EMPTY + b"\x00" * 7 + _BZ2_EMPTY + b"\x00" * 3
+    ),
+}
+_BZ2_MODES = [
+    pytest.param(AcceleratorMode.ON, id="accelerator", marks=requires("rapidgzip")),
+    pytest.param(AcceleratorMode.OFF, id="stdlib"),
+]
+
+
+def _tar_of(payload: bytes) -> bytes:
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        info = tarfile.TarInfo("a.bin")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    return buffer.getvalue()
+
+
+def _read_single_member(path: Path, config: ArchiveyConfig, access: str) -> bytes:
+    """Read the file's one member through ``access``; strict policy raises on a report."""
+    if access == "streaming":
+        read = []
+        with open_archive(path, config=config, streaming=True) as reader:
+            for _member, stream in reader.stream_members():
+                if stream is not None:
+                    read.append(stream.read())
+            assert _reports(reader) == []
+        (data,) = read
+        return data
+    with open_archive(
+        path, config=config, seekable_members=access == "seekable"
+    ) as reader:
+        (member,) = [m for m in reader.members() if m.is_file]
+        with reader.open(member) as stream:
+            if access == "seekable":
+                stream.seek(len(stream.read()) // 2)
+                stream.seek(0)
+            data = stream.read()
+        assert _reports(reader) == []
+    return data
+
+
+@pytest.mark.parametrize("access", ["random", "seekable", "streaming"])
+@pytest.mark.parametrize("kind", [".bz2", ".tar.bz2"])
+@pytest.mark.parametrize("layout", sorted(_BZ2_LAYOUTS))
+@pytest.mark.parametrize("mode", _BZ2_MODES)
+def test_empty_bzip2_streams_are_part_of_the_data(
+    tmp_path: Path, mode: AcceleratorMode, layout: str, kind: str, access: str
+) -> None:
+    """The strict policy accepts the file, in every accelerator mode and access mode.
+
+    rapidgzip's compressed position after the last read stops at the end of the last
+    stream that produced data. The accelerated path read the empty streams after it as
+    appended bytes, and the strict policy refused the file.
+    """
+    payload = _PAYLOAD[:20_000]
+    content = _tar_of(payload) if kind == ".tar.bz2" else payload
+    path = _write(tmp_path, kind, _BZ2_LAYOUTS[layout](content))
+    config = ArchiveyConfig(
+        use_indexed_bzip2=mode, diagnostic_policy=DiagnosticPolicy.strict()
+    )
+    assert _read_single_member(path, config, access) == payload
+
+
+@pytest.mark.parametrize("empty_streams", [1, 2])
+@pytest.mark.parametrize("mode", _BZ2_MODES)
+def test_bytes_after_empty_bzip2_streams_are_reported_past_them(
+    tmp_path: Path, mode: AcceleratorMode, empty_streams: int
+) -> None:
+    """Junk after the empty streams still reports, at the same offset in both modes."""
+    data = bz2.compress(_PAYLOAD) + _BZ2_EMPTY * empty_streams
+    path = _write(tmp_path, ".bz2", data + _JUNK)
+    config = ArchiveyConfig(use_indexed_bzip2=mode)
+    with open_archive(path, config=config, seekable_members=True) as reader:
+        assert reader.read(reader.members()[0]) == _PAYLOAD
+        (report,) = _reports(reader)
+    assert report.observed_bytes == len(data)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    ("tail", "reported_at"),
+    [
+        # The accelerator's scan reads 64 KiB at a time; this empty stream starts 5
+        # bytes before the end of the first read.
+        pytest.param(b"\x00" * ((1 << 16) - 5) + _BZ2_EMPTY, None, id="split-by-scan"),
+        pytest.param(
+            b"\x00" * ((1 << 16) - 5) + _BZ2_EMPTY + _JUNK,
+            (1 << 16) - 5 + len(_BZ2_EMPTY),
+            id="split-by-scan-then-junk",
+        ),
+        # The file ends inside what would be an empty stream: that is not one.
+        pytest.param(_BZ2_EMPTY[:5], 0, id="cut-empty-stream"),
+        pytest.param(b"\x00" * 3 + _BZ2_EMPTY[:-1], 3, id="cut-after-padding"),
+        # Shaped like an empty stream but not one: the combined CRC of no blocks is
+        # zero, and the block-size digit is 1 to 9.
+        pytest.param(_BZ2_EMPTY[:-4] + b"\xde\xad\xbe\xef", 0, id="non-zero-crc"),
+        pytest.param(b"BZh0" + _BZ2_EMPTY[4:], 0, id="digit-out-of-range"),
+    ],
+)
+def test_the_accelerator_scan_finds_empty_streams_across_its_reads(
+    tmp_path: Path, tail: bytes, reported_at: int | None
+) -> None:
+    compressed = bz2.compress(_PAYLOAD)
+    path = _write(tmp_path, ".bz2", compressed + tail)
+    config = ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)
+    with open_archive(path, config=config, seekable_members=True) as reader:
+        assert reader.read(reader.members()[0]) == _PAYLOAD
+        found = [report.observed_bytes for report in _reports(reader)]
+    expected = [] if reported_at is None else [len(compressed) + reported_at]
+    assert found == expected
 
 
 @pytest.mark.parametrize(("report", "expected"), [(False, 0), (True, 1)])

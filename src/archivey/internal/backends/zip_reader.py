@@ -75,6 +75,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     EncryptionError,
+    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -179,6 +180,14 @@ _ZIP_MASK_USE_DATA_DESCRIPTOR = 0x8
 
 # ZIP general-purpose bit 0: the member is encrypted.
 _ZIP_MASK_ENCRYPTED = 0x1
+# ZIP general-purpose bit 1 on an LZMA (method 14) member: the stream ends with an
+# end-of-stream marker. When it is clear there is no marker, and APPNOTE 4.4.4 says the
+# decoder stops at the declared uncompressed size.
+_ZIP_MASK_LZMA_EOS_MARKER = 0x2
+# ZIP general-purpose bit 5: the body is PKWARE "compressed patched data", a patch
+# against some other file rather than the file itself. Nothing implements it; stdlib
+# zipfile refuses it too.
+_ZIP_MASK_COMPRESSED_PATCHED_DATA = 0x20
 # PKWARE Strong Encryption (APPNOTE §7): general-purpose bit 6 on an encrypted member
 # (bit 0 is set with it), with the algorithm in extra field 0x0017. Either marks the
 # member; archivey does not implement the algorithm.
@@ -349,6 +358,7 @@ def _is_candidate_integrity_failure(
     The local header is not encrypted, so a damaged one is never the key's doing: it
     raises before decryption starts.
     """
+    # TruncatedError is a CorruptionError subclass, so it must be tested first.
     if isinstance(exc, TruncatedError):
         return payload_complete()
     return isinstance(exc, CorruptionError)
@@ -383,6 +393,30 @@ def _unverified_data_error(message: str) -> EncryptionError:
 
 def _is_unverified_data_error(error: BaseException) -> bool:
     return getattr(error, _UNVERIFIED_DATA_MARK, False) is True
+
+
+#: ZIP methods whose codec settings sit inside the member's data: the LZMA properties
+#: (method 14) and the PPMd order and memory (method 98). Under ZipCrypto they are
+#: encrypted, so a wrong password that passes the one-byte check decrypts them to
+#: garbage, and a garbage dictionary or memory size trips ``max_decoder_memory``.
+_ZIP_KEYED_SETTINGS_METHODS = frozenset({14, 98})
+
+_UNCONFIRMED_RESOURCE_LIMIT_NOTE = (
+    "Under ZipCrypto the password may be wrong: it checks only one byte of the "
+    "password before decrypting, and these codec settings are part of the encrypted "
+    "data, so a wrong password decrypts them to an arbitrary size."
+)
+
+
+def _unconfirmed_resource_limit(error: ResourceLimitError) -> ResourceLimitError:
+    """``error``, from codec settings an unconfirmed ZipCrypto key decrypted, with a note.
+
+    Still a ``ResourceLimitError``: when the size is real (the password was right), a
+    caller who raises ``DecoderLimits.max_decoder_memory`` gets a working read.
+    """
+    return ResourceLimitError(
+        f"{raw_message_of(error)} {_UNCONFIRMED_RESOURCE_LIMIT_NOTE}"
+    )
 
 
 class _UnconfirmedZipCryptoStream(DelegatingStream):
@@ -727,11 +761,13 @@ class ZipReader(BaseArchiveReader):
                 archive_name=archive_name,
                 source_format=ArchiveFormat.ZIP,
             ) from exc
-        except UnicodeDecodeError as exc:
+        except UnicodeError as exc:
             # A member name failed to decode while reading the central directory: either a
             # UTF-8-flagged entry whose stored bytes are corrupt, or a wrong explicit
-            # `encoding=`. Both are surfaced as a typed error (never a raw UnicodeDecodeError);
-            # the message points at the encoding when the caller supplied one.
+            # `encoding=`. Both are surfaced as a typed error (never a raw UnicodeError);
+            # the message points at the encoding when the caller supplied one. The base
+            # class, not UnicodeDecodeError: `idna` raises a plain UnicodeError for a
+            # name it cannot decode (an empty or over-long label).
             hint = (
                 f" (with encoding={encoding!r}; the stored bytes may use a different encoding)"
                 if encoding is not None
@@ -777,10 +813,12 @@ class ZipReader(BaseArchiveReader):
         if isinstance(exc, io.UnsupportedOperation) and "seek" in str(exc):
             return StreamNotSeekableError("ZIP archives require a seekable source")
         if isinstance(exc, NotImplementedError):
-            # zipfile raises NotImplementedError for a compress_type / flag combination it
-            # cannot decode — an unsupported *method* ("compression method 99"), but also a
-            # corrupt entry whose mutated flags select an unimplemented mode ("compressed
-            # patched data (flag bit 5)"). Either way the member is unreadable here.
+            # zipfile raises NotImplementedError for a version or feature it does not
+            # handle. Member bodies no longer go through zipfile's own decoders (every
+            # member decodes through the codec layer; `_member_codec` refuses an unknown
+            # method and `_open_member` refuses bit 5, compressed patched data, as
+            # UnsupportedFeatureError themselves), so this arm is a backstop for any
+            # zipfile call that still raises it. Either way the entry is unreadable.
             return UnsupportedFeatureError(f"Unsupported ZIP entry feature: {exc!r}")
         if isinstance(exc, (zlib.error, lzma.LZMAError)):
             # Corruption inside a member body: stdlib zipfile surfaces the codec's own error
@@ -844,12 +882,35 @@ class ZipReader(BaseArchiveReader):
                 return cp437_decoded, None
             try:
                 return raw_name.decode(fallback, errors="surrogateescape"), fallback
-            except LookupError:
-                # An unknown fallback encoding name: keep the cp437 decode rather than fail.
+            except (LookupError, UnicodeError):
+                # An unknown fallback encoding name, or a codec that refuses the
+                # surrogateescape handler outright (``idna``): keep the cp437 decode
+                # rather than fail.
                 return cp437_decoded, None
         if utf8_decoded == cp437_decoded:
             return utf8_decoded, None
         return utf8_decoded, "utf-8"
+
+    @staticmethod
+    def _reencode_name(decoded: str, codec: str) -> bytes | None:
+        """The stored bytes of a name zipfile decoded with ``codec``, or ``None``.
+
+        ``surrogateescape`` keeps any escaped byte. A few codecs ``open_archive``
+        accepts (``idna``) refuse that handler before they look at the
+        input. zipfile decoded the name strictly with the same codec, so a strict
+        encode normally gives the bytes back. When even that fails (``idna`` cannot
+        encode the empty label in ``"a..b"``), no codec reproduces the name, and
+        ``raw_name`` is ``None``, as TAR reports it, rather than an error that would
+        stop the listing.
+        """
+        try:
+            return decoded.encode(codec, errors="surrogateescape")
+        except UnicodeError:
+            pass
+        try:
+            return decoded.encode(codec)
+        except UnicodeError:
+            return None
 
     def _to_member(self, info: zipfile.ZipInfo, index: int) -> ArchiveMember:
         full_mode = info.external_attr >> 16
@@ -894,9 +955,8 @@ class ZipReader(BaseArchiveReader):
         # (decoded == orig_filename) with the codec zipfile decoded with: UTF-8 when the
         # entry's UTF-8 flag is set, else the caller's metadata encoding (when given) or
         # zipfile's cp437 default. Using orig_filename keeps name and raw_name consistent.
-        raw_name = decoded.encode(
-            "utf-8" if is_utf8_flagged else (self._encoding or "cp437"),
-            errors="surrogateescape",
+        raw_name = self._reencode_name(
+            decoded, "utf-8" if is_utf8_flagged else (self._encoding or "cp437")
         )
         # Many tools write UTF-8 names without setting the UTF-8 flag (APPNOTE says cp437),
         # so cp437 would yield mojibake. With no authoritative signal (flag clear AND no
@@ -905,7 +965,13 @@ class ZipReader(BaseArchiveReader):
         # ASCII bytes decode identically under UTF-8 and cp437 — skip the sniff.
         name_source = decoded
         inferred_encoding: str | None = None
-        if not is_utf8_flagged and self._encoding is None and not raw_name.isascii():
+        # raw_name is None only under an explicit encoding=, which skips the sniff.
+        if (
+            not is_utf8_flagged
+            and self._encoding is None
+            and raw_name is not None
+            and not raw_name.isascii()
+        ):
             name_source, inferred_encoding = self._sniff_unflagged_name(
                 raw_name, decoded
             )
@@ -1253,6 +1319,16 @@ class ZipReader(BaseArchiveReader):
             params = CodecParams()
             if method == 14:  # ZIP LZMA
                 params = self._zip_lzma_params(body)
+                # Without the EOS-marker flag the stream has no end marker (APPNOTE
+                # 4.4.4): the declared size is where it ends, so the decoder stops
+                # there. With the flag set it stays unbounded, and an over-long or
+                # short stream is caught by the size check on the member stream.
+                if (
+                    not info.flag_bits & _ZIP_MASK_LZMA_EOS_MARKER
+                    and size is not None
+                    and size >= 0
+                ):
+                    params = replace(params, unpack_size=size)
             elif method == 98:  # ZIP PPMd8
                 params = self._zip_ppmd_params(body)
                 # Bound PPMd decode to the member size when known (defensive; PPMd8
@@ -1530,6 +1606,15 @@ class ZipReader(BaseArchiveReader):
             body = stage(password)
             try:
                 decoded = decode_body(body)
+            except ResourceLimitError as exc:
+                # The LZMA or PPMd settings decrypted to a size over the cap. The
+                # password may be wrong, but the size may be real: say both, and keep
+                # the type a caller can act on by raising the cap.
+                if info.compress_type not in _ZIP_KEYED_SETTINGS_METHODS:
+                    raise
+                noted = _unconfirmed_resource_limit(exc)
+                self._stamp_error_context(noted, member_name)
+                raise noted from exc
             except ArchiveyError as exc:
                 # The LZMA or PPMd header decrypted to nonsense: the same ambiguity
                 # as a failure further in.
@@ -1609,6 +1694,13 @@ class ZipReader(BaseArchiveReader):
                 bounded=size <= PASSWORD_CONFIRM_PREFIX_BYTES,
             )
         ambiguous_holder: list[EncryptionError] = []
+        # The first ZipCrypto candidate whose decrypted codec settings tripped a
+        # decoder limit. That counts as the candidate failing (it may be a wrong key
+        # that passed the one-byte check), and it is what is raised when no
+        # candidate succeeds. WinZip AES keeps propagating the limit: its 16-bit
+        # pw_verify and the HMAC make a garbage size from a wrong key negligible.
+        limit_holder: list[ResourceLimitError] = []
+        keyed_settings = not hmac_anchor and method in _ZIP_KEYED_SETTINGS_METHODS
 
         def candidate_failed(cause: Exception | None) -> EncryptionError:
             failure = EncryptionError(
@@ -1636,7 +1728,17 @@ class ZipReader(BaseArchiveReader):
             probe: ArchiveStream | None = None
             ended_early: TruncatedError | None = None
             try:
-                probe = decode_body(body)
+                try:
+                    probe = decode_body(body)
+                except ResourceLimitError as exc:
+                    if not keyed_settings:
+                        raise
+                    if not limit_holder:
+                        limit_holder.append(exc)
+                    raise EncryptionError(
+                        "Password candidate decrypted codec settings over a decoder "
+                        "limit for this ZIP member"
+                    ) from exc
                 verdict = run_password_confirm_plan(probe, plan)
                 if verdict is not PasswordConfirmVerdict.REJECTED and reads_to_hmac:
                     # The read that finds the end is the one that checks the HMAC.
@@ -1682,6 +1784,7 @@ class ZipReader(BaseArchiveReader):
             ambiguous_holder=ambiguous_holder,
             promote=promote_candidate_password,
             failure_is_damage=hmac_anchor,
+            limit_holder=limit_holder,
         )
         stream: BinaryIO = decoded
         if verdict is not PasswordConfirmVerdict.CONFIRMED:
@@ -1889,6 +1992,7 @@ class ZipReader(BaseArchiveReader):
         ambiguous_holder: list[EncryptionError] | None,
         promote: Callable[[_T], bool] | None = None,
         failure_is_damage: bool = False,
+        limit_holder: list[ResourceLimitError] | None = None,
     ) -> _T:
         """Try each password through ``decrypt``, and name what exhausting them means.
 
@@ -1901,10 +2005,19 @@ class ZipReader(BaseArchiveReader):
         one), ``CorruptionError`` for anything else (an HMAC mismatch, a codec
         rejection). ZipCrypto's 8-bit check
         leaves the ambiguous ``EncryptionError``.
+
+        ``limit_holder`` holds the first ``ResourceLimitError`` a ZipCrypto candidate's
+        decrypted codec settings raised. When it holds one, exhausting the candidates
+        raises it, with the note that the password may be wrong, ahead of every other
+        outcome: raising the limit may be all a right password needs.
         """
         try:
             return self._passwords.attempt(member, decrypt, promote=promote)
         except _PasswordCandidatesExhausted as exc:
+            if limit_holder:
+                noted = _unconfirmed_resource_limit(limit_holder[0])
+                self._stamp_error_context(noted, member_name)
+                raise noted from limit_holder[0]
             ambiguous_failure = ambiguous_holder[0] if ambiguous_holder else None
             if ambiguous_failure is not None and failure_is_damage:
                 damage_type: type[ArchiveyError] = (
@@ -2028,6 +2141,16 @@ class ZipReader(BaseArchiveReader):
         if _uses_strong_encryption(info):
             raise UnsupportedFeatureError(
                 _STRONG_ENCRYPTION_MSG,
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        if info.flag_bits & _ZIP_MASK_COMPRESSED_PATCHED_DATA:
+            # The body is a patch against another file, not this member's content.
+            # Decoding it as the content would return the patch bytes, and a stored CRC
+            # that covers those bytes would not catch it. No guessed output: refuse.
+            raise UnsupportedFeatureError(
+                "ZIP compressed patched data (general-purpose bit 5) is not supported",
                 archive_name=self._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.ZIP,

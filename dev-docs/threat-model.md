@@ -10,7 +10,7 @@ The public half is [`docs/extracting.md`](../docs/extracting.md): §Trust bounda
 §Known and accepted limits and §What is enforced. This page and that one must agree.
 Disclosure and reporter scope are in [`SECURITY.md`](../SECURITY.md).
 
-Older references use register ids (`O1` to `O21`, `C1` to `C4`). The
+Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 [index](#6-index-of-old-register-ids) maps each one to its section here.
 
 ## 1. Scope and attackers
@@ -86,8 +86,11 @@ no member replaces the destination itself.
 - `_apply_metadata` strips setuid, setgid and sticky except under `TRUSTED`, and applies
   ownership only under `TRUSTED` as root.
 
-**Residual.** A local process racing the destination (out of scope, §1). A hard kill can
-leave `.archivey-tmp-*` files, which are safe to delete.
+**Residual.** A later member can turn an earlier, valid symlink into one that points
+outside the destination; the link stays on disk, though nothing is written through it
+([open gap](#a-later-member-can-make-an-extracted-symlink-escape)). A local process
+racing the destination (out of scope, §1). A hard kill can leave `.archivey-tmp-*`
+files, which are safe to delete.
 
 **Tests.** `tests/test_extraction.py`: `test_check_universal_rejects_traversal`,
 `test_check_universal_rejects_root_named_file`,
@@ -171,7 +174,10 @@ archive declares.
   materialized list (`members()`, `scan_members()`, extract preparation). Crossing a cap
   raises `ResourceLimitError`. `None` (`ListingLimits.UNLIMITED`) disables it.
   `stream_members()` and `streaming=True` are unguarded, as the O(1) escape hatch,
-  except on 7z and RAR, which check `max_members` while parsing.
+  except on 7z and RAR, which check `max_members` while parsing. Unguarded bounds memory,
+  not work: a forward-only TAR walk reads through every member it skips, for the bytes
+  present rather than the size a header declares (a member declaring more than the
+  archive holds raises `TruncatedError` at the first short read).
 - 7z checks `max_members` while parsing, at `open_archive`
   (`internal/backends/sevenzip_parser.py`, the `max_members` checks on folders, unpack
   streams, their sum and `num_files`). Member-scaled counts are also checked against the
@@ -179,8 +185,11 @@ archive declares.
   no sizes or CRCs) read no bytes per entry, and a count of 2^40 would otherwise allocate
   until `MemoryError`. Pack streams keep the header-size bound only: a BCJ2 folder has
   four, and `max_members` would refuse a legitimate non-solid BCJ2 archive.
-  `_MAX_NUM_STREAMS` (65,536) bounds per-folder coder graphs only; applied to unpack
-  streams it would refuse ordinary solid archives over 65,536 files.
+  Per-folder coder graphs are capped at 7-Zip's own limit of 64 coders and 64 in-streams
+  (`k_Scan_NumCoders_MAX`, `k_Scan_NumCodersStreams_in_Folder_MAX` in 7-Zip 26.03's
+  `CPP/7zip/Archive/7z/7zIn.cpp`), refused as `UnsupportedFeatureError`; out-streams
+  keep the same 64. A larger cap let a small header drive the planner and the nested
+  decode streams into a raw `RecursionError`.
 - 7z decodes one encoded-header layer and raises `CorruptionError` if the result is
   another encoded header (`internal/backends/sevenzip_pipeline.py`
   `parse_decoded_header`); a COPY header that decodes to itself would otherwise loop.
@@ -194,7 +203,14 @@ archive declares.
   parse is linear.
 - TAR has no member table, so the caps bind the header walk: `tar_reader.py` pulls
   headers in batches that stop one header past what either cap has left, PAX keywords
-  and values included.
+  and values included. `tarfile` reads a PAX extended or global header, or a GNU long
+  name or link name, whole in one call, so the walk refuses such a header from its
+  declared size before that read: in random access when it declares more than is left
+  of `max_metadata_bytes`, and in any mode, streaming included, when it declares more
+  than the whole cap. An over-limit tar then costs about the cap plus one ordinary
+  header. A sparse map is weighed only once parsed (24 bytes per entry), so an old GNU
+  sparse member's chain of extension blocks, or a PAX sparse 1.0 map, is held whole for
+  the one member that crosses the cap.
 - A symlink target stored as member data (ZIP, 7z, RAR3/4) is read with a cap of
   `MAX_LINK_TARGET_BYTES` (4096, Linux `PATH_MAX`; `internal/base_reader.py`). A member
   declaring more is not opened; a read with no declared size stops at 4097 bytes. An
@@ -259,10 +275,13 @@ A flat metadata cap would be wrong here: member data goes through the same wrapp
 `DecoderLimits.max_decoder_memory` (2 GiB) because the archive declared one.
 
 **Mechanism.** `internal/config.py` `check_decoder_memory` runs before the decoder is
-built, on `open()` and `read()` as well as extraction. A 7z BCJ2 folder runs all its
-branch decoders at once (three as 7-Zip writes it, four if a crafted folder codes `rc`),
-so `internal/backends/sevenzip_pipeline.py` `open_folder_pipeline` checks their summed
-LZMA dictionaries and PPMd sizes against the same cap. Bytes decoded inside a branch
+built, on `open()` and `read()` as well as extraction. A 7z folder can hold several
+decoders live at once: a BCJ2 folder runs all its branch decoders (three as 7-Zip writes
+it, four if a crafted folder codes `rc`), and the stages of a linear chain are stacked
+streams (`LZMA2 → Copy → LZMA2` keeps two dictionaries live). So for every folder with
+more than one such decoder, `internal/backends/sevenzip_pipeline.py`
+`open_folder_pipeline` checks their summed LZMA dictionaries and PPMd sizes against the
+same cap before building any. Bytes decoded inside a branch
 never reach the folder stream `ExtractionLimits` counts, so the end-of-output check reads
 at most one byte from each branch.
 
@@ -755,6 +774,51 @@ Onboarding comes after the first release. The bar for calling archivey safe (thr
 model, adversarial corpus, coverage-guided fuzzing, disclosure process) is met without
 it.
 
+### A later member can make an extracted symlink escape
+
+Symlinks are re-validated against the live tree once, right after `os.symlink`. A later
+member can change what an earlier link resolves to. Archive `l -> a/../secret`, then
+`a -> .`: when `l` is created, `a` does not exist, so Python's non-strict `resolve()`
+treats the `..` lexically, `l` resolves to `<dest>/secret`, and it passes. `a -> .` is
+harmless on its own and passes too. On disk, `l` now resolves through `a` to
+`<dest>/../secret`, and nothing rechecks it. The same happens when a directory the
+resolution went through is later replaced by a symlink under `OverwritePolicy.REPLACE`.
+
+Nothing is written outside the destination, because every file write resolves its real
+parent first, so a later `l/x` member is `BLOCKED`. What stays is a link in the output
+tree that points outside it, against `docs/extracting.md` ("escaping links are removed
+and rejected"), and anything that reads or copies the tree afterwards follows it.
+Measured the same with `streaming=False` and `streaming=True`.
+
+Deferred for a separate exploration (maintainer, 2026-09-28). The options:
+
+- **Refuse `..` after a normal component in a target** (`a/../x`). Cheap, but refuses
+  legitimate targets some build tools write, and `REPLACE` can still swap a directory
+  for a symlink.
+- **Re-validate every created symlink at the end of the run.** Complete, but the escape
+  stays live on disk until the sweep.
+- **Analyse all targets before extracting.** Not available to a streaming extraction.
+- **Recheck only the affected links when a new link appears** (the maintainer's
+  direction). Record the destination paths each link's resolution depended on (missing
+  components, existing directories, and the dependencies of any link it followed); when
+  a member creates or replaces one of those paths, recheck the dependent links and
+  remove any that now escape, reporting them `BLOCKED`. The escape is then never live on
+  disk, and it works in one streaming pass. To settle: chains of links, renames under
+  `OverwritePolicy.RENAME`, the orphan second pass, a memory bound, and rewriting a
+  result a progress callback already reported as `EXTRACTED`.
+- A narrower refusal: refuse `..` only when the component before it does not exist when
+  the link is created.
+
+A fix is done when the test below passes in both modes, no escaping link is on disk at
+any point a later member could observe, no legitimate `a/../x` target is refused, and
+symlink-heavy extraction stays linear in link count.
+
+Code: `internal/extraction.py` `_write_symlink` (the one re-validation),
+`internal/filters.py` `check_universal` (the lexical check and the parent resolve),
+`_prepare_destination` (where `REPLACE` removes a directory). Pinned by
+`tests/test_audit_extraction.py::test_symlink_made_escaping_by_a_later_member_is_not_left_on_disk`
+(strict xfail).
+
 ### Bounded recursion helper
 
 "Index my backups", the founding use case, recurses into nested archives. A recipe or
@@ -796,6 +860,7 @@ writing lands (possibly after 1.0), and must be a day-one decision of the writin
 | O19 | Data-stored symlink target sized an allocation | [Listing](#listing) |
 | O20 | 7z BCJ2 in pure Python | CPU: [No CPU or wall-clock bound](#no-cpu-or-wall-clock-bound); memory: [Decoder memory](#decoder-memory) |
 | O21 | Directory source changed between listing and reading | [Directory sources](#directory-sources-changed-concurrently), [Windows directory sources](#windows-directory-sources) |
+| O22 | A later member turns an extracted symlink into an escape | [A later member can make an extracted symlink escape](#a-later-member-can-make-an-extracted-symlink-escape) |
 | C1 | RAR data through an external program | [External programs](#external-programs-get-a-fixed-command-line), [unar password](#the-unar-password-is-on-its-command-line) |
 | C2 | Warnings that should be data | [Errors are typed and honest](#errors-are-typed-and-honest) |
 | C3 | Metadata fidelity | [Metadata fidelity](#metadata-fidelity) |

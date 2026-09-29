@@ -123,12 +123,16 @@ class NameEncodingContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class MemberNameControlsContext(_JsonSafeContext):
-    """Member name carries Unicode bidi formatting controls.
+    """Member name or link target carries Unicode bidi formatting controls.
 
     ``controls`` is the comma-joined ``U+XXXX`` spellings in the order they occur, so a
     caller can tell an *override* (U+202A–202E, U+2066–2069 — the `…gnp.exe` disguise)
     from a *directional mark* (U+061C, U+200E, U+200F, which occur in legitimate Arabic
-    and Hebrew filenames) without re-scanning the name.
+    and Hebrew filenames) without re-scanning the text.
+
+    ``field`` says which text carries them: ``"name"``, the member's name, or
+    ``"link_target"``, the target a link member stores. ``member_name`` and
+    ``raw_name_base64`` always identify the member.
     """
 
     kind: Literal["member_name_controls"] = "member_name_controls"
@@ -137,6 +141,7 @@ class MemberNameControlsContext(_JsonSafeContext):
     member_id: int | None = None
     raw_name_base64: str | None = None
     controls: str = ""
+    field: Literal["name", "link_target"] = "name"
 
 
 @dataclass(frozen=True)

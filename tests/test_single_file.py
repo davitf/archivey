@@ -37,6 +37,7 @@ from archivey.exceptions import (
 )
 from archivey.types import HashAlgorithm, crc32_digest
 from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (
     NonSeekableBytesIO,
     make_lzip_member,
@@ -408,7 +409,7 @@ def test_zlib_omits_hashes_but_verifies_adler_on_read(tmp_path: Path) -> None:
     with open_archive(path) as ar:
         member = ar.members()[0]
         assert not member.hashes
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             ar.read(member)
 
 
@@ -699,11 +700,22 @@ def test_truncated_gzip_raises_truncated() -> None:
             _read_single_streamed_member(ar)
 
 
+def test_truncation_is_caught_as_corruption() -> None:
+    # The error-handling spec's row: data that ends early raises TruncatedError, and
+    # ``except CorruptionError`` catches it.
+    assert issubclass(TruncatedError, CorruptionError)
+    full = gzip.compress(b"streamed payload" * 1000)
+    with open_archive(NonSeekableBytesIO(full[: len(full) // 2]), streaming=True) as ar:
+        with pytest.raises(CorruptionError) as caught:
+            _read_single_streamed_member(ar)
+    assert isinstance(caught.value, TruncatedError)
+
+
 def test_corrupt_gzip_raises_corruption() -> None:
     data = bytearray(gzip.compress(b"streamed payload" * 100))
     data[15:35] = b"\x00" * 20  # clobber the deflate body (past the 10-byte header)
     with open_archive(NonSeekableBytesIO(bytes(data)), streaming=True) as ar:
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             _read_single_streamed_member(ar)
 
 
@@ -878,7 +890,7 @@ def test_undecodable_source_raises_at_open(
         _assert_zeros_read_as_empty_lzma(path, seekable_members=seekable_members)
         return
     # The raise must come from open_archive itself, not from a read after it.
-    with pytest.raises((CorruptionError, TruncatedError)):
+    with pytest.raises(CorruptionError):
         open_archive(path, seekable_members=seekable_members)
 
 
@@ -905,7 +917,7 @@ def test_undecodable_bytesio_raises_at_open(suffix: str) -> None:
     if suffix == ".lzma":
         _assert_zeros_read_as_empty_lzma(io.BytesIO(b"\x00" * 40_000), format=fmt)
         return
-    with pytest.raises((CorruptionError, TruncatedError)):
+    with pytest.raises(CorruptionError):
         open_archive(io.BytesIO(b"\x00" * 40_000), format=fmt)
 
 
@@ -925,7 +937,7 @@ def test_open_time_failure_names_no_member(tmp_path: Path) -> None:
     # Nobody asked for a member yet, so the error must not attribute the failure to one.
     path = tmp_path / "backup.gz"
     path.write_bytes(b"\x00" * 40_000)
-    with pytest.raises(CorruptionError) as info:
+    with raises_corruption_not_truncation() as info:
         open_archive(path)
     assert info.value.member_name is None
     assert info.value.archive_name is not None
@@ -937,7 +949,7 @@ def test_non_seekable_source_still_defers_validation_to_the_read() -> None:
     with open_archive(
         NonSeekableBytesIO(b"\x00" * 40_000), format=ArchiveFormat.GZ, streaming=True
     ) as ar:
-        with pytest.raises(CorruptionError):
+        with raises_corruption_not_truncation():
             _read_single_streamed_member(ar)
 
 
@@ -956,6 +968,6 @@ def test_corrupt_bz2_raises_whatever_the_accelerator_mode(
     path = tmp_path / "garbage.bz2"
     path.write_bytes(_NOT_A_STREAM[contents])
     config = ArchiveyConfig(use_indexed_bzip2=mode)
-    with pytest.raises((CorruptionError, TruncatedError)):
+    with pytest.raises(CorruptionError):
         with open_archive(path, seekable_members=True, config=config) as ar:
             ar.read(ar.members()[0])

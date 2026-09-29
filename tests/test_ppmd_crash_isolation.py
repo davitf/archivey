@@ -47,6 +47,7 @@ from archivey.internal.streams.ppmd_child import (
     child_decoding_available,
 )
 from tests.conftest import requires
+from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_ppmd_raw_streams import (
     _MEM,
     _ORDER,
@@ -267,6 +268,25 @@ def test_without_a_child_process_a_large_member_is_refused(
             stream.read(10)
 
 
+def test_a_member_past_the_limit_is_refused_even_when_one_read_carries_it_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The limit, not the caller's read size, decides where a member decodes.
+
+    One large ``read(n)`` hands the decoder the whole pack in a single feed. It is still
+    past the limit, so without a child process it is refused rather than decoded here.
+    """
+    monkeypatch.setattr(decompress_module, "child_decoding_available", lambda: False)
+    packed = _encode_ppmd7(_ZERO_RUN)
+    assert 1024 < len(packed) < 1 << 20  # past the limit, inside one 1 MiB feed
+    params = _params(7, len(packed), len(_ZERO_RUN))
+    with open_codec_stream(
+        Codec.PPMD, io.BytesIO(packed), params=params, config=_config("child")
+    ) as stream:
+        with pytest.raises(ResourceLimitError, match="max_ppmd_in_process_input"):
+            stream.read(1 << 20)
+
+
 @pytest.mark.parametrize("failure", ["spawn", "handshake"])
 def test_a_child_that_cannot_start_is_a_resource_limit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
@@ -373,7 +393,7 @@ def test_child_crash_surfaces_as_corruption_error(
     with open_codec_stream(
         Codec.PPMD, io.BytesIO(packed), params=params, config=_config("child")
     ) as stream:
-        with pytest.raises(CorruptionError, match="crashed"):
+        with raises_corruption_not_truncation(match="crashed"):
             stream.read()
 
 
