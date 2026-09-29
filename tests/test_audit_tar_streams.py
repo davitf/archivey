@@ -588,7 +588,7 @@ def test_untyped_block_check_is_never_silent(codec: str, streaming: bool) -> Non
     With only ``tarfile``'s own record padding, whether the check is reached while
     the member is read (``CorruptionError`` from ``read()``) or in the trailing scan
     (``DIGEST_UNVERIFIABLE``) depends on where the codec's input chunking lands, so
-    the member size decides it. Neither arm is silent.
+    the member size (and the codec backend) decides it. Neither arm is silent.
     """
     fmt = ArchiveFormat.TAR_BZ2 if codec == "bz2" else ArchiveFormat.TAR_XZ
     outcomes: set[str] = set()
@@ -611,10 +611,9 @@ def test_untyped_block_check_is_never_silent(codec: str, streaming: bool) -> Non
             continue
         assert DiagnosticCode.DIGEST_UNVERIFIABLE in counts, f"silent at {size}"
         outcomes.add("reported")
-    if not streaming:
-        # Random access shows the dependence on size; streaming raises on every size
-        # in this sweep.
-        assert outcomes == {"raised", "reported"}
+    # Which sizes land in which arm depends on the installed codec backends; the
+    # reporting arm is pinned by the 64 KiB-padding test above.
+    assert "raised" in outcomes
 
 
 def _drain_closing(ar) -> None:
