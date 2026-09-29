@@ -271,7 +271,7 @@ def test_folder_at_the_7zip_in_stream_limit_lists() -> None:
 
 def test_folder_past_the_7zip_in_stream_limit_is_unsupported() -> None:
     data = _two_coder_in_stream_archive(63, 2)
-    with pytest.raises(UnsupportedFeatureError, match="in-stream count 65"):
+    with pytest.raises(UnsupportedFeatureError, match="folder in-stream count 65"):
         _member_count(data)
 
 

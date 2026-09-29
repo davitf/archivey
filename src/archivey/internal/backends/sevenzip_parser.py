@@ -62,14 +62,18 @@ SIGNATURE_HEADER_SIZE = 32
 _MAX_UINT64_ENCODING = 8
 _MAX_UTF16_CHARS = 65536
 # Structural cap for per-folder coder graphs (coders, coder in/out streams). 7-Zip
-# 26.03, CPP/7zip/Archive/7z/7zIn.cpp (CInArchive::ReadUnpackInfo; C/7zArcIn.c has the
-# same rule), defines ``k_Scan_NumCoders_MAX`` and
+# 26.03 CPP/7zip/Archive/7z/7zIn.cpp (``CInArchive::ReadUnpackInfo``; ``ReadUnpackInfo``
+# in C/7zArcIn.c has the same rule) defines ``k_Scan_NumCoders_MAX`` and
 # ``k_Scan_NumCodersStreams_in_Folder_MAX``, both 64, and throws "unsupported" when a
 # folder has 0 or more than 64 coders, when one coder declares more than 64 in-streams,
 # or when the running in-stream total of the folder passes 64. It requires exactly one
-# out-stream per coder. This parser applies the same 64 caps to in-streams and, as a
-# looser bound, to out-streams; the reader refuses a coder with more than one
-# out-stream when a member is opened. The reader plans each coder
+# out-stream per coder. This parser applies the same 64 caps to in-streams. It is
+# looser in three places: out-streams are capped at 64 rather than required to be
+# one (the reader refuses a multi-output coder when a member is opened); only flag
+# bit 0x80 is refused, where 7-Zip refuses 0xC0; and a method id may be up to 15
+# bytes, where 7-Zip refuses more than 8. A folder with 0 coders stays
+# CorruptionError here, not unsupported: an empty graph cannot be a valid folder.
+# The reader plans each coder
 # recursively and wraps each one in its own stream, so a larger folder would let a
 # small header drive the planner and ``read()`` into RecursionError.
 # Folders, unpack streams, and num_files scale with member count: header size
