@@ -391,7 +391,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
-        sevenzip_pipeline._DecodedPastSizeCheck,  # same offsets as its LZMA2 chain
+        sevenzip_pipeline._DecodedPastSizeCheck,  # same offsets as the codec it wraps
         slice_mod.SlicingStream,  # translates remapped offset space; clamp at 0
         verify.VerifyingStream,
     }

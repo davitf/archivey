@@ -6,25 +6,29 @@ archives reuse the header builder style of ``test_sevenzip_parser_hardening``.
 
 from __future__ import annotations
 
+import bz2
 import io
 import lzma
 import random
 import struct
+import subprocess
 import zlib
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 
 from archivey import open_archive
-from archivey.config import ArchiveyConfig, DecoderLimits
+from archivey.config import AcceleratorMode, ArchiveyConfig, DecoderLimits
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    EncryptionError,
     ResourceLimitError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.sevenzip_parser import MAGIC_7Z
-from tests.conftest import requires
+from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 
 _COPY = b"\x00"
 _DELTA = b"\x03"
@@ -446,6 +450,379 @@ def test_folder_decoding_past_its_unpack_size_is_corruption() -> None:
     )
     with pytest.raises(CorruptionError):
         _read_only_member(_archive(packed, header))
+
+
+# The same, for the other codecs with an end of stream: Deflate, Deflate64, BZip2,
+# Zstd, LZ4 and Brotli. LZMA1 and PPMd have no end mark and are capped at their size.
+
+_DEFLATE = b"\x04\x01\x08"
+_DEFLATE64 = b"\x04\x01\x09"
+_BZIP2 = b"\x04\x02\x02"
+_ZSTD = b"\x04\xf7\x11\x01"
+_BROTLI = b"\x04\xf7\x11\x02"
+_LZ4 = b"\x04\xf7\x11\x04"
+
+_CODEC_METHODS = {
+    "deflate": _DEFLATE,
+    "deflate64": _DEFLATE64,
+    "bzip2": _BZIP2,
+    "zstd": _ZSTD,
+    "brotli": _BROTLI,
+    "lz4": _LZ4,
+}
+
+_CODECS = [
+    pytest.param("deflate", id="deflate"),
+    pytest.param("deflate64", id="deflate64", marks=requires("inflate64")),
+    pytest.param("bzip2", id="bzip2"),
+    pytest.param("zstd", id="zstd", marks=requires_zstd()),
+    pytest.param("lz4", id="lz4", marks=requires("lz4")),
+    pytest.param("brotli", id="brotli", marks=requires("brotli")),
+]
+# The codecs whose decoders read concatenated streams (frames) as one.
+_MULTI_STREAM_CODECS = [
+    pytest.param("bzip2", id="bzip2"),
+    pytest.param("zstd", id="zstd", marks=requires_zstd()),
+    pytest.param("lz4", id="lz4", marks=requires("lz4")),
+]
+
+
+def _compress(codec: str, data: bytes) -> bytes:
+    """``data`` as one stream of ``codec``, in the form a 7z coder stores it."""
+    if codec == "deflate":
+        compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+        return compressor.compress(data) + compressor.flush()
+    if codec == "deflate64":
+        import inflate64
+
+        deflater = inflate64.Deflater()
+        return deflater.deflate(data) + deflater.flush()
+    if codec == "bzip2":
+        return bz2.compress(data)
+    if codec == "zstd":
+        return zstd_backend().compress(data)
+    if codec == "lz4":
+        import lz4.frame
+
+        return lz4.frame.compress(data)
+    import brotli
+
+    return brotli.compress(data)
+
+
+def _text(size: int, seed: int = 0) -> bytes:
+    return bytes(random.Random(seed).choices(b"abcdefgh \n", k=size))
+
+
+def _codec_archive(
+    coders: list[bytes], sizes: list[int], packed: bytes, declared: bytes
+) -> bytes:
+    """One member over one linear folder, with the folder CRC over ``declared``."""
+    header = _header(
+        folders=[_linear(coders)],
+        coder_unpack_sizes=[sizes],
+        pack_sizes=[len(packed)],
+        names=["a"],
+        folder_crcs=[_crc(declared)],
+    )
+    return _archive(packed, header)
+
+
+@pytest.mark.parametrize("short_by", [1, 3000])
+@pytest.mark.parametrize("codec", _CODECS)
+def test_codec_decoding_past_its_unpack_size_is_corruption(
+    codec: str, short_by: int
+) -> None:
+    payload = _text(4000)
+    packed = _compress(codec, payload)
+    declared = payload[:-short_by]
+    coder = _coder(_CODEC_METHODS[codec])
+    data = _codec_archive([coder], [len(declared)], packed, declared)
+    with pytest.raises(CorruptionError, match="past its declared unpack size"):
+        _read_only_member(data)
+
+
+@pytest.mark.parametrize("codec", _CODECS)
+def test_codec_at_its_unpack_size_reads(codec: str) -> None:
+    payload = _text(4000)
+    packed = _compress(codec, payload)
+    coder = _coder(_CODEC_METHODS[codec])
+    data = _codec_archive([coder], [len(payload)], packed, payload)
+    assert _read_only_member(data) == payload
+
+
+_ACCELERATED = [
+    pytest.param("deflate", ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)),
+    pytest.param("bzip2", ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)),
+]
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize(("codec", "config"), _ACCELERATED)
+def test_accelerated_codec_decoding_past_its_unpack_size_is_corruption(
+    codec: str, config: ArchiveyConfig
+) -> None:
+    payload = _text(4000)
+    packed = _compress(codec, payload)
+    coder = _coder(_CODEC_METHODS[codec])
+    exact = _codec_archive([coder], [len(payload)], packed, payload)
+    assert _read_only_member(exact, config=config) == payload
+    declared = payload[:-1]
+    data = _codec_archive([coder], [len(declared)], packed, declared)
+    with pytest.raises(CorruptionError, match="past its declared unpack size"):
+        _read_only_member(data, config=config)
+
+
+def _padded_payload(codec: str, base: int = 4000) -> tuple[bytes, bytes]:
+    """A payload whose packed form is not a whole number of AES blocks, and that form."""
+    for size in range(base, base + 100):
+        payload = _text(size)
+        packed = _compress(codec, payload)
+        if len(packed) % 16:
+            return payload, packed
+    raise AssertionError("no payload size leaves an AES pad")
+
+
+def _surplus_in_chain(exc: BaseException) -> bool:
+    """Whether ``exc`` is, or was raised from, the past-size ``CorruptionError``."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        if isinstance(seen, CorruptionError) and "past its declared unpack size" in str(
+            seen
+        ):
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("codec", _CODECS)
+def test_codec_behind_aes_reads_with_the_aes_padding(codec: str) -> None:
+    # pack -> AES -> codec -> output. AES decrypts whole blocks, so the codec's input
+    # ends in pad bytes past the AES coder's unpack size. They are not codec output.
+    payload, packed = _padded_payload(codec)
+    ciphertext = _aes_encrypt(packed, "pw")
+    coders = [_coder(_AES, props=b"\x00"), _coder(_CODEC_METHODS[codec])]
+    data = _codec_archive(coders, [len(packed), len(payload)], ciphertext, payload)
+    assert _read_only_member(data, password="pw") == payload
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("base", [4000, 100_000], ids=["small", "large"])
+@pytest.mark.parametrize("codec", _CODECS)
+def test_codec_behind_aes_decoding_past_its_unpack_size_is_corruption(
+    codec: str, base: int
+) -> None:
+    _assert_surplus_behind_aes(codec, base)
+
+
+def _assert_surplus_behind_aes(
+    codec: str, base: int, config: ArchiveyConfig | None = None
+) -> None:
+    payload, packed = _padded_payload(codec, base)
+    ciphertext = _aes_encrypt(packed, "pw")
+    coders = [_coder(_AES, props=b"\x00"), _coder(_CODEC_METHODS[codec])]
+    exact = _codec_archive(coders, [len(packed), len(payload)], ciphertext, payload)
+    assert _read_only_member(exact, password="pw", config=config) == payload
+    declared = payload[:-1]
+    data = _codec_archive(coders, [len(packed), len(declared)], ciphertext, declared)
+    # When the password check decodes the whole folder, it meets the surplus first
+    # and reports the folder as "wrong password or corrupt", as for any other damage
+    # it decodes. The surplus error is then in the cause chain, not the raised type.
+    # It decodes a small folder (inside its 64 KiB prefix) whole; whether it decodes
+    # a larger one whole depends on the codec (it walks to the member CRC when the
+    # codec cannot reject a wrong key by itself, as Brotli cannot).
+    with pytest.raises(ArchiveyError) as caught:
+        _read_only_member(data, password="pw", config=config)
+    assert isinstance(caught.value, (CorruptionError, EncryptionError))
+    if base < 64 * 1024:
+        assert isinstance(caught.value, EncryptionError)
+    assert _surplus_in_chain(caught.value)
+
+
+@requires("rapidgzip", "cryptography")
+@pytest.mark.parametrize("base", [4000, 100_000], ids=["small", "large"])
+@pytest.mark.parametrize(("codec", "config"), _ACCELERATED)
+def test_accelerated_codec_behind_aes_decoding_past_its_unpack_size_is_corruption(
+    codec: str, config: ArchiveyConfig, base: int
+) -> None:
+    # The accelerators read a pad-free input: pack_size cuts it at the AES coder's
+    # unpack size. Both the exact archive and the one-byte-short one are checked.
+    _assert_surplus_behind_aes(codec, base, config)
+
+
+@pytest.mark.parametrize("codec", _MULTI_STREAM_CODECS)
+def test_codec_streams_count_together_against_the_unpack_size(codec: str) -> None:
+    # Two concatenated streams in one coder. Their output together is the coder's
+    # output, so the second stream is data when the size counts it and surplus when
+    # the size stops at the first.
+    first, second = _text(3000, seed=1), _text(2000, seed=2)
+    packed = _compress(codec, first) + _compress(codec, second)
+    coder = _coder(_CODEC_METHODS[codec])
+    whole = first + second
+    exact = _codec_archive([coder], [len(whole)], packed, whole)
+    assert _read_only_member(exact) == whole
+    data = _codec_archive([coder], [len(first)], packed, first)
+    with pytest.raises(CorruptionError, match="past its declared unpack size"):
+        _read_only_member(data)
+
+
+@pytest.mark.parametrize("kind", ["delta", "bcj"])
+@pytest.mark.parametrize("codec", _CODECS)
+def test_codec_then_filter_decoding_past_its_unpack_size_is_corruption(
+    codec: str, kind: str
+) -> None:
+    # pack -> codec -> filter -> output (7z a -m0=Delta:4 -m1=Deflate, or BCJ). The
+    # filter keeps the length, so both coders declare the same size.
+    payload = b"".join(b"\xe8" + i.to_bytes(4, "little") for i in range(800))
+    if kind == "delta":
+        filtered = _filter_encode(payload, {"id": lzma.FILTER_DELTA, "dist": 4})
+        second = _coder(_DELTA, props=bytes([4 - 1]))
+    else:
+        filtered = _filter_encode(payload, {"id": lzma.FILTER_X86})
+        second = _coder(_BCJ_X86)
+    packed = _compress(codec, filtered)
+    coders = [_coder(_CODEC_METHODS[codec]), second]
+    exact = _codec_archive(coders, [len(payload)] * 2, packed, payload)
+    assert _read_only_member(exact) == payload
+    declared = payload[:-5]
+    data = _codec_archive(coders, [len(declared)] * 2, packed, declared)
+    with pytest.raises(CorruptionError, match="past its declared unpack size"):
+        _read_only_member(data)
+
+
+def test_empty_streams_after_the_data_are_not_surplus() -> None:
+    # The probe asks for one byte of output, so the decoder reads through a tail of
+    # BZip2 streams that decode to nothing, to the end of the coder's packed slice.
+    # That tail is not surplus. A stream with output after it still is.
+    payload = _text(4000)
+    empty_tail = bz2.compress(b"") * 2000
+    coder = _coder(_BZIP2)
+    packed = bz2.compress(payload) + empty_tail
+    assert _read_only_member(
+        _codec_archive([coder], [len(payload)], packed, payload)
+    ) == (payload)
+    packed += bz2.compress(b"x")
+    data = _codec_archive([coder], [len(payload)], packed, payload)
+    with pytest.raises(CorruptionError, match="past its declared unpack size"):
+        _read_only_member(data)
+
+
+def test_codec_in_a_bcj2_branch_decoding_past_its_unpack_size_is_corruption() -> None:
+    # BCJ2 whose main branch is BZip2 (7z a -m0=BCJ2 -m1=BZip2 ...), with empty call
+    # and jump streams and a 5-byte rc stream. With no branch opcodes in the payload,
+    # the output is the main branch. The branch slice stops at main's declared size,
+    # so only the check can see the BZip2 output past it.
+    payload = _text(4000)
+    rc = bytes(5)
+    main = bz2.compress(payload)
+    coders = [_coder(_BCJ2, num_in=4, num_out=1), _coder(_BZIP2)]
+
+    def archive(size: int) -> bytes:
+        header = _header(
+            folders=[_folder(coders, bind_pairs=[(0, 1)], packed=[4, 1, 2, 3])],
+            coder_unpack_sizes=[[size, size]],
+            pack_sizes=[len(main), 0, 0, len(rc)],
+            names=["a"],
+            folder_crcs=[_crc(payload[:size])],
+        )
+        return _archive(main + rc, header)
+
+    assert _read_only_member(archive(len(payload))) == payload
+    with pytest.raises(CorruptionError, match="BZip2 coder decodes past"):
+        _read_only_member(archive(len(payload) - 1))
+
+
+def test_lzma1_surplus_is_cut_at_the_declared_size() -> None:
+    # LZMA1 has no end marker in 7z, so it stops at its declared size and output past
+    # it cannot be told from data. This pins that it reads clean and truncated, not
+    # refused: probing LZMA1 would fail valid archives.
+    payload = _text(4000)
+    lzma1 = {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}
+    packed = lzma.compress(payload, format=lzma.FORMAT_RAW, filters=[lzma1])
+    lzma1_props = bytes([93]) + (1 << 16).to_bytes(4, "little")
+    declared = payload[:1000]
+    data = _codec_archive(
+        [_coder(_LZMA, props=lzma1_props)], [len(declared)], packed, declared
+    )
+    assert _read_only_member(data) == declared
+
+
+def test_past_size_check_covers_exactly_the_end_marked_codecs() -> None:
+    # The check is an allowlist. Every single-codec 7z method must be classified:
+    # checked (ends its own stream) or capped (relies on the declared size).
+    from archivey.internal.backends import sevenzip_methods, sevenzip_pipeline
+    from archivey.internal.streams.codecs import Codec
+
+    checked = {
+        Codec.LZMA2,
+        Codec.DEFLATE,
+        Codec.DEFLATE64,
+        Codec.BZIP2,
+        Codec.ZSTD,
+        Codec.LZ4,
+        Codec.BROTLI,
+    }
+    capped = {Codec.LZMA, Codec.PPMD}
+    assert set(sevenzip_pipeline._CODEC_LABELS) == checked
+    single = {
+        method.codec
+        for method in sevenzip_methods._METHODS
+        if method.kind is sevenzip_methods.MethodKind.SINGLE
+    }
+    unclassified = single - checked - capped
+    assert not unclassified, f"classify these 7z codecs here: {unclassified}"
+
+
+def test_past_size_check_counts_readinto() -> None:
+    from archivey.internal.backends.sevenzip_pipeline import _DecodedPastSizeCheck
+
+    exact = _DecodedPastSizeCheck(io.BytesIO(b"abc"), size=3, label="Test")
+    buffer = bytearray(3)
+    assert exact.readinto(buffer) == 3
+    assert exact.read() == b""
+    # readinto lands on the declared size; the probe finds one more byte.
+    short = _DecodedPastSizeCheck(io.BytesIO(b"abcd"), size=3, label="Test")
+    with pytest.raises(CorruptionError, match="Test coder decodes past"):
+        short.readinto(bytearray(3))
+    # readinto goes past the declared size in one call.
+    over = _DecodedPastSizeCheck(io.BytesIO(b"abcdef"), size=3, label="Test")
+    with pytest.raises(CorruptionError, match="Test coder decodes past"):
+        over.readinto(bytearray(6))
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize(
+    "encrypted",
+    [
+        pytest.param(False, id="plain"),
+        pytest.param(True, id="encrypted", marks=requires("cryptography")),
+    ],
+)
+@pytest.mark.parametrize(
+    "method",
+    ["Deflate", pytest.param("Deflate64", marks=requires("inflate64")), "BZip2"],
+)
+def test_7zip_codec_archives_read_clean(
+    tmp_path: Path, method: str, encrypted: bool
+) -> None:
+    contents = {f"f{i}.txt": _text(3000 + 7 * i, seed=i) for i in range(5)}
+    for name, content in contents.items():
+        (tmp_path / name).write_bytes(content)
+    archive = tmp_path / "a.7z"
+    options = ["-mhe=on", "-psecret"] if encrypted else []
+    subprocess.run(
+        ["7z", "a", "-t7z", f"-m0={method}", *options, str(archive), *contents],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    with open_archive(archive, password="secret" if encrypted else None) as reader:
+        read = {}
+        for member in reader.members():
+            with reader.open(member) as stream:
+                read[member.name] = stream.read()
+    assert read == contents
 
 
 # ---------------------------------------------------------------------------
