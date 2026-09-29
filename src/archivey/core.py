@@ -873,8 +873,8 @@ def extract(
 
     The one-shot extraction API (see ``safe-extraction``). It deliberately has **no**
     member-selection parameter — selecting a subset requires the member list, which would
-    force a reopen; use :meth:`ArchiveReader.extract_all` with ``members=`` on an already
-    open reader instead. Extraction is safe-by-default: ``ExtractionPolicy.STRICT`` and
+    force a reopen; use :meth:`StreamingArchiveReader.extract_all` with ``members=`` on
+    an already open reader instead. Extraction is safe-by-default: ``ExtractionPolicy.STRICT`` and
     ``OverwritePolicy.ERROR``, with the decompression-bomb guards active.
 
     A **non-seekable** stream source (a pipe, a socket) is opened in streaming mode

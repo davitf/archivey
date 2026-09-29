@@ -184,7 +184,10 @@ if you `break` out early.
 
 A type checker catches the random-access calls before you run the code:
 `open_archive(..., streaming=True)` is typed to return `StreamingArchiveReader`, which
-has no `members()`, `get()`, `open()` or `read()`. The one-pass rule it cannot see.
+has no `members()`, `get()`, `open()` or `read()`. The same goes for a `streaming=`
+value the checker cannot prove is `False`, such as a `bool` variable: if the code needs
+random access in one branch, branch on the flag rather than pass it through. What a type
+checker still cannot see is the one-pass rule.
 Annotate a function that takes a reader of either kind, and only makes one pass, with
 `StreamingArchiveReader`; the full `ArchiveReader` is a subclass of it.
 

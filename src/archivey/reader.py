@@ -37,7 +37,7 @@ MemberSelector = (
 
 
 class StreamingArchiveReader(ABC):
-    """The methods every open archive supports, including a forward-only one.
+    """An open archive, read in one forward pass: the methods every reader supports.
 
     ``open_archive(..., streaming=True)`` is typed to return this class, so a type
     checker flags a call to :meth:`~ArchiveReader.members`, :meth:`~ArchiveReader.get`,
@@ -112,8 +112,8 @@ class StreamingArchiveReader(ABC):
 
         ``report.error is None`` means ``report.members`` is complete. A non-``None``
         error means the tuple is the recovered prefix and the error is the terminal
-        archive-level listing damage. Unlike :meth:`~ArchiveReader.members`, this returns the report
-        instead of raising for those terminal archive-damage errors.
+        archive-level listing damage. Unlike :meth:`~ArchiveReader.members`, this
+        returns the report instead of raising for those terminal archive-damage errors.
         """
         ...
 
@@ -123,11 +123,11 @@ class StreamingArchiveReader(ABC):
 
         It is :meth:`members_report`, raising ``report.error`` when the listing is
         incomplete and otherwise returning ``report.members`` as a list. In
-        random-access mode this is equivalent to :meth:`~ArchiveReader.members` and does not consume
-        the reader. On a streaming reader it finishes the single forward pass (running
-        it from the start, or completing an interrupted one) and returns the resolved
-        list; it may also be called after a completed pass to return the cached
-        list."""
+        random-access mode this is equivalent to :meth:`~ArchiveReader.members` and
+        does not consume the reader. On a streaming reader it finishes the single
+        forward pass (running it from the start, or completing an interrupted one) and
+        returns the resolved list; it may also be called after a completed pass to
+        return the cached list."""
         ...
 
     @abstractmethod
@@ -143,9 +143,10 @@ class StreamingArchiveReader(ABC):
 
         Identity-based and O(1) — no scan — so it is valid in any access mode; useful to
         disambiguate members when several readers are in play. Name lookup is
-        :meth:`~ArchiveReader.get`, and a non-``ArchiveMember`` operand raises ``TypeError`` (this also
-        keeps the ``in`` operator from silently falling back to a full iteration, which
-        would consume a streaming reader's single forward pass)."""
+        :meth:`~ArchiveReader.get`, and a non-``ArchiveMember`` operand raises
+        ``TypeError`` (this also keeps the ``in`` operator from silently falling back to
+        a full iteration, which would consume a streaming reader's single forward
+        pass)."""
         ...
 
     @abstractmethod
@@ -221,17 +222,19 @@ class ArchiveReader(StreamingArchiveReader):
     """The public, read-only interface to an archive opened for random access.
 
     Returned by :func:`archivey.open_archive` with the default ``streaming=False``.
-    Adds lookup and random member access to :class:`StreamingArchiveReader`. Annotate
-    against this type when the code needs those methods; concrete machinery lives in
-    the internal ``BaseArchiveReader`` helper. Use in a ``with`` block.
+    It has every method of :class:`StreamingArchiveReader`, documented above, and adds
+    the four below for lookup and random member access. Annotate against this type
+    when the code needs those methods; concrete machinery lives in the internal
+    ``BaseArchiveReader`` helper. Use in a ``with`` block.
     """
 
     @abstractmethod
     def members(self) -> list[ArchiveMember]:
         """All members as a list. May trigger a scan; raises ``ArchiveyUsageError``
         on a streaming reader (use :meth:`~StreamingArchiveReader.scan_members` or
-        :meth:`~StreamingArchiveReader.members_report_if_available` there). Raises terminal archive-level listing
-        errors instead of returning an incomplete list."""
+        :meth:`~StreamingArchiveReader.members_report_if_available` there). Raises
+        terminal archive-level listing errors instead of returning an incomplete
+        list."""
         ...
 
     @abstractmethod
@@ -256,8 +259,8 @@ class ArchiveReader(StreamingArchiveReader):
         **Cost, when ``reader.cost.access_cost`` is ``SOLID``** (solid 7z/RAR, any
         compressed tar): members share one compression run, so opening one decodes
         every member before it. Doing that for each member in turn is quadratic in the
-        archive size. Nothing warns about it — prefer :meth:`~StreamingArchiveReader.stream_members`, which
-        decodes the run once."""
+        archive size. Nothing warns about it — prefer
+        :meth:`~StreamingArchiveReader.stream_members`, which decodes the run once."""
         ...
 
     @abstractmethod

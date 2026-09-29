@@ -34,7 +34,7 @@ archivey.open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
-) -> ArchiveReader | StreamingArchiveReader  # by `streaming`; see below
+) -> ArchiveReader  # StreamingArchiveReader when streaming may be True; see below
 ```
 
 The return type SHALL follow the access mode, through two `typing.overload`
@@ -47,15 +47,7 @@ The distinction SHALL be static only: every reader returned at run time is an
 `ArchiveReader` instance, and a streaming reader still raises `ArchiveyUsageError`
 from the four methods.
 
-#### Scenario: return type by access mode
-
-| Call | Static return type | A type checker on `.members()` |
-| --- | --- | --- |
-| `open_archive(src)` | `ArchiveReader` | accepted |
-| `open_archive(src, streaming=False)` | `ArchiveReader` | accepted |
-| `open_archive(src, streaming=True)` | `StreamingArchiveReader` | refused (no such attribute) |
-| `open_archive(src, streaming=flag)`, `flag: bool` | `StreamingArchiveReader` | refused |
-| any of the above, at run time | an `ArchiveReader` instance | n/a |
+`tests/test_public_api.py` checks each case under both type checkers the project uses (ty and Pyrefly).
 
 `source`, multi-volume ordering, `streaming`, password candidates/providers,
 encoding, configuration precedence, and backend selection retain their existing

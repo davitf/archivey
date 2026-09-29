@@ -8,6 +8,7 @@ is the safety net that keeps the hand-maintained list from drifting.
 from __future__ import annotations
 
 import inspect
+import json
 import shutil
 import subprocess
 import sys
@@ -82,21 +83,11 @@ def check(flag: bool) -> None:
 """
 
 
-def test_type_checker_refuses_random_access_on_a_streaming_reader(tmp_path) -> None:
-    """``open_archive``'s overloads, as ty sees them.
-
-    CI type-checks ``src/`` only, so the overloads' effect on a caller is checked here:
-    every ``assert_type`` holds and the one diagnostic is ``forward.members()``.
-    """
-    ty = shutil.which("ty")
-    if ty is None:
-        pytest.skip("ty is not installed (it is a dev dependency)")
-    sample = tmp_path / "sample.py"
-    sample.write_text(_OPEN_ARCHIVE_TYPING_SAMPLE)
-    src = Path(archivey.__file__).resolve().parent.parent
-    result = subprocess.run(
-        [
-            ty,
+def _checker_command(checker: str, exe: str, tmp_path: Path, src: Path) -> list[str]:
+    """How to run ``checker`` on ``sample.py`` in ``tmp_path``, with ``src`` importable."""
+    if checker == "ty":
+        return [
+            exe,
             "check",
             "--python",
             sys.executable,
@@ -105,7 +96,33 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(tmp_path) -> N
             "--output-format",
             "concise",
             "sample.py",
-        ],
+        ]
+    # Pyrefly takes the search path from a config file; without one it falls back to a
+    # preset that reports nothing here.
+    (tmp_path / "pyrefly.toml").write_text(
+        f'search-path = [{json.dumps(src.as_posix())}]\npython_version = "3.11"\n'
+    )
+    return [exe, "check", "--output-format", "min-text", "sample.py"]
+
+
+@pytest.mark.parametrize("checker", ["ty", "pyrefly"])
+def test_type_checker_refuses_random_access_on_a_streaming_reader(
+    checker: str, tmp_path: Path
+) -> None:
+    """``open_archive``'s overloads, as each checker CI runs sees them.
+
+    CI type-checks ``src/`` only, so the overloads' effect on a caller is checked here:
+    every ``assert_type`` holds and the one diagnostic is ``forward.members()``. Both
+    checkers, because the library is kept clean on both so that one's blind spot
+    cannot hide what the other would catch.
+    """
+    exe = shutil.which(checker)
+    if exe is None:
+        pytest.skip(f"{checker} is not installed (it is a dev dependency)")
+    (tmp_path / "sample.py").write_text(_OPEN_ARCHIVE_TYPING_SAMPLE)
+    src = Path(archivey.__file__).resolve().parent.parent
+    result = subprocess.run(
+        _checker_command(checker, exe, tmp_path, src),
         capture_output=True,
         text=True,
         cwd=tmp_path,
@@ -113,10 +130,14 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(tmp_path) -> N
     refused_line = _OPEN_ARCHIVE_TYPING_SAMPLE.splitlines().index(
         "        forward.members()"
     )
+    output = result.stdout + result.stderr
+    # ty prints ``sample.py:L:C: ...``; Pyrefly prints ``ERROR sample.py:L:C-C: ...``.
     diagnostics = [
-        line for line in result.stdout.splitlines() if line.startswith("sample.py:")
+        line.removeprefix("ERROR ")
+        for line in output.splitlines()
+        if line.startswith(("sample.py:", "ERROR sample.py:"))
     ]
-    assert len(diagnostics) == 1, result.stdout + result.stderr
+    assert len(diagnostics) == 1, output
     assert diagnostics[0].startswith(f"sample.py:{refused_line + 1}:"), diagnostics
     assert "`members`" in diagnostics[0], diagnostics
 
