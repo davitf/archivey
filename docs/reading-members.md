@@ -42,7 +42,9 @@ with archivey.open_archive(
     ...
 ```
 
-Neither flag is free — see [Access costs](access-and-cost.md#concurrent-member-streams).
+Neither flag costs anything until you use what it adds. What seeking and overlapping
+streams cost when you do, and which option fits which job, is in
+[Which options to set](opening-and-listing.md#which-options-to-set).
 
 ## Two ways to read
 

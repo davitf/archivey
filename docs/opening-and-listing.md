@@ -19,13 +19,12 @@ with archivey.open_archive("photos.zip") as reader:
 
 **By default you can open any member you like, in any order.** That is what most
 callers want, and it is what the example above relies on. It is not always the
-cheapest way to read, though — [Reading members](reading-members.md#two-ways-to-read)
-covers when to make one forward pass instead.
+cheapest way to read, though. When one pass in archive order is all you need, open with
+`streaming=True`; [Which options to set](#which-options-to-set) says when that pays.
 
-If your source is a pipe or another non-seekable stream, pass `streaming=True` for a
-forward-only single pass. Without it the open fails immediately rather than halfway
-through — see [What you can open](#what-you-can-open) for which formats can be read
-this way at all.
+If your source is a pipe or another non-seekable stream, `streaming=True` is required.
+Without it the open fails immediately rather than halfway through. See
+[What you can open](#what-you-can-open) for which formats can be read this way at all.
 
 ### `open_archive` or `open_stream`?
 
@@ -41,6 +40,49 @@ archivey.open_stream("access.log.gz")  # a stream: the decompressed bytes
 `open_archive` works on a plain `.gz` too — you get an archive with exactly one
 member, named after the file. Use `open_stream` when you just want the bytes and
 know there is no tar inside.
+
+## Which options to set
+
+Most programs need no option at all, or exactly one. Each option adds something the
+reader can do. None of them costs anything until you use what it adds.
+
+| What you need | Open with | What you give up |
+|---|---|---|
+| Read or extract every member once, in archive order: hash them, index them, load the data once | `streaming=True`, then one of `stream_members()`, `for member in reader` or `extract_all()` | Random access: `members()`, `get()`, `open()` and `read()` raise. You get one pass, even if you `break` out of it early. [More below](#streaming-for-one-pass) |
+| Read one member, or a few, by name; list the archive | Nothing (the defaults) | One member stream open at a time. On a solid archive, opening members out of archive order can decode the same block again ([details](access-and-cost.md#solid-archives-prefer-one-forward-pass)) |
+| Call `seek()` on a member stream, or pass it to a library that seeks (a nested ZIP, a Parquet file, an image decoder) | `seekable_members=True`, plus the `[seekable]` extra for gzip and bzip2 | Nothing until you seek. A seek backwards can decompress the member again from its start, and any seek that moves the position gives up the member's CRC check. If you will seek a lot, extract the member to a file first. [Details](access-and-cost.md#seeking-inside-compressed-members) |
+| Several member streams open at once, for example a thread pool that reads different members | `concurrent_members=True`; call `members()` once before you fan out | A second overlapping `open()` no longer raises, so the check that catches an accidental overlap is gone. Reads are correct but not always faster: they can wait on one lock per archive. Cannot be combined with `streaming=True`. [Details](access-and-cost.md#concurrent-member-streams) |
+| Read from a pipe, a socket or an HTTP response | `streaming=True` | The same as the first row. Only TAR and the single-file compressors can be read this way; see [below](#what-you-can-open) |
+
+`seekable_members` and `concurrent_members` combine freely with each other. To extract a
+whole archive with safe defaults and no reader at all, call
+`archivey.extract(src, dest)` ([Extracting](extracting.md)).
+
+### Streaming for one pass
+
+`streaming=True` is not only for pipes. On a file it tells archivey that you will read
+the archive once, from start to end, and never go back. Two things follow.
+
+- **A compressed TAR is decoded once instead of twice.** A `.tar.gz`, `.tar.xz` or
+  `.tar.zst` has no index, so the default mode decompresses the whole archive to build
+  the member list, then decompresses it again as `stream_members()` or `extract_all()`
+  reads the data. With `streaming=True` the listing and the read are the same pass.
+  Other formats list from an index, so for them the two modes read the same bytes.
+- **A slow access pattern fails instead of running slowly.** A random `open()` raises
+  `ArchiveyUsageError`, so an out-of-order read on a solid archive cannot slip in and
+  decode a block again. And no member stream can seek, so every member you read to its
+  end gets its stored CRC checked.
+
+What you give up, beyond random access:
+
+- **Listing limits.** `ListingLimits` apply when the member list is built, and a
+  streaming pass never builds one. 7z and RAR still check `max_members` when the archive
+  is opened. See [Limits](extracting.md#limits).
+- **Two TAR checks.** A corrupt header in the last block of a TAR is reported as a
+  missing end-of-archive marker, not as corruption
+  ([TAR](formats.md#tar-and-compressed-tar)). And when an `extract_all()` filter
+  leaves out the first name of a hard link, extracting the link fails, because its
+  data has already gone past.
 
 ## What you can open
 
