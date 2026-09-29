@@ -347,6 +347,16 @@ This post-creation check SHALL catch chained symlink attacks where earlier archi
 members influence later target resolution, without allowing writes through an
 escaping link.
 
+A *later* member can change what an earlier link resolves to (`l -> a/../x`, then
+`a -> .`). The system SHALL record which destination paths each created link's
+resolution depended on and, before the next member is handled, recheck every link
+whose dependency a member created as a symlink, or removed or replaced as a symlink or
+directory. A link that now escapes SHALL be unlinked and its result revised in place to
+`BLOCKED` with a `FilterRejectionError`. A `..` target that stays inside `dest` SHALL
+NOT be refused. Rechecks count against `max_entries`; once it is spent, the links still
+waiting are removed unresolved and the run stops with `ResourceLimitError`. Tests:
+`tests/test_symlink_recheck.py`; rationale: `dev-docs/threat-model.md` O22.
+
 #### Scenario: symlink revalidation matrix
 
 | Case | Expected |
@@ -896,7 +906,8 @@ tiny entries and is independent of byte and ratio limits.
 Only members that will create disk entries SHALL count: selector exclusions, user
 filter skips, and members dropped before writing do not increment the counter.
 Every written FILE, DIR, SYMLINK, and HARDLINK counts. This is a global resource
-guard and halts even under `OnError.CONTINUE`.
+guard and halts even under `OnError.CONTINUE`. The same limit separately bounds the
+symlink rechecks of "Symlink Escape Re-Validated at Extraction Time".
 
 #### Scenario: entry-count matrix
 

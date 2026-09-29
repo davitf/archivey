@@ -121,7 +121,7 @@ Three things about this path are worth knowing before you debug it:
 | A codec, or adding one | `streams/codecs.py` + `streams/decompress.py`; `xz.py` / `lzip.py` / `unix_compress.py` for the hand-written ones; `rapidgzip_child.py` for the accelerator's child process; handbook [`formats/single-file.md`](formats/single-file.md) and the codec's own page |
 | Seeking inside a compressed stream | `streams/decompressor_stream.py`; spec `seekable-decompressor-streams` |
 | Stream wrapping / slicing / locking | `streams/streamtools/`; handbook [`topics/stream-ownership.md`](topics/stream-ownership.md); archived review `review/archive/2026-07-19-stream-layering/` |
-| Extraction safety, path traversal, symlinks | `internal/filters.py` + `internal/extraction.py`; `dev-docs/threat-model.md` |
+| Extraction safety, path traversal, symlinks | `internal/filters.py` + `internal/extraction.py`; a later member changing where an earlier link resolves: `internal/link_watch.py`; `dev-docs/threat-model.md` |
 | Decompression-bomb limits | `internal/extraction.py`; listing-side caps in `internal/listing_limits.py` |
 | Member names, encoding, bidi, cross-platform safety | `internal/naming.py`; ADRs 0013, 0017 |
 | The error hierarchy or a translation | `exceptions.py` + the backend's translator; spec `error-handling` |
