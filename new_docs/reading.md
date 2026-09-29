@@ -54,3 +54,13 @@ usually cheaper than opening the archive once per worker, which reads the archiv
 time. The exception is a source where each jump to a new position is costly, such as a member
 of another archive or a file read over the network. There, streams that take turns make the
 source jump back and forth, and each jump throws away what it had buffered.
+
+## Why these aren't on by default
+
+Seeking and reading several members at once are off by default, and `streaming=True` turns off
+out-of-order reads. Each of these can be slow in some cases, or skip a check, in ways the code
+doesn't show. With the checks in place, the risky pattern raises instead of running.
+
+A ZIP can be read out of order at no cost, but a `.tar.gz` can't. If archivey raised only on the
+`.tar.gz`, code tested on ZIPs would first fail in production. So the checks apply on every
+format, and the mistake shows up during development.
