@@ -44,6 +44,19 @@ know there is no tar inside.
 
 ## Which options to set
 
+The two openers take these keyword arguments:
+
+```python
+archivey.open_archive(source, *, format=None, streaming=False,
+                      seekable_members=False, concurrent_members=False,
+                      password=None, encoding=None, config=None)
+archivey.open_stream(source, *, format=None, seekable=False, config=None)
+```
+
+The table below covers the three access options of `open_archive`: `streaming`,
+`seekable_members` and `concurrent_members`. `open_stream` has only one of them,
+`seekable`, which works like `seekable_members` for the one stream it returns.
+
 Most programs need no option at all, or exactly one. The options exist so that you
 never do something expensive without knowing it: without them, a seek, a second open
 stream or random access on a pipe raises instead of quietly costing time. Before you set
@@ -52,9 +65,9 @@ do the job.
 
 | What you need | Open with | What you give up |
 |---|---|---|
-| Read or extract some or all of the members once, and the order does not matter: hash them, index them, load the data once | `streaming=True`, then one of `stream_members()`, `for member in reader` or `extract_all()` | Random access: `members()`, `get()`, `open()` and `read()` raise. You get one pass, even if you `break` out of it early. You do not get the full member list before the pass starts: each member is known only when the pass reaches it. [More below](#streaming-for-one-pass) |
-| Read one member, or a few, by name; list the archive | Nothing (the defaults) | One member stream open at a time. On a solid archive, opening members out of archive order can decode the same block again ([details](access-and-cost.md#solid-archives-prefer-one-forward-pass)) |
-| Call `seek()` on a member stream, or pass it to a library that seeks (a nested ZIP, a Parquet file, an image decoder) | `seekable_members=True`, plus the `[seekable]` extra for gzip and bzip2 | A little bookkeeping as you read: streams record points they can seek back to, and a gzip or bzip2 member of 16 MiB compressed or more is decoded by the `[seekable]` accelerator when it is installed. A seek backwards can decompress the member again from its start, and any seek that moves the position gives up the member's CRC check. If you will seek a lot, extract the member to a file first. [Details](access-and-cost.md#seeking-inside-compressed-members) |
+| Read or extract some or all of the members once, and the order does not matter: hash them, index them, load the data once | `streaming=True`, then one of `stream_members()`, `for member in reader` or `extract_all()` | Random access: `members()`, `get()`, `open()` and `read()` raise. You get one pass, even if you `break` out of it early. You do not get the full member list before the pass starts: each member is known only when the pass reaches it. `scan_members()` and `members_report()` still list the archive, but they use up the pass to do it. [More below](#streaming-for-one-pass) |
+| Read one member, or a few, by name; list the archive and then read from it | Nothing (the defaults) | One member stream open at a time. On a solid archive, opening members out of archive order can decode the same block again ([details](access-and-cost.md#solid-archives-prefer-one-forward-pass)) |
+| Call `seek()` on a member stream, or pass it to a library that seeks (a nested ZIP, a Parquet file, an image decoder) | `seekable_members=True`, plus the `[seekable]` extra for gzip and bzip2 | Some extra work as you read, which depends on the codec: the stream may read the format's own index (xz, lzip), keep track of points it can seek back to, or hand a gzip or bzip2 member of 16 MiB compressed or more to the `[seekable]` accelerator when it is installed. A seek backwards can decompress the member again from its start, and any seek that moves the position gives up the member's CRC check. If you will seek a lot, extract the member to a file first. [Details](access-and-cost.md#seeking-inside-compressed-members) |
 | Several member streams open at once, for example a thread pool that reads different members | `concurrent_members=True`; call `members()` once before you fan out | A second overlapping `open()` no longer raises, so the check that catches an accidental overlap is gone. Reads from several members at once can make the reader seek back and forth in the archive, and decompress data again: on a solid archive, each stream decodes its block from the start. Reads are correct but not always faster: on formats that share one file handle, each read takes a lock, and workers can wait on it. Opening the archive several times, one reader per worker without this option, can be cheaper; it can also cost more, because each reader parses the archive's index again. Cannot be combined with `streaming=True`. [Details](access-and-cost.md#concurrent-member-streams) |
 | Read from a pipe, a socket or an HTTP response | `streaming=True` | The same as the first row. Only TAR and the single-file compressors can be read this way; see [below](#what-you-can-open) |
 
