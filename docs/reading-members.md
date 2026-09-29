@@ -42,9 +42,9 @@ with archivey.open_archive(
     ...
 ```
 
-Neither flag costs anything until you use what it adds. What seeking and overlapping
-streams cost when you do, and which option fits which job, is in
-[Which options to set](opening-and-listing.md#which-options-to-set).
+Neither flag is free, and each one turns off a check that stops an expensive access
+pattern from happening by accident. What each costs, and which option fits which job, is
+in [Which options to set](opening-and-listing.md#which-options-to-set).
 
 ## Two ways to read
 

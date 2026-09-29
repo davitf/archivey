@@ -41,15 +41,15 @@ Archivey’s defaults are the **cheap, honest path**:
 - no concurrent opens until you ask (`concurrent_members=True`)
 - random-access open fails fast on a non-seekable source (no silent buffering)
 
-When you need more, you **declare** it. Escape hatches are explicit, not ambient, and
-cost nothing until you use them. For which one fits which job, see
+When you need more, you **declare** it. Escape hatches are explicit, not ambient. For
+which one fits which job, and what each costs, see
 [Which options to set](opening-and-listing.md#which-options-to-set).
 
 ## Escape hatches for advanced use
 
 | Need | How |
 | --- | --- |
-| One pass over every member | `open_archive(..., streaming=True)` — random access is refused; a compressed TAR decodes once instead of twice |
+| Read each member once, in any order | `open_archive(..., streaming=True)` — random access is refused, so it cannot slip in by accident |
 | Pipes / sockets | `open_archive(..., streaming=True)` — TAR and the single-file compressors; ZIP, ISO, 7z and RAR need a seekable source in either mode |
 | Seek inside a member | `seekable_members=True` |
 | Many open members / workers | `concurrent_members=True` |

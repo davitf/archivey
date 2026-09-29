@@ -80,12 +80,6 @@ for member, stream in reader.stream_members():
     consume(stream)   # one decode of each solid block
 ```
 
-On a compressed TAR, open with `streaming=True` as well. In the default mode the reader
-builds the member list first, and a `.tar.gz` has no index, so that is one full decode
-before `stream_members()` decodes it again to read the data. `streaming=True` makes the
-listing and the read one pass. See
-[Streaming for one pass](opening-and-listing.md#streaming-for-one-pass).
-
 **Avoid this on solid archives** (unless you accept the cost):
 
 ```python
@@ -286,7 +280,7 @@ not a guarantee: an input that aborts the bzip2 decoder would end your process. 
 
 | Situation | Prefer |
 | --- | --- |
-| Hash / process every member | `stream_members()`; on a compressed TAR, open with `streaming=True` too |
+| Hash / process every member | `stream_members()` or `__iter__` |
 | Solid archive, many named opens | Reorder to archive order, or one streaming pass |
 | Need `seek()` on a member | `seekable_members=True` (+ `[seekable]` for gz/bz2/zlib/deflate) |
 | Thread pool of member readers | `concurrent_members=True` after `members()` |
