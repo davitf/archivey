@@ -16,3 +16,18 @@ AES decryption, which most encrypted 7z and ZIP archives need.
 RAR archives can be listed with nothing else installed. To read the files inside, you also
 need RARLAB's `unrar` 6.0 or later, or `unar` 1.10 or later, which handles fewer RAR archives.
 [Install](install.md) has the details.
+
+## Open and list
+
+```python
+import archivey
+
+with archivey.open_archive("photos.zip") as archive:
+    for member in archive:
+        print(member.name, member.size)
+```
+
+`open_archive` works out the format from the file's contents, so the same code opens a `.7z`
+or a `.tar.gz`. Each entry in the archive, whether a file, a directory or a link, is a
+*member*, as in `zipfile` and `tarfile`. [`ArchiveMember`](api.md#archivey.ArchiveMember)
+lists everything a member carries.
