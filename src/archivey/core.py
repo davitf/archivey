@@ -872,10 +872,11 @@ def extract(
     """Open ``source``, apply safety checks, and write **all** members to ``dest``.
 
     The one-shot extraction API (see ``safe-extraction``). It deliberately has **no**
-    member-selection parameter — selecting a subset requires the member list, which would
-    force a reopen; use :meth:`ForwardArchiveReader.extract_all` with ``members=`` on
-    an already open reader instead. Extraction is safe-by-default: ``ExtractionPolicy.STRICT`` and
-    ``OverwritePolicy.ERROR``, with the decompression-bomb guards active.
+    member-selection parameter — selecting a subset requires the member list, which
+    would force a reopen; use :meth:`ForwardArchiveReader.extract_all` with
+    ``members=`` on an already open reader instead. Extraction is safe-by-default:
+    ``ExtractionPolicy.STRICT`` and ``OverwritePolicy.ERROR``, with the
+    decompression-bomb guards active.
 
     A **non-seekable** stream source (a pipe, a socket) is opened in streaming mode
     automatically: extraction is a single forward pass, so it needs no random access, and

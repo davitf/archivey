@@ -694,9 +694,9 @@ class ExtractionReport:
     ``for result in extract(...)`` / ``len(...)`` / ``report[0]`` idioms keep working while
     ``report.diagnostics`` exposes the operation's diagnostic summary. Its scope depends
     on who opened the reader: from :meth:`ForwardArchiveReader.extract_all` it covers
-    that call only (open-phase diagnostics stay on ``reader.diagnostics``); from the one-shot
-    :func:`archivey.extract` it covers detection, open and extraction together, because
-    the caller has no reader to ask.
+    that call only (open-phase diagnostics stay on ``reader.diagnostics``); from the
+    one-shot :func:`archivey.extract` it covers detection, open and extraction
+    together, because the caller has no reader to ask.
     """
 
     results: tuple[ExtractionResult, ...]

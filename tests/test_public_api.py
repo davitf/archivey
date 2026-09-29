@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 import typing
 from pathlib import Path
 from types import FunctionType
@@ -84,25 +85,31 @@ def check(flag: bool) -> None:
 """
 
 
-def _checker_command(checker: str, exe: str, tmp_path: Path, src: Path) -> list[str]:
-    """How to run ``checker`` on ``sample.py`` in ``tmp_path``, with ``src`` importable."""
+_PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
+
+
+def _checker_command(
+    checker: str, exe: str, src: Path, python_version: str
+) -> list[str]:
+    """The command line that runs ``checker`` on ``sample.py`` in the working directory.
+
+    Pyrefly reads its search path and Python version from a ``pyrefly.toml`` beside
+    the sample, which the test writes; ty takes both as arguments.
+    """
     if checker == "ty":
         return [
             exe,
             "check",
             "--python",
             sys.executable,
+            "--python-version",
+            python_version,
             "--extra-search-path",
             str(src),
             "--output-format",
             "concise",
             "sample.py",
         ]
-    # Pyrefly takes the search path from a config file; without one it falls back to a
-    # preset that reports nothing here.
-    (tmp_path / "pyrefly.toml").write_text(
-        f'search-path = [{json.dumps(src.as_posix())}]\npython_version = "3.11"\n'
-    )
     return [exe, "check", "--output-format", "min-text", "sample.py"]
 
 
@@ -110,7 +117,7 @@ def _checker_command(checker: str, exe: str, tmp_path: Path, src: Path) -> list[
 def test_type_checker_refuses_random_access_on_a_streaming_reader(
     checker: str, tmp_path: Path
 ) -> None:
-    """``open_archive``'s overloads, as each checker CI runs sees them.
+    """``open_archive``'s overloads, as seen by each checker CI runs.
 
     CI type-checks ``src/`` only, so the overloads' effect on a caller is checked here:
     every ``assert_type`` holds and the one diagnostic is ``forward.members()``. Both
@@ -120,15 +127,24 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(
     exe = shutil.which(checker)
     if exe is None:
         pytest.skip(f"{checker} is not installed (it is a dev dependency)")
-    (tmp_path / "sample.py").write_text(_OPEN_ARCHIVE_TYPING_SAMPLE)
+    # The same Python version CI checks ``src/`` at, so the two cannot drift apart.
+    python_version = tomllib.loads(_PYPROJECT.read_text())["tool"]["pyrefly"][
+        "python_version"
+    ]
     src = Path(archivey.__file__).resolve().parent.parent
+    (tmp_path / "sample.py").write_text(_OPEN_ARCHIVE_TYPING_SAMPLE)
+    # Without a config file Pyrefly falls back to a preset that reports nothing here.
+    (tmp_path / "pyrefly.toml").write_text(
+        f"search-path = [{json.dumps(src.as_posix())}]\n"
+        f"python_version = {json.dumps(python_version)}\n"
+    )
     # Both checkers start the Python interpreter to find its search paths. pytest-cov
     # before 7 measures such a child through its COV_CORE_* variables, and from
     # tmp_path the child cannot find this repo's coverage config, so it writes
     # statement-only data that the branch-coverage parent then refuses to combine.
     env = {k: v for k, v in os.environ.items() if not k.startswith("COV_CORE_")}
     result = subprocess.run(
-        _checker_command(checker, exe, tmp_path, src),
+        _checker_command(checker, exe, src, python_version),
         capture_output=True,
         text=True,
         cwd=tmp_path,

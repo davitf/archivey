@@ -223,10 +223,11 @@ class ArchiveReader(ForwardArchiveReader):
     """The public, read-only interface to an archive opened for random access.
 
     Returned by :func:`archivey.open_archive` with the default ``streaming=False``.
-    It has every method of :class:`ForwardArchiveReader`, documented above, and adds
-    the four below for lookup and random member access. Annotate against this type
-    when the code needs those methods; concrete machinery lives in the internal
-    ``BaseArchiveReader`` helper. Use in a ``with`` block.
+    It has every :class:`ForwardArchiveReader` method and adds four for lookup and
+    random member access: :meth:`members`, :meth:`get`, :meth:`open` and
+    :meth:`read`. Annotate against this type when the code needs those methods;
+    concrete machinery lives in the internal ``BaseArchiveReader`` helper. Use in a
+    ``with`` block.
     """
 
     @abstractmethod
