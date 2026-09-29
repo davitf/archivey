@@ -23,16 +23,18 @@ trade-off the agents cannot settle from the code: how strict a default is, how m
 memory a decoder may use, what a damaged archive should do. Some examples of those
 rulings:
 
-- A bad optional record in a RAR header is dropped with a diagnostic. `strict` mode
-  refuses the archive instead, and a bad encryption record is always fatal.
+- A bad optional record in a RAR header is dropped with a diagnostic.
+  `DiagnosticPolicy.strict()` refuses the archive instead, and a bad encryption record is always fatal.
 - Decoder memory is capped at 2 GiB by default, and you can change the cap through
   `DecoderLimits`.
 - The integrity guarantee covers a member read from start to end. A read that seeks is
   best effort, because a seek trusts the format's own index.
 
 The maintainer reads code as well, especially to check the architecture and the tricky
-parts. Decisions are recorded in the repository as architecture decision records,
-behaviour specs and archived change proposals.
+parts. Decisions are recorded in the repository as
+[architecture decision records](https://github.com/davitf/archivey/tree/main/dev-docs/decisions),
+[behaviour specs](https://github.com/davitf/archivey/tree/main/openspec/specs) and
+[archived change proposals](https://github.com/davitf/archivey/tree/main/openspec/changes/archive).
 
 The agents do the rest. They write the code and the tests, build the test archives, run
 investigations, review each other's work, and write the docs you are reading.
@@ -47,21 +49,26 @@ AI makes mistakes, so the review process is essential for catching them.
    and the fixes are reviewed too.
 3. Anything the agents cannot settle from the code goes to the maintainer as a decision.
 4. Sometimes the maintainer reviews the change directly.
-5. The change is merged only when we are happy with it.
+5. The change is merged only when review and CI pass and we are happy with it. The
+   maintainer merges anything tricky. Under rules the maintainer set, an agent may merge
+   a straightforward change once its review approves it and CI is green.
 
 Even then, problems and cases nobody thought of creep in. So we also run full-code
 reviews: reviews over the whole codebase rather than one change, each with its own
 goal, such as finding bugs, finding redundant, dead or unclear code, or evaluating the
 public API. A recent bug hunt over extraction and every backend found about 40 bugs;
-each got a reproducer test first, and then a fix
+each got a reproducer test first. Most were fixed in the same pull request, and the
+rest stay in the suite as expected failures until later work fixes them
 ([PR 512](https://github.com/davitf/archivey/pull/512)).
 
 ## How the code is checked
 
 Besides review, these checks run on the code. Each one catches things the others miss.
 
-- **Tests.** More than 7,500 tests run on Linux, macOS and Windows, on Python 3.11 to
-  3.14 and a free-threaded build. They include a corpus of archives written by the real
+- **Tests.** Thousands of tests run on every pull request: Python 3.11 to 3.14 on Linux,
+  the oldest and newest of those on macOS and Windows, and a free-threaded build on the
+  core and the extras that support it
+  ([Platforms and threading](support-matrix.md) has the full table). They include a corpus of archives written by the real
   tools (7-Zip, RAR, zip, tar and others) and a set of hand-built hostile archives:
   path traversal, link escapes, decompression bombs, forged sizes and counts.
 - **Fuzzing.** Every corpus archive is mutated (truncated, bit-flipped, padded with
@@ -70,7 +77,8 @@ Besides review, these checks run on the code. Each one catches things the others
   runs over the 7z, RAR, ZIP, TAR and ISO parsers and every codec on each pull request.
 - **A threat model.** The known security gaps are written down with their status, from
   metadata bombs to a directory swapped for a symlink while it is being listed. The
-  limits we accept rather than fix are published, not hidden.
+  limits the maintainer accepts rather than fixes are recorded there too, in the
+  [threat model](https://github.com/davitf/archivey/blob/main/dev-docs/threat-model.md), not hidden.
 - **Upstream bugs written up.** Checking archivey's decoders against other libraries has
   turned up defects in them: a use-after-free in pyppmd, three decoder bugs in pybcj, and
   a hang in py7zr. Archivey works around or avoids each one.
@@ -111,8 +119,8 @@ do.
 ## Review it yourself
 
 You don't have to take this page's word for it. The history is public: every
-[pull request](https://github.com/davitf/archivey/pulls?q=is%3Apr), its review threads and
-the decisions behind it are on GitHub.
+[pull request](https://github.com/davitf/archivey/pulls?q=is%3Apr), its review threads and the decisions behind it are
+on GitHub, next to the decision records, specs and threat model linked above.
 
 We welcome your own reviews, whether you read the code yourself or point an agent at it.
 Bug reports, questions and pull requests are welcome; see

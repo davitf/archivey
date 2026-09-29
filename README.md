@@ -63,12 +63,6 @@ with archivey.open_archive("photos.tar.gz") as reader:
 [Safe extraction](https://davitf.github.io/archivey/extracting/) ·
 [API reference](https://davitf.github.io/archivey/api/)
 
-## Contributing and security
-
-- **[CONTRIBUTING.md](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md)** — coding / testing standards
-- **[VISION.md](https://github.com/davitf/archivey/blob/main/VISION.md)** — priorities and trade-offs; authoritative contracts live in `openspec/specs/`
-- **[SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md)** — private vulnerability reporting
-
 ## How it is built
 
 Almost all of archivey's code, tests and documentation are written by AI coding agents
@@ -79,3 +73,9 @@ that reads them from zero, and several reviews of the whole codebase hunt for bu
 unclear or dead code, and API problems. If you are wary of AI-written code, that is
 reasonable: [How it is built](https://davitf.github.io/archivey/how-it-is-built/) says
 how changes are made and checked, and what the process does not promise.
+
+## Contributing and security
+
+- **[CONTRIBUTING.md](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md)** — coding / testing standards
+- **[VISION.md](https://github.com/davitf/archivey/blob/main/VISION.md)** — priorities and trade-offs; authoritative contracts live in `openspec/specs/`
+- **[SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md)** — private vulnerability reporting
