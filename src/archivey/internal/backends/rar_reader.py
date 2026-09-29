@@ -31,6 +31,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import zlib
@@ -2562,19 +2563,23 @@ class RarReader(BaseArchiveReader):
         if mask_name is None or mask_view is None or refusal is not None:
             raise self._unrar_name_refused(member, refusal or "no mask")
         glob_mask = "?" in mask_view
-        # ``\\`` is a separator to Windows unrar and a literal on Linux; the
-        # same ``-n./`` mask therefore matches a different set. Refuse rather
-        # than report a valid member truncated (Windows CI on ``a\\b_TGT.txt``).
+        # ``\\`` in the mask is a separator to Windows unrar and a literal on
+        # POSIX, so the same ``-n./`` mask selects a different set; Windows CI
+        # read nothing for ``a\\b_TGT.txt``. On POSIX a RAR5 Windows-host
+        # ``\\`` is read as ``_`` (measured in test_rar_unrar_names.py), which
+        # the mask already reflects. On Windows every RAR5 ``\\`` becomes ``_``
+        # by the unrar source, which is unmeasured there, so a stored backslash
+        # is still refused on Windows.
         if (
-            "\\" in presented
-            or "\\" in mask_view
+            "\\" in mask_view
+            or (sys.platform == "win32" and "\\" in presented)
             or (glob_mask and not _unrar_glob_demux_ok(mask_view[2:]))
         ):
             raise UnsupportedFeatureError(
-                "RAR member names that contain a backslash or a glob in a "
-                "directory component cannot be read through unrar; the "
-                "include-mask matcher is only faithful for a glob confined "
-                "to the basename.",
+                "RAR member names that unrar reads with a backslash, or with a "
+                "glob in a directory component, cannot be read through unrar: "
+                "Windows unrar treats a backslash as a separator, and a "
+                "directory glob selects members archivey cannot size.",
                 archive_name=self._archive_name,
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,

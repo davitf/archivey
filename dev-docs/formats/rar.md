@@ -525,10 +525,12 @@ never starts `unrar` and is never asked for a password.
   wildcards, `./` also anchors the mask to the exact archive path, though `unrar` still
   selects everything *below* that path (`ab` selects `ab/x`). Once the name contains
   `*` or `?` in the **basename only**, the same mask matches that basename at any depth.
-  A glob in a directory component, or a backslash in the stored name, is still
+  A glob in a directory component, or a backslash in the name `unrar` reads, is still
   `UnsupportedFeatureError` on the unrar path: Windows `unrar` treats `\` as a separator
   so `-n./a\b_TGT.txt` emits nothing, and a directory glob has not been measured enough
-  to demux.
+  to demux. POSIX `unrar` reads the `\` of a Windows-host RAR5 name as `_`, so that
+  name reads through the `_` mask. On Windows a stored backslash is refused in every
+  case, since `unrar` there turns every RAR5 `\` into `_` and that is unmeasured.
 - **Which members a mask selects is computed the way `unrar` 7 computes it.**
   `rar_unrar.py` ports the steps from the `unrar` source: how a name is read from the
   header (`UtfToWide` cuts a RAR5 name at its first invalid byte and accepts overlong
@@ -796,7 +798,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
   can hand over an archive, with two outcomes — the wrong member's bytes returned at exit 0,
   and an arbitrary local-file read driven by a `@`-prefixed name. Closed by the `-n./`
   include mask; a basename glob with no backslash is demuxed from the parsed member list
-  (§2.3). A glob in a directory component, or a backslash in the stored name, is refused
+  (§2.3). A glob in a directory component, or a backslash `unrar` keeps, is refused
   on the unrar path rather than guessed. Worth remembering how the hole survived a rule written to prevent
   it: the backend did control the argv it intended to build, and the hostile-name axis
   was simply not one anybody had enumerated.
@@ -1012,13 +1014,19 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
 - **Open: the name model on Windows and macOS is unmeasured.** The selection tests run
   on Linux only.
   - Windows: the case fold is Python's per-character `.upper()` where `unrar` uses
-    `CharUpperW`; the mask is assumed to go through the same `/` to `\` conversion as
-    the name; an 8-bit name is read through the OEM then ANSI code page, which is
+    `CharUpperW`; the mask and the name both get `/` turned into `\` (the mask in
+    `CheckArgs`, a change the source dates 2025-09-11, so older Windows builds may
+    differ; the name in `ConvertFileHeader`), so the model converts both sides; an
+    8-bit name is read through the OEM then ANSI code page, which is
     modelled only for a single-byte OEM, so a DBCS OEM (cp932) can mis-size the skip.
     Precomposition (`FoldStringW`) for a Unix-host name is modelled but unmeasured.
-  - macOS: `unrar` reads 8-bit names with its own UTF-8 decoder, and that is modelled;
-    `_probe_utf8_locale` is unverified on macOS/BSD. If it fails there, non-ASCII
-    names are refused rather than misread.
+  - macOS: `unrar` reads 8-bit names, and the argv mask, with its own `UtfToWide`
+    (`CharToWide` under `_APPLE`), which stops at the first byte that is not UTF-8.
+    That is modelled. So an 8-bit name that is not UTF-8 from its first byte (cp1251
+    `привет.txt`) is read as empty and refused before the spawn, and `caf\xe9.txt`
+    reads through `caf`. macOS CI confirmed the refusal. `_probe_utf8_locale` is
+    unverified on macOS/BSD. If it fails there, non-ASCII names are refused rather
+    than misread.
   - To build more cases: `tests/test_audit_rar_iso_dir.py` has RAR5/RAR3 header
     rewriters with CRC fix-up (`_rar5_parse`, `_rar5_build`, `_rar3_parse`,
     `_rar3_build`), since `rar` 7.00 cannot write RAR4.
@@ -1182,8 +1190,8 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | A NUL in a password or a member name is a typed refusal; a password past the pipe buffer does not deadlock the spawn | `tests/test_audit_rar_iso_dir.py::test_password_with_nul_is_not_silently_cut_by_unrar`, `::test_nul_in_member_name_read_raises_an_archivey_error`, `::test_long_password_does_not_deadlock_the_unrar_spawn` |
 | An 8-bit RAR3 name is masked with its stored bytes; `unrar` runs under a UTF-8 locale, and without one a non-ASCII name is refused before spawning | `tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_member_is_readable`, `::test_non_ascii_member_reads_under_the_c_locale`, `tests/test_rar_unrar_argv.py::test_8bit_name_mask_is_the_stored_bytes`, `::test_unrar_child_runs_under_a_utf8_locale`, `::test_non_ascii_name_without_a_utf8_locale_is_refused_before_spawning` |
 | Each read returns its own member's bytes when the mask selects others: duplicate names (solid and not), a RAR5 name cut at a bad byte, a name `unrar` reads as empty; an earlier unmodellable name refuses later reads | `tests/test_audit_rar_iso_dir.py::test_invalid_utf8_name_never_reads_a_siblings_bytes`, `::test_duplicate_named_compressed_rar5_members_read_their_own_bytes`, `tests/test_rar_unrar_names.py::test_every_rar5_member_reads_its_own_bytes_or_is_refused`, `::test_duplicate_names_read_by_position`, `::test_invalid_utf8_name_reads_through_the_prefix_unrar_sees`, `::test_name_unrar_reads_as_empty_is_refused`, `::test_earlier_name_unrar_cannot_be_modelled_refuses_later_reads` |
-| The mask selection archivey predicts is the one `unrar` 7.00 makes (Linux) | `tests/test_rar_unrar_names.py::test_rar5_mask_selection_is_the_one_unrar_makes`, `::test_rar3_8bit_mask_selection_is_the_one_unrar_makes`, `tests/test_rar_reader.py::test_unrar_mask_selection_follows_unrar_path_rules` |
-| An 8-bit RAR 1.5-4 name lists in its writer's code page, honours `encoding=`, and still reads; RAR5 names ignore `encoding=` | `tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_is_not_decoded_as_utf16`, `tests/test_rar_unrar_names.py::test_8bit_rar3_name_lists_in_its_writers_code_page`, `::test_encoding_argument_decodes_an_8bit_rar3_name`, `::test_8bit_rar3_name_decoded_with_encoding_still_reads`, `::test_unicode_flagged_rar3_name_without_a_utf16_field`, `::test_encoding_argument_leaves_rar5_names_alone` |
+| The mask selection archivey predicts is the one `unrar` 7.00 makes (Linux) | `tests/test_rar_unrar_names.py::test_rar5_mask_selection_is_the_one_unrar_makes`, `::test_rar3_8bit_mask_selection_is_the_one_unrar_makes`, `tests/test_rar_reader.py::test_unrar_mask_selection_follows_unrar_path_rules`, `::test_unrar_mask_selection_on_windows_takes_either_separator_in_the_name` |
+| An 8-bit RAR 1.5-4 name lists in its writer's code page, honours `encoding=`, and still reads; RAR5 names ignore `encoding=` | `tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_is_not_decoded_as_utf16`, `tests/test_rar_unrar_names.py::test_8bit_rar3_name_lists_in_its_writers_code_page`, `::test_encoding_argument_decodes_an_8bit_rar3_name`, `::test_8bit_rar3_name_decoded_with_encoding_still_reads`, `::test_unicode_flagged_rar3_name_without_a_utf16_field`, `::test_encoding_argument_leaves_rar5_names_alone`, `::test_8bit_name_macos_unrar_reads_as_empty_is_refused_before_spawning` |
 | An explicit volume list in separate directories reads as given | `tests/test_audit_rar_iso_dir.py::test_explicit_rar_volume_paths_in_separate_directories_open` |
 | An invalid DOS date or out-of-range FILETIME is `None` plus `MEMBER_TIMESTAMP_INVALID`; a crafted `;n` suffix is not a bare `ValueError` | `tests/test_audit_cross_format.py::test_invalid_timestamp_is_none_and_reported`, `tests/test_audit_rar_iso_dir.py::test_rar3_version_suffix_is_parsed_without_a_bare_value_error` |
 | Exit-code mapping: 11, 2/3, 10, hash-present suppression, solid-pipe suppression, negative rc | `tests/test_rar_reader.py::test_unrar_owned_stream_maps_exit_11_to_encryption_error` and the nine tests after it |

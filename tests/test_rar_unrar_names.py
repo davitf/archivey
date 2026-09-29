@@ -92,6 +92,7 @@ _RAR3_NAMES: list[bytes] = [
     b"d/caf\xe9.txt",
     b"caf?.txt",
     b"cafX.txt",
+    b"caf\xf8\x80\x80\x80\x80.txt",  # an overlong five-byte form: mapped
 ]
 
 
@@ -278,9 +279,12 @@ def test_every_rar5_member_reads_its_own_bytes_or_is_refused(tmp_path: Path) -> 
             outcomes[index] = "read"
     refused = {index for index, outcome in outcomes.items() if outcome != "read"}
     # "\xff" and the overlong NUL read as empty; the encoded surrogate cannot be
-    # passed back; "ab\\x" and "w\\v" hold a backslash; "a?b" is a glob that
-    # also selects "aXb"... after it, so it reads; nothing else is refused.
-    assert refused == {3, 8, 12, 16, 20}, outcomes
+    # passed back; unrar reads "ab\\x" with its backslash. "w\\v" has a
+    # Windows host, so POSIX unrar reads it as "w_v" and it reads by position
+    # beside the "w_v" after it; Windows still refuses a stored backslash. "a?b"
+    # is a glob that also selects "aXb"... after it, so it reads.
+    expected = {3, 8, 12, 16, 20} if sys.platform == "win32" else {3, 8, 12, 16}
+    assert refused == expected, outcomes
 
 
 @requires_binary("unrar")
@@ -361,6 +365,49 @@ def test_earlier_name_unrar_cannot_be_modelled_refuses_later_reads(
             reader.read(later)
 
 
+def test_five_and_six_byte_forms_are_modelled_as_glibc_reads_them() -> None:
+    """glibc's ``mbrtowc`` decodes five- and six-byte forms above U+10FFFF and
+    rejects their overlong spellings. A rejected form is mapped byte by byte like
+    any invalid byte, which is modelled; an accepted one is not."""
+    if not sys.platform.startswith("linux") or rar_unrar._utf8_locale_name() is None:
+        pytest.skip("the glibc reading needs Linux and a UTF-8 locale")
+
+    def view(stored: bytes) -> str | None:
+        return unrar_member_view(
+            rar5=False,
+            stored=stored,
+            rar3_unicode_name=None,
+            host_os=3,
+            file_version=None,
+        )
+
+    assert view(b"caf\xf8\x80\x80\x80\x80.txt") == (
+        "caf\ufffe" + "".join(chr(0xE000 + b) for b in b"\xf8\x80\x80\x80\x80") + ".txt"
+    )
+    assert view(b"caf\xfc\x80\x80\x80\x80\x80.txt") is not None
+    assert view(b"caf\xf8\x88\x80\x80\x80.txt") is None  # U+200000
+    assert view(b"caf\xfc\x84\x80\x80\x80\x80.txt") is None  # U+4000000
+
+
+@requires_binary("unrar")
+@_LINUX_ONLY
+def test_overlong_five_byte_name_does_not_refuse_later_reads(tmp_path: Path) -> None:
+    """unrar maps an overlong form, so the earlier name is known and later
+    members read; the accepted form is not modelled and refuses them."""
+    with open_archive(_fixture("hostile_argv__rar4.rar"), config=_UNRAR_ONLY) as ar:
+        expected = {m.name: ar.read(m) for m in ar.members()[1:] if m.is_file}
+    path = _rar4_with_name(tmp_path, b"caf\xf8\x80\x80\x80\x80")
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        later = [m for m in reader.members()[1:] if m.is_file]
+        assert later
+        for member in later:
+            assert reader.read(member) == expected[member.name]
+    path = _rar4_with_name(tmp_path, b"caf\xf8\x88\x80\x80\x80")
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        with pytest.raises(ArchiveyError, match="earlier member's name"):
+            reader.read([m for m in reader.members()[1:] if m.is_file][0])
+
+
 # --- listing an 8-bit RAR 1.5-4 name -------------------------------------------
 
 
@@ -432,7 +479,48 @@ def test_8bit_rar3_name_decoded_with_encoding_still_reads(tmp_path: Path) -> Non
         expected = ar.read("canary.txt")
     path = _rar4_with_name(tmp_path, "привет.txt".encode("cp1251"))
     with open_archive(path, encoding="cp1251", config=_UNRAR_ONLY) as reader:
-        assert reader.read(reader.members()[0]) == expected
+        if sys.platform == "darwin":
+            # macOS unrar reads this name as empty; see the test below.
+            with pytest.raises(UnsupportedFeatureError, match="unar"):
+                reader.read(reader.members()[0])
+        else:
+            assert reader.read(reader.members()[0]) == expected
+
+
+@requires_binary("unrar")
+def test_8bit_name_macos_unrar_reads_as_empty_is_refused_before_spawning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOS ``unrar`` converts an 8-bit name, and the argv mask, with ``UtfToWide``
+    (``unicode.cpp``, ``CharToWide`` under ``_APPLE``), which stops at the first
+    byte that is not UTF-8. cp1251 ``привет.txt`` starts with such a byte, so the
+    name ``unrar`` reads is empty and no mask can select only this member. The read
+    is refused before ``unrar`` is spawned. A name cut later (``caf\\xe9.txt`` is
+    ``caf``) still has a mask and reads through it.
+    """
+    from archivey.internal.backends import rar_unrar
+
+    path = _rar4_with_name(tmp_path, "привет.txt".encode("cp1251"))
+    with open_archive(path, encoding="cp1251", config=_UNRAR_ONLY) as reader:
+        member = reader.members()[0]
+        monkeypatch.setattr(rar_unrar.sys, "platform", "darwin")
+
+        def no_spawn(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("unrar was spawned")
+
+        monkeypatch.setattr(rar_unrar.subprocess, "Popen", no_spawn)
+        with pytest.raises(UnsupportedFeatureError, match="unar"):
+            reader.read(member)
+    assert (
+        unrar_member_view(
+            rar5=False,
+            stored=b"caf\xe9.txt",
+            rar3_unicode_name=None,
+            host_os=3,
+            file_version=None,
+        )
+        == "caf"
+    )
 
 
 def test_unicode_flagged_rar3_name_without_a_utf16_field(tmp_path: Path) -> None:

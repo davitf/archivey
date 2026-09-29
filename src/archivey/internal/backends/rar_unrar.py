@@ -419,8 +419,8 @@ def _member_include_switch(member: str | bytes) -> str | bytes:
     more than its own member (a duplicate name, a glob, a name ``unrar`` cuts
     short), so ``RarReader._open_member`` skips the others using the parsed
     member list and :func:`unrar_mask_selects`. A glob in a directory component,
-    or a backslash in the presented name, raises ``UnsupportedFeatureError``
-    instead (see :func:`_unrar_glob_demux_ok`).
+    or a backslash in the mask (on Windows, in the stored name), raises
+    ``UnsupportedFeatureError`` instead (see :func:`_unrar_glob_demux_ok`).
     """
     if isinstance(member, bytes):
         return b"-n./" + member.replace(b"*", b"?")
@@ -720,13 +720,23 @@ def _glibc_utf8_width(data: bytes, pos: int) -> int | None:
         except UnicodeDecodeError:
             continue
     # glibc decodes up to U+7FFFFFFF: F4 90.. to F7 as four bytes, F8-FB as five
-    # and FC-FD as six, each refusing an overlong form.
-    widths = {0xF4: 4, 0xF5: 4, 0xF6: 4, 0xF7: 4, 0xF8: 5, 0xF9: 5, 0xFA: 5, 0xFB: 5}
-    width = widths.get(lead, 6 if lead in (0xFC, 0xFD) else 0)
+    # and FC-FD as six, each refusing an overlong form. A four-byte lead that gets
+    # here is never overlong (F0-F3 forms are either decoded above or invalid).
+    if 0xF4 <= lead <= 0xF7:
+        width, value, least = 4, lead & 0x07, 0
+    elif 0xF8 <= lead <= 0xFB:
+        width, value, least = 5, lead & 0x03, 0x200000
+    elif lead in (0xFC, 0xFD):
+        width, value, least = 6, lead & 0x01, 0x4000000
+    else:
+        return None
     tail = data[pos + 1 : pos + width]
-    if width and len(tail) == width - 1 and all(b & 0xC0 == 0x80 for b in tail):
-        return -1
-    return None
+    if len(tail) != width - 1 or any(b & 0xC0 != 0x80 for b in tail):
+        return None
+    for byte in tail:
+        value = value << 6 | byte & 0x3F
+    # An overlong form is rejected like any invalid byte, and unrar maps it.
+    return -1 if value >= least else None
 
 
 def _unrar_posix_char_to_wide(data: bytes) -> str | None:
@@ -911,11 +921,20 @@ def _unrar_convert_path_offset(text: str) -> int:
 
 
 def _unrar_name_pos(text: str) -> int:
-    """``PointToName``: where the last path component starts."""
+    """``GetNamePos``: where the last path component starts."""
     for index in range(len(text) - 1, -1, -1):
         if _unrar_is_div(text[index]):
             return index + 1
-    if sys.platform == "win32" and len(text) > 1 and text[1] == ":":
+    # ``IsDriveLetter``: an ASCII letter (``etoupperw`` folds only ASCII), then
+    # ``:``. ``ConvertPath`` checks only the colon, and
+    # ``_unrar_convert_path_offset`` follows it there.
+    if (
+        sys.platform == "win32"
+        and len(text) > 1
+        and text[0].isascii()
+        and text[0].isalpha()
+        and text[1] == ":"
+    ):
         return 2
     return 0
 
@@ -1003,7 +1022,12 @@ def unrar_mask_selects(mask_view: str, name_view: str) -> bool:
     whole directories and is never built here.
     """
     if sys.platform == "win32":
+        # Both sides as Windows unrar holds them: ``CheckArgs`` turns ``/`` into
+        # ``\\`` in the mask and ``ConvertFileHeader`` does so in the name. A view
+        # from :func:`unrar_member_view` already has ``\\``; a name given with
+        # ``/`` would otherwise differ in its directory part.
         mask_view = mask_view.replace("/", "\\")
+        name_view = name_view.replace("/", "\\")
     if mask_view and _unrar_is_div(mask_view[-1]):
         raise AssertionError("a mask ending in a separator is never passed to unrar")
     mask = mask_view[_unrar_convert_path_offset(mask_view) :]
@@ -1046,6 +1070,8 @@ def unrar_selection_keys(view: str) -> tuple[str, ...]:
     one of its separators. The keys are those strings, folded on Windows. The
     index is a filter: :func:`unrar_mask_selects` still decides.
     """
+    if sys.platform == "win32":
+        view = view.replace("/", "\\")  # as in :func:`unrar_mask_selects`
     name = view[_unrar_convert_path_offset(view) :]
     folded = _unrar_fold_all(name)
     keys = {folded.rstrip(".")}

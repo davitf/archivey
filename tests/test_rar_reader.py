@@ -3533,6 +3533,51 @@ def test_unrar_mask_selection_follows_unrar_path_rules() -> None:
     assert selects("x/../ab", "ab")
 
 
+def test_unrar_mask_selection_on_windows_takes_either_separator_in_the_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows ``unrar`` turns ``/`` into ``\\`` in the name (``ConvertFileHeader``)
+    and in the mask (``CheckArgs``), so a directory part compares equal whichever
+    separator either side was written with. The index keys must agree, or an exact
+    mask would not find its member. Linux keeps ``\\`` as a name character.
+    """
+    from archivey.internal.backends import rar_unrar
+    from archivey.internal.backends.rar_unrar import (
+        unrar_mask_keys,
+        unrar_mask_selects,
+        unrar_selection_keys,
+    )
+
+    monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
+    for name in ("subdir/aY.txt", "subdir\\aY.txt"):
+        assert unrar_mask_selects("./subdir/a?.txt", name)
+        assert unrar_mask_selects("./subdir/aY.txt", name)
+        assert unrar_mask_selects("./subdir", name)
+        assert not unrar_mask_selects("./other/a?.txt", name)
+        keys = unrar_mask_keys("./subdir/aY.txt")
+        assert keys is not None
+        assert set(keys) & set(unrar_selection_keys(name))
+    monkeypatch.setattr(rar_unrar.sys, "platform", "linux")
+    assert unrar_mask_selects("./subdir/a?.txt", "subdir/aY.txt")
+    assert not unrar_mask_selects("./subdir/a?.txt", "subdir\\aY.txt")
+
+
+def test_unrar_name_pos_takes_a_drive_only_after_an_ascii_letter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``GetNamePos`` falls back to 2 only for ``IsDriveLetter``: A-Z, then ``:``."""
+    from archivey.internal.backends import rar_unrar
+    from archivey.internal.backends.rar_unrar import _unrar_name_pos
+
+    monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
+    assert _unrar_name_pos("c:ab") == 2
+    assert _unrar_name_pos("Z:ab") == 2
+    for name in ("1:ab", ":x", "é:ab", "ı:ab"):
+        assert _unrar_name_pos(name) == 0, name
+    monkeypatch.setattr(rar_unrar.sys, "platform", "linux")
+    assert _unrar_name_pos("c:ab") == 0
+
+
 def test_unrar_mask_selection_windows_fold_does_not_change_wildcard_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
