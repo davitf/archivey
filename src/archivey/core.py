@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Callable, Collection
+from typing import TYPE_CHECKING, BinaryIO, Callable, Collection, Literal, overload
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -85,7 +85,7 @@ from archivey.internal.volumes import (
     is_sfx_stub_name,
     resolve_source,
 )
-from archivey.reader import ArchiveReader
+from archivey.reader import ArchiveReader, StreamingArchiveReader
 from archivey.terminal import display_path
 from archivey.types import (
     AbortOn,
@@ -252,6 +252,38 @@ def _follow_stub_volume(
     return resolved
 
 
+# Two overloads carry the access mode into the return type: the default
+# ``streaming=False`` gives the full ``ArchiveReader``, while ``streaming=True`` or a
+# flag known only at run time gives ``StreamingArchiveReader``, which lacks the
+# random-access methods, so a type checker flags a call that would raise.
+@overload
+def open_archive(
+    source: OpenSourceInput,
+    *,
+    format: ArchiveFormat | str | None = None,
+    streaming: Literal[False] = False,
+    seekable_members: bool = False,
+    concurrent_members: bool = False,
+    password: PasswordInput = None,
+    encoding: str | None = None,
+    config: ArchiveyConfig | None = None,
+) -> ArchiveReader: ...
+
+
+@overload
+def open_archive(
+    source: OpenSourceInput,
+    *,
+    format: ArchiveFormat | str | None = None,
+    streaming: bool,
+    seekable_members: bool = False,
+    concurrent_members: bool = False,
+    password: PasswordInput = None,
+    encoding: str | None = None,
+    config: ArchiveyConfig | None = None,
+) -> StreamingArchiveReader: ...
+
+
 def open_archive(
     source: OpenSourceInput,
     *,
@@ -262,12 +294,19 @@ def open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
-) -> ArchiveReader:
+) -> StreamingArchiveReader:
     """Open an archive for reading.
 
     ``streaming=False`` (the default) opens for random access and fails fast at open
     time on a non-seekable source. ``streaming=True`` promises forward-only, single-pass
     access (works on any source, but disables random-access methods).
+
+    The return type follows the access mode: :class:`~archivey.ArchiveReader` for the
+    default ``streaming=False``, and :class:`~archivey.StreamingArchiveReader`, which
+    lacks ``members()``, ``get()``, ``open()`` and ``read()``, for ``streaming=True``
+    or a flag whose value is known only at run time. A type checker then flags a
+    random-access call on a streaming reader. Every reader is an ``ArchiveReader`` at
+    run time; the difference is in the annotations only.
 
     Member streams are forward-only and single-live by default. Two keyword flags opt
     into more, each unlocking one specific trap:

@@ -8,6 +8,7 @@ is the safety net that keeps the hand-maintained list from drifting.
 from __future__ import annotations
 
 import inspect
+import shutil
 import subprocess
 import sys
 import typing
@@ -29,6 +30,95 @@ def test_open_archive_returns_an_archive_reader(tmp_path) -> None:
     (tmp_path / "f.txt").write_bytes(b"x")
     with archivey.open_archive(tmp_path) as ar:
         assert isinstance(ar, archivey.ArchiveReader)
+
+
+# The four methods a streaming reader refuses at run time, which the narrower
+# ``StreamingArchiveReader`` type leaves out so a type checker refuses them too.
+_RANDOM_ACCESS_METHODS = {"members", "get", "open", "read"}
+
+
+def test_streaming_reader_type_leaves_out_exactly_the_random_access_methods() -> None:
+    assert issubclass(archivey.ArchiveReader, archivey.StreamingArchiveReader)
+    streaming_api = {
+        name
+        for name in dir(archivey.StreamingArchiveReader)
+        if not name.startswith("_") or name in ("__iter__", "__contains__")
+    }
+    full_api = {
+        name
+        for name in dir(archivey.ArchiveReader)
+        if not name.startswith("_") or name in ("__iter__", "__contains__")
+    }
+    assert full_api - streaming_api == _RANDOM_ACCESS_METHODS
+
+
+def test_a_streaming_reader_is_still_an_archive_reader_at_run_time(tmp_path) -> None:
+    """The narrowing is static only: one runtime class serves both access modes."""
+    (tmp_path / "f.txt").write_bytes(b"x")
+    with archivey.open_archive(tmp_path, streaming=True) as ar:
+        assert isinstance(ar, archivey.ArchiveReader)
+        with pytest.raises(archivey.ArchiveyUsageError):
+            ar.members()  # type: ignore[attr-defined]  # the call this type refuses
+
+
+_OPEN_ARCHIVE_TYPING_SAMPLE = """\
+from typing import assert_type
+
+import archivey
+from archivey import ArchiveReader, StreamingArchiveReader
+
+
+def check(flag: bool) -> None:
+    assert_type(archivey.open_archive("a.zip"), ArchiveReader)
+    assert_type(archivey.open_archive("a.zip", streaming=False), ArchiveReader)
+    assert_type(archivey.open_archive("a.zip", streaming=True), StreamingArchiveReader)
+    assert_type(archivey.open_archive("a.zip", streaming=flag), StreamingArchiveReader)
+    with archivey.open_archive("a.zip") as full:
+        assert_type(full, ArchiveReader)
+        full.members()
+    with archivey.open_archive("a.zip", streaming=True) as forward:
+        assert_type(forward, StreamingArchiveReader)
+        forward.members()
+"""
+
+
+def test_type_checker_refuses_random_access_on_a_streaming_reader(tmp_path) -> None:
+    """``open_archive``'s overloads, as ty sees them.
+
+    CI type-checks ``src/`` only, so the overloads' effect on a caller is checked here:
+    every ``assert_type`` holds and the one diagnostic is ``forward.members()``.
+    """
+    ty = shutil.which("ty")
+    if ty is None:
+        pytest.skip("ty is not installed (it is a dev dependency)")
+    sample = tmp_path / "sample.py"
+    sample.write_text(_OPEN_ARCHIVE_TYPING_SAMPLE)
+    src = Path(archivey.__file__).resolve().parent.parent
+    result = subprocess.run(
+        [
+            ty,
+            "check",
+            "--python",
+            sys.executable,
+            "--extra-search-path",
+            str(src),
+            "--output-format",
+            "concise",
+            "sample.py",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    refused_line = _OPEN_ARCHIVE_TYPING_SAMPLE.splitlines().index(
+        "        forward.members()"
+    )
+    diagnostics = [
+        line for line in result.stdout.splitlines() if line.startswith("sample.py:")
+    ]
+    assert len(diagnostics) == 1, result.stdout + result.stderr
+    assert diagnostics[0].startswith(f"sample.py:{refused_line + 1}:"), diagnostics
+    assert "`members`" in diagnostics[0], diagnostics
 
 
 def test_member_streams_is_demoted_from_the_surface(tmp_path) -> None:
@@ -62,6 +152,7 @@ def test_io_measurement_is_not_public() -> None:
         assert not hasattr(archivey, name)
     assert importlib.util.find_spec("archivey.measurement") is None
     assert "io_stats" not in vars(archivey.ArchiveReader)
+    assert "io_stats" not in vars(archivey.StreamingArchiveReader)
     assert "io_stats" in vars(BaseArchiveReader)
 
 
@@ -80,7 +171,9 @@ def test_public_interface_hides_internal_hooks() -> None:
         "_get_archive_info",
         "_close_archive",
     }
-    public_names = set(vars(archivey.ArchiveReader))
+    public_names = set(vars(archivey.ArchiveReader)) | set(
+        vars(archivey.StreamingArchiveReader)
+    )
     leaked = internal_hooks & public_names
     assert not leaked, f"internal hooks leaked onto the public ArchiveReader: {leaked}"
     # They DO live on the internal helper.

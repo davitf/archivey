@@ -182,6 +182,12 @@ methods — `members()`, `get()`, `open()`, `read()` — raise
 and `extract_all()`, and you get **one** of them: the first consumes the source, even
 if you `break` out early.
 
+A type checker catches the random-access calls before you run the code:
+`open_archive(..., streaming=True)` is typed to return `StreamingArchiveReader`, which
+has no `members()`, `get()`, `open()` or `read()`. The one-pass rule it cannot see.
+Annotate a function that takes a reader of either kind, and only makes one pass, with
+`StreamingArchiveReader`; the full `ArchiveReader` is a subclass of it.
+
 ## One-shot extract
 
 `archivey.extract(src, dest)` extracts everything with safe defaults — see

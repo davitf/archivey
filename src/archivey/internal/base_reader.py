@@ -21,6 +21,7 @@ from typing import (
     Literal,
     Mapping,
     NoReturn,
+    Self,
 )
 
 if TYPE_CHECKING:
@@ -2754,7 +2755,7 @@ class BaseArchiveReader(ArchiveReader):
                 "closing member streams during reader close failed", failures
             )
 
-    def __enter__(self) -> "BaseArchiveReader":
+    def __enter__(self) -> Self:
         self._state.require_open("__enter__")
         return self
 

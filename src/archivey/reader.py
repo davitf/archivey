@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Collection, Iterator
+from typing import TYPE_CHECKING, Callable, Collection, Iterator, Self
 
 from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt
@@ -36,16 +36,26 @@ MemberSelector = (
 )
 
 
-class ArchiveReader(ABC):
-    """The public, read-only interface to an open archive.
+class StreamingArchiveReader(ABC):
+    """The methods every open archive supports, including a forward-only one.
 
-    Returned by :func:`archivey.open_archive`. Annotate against this type; concrete
-    machinery lives in the internal ``BaseArchiveReader`` helper. Use in a ``with``
-    block.
+    ``open_archive(..., streaming=True)`` is typed to return this class, so a type
+    checker flags a call to :meth:`~ArchiveReader.members`, :meth:`~ArchiveReader.get`,
+    :meth:`~ArchiveReader.open` or :meth:`~ArchiveReader.read` on a streaming reader,
+    which would raise ``ArchiveyUsageError`` at run time. What remains reads the archive
+    in one pass: iterate the reader, :meth:`stream_members`, :meth:`extract_all`, or
+    :meth:`scan_members` for the member list.
+
+    A random-access reader is an :class:`ArchiveReader`, a subclass, so annotate a
+    function with this type when it takes a reader of either kind and only makes one
+    pass. The check is static only: every reader is an ``ArchiveReader`` at run time,
+    and a streaming one still raises from the random-access methods. The single-pass
+    rule (a second pass on a streaming reader raises) is not visible to a type checker.
+    Use in a ``with`` block.
 
     **Listing APIs** (easy to mix up):
 
-    - :meth:`members` — complete list or raise; random-access only (fails on streaming).
+    - :meth:`~ArchiveReader.members` — complete list or raise; random-access only.
     - :meth:`members_report` — always returns a report; check ``error is None`` for
       completeness (preferred for damaged archives).
     - :meth:`scan_members` — :meth:`members_report` that raises the report's error:
@@ -97,20 +107,12 @@ class ArchiveReader(ABC):
         ...
 
     @abstractmethod
-    def members(self) -> list[ArchiveMember]:
-        """All members as a list. May trigger a scan; raises ``ArchiveyUsageError``
-        on a streaming reader (use :meth:`scan_members` or
-        :meth:`members_report_if_available` there). Raises terminal archive-level listing
-        errors instead of returning an incomplete list."""
-        ...
-
-    @abstractmethod
     def members_report(self) -> MemberListReport:
         """Materialize the member listing and return a report.
 
         ``report.error is None`` means ``report.members`` is complete. A non-``None``
         error means the tuple is the recovered prefix and the error is the terminal
-        archive-level listing damage. Unlike :meth:`members`, this returns the report
+        archive-level listing damage. Unlike :meth:`~ArchiveReader.members`, this returns the report
         instead of raising for those terminal archive-damage errors.
         """
         ...
@@ -121,7 +123,7 @@ class ArchiveReader(ABC):
 
         It is :meth:`members_report`, raising ``report.error`` when the listing is
         incomplete and otherwise returning ``report.members`` as a list. In
-        random-access mode this is equivalent to :meth:`members` and does not consume
+        random-access mode this is equivalent to :meth:`~ArchiveReader.members` and does not consume
         the reader. On a streaming reader it finishes the single forward pass (running
         it from the start, or completing an interrupted one) and returns the resolved
         list; it may also be called after a completed pass to return the cached
@@ -141,45 +143,9 @@ class ArchiveReader(ABC):
 
         Identity-based and O(1) — no scan — so it is valid in any access mode; useful to
         disambiguate members when several readers are in play. Name lookup is
-        :meth:`get`, and a non-``ArchiveMember`` operand raises ``TypeError`` (this also
+        :meth:`~ArchiveReader.get`, and a non-``ArchiveMember`` operand raises ``TypeError`` (this also
         keeps the ``in`` operator from silently falling back to a full iteration, which
         would consume a streaming reader's single forward pass)."""
-        ...
-
-    @abstractmethod
-    def get(
-        self, name: str, default: ArchiveMember | None = None
-    ) -> ArchiveMember | None:
-        """Look up a member by its normalized name, returning ``default`` if absent.
-        This is the name-lookup entry point; :meth:`open`/:meth:`read` also accept a
-        name directly. May trigger a scan; on a streaming reader raises
-        ``ArchiveyUsageError``. With duplicate member names, returns the last
-        (the one a sequential extraction would leave on disk)."""
-        ...
-
-    @abstractmethod
-    def open(self, member: str | ArchiveMember) -> ArchiveStream:
-        """Open a member as a binary stream, following symlinks/hardlinks. Accepts a
-        member object or a name (an unknown name raises ``KeyError``; a member object
-        that was not yielded by this reader raises ``ArchiveyUsageError`` — same identity
-        rule as ``member in reader``). The caller is responsible for closing the returned
-        stream. Returns an :class:`~archivey.ArchiveStream` (usable as ``BinaryIO``).
-
-        **Cost, when ``reader.cost.access_cost`` is ``SOLID``** (solid 7z/RAR, any
-        compressed tar): members share one compression run, so opening one decodes
-        every member before it. Doing that for each member in turn is quadratic in the
-        archive size. Nothing warns about it — prefer :meth:`stream_members`, which
-        decodes the run once."""
-        ...
-
-    @abstractmethod
-    def read(self, member: str | ArchiveMember) -> bytes:
-        """Read a member's full contents as ``bytes`` (unbounded — prefer :meth:`open`
-        or :meth:`stream_members` for anything not known to be small).
-
-        Carries :meth:`open`'s solid-archive cost: on a ``SOLID`` archive this decodes
-        every member preceding the requested one, so a loop over all members is
-        quadratic. Use :meth:`stream_members` for that."""
         ...
 
     @abstractmethod
@@ -196,7 +162,7 @@ class ArchiveReader(ABC):
         ``io.UnsupportedOperation``, and ``tell()`` works. A nested archive read from
         it is a non-seekable source: ``open_archive()`` accepts it only with
         ``streaming=True`` and only for TAR and single-file compressors. For a member
-        you need to seek, nested archives included, use :meth:`open` under
+        you need to seek, nested archives included, use :meth:`~ArchiveReader.open` under
         ``seekable_members=True``."""
         ...
 
@@ -245,7 +211,61 @@ class ArchiveReader(ABC):
         ...
 
     @abstractmethod
-    def __enter__(self) -> "ArchiveReader": ...
+    def __enter__(self) -> Self: ...
 
     @abstractmethod
     def __exit__(self, *args: object) -> None: ...
+
+
+class ArchiveReader(StreamingArchiveReader):
+    """The public, read-only interface to an archive opened for random access.
+
+    Returned by :func:`archivey.open_archive` with the default ``streaming=False``.
+    Adds lookup and random member access to :class:`StreamingArchiveReader`. Annotate
+    against this type when the code needs those methods; concrete machinery lives in
+    the internal ``BaseArchiveReader`` helper. Use in a ``with`` block.
+    """
+
+    @abstractmethod
+    def members(self) -> list[ArchiveMember]:
+        """All members as a list. May trigger a scan; raises ``ArchiveyUsageError``
+        on a streaming reader (use :meth:`~StreamingArchiveReader.scan_members` or
+        :meth:`~StreamingArchiveReader.members_report_if_available` there). Raises terminal archive-level listing
+        errors instead of returning an incomplete list."""
+        ...
+
+    @abstractmethod
+    def get(
+        self, name: str, default: ArchiveMember | None = None
+    ) -> ArchiveMember | None:
+        """Look up a member by its normalized name, returning ``default`` if absent.
+        This is the name-lookup entry point; :meth:`open`/:meth:`read` also accept a
+        name directly. May trigger a scan; on a streaming reader raises
+        ``ArchiveyUsageError``. With duplicate member names, returns the last
+        (the one a sequential extraction would leave on disk)."""
+        ...
+
+    @abstractmethod
+    def open(self, member: str | ArchiveMember) -> ArchiveStream:
+        """Open a member as a binary stream, following symlinks/hardlinks. Accepts a
+        member object or a name (an unknown name raises ``KeyError``; a member object
+        that was not yielded by this reader raises ``ArchiveyUsageError`` — same identity
+        rule as ``member in reader``). The caller is responsible for closing the returned
+        stream. Returns an :class:`~archivey.ArchiveStream` (usable as ``BinaryIO``).
+
+        **Cost, when ``reader.cost.access_cost`` is ``SOLID``** (solid 7z/RAR, any
+        compressed tar): members share one compression run, so opening one decodes
+        every member before it. Doing that for each member in turn is quadratic in the
+        archive size. Nothing warns about it — prefer :meth:`~StreamingArchiveReader.stream_members`, which
+        decodes the run once."""
+        ...
+
+    @abstractmethod
+    def read(self, member: str | ArchiveMember) -> bytes:
+        """Read a member's full contents as ``bytes`` (unbounded — prefer :meth:`open`
+        or :meth:`~StreamingArchiveReader.stream_members` for anything not known to be small).
+
+        Carries :meth:`open`'s solid-archive cost: on a ``SOLID`` archive this decodes
+        every member preceding the requested one, so a loop over all members is
+        quadratic. Use :meth:`~StreamingArchiveReader.stream_members` for that."""
+        ...
