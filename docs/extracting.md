@@ -249,11 +249,11 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   the limits as each member arrives in its one pass, so members before the one that
   crosses a cap are already written when it raises. A damaged TAR behaves the same
   way (see above). `stream_members()` / `streaming=True` stay unguarded by design,
-  except on 7z and RAR where `max_members` is checked at `open_archive`. Raise `listing_limits.max_members` to open a larger 7z or
-  RAR. That parse bound is a member count, not a byte budget:
-  `max_metadata_bytes` still fires when the list is materialized. RAR also
-  checks it at `open_archive` against the declared sizes of compressed
-  RAR 1.5/2.x comments, before decoding them.
+  except on 7z and RAR where `max_members` is checked at `open_archive`. Raise
+  `listing_limits.max_members` to open a larger 7z or RAR. That parse bound is a
+  member count, not a byte budget: `max_metadata_bytes` still fires when the list is
+  materialized. RAR also checks it at `open_archive` against the declared sizes of
+  compressed RAR 1.5/2.x comments, before decoding them.
 - **Decoder memory** — the working set a codec allocates because the *archive's* header
   said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
   2 GiB). Checked before the allocation, on `open()` / `read()` as much as on
