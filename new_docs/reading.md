@@ -33,3 +33,12 @@ is used up even if you leave the loop early.
 A pipe, a socket or an HTTP response can only be read this way. Only TAR archives and single
 compressed files can come from one. ZIP, 7z, RAR and ISO keep their index at the end of the
 file, or jump around in it, so they need a file or another source that can seek.
+
+## Seeking inside a member
+
+Some code needs to seek inside a member: a library that reads a ZIP stored inside the archive,
+a Parquet reader, an image decoder. By default a member stream only moves forward, and `seek`
+raises. With `seekable_members=True`, streams from `open` can seek. Moving backwards in
+compressed data can mean decompressing the member again from its start. Reading a member from
+start to end also checks it against the checksum the archive stores, and a seek gives that
+check up. If you'll seek a lot, extracting the member to a file first is often faster.
