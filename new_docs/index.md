@@ -67,3 +67,15 @@ with archivey.open_archive("backup.tar.gz") as archive:
 with a stream of its contents. It reads each member once, so it is never slower than reading
 them by name, and on some archives it is much faster. Directories and links come with `None` in
 place of a stream, and each stream works only until the loop moves on.
+
+## Extract
+
+```python
+archivey.extract("download.zip", "out/")
+```
+
+`extract` writes every member under `out/`. By default it refuses anything that would land
+outside that folder, such as `../` paths, absolute paths or links pointing out of it, and it
+stops archives that expand to far more data than they hold. [Safe extraction](extracting.md)
+lists every protection and how to relax them for archives you trust, and also shows how to
+extract only some files.
