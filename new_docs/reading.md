@@ -48,7 +48,9 @@ check up. If you'll seek a lot, extracting the member to a file first is often f
 By default only one member stream can be open at a time, and opening a second while the first
 is still open raises. A thread pool that reads different members at once needs
 `concurrent_members=True`. Each stream is opened the same way `open` always opens one, so on a
-solid archive it may first decompress the members stored before it. The streams also share one
-file handle and take turns reading from it. If the archive is a file you can open again,
-opening it once per worker gives each worker its own handle, at the cost of reading the
-archive's index once per worker.
+solid archive it may first decompress the members stored before it. The streams share the
+source and take turns reading compressed data from it, but they decompress in parallel. That is
+usually cheaper than opening the archive once per worker, which reads the archive's index each
+time. The exception is a source where each jump to a new position is costly, such as a member
+of another archive or a file read over the network. There, streams that take turns make the
+source jump back and forth, and each jump throws away what it had buffered.
