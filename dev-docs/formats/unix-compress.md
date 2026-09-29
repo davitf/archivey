@@ -122,8 +122,14 @@ Measured with `ncompress` 5.0, as listed on [`single-file.md`](single-file.md) �
 
 - **Native code, but Python.** The decoder is archivey's own, in Python, and covered by the
   fuzzers; there is no native library to crash.
-- **Memory is fixed by the format.** The table holds at most 2¹⁶ entries; no header field
-  sizes an allocation.
+- **Memory is bounded by the decoder.** The table holds at most 2¹⁶ entries and no header
+  field sizes an allocation, but an entry can be up to about 64 KiB long, so storing each
+  entry as its full expansion would reach about 2 GiB. A zero run builds that shape, and
+  130 KB of crafted input fills it. The decoder stores an entry of up to 256 bytes flat.
+  A longer entry is a link to an earlier code plus a tail of up to 128 bytes, rebuilt on
+  use by walking the links (about one step per 128 bytes of output). The table stays under
+  about 19 MiB in the worst case, well under the `DecoderLimits.max_decoder_memory`
+  default, so that limit is not consulted.
 - **Expansion.** Each code emits at most the longest string in the table, so one read's
   output is bounded per call like every codec's ([`single-file.md`](single-file.md) §4).
 - **A cut or damaged file can pass.** The format carries no length or checksum (§1). A

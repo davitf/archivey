@@ -755,6 +755,80 @@ def test_unix_compress_maxbits_16_accepted() -> None:
         assert stream.read() == CONTENT
 
 
+def _lzw_decode_in_chunks(compressed: bytes, chunk: int) -> bytes:
+    from archivey.internal.streams.unix_compress import LzwState
+
+    state = LzwState()
+    out = bytearray()
+    for i in range(0, len(compressed), chunk):
+        out += state.feed(compressed[i : i + chunk])[0]
+        while not state.needs_input:
+            out += state.feed(b"")[0]
+    out += state.flush()[0]
+    return bytes(out)
+
+
+def _lzw_block_mode_run(codes: int, repeats: int) -> bytes:
+    """A 16-bit block-mode ``.Z`` of ``codes`` KwKwK codes (entry ``k`` is ``k`` bytes
+    of ``a``), then the longest code ``repeats`` more times."""
+    out = bytearray(b"\x1f\x9d\x90")
+    width, in_era, bits, nbits = 9, 0, 0, 0
+    seq = [97] + [256 + i for i in range(1, codes)]
+    for code in seq + [seq[-1]] * repeats:
+        bits |= code << nbits
+        nbits += width
+        in_era += 1
+        while nbits >= 8:
+            out.append(bits & 0xFF)
+            bits >>= 8
+            nbits -= 8
+        if in_era >= 1 << (width - 1) and width < 16:
+            width, in_era = width + 1, 0
+    if nbits:
+        out.append(bits & 0xFF)
+    return bytes(out)
+
+
+@requires("ncompress")
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(bytes(3 << 20), id="zeros"),
+        pytest.param(b"ab" * (1 << 20), id="abab"),
+        # A period that does not divide the tail length puts different bytes in each
+        # link, so a walk that joins its tails out of order shows.
+        pytest.param(b"abcdefg" * 300_000, id="period-7"),
+        pytest.param(bytes(range(256)) * 4000 + b"z" * 70_000, id="period-256"),
+        pytest.param(
+            b"".join(
+                random.Random(i).randbytes(150_000) + bytes(200_000 + i)
+                for i in range(3)
+            ),
+            id="random-and-zeros-with-clears",
+        ),
+    ],
+)
+def test_unix_compress_long_dictionary_entries_decode_exactly(data: bytes) -> None:
+    """Entries longer than the flat cap are rebuilt from linked tails; the output must
+    match the input and the C reference decoder, whatever the feed size."""
+    import ncompress
+
+    compressed = make_unix_compress(data)
+    assert ncompress.decompress(compressed) == data
+    for chunk in (1 << 20, 4097, 3):
+        if chunk == 3 and len(compressed) > 100_000:
+            continue
+        assert _lzw_decode_in_chunks(compressed, chunk) == data
+
+
+def test_unix_compress_repeated_longest_code_decodes_exactly() -> None:
+    """Emitting the longest entry again walks its whole chain of tails."""
+    codes, repeats = 3000, 40
+    compressed = _lzw_block_mode_run(codes, repeats)
+    expected = b"a" * (codes * (codes + 1) // 2 + repeats * codes)
+    assert _lzw_decode_in_chunks(compressed, 4097) == expected
+
+
 def test_decompressor_read_one_bounds_internal_buffer() -> None:
     """Bounded read(1) must not buffer megabytes of highly compressible output (F3a)."""
     import lzma
