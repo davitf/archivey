@@ -597,6 +597,26 @@
     long zero run) before comparing, and hold the hybrid to the current decoder's speed
     on the text case.
 
+- **bzip2 accelerator and the standard library disagree past the end of a stream** —
+  two cases, found 2026-09-29 while fixing the empty-trailing-stream report.
+  - **A stream after zero padding.** For `bzip2 -c a; head -c 100 /dev/zero; bzip2 -c b`,
+    the standard library engine skips the zeros and reads both payloads. The accelerator
+    (`use_indexed_bzip2=ON`, or `AUTO` with `seekable_members=True`) reads the first
+    payload only and reports `ARCHIVE_TRAILING_DATA` at the start of the second stream.
+    Under the default policy that is a short read with a warning and no error;
+    `DiagnosticPolicy.strict()` raises `DiagnosticRaisedError`. `bzip2` 1.0.8 does what
+    the accelerator does (`bzip2 -d` writes the first payload only and warns "trailing
+    garbage after EOF ignored"), so which answer is right is a decision, not only a bug.
+    Options: have the accelerator's end scan find a `BZh` stream after the padding and
+    decode the rest with the standard library; or stop the standard library engine at
+    zeros, as `bzip2` does.
+  - **A broken empty stream at the end.** A cut empty stream (`BZh9` and fewer than 10
+    more bytes) or one with a non-zero CRC is reported as `ARCHIVE_TRAILING_DATA` by the
+    accelerator, because its end scan skips only a whole, valid empty stream. The
+    standard library engine raises `TruncatedError` or `CorruptionError` for the same
+    bytes. An accelerator should not change whether a source raises (the rule behind
+    `_Bzip2EmptyStreamCheck`), so the scan could hand a `BZh` tail to `bz2` to decide.
+
 - **Tell a real LZMA dictionary size from decrypted garbage** — under ZipCrypto, a wrong
   password that passes the one-byte check decrypts a ZIP LZMA or PPMd member's codec
   properties to garbage, and about one such garbage properties blob in five declares a

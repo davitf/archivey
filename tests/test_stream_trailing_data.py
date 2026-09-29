@@ -535,7 +535,7 @@ def _tar_of(payload: bytes) -> bytes:
     return buffer.getvalue()
 
 
-def _read_every_member(path: Path, config: ArchiveyConfig, access: str) -> bytes:
+def _read_single_member(path: Path, config: ArchiveyConfig, access: str) -> bytes:
     """Read the file's one member through ``access``; strict policy raises on a report."""
     if access == "streaming":
         read = []
@@ -578,7 +578,7 @@ def test_empty_bzip2_streams_are_part_of_the_data(
     config = ArchiveyConfig(
         use_indexed_bzip2=mode, diagnostic_policy=DiagnosticPolicy.strict()
     )
-    assert _read_every_member(path, config, access) == payload
+    assert _read_single_member(path, config, access) == payload
 
 
 @pytest.mark.parametrize("empty_streams", [1, 2])
@@ -611,6 +611,10 @@ def test_bytes_after_empty_bzip2_streams_are_reported_past_them(
         # The file ends inside what would be an empty stream: that is not one.
         pytest.param(_BZ2_EMPTY[:5], 0, id="cut-empty-stream"),
         pytest.param(b"\x00" * 3 + _BZ2_EMPTY[:-1], 3, id="cut-after-padding"),
+        # Shaped like an empty stream but not one: the combined CRC of no blocks is
+        # zero, and the block-size digit is 1 to 9.
+        pytest.param(_BZ2_EMPTY[:-4] + b"\xde\xad\xbe\xef", 0, id="non-zero-crc"),
+        pytest.param(b"BZh0" + _BZ2_EMPTY[4:], 0, id="digit-out-of-range"),
     ],
 )
 def test_the_accelerator_scan_finds_empty_streams_across_its_reads(
