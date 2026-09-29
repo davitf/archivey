@@ -800,7 +800,10 @@ def run_cases(
                 bdec,
                 seeks,
                 unpacked_bytes=unpacked,
-                notes="pure-Python LZW; no stdlib peer",
+                notes=(
+                    "pure-Python LZW; no stdlib peer; "
+                    "+1 byte is the one-byte probe read at open"
+                ),
             )
         )
 

@@ -57,7 +57,7 @@ Useful helpers in those files:
 | T5 | Out-of-range base-256 mode: `OverflowError` | Fixed (masked `& 0o7777`) |
 | T6 | Codec checksum failures after the tar trailer were swallowed; past 1 MiB the checksum was never reached | Fixed: decisions **D6** / **D6b**, extended in review (K2, K5) |
 | T7 | PAX sparse 1.0 map not weighed against `max_metadata_bytes` | Fixed (24 bytes per entry) |
-| T8 | `.Z` LZW dictionary holds full expansions: 130 KB of input reaches about 2.1 GiB | **Deferred:** decision **D7**, `IDEAS.md` |
+| T8 | `.Z` LZW dictionary holds full expansions: 130 KB of input reaches about 2.1 GiB | Fixed in #519 (decision **D7**): entries past 256 bytes are stored as links, so the table stays under about 19 MiB (`formats/unix-compress.md` §4) |
 | T9 | bzip2 accelerator: raw `ValueError` / `UnicodeDecodeError` | Fixed |
 | T10 | Sparse map running past the stored data served the next header as content | Fixed. Up to 511 bytes of the member's own zero padding can still be served |
 | T11 | **High** (found by the cross-format agent). A compressed PAX header was allocated before the metadata cap; a 185-byte `.tar.bz2` peaked at 160 MB | Fixed: decision **D5** |
@@ -158,7 +158,8 @@ Useful helpers in those files:
    name".
 3. **R13 / D9:** `dev-docs/formats/rar.md` §7, "should a RAR dictionary size count
    against `DecoderLimits`?".
-4. **T8 / D7:** `dev-docs/IDEAS.md`, "Bound the `.Z` decoder's dictionary".
+4. **T8 / D7:** closed by #519; the bound is described in `dev-docs/formats/unix-compress.md`
+   §4.
 5. **P1:** `dev-docs/IDEAS.md`, "Empty trailing bzip2 stream under the accelerator".
 6. **S4 constants:** confirm 7-Zip's `k_Scan_NumCoders_MAX` /
    `k_Scan_NumCodersStreams_in_Folder_MAX` (64) against `CPP/7zip/Archive/7z/7zIn.cpp`.

@@ -41,7 +41,14 @@ _MAGIC = bytes([_MAGIC_BYTE0, _MAGIC_BYTE1])
 # tail". The tail grows to _MAX_ENTRY_TAIL bytes before a new pair starts from the
 # previous code, so every link but the first in a walk carries a full tail: rebuilding
 # an entry takes about one step per 128 bytes of it. With CPython object overhead the
-# dictionary stays under about 19 MiB; 65 536 flat 256-byte entries are the worst case.
+# dictionary stays under about 19 MiB: a full table of flat 256-byte entries, or of
+# links with full tails, measures 18.5 to 18.8 MiB on CPython 3.11 to 3.14. A
+# free-threaded build has larger object headers and measures up to 20.3 MiB.
+#
+# The two caps trade speed against that bound. Shorter tails mean more Python steps per
+# output byte: one-byte links rebuilt 64 KiB entries at about 18 MB/s, against about
+# 1.6 GB/s at 128. Longer tails or a higher flat cap raise the worst case: 256-byte
+# tails measured 26 MiB.
 _MAX_FLAT_ENTRY = 256
 _MAX_ENTRY_TAIL = 128
 
@@ -49,7 +56,13 @@ _MAX_ENTRY_TAIL = 128
 def _expand(
     dictionary: list[bytes], links: dict[int, tuple[int, bytes]], code: int
 ) -> bytes:
-    """Rebuild a long entry by walking its links back to a flat entry."""
+    """Rebuild a long entry by walking its links back to a flat entry.
+
+    Every b"" the walk meets is a long entry, so ``links`` holds it: a link's base is
+    always a code that was output, and block mode's CLEAR placeholder, the only other
+    b"" in the dictionary, is never output. A second b"" sentinel would break this and
+    turn the walk into a KeyError.
+    """
     base, tail = links[code]
     parts = [tail]
     while not (head := dictionary[base]):
@@ -248,6 +261,8 @@ class LzwState:
         prev_entry = self._prev_entry
         prev_code = self._prev_code
         prev_len = len(prev_entry) if prev_entry is not None else 0
+        # Only the flat cap is read for every new entry; _MAX_ENTRY_TAIL is read only on
+        # the long-entry branch, so it stays a module global.
         max_flat_entry = _MAX_FLAT_ENTRY
         dictionary = self._dictionary
         links = self._links
@@ -340,7 +355,12 @@ class LzwState:
 
                 if not entry:
                     # A long entry (block mode's CLEAR placeholder never gets here).
-                    entry = _expand(dictionary, links, code)
+                    # Entries never change once written, so a repeated code reuses
+                    # the expansion it produced last time instead of walking again.
+                    if code == prev_code and prev_entry is not None:
+                        entry = prev_entry
+                    else:
+                        entry = _expand(dictionary, links, code)
                 output += entry
                 entry_len = len(entry)
                 seg_decomp += entry_len
