@@ -79,3 +79,11 @@ outside that folder, such as `../` paths, absolute paths or links pointing out o
 stops archives that expand to far more data than they hold. [Safe extraction](extracting.md)
 lists every protection and how to relax them for archives you trust, and also shows how to
 extract only some files.
+
+## When something goes wrong
+
+Problems with the archive raise a subclass of `ArchiveyError`: `CorruptionError` for damaged
+data, `EncryptionError` for a missing or wrong password, `PackageNotInstalledError` when a
+format needs the extra. Archivey raises these the same way for every format, including where
+the underlying library would stop quietly and hand back short data.
+[Errors](errors-and-diagnostics.md) has the full list.
