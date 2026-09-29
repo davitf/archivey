@@ -29,6 +29,7 @@ import importlib
 import io
 import lzma
 import os
+import re
 import struct
 import threading
 import weakref
@@ -265,7 +266,9 @@ class _AcceleratorStream(DelegatingStream):
 
         rapidgzip's ``tell_compressed()`` counts bits. After the last read it is where
         the data ended: measured on rapidgzip 0.16's bzip2 decoder, it lands exactly on
-        the end of the last stream, whatever follows it.
+        the end of the last stream that produced data. With ``parallelization=0``, as
+        opened here, empty streams after that one are not counted: for a data stream
+        and then ``bzip2 -c /dev/null``, it lands at the start of the empty stream.
         """
         tell = getattr(self._inner, "tell_compressed", None)
         if tell is None:
@@ -1460,11 +1463,13 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
     def _check_end(self) -> None:
         """Report non-zero bytes after the last stream, which the accelerator skips.
 
-        rapidgzip's bzip2 decoder reads past them with a warning on stderr and no error,
-        and after the last read its compressed position is exactly where the data
-        ended. The bytes from there to the end of the source are read (a fresh view, so
-        the decoder's cursor does not move) until a non-zero one; zeros are padding,
-        as on the standard-library path.
+        rapidgzip's bzip2 decoder reads past them with a warning on stderr and no error.
+        After the last read its compressed position is the end of the last stream that
+        produced data (see ``compressed_position``), so empty streams after that one are
+        not counted in it. The bytes from there to the end of the source are read (a
+        fresh view, so the decoder's cursor does not move) until one that is neither
+        zero padding nor part of an empty stream. The standard-library path accepts
+        both, so this path accepts both too.
         """
         self._end_unchecked = False
         if not self._config.report_trailing_data:
@@ -1478,17 +1483,24 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
             else self._reopen()
         ) as view:
             view.seek(end)
+            # ``held`` is the start of an empty stream that the previous chunk cut, or
+            # nothing. ``offset`` is the source offset of ``data[0]``.
             offset = end
-            while chunk := view.read(_TRAILING_SCAN_CHUNK):
-                rest = chunk.lstrip(b"\x00")
-                if rest:
+            held = b""
+            while True:
+                chunk = view.read(_TRAILING_SCAN_CHUNK)
+                data = held + chunk
+                skipped = _padding_and_empty_bzip2_streams(data)
+                rest = data[skipped:]
+                if rest and not (chunk and _starts_empty_bzip2_stream(rest)):
                     report_trailing_data(
-                        self._config.collector,
-                        "bzip2",
-                        offset + len(chunk) - len(rest),
+                        self._config.collector, "bzip2", offset + skipped
                     )
                     return
-                offset += len(chunk)
+                if not chunk:
+                    return
+                held = rest
+                offset += skipped
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         result = super().seek(offset, whence)
@@ -1517,6 +1529,35 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
 
 # Bytes read per step while looking past an accelerator's end for a non-zero byte.
 _TRAILING_SCAN_CHUNK = 1 << 16
+
+# A bzip2 stream with no blocks: the ``BZh`` header and block-size digit, the
+# end-of-stream magic, and a combined CRC of zero. The header is byte-aligned and the
+# two fields after it fill whole bytes, so the stream has no padding bits. This is what
+# ``bzip2 -c /dev/null`` writes.
+_EMPTY_BZIP2_STREAM = rb"BZh[1-9]\x17\x72\x45\x38\x50\x90\x00\x00\x00\x00"
+_EMPTY_BZIP2_STREAM_LEN = 14
+_BZIP2_PADDING_AND_EMPTY_STREAMS = re.compile(
+    rb"(?:\x00|" + _EMPTY_BZIP2_STREAM + rb")*"
+)
+_EMPTY_BZIP2_STREAM_FULL = re.compile(_EMPTY_BZIP2_STREAM)
+# Completes a prefix of an empty stream, so the prefix can be tested with the pattern.
+_EMPTY_BZIP2_TEMPLATE = b"BZh9\x17\x72\x45\x38\x50\x90\x00\x00\x00\x00"
+
+
+def _padding_and_empty_bzip2_streams(data: bytes) -> int:
+    """How many bytes at the start of ``data`` are zeros and whole empty streams."""
+    match = _BZIP2_PADDING_AND_EMPTY_STREAMS.match(data)
+    # The pattern is a repetition, so it matches at least the empty prefix.
+    assert match is not None
+    return match.end()
+
+
+def _starts_empty_bzip2_stream(data: bytes) -> bool:
+    """Whether ``data`` is shorter than an empty bzip2 stream and could begin one."""
+    if len(data) >= _EMPTY_BZIP2_STREAM_LEN:
+        return False
+    completed = data + _EMPTY_BZIP2_TEMPLATE[len(data) :]
+    return _EMPTY_BZIP2_STREAM_FULL.fullmatch(completed) is not None
 
 
 def gzip_has_additional_member(stream: BinaryIO) -> bool:

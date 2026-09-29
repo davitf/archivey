@@ -120,9 +120,13 @@ Python exceptions only. So it runs in the caller's process, with three guards ar
 - **Bytes after the last stream must be reported the same way.** The decoder skips them
   and prints a warning to standard error, which archivey cannot catch. At the end of data,
   `_Bzip2EmptyStreamCheck` asks the decoder for its compressed position
-  (`tell_compressed()`, in bits, rounded up to a byte; exact after the end, measured with
-  `parallelization=0`), scans a fresh view of the source from there for the first non-zero
-  byte, and reports it at the offset the standard library engine would.
+  (`tell_compressed()`, in bits, rounded up to a byte, measured with `parallelization=0`).
+  That position is the end of the last stream that produced data, so empty streams after
+  it (`bzip2 -c /dev/null` appended to a file) are not counted in it. The check scans a
+  fresh view of the source from there, skips zeros and whole empty streams (the `BZh`
+  header, the end-of-stream marker and a zero CRC: 14 bytes), and reports the first other
+  byte at the offset the standard library engine would. Before this skip, a trailing
+  empty stream was reported as trailing data under the accelerator only.
 - **An exception from the caller's source must not abort the process.** `rapidgzip` calls
   `std::terminate` when a Python file object it reads from raises. The source is wrapped in
   `_TrappingSource`, which parks the exception, hands the decoder an end of data, and lets
@@ -163,6 +167,7 @@ accelerator `OFF` and `ON`.
 | `bzip2` | Reads |
 | `pbzip2`, `lbzip2` | Reads, as a run of streams |
 | Two `bzip2` files concatenated | Reads both payloads |
+| A stream and empty streams (`bzip2 -c /dev/null`) concatenated, the empty ones before, between or after | Reads, with no diagnostic, with the accelerator off and on. `bzip2 -t` accepts it |
 | A stream followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` at the same offset with the accelerator off and on. With it on, "[Warning] Trailing garbage after EOF ignored!" is also printed to standard error. `bzip2 -t` warns and exits 0 |
 | A stream cut at any of 20 points | `TruncatedError` with the accelerator off, `CorruptionError` with it on. Never a short read with no error |
 
@@ -208,6 +213,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | No size threshold for `AUTO` | The in-process decoder costs no child start; seeking was asked for | Reusing the 16 MiB DEFLATE gate |
 | Let the inner-TAR probe read up to 1 MiB of compressed input, for every codec (PR #32) | bzip2's first output comes only after a whole block; one bound for all codecs needs no per-codec branch | Probing only the detection prefix, which called a `.tar.bz2` with a large first block plain `BZ2` |
 | Find the accelerator's end from its compressed position and scan the source | Its warning goes to standard error, and the offset must match the standard library engine's | Clipping the source to the end, which is found only by decoding |
+| The scan skips whole empty streams as well as zeros | The compressed position stops before trailing empty streams, and the standard library engine reads them as part of the data | Reading the end from the decoder's block offsets, whose last entry is where an end-of-stream marker starts: undocumented, and it forces the full index |
 | Translate the accelerator's errors by message text | They carry no distinct type; each string was seen on a real corrupt file | Treating every `RuntimeError` as corruption, which would hide archivey's own bugs |
 
 ## 7. Open questions
@@ -233,6 +239,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Size is `None` before a full read | `tests/test_single_file.py::test_bz2_size_none_before_full_read` |
 | Garbage raises in every accelerator mode; a valid empty stream reads empty | `::test_corrupt_bz2_raises_whatever_the_accelerator_mode`, `tests/test_accelerator_corruption.py::test_bzip2_not_a_stream_raises_in_every_accelerator_mode`, `::test_indexed_bzip2_valid_empty_stream_reads_empty` |
 | A seek before the first read does not bypass the check | `::test_indexed_bzip2_seek_before_read_still_raises` |
+| Empty streams anywhere in the file are data in every accelerator and access mode; bytes after them report at the same offset | `tests/test_stream_trailing_data.py::test_empty_bzip2_streams_are_part_of_the_data`, `::test_bytes_after_empty_bzip2_streams_are_reported_past_them`, `::test_the_accelerator_scan_finds_empty_streams_across_its_reads` |
 | Accelerator errors become `CorruptionError`; intact files read clean | `::test_indexed_bzip2_corrupt_translates_to_corruption`, `::test_indexed_bzip2_intact_reads_clean` |
 | The caller's source exception reaches the caller unchanged | `::test_bzip2_callers_source_exception_reaches_the_caller_unchanged`, `tests/test_exception_handlers.py::test_bzip2_accelerator_traps_a_failing_caller_source` |
 | bzip2 stays in-process | `tests/test_accelerator_truncation_abort.py::test_bzip2_stays_in_process` |

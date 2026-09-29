@@ -597,21 +597,6 @@
     long zero run) before comparing, and hold the hybrid to the current decoder's speed
     on the text case.
 
-- **Empty trailing bzip2 stream under the accelerator** — a `.tar.bz2` made as
-  `bzip2 -c a.tar; bzip2 -c /dev/null` (a data stream followed by an *empty* bzip2
-  stream) reports `ARCHIVE_TRAILING_DATA` ("the bzip2 stream ends before the file
-  does") when the bzip2 accelerator is on, so `DiagnosticPolicy.strict()` refuses it.
-  With the accelerator off it is clean. `pbzip2`-style files, whose streams all carry
-  data, are clean both ways. Found 2026-09-29 while re-checking PR #512; it was already
-  on `main` before that PR. The message comes from
-  `internal/streams/decompressor_stream.py` (the "stream ends before the file does"
-  emit). Likely cause: the accelerator stops at a stream with no blocks and hands the
-  rest back as trailing bytes, where stdlib `bz2` decodes it as an empty stream.
-  Candidate fix: treat a bare `BZh` header plus end-of-stream marker as an empty stream
-  rather than trailing data, and add the case to the multi-stream bzip2 tests.
-
-
-
 - **Tell a real LZMA dictionary size from decrypted garbage** — under ZipCrypto, a wrong
   password that passes the one-byte check decrypts a ZIP LZMA or PPMd member's codec
   properties to garbage, and about one such garbage properties blob in five declares a
