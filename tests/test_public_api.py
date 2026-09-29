@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -121,11 +122,17 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(
         pytest.skip(f"{checker} is not installed (it is a dev dependency)")
     (tmp_path / "sample.py").write_text(_OPEN_ARCHIVE_TYPING_SAMPLE)
     src = Path(archivey.__file__).resolve().parent.parent
+    # Both checkers start the Python interpreter to find its search paths. pytest-cov
+    # before 7 measures such a child through its COV_CORE_* variables, and from
+    # tmp_path the child cannot find this repo's coverage config, so it writes
+    # statement-only data that the branch-coverage parent then refuses to combine.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("COV_CORE_")}
     result = subprocess.run(
         _checker_command(checker, exe, tmp_path, src),
         capture_output=True,
         text=True,
         cwd=tmp_path,
+        env=env,
     )
     refused_line = _OPEN_ARCHIVE_TYPING_SAMPLE.splitlines().index(
         "        forward.members()"
