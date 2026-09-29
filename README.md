@@ -68,3 +68,14 @@ with archivey.open_archive("photos.tar.gz") as reader:
 - **[CONTRIBUTING.md](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md)** — coding / testing standards
 - **[VISION.md](https://github.com/davitf/archivey/blob/main/VISION.md)** — priorities and trade-offs; authoritative contracts live in `openspec/specs/`
 - **[SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md)** — private vulnerability reporting
+
+## How it is built
+
+Almost all of archivey's code, tests and documentation are written by AI coding agents
+(Claude Code and Cursor). The maintainer designs the library, makes the decisions,
+directs the work and reviews the code, especially the architecture and the tricky parts.
+Changes are tested on Linux, macOS and Windows and reviewed by a separate AI session
+that reads it from zero, and several reviews of the whole codebase hunt for bugs,
+unclear or dead code, and API problems. If you are wary of AI-written code, that is
+reasonable: [How it is built](https://davitf.github.io/archivey/how-it-is-built/) says
+how the code is checked, what AI gets wrong, and what the process does not promise.
