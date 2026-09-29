@@ -943,7 +943,9 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   (`tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_is_not_decoded_as_utf16`,
   xfail). The candidates are strict UTF-8 then windows-1252 or cp437, plus honouring
   `encoding=` for RAR as ZIP and TAR do. Reading is not affected: the `-n` mask uses the
-  stored bytes.
+  stored bytes, or on Windows the text Windows `unrar` makes of them (OEM code page, then
+  ANSI). That conversion can be lossy, so two 8-bit names it makes equal are the
+  duplicate-name case (b).
 
 - **Open: should a RAR dictionary size count against `DecoderLimits`?** Every
   in-process codec checks the dictionary or window its header declares against

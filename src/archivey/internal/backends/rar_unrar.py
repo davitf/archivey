@@ -428,8 +428,8 @@ def _member_include_switch(member: str | bytes) -> str | bytes:
 
 def unrar_member_argument(
     presented: str, stored: bytes | None, *, stored_is_8bit: bool
-) -> str | bytes:
-    """The name to build ``unrar``'s ``-n`` mask from: text, or the stored bytes.
+) -> str | bytes | None:
+    """The name to build ``unrar``'s ``-n`` mask from: text, the stored bytes, or none.
 
     ``unrar`` turns a mask from argv into characters with the C library's multibyte
     conversion, and does the same to an 8-bit RAR3 name (one without the Unicode
@@ -445,34 +445,53 @@ def unrar_member_argument(
     Windows argv is Unicode, not bytes. Windows ``unrar`` reads an 8-bit name as
     OEM text, not as the name archivey presents, so the mask there is the stored
     bytes put through that same conversion (:func:`_windows_unrar_8bit_name`).
-    Backslashes are separators in RAR3's stored bytes and ``/`` in the presented
-    name; the bytes follow the name.
+    ``None`` means the conversion failed, so there is no mask to give;
+    :func:`unrar_member_refusal` turns that into a reason. Backslashes are
+    separators in RAR3's stored bytes and ``/`` in the presented name; the bytes
+    follow the name.
     """
     if not stored_is_8bit or stored is None:
         return presented
     if sys.platform == "win32":
-        return (
-            _windows_unrar_8bit_name(stored).replace("\\", "/").rstrip("/") or presented
-        )
+        text = _windows_unrar_8bit_name(stored)
+        return None if text is None else text.replace("\\", "/").rstrip("/")
     return stored.replace(b"\\", b"/").rstrip(b"/")
 
 
-def _windows_unrar_8bit_name(stored: bytes) -> str:
-    """An 8-bit RAR3 name as Windows ``unrar`` sees it.
+def _windows_unrar_8bit_name(stored: bytes) -> str | None:
+    """An 8-bit RAR3 name as Windows ``unrar`` sees it; ``None`` if it cannot tell.
 
     ``unrar`` 7.00 (``ArcCharToWide`` with ``ACTW_OEM``) converts the stored bytes
-    with ``OemToCharBuffA`` and then ``MultiByteToWideChar(CP_ACP)``. Both are the
-    system code pages, which the child shares, so the same two calls here give the
-    text its mask must match. Under OEM 437 the ``\\xe9`` of ``caf\\xe9s.txt`` is
-    ``Θ``, not the ``é`` archivey presents (Windows CI).
+    with ``OemToCharBuffA`` and then ``MultiByteToWideChar(CP_ACP, 0, …)``. Both use
+    the system code pages, which the child shares, so making the same two calls
+    with the same flags here gives the text its mask must match. Under OEM 437 the
+    ``\\xe9`` of ``caf\\xe9s.txt`` is ``Θ``, not the ``é`` archivey presents
+    (Windows CI).
+
+    The calls are made through ``ctypes`` rather than Python's ``mbcs`` codec
+    because either step can be lossy: ``OemToCharBuffA`` best-fits a character the
+    ANSI code page lacks, and ``MultiByteToWideChar`` with no flags maps an
+    undefined byte to the code page's default character, where the codec would
+    raise or substitute ``U+FFFD``. Reproducing the loss exactly is what keeps the
+    mask on ``unrar``'s own name. Two names the loss makes equal are then the
+    duplicate-name case ``dev-docs/formats/rar.md`` §7 records.
     """
-    if sys.platform == "win32" and not stored.isascii():
+    if stored.isascii():
+        return stored.decode("ascii")
+    if sys.platform == "win32":
         import ctypes
 
         buffer = ctypes.create_string_buffer(stored, len(stored))
         ctypes.windll.user32.OemToCharBuffA(buffer, buffer, len(stored))
-        stored = buffer.raw
-    return stored.decode("mbcs", "replace")
+        # ``OemToExt`` cuts the converted name at its first NUL.
+        ansi = buffer.raw.split(b"\0", 1)[0]
+        multi_byte_to_wide_char = ctypes.windll.kernel32.MultiByteToWideChar
+        size = multi_byte_to_wide_char(0, 0, ansi, len(ansi), None, 0)
+        if size > 0:
+            wide = ctypes.create_unicode_buffer(size)
+            if multi_byte_to_wide_char(0, 0, ansi, len(ansi), wide, size) == size:
+                return wide[:size]
+    return None
 
 
 # Locale names that select UTF-8, tried in order for unrar's environment. glibc
@@ -546,13 +565,20 @@ def _unrar_env() -> dict[str, str] | None:
     return {**os.environ, "LC_ALL": name}
 
 
-def unrar_member_refusal(member: str | bytes) -> str | None:
+def unrar_member_refusal(member: str | bytes | None) -> str | None:
     """Why ``unrar`` cannot be given ``member`` as a mask, or ``None`` when it can.
 
-    A NUL cannot be in any process argument. A non-ASCII text name needs the UTF-8
-    locale :func:`_unrar_env` sets, and without one it would read as truncated.
-    Stored bytes need no locale (:func:`unrar_member_argument`).
+    ``None`` is an 8-bit RAR3 name Windows ``unrar`` cannot be matched against
+    (:func:`_windows_unrar_8bit_name`). A NUL cannot be in any process argument.
+    A non-ASCII text name needs the UTF-8 locale :func:`_unrar_env` sets, and
+    without one it would read as truncated. Stored bytes need no locale
+    (:func:`unrar_member_argument`).
     """
+    if member is None:
+        return (
+            "its stored name could not be converted through this system's OEM and "
+            "ANSI code pages, which is how unrar reads it"
+        )
     has_nul = b"\0" in member if isinstance(member, bytes) else "\0" in member
     if has_nul:
         return (

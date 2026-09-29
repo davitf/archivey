@@ -258,6 +258,43 @@ def test_8bit_name_mask_is_the_stored_bytes() -> None:
     )
 
 
+def test_unconvertible_windows_8bit_name_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No mask is better than a guessed one: a miss reads as truncated data."""
+    monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
+    monkeypatch.setattr(rar_unrar, "_windows_unrar_8bit_name", lambda stored: None)
+    argument = rar_unrar.unrar_member_argument(
+        "café.txt", b"caf\xe9.txt", stored_is_8bit=True
+    )
+    assert argument is None
+    reason = rar_unrar.unrar_member_refusal(argument)
+    assert reason is not None
+    assert "code pages" in reason
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows code-page conversion")
+def test_windows_8bit_name_keeps_every_byte_as_unrar_does() -> None:
+    """Every high byte converts to one character, never ``U+FFFD``, on OEM 437/ANSI 1252.
+
+    ``MultiByteToWideChar`` with no flags maps a byte the ANSI code page leaves
+    undefined to that code page's default character; ``unrar`` makes the same call.
+    """
+    import ctypes
+
+    if (ctypes.windll.kernel32.GetOEMCP(), ctypes.windll.kernel32.GetACP()) != (
+        437,
+        1252,
+    ):
+        pytest.skip("expectations are for OEM 437 and ANSI 1252")
+    for byte in range(0x80, 0x100):
+        text = rar_unrar._windows_unrar_8bit_name(b"a" + bytes([byte]))
+        assert text is not None
+        assert len(text) == 2
+        assert "\ufffd" not in text
+    assert rar_unrar._windows_unrar_8bit_name(b"caf\xe9s.txt") != "cafés.txt"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX locale behaviour")
 def test_unrar_child_runs_under_a_utf8_locale(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LC_ALL", "C")

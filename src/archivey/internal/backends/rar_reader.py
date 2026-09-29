@@ -2423,9 +2423,11 @@ class RarReader(BaseArchiveReader):
         presented = _presented_filename(raw)
         version_control = raw.is_file_version_history()
         glob_mask = "*" in presented or "?" in presented
-        # An 8-bit RAR3 name goes to unrar as its stored bytes; everything else as
-        # the presented text. The glob skip below is sized on the presented text,
-        # which for an 8-bit name is the same bytes decoded one character apiece.
+        # An 8-bit RAR3 name goes to unrar as its stored bytes (on Windows, as
+        # unrar's own OEM reading of them); everything else as the presented text.
+        # The glob skip below is sized on the presented text, which for an 8-bit
+        # name is the same bytes decoded one character apiece; Windows unrar's
+        # reading matches that count only under a single-byte OEM code page.
         mask_name = unrar_member_argument(
             presented,
             raw.orig_filename,
@@ -2433,8 +2435,8 @@ class RarReader(BaseArchiveReader):
             and not raw.flags & _RAR3_FILE_UNICODE,
         )
         refusal = unrar_member_refusal(mask_name)
-        if refusal is not None:
-            # unar addresses entries by index, so neither reason applies to it.
+        if refusal is not None or mask_name is None:
+            # unar addresses entries by index, so none of these reasons apply to it.
             raise UnsupportedFeatureError(
                 f"RAR member {quoted(member.name)} cannot be read through unrar: "
                 f"{refusal}. Set ArchiveyConfig.rar_decompressor to 'unar' to read "
