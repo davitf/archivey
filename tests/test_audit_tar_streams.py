@@ -517,3 +517,63 @@ def test_compressed_tar_stream_checksum_after_trailer_is_not_dropped(
     else:
         assert DiagnosticCode.DIGEST_UNVERIFIABLE in _drained(bytes(compressed))
         assert DiagnosticCode.DIGEST_UNVERIFIABLE in _drained(clean)
+
+
+def _bad_last_block_check(codec: str, raw: bytes) -> tuple[bytes, bytes]:
+    """``raw`` compressed clean, and again with the last block's check flipped.
+
+    The members still decode byte for byte; only the check disagrees, and bzip2 and
+    xz report that the same way as any other decode failure.
+    """
+    if codec == "bz2":
+        import bz2
+
+        clean = bz2.compress(raw)
+        # "BZh9", then the block magic (6 bytes), then the block CRC.
+        at = 4 + 6
+    else:
+        import lzma
+
+        clean = lzma.compress(raw, check=lzma.CHECK_CRC64)
+        backward_size = (int.from_bytes(clean[-8:-4], "little") + 1) * 4
+        # The block's CRC64 is the last 8 bytes before the index.
+        at = len(clean) - 12 - backward_size - 1
+    damaged = bytearray(clean)
+    damaged[at] ^= 0x01
+    return clean, bytes(damaged)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("codec", ["bz2", "xz"])
+def test_untyped_block_check_after_trailer_is_reported(
+    codec: str, streaming: bool
+) -> None:
+    """format-tar: bzip2 and xz cannot tell a failed check from junk after the stream.
+
+    The last block's check is reached in the trailing scan (64 KiB of padding), so the
+    failure there must be ``DIGEST_UNVERIFIABLE``, not silence: the same damage in a
+    ``.tar.gz`` raises (the test above).
+    """
+    import random
+
+    payload = random.Random(1).randbytes(200_000)
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w") as t:
+        info = tarfile.TarInfo("a")
+        info.size = len(payload)
+        t.addfile(info, io.BytesIO(payload))
+    clean, damaged = _bad_last_block_check(codec, tar.getvalue() + b"\0" * 64 * 1024)
+    fmt = ArchiveFormat.TAR_BZ2 if codec == "bz2" else ArchiveFormat.TAR_XZ
+
+    def _drained(data: bytes) -> dict[DiagnosticCode, int]:
+        with open_archive(io.BytesIO(data), format=fmt, streaming=streaming) as ar:
+            read = [
+                stream.read()
+                for _member, stream in ar.stream_members()
+                if stream is not None
+            ]
+            assert read == [payload]
+            return dict(ar.diagnostics.counts)
+
+    assert DiagnosticCode.DIGEST_UNVERIFIABLE in _drained(damaged)
+    assert DiagnosticCode.DIGEST_UNVERIFIABLE not in _drained(clean)

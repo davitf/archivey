@@ -164,8 +164,10 @@ In random-access mode the fileobj is wrapped in `_EofProbeStream`, which does tw
      padding (64 KiB) the scan is where it is reached. When the scan stops at 1 MiB
      with the compressed stream still going, that checksum was never checked, and
      `DIGEST_UNVERIFIABLE` (`reason="trailing_scan_limit"`) says so. An xz integrity
-     check fails with liblzma's generic "Corrupt input data", which a junk tail gives
-     too, so it stays quiet here.
+     check fails with liblzma's generic "Corrupt input data", and a bzip2 block CRC
+     with the same "Invalid data stream" as any bad bzip2 input; a junk tail gives
+     both too. So on those two a tail that does not decode is `DIGEST_UNVERIFIABLE`
+     (`reason="trailing_decode_failed"`): it may be a failed check over the members.
 
   Streaming has no probe, so it runs steps 2 and 3 only, and a rejected header that is
   the file's last block reads there as a missing trailer

@@ -127,9 +127,10 @@ _READ_THROUGH_CHUNK = 64 * 1024
 # means on every other field there.
 _MAX_TRAILING_SCAN = 1 * 2**20
 
-# Stream formats that carry, or can carry, a checksum over the whole decoded stream,
-# which is checked only when the stream's end is read. For these a trailing scan that
-# stops at ``_MAX_TRAILING_SCAN`` leaves that checksum unchecked, and says so.
+# Stream formats that carry, or can carry, a checksum over the whole decoded stream
+# or its last block, which is checked only when the stream's end is read. For these a
+# trailing scan that stops at ``_MAX_TRAILING_SCAN`` leaves that checksum unchecked, and
+# says so.
 _STREAMS_WITH_CHECKSUM = frozenset(
     (
         StreamFormat.GZIP,
@@ -141,6 +142,11 @@ _STREAMS_WITH_CHECKSUM = frozenset(
         StreamFormat.ZLIB,
     )
 )
+
+# The subset whose failed check reads, to archivey, like any other decode failure: the
+# bzip2 block CRC and the xz block check. For these, a tail that fails to decode in the
+# trailing scan may be a failed check over members already read, and says so.
+_STREAMS_WITH_UNTYPED_CHECKSUM = frozenset((StreamFormat.BZIP2, StreamFormat.XZ))
 
 # Headers the random-access walk parses per handle-lock hold. Large enough that the
 # walk runs as a dense pass (one header per hold measured about 1.3x slower on a
@@ -1227,6 +1233,11 @@ class TarReader(BaseArchiveReader):
         damaged, and that raises. A ``tar -b128`` record pads 64 KiB past the trailer,
         so this scan is often where the checksum is reached.
 
+        bzip2 and xz check each block, and the last block's check is reached here too,
+        but neither codec reports a failed check differently from junk after the
+        stream. A decode failure on those is therefore ``DIGEST_UNVERIFIABLE``, not
+        silence: the members already read may be damaged, and nothing can say.
+
         When the scan stops at its bound with the compressed stream not yet at its end,
         that checksum was never checked, and ``DIGEST_UNVERIFIABLE`` says so.
         """
@@ -1245,11 +1256,15 @@ class TarReader(BaseArchiveReader):
                 # so this is damage to them, not a tail that failed to decode.
                 raise
             except ReadError:
+                if self._format.stream in _STREAMS_WITH_UNTYPED_CHECKSUM:
+                    self._emit_stream_checksum_unverified(
+                        reason="trailing_decode_failed"
+                    )
                 return
             if not chunk:
                 return
             if offset == _MAX_TRAILING_SCAN:
-                self._emit_stream_checksum_unverified()
+                self._emit_stream_checksum_unverified(reason="trailing_scan_limit")
                 return
             stripped = chunk.lstrip(b"\x00")
             if stripped:
@@ -1259,27 +1274,39 @@ class TarReader(BaseArchiveReader):
                 return
             offset += len(chunk)
 
-    def _emit_stream_checksum_unverified(self) -> None:
-        """Report a compressed stream whose end the trailing scan did not reach.
+    def _emit_stream_checksum_unverified(self, *, reason: str) -> None:
+        """Report a compressed stream whose checksum the trailing scan could not check.
 
-        Only for a codec that can carry a checksum over the whole stream; the zstd, lz4
-        and xz ones are optional, so the message says "if it carries one".
+        ``reason`` is ``"trailing_scan_limit"`` when the scan stopped at its bound
+        before the stream's end, and ``"trailing_decode_failed"`` when a bzip2 or xz
+        tail failed to decode (see :meth:`_verify_nothing_but_zeros_to_eof`). Only
+        for a codec that can carry such a checksum; the zstd, lz4 and xz ones are
+        optional, so the message says "if it carries one".
         """
         stream = self._format.stream
         if stream not in _STREAMS_WITH_CHECKSUM:
             return
+        if reason == "trailing_scan_limit":
+            what = (
+                f"continues more than {_MAX_TRAILING_SCAN} bytes past the "
+                "end-of-archive marker, and the scan stopped there"
+            )
+        else:
+            what = (
+                "fails to decode past the end-of-archive marker, which this codec "
+                "reports the same way for a failed check as for junk after the stream"
+            )
         self._diagnostics_collector.emit(
             code=DiagnosticCode.DIGEST_UNVERIFIABLE,
             message=(
-                f"The {stream.value} stream around this TAR archive continues more than "
-                f"{_MAX_TRAILING_SCAN} bytes past the end-of-archive marker, and the "
-                "scan stopped there: the stream's checksum, if it carries one, was not "
-                "checked, so damage to the members already read may go unseen."
+                f"The {stream.value} stream around this TAR archive {what}: the "
+                "stream's checksum, if it carries one, was not checked, so damage to "
+                "the members already read may go unseen."
             ),
             context=DigestContext(
                 archive_name=self._archive_name,
                 algorithm=f"{stream.value} stream checksum",
-                reason="trailing_scan_limit",
+                reason=reason,
             ),
             logger=integrity_logger,
         )

@@ -283,11 +283,15 @@ a configuration field. On a compressed tar whose codec can carry a whole-stream 
 (gzip, bzip2, xz, zstd, lz4, lzip, zlib), a scan that stops at the bound with the stream
 not at its end SHALL emit `DIGEST_UNVERIFIABLE` (`reason="trailing_scan_limit"`): that
 checksum was never checked. A tail that fails to decode — on a compressed tar, junk
-after the compressed stream or a missing footer — SHALL end the scan with no error and
-no diagnostic: every member was already read whole, and that is not trailing tar data.
+after the compressed stream or a missing footer — SHALL end the scan with no error and,
+except on bzip2 and xz (below), no diagnostic: every member was already read whole, and that is not trailing tar data.
 A whole-stream checksum that fails in the scan (gzip CRC-32 or ISIZE, zlib Adler-32,
 zstd or lz4 content checksum, lzip CRC-32) is not such a tail: it covers the members
-already read, and SHALL raise `CorruptionError`.
+already read, and SHALL raise `CorruptionError`. bzip2 and xz check each block, and the
+last block's check can also be reached in the scan, but those codecs report a failed
+check the same way as junk after the stream. On a `.tar.bz2` or `.tar.xz` a tail that
+fails to decode SHALL therefore emit `DIGEST_UNVERIFIABLE`
+(`reason="trailing_decode_failed"`) instead of ending the scan silently.
 
 The code is not a truncation: nothing is truncated, the file is *longer* than the
 listing accounts for.
@@ -308,6 +312,7 @@ listing accounts for.
 | `.tar.gz`, junk inside the gzip stream after the trailer | Tail decompressed, at most 1 MiB; `ARCHIVE_TRAILING_DATA` | `DiagnosticRaisedError` |
 | `.tar.gz`, junk after the gzip stream or a missing gzip footer | No diagnostic, no error | No diagnostic, no error |
 | `.tar.gz` / `.tar.zst` / `.tar.lz4`, a member byte damaged, stream checksum reached within 1 MiB of the trailer | `CorruptionError` | `CorruptionError` |
+| `.tar.bz2` / `.tar.xz`, the last block's check failing within 1 MiB of the trailer, or junk after the stream | `DIGEST_UNVERIFIABLE` | Raises on `DIGEST_UNVERIFIABLE` |
 
 ### Requirement: Decode TAR member names as UTF-8 by default
 
