@@ -46,7 +46,11 @@ AI makes mistakes, so the review process is essential for catching them.
 1. An agent writes the change, with tests.
 2. A separate AI session reviews it, starting from the diff and the repository alone,
    not from the session that wrote the code. Each finding gets a fix or a stated reason,
-   and the fixes are reviewed too.
+   and the fixes are reviewed too. The
+   [review workflow](https://github.com/davitf/archivey/blob/main/dev-docs/review-loop.md) and the instructions the agents follow
+   to [review](https://github.com/davitf/archivey/blob/main/.claude/skills/code-review-skill/SKILL.md) and to
+   [address findings](https://github.com/davitf/archivey/blob/main/.claude/skills/address-review-findings/SKILL.md) are in the
+   repository.
 3. Anything the agents cannot settle from the code goes to the maintainer as a decision.
 4. Sometimes the maintainer reviews the change directly.
 5. The change is merged only when review and CI pass and we are happy with it. The
