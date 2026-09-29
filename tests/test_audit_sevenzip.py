@@ -7,7 +7,6 @@ archives reuse the header builder style of ``test_sevenzip_parser_hardening``.
 from __future__ import annotations
 
 import bz2
-import importlib.util
 import io
 import lzma
 import random
@@ -24,6 +23,7 @@ from archivey.config import AcceleratorMode, ArchiveyConfig, DecoderLimits
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    EncryptionError,
     ResourceLimitError,
     UnsupportedFeatureError,
 )
@@ -573,17 +573,42 @@ def test_codec_behind_aes_reads_with_the_aes_padding(codec: str) -> None:
 def test_codec_behind_aes_decoding_past_its_unpack_size_is_corruption(
     codec: str, base: int
 ) -> None:
+    _assert_surplus_behind_aes(codec, base)
+
+
+def _assert_surplus_behind_aes(
+    codec: str, base: int, config: ArchiveyConfig | None = None
+) -> None:
     payload, packed = _padded_payload(codec, base)
     ciphertext = _aes_encrypt(packed, "pw")
-    declared = payload[:-1]
     coders = [_coder(_AES, props=b"\x00"), _coder(_CODEC_METHODS[codec])]
+    exact = _codec_archive(coders, [len(packed), len(payload)], ciphertext, payload)
+    assert _read_only_member(exact, password="pw", config=config) == payload
+    declared = payload[:-1]
     data = _codec_archive(coders, [len(packed), len(declared)], ciphertext, declared)
     # When the password check decodes the whole folder, it meets the surplus first
     # and reports the folder as "wrong password or corrupt", as for any other damage
-    # it meets; the surplus error is its cause.
+    # it decodes. The surplus error is then in the cause chain, not the raised type.
+    # It decodes a small folder (inside its 64 KiB prefix) whole; whether it decodes
+    # a larger one whole depends on the codec (it walks to the member CRC when the
+    # codec cannot reject a wrong key by itself, as Brotli cannot).
     with pytest.raises(ArchiveyError) as caught:
-        _read_only_member(data, password="pw")
+        _read_only_member(data, password="pw", config=config)
+    assert isinstance(caught.value, (CorruptionError, EncryptionError))
+    if base < 64 * 1024:
+        assert isinstance(caught.value, EncryptionError)
     assert _surplus_in_chain(caught.value)
+
+
+@requires("rapidgzip", "cryptography")
+@pytest.mark.parametrize("base", [4000, 100_000], ids=["small", "large"])
+@pytest.mark.parametrize(("codec", "config"), _ACCELERATED)
+def test_accelerated_codec_behind_aes_decoding_past_its_unpack_size_is_corruption(
+    codec: str, config: ArchiveyConfig, base: int
+) -> None:
+    # The accelerators read a pad-free input: pack_size cuts it at the AES coder's
+    # unpack size. Both the exact archive and the one-byte-short one are checked.
+    _assert_surplus_behind_aes(codec, base, config)
 
 
 @pytest.mark.parametrize("codec", _MULTI_STREAM_CODECS)
@@ -626,16 +651,121 @@ def test_codec_then_filter_decoding_past_its_unpack_size_is_corruption(
         _read_only_member(data)
 
 
+def test_empty_streams_after_the_data_are_not_surplus() -> None:
+    # The probe asks for one byte of output, so the decoder reads through a tail of
+    # BZip2 streams that decode to nothing, to the end of the coder's packed slice.
+    # That tail is not surplus. A stream with output after it still is.
+    payload = _text(4000)
+    empty_tail = bz2.compress(b"") * 2000
+    coder = _coder(_BZIP2)
+    packed = bz2.compress(payload) + empty_tail
+    assert _read_only_member(
+        _codec_archive([coder], [len(payload)], packed, payload)
+    ) == (payload)
+    packed += bz2.compress(b"x")
+    data = _codec_archive([coder], [len(payload)], packed, payload)
+    with pytest.raises(CorruptionError, match="past its declared unpack size"):
+        _read_only_member(data)
+
+
+def test_codec_in_a_bcj2_branch_decoding_past_its_unpack_size_is_corruption() -> None:
+    # BCJ2 whose main branch is BZip2 (7z a -m0=BCJ2 -m1=BZip2 ...), with empty call
+    # and jump streams and a 5-byte rc stream. With no branch opcodes in the payload,
+    # the output is the main branch. The branch slice stops at main's declared size,
+    # so only the check can see the BZip2 output past it.
+    payload = _text(4000)
+    rc = bytes(5)
+    main = bz2.compress(payload)
+    coders = [_coder(_BCJ2, num_in=4, num_out=1), _coder(_BZIP2)]
+
+    def archive(size: int) -> bytes:
+        header = _header(
+            folders=[_folder(coders, bind_pairs=[(0, 1)], packed=[4, 1, 2, 3])],
+            coder_unpack_sizes=[[size, size]],
+            pack_sizes=[len(main), 0, 0, len(rc)],
+            names=["a"],
+            folder_crcs=[_crc(payload[:size])],
+        )
+        return _archive(main + rc, header)
+
+    assert _read_only_member(archive(len(payload))) == payload
+    with pytest.raises(CorruptionError, match="BZip2 coder decodes past"):
+        _read_only_member(archive(len(payload) - 1))
+
+
+def test_lzma1_surplus_is_cut_at_the_declared_size() -> None:
+    # LZMA1 has no end marker in 7z, so it stops at its declared size and output past
+    # it cannot be told from data. This pins that it reads clean and truncated, not
+    # refused: probing LZMA1 would fail valid archives.
+    payload = _text(4000)
+    lzma1 = {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}
+    packed = lzma.compress(payload, format=lzma.FORMAT_RAW, filters=[lzma1])
+    lzma1_props = bytes([93]) + (1 << 16).to_bytes(4, "little")
+    declared = payload[:1000]
+    data = _codec_archive(
+        [_coder(_LZMA, props=lzma1_props)], [len(declared)], packed, declared
+    )
+    assert _read_only_member(data) == declared
+
+
+def test_past_size_check_covers_exactly_the_end_marked_codecs() -> None:
+    # The check is an allowlist. Every single-codec 7z method must be classified:
+    # checked (ends its own stream) or capped (relies on the declared size).
+    from archivey.internal.backends import sevenzip_methods, sevenzip_pipeline
+    from archivey.internal.streams.codecs import Codec
+
+    checked = {
+        Codec.LZMA2,
+        Codec.DEFLATE,
+        Codec.DEFLATE64,
+        Codec.BZIP2,
+        Codec.ZSTD,
+        Codec.LZ4,
+        Codec.BROTLI,
+    }
+    capped = {Codec.LZMA, Codec.PPMD}
+    assert set(sevenzip_pipeline._CODEC_LABELS) == checked
+    single = {
+        method.codec
+        for method in sevenzip_methods._METHODS
+        if method.kind is sevenzip_methods.MethodKind.SINGLE
+    }
+    unclassified = single - checked - capped
+    assert not unclassified, f"classify these 7z codecs here: {unclassified}"
+
+
+def test_past_size_check_counts_readinto() -> None:
+    from archivey.internal.backends.sevenzip_pipeline import _DecodedPastSizeCheck
+
+    exact = _DecodedPastSizeCheck(io.BytesIO(b"abc"), size=3, label="Test")
+    buffer = bytearray(3)
+    assert exact.readinto(buffer) == 3
+    assert exact.read() == b""
+    # readinto lands on the declared size; the probe finds one more byte.
+    short = _DecodedPastSizeCheck(io.BytesIO(b"abcd"), size=3, label="Test")
+    with pytest.raises(CorruptionError, match="Test coder decodes past"):
+        short.readinto(bytearray(3))
+    # readinto goes past the declared size in one call.
+    over = _DecodedPastSizeCheck(io.BytesIO(b"abcdef"), size=3, label="Test")
+    with pytest.raises(CorruptionError, match="Test coder decodes past"):
+        over.readinto(bytearray(6))
+
+
 @requires_binary("7z")
-@pytest.mark.parametrize("encrypted", [False, True], ids=["plain", "encrypted"])
-@pytest.mark.parametrize("method", ["Deflate", "Deflate64", "BZip2"])
+@pytest.mark.parametrize(
+    "encrypted",
+    [
+        pytest.param(False, id="plain"),
+        pytest.param(True, id="encrypted", marks=requires("cryptography")),
+    ],
+)
+@pytest.mark.parametrize(
+    "method",
+    ["Deflate", pytest.param("Deflate64", marks=requires("inflate64")), "BZip2"],
+)
 def test_7zip_codec_archives_read_clean(
     tmp_path: Path, method: str, encrypted: bool
 ) -> None:
-    if method == "Deflate64" and importlib.util.find_spec("inflate64") is None:
-        pytest.skip("requires optional package(s): inflate64")
-    if encrypted and importlib.util.find_spec("cryptography") is None:
-        pytest.skip("requires optional package(s): cryptography")
     contents = {f"f{i}.txt": _text(3000 + 7 * i, seed=i) for i in range(5)}
     for name, content in contents.items():
         (tmp_path / name).write_bytes(content)

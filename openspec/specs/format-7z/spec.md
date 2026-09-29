@@ -247,14 +247,20 @@ exceeding it SHALL raise `ResourceLimitError`.
 
 A coder whose codec ends its own stream (LZMA2, Deflate, Deflate64, BZip2, Zstd, LZ4
 and Brotli) that decodes more bytes than its declared unpack size SHALL raise
-`CorruptionError`, as 7-Zip reports a data error. The check SHALL count the coder's
-decoded output, so AES padding in the coder's input is not surplus, and the output of
-concatenated streams in one coder (BZip2 streams, Zstd or LZ4 frames) counts together.
-The check SHALL read at most one byte past the declared size, and SHALL NOT decode the
-folder a second time. A decoder error on that one byte (input after the end of the
-stream, such as AES padding after an LZMA2 end marker) is not surplus output. LZMA1 and
-PPMd coders, which 7-Zip writes without an end marker, SHALL stop at their declared
-size, so their surplus output is not detected.
+`CorruptionError`, as 7-Zip reports a data error. In an encrypted folder the password
+check can decode the folder before the caller's read does; when it meets the surplus
+there, the raised error SHALL be `EncryptionError` ("wrong password or corrupt"), with
+the surplus `CorruptionError` in its cause chain, as for any damage the check decodes.
+The check SHALL count the coder's decoded output, so AES padding in the coder's input
+is not surplus, and the output of concatenated streams in one coder (BZip2 streams,
+Zstd or LZ4 frames) counts together. The check SHALL ask the decoder for at most one
+byte of output past the declared size, and SHALL NOT decode the folder a second time.
+The decoder MAY read the rest of the coder's packed input to produce that byte (a tail
+of streams that decode to nothing), so the check's input cost is bounded by the coder's
+packed size, the same bound as decoding the folder. A decoder error on that one byte
+(input after the end of the stream, such as AES padding after an LZMA2 end marker) is
+not surplus output. LZMA1 and PPMd coders, which 7-Zip writes without an end marker,
+SHALL stop at their declared size, so their surplus output is not detected.
 
 #### Scenario: coder-chain matrix
 
@@ -277,7 +283,10 @@ size, so their surplus output is not detected.
 | Delta, BCJ or LZMA2 decoded before LZMA2 (`7z a -m0=LZMA2 -m1=BCJ`) | Staged separately; the original bytes return |
 | LZMA2, Copy, LZMA2 whose dictionaries each fit `max_decoder_memory` but together do not | `ResourceLimitError` before a decoder is built |
 | LZMA2 coder decodes past the folder's declared unpack size | `CorruptionError` |
-| Deflate, Deflate64, BZip2, Zstd, LZ4 or Brotli coder decodes past its declared unpack size, also behind AES or before a Delta or BCJ filter | `CorruptionError` |
+| Deflate, Deflate64, BZip2, Zstd, LZ4 or Brotli coder decodes past its declared unpack size, also before a Delta or BCJ filter or in a BCJ2 branch | `CorruptionError` |
+| Same, behind AES, in a folder the password check decodes whole (one inside its 64 KiB prefix) | `EncryptionError`, with the surplus `CorruptionError` in its cause chain |
+| Same, behind AES, in a folder the password check does not decode whole | `CorruptionError` |
+| LZMA1 coder whose data decodes past its declared unpack size | Reads clean, cut at the declared size |
 | AES then Deflate, Deflate64, BZip2, Zstd, LZ4 or Brotli, decrypted input ending in AES padding | Original bytes return; the padding is not surplus |
 | Two BZip2 streams, Zstd frames or LZ4 frames in one coder | Original bytes when the unpack size counts both; `CorruptionError` when it stops after the first |
 
