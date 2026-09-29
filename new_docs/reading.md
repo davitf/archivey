@@ -40,8 +40,8 @@ Some code needs to seek inside a member: a library that reads a ZIP stored insid
 a Parquet reader, an image decoder. By default a member stream only moves forward, and `seek`
 raises. With `seekable_members=True`, streams from `open` can seek. Moving backwards in
 compressed data can mean decompressing the member again from its start. Reading a member from
-start to end also checks it against the checksum the archive stores, and a seek gives that
-check up. If you'll seek a lot, extracting the member to a file first is often faster.
+start to end lets archivey notice if its data is damaged, but after a seek, damage may go
+unnoticed. If you'll seek a lot, extracting the member to a file first is often faster.
 
 ## Several members at once
 
@@ -58,9 +58,19 @@ source jump back and forth, and each jump throws away what it had buffered.
 ## Why these aren't on by default
 
 Seeking and reading several members at once are off by default, and `streaming=True` turns off
-out-of-order reads. Each of these can be slow in some cases, or skip a check, in ways the code
-doesn't show. With the checks in place, the risky pattern raises instead of running.
+out-of-order reads. Each of these can be slow in some cases, or let damaged data go unnoticed,
+in ways the code doesn't show. With these defaults, the risky pattern raises instead of running.
 
 A ZIP can be read out of order at no cost, but a `.tar.gz` can't. If archivey raised only on the
-`.tar.gz`, code tested on ZIPs would first fail in production. So the checks apply on every
+`.tar.gz`, code tested on ZIPs would first fail in production. So archivey raises on every
 format, and the mistake shows up during development.
+
+## Summary
+
+| If you want to | Open with | What it costs |
+|---|---|---|
+| Read a few members by name, or list and then read | nothing | Out-of-order reads can be slow on [solid archives](#solid-archives) |
+| Read everything once | `streaming=True` | [One pass only](#reading-once); no reads by name |
+| Read from a pipe | `streaming=True` | [TAR and single compressed files only](#reading-once) |
+| Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and damage may go unnoticed after a seek |
+| Read members from several threads | `concurrent_members=True` | [Slow on sources where each jump is costly](#several-members-at-once) |
