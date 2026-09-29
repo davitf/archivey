@@ -156,3 +156,6 @@ consequences are deliberate: a small dependency surface, heavy investment in
 self-checking scaffolding (specs, corpus sweep, fuzzing, CI matrix) over manual
 vigilance, a conservative public-API surface (easy to keep stable), and no promised
 support matrix beyond what CI actually exercises.
+
+[How it is built](https://davitf.github.io/archivey/how-it-is-built/) tells users how
+changes are made and checked, and what that process does not promise.
