@@ -316,7 +316,8 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
 - **Temporary copies of a stream source** — RAR member data goes through an external
   program (`unrar` or `unar`), which reads only files, so a RAR opened from a stream is
   copied to a temp file first (`SpoolLimits.max_bytes` on
-  `ArchiveyConfig.spool_limits`, default 1 GiB across the whole copy). Checked before anything is written. Trips raise `ResourceLimitError`.
+  `ArchiveyConfig.spool_limits`, default 1 GiB across the whole copy). Checked before
+  anything is written. Trips raise `ResourceLimitError`.
   A path source is read in place, with two exceptions bounded by the same limit: a
   RAR with a prefix before it (an SFX stub) read with `rar_decompressor="unar"`, and
   a list of RAR volume files where the system allows no link to them.
