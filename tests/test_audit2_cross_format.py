@@ -415,14 +415,6 @@ def _zip_with_cjk_name_and_comment(path: Path) -> None:
         zf.comment = "日本語".encode()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "X5: `list` / `info` print printable non-ASCII archive text raw, so a stdout "
-        "that cannot encode it (cp1252 redirect on Windows, PYTHONIOENCODING=ascii) "
-        "raises an uncaught UnicodeEncodeError mid-listing"
-    ),
-)
 @pytest.mark.parametrize("verb", ["list", "info"])
 def test_cli_output_survives_unencodable_member_text(verb: str, tmp_path: Path) -> None:
     archive = tmp_path / "jp.zip"
