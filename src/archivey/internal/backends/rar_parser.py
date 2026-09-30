@@ -411,6 +411,12 @@ class RarArchive:
     #: How many damaged SERVICE headers the cap above kept out of that list. The
     #: reader reports the count, so hitting the cap is itself never silent.
     damaged_service_headers_omitted: int = 0
+    #: Set when the walk ended because a block's packed data ran past the end of the
+    #: file: the members listed are a prefix, and the last one's data is cut short.
+    #: The reader lists them and then reports this as ``TruncatedError``, as TAR does
+    #: for a member whose data runs past the end. The walk cannot tell it at open, so
+    #: raising here would lose the prefix a caller can still read.
+    data_past_end: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +545,7 @@ def parse_rar_volumes(
             merged.damaged_service_headers_omitted += (
                 part.damaged_service_headers_omitted
             )
+            merged.data_past_end = merged.data_past_end or part.data_past_end
             for member in part.members:
                 if member.split_before and merged.members:
                     _merge_split_member(merged.members[-1], member)
@@ -768,6 +775,24 @@ def _seek_to(source: BinaryIO, pos: int) -> None:
         source.seek(pos)
     except (OverflowError, OSError) as exc:
         raise CorruptionError(f"RAR packed-data seek failed at offset {pos}") from exc
+
+
+def _data_past_end(source: BinaryIO) -> str | None:
+    """Why the walk reached end of file inside a block's packed data, or ``None``.
+
+    Called where the walk found no further header. A clean end sits exactly at the
+    end of the file; a skip over packed data that the file does not hold leaves the
+    position past it, and the read there is empty as well.
+    """
+    pos = source.tell()
+    end = source.seek(0, io.SEEK_END)
+    source.seek(pos)
+    if pos <= end:
+        return None
+    return (
+        f"RAR archive is truncated: the last block's packed data ends at byte {pos}, "
+        f"past the end of the file ({end} bytes)"
+    )
 
 
 def _seek_after_packed(source: BinaryIO, data_offset: int, add_size: int) -> None:
@@ -1482,6 +1507,7 @@ def _parse_rar3(
     comment: str | _Rar3Comment | None = None
     members: list[RarMemberInfo] = []
     needs_next_volume = False
+    data_past_end: str | None = None
 
     while True:
         header_fd: _Readable = source
@@ -1505,6 +1531,7 @@ def _parse_rar3(
             header_offset = header_fd.tell()
             buf = read_exact(header_fd, _S_BLK_HDR.size)
             if not buf:
+                data_past_end = _data_past_end(source)
                 break
             if len(buf) < _S_BLK_HDR.size:
                 raise CorruptionError("Unexpected EOF while reading RAR3 block header")
@@ -1660,6 +1687,7 @@ def _parse_rar3(
         is_volume=is_volume,
         needs_next_volume=needs_next_volume,
         old_volume_naming=old_volume_naming,
+        data_past_end=data_past_end,
     )
 
 
@@ -2275,6 +2303,7 @@ def _parse_rar5(
     qo_by_off: dict[int, RarMemberInfo] = {}
     damaged_service_headers: list[DamagedServiceHeader] = []
     damaged_service_headers_omitted = 0
+    data_past_end: str | None = None
 
     while True:
         header_fd: _Readable = source
@@ -2314,6 +2343,7 @@ def _parse_rar5(
         else:
             parsed = _read_rar5_block(header_fd)
         if parsed is None:
+            data_past_end = _data_past_end(source)
             break
         (
             block_type,
@@ -2462,6 +2492,7 @@ def _parse_rar5(
         needs_next_volume=needs_next_volume,
         damaged_service_headers=damaged_service_headers,
         damaged_service_headers_omitted=damaged_service_headers_omitted,
+        data_past_end=data_past_end,
     )
 
 

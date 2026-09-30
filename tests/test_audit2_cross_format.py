@@ -93,13 +93,6 @@ def _cut_inside_third_file_data(
     return data[: header_end + data_size // 2]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "C1: a RAR cut inside a member's packed data lists the prefix with "
-        "report.error=None and no diagnostic; later members vanish silently"
-    ),
-)
 @pytest.mark.parametrize(
     ("fixture", "walker", "file_type"),
     [

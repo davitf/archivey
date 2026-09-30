@@ -136,6 +136,11 @@ next one. That is O(members) seeks — the same shape `ListingCost.REQUIRES_SCAN
 which is what `tar_reader` reports for uncompressed tar. RAR still reports `INDEXED`
 because the table is cached at open. With a usable `QO`, listing reads those copies
 first, seeks back to after MAIN, and skips matching FILE headers on the walk (§1.1).
+A walk whose last skip lands past the end of the file lists what it found and then
+reports `TruncatedError` as `members_report().error` (`members()` raises it), as TAR
+does for a member whose data runs past the end. A cut exactly at a header boundary
+still lists as complete: a RAR5 archive without `ENDARC` is not reported yet, and RAR3
+had no mandatory end block to miss.
 
 ### 1.1 Quick Open (QO)
 
