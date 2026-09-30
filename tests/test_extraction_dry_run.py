@@ -33,6 +33,7 @@ from archivey import (
 )
 from archivey.cli.exit_codes import EXIT_OK, EXIT_POLICY
 from archivey.cli.main import main
+from archivey.terminal import display_path
 from tests.create_adversarial import adversarial_archives
 from tests.sample_archives import CORPUS, corpus_archive_path, skip_unless_runnable
 
@@ -315,7 +316,7 @@ def test_scratch_is_removed_on_abort_and_the_message_names_dest(
     with open_archive(io.BytesIO(blob)) as reader:
         with pytest.raises(NameCollisionError) as caught:
             reader.extract_all(dest, abort_on=[AbortOn.NAME_COLLISION], dry_run=True)
-    assert str(dest / "A") in str(caught.value)
+    assert display_path(dest / "A") in str(caught.value)
     assert "archivey-dry-run-" not in str(caught.value)
     _assert_nothing_left(tmp_path, dest)
 
