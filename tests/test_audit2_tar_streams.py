@@ -226,7 +226,9 @@ def test_bz2_accelerator_refuses_a_stream_with_a_block_removed() -> None:
         )
     except CorruptionError:
         return
-    assert out == payload, f"read {len(out)} of {len(payload)} bytes with no error"
+    # Not a bare ``==``: pytest's diff of two 360 kB byte strings can take minutes.
+    if out != payload:
+        pytest.fail(f"read {len(out)} of {len(payload)} bytes with no error")
 
 
 @requires("rapidgzip")

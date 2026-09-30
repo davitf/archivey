@@ -10,6 +10,7 @@ or local header field independently of the other.
 from __future__ import annotations
 
 import bz2
+import hashlib
 import io
 import os
 import struct
@@ -120,7 +121,9 @@ def _raw_deflate(data: bytes, level: int = 9) -> bytes:
 
 
 def _outcome(blob: bytes, **open_kwargs: object) -> tuple[str, object]:
-    """Read the only member in 1 MiB chunks: ``("ok", bytes)`` or ``("raise", type)``."""
+    """Read the only member in 1 MiB chunks: ``("ok", sha256)`` or ``("raise", type)``.
+
+    The digest keeps a failed comparison cheap for pytest to explain."""
     with archivey.open_archive(io.BytesIO(blob), **open_kwargs) as ar:  # type: ignore[arg-type]
         (member,) = ar.members()
         try:
@@ -130,7 +133,7 @@ def _outcome(blob: bytes, **open_kwargs: object) -> tuple[str, object]:
                     chunks.append(chunk)
         except ArchiveyError as exc:
             return ("raise", type(exc))
-    return ("ok", b"".join(chunks))
+    return ("ok", hashlib.sha256(b"".join(chunks)).hexdigest())
 
 
 def _open_and_list(blob: bytes) -> list[str]:
@@ -341,7 +344,7 @@ def test_bzip2_member_with_a_second_stream_after_its_end_reads() -> None:
         assert zf.read("a") == _BZ_PAYLOAD
     # Bytes after a codec's end inside a ZIP member end it silently for DEFLATE,
     # LZMA and PPMd here (internal/config.py StreamConfig.report_trailing_data).
-    assert _outcome(blob) == ("ok", _BZ_PAYLOAD)
+    assert _outcome(blob) == ("ok", hashlib.sha256(_BZ_PAYLOAD).hexdigest())
 
 
 # ---------------------------------------------------------------------------------------
