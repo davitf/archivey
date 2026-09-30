@@ -368,6 +368,7 @@ def _report_extraction(
     skipped = extra_skipped
     blocked = 0
     failed = 0
+    rerooted = 0
     for result in report:
         status = result.status
         if status is ExtractionStatus.EXTRACTED:
@@ -394,7 +395,23 @@ def _report_extraction(
             # A portable rewrite is a different event from a collision rename: the member
             # landed where it asked to, under a different spelling. Always reported, for
             # the same reason as a rename — the on-disk name is not the archive's.
-            if result.presented_name is not None:
+            # A re-root is the exception: a ``tar -P`` backup re-roots every member, so
+            # re-roots are counted and reported once, as GNU tar does, and listed per
+            # member only under --verbose. A portable rewrite on top keeps its line.
+            if result.presented_name is not None and _was_rerooted(
+                result.presented_name
+            ):
+                rerooted += 1
+            if result.presented_name is not None and _only_rerooted(
+                result.presented_name, result.path, target
+            ):
+                if verbose:
+                    print(
+                        f"re-rooted: {escape_member_name(result.presented_name)} -> "
+                        f"{escape_member_name(_relative_name(result.path, target))}",
+                        file=err,
+                    )
+            elif result.presented_name is not None:
                 # ``presented_name`` is the full relative name, so the arrow's other side
                 # must be too: a basename would print ``dir/foo. -> foo`` and invent a
                 # destination the member never had.
@@ -455,6 +472,12 @@ def _report_extraction(
     # set aside for the operator's — so it is not on disk and not counted, exactly as
     # a direct extraction's ``NOT_OVERWRITTEN`` is not.
     extracted -= extra_skipped
+    if rerooted:
+        print(
+            f"re-rooted {rerooted} absolute member name{'s' if rerooted != 1 else ''}"
+            " inside the destination",
+            file=err,
+        )
     if dest_label is None:
         dest_label = _summary_dest_label(target, report)
     print(
@@ -483,6 +506,34 @@ def _escaped_where(result: ExtractionResult, target: Path) -> str:
     if result.requested_path is not None:
         return escape_member_name(_relative_name(result.requested_path, target))
     return escape_member_name(result.member.name)
+
+
+def _strip_root(name: str) -> str:
+    """``name`` without the root a re-root drops: leading ``/`` or ``\\``, or a drive
+    letter followed by one, repeatedly. Mirrors the library's re-root, which the CLI
+    may not import, closely enough to tell a re-root from a portable rewrite."""
+    while True:
+        if name[:1] in ("/", "\\"):
+            name = name.lstrip("/\\")
+        elif name[:1].isascii() and name[:1].isalpha() and name[1:3] in (":/", ":\\"):
+            name = name[2:]
+        else:
+            return name
+
+
+def _was_rerooted(presented_name: str) -> bool:
+    """Whether the stored name had a root that extraction dropped."""
+    return _strip_root(presented_name) != presented_name
+
+
+def _only_rerooted(
+    presented_name: str, path: PurePath | None, target: PurePath
+) -> bool:
+    """Whether the written name differs from the stored one only by the root it lost.
+
+    Anything else in the difference (a percent-encoded byte, a reserved stem) is a
+    portable rewrite and keeps its own per-member line."""
+    return _strip_root(presented_name) == _relative_name(path, target)
 
 
 def _relative_name(path: PurePath | None, target: PurePath) -> str:

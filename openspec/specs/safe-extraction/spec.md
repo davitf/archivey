@@ -140,20 +140,22 @@ is reject/raise, with one rewrite:
   followed by `/` or `\`) loses that root, repeatedly (`/etc/x` → `etc/x`, `C:\x` →
   `x`), and the member extracts inside `dest`. A drive-relative name (`C:x`) is not
   rooted: it is also an ordinary POSIX name (`a:b`), so it is not rewritten and the
-  check below refuses it. A HARDLINK's absolute `link_target` is re-rooted the same way, since it names
-  another member of the archive. A SYMLINK target is not re-rooted. `STRICT` does not
-  re-root, so the check below refuses the member. This matches GNU tar, bsdtar, unzip,
-  7-Zip and Python's `tarfile` `data` filter, which all strip the root. A re-root is a
-  name rewrite: `AbortOn.NAME_SANITIZED` raises `NameRewrittenError` on it and
-  `presented_name` records it, unless the filter dropped the member or renamed it.
+  check below refuses it. A HARDLINK's absolute `link_target` is re-rooted the same
+  way, since it names another member of the archive. A SYMLINK target is not
+  re-rooted. `STRICT` does not re-root, so the check below refuses the member. This
+  matches GNU tar, bsdtar, unzip, 7-Zip and Python's `tarfile` `data` filter, which
+  all strip the root. A re-root is a name rewrite: `AbortOn.NAME_SANITIZED` raises
+  `NameRewrittenError` on it and `presented_name` records it, unless the filter
+  dropped the member or renamed it.
 - **`archivey.sanitize_names`** is a public `MemberFilter` that rewrites instead of
-  refusing, at any policy: it strips a root, resolves `..` against the
-  segment before it and drops a `..` with nothing to climb out of (`a/../b` → `b`,
-  `../x` → `x`), removes bidi override/isolate characters, appends `_` to a
-  Windows-reserved stem (`CON.txt` → `CON_.txt`), and replaces `:` and NUL with `_`.
-  It applies the same rewrites to a HARDLINK target, which keeps the target inside
-  `dest` for the containment check (the linked member was resolved at listing and does
-  not change), and leaves a SYMLINK target as stored. It returns the member unchanged when nothing needs rewriting.
+  refusing, at any policy: it strips a root, resolves `..` against the segment before
+  it and drops a `..` with nothing to climb out of (`a/../b` → `b`, `../x` → `x`),
+  removes bidi override/isolate characters, appends `_` to a Windows-reserved stem
+  (`CON.txt` → `CON_.txt`), and replaces `:` and NUL with `_`. It applies the same
+  rewrites to a HARDLINK target, which keeps the target inside `dest` for the
+  containment check (the linked member was resolved at listing and does not change),
+  and leaves a SYMLINK target as stored. It returns the member unchanged when nothing
+  needs rewriting.
 
 The implementation SHALL enforce defense in depth: first a string check rejects
 absolute paths, Windows drive/UNC roots, any `..` component split on `/` or `\`,

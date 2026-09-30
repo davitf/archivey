@@ -2320,3 +2320,32 @@ def test_test_early_stop_without_error_exits_fail(
     monkeypatch.setattr(BaseArchiveReader, "stream_members", _one_then_stop)
     assert main(["test", str(sample_zip)]) == EXIT_FAIL
     assert "1 OK, 0 failed, 2 not tested" in capsys.readouterr().err
+
+
+def test_extract_reports_reroots_once_not_per_member(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A ``tar -P`` backup re-roots every member; one summary line says so, and the
+    per-member lines appear only under --verbose. A portable rewrite on top of the
+    re-root keeps its own line."""
+    archive = _tar(
+        tmp_path / "t.tar",
+        {"/etc/a": b"1", "/etc/b": b"2", "/var/log/c": b"3", "/d/y\udcff": b"4"},
+    )
+    dest = tmp_path / "out"
+    assert main(["x", str(archive), "-d", str(dest), "--policy", "standard"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "re-rooted 4 absolute member names inside the destination" in err
+    assert "re-rooted: " not in err
+    assert "name rewritten: /d/y\\xff -> d/y%FF" in err
+    assert err.count("name rewritten:") == 1
+    assert (dest / "etc" / "a").read_bytes() == b"1"
+
+    dest2 = tmp_path / "out2"
+    assert (
+        main(["x", str(archive), "-d", str(dest2), "--policy", "standard", "-v"])
+        == EXIT_OK
+    )
+    err = capsys.readouterr().err
+    assert "re-rooted: /etc/a -> etc/a" in err
+    assert "re-rooted: /var/log/c -> var/log/c" in err

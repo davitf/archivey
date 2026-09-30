@@ -360,7 +360,10 @@ fallback to another encoding, bytes it cannot decode are escaped in the same way
 On extraction, `STRICT` (the default) and `STANDARD` write each escaped byte
 percent-encoded, as `caf%E9.txt`; only `TRUSTED` writes the stored bytes.
 `ExtractionResult.presented_name` holds the name before the rewrite, which also tells
-a rewritten `%E9` apart from one that was stored that way.
+a rewritten `%E9` apart from one that was stored that way: after the rewrite it
+differs from the written name in the escaped bytes. It is also set when an absolute
+name loses its root (`/etc/x` written as `etc/x`), and then differs from the written
+name only by that root.
 
 ## Duplicate names and is_current
 

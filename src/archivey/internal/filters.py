@@ -338,10 +338,12 @@ def _sanitize_portable_name(name: str) -> str:
 
     The escaping is therefore reversible within a rewritten name, not across names: a
     stored ``%FF`` is returned verbatim and a raw ``0xFF`` byte is also written ``%FF``.
-    The name alone cannot tell the two apart; ``ExtractionResult.presented_name`` can,
-    since it is set only when the name was rewritten. The collision map sees both
-    spellings as one key, so the second is resolved by the ``OverwritePolicy`` rather
-    than silently overwriting the first.
+    The name alone cannot tell the two apart; ``ExtractionResult.presented_name`` can:
+    after this rewrite it differs from the written name in the escaped bytes. A set
+    ``presented_name`` alone is not enough, since an absolute-name re-root sets it too,
+    and then it differs from the written name only by the root it lost. The collision
+    map sees both spellings as one key, so the second is resolved by the
+    ``OverwritePolicy`` rather than silently overwriting the first.
     """
     if not any("\udc80" <= c <= "\udcff" for c in name):
         return name
