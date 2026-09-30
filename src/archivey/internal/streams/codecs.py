@@ -83,6 +83,7 @@ from archivey.internal.streams.decompressor_stream import (
     gzip_corruption,
     report_trailing_data,
 )
+from archivey.internal.streams.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.ppmd_child import PpmdChildError
 from archivey.internal.streams.rapidgzip_child import (
@@ -155,6 +156,7 @@ def _optional_zstd() -> ModuleType | None:
 
 _zstd = _optional_zstd()
 _lz4_frame = _optional("lz4.frame")
+_lz4_block = _optional("lz4.block")
 _brotli = _optional("brotli")
 _pyppmd = _optional("pyppmd")
 _inflate64 = _optional("inflate64")
@@ -921,7 +923,13 @@ _SKIPPABLE_FRAME = (range(0x50, 0x60), b"\x2a", b"\x4d", b"\x18")
 _ZSTD_STREAMS = stream_magic(
     tuple(bytes([b]) for b in ZSTD_FRAME_MAGIC), _SKIPPABLE_FRAME
 )
-_LZ4_STREAMS = stream_magic((b"\x04", b"\x22", b"\x4d", b"\x18"), _SKIPPABLE_FRAME)
+# LZ4 also takes a legacy stream (``lz4 -l``), which the ``lz4`` command reads after a
+# frame and a frame after it.
+_LZ4_STREAMS = stream_magic(
+    (b"\x04", b"\x22", b"\x4d", b"\x18"),
+    tuple(bytes([b]) for b in LEGACY_MAGIC),
+    _SKIPPABLE_FRAME,
+)
 
 
 def _stdlib_bzip2(source: CodecSource, config: StreamConfig) -> BinaryIO:
@@ -2782,23 +2790,27 @@ class ZstdCodec(StreamCodec):
 class Lz4Codec(StreamCodec):
     codec = Codec.LZ4
     stream_format = StreamFormat.LZ4
-    magic = (MagicSignature(0, b"\x04\x22\x4d\x18", ArchiveFormat.LZ4),)
+    magic = (
+        MagicSignature(0, b"\x04\x22\x4d\x18", ArchiveFormat.LZ4),
+        # The legacy stream ``lz4 -l`` writes, and Linux kernel images use.
+        MagicSignature(0, LEGACY_MAGIC, ArchiveFormat.LZ4),
+    )
     requirement = MissingComponent("lz4", "pip install archivey[recommended]", ("lz4",))
 
     def _backend_present(self) -> bool:
-        return _lz4_frame is not None
+        return _lz4_frame is not None and _lz4_block is not None
 
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if _lz4_frame is None:
+        if _lz4_frame is None or _lz4_block is None:
             raise self._missing("lz4 streams")
         # A rewind re-decompresses from the start (the outer ArchiveStream warns on a
         # rewind — see rewind_warning).
-        lz4_frame = _lz4_frame
+        lz4_frame, lz4_block = _lz4_frame, _lz4_block
         return FramedDecompressorStream(
             source,
-            lambda: lz4_frame.LZ4FrameDecompressor(),
+            lambda: Lz4Decompressor(lz4_frame, lz4_block),
             codec_name="lz4",
             magic=_LZ4_STREAMS,
             collector=config.collector,
@@ -2811,6 +2823,9 @@ class Lz4Codec(StreamCodec):
                 # The frame's content checksum, over everything the frame decoded; a
                 # block checksum covers one block and stays a plain corruption.
                 return _StreamChecksumError(f"Error reading lz4 stream: {exc!r}")
+            return CorruptionError(f"Error reading lz4 stream: {exc!r}")
+        if _lz4_block is not None and isinstance(exc, _lz4_block.LZ4BlockError):
+            # A block of a legacy stream; it has no checksum to fail.
             return CorruptionError(f"Error reading lz4 stream: {exc!r}")
         if isinstance(exc, EOFError):
             return TruncatedError(f"lz4 stream is truncated: {exc!r}")
