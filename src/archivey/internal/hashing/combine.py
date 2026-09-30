@@ -14,53 +14,53 @@ _CRC32_POLY = 0xEDB88320
 _MOD_ADLER = 65521
 
 
-def _gf2_matrix_times(mat: list[int], vec: int) -> int:
-    summary = 0
-    i = 0
-    while vec:
-        if vec & 1:
-            summary ^= mat[i]
-        vec >>= 1
-        i += 1
-    return summary
+def _multmodp(a: int, b: int) -> int:
+    """``a * b mod P`` in the reflected bit order zlib uses (``a`` must be nonzero)."""
+    m = 1 << 31
+    p = 0
+    while True:
+        if a & m:
+            p ^= b
+            if (a & (m - 1)) == 0:
+                return p
+        m >>= 1
+        b = (b >> 1) ^ _CRC32_POLY if b & 1 else b >> 1
 
 
-def _gf2_matrix_square(square: list[int], mat: list[int]) -> None:
-    for n in range(32):
-        square[n] = _gf2_matrix_times(mat, mat[n])
+def _x2n_table() -> tuple[int, ...]:
+    # x^(2^k) mod P for k in 0..31, as zlib's ``x2n_table``.
+    p = 1 << 30  # x^1
+    table = [p]
+    for _ in range(1, 32):
+        p = _multmodp(p, p)
+        table.append(p)
+    return tuple(table)
+
+
+_X2N_TABLE = _x2n_table()
+
+
+def _x2nmodp(n: int, k: int) -> int:
+    """``x^(n * 2^k) mod P``: one table multiply per set bit of ``n``."""
+    p = 1 << 31  # x^0
+    while n:
+        if n & 1:
+            p = _multmodp(_X2N_TABLE[k & 31], p)
+        n >>= 1
+        k += 1
+    return p
 
 
 def crc32_combine(crc1: int, crc2: int, len2: int) -> int:
-    """Return ``zlib.crc32(a + b)`` given ``crc32(a)``, ``crc32(b)``, and ``len(b)``."""
+    """Return ``zlib.crc32(a + b)`` given ``crc32(a)``, ``crc32(b)``, and ``len(b)``.
+
+    zlib 1.2.12+'s method: shift ``crc1`` by ``8 * len2`` zero bits with a
+    precomputed x^(2^k) table, so the cost is O(log len2) small multiplies.
+    """
     if len2 <= 0:
         return crc1 & 0xFFFFFFFF
-
-    odd = [0] * 32
-    even = [0] * 32
-    odd[0] = _CRC32_POLY
-    row = 1
-    for n in range(1, 32):
-        odd[n] = row
-        row <<= 1
-    _gf2_matrix_square(even, odd)
-    _gf2_matrix_square(odd, even)
-
-    crc1 &= 0xFFFFFFFF
-    remaining = len2
-    while True:
-        _gf2_matrix_square(even, odd)
-        if remaining & 1:
-            crc1 = _gf2_matrix_times(even, crc1)
-        remaining >>= 1
-        if remaining == 0:
-            break
-        _gf2_matrix_square(odd, even)
-        if remaining & 1:
-            crc1 = _gf2_matrix_times(odd, crc1)
-        remaining >>= 1
-        if remaining == 0:
-            break
-    return (crc1 ^ (crc2 & 0xFFFFFFFF)) & 0xFFFFFFFF
+    shifted = _multmodp(_x2nmodp(len2, 3), crc1 & 0xFFFFFFFF)
+    return (shifted ^ (crc2 & 0xFFFFFFFF)) & 0xFFFFFFFF
 
 
 def adler32_combine(adler1: int, adler2: int, len2: int) -> int:

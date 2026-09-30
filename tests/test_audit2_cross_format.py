@@ -187,14 +187,6 @@ def lzma_raw(payload: bytes) -> bytes:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "C2: open_archive on a multi-member .lz costs ~4.5 ms per 26-byte trailer "
-        "(crc32_combine rebuilds 32x32 GF(2) matrices per call, log2 of an "
-        "attacker-chosen data_size); a 1 MiB file takes minutes before any decode"
-    ),
-)
 def test_lzip_listing_cost_does_not_scale_with_declared_sizes() -> None:
     # One real member, then 400 trailer-only members (header + trailer, 26 bytes)
     # each declaring 2**62 bytes. The backward index scan reads only trailers and
@@ -205,7 +197,8 @@ def test_lzip_listing_cost_does_not_scale_with_declared_sizes() -> None:
     with open_archive(io.BytesIO(blob)) as reader:
         reader.members()
     elapsed = time.perf_counter() - start
-    # Linear work over 10 KiB of trailers is milliseconds; today it is ~1.8 s here.
+    # Linear work over 10 KiB of trailers is milliseconds (it was ~1.8 s when
+    # crc32_combine rebuilt its GF(2) matrices per call).
     assert elapsed < 0.5, f"listing a 10 KiB .lz took {elapsed:.2f} s"
 
 
