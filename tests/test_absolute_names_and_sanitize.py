@@ -76,12 +76,16 @@ def _member(
         ("//etc//x", "etc//x"),
         ("C:/x", "x"),
         ("c:\\x", "x"),
-        ("C:x", "x"),
+        # Drive-relative (no separator after the colon) is not rooted: "a:b" is an
+        # ordinary POSIX name, so re-rooting it would rename it. It stays as it is and
+        # check_universal refuses it.
+        ("C:x", "C:x"),
         ("\\\\host\\share\\x", "host\\share\\x"),
         ("/C:/x", "x"),
         ("/etc/", "etc/"),
         ("/", "."),
-        ("C:", "."),
+        ("C:", "C:"),
+        ("/a:b", "a:b"),
     ],
 )
 def test_strip_absolute_root(name: str, expected: str) -> None:
@@ -267,7 +271,11 @@ def test_what_the_filter_returns_is_checked(tmp_path: Path, bad: str) -> None:
         ("CON", "CON_"),
         ("dir/nul.txt", "dir/nul_.txt"),
         ("x/a:b", "x/a_b"),
-        ("a:b", "b"),  # one ASCII letter and a colon is a drive letter
+        ("a:b", "a_b"),  # drive-relative: not stripped, the colon is replaced
+        ("C:\\..\\x", "x"),
+        ("a\\\\..\\b", "b"),  # an empty segment does not absorb the ..
+        ("a\\.\\..\\b", "b"),  # nor does a "." segment
+        ("a/./../b", "b"),
         ("in\u202evoice", "invoice"),
         ("a\x00b", "a_b"),
     ],
@@ -325,3 +333,61 @@ def test_hardlink_target_with_a_leading_slash_names_that_member() -> None:
     assert resolve_link_target_name("x", "/../a", MemberType.HARDLINK) is None
     assert resolve_link_target_name("x", "/", MemberType.HARDLINK) is None
     assert resolve_link_target_name("x", "/abs", MemberType.SYMLINK) is None
+
+
+# --- review round 1 -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("policy", list(ExtractionPolicy))
+def test_drive_relative_name_is_not_rerooted_onto_a_real_member(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """``a:b`` is a legal POSIX name, not ``b`` on drive ``A:``. Re-rooting it would
+    write it over the real member ``b``; it is refused instead, as before."""
+    src = _tar(tmp_path / "a.tar", [("file", "a:b", b"one"), ("file", "b", b"two")])
+    dest = tmp_path / "out"
+    with open_archive(src) as r:
+        report = r.extract_all(dest, policy=policy, on_error="continue")
+    statuses = {res.member.name: res.status for res in report.results}
+    assert statuses == {
+        "a:b": ExtractionStatus.BLOCKED,
+        "b": ExtractionStatus.EXTRACTED,
+    }
+    assert (dest / "b").read_bytes() == b"two"
+
+
+@pytest.mark.parametrize(
+    "keep", [lambda m: None, lambda m: m.replace(name="mine/x")], ids=["drop", "rename"]
+)
+def test_reroot_abort_ignores_a_member_the_filter_dropped_or_renamed(
+    tmp_path: Path, keep
+) -> None:
+    src = _tar(tmp_path / "a.tar", [("file", "/etc/x", b"x")])
+    with open_archive(src) as r:
+        r.extract_all(
+            tmp_path / "out",
+            policy=ExtractionPolicy.STANDARD,
+            abort_on={AbortOn.NAME_SANITIZED},
+            filter=keep,
+        )
+
+
+def test_reroot_is_recorded_in_presented_name(tmp_path: Path) -> None:
+    src = _tar(tmp_path / "a.tar", [("file", "/etc/x", b"x"), ("file", "/etc/y", b"y")])
+    dest = tmp_path / "out"
+
+    def rename_y(member: ArchiveMember) -> ArchiveMember:
+        return member.replace(name="mine/y") if member.name == "etc/y" else member
+
+    with open_archive(src) as r:
+        report = r.extract_all(dest, policy=ExtractionPolicy.STANDARD, filter=rename_y)
+    presented = {res.member.name: res.presented_name for res in report.results}
+    # A name the filter chose is not a rewrite; the re-rooted one is.
+    assert presented == {"/etc/x": "/etc/x", "/etc/y": None}
+
+
+def test_sanitize_names_rewrites_a_hardlink_target_like_the_name() -> None:
+    hard = sanitize_names(
+        _member("h", type=MemberType.HARDLINK, link_target="d/CON.txt")
+    )
+    assert hard.link_target == sanitize_names(_member("d/CON.txt")).name == "d/CON_.txt"

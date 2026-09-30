@@ -73,8 +73,11 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   before any write; the destination parent is resolved and containment-checked
   (`safe-extraction`, `internal/filters.py`). An absolute name (a leading `/`, a drive
   letter or a UNC prefix) is refused under `STRICT`. `STANDARD` and `TRUSTED` drop the
-  root and extract it inside the destination (`/etc/x` → `etc/x`), as GNU tar, bsdtar,
-  unzip and 7-Zip do; a hardlink's absolute target is re-rooted the same way. Your
+  root and extract it inside the destination (`/etc/x` → `etc/x`, `C:/x` → `x`), as
+  GNU tar, bsdtar, unzip and 7-Zip do, and record the stored name in
+  `ExtractionResult.presented_name`; a hardlink's absolute target is re-rooted the same
+  way. A drive letter with no separator after it (`a:b`) is refused at every policy: it
+  is also an ordinary POSIX name, so there is no root to drop. Your
   `filter` runs before these checks, so it sees every member and can rename an unsafe
   one; the name it returns is the one checked. `archivey.sanitize_names` is a ready-made
   filter that renames instead of refusing: it drops roots, resolves or drops `..`,
@@ -226,7 +229,7 @@ archivey.extract("untrusted.zip", "out/", abort_on={AbortOn.BLOCKED_MEMBER})
 | --- | --- | --- |
 | `BLOCKED_MEMBER` | a member is refused by a path-safety check or a policy filter | the underlying `FilterRejectionError` |
 | `NAME_COLLISION` | a second member resolves to an already-written destination (non-`TRUSTED`) | `NameCollisionError` |
-| `NAME_SANITIZED` | a name is rewritten to its portable spelling | `NameRewrittenError` |
+| `NAME_SANITIZED` | a name is rewritten to its portable spelling, or an absolute name is re-rooted | `NameRewrittenError` |
 
 An abort is immediate: no later member is processed and **no report is returned** — so
 handle the exception, not a return value. Output already written for earlier members

@@ -47,22 +47,35 @@ def _is_absolute(name: str) -> bool:
     return len(name) >= 2 and name[0] in string.ascii_letters and name[1] == ":"
 
 
-def strip_absolute_root(name: str) -> str:
-    """``name`` with its absolute prefix removed: every leading ``/`` and ``\\`` and any
-    drive letter (``C:``), repeatedly, so ``C:\\x``, ``//host/share/x`` and ``/C:/x``
-    all lose their whole root. A name that is nothing but a root becomes ``"."``.
+def _is_rooted(name: str) -> bool:
+    """Whether ``name`` starts at a filesystem root: a leading ``/`` or ``\\`` (POSIX
+    root, UNC share) or a drive letter followed by a separator (``C:/``, ``C:\\``).
 
-    ``C:`` is dropped on every OS, as bsdtar does, so a member extracts to the same
+    Narrower than :func:`_is_absolute`, on purpose. A drive-relative ``C:x`` is also an
+    ordinary POSIX name (``a:b``), so it has no root to drop: rewriting it to ``x``
+    would put the member where another member named ``x`` belongs. It stays refused.
+    """
+    if name[:1] in ("/", "\\"):
+        return True
+    return _is_absolute(name) and name[2:3] in ("/", "\\")
+
+
+def strip_absolute_root(name: str) -> str:
+    """``name`` with its root removed: every leading ``/`` and ``\\`` and a drive letter
+    followed by a separator, repeatedly, so ``C:\\x``, ``//host/share/x`` and ``/C:/x``
+    all lose their whole root. A name that is nothing but a root becomes ``"."``. A name
+    that is not rooted (see :func:`_is_rooted`), ``C:x`` included, is returned as is.
+
+    ``C:/`` is dropped on every OS, as bsdtar does, so a member extracts to the same
     place wherever it is extracted. GNU tar keeps it as a literal directory on POSIX.
     """
     stripped = name
-    while True:
+    while _is_rooted(stripped):
         if stripped[:1] in ("/", "\\"):
             stripped = stripped.lstrip("/\\")
-        elif _is_absolute(stripped):  # the drive-letter case: the root cases are above
+        else:  # a drive letter and its separator; the next pass strips the separator
             stripped = stripped[2:]
-        else:
-            return stripped or "."
+    return stripped or "."
 
 
 def reroot_absolute(member: ArchiveMember) -> ArchiveMember:
@@ -76,17 +89,16 @@ def reroot_absolute(member: ArchiveMember) -> ArchiveMember:
     archive (``tar -P`` stores both with their ``/``). A symlink's target is left as
     stored: it is a filesystem path, and an absolute one is refused as an escape.
 
+    Only a rooted name is re-rooted (:func:`_is_rooted`); a drive-relative ``C:x`` is
+    left for :func:`check_universal` to refuse.
+
     Returns ``member`` itself when there is nothing to change.
     """
     changes: dict[str, object] = {}
-    if _is_absolute(member.name):
+    if _is_rooted(member.name):
         changes["name"] = strip_absolute_root(member.name)
     target = member.link_target
-    if (
-        member.type is MemberType.HARDLINK
-        and target is not None
-        and _is_absolute(target)
-    ):
+    if member.type is MemberType.HARDLINK and target is not None and _is_rooted(target):
         changes["link_target"] = strip_absolute_root(target)
     return member.replace(**changes) if changes else member
 
@@ -456,7 +468,11 @@ def _collapse_dotdot(name: str) -> str:
         segment = parts[index]
         separator = parts[index + 1] if index + 1 < len(parts) else ""
         if segment == "..":
-            # Drop the segment this one climbs out of, with its separator.
+            # Drop the segment this one climbs out of, with its separator. An empty
+            # or "." segment is not a directory to climb out of, so it goes too and
+            # the ".." carries on to the real segment before it (a\.\..\b is b).
+            while kept and kept[-2] in ("", "."):
+                del kept[-2:]
             if kept:
                 del kept[-2:]
             continue
@@ -476,13 +492,17 @@ def _sanitize_segment(segment: str) -> str:
 
 
 def _sanitize_path(name: str) -> str:
-    """The path-level rewrites shared by a member name and a hardlink target."""
+    """Every ``sanitize_names`` rewrite of one path: a member name or a hardlink target."""
     if not name.isascii():
         name = "".join(c for c in name if c not in BIDI_REORDERING_CONTROLS)
     name = name.replace("\x00", "_")
-    if _is_absolute(name):
-        name = strip_absolute_root(name)
-    return _collapse_dotdot(name)
+    # Only a rooted name loses its root. A drive-relative "a:b" is kept, and the
+    # segment rewrite below turns its colon into "_".
+    name = _collapse_dotdot(strip_absolute_root(name))
+    return "".join(
+        part if part in ("/", "\\") else _sanitize_segment(part)
+        for part in _SEP_KEEP_SPLIT.split(name)
+    )
 
 
 def sanitize_names(member: ArchiveMember) -> ArchiveMember:
@@ -492,7 +512,7 @@ def sanitize_names(member: ArchiveMember) -> ArchiveMember:
     from your own filter) to extract every member that has a safe place to go under a
     rewritten name, instead of refusing the members with an unsafe one. It changes:
 
-    - an absolute name (``/etc/x``, ``C:\\x``, ``\\\\host\\share\\x``): the root
+    - a rooted name (``/etc/x``, ``C:\\x``, ``\\\\host\\share\\x``): the root
       is dropped, so the member lands at ``etc/x`` inside the destination. ``STANDARD``
       and ``TRUSTED`` already do this; under ``STRICT`` it happens only with this filter.
     - a ``..`` component: resolved against the segment before it (``a/../b`` → ``b``),
@@ -503,9 +523,12 @@ def sanitize_names(member: ArchiveMember) -> ArchiveMember:
       ``_``.
     - a NUL character: becomes ``_``.
 
-    A hardlink's target gets the same rewrite, so it still names the member it linked
-    to. A symlink's target is left as stored: it is a path on the filesystem, and one
-    that points outside the destination is still refused.
+    A hardlink's target gets the same rewrite. That keeps the target inside the
+    destination, which extraction checks; it does not choose the linked member, which
+    was resolved from the stored target when the archive was listed. A hardlink whose
+    stored target names no member (``../a``) still fails. A symlink's target is left as
+    stored: it is a path on the filesystem, and one that points outside the destination
+    is still refused.
 
     Two members can end up with the same name (``a/../x`` and ``x``). The second is then
     handled by the ``overwrite`` option like any other clash. The result's
@@ -515,10 +538,6 @@ def sanitize_names(member: ArchiveMember) -> ArchiveMember:
     """
     changes: dict[str, object] = {}
     name = _sanitize_path(member.name)
-    parts = _SEP_KEEP_SPLIT.split(name)
-    name = "".join(
-        part if part in ("/", "\\") else _sanitize_segment(part) for part in parts
-    )
     if name != member.name:
         changes["name"] = name
     target = member.link_target

@@ -1001,7 +1001,8 @@ class AbortOn(str, Enum):
     # replaced, skipped, errored or renamed. The trigger is the collision, not its
     # outcome. Raises NameCollisionError.
     NAME_COLLISION = "name_collision"
-    # A name rewritten to its portable spelling. A narrow escape hatch for callers who
+    # A name rewritten to its portable spelling, or an absolute name re-rooted inside
+    # the destination (STANDARD / TRUSTED). A narrow escape hatch for callers who
     # refuse any on-disk name differing from the archive's — mirroring tools, forensic
     # extracts, byte-fidelity checks — and NOT part of ordinary strict extraction: no
     # preset or policy level implies it. To *audit* rewrites read
@@ -1100,11 +1101,13 @@ class ExtractionResult:
     # On an OVERWRITTEN result it retains the destination the member did write to, so a
     # caller can join the pair to the replacing member's ``path``.
     requested_path: Path | None = None
-    # The member's full relative name BEFORE the portable-name rewrite (O3 trailing
-    # dot/space strip, O7 percent-escape), or ``None`` when no rewrite occurred. Distinct
-    # from ``member.name`` (the archive's spelling) and from ``path`` (the final on-disk
-    # spelling): a caller ``filter`` rename followed by a portable rewrite produces three
-    # spellings, and only this field records the middle one.
+    # The member's full relative name BEFORE a safety rewrite that reached disk, or
+    # ``None`` when none did. The safety rewrites are the portable-name rewrite (O3
+    # trailing dot/space strip, O7 percent-escape) and the absolute-name re-root
+    # (``/etc/x`` -> ``etc/x``); after a re-root this is the stored name. Otherwise it
+    # is distinct from ``member.name`` (the archive's spelling) and from ``path`` (the
+    # final on-disk spelling): a caller ``filter`` rename followed by a portable rewrite
+    # produces three spellings, and only this field records the middle one.
     presented_name: str | None = None
     # Set together, and only when one failed hardlink source causes N FAILED link results:
     # those N results share one group id and carry ``failure_group_size=N``. The id is

@@ -136,20 +136,24 @@ to a safe name; the checks run on whatever it returns. The default path-safety b
 is reject/raise, with one rewrite:
 
 - **Absolute names are re-rooted under `STANDARD` and `TRUSTED`.** Before the filter
-  runs, a name with a leading `/` or `\`, a drive letter or a UNC prefix loses that
-  root, repeatedly (`/etc/x` → `etc/x`, `C:\x` → `x`), and the member extracts inside
-  `dest`. A HARDLINK's absolute `link_target` is re-rooted the same way, since it names
+  runs, a rooted name (a leading `/` or `\`, which covers UNC, or a drive letter
+  followed by `/` or `\`) loses that root, repeatedly (`/etc/x` → `etc/x`, `C:\x` →
+  `x`), and the member extracts inside `dest`. A drive-relative name (`C:x`) is not
+  rooted: it is also an ordinary POSIX name (`a:b`), so it is not rewritten and the
+  check below refuses it. A HARDLINK's absolute `link_target` is re-rooted the same way, since it names
   another member of the archive. A SYMLINK target is not re-rooted. `STRICT` does not
   re-root, so the check below refuses the member. This matches GNU tar, bsdtar, unzip,
   7-Zip and Python's `tarfile` `data` filter, which all strip the root. A re-root is a
-  name rewrite for `AbortOn.NAME_SANITIZED`, which raises `NameRewrittenError` on it.
+  name rewrite: `AbortOn.NAME_SANITIZED` raises `NameRewrittenError` on it and
+  `presented_name` records it, unless the filter dropped the member or renamed it.
 - **`archivey.sanitize_names`** is a public `MemberFilter` that rewrites instead of
-  refusing, at any policy: it strips an absolute root, resolves `..` against the
+  refusing, at any policy: it strips a root, resolves `..` against the
   segment before it and drops a `..` with nothing to climb out of (`a/../b` → `b`,
   `../x` → `x`), removes bidi override/isolate characters, appends `_` to a
   Windows-reserved stem (`CON.txt` → `CON_.txt`), and replaces `:` and NUL with `_`.
-  It applies the same path rewrites to a HARDLINK target and leaves a SYMLINK target
-  as stored. It returns the member unchanged when nothing needs rewriting.
+  It applies the same rewrites to a HARDLINK target, which keeps the target inside
+  `dest` for the containment check (the linked member was resolved at listing and does
+  not change), and leaves a SYMLINK target as stored. It returns the member unchanged when nothing needs rewriting.
 
 The implementation SHALL enforce defense in depth: first a string check rejects
 absolute paths, Windows drive/UNC roots, any `..` component split on `/` or `\`,
@@ -218,6 +222,9 @@ read back.
 | `"/etc/x"` or `"C:/etc/x"` under `STANDARD` / `TRUSTED` | Extracted at `dest/etc/x`; `result.member.name` keeps the stored name |
 | HARDLINK `"/b"` → `"/a"` under `STANDARD` / `TRUSTED` | Re-rooted to `b` → `a`; linked to the extracted `a` |
 | Absolute name, `abort_on={NAME_SANITIZED}`, `STANDARD` | `NameRewrittenError`; no report |
+| The same, with a filter that drops or renames the member | No error; the filter's outcome stands |
+| `"/etc/x"` under `STANDARD` | `presented_name="/etc/x"` |
+| `"a:b"` (drive-relative) at any policy | `FilterRejectionError`; never re-rooted to `b` |
 | Caller filter returns an absolute or `..` name | `FilterRejectionError`; the check runs on the filter's output |
 | `"../evil"` with `filter=sanitize_names` | Extracted at `dest/evil`, all policies |
 | `"a/../b"` with `filter=sanitize_names` | Extracted at `dest/b`, all policies |
@@ -749,11 +756,14 @@ overwrite/rename resolution; it equals `path` for an ordinary write, and
 retains the destination the member did write to, so a caller can join it to the
 replacing member's `path`.
 
-`presented_name` SHALL carry the member's full relative name **before** portable
-rewriting, and SHALL be `None` when no rewrite occurred. It is distinct from
-`member.name` (the archive's spelling) and from `path` (the final on-disk spelling):
-a caller `filter` rename followed by a portable rewrite produces three spellings, and
-only `presented_name` records the middle one.
+`presented_name` SHALL carry the member's full relative name **before** a safety
+rewrite, and SHALL be `None` when no safety rewrite reached disk. The safety rewrites
+are the portable-name rewrite and the absolute-name re-root. After a re-root it is the
+stored name, even if a portable rewrite followed. A re-root the caller's `filter`
+replaced with a name of its own is not a rewrite. `presented_name` is distinct from
+`path` (the final on-disk spelling) and, except after a re-root, from `member.name`
+(the archive's spelling): a caller `filter` rename followed by a portable rewrite
+produces three spellings, and only `presented_name` records the middle one.
 
 `collided_with` SHALL carry the already-written destination this member collided
 with, and SHALL be `None` when nothing this run held the name. It SHALL be set under
@@ -1069,7 +1079,7 @@ class AbortOn(str, Enum):
 | --- | --- | --- |
 | `BLOCKED_MEMBER` | a member is blocked by a universal path-safety check or a policy filter | the underlying `FilterRejectionError` |
 | `NAME_COLLISION` | a second member resolves to an already-written collision key (non-`TRUSTED`) | `NameCollisionError` |
-| `NAME_SANITIZED` | a name is rewritten to its portable spelling | `NameRewrittenError` |
+| `NAME_SANITIZED` | a name is rewritten to its portable spelling, or an absolute name is re-rooted | `NameRewrittenError` |
 
 `NAME_SANITIZED` is deliberately unlike the other two: it fires on a **successful**
 safety rewrite rather than on a refusal or an ambiguity. It SHALL be documented as a
