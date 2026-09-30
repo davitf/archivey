@@ -26,8 +26,17 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import IO, BinaryIO, cast
 
-from archivey.exceptions import PackageNotInstalledError, ReadError
-from archivey.internal.streams.child_process import spawn, wait_or_kill
+from archivey.exceptions import (
+    PackageNotInstalledError,
+    ReadError,
+    ResourceLimitError,
+)
+from archivey.internal.streams.child_process import (
+    describe_exit,
+    is_system_kill,
+    spawn,
+    wait_or_kill,
+)
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.terminal import display_path
 
@@ -247,6 +256,28 @@ def spawn_for_stdout(
     # typeshed types Popen[bytes].stdout as IO[bytes], not BinaryIO; the pipe is opened
     # in binary mode, so it is one at runtime.
     return proc, cast(BinaryIO, proc.stdout)
+
+
+def signal_exit_error(name: str, returncode: int) -> ReadError | ResourceLimitError:
+    """The error for a program that a signal ended after it closed its output.
+
+    Not a verdict on the archive, which is why this never raises ``CorruptionError``
+    or ``TruncatedError``: SIGKILL comes from outside (most often the out-of-memory
+    killer), and is reported as the ppmd and rapidgzip children report it. Any other
+    signal is a ``ReadError``, the crash signals included: ``unar`` 1.10.1 crashes on
+    some valid archives, so a crash of these programs does not condemn the data.
+    """
+    how = describe_exit(returncode)
+    if is_system_kill(returncode):
+        return ResourceLimitError(
+            f"{name} was killed ({how}) while reading data. SIGKILL comes from "
+            "outside the program, most often the system's out-of-memory killer, so "
+            "the archive may be valid; read it again with more memory available."
+        )
+    return ReadError(
+        f"{name} stopped on a signal ({how}) while reading data; the archive may be "
+        "valid, so try reading it again."
+    )
 
 
 class ProcessOutputStream(DelegatingStream):

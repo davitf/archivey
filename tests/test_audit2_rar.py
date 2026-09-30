@@ -31,6 +31,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     EncryptionError,
+    ResourceLimitError,
     UnsupportedFeatureError,
 )
 from tests.conftest import requires_binary
@@ -321,22 +322,17 @@ def test_unrar_reads_the_volumes_archivey_parsed(tmp_path: Path) -> None:
 # --- R22: an unrar/unar killed from outside is reported as a truncated archive --
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R22: an unrar/unar child killed by SIGKILL (the OOM killer) mid-member is "
-        "reported as TruncatedError, a verdict on the archive; the ppmd and "
-        "rapidgzip children map the same death to ResourceLimitError"
-    ),
-)
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.parametrize("signame", ["SIGKILL", "SIGTERM"])
 @pytest.mark.parametrize("decompressor", ["unrar", "unar"])
 def test_externally_killed_decompressor_is_not_reported_as_truncation(
-    decompressor: str, monkeypatch: pytest.MonkeyPatch
+    decompressor: str, signame: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``child_process``: a child ended from outside says nothing about the data.
 
     ``seek_respawn_solid__.rar`` holds a 1 MiB member, far more than a pipe buffer,
     so the child is still blocked writing when it is killed after the first read.
+    ``unrar`` catches SIGTERM and exits 255 (user break) instead of dying on it.
     """
     if shutil.which(decompressor) is None:
         pytest.skip(f"requires {decompressor}")
@@ -361,11 +357,13 @@ def test_externally_killed_decompressor_is_not_reported_as_truncation(
             (proc,) = procs
             if proc.poll() is not None:
                 pytest.skip("the child finished before it could be killed")
-            proc.send_signal(signal.SIGKILL)
+            proc.send_signal(getattr(signal, signame))
             with pytest.raises(ArchiveyError) as info:
                 while stream.read(1 << 16):
                     pass
     assert not isinstance(info.value, CorruptionError), repr(info.value)
+    if signame == "SIGKILL":
+        assert isinstance(info.value, ResourceLimitError), repr(info.value)
 
 
 # --- R23: the RAR5 archive comment is read by its unpacked size ----------------

@@ -56,6 +56,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
+    ReadError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -105,7 +106,7 @@ from archivey.internal.base_reader import (
 )
 from archivey.internal.config import KeyDerivationBudget
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.external.cli import ProcessOutputStream
+from archivey.internal.external.cli import ProcessOutputStream, signal_exit_error
 from archivey.internal.external.unar import (
     UnarOutputStream,
     find_unar,
@@ -605,8 +606,11 @@ class _UnrarOwnedStream(ProcessOutputStream):
 
     On close it maps ``unrar``'s exit code (RARLAB) to a typed error so a corrupt,
     truncated, or wrong-password member surfaces honestly instead of a silent short
-    read. Only a self-exit code maps: when *we* terminate the process (early close /
-    teardown) the return code is negative and no error is raised. ``named_member``
+    read. When *we* terminate the process (early close / teardown) the return code
+    is negative and no error is raised. A signal that ends ``unrar`` after it closed
+    its output came from elsewhere (or was a crash), and maps to
+    ``ResourceLimitError`` / ``ReadError`` (:func:`signal_exit_error`), never to a
+    truncation the digest check would otherwise report. ``named_member``
     distinguishes a per-member open (``-n`` mask) — where "no files matched" (code 10)
     means the member could not be read — from the solid ALL-pipe, where an empty match
     is not an error.
@@ -641,7 +645,12 @@ class _UnrarOwnedStream(ProcessOutputStream):
         self._named_member = named_member
         self._has_verifiable_hash = has_verifiable_hash
         self._encrypted = encrypted
+        self._saw_eof = False
         super().__init__(stdout, proc)
+
+    def _at_eof(self) -> None:
+        self._saw_eof = True
+        super()._at_eof()
 
     def tell(self, /) -> int:
         if self.closed:
@@ -653,8 +662,23 @@ class _UnrarOwnedStream(ProcessOutputStream):
     def _raise_for_returncode(self, rc: int) -> None:
         """Map an unrar exit code to an archivey error, or return quietly."""
         # RARLAB unrar exit codes: 11 bad password, 3 CRC/corrupt data, 2 fatal
-        # error, 10 no files matched. Codes 0 (success) and 1 (warning) pass; a
-        # negative code means we terminated it (early close) — not an error.
+        # error, 10 no files matched. Codes 0 (success) and 1 (warning) pass.
+        if rc < 0:
+            # A signal. Before end of file it is archivey's doing: close stopped a
+            # program that was still writing, or the pipe it closed ended it. After
+            # end of file something else ended unrar (the out-of-memory killer, an
+            # operator) or it crashed; either way the pipe was cut short, and the
+            # digest check below would call that a truncated archive.
+            if self._saw_eof:
+                raise signal_exit_error("unrar", rc)
+            return
+        if rc == 255 and self._saw_eof:
+            # ``USER_BREAK``: unrar catches SIGINT and SIGTERM and exits 255, so a
+            # stop from outside arrives as this code rather than as a signal.
+            raise ReadError(
+                "unrar was stopped from outside (exit 255, user break) while reading "
+                "data; the archive may be valid, so try reading it again."
+            )
         if rc == 11:
             raise EncryptionError("Incorrect RAR password or encrypted member")
         # RAR4 wrong/missing password: often exit 3 + empty stdout, not exit 11.

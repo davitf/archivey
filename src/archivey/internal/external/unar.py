@@ -39,11 +39,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import BinaryIO
 
-from archivey.exceptions import CorruptionError, EncryptionError, ReadError
+from archivey.exceptions import CorruptionError, EncryptionError
 from archivey.internal.external.cli import (
     Banner,
     CliToolFinder,
     ProcessOutputStream,
+    signal_exit_error,
     spawn_for_stdout,
 )
 
@@ -165,9 +166,12 @@ class UnarOutputStream(ProcessOutputStream):
     close if the child exited after that read. A child still running at close is
     stopped and its status not checked. ``unar`` exits 0 on success and 1 or 2
     on a failure it noticed (bad data, missing password). A negative status is a
-    signal, and before end of file it is a crash, which ``unar`` 1.10.1 does on some
-    archives. A close before end of file checks nothing: archivey closed the pipe on a
-    child that was still writing, so whatever status follows is archivey's doing.
+    signal: a crash, which ``unar`` 1.10.1 does on some archives, or a kill from
+    outside. Neither is a verdict on the data (:func:`signal_exit_error`), and both
+    are reported even when the caller verifies digests, whose short read would
+    otherwise say the archive is truncated. A close before end of file checks
+    nothing: archivey closed the pipe on a child that was still writing, so whatever
+    status follows is archivey's doing.
 
     ``unar`` also returns exit 0 with missing or short output on some archives, so exit
     status is not the integrity check. The caller verifies the declared size and any
@@ -209,8 +213,13 @@ class UnarOutputStream(ProcessOutputStream):
     def _raise_for_returncode(self, rc: int) -> None:
         # A status before end of file is archivey's doing: it closed the pipe on a
         # program that was still writing.
-        if rc == 0 or self._has_verifiable_digest or not self._saw_eof:
+        if rc == 0 or not self._saw_eof:
             return
-        if rc > 0:
-            raise CorruptionError(f"unar reported a failure (exit {rc}) reading data")
-        raise ReadError(f"unar stopped on signal {-rc} while reading data")
+        if rc < 0:
+            # Checked before the digest: a program ended by a signal leaves the
+            # caller's size check a short read to report, which would name a
+            # truncated archive for what happened to the process.
+            raise signal_exit_error("unar", rc)
+        if self._has_verifiable_digest:
+            return
+        raise CorruptionError(f"unar reported a failure (exit {rc}) reading data")
