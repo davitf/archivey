@@ -1151,7 +1151,7 @@ class ZipReader(BaseArchiveReader):
 
         Parses only the fixed 30-byte local header plus the local name/extra lengths
         (central-directory extra can differ). Rejects truncated/bad magic headers,
-        a local name that disagrees with the CDH, and a data offset past
+        a local name that disagrees with the CDH, and a header or data offset past
         ``_MAX_DATA_OFFSET``. Name/extra lengths are uint16; 65535 is legal, so they
         are not capped separately.
         """
@@ -1162,6 +1162,12 @@ class ZipReader(BaseArchiveReader):
                 raise _closed_archive_error()
             saved = fp.tell()
             try:
+                # A ZIP64 extra can declare any uint64; past ssize_t, ``seek`` raises a
+                # raw OverflowError. Refuse an absurd offset before seeking to it.
+                if not 0 <= info.header_offset <= _MAX_DATA_OFFSET:
+                    raise zipfile.BadZipFile(
+                        f"Absurd local-header offset: {info.header_offset}"
+                    )
                 fp.seek(info.header_offset)
                 fheader = read_exact(fp, 30)
                 if len(fheader) != 30 or fheader[:4] != b"PK\x03\x04":

@@ -23,6 +23,7 @@ import pytest
 
 import archivey
 from archivey.config import AcceleratorMode, ArchiveyConfig
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -162,11 +163,6 @@ def _zip64_header_offset_zip(offset: int, *, symlink: bool = False) -> bytes:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=OverflowError,
-    reason="Z5: ZIP64 header_offset >= 2**63 makes fp.seek raise a raw OverflowError",
-)
 @pytest.mark.parametrize("offset", [2**63, 2**64 - 1])
 def test_zip64_header_offset_past_ssize_max_is_typed(offset: int) -> None:
     blob = _zip64_header_offset_zip(offset)
@@ -176,23 +172,12 @@ def test_zip64_header_offset_past_ssize_max_is_typed(offset: int) -> None:
             ar.read(member)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=OverflowError,
-    reason="Z5: extract() from a stream ends with a raw OverflowError",
-)
 def test_zip64_header_offset_past_ssize_max_extract_is_typed(tmp_path: Path) -> None:
     blob = _zip64_header_offset_zip(2**63)
     with pytest.raises(ArchiveyError):
         archivey.extract(io.BytesIO(blob), tmp_path / "out")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=OverflowError,
-    reason="Z5: members() reads a symlink's target, so the raw OverflowError ends the "
-    "whole listing",
-)
 def test_zip64_header_offset_past_ssize_max_symlink_lists() -> None:
     blob = _zip64_header_offset_zip(2**63, symlink=True)
     # A damaged link target leaves the link listed without a target
@@ -200,6 +185,9 @@ def test_zip64_header_offset_past_ssize_max_symlink_lists() -> None:
     with archivey.open_archive(io.BytesIO(blob)) as ar:
         (member,) = ar.members()
     assert member.link_target is None
+    assert [
+        (d.code, getattr(d.context, "reason", None)) for d in member.diagnostics
+    ] == [(DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE, "target_data_damaged")]
 
 
 # ---------------------------------------------------------------------------------------
