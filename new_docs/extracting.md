@@ -76,7 +76,7 @@ aren't failures. It's empty by default:
 | `abort_on` value | Raises when |
 |---|---|
 | `"blocked_member"` | A member is refused |
-| `"name_collision"` | Two members end up at the same path, whatever `overwrite` does about it |
+| `"name_collision"` | Two members end up at the same path, whatever `overwrite` does about it (not checked under `"trusted"`) |
 | `"name_sanitized"` | A name is rewritten to its portable spelling |
 
 After an abort there's no report, and the files already written stay on disk.
