@@ -9,6 +9,7 @@ the symlink-redirection cases that only a real filesystem answers (threat model 
 from __future__ import annotations
 
 import io
+import logging
 import os
 import re
 import tarfile
@@ -237,6 +238,55 @@ def test_filesystem_dependent_outcomes_match(
         assert dry == real, policy
 
 
+def _dest_named_links(dest: Path) -> list[tuple[str, str, object]]:
+    """Links whose targets name ``dest`` itself, so each run needs its own archive."""
+    return [
+        ("data", "file", b"content"),
+        # Absolute, into dest: kept by a real extraction.
+        ("abs", "sym", f"{dest}/data"),
+        ("abs-dotdot", "sym", f"{dest}/sub/../data"),
+        # A file written through an absolute link to a directory in dest.
+        ("sub", "dir", None),
+        ("abs-dir", "sym", f"{dest}/sub"),
+        ("abs-dir/f", "file", 0),
+        # Absolute, outside dest: refused by a real extraction too.
+        ("abs-out", "sym", "/archivey-dry-run-test-elsewhere"),
+        # Relative, out of dest by name and back in.
+        ("up", "sym", f"../{dest.name}/data"),
+        # O22 on an absolute target: inside when made, outside once "a" is dest.
+        ("later", "sym", f"{dest}/a/b/../../data"),
+        ("a", "sym", "."),
+        # A hardlink whose (archive-relative) target is absolute.
+        ("hard-abs", "hard", f"{dest}/data"),
+    ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_link_targets_that_name_dest_match(streaming: bool, tmp_path: Path) -> None:
+    for policy in _POLICIES:
+        work = tmp_path / policy.value
+        (work / "tmp").mkdir(parents=True)
+        tempfile.tempdir = str(work / "tmp")
+        blobs = {
+            dry_run: _tar(_dest_named_links(work / kind / "out"))
+            for dry_run, kind in ((False, "real"), (True, "dry"))
+        }
+        calls = iter((False, True))
+        real, dry = _both(
+            lambda: io.BytesIO(blobs[next(calls)]),
+            work,
+            policy=policy,
+            open_kwargs={"streaming": streaming},
+        )
+        assert dry == real, policy
+        statuses = {entry[0]: entry[1] for entry in dry}
+        assert statuses["abs"] is ExtractionStatus.EXTRACTED
+        assert statuses["up"] is ExtractionStatus.EXTRACTED
+        assert statuses["abs-dir/f"] is ExtractionStatus.EXTRACTED
+        assert statuses["later"] is ExtractionStatus.BLOCKED
+
+
 # --- what the dry run does and does not touch ---------------------------------------
 
 
@@ -295,6 +345,62 @@ def test_destination_that_is_a_file_is_refused(tmp_path: Path) -> None:
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
+def test_destination_under_a_file_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "afile").write_bytes(b"")
+    blob = _tar([("a", "file", 0)])
+    raised = []
+    for dry_run in (False, True):
+        dest = tmp_path / "afile" / ("dry" if dry_run else "real") / "out"
+        with open_archive(io.BytesIO(blob)) as reader:
+            with pytest.raises(OSError) as caught:
+                reader.extract_all(dest, dry_run=dry_run)
+        raised.append(caught.value)
+    real, dry = raised
+    if os.name != "nt":
+        assert type(dry) is type(real)
+    assert "archivey-dry-run-" not in str(dry)
+    assert list((tmp_path / "tmp").iterdir()) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes anywhere"
+)
+def test_errors_and_warnings_name_dest(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The directory is locked before its file is written, so the write fails.
+    blob = _tar([("ro", "dir", 0o555), ("ro/f", "file", 0)])
+    dest = tmp_path / "out"
+    with caplog.at_level(logging.WARNING, logger="archivey"):
+        with open_archive(io.BytesIO(blob)) as reader:
+            report = reader.extract_all(
+                dest,
+                policy=ExtractionPolicy.TRUSTED,
+                on_error=OnError.CONTINUE,
+                dry_run=True,
+            )
+    failed = report.results[-1]
+    assert failed.status is ExtractionStatus.FAILED
+    assert isinstance(failed.error, PermissionError)
+    assert str(dest / "ro") in str(failed.error)
+    assert "archivey-dry-run-" not in str(failed.error)
+    assert str(dest / "ro") in caplog.text
+    assert "archivey-dry-run-" not in caplog.text
+
+    with open_archive(io.BytesIO(blob)) as reader:
+        with pytest.raises(PermissionError) as caught:
+            reader.extract_all(
+                dest,
+                policy=ExtractionPolicy.TRUSTED,
+                on_error=OnError.STOP,
+                dry_run=True,
+            )
+    assert str(dest / "ro") in str(caught.value)
+    assert "archivey-dry-run-" not in str(caught.value)
+    _assert_nothing_left(tmp_path, dest)
+
+
 def test_scratch_is_removed_when_the_archive_locks_its_own_directories(
     tmp_path: Path,
 ) -> None:
@@ -342,6 +448,46 @@ def test_cli_dry_run_writes_nothing(
     assert "blocked: ../up" in err
     assert "dry run, nothing written: 1 extracted" in err
     assert sorted(p.name for p in tmp_path.iterdir()) == ["bundle.tar", "tmp"]
+    assert list((tmp_path / "tmp").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("root", "existing", "expected"),
+    [
+        ("src", None, "would move to src/"),
+        ("bundle", None, "would remove wrapper; content at bundle/"),
+        ("src", "src", "would move to src/, which exists already"),
+    ],
+    ids=["moved", "flattened", "onto-existing"],
+)
+def test_cli_dry_run_names_where_a_single_root_lands(
+    root: str,
+    existing: str | None,
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blob = _tar([(f"{root}/a", "file", b"x"), (f"{root}/b", "file", b"y")])
+    runs = {}
+    for dry_run in (False, True):
+        cwd = tmp_path / ("dry" if dry_run else "real")
+        cwd.mkdir()
+        (cwd / "bundle.tar").write_bytes(blob)
+        if existing is not None:
+            (cwd / existing).mkdir()
+        monkeypatch.chdir(cwd)
+        argv = ["x", "bundle.tar", "--hide-progress"]
+        runs[dry_run] = _cli([*argv, "--dry-run"] if dry_run else argv)
+    (real_code, real_err), (dry_code, dry_err) = runs[False], runs[True]
+    assert expected in dry_err
+    assert dry_code == real_code
+    # The summary names where the real run put the content.
+    assert (
+        real_err.splitlines()[-1].split(" → ")[1]
+        == (dry_err.splitlines()[-1].split(" → ")[1])
+    )
+    expected_left = ["bundle.tar"] + ([existing] if existing else [])
+    assert sorted(p.name for p in (tmp_path / "dry").iterdir()) == expected_left
     assert list((tmp_path / "tmp").iterdir()) == []
 
 

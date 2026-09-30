@@ -28,7 +28,7 @@ import stat
 import tempfile
 import uuid
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, BinaryIO, Callable, Collection, assert_never
 
 from archivey.config import ExtractionLimits
@@ -441,11 +441,17 @@ class ExtractionCoordinator:
         # ``run()``.
         self._links: LinkWatch | None = None
         self._dest_root = Path()
-        # Dry run only, both set per ``run()``: the private directory the pass writes
-        # into, and the destination the caller named, which every path the run reports
-        # is translated back to (``_shown``). ``None`` on a real run.
+        # Dry run only, set per ``run()``: the directory the pass extracts into, inside
+        # a private scratch directory, and the destination the caller named, which
+        # every path the run reports is translated back to (``_shown``). ``None`` on a
+        # real run.
         self._scratch: Path | None = None
         self._shown_dest: Path | None = None
+        # Dry run only: the caller's destination as the absolute path they gave and as
+        # it resolves, which an absolute link target is matched against
+        # (``_link_target_on_disk``), and each rewritten target's original, for errors.
+        self._dest_spellings: tuple[PurePath, ...] = ()
+        self._shown_targets: dict[str, str] = {}
         # Dry run only: where FILE bodies go instead of the file (``os.devnull``).
         self._sink: BinaryIO | None = None
 
@@ -466,20 +472,40 @@ class ExtractionCoordinator:
         checked the way a real run checks it and is never created. Paths in the results
         and in errors are reported under ``dest``, and the scratch directory is removed
         before this returns or raises.
+
+        Where the scratch tree cannot stand in for ``dest``, the run says less than a
+        real one would. A link target that leaves ``dest`` is resolved outside the
+        scratch tree, so one that comes back into ``dest`` through a symlink outside it,
+        or climbs above the directory that holds it, is refused where a real run could
+        accept it; an absolute target is matched against ``dest`` by name and is not
+        affected. And everything is written to one filesystem, so a hardlink never falls
+        back to a copy: the bytes such a copy counts against ``max_extracted_bytes`` in
+        a ``dest`` that spans a mount point are not counted.
         """
         dest = Path(dest)
         if not self._dry_run:
             return self._run(reader, dest)
+        given = Path(os.path.abspath(dest))
+        try:
+            resolved = given.resolve()
+        except (OSError, RuntimeError):
+            resolved = given
         # Resolved, so a path built from the resolved root (``dest_root``) and one built
-        # from ``dest`` translate the same way (macOS's /var -> /private/var).
+        # from ``dest`` translate the same way (macOS's /var -> /private/var). The pass
+        # extracts into a directory named like dest, one level down, so a relative link
+        # target that climbs out of dest by name (``../out/x``) comes back in.
         scratch = Path(tempfile.mkdtemp(prefix=_DRY_RUN_PREFIX)).resolve()
-        self._scratch = scratch
+        work = scratch / (resolved.name or "dest")
+        self._scratch = work
         self._shown_dest = dest
+        self._dest_spellings = (given, resolved)
+        self._shown_targets = {}
         try:
             with open(os.devnull, "wb") as sink:
                 self._sink = sink
                 try:
-                    results = self._run(reader, scratch)
+                    work.mkdir()
+                    results = self._run(reader, work)
                 except OSError as exc:
                     self._rebase_os_error(exc)
                     raise
@@ -489,6 +515,37 @@ class ExtractionCoordinator:
             _remove_scratch(scratch)
             self._scratch = None
             self._shown_dest = None
+            self._dest_spellings = ()
+            self._shown_targets = {}
+
+    @property
+    def _on_disk(self) -> Callable[[str], str] | None:
+        """``check_universal``'s ``link_target_on_disk``: set on a dry run only."""
+        return self._link_target_on_disk if self._scratch is not None else None
+
+    def _link_target_on_disk(self, target: str) -> str:
+        """The target a link is created with: under a dry run, an absolute target that
+        names a path under dest is rewritten to the same path under the scratch copy.
+
+        Matched by name against dest as given and as it resolves, not resolved itself,
+        so ``..`` components and symlinks on the way are left for the checks that
+        resolve the link. Any other target is returned as it is.
+        """
+        if self._scratch is None:
+            return target
+        pure = PurePath(target)
+        if not pure.anchor:
+            return target
+        if not pure.drive and self._dest_spellings:
+            # Windows root-relative (a target like \x): pathlib joins it onto the
+            # link's own drive, which is dest's. A no-op elsewhere, where drive is "".
+            pure = PurePath(self._dest_spellings[0].drive + target)
+        for spelling in self._dest_spellings:
+            if pure.is_relative_to(spelling):
+                on_disk = str(self._scratch / pure.relative_to(spelling))
+                self._shown_targets[on_disk] = target
+                return on_disk
+        return target
 
     def _shown(self, path: Path) -> Path:
         """``path`` as the caller sees it: a dry run's scratch path under their dest."""
@@ -820,6 +877,9 @@ class ExtractionCoordinator:
                 # instead of a bare OSError. (Rewriting such names to an always-portable
                 # spelling so the write succeeds is the separate, policy-gated
                 # threat-model O7 follow-up.)
+                if isinstance(exc, OSError):
+                    # Before it is recorded or logged: a dry run's error names dest.
+                    self._rebase_os_error(exc)
                 error: ArchiveyError | OSError = exc
                 if isinstance(exc, OSError) and exc.errno == errno.EILSEQ:
                     error = ExtractionError(
@@ -1027,7 +1087,10 @@ class ExtractionCoordinator:
             except FileNotFoundError:
                 written_paths.discard(path)
             except OSError as exc:
-                logger.warning("Could not remove superseded %r: %s", str(path), exc)
+                self._rebase_os_error(exc)
+                logger.warning(
+                    "Could not remove superseded %r: %s", str(self._shown(path)), exc
+                )
                 written_paths.add(path)
                 key = collision_key(self._rel_name(dest, path), self._policy)
                 collision_map[key] = _Claim(path, index)
@@ -1051,14 +1114,14 @@ class ExtractionCoordinator:
         filter skipped it, and ``presented_name`` is the pre-rewrite full name when the
         portable-name policy rewrote it, else ``None``. Raises a ``FilterRejectionError``
         on a universal violation."""
-        check_universal(original, dest_root)
+        check_universal(original, dest_root, link_target_on_disk=self._on_disk)
         transformed = POLICY_TRANSFORMS[self._policy](original)
         if self._filter is not None:
             transformed = self._filter(transformed)
             if transformed is None:
                 return None, None
             # A caller filter can rename/relink; re-run the universal check on the result.
-            check_universal(transformed, dest_root)
+            check_universal(transformed, dest_root, link_target_on_disk=self._on_disk)
         if self._reader is not None and self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has
             # read yet: `read_link_targets=False`, or a streaming pass whose own read
@@ -1077,7 +1140,9 @@ class ExtractionCoordinator:
             if original.link_target is not None:
                 if transformed is not original:
                     transformed = transformed.replace(link_target=original.link_target)
-                check_universal(transformed, dest_root)
+                check_universal(
+                    transformed, dest_root, link_target_on_disk=self._on_disk
+                )
         # Portable-name policy on the FINAL name — after the user filter, so a filter rename
         # is checked too, and TRUSTED keeps faithful bytes. Reserved names / ':' are
         # rejected; a trailing dot/space (STRICT) or non-representable byte is rewritten to a
@@ -1233,7 +1298,9 @@ class ExtractionCoordinator:
                 written_paths.add(result.path)
                 if self._links is not None and transformed.link_target is not None:
                     self._links.track(
-                        result.path, transformed.link_target, result_index
+                        result.path,
+                        self._link_target_on_disk(transformed.link_target),
+                        result_index,
                     )
             return result
 
@@ -1561,11 +1628,13 @@ class ExtractionCoordinator:
         # A symlink is target-independent: create it even if the target was filtered out,
         # appears later, or lies outside the archive — it may dangle. Only the escape
         # check below constrains it. An os.symlink failure (unsupported FS) propagates as
-        # a per-member OnError failure; no copy-the-target fallback.
-        os.symlink(target, dest_path)
+        # a per-member OnError failure; no copy-the-target fallback. A dry run creates
+        # an absolute target that names dest pointing into its scratch copy instead.
+        on_disk = self._link_target_on_disk(target)
+        os.symlink(on_disk, dest_path)
 
         # Re-validate the symlink target AFTER creating it, resolving through the real
-        # filesystem. check_universal already rejected an absolute or escaping target at
+        # filesystem. check_universal already rejected an escaping target at
         # planning time, but that check resolves the target lexically against the tree as it
         # looked *then*. The authoritative question — where does this link actually point? —
         # can only be answered against the filesystem as it is now, because an *earlier*
@@ -1582,7 +1651,7 @@ class ExtractionCoordinator:
         # ("Symlink Escape Re-Validated at Extraction Time"); layers 1-2 are in
         # check_universal. A *later* member can still change what this link resolves
         # to; the caller records the link in ``self._links`` for that.
-        if _symlink_escapes(dest_path, target, dest_root):
+        if _symlink_escapes(dest_path, on_disk, dest_root):
             try:
                 dest_path.unlink()
             except OSError:
@@ -1724,6 +1793,8 @@ class ExtractionCoordinator:
             except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
+                if isinstance(exc, OSError):
+                    self._rebase_os_error(exc)
                 # One failed source, N failed links: the fan-out is recorded on the
                 # results themselves, so a caller can tell N separate failures from one
                 # failure seen N times without joining against a diagnostic.
@@ -1953,6 +2024,8 @@ class ExtractionCoordinator:
         except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
             raise
         except (ArchiveyError, OSError) as exc:
+            if isinstance(exc, OSError):
+                self._rebase_os_error(exc)
             self._revise_result(
                 results,
                 orphan.result_index,
@@ -2029,7 +2102,9 @@ class ExtractionCoordinator:
         for link, message in removed:
             prior = results[link.result_index]
             error = FilterRejectionError(
-                message, member_name=prior.member.name, link_target=link.target
+                message,
+                member_name=prior.member.name,
+                link_target=self._shown_targets.get(link.target, link.target),
             )
             first = first or error
             self._written_paths.discard(link.dest_path)
@@ -2086,8 +2161,35 @@ class ExtractionCoordinator:
 
     # --- filesystem helpers --------------------------------------------------------
 
+    def _check_dry_run_dest(self, dest: Path) -> None:
+        """Refuse a dry run's ``dest`` where a real run would, without creating it.
+
+        The pass itself writes into the scratch directory, which exists already. Here
+        ``dest`` gets the refusal below, and then the question ``mkdir(parents=True)``
+        would answer: the nearest part of it that exists must be a directory.
+        """
+        if dest.is_dir():
+            return
+        if os.path.lexists(dest):
+            raise ExtractionError(
+                f"Destination exists and is not a directory: {display_path(dest)}"
+            )
+        ancestor = Path(os.path.abspath(dest)).parent
+        while not os.path.lexists(ancestor) and ancestor != ancestor.parent:
+            ancestor = ancestor.parent
+        if ancestor.is_dir():
+            return
+        if ancestor.is_symlink() and not ancestor.exists():
+            # mkdir meets a dangling symlink as an existing entry.
+            raise FileExistsError(
+                errno.EEXIST, os.strerror(errno.EEXIST), str(ancestor)
+            )
+        raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(dest))
+
     def _ensure_dest_root(self, dest: Path) -> None:
-        """Ensure ``dest`` is a directory to extract into, creating it if absent.
+        """Ensure ``dest`` is a directory to extract into, creating it if absent; under
+        ``dry_run``, only refuse a ``dest`` a real run would refuse
+        (``_check_dry_run_dest``).
 
         A dest that resolves to a directory — a real directory or a symlink pointing at
         one — is reused, and members land inside the resolved target (``run`` resolves
@@ -2101,14 +2203,7 @@ class ExtractionCoordinator:
         by mistake (e.g. a CLI given a file argument where a directory was meant).
         """
         if self._shown_dest is not None:
-            # A dry run writes into its own scratch directory, which exists already. The
-            # destination the caller named is refused exactly as a real run would
-            # refuse it, and is not created.
-            if not self._shown_dest.is_dir() and os.path.lexists(self._shown_dest):
-                raise ExtractionError(
-                    "Destination exists and is not a directory: "
-                    f"{display_path(self._shown_dest)}"
-                )
+            self._check_dry_run_dest(self._shown_dest)
             return
         if dest.is_dir():  # real directory or symlink resolving to one: reuse / follow
             return

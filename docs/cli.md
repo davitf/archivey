@@ -36,7 +36,9 @@ archivey extract photos.zip -d out/ '*.py' --exclude '*_test.py'
 archivey extract photos.zip --policy trusted -d /tmp/out
 
 # Dry run: every check and every read, nothing written. Same report lines
-# and exit code as a real extraction into an empty destination.
+# and exit code as a real extraction into an empty directory. Without -d, a
+# single top-level folder is named where it would be moved to; what is
+# already there is not checked for collisions.
 archivey extract photos.zip --dry-run
 ```
 

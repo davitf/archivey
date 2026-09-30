@@ -35,7 +35,12 @@ from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
 from archivey.reader import ArchiveReader
-from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat
+from archivey.types import (
+    ArchiveFormat,
+    ArchiveMember,
+    ContainerFormat,
+    MemberType,
+)
 
 
 def _archive_stem(path: Path, *, format: ArchiveFormat) -> str:
@@ -316,6 +321,47 @@ def maybe_hoist_single_root(
     return result
 
 
+def predict_hoist(
+    wrapper: Path, report: ExtractionReport, *, err: TextIO
+) -> _HoistResult:
+    """What :func:`maybe_hoist_single_root` would do after a real run, for a dry run.
+
+    A dry run writes nothing, so there is no wrapper to look into. The report says what
+    a real run would have put there: the top-level entries of the members it extracted.
+    A single one is lifted to the wrapper's parent under its own name, as the hoist
+    lifts it. Where that name exists already, the hoist would merge into it, and the
+    collisions that merge could meet are not checked.
+    """
+    tops: dict[str, bool] = {}  # name -> whether it is a directory
+    for result in report:
+        if result.status is not ExtractionStatus.EXTRACTED or result.path is None:
+            continue
+        try:
+            parts = result.path.relative_to(wrapper).parts
+        except ValueError:
+            continue
+        if not parts:
+            continue
+        is_dir = len(parts) > 1 or result.member.type is MemberType.DIRECTORY
+        tops[parts[0]] = tops.get(parts[0], False) or is_dir
+    if len(tops) != 1:
+        return _HoistResult(wrapper)
+    ((name, is_dir),) = tops.items()
+    dest = wrapper.parent / name
+    label = f"{escape_path(dest)}{'/' if is_dir else ''}"
+    if dest == wrapper:
+        print(f"would remove wrapper; content at {label}", file=err)
+    elif os.path.lexists(dest):
+        print(
+            f"would move to {label}, which exists already: "
+            "collisions with its contents are not checked",
+            file=err,
+        )
+    else:
+        print(f"would move to {label}", file=err)
+    return _HoistResult(dest, dest_label=label)
+
+
 def _summary_dest_label(target: Path, report: ExtractionReport) -> str:
     """Closing summary destination; prefer the single extracted top when dest is cwd.
 
@@ -569,8 +615,7 @@ def run_extract(
                 overwrite=overwrite_enum,
             )
             target = plan.target
-            # The hoist moves what the extraction wrote; a dry run wrote nothing.
-            may_hoist = plan.may_hoist and not dry_run
+            may_hoist = plan.may_hoist
             if target != Path("."):
                 verb = "would extract" if dry_run else "extracting"
                 print(f"{verb} into {escape_path(target)}/", file=err)
@@ -628,7 +673,10 @@ def run_extract(
                 warn_unmatched_includes(patterns, err=err, dest_hint=True)
                 return EXIT_FAIL
             hoist = _HoistResult(target)
-            if may_hoist:
+            if may_hoist and dry_run:
+                # The hoist moves what the extraction wrote; a dry run wrote nothing.
+                hoist = predict_hoist(target, report, err=err)
+            elif may_hoist:
                 hoist = maybe_hoist_single_root(
                     target, overwrite=overwrite_enum, err=err
                 )

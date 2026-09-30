@@ -277,7 +277,19 @@ away: the files are created empty. A dry run therefore takes as long as an extra
 but needs one inode per member instead of the space for the content.
 
 The report reads as if `out/` had been empty. Files already in `out/` are not read, so
-they cause no collisions, and `out/` is neither created nor changed.
+they cause no collisions, and `out/` is neither created nor changed. A symlink whose
+absolute target names a path inside `out/` is checked against that path, as in a real
+extraction.
+
+Two answers can differ from a real extraction, because the scratch directory is not
+`out/`:
+
+- If a link target leaves `out/` and comes back in through a symlink outside it, or
+  climbs above the directory that holds `out/`, the dry run blocks the link. A real
+  extraction could keep it.
+- Everything is on one filesystem. If `out/` spans a mount point, a real extraction
+  copies a hardlink that crosses it and counts the copy against `max_extracted_bytes`.
+  The dry run does not count those bytes.
 
 ## Names change on disk
 
