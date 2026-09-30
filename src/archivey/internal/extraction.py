@@ -490,6 +490,9 @@ class ExtractionCoordinator:
         # removed changes a resolution, so each of those clears it (``_note_link_change``
         # and ``_resolutions_changed``). Reset per ``run()``.
         self._resolved_parents: dict[str, str] = {}
+        # ``_hardlink_chain_end``'s memo: a hard link's ``_member_id`` -> the first
+        # member on its chain that is not a HARDLINK, or ``None``. Reset per ``run()``.
+        self._hardlink_ends: dict[int, ArchiveMember | None] = {}
         # The symlinks this run created and the paths each one's resolution depends on,
         # so a later member that changes such a path gets them rechecked. Set per
         # ``run()``.
@@ -768,6 +771,7 @@ class ExtractionCoordinator:
         self._created_dirs = {dest} if created_root else set()
         self._claim_keys.clear()
         self._resolved_parents.clear()
+        self._hardlink_ends.clear()
         # O2 collision map: casefold(NFC(relpath)) key (exact under TRUSTED) -> the claim
         # (written path + claiming member's result index). Tracks non-directory members
         # written THIS run so a second member resolving to the same key is a deterministic
@@ -1218,13 +1222,7 @@ class ExtractionCoordinator:
             or self._reader is None
         ):
             return transformed
-        direct: ArchiveMember | None = original
-        seen: set[int] = set()
-        while direct is not None and direct.type is MemberType.HARDLINK:
-            if id(direct) in seen:
-                return transformed
-            seen.add(id(direct))
-            direct = self._reader._hardlink_direct_target(direct)
+        direct = self._hardlink_chain_end(self._reader, original)
         if (
             direct is None
             or direct.type is not MemberType.SYMLINK
@@ -1236,6 +1234,48 @@ class ExtractionCoordinator:
             link_target=direct.link_target,
             link_target_member=direct.link_target_member,
         )
+
+    def _hardlink_chain_end(
+        self, reader: "BaseArchiveReader", member: ArchiveMember
+    ) -> ArchiveMember | None:
+        """The first member that is not a HARDLINK on ``member``'s hard-link chain, or
+        ``None`` for a cycle or a dead end.
+
+        Memoized by ``_member_id`` for every link on the walked path, as
+        ``BaseArchiveReader._resolve_link`` does, so a chain of N hard links costs O(N)
+        lookups in total rather than O(N²). A lookup depends only on the node it starts
+        at, so the links on one path share its end. The memo is kept across members
+        only while an answer cannot change: when the listing is complete, or when the
+        backend never looks forward for a hard link's target. A streaming walk with the
+        forward fallback can find a target listed later, so there it covers one walk.
+        """
+        stable = not reader._streaming or not reader._HARDLINK_FORWARD_FALLBACK
+        ends = self._hardlink_ends if stable else {}
+        path: list[int] = []
+        end: ArchiveMember | None
+        current = member
+        while True:
+            if current.type is not MemberType.HARDLINK:
+                end = current
+                break
+            member_id = current._member_id
+            if member_id is None:
+                end = None
+                break
+            if member_id in ends:
+                end = ends[member_id]
+                break
+            # A node already on this path is recorded with the placeholder below.
+            ends[member_id] = None
+            path.append(member_id)
+            target = reader._hardlink_direct_target(current)
+            if target is None:
+                end = None
+                break
+            current = target
+        for member_id in path:
+            ends[member_id] = end
+        return end
 
     def _transform(
         self, original: ArchiveMember, dest_root: Path
@@ -2760,17 +2800,17 @@ class ExtractionCoordinator:
         # drops one once another member replaces it. Checked again here because
         # ``os.link`` follows a symlink (``follow_symlinks=False`` is not available on
         # every platform): a link made through one would name a file this run did not
-        # write.
-        candidates = [path for path in existing if _is_regular_file(path)]
-        if not candidates:
-            raise ExtractionError(
-                "Hardlink source is no longer on disk as a regular file",
-                member_name=member.name,
-            )
+        # write. Checked one path at a time as the loop reaches it, so the common case,
+        # where the first path links, checks one path however many links name it.
         tmp = self._temp_sibling(new_path.parent)
         try:
             copied = False
-            for candidate in candidates:
+            copy_from: Path | None = None
+            for candidate in existing:
+                if not _is_regular_file(candidate):
+                    continue
+                if copy_from is None:
+                    copy_from = candidate
                 try:
                     os.link(candidate, tmp)
                     break
@@ -2779,14 +2819,19 @@ class ExtractionCoordinator:
                         continue
                     raise
             else:
-                # Every recorded path is cross-device: fall back to a copy from the first.
+                if copy_from is None:
+                    raise ExtractionError(
+                        "Hardlink source is no longer on disk as a regular file",
+                        member_name=member.name,
+                    )
+                # Every usable path is cross-device: fall back to a copy from the first.
                 # Created private when a mode follows (as mkstemp would), at the ordinary
                 # creation mode when none does, the same as a FILE write.
                 create_mode = (
                     0o600 if self._effective_mode(member) is not None else 0o666
                 )
                 with (
-                    open(candidates[0], "rb") as src,
+                    open(copy_from, "rb") as src,
                     os.fdopen(_open_new_file(tmp, create_mode), "wb") as dst,
                 ):
                     while chunk := src.read(_CHUNK):

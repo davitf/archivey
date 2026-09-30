@@ -445,9 +445,10 @@ your `filter` a second time, now with the file, so a filter can see such a membe
 In random access it then writes the file's content. A streaming pass has already gone
 past that content, so the member fails under `on_error` instead.
 
-A hard link to a symlink goes the other way: your `filter` sees the HARDLINK the archive
-lists, and its result keeps that member, but what is written is a second symlink with the
-same target, as GNU tar makes it. It is checked like any other symlink.
+A hard link to a symlink, directly or through other hard links, goes the other way: your
+`filter` sees the HARDLINK the archive lists, and its result keeps that member, but what
+is written is a second symlink with the same target, as GNU tar makes it. It is checked
+like any other symlink.
 
 **The bomb tracker is per-archive, not nesting-aware.** It measures the expansion of
 the archive it is extracting, so a zip-of-zips can amplify past your budget one level

@@ -631,6 +631,50 @@ def test_a_hardlink_to_a_symlink_is_a_second_symlink(
 
 
 @posix_links
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("shape", ["fan-out", "chain"])
+def test_hard_links_cost_linear_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streaming: bool, shape: str
+) -> None:
+    # Counts rather than wall time. Every link names `base` (fan-out, what GNU tar
+    # makes) or the link before it (chain). Each link should check one recorded path
+    # before linking and look up one direct target; rechecking every earlier path, or
+    # walking the chain from scratch for each link, makes both grow as N².
+    from archivey.internal import base_reader, extraction
+
+    n = 300
+    entries: list[tuple] = [("base", "file", b"AB")]
+    for i in range(n):
+        previous = "base" if shape == "fan-out" or i == 0 else f"h{i - 1}"
+        entries.append((f"h{i}", "hard", previous))
+    archive = _build_tar(tmp_path / "a.tar", entries)
+    counts = {"checks": 0, "lookups": 0}
+
+    is_regular_file = extraction._is_regular_file
+    direct_target = base_reader.BaseArchiveReader._hardlink_direct_target
+
+    def counting_check(path: Path) -> bool:
+        counts["checks"] += 1
+        return is_regular_file(path)
+
+    def counting_lookup(self: Any, member: Any) -> Any:
+        counts["lookups"] += 1
+        return direct_target(self, member)
+
+    monkeypatch.setattr(extraction, "_is_regular_file", counting_check)
+    monkeypatch.setattr(
+        base_reader.BaseArchiveReader, "_hardlink_direct_target", counting_lookup
+    )
+    with archivey.open_archive(archive, streaming=streaming) as reader:
+        report = reader.extract_all(tmp_path / "out", policy="standard")
+
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    assert os.stat(tmp_path / "out" / f"h{n - 1}").st_nlink == n + 1
+    assert counts["checks"] <= 2 * n
+    assert counts["lookups"] <= 2 * n
+
+
+@posix_links
 def test_a_filter_sees_a_hardlink_to_a_symlink_as_the_hardlink(tmp_path: Path) -> None:
     archive = _build_tar(
         tmp_path / "a.tar",
