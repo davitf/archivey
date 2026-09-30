@@ -64,3 +64,14 @@ for result in report:
 ```
 
 If you'd rather stop at the first refused member, `abort_on=["blocked_member"]` raises instead.
+
+## Names can change on disk
+
+Some names can't be written as they are on every system, so by default archivey writes a portable
+spelling instead. Bytes that aren't valid UTF-8 become `%` escapes, and trailing dots and spaces
+are removed, since Windows drops them. Names that differ only in case, like `README` and `readme`,
+count as the same file on every system, because on macOS and Windows they are. The second one is
+handled like a file that's already there (next section).
+
+Each result in the report has the path that was written in `result.path`, next to the member with
+its name as the archive stored it, in `result.member.name`.
