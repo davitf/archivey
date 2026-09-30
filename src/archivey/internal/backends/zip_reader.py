@@ -1341,6 +1341,14 @@ class ZipReader(BaseArchiveReader):
                 # usually has an end mark, but max_length still matches py7zr practice).
                 if size is not None and size >= 0:
                     params = replace(params, unpack_size=size)
+            elif method == 12:  # ZIP bzip2
+                # A member is one bzip2 stream: it ends at its end-of-stream marker, as
+                # 7-Zip, Info-ZIP and stdlib zipfile read it, and as DEFLATE, LZMA and
+                # PPMd members end at theirs. rapidgzip reads on into a further stream,
+                # so AUTO decodes with the standard library here.
+                params = replace(params, single_stream=True)
+                if config.use_indexed_bzip2 is AcceleratorMode.AUTO:
+                    config = replace(config, use_indexed_bzip2=AcceleratorMode.OFF)
             return open_codec_stream(
                 codec,
                 body,

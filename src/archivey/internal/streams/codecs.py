@@ -467,6 +467,9 @@ class CodecParams:
       ZIP compressed size / sized view). Must match the bytes passed to
       ``PpmdDecoder.feed`` (not an enclosing member size). Gates post-eof empty
       drains; when omitted, PPMd recovery stays conservative (single capped NUL only).
+    - ``single_stream`` — the coder's data is one bzip2 stream (a ZIP member), so the
+      standard-library decoder ends at its end-of-stream marker rather than reading a
+      further stream as a concatenated file. The accelerator does not honour it.
     """
 
     filters: list[dict] | None = None
@@ -476,6 +479,7 @@ class CodecParams:
     ppmd_restore_method: int = 0
     unpack_size: int | None = None
     pack_size: int | None = None
+    single_stream: bool = False
 
 
 _DEFAULT_PARAMS = CodecParams()
@@ -932,12 +936,18 @@ _LZ4_STREAMS = stream_magic(
 )
 
 
-def _stdlib_bzip2(source: CodecSource, config: StreamConfig) -> BinaryIO:
+# Nothing starts a further stream: what follows the first one is past the data.
+_NO_FURTHER_STREAM = stream_magic()
+
+
+def _stdlib_bzip2(
+    source: CodecSource, config: StreamConfig, *, single_stream: bool = False
+) -> BinaryIO:
     return FramedDecompressorStream(
         source,
         bz2.BZ2Decompressor,
         codec_name="bzip2",
-        magic=_BZIP2_STREAMS,
+        magic=_NO_FURTHER_STREAM if single_stream else _BZIP2_STREAMS,
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
     )
@@ -2108,7 +2118,7 @@ class Bzip2Codec(StreamCodec):
         # A rewind re-decompresses from the start; the outer ArchiveStream warns about
         # that (see rewind_warning). The [seekable] accelerator (above) gives real
         # random access.
-        return _stdlib_bzip2(source, config)
+        return _stdlib_bzip2(source, config, single_stream=params.single_stream)
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, OSError) and "Invalid data stream" in str(exc):

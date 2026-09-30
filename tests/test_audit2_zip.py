@@ -289,11 +289,6 @@ def test_seekable_members_does_not_change_whether_a_zip_member_raises() -> None:
 _BZ_PAYLOAD = b"hello world " * 20
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Z8: a ZIP bzip2 member decodes a second concatenated bzip2 stream as "
-    "content; 7-Zip, Info-ZIP unzip and stdlib zipfile end the member at the first",
-)
 def test_bzip2_member_ends_at_its_first_stream() -> None:
     stream = bz2.compress(_BZ_PAYLOAD)
     blob = _build_zip(
@@ -311,14 +306,11 @@ def test_bzip2_member_ends_at_its_first_stream() -> None:
     # CRC (of both streams) fails: `unzip -t` "bad CRC", `7z t` "CRC Failed".
     with zipfile.ZipFile(io.BytesIO(blob)) as zf, pytest.raises(zipfile.BadZipFile):
         zf.read("a")
-    assert _outcome(blob) == ("raise", CorruptionError)
+    # Here the member ends 240 bytes short of its declared size, which the verifier
+    # reports as TruncatedError (a CorruptionError), as for two DEFLATE streams (Z7).
+    assert _outcome(blob) == ("raise", archivey.exceptions.TruncatedError)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Z8: bytes after a bzip2 member's end-of-stream are decoded as a second "
-    "stream; the member the other readers accept is refused as over-long",
-)
 def test_bzip2_member_with_a_second_stream_after_its_end_reads() -> None:
     stream = bz2.compress(_BZ_PAYLOAD)
     blob = _build_zip(
@@ -333,6 +325,18 @@ def test_bzip2_member_with_a_second_stream_after_its_end_reads() -> None:
     # Bytes after a codec's end inside a ZIP member end it silently for DEFLATE,
     # LZMA and PPMd here (internal/config.py StreamConfig.report_trailing_data).
     assert _outcome(blob) == ("ok", hashlib.sha256(_BZ_PAYLOAD).hexdigest())
+
+
+@pytest.mark.parametrize("declared", ["both", "first"])
+def test_bzip2_member_seekable_members_gives_the_same_verdict(declared: str) -> None:
+    # Under AUTO, seekable_members=True must not hand the member to rapidgzip's bzip2
+    # decoder, which reads on into the second stream.
+    stream = bz2.compress(_BZ_PAYLOAD)
+    plain = _BZ_PAYLOAD * 2 if declared == "both" else _BZ_PAYLOAD
+    blob = _build_zip(
+        [_Entry(b"a", stream + stream, method=12, plain=plain, extract_version=46)]
+    )
+    assert _outcome(blob, seekable_members=True) == _outcome(blob)
 
 
 # ---------------------------------------------------------------------------------------

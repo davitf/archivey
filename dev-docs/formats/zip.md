@@ -324,6 +324,12 @@ body raises `CorruptionError` and a cut-short one raises `TruncatedError` throug
 code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
 since `use_rapidgzip` covers raw deflate.
 
+A bzip2 member ends at its first end-of-stream marker, as 7-Zip, Info-ZIP and `zipfile` read
+it, and as a DEFLATE, LZMA or PPMd member ends at its own; bytes after it are not a
+concatenated stream. rapidgzip's bzip2 decoder reads on into a further stream, so `AUTO`
+leaves it off for ZIP members. Under `use_indexed_bzip2=ON` it is used, and a second stream
+inside the member is still read as content.
+
 Encrypted members take the same route with a decrypt stage between the slice and the codec
 layer, so they decode every method an unencrypted member does, and their CRC runs through
 the same fused verifier:
