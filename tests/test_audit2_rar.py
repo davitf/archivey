@@ -230,14 +230,6 @@ def test_solid_rar4_wrong_password_is_an_encryption_error(
 # --- R20: a str password holding a lone surrogate escapes as UnicodeEncodeError --
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R20: a str password with a lone surrogate (what os.fsdecode gives for a "
-        "non-UTF-8 argv/env password) raises a bare UnicodeEncodeError from "
-        "open_archive"
-    ),
-)
 def test_surrogate_escaped_password_raises_no_bare_unicode_error() -> None:
     """``sys.argv`` decodes a Latin-1 ``--password é`` to ``'\\udce9'``.
 

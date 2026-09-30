@@ -13,7 +13,7 @@ import pytest
 
 import archivey
 from archivey import PasswordRequest, open_archive
-from archivey.exceptions import EncryptionError
+from archivey.exceptions import ArchiveyUsageError, EncryptionError
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
 from archivey.internal.measurement import enable_measurement
 from archivey.internal.password import _PasswordCandidates, wrong_password_error
@@ -240,6 +240,14 @@ def test_password_candidates_sequence_order() -> None:
     candidates = _PasswordCandidates.from_input([b"first", b"second"])
     assert candidates.attempt(None, decrypt) == b"data"
     assert tried == [b"first", b"second"]
+
+
+def test_password_candidates_str_with_lone_surrogates() -> None:
+    """A ``sys.argv``/``fsdecode`` escape gives back its byte; any other is refused."""
+    candidates = _PasswordCandidates.from_input(["caf\udce9", b"x"])
+    assert list(candidates.iter_candidates()) == [b"caf\xe9", b"x"]
+    with pytest.raises(ArchiveyUsageError):
+        _PasswordCandidates.from_input("\ud800")
 
 
 @requires_binary("7z")
