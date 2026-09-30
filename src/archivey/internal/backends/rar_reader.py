@@ -56,6 +56,7 @@ from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
+    ReadError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -105,7 +106,7 @@ from archivey.internal.base_reader import (
 )
 from archivey.internal.config import KeyDerivationBudget
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.external.cli import ProcessOutputStream
+from archivey.internal.external.cli import ProcessOutputStream, signal_exit_error
 from archivey.internal.external.unar import (
     UnarOutputStream,
     find_unar,
@@ -605,8 +606,11 @@ class _UnrarOwnedStream(ProcessOutputStream):
 
     On close it maps ``unrar``'s exit code (RARLAB) to a typed error so a corrupt,
     truncated, or wrong-password member surfaces honestly instead of a silent short
-    read. Only a self-exit code maps: when *we* terminate the process (early close /
-    teardown) the return code is negative and no error is raised. ``named_member``
+    read. When *we* terminate the process (early close / teardown) the return code
+    is negative and no error is raised. A signal that ends ``unrar`` after it closed
+    its output came from elsewhere (or was a crash), and maps to
+    ``ResourceLimitError`` / ``ReadError`` (:func:`signal_exit_error`), never to a
+    truncation the digest check would otherwise report. ``named_member``
     distinguishes a per-member open (``-n`` mask) — where "no files matched" (code 10)
     means the member could not be read — from the solid ALL-pipe, where an empty match
     is not an error.
@@ -641,7 +645,12 @@ class _UnrarOwnedStream(ProcessOutputStream):
         self._named_member = named_member
         self._has_verifiable_hash = has_verifiable_hash
         self._encrypted = encrypted
+        self._saw_eof = False
         super().__init__(stdout, proc)
+
+    def _at_eof(self) -> None:
+        self._saw_eof = True
+        super()._at_eof()
 
     def tell(self, /) -> int:
         if self.closed:
@@ -653,8 +662,23 @@ class _UnrarOwnedStream(ProcessOutputStream):
     def _raise_for_returncode(self, rc: int) -> None:
         """Map an unrar exit code to an archivey error, or return quietly."""
         # RARLAB unrar exit codes: 11 bad password, 3 CRC/corrupt data, 2 fatal
-        # error, 10 no files matched. Codes 0 (success) and 1 (warning) pass; a
-        # negative code means we terminated it (early close) — not an error.
+        # error, 10 no files matched. Codes 0 (success) and 1 (warning) pass.
+        if rc < 0:
+            # A signal. Before end of file it is archivey's doing: close stopped a
+            # program that was still writing, or the pipe it closed ended it. After
+            # end of file something else ended unrar (the out-of-memory killer, an
+            # operator) or it crashed; either way the pipe was cut short, and the
+            # digest check below would call that a truncated archive.
+            if self._saw_eof:
+                raise signal_exit_error("unrar", rc)
+            return
+        if rc == 255 and self._saw_eof:
+            # ``USER_BREAK``: unrar catches SIGINT and SIGTERM and exits 255, so a
+            # stop from outside arrives as this code rather than as a signal.
+            raise ReadError(
+                "unrar was stopped from outside (exit 255, user break) while reading "
+                "data; the archive may be valid, so try reading it again."
+            )
         if rc == 11:
             raise EncryptionError("Incorrect RAR password or encrypted member")
         # RAR4 wrong/missing password: often exit 3 + empty stdout, not exit 11.
@@ -1030,7 +1054,7 @@ class RarReader(BaseArchiveReader):
                     "unar",
                 ),
             )
-        self._check_rar3_comment_budget()
+        self._check_comment_budget()
         self._archive.comment = self._resolve_rar3_comment(self._archive.comment)
         for info in self._archive.members:
             info.comment = self._resolve_rar3_comment(info.comment)
@@ -1705,9 +1729,17 @@ class RarReader(BaseArchiveReader):
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
+        if self._archive.data_past_end is not None:
+            # Terminal damage after the prefix, so the listing keeps what the file
+            # holds and reports the rest as missing (``members_report().error``).
+            raise TruncatedError(
+                self._archive.data_past_end,
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.RAR,
+            )
 
-    def _check_rar3_comment_budget(self) -> None:
-        """Refuse compressed old-style comments whose declared sizes exceed the budget.
+    def _check_comment_budget(self) -> None:
+        """Refuse comments whose sizes, together, exceed the metadata budget.
 
         Each compressed comment expands to up to 64 KiB, and ``max_members`` alone
         lets one archive carry a million of them. The header declares every
@@ -1725,18 +1757,22 @@ class RarReader(BaseArchiveReader):
         undecodable comment is dropped, is the maintainer's ruling (``review/backlog.md``,
         "#353 F12"): ``max_metadata_bytes`` means retained metadata on every format, and
         an over-budget listing raises on all of them.
+
+        Comments the parser already decoded (stored ones) are weighed in the same
+        total. The parser read them in pieces bounded by the file, so what they hold
+        is data the archive really carries; this is where their size is judged.
         """
         comments = [self._archive.comment]
         comments.extend(info.comment for info in self._archive.members)
         total = sum(
-            comment.unpacked_size
+            comment.unpacked_size if isinstance(comment, _Rar3Comment) else len(comment)
             for comment in comments
-            if isinstance(comment, _Rar3Comment)
+            if comment is not None
         )
         check_metadata_budget(
             self._config.listing_limits,
             total,
-            detail=f"RAR3 compressed comments declare {total} bytes",
+            detail=f"RAR comments hold or declare {total} bytes",
         )
 
     def _resolve_rar3_comment(self, comment: str | _Rar3Comment | None) -> str | None:
@@ -1951,8 +1987,15 @@ class RarReader(BaseArchiveReader):
                 # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
                 # and declared length via fused ArchiveStream verify), so the pipe-level
                 # unrar exit code is redundant for corruption and is suppressed here to
-                # avoid legacy-format false positives; wrong-password (11) still maps.
-                owned = _UnrarOwnedStream(stdout, proc, has_verifiable_hash=True)
+                # avoid legacy-format false positives; wrong-password (11) still maps,
+                # and so does RAR4's wrong-password exit 2/3 with nothing emitted,
+                # which is why the pipe is told whether the archive is encrypted.
+                owned = _UnrarOwnedStream(
+                    stdout,
+                    proc,
+                    has_verifiable_hash=True,
+                    encrypted=self._archive_has_encryption,
+                )
                 with _close_on_error(owned):
                     tracked = self._track_decompressed(owned)
                 with _close_on_error(tracked):
@@ -2365,7 +2408,11 @@ class RarReader(BaseArchiveReader):
             view.close()
 
     def _direct_view(self, info: RarMemberInfo, length: int | None = None) -> BinaryIO:
-        size = info.file_size if length is None else length
+        # Never past the packed span: whatever the unpacked size claims, the bytes
+        # after ``compress_size`` belong to the next header, not to this member. A
+        # stored member that declares more than it packs then ends short, and the
+        # size check reports it as truncated.
+        size = min(info.file_size, info.compress_size) if length is None else length
         return self._shared.view(info.data_offset, size)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
@@ -2597,6 +2644,19 @@ class RarReader(BaseArchiveReader):
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
+
+        if self._can_direct_read(raw) and raw.compress_size != raw.file_size:
+            # A plaintext stored member packs exactly its own bytes; only encryption
+            # (padding to the AES block) makes the two sizes differ, and encrypted
+            # members never take this path. ``unrar`` trusts the packed size here,
+            # the size check trusts the unpacked one, and neither is the member.
+            raise CorruptionError(
+                f"This stored RAR member declares {raw.file_size} bytes but packs "
+                f"{raw.compress_size}; a stored member's two sizes must match.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
 
         if self._can_direct_read(raw):
             inner: BinaryIO = self._direct_view(raw)

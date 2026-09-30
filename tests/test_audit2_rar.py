@@ -25,12 +25,13 @@ from typing import Any
 
 import pytest
 
-from archivey import ArchiveyConfig, extract, open_archive
+from archivey import ArchiveyConfig, ListingLimits, extract, open_archive
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
     EncryptionError,
+    ResourceLimitError,
     UnsupportedFeatureError,
 )
 from tests.conftest import requires_binary
@@ -69,13 +70,6 @@ def _stored_member_declaring_more_than_it_packs(tmp_path: Path) -> tuple[Path, b
     return path, original
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R15: a stored RAR5 member is sliced by its unpacked size, so a header "
-        "declaring more than its packed span returns the next header's bytes as data"
-    ),
-)
 def test_stored_member_never_reads_past_its_packed_span(tmp_path: Path) -> None:
     """``unrar p`` emits the 13 packed bytes; archivey returned 40.
 
@@ -155,14 +149,6 @@ def _dot_named_archive(tmp_path: Path) -> tuple[Path, dict[str, bytes]]:
 
 
 @requires_binary("unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R17: the unrar selection model counts a './' member under the mask '...', "
-        "so reading the first '...' skips the wrong prefix and returns its "
-        "sibling's bytes"
-    ),
-)
 def test_dot_named_member_never_reads_a_siblings_bytes(tmp_path: Path) -> None:
     path, payloads = _dot_named_archive(tmp_path)
     with open_archive(path, config=_UNRAR_ONLY) as archive:
@@ -179,14 +165,6 @@ def test_dot_named_member_never_reads_a_siblings_bytes(tmp_path: Path) -> None:
 
 
 @requires_binary("unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R18: a member stored as './' reaches unrar with a mask that selects "
-        "nothing and is reported as a truncated (or corrupt) member, not refused "
-        "as a name unrar cannot address"
-    ),
-)
 def test_member_unrar_cannot_address_is_refused_not_reported_corrupt(
     tmp_path: Path,
 ) -> None:
@@ -226,14 +204,6 @@ def _solid_encrypted_rar4(tmp_path: Path) -> Path:
 
 
 @requires_binary("unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R19: a wrong password on a solid RAR3/4 archive surfaces as TruncatedError "
-        "from stream_members()/extract(); the named-open path maps the same unrar "
-        "exit to EncryptionError"
-    ),
-)
 @pytest.mark.parametrize("via", ["stream_members", "extract"])
 def test_solid_rar4_wrong_password_is_an_encryption_error(
     tmp_path: Path, via: str
@@ -261,14 +231,6 @@ def test_solid_rar4_wrong_password_is_an_encryption_error(
 # --- R20: a str password holding a lone surrogate escapes as UnicodeEncodeError --
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R20: a str password with a lone surrogate (what os.fsdecode gives for a "
-        "non-UTF-8 argv/env password) raises a bare UnicodeEncodeError from "
-        "open_archive"
-    ),
-)
 def test_surrogate_escaped_password_raises_no_bare_unicode_error() -> None:
     """``sys.argv`` decodes a Latin-1 ``--password é`` to ``'\\udce9'``.
 
@@ -360,22 +322,17 @@ def test_unrar_reads_the_volumes_archivey_parsed(tmp_path: Path) -> None:
 # --- R22: an unrar/unar killed from outside is reported as a truncated archive --
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R22: an unrar/unar child killed by SIGKILL (the OOM killer) mid-member is "
-        "reported as TruncatedError, a verdict on the archive; the ppmd and "
-        "rapidgzip children map the same death to ResourceLimitError"
-    ),
-)
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.parametrize("signame", ["SIGKILL", "SIGTERM"])
 @pytest.mark.parametrize("decompressor", ["unrar", "unar"])
 def test_externally_killed_decompressor_is_not_reported_as_truncation(
-    decompressor: str, monkeypatch: pytest.MonkeyPatch
+    decompressor: str, signame: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``child_process``: a child ended from outside says nothing about the data.
 
     ``seek_respawn_solid__.rar`` holds a 1 MiB member, far more than a pipe buffer,
     so the child is still blocked writing when it is killed after the first read.
+    ``unrar`` catches SIGTERM and exits 255 (user break) instead of dying on it.
     """
     if shutil.which(decompressor) is None:
         pytest.skip(f"requires {decompressor}")
@@ -400,11 +357,13 @@ def test_externally_killed_decompressor_is_not_reported_as_truncation(
             (proc,) = procs
             if proc.poll() is not None:
                 pytest.skip("the child finished before it could be killed")
-            proc.send_signal(signal.SIGKILL)
+            proc.send_signal(getattr(signal, signame))
             with pytest.raises(ArchiveyError) as info:
                 while stream.read(1 << 16):
                     pass
     assert not isinstance(info.value, CorruptionError), repr(info.value)
+    if signame == "SIGKILL":
+        assert isinstance(info.value, ResourceLimitError), repr(info.value)
 
 
 # --- R23: the RAR5 archive comment is read by its unpacked size ----------------
@@ -426,13 +385,6 @@ def _comment_declaring(tmp_path: Path, unpacked: int) -> Path:
     return path
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R23: the stored RAR5 CMT is sliced by its unpacked size, so the next "
-        "header's bytes are appended to ArchiveInfo.comment"
-    ),
-)
 def test_rar5_comment_never_reads_past_its_packed_span(tmp_path: Path) -> None:
     path = _comment_declaring(tmp_path, 40)
     try:
@@ -463,13 +415,6 @@ _OPEN_UNDER_RLIMIT = textwrap.dedent(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_AS is POSIX")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R23: a stored RAR5 CMT declaring 1 TiB makes open_archive() ask the "
-        "file for 1 TiB in one read, which raises a bare MemoryError"
-    ),
-)
 def test_rar5_comment_huge_declared_size_is_not_a_memory_error(
     tmp_path: Path,
 ) -> None:
@@ -511,13 +456,6 @@ def _rar3_newsub_comment(tmp_path: Path, *, high_packed: int) -> Path:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_AS is POSIX")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R23: a RAR 2.9 CMT sub-block whose LARGE packed size is 1 TiB makes "
-        "open_archive() ask the file for 1 TiB in one read: bare MemoryError"
-    ),
-)
 def test_rar3_comment_huge_packed_size_is_not_a_memory_error(tmp_path: Path) -> None:
     control = _rar3_newsub_comment(tmp_path, high_packed=0)
     with open_archive(control) as archive:
@@ -534,3 +472,11 @@ def test_rar3_comment_huge_packed_size_is_not_a_memory_error(tmp_path: Path) -> 
     assert outcome == "opened" or outcome.startswith("typed "), (
         result.stdout + result.stderr
     )
+
+
+def test_stored_comment_over_the_metadata_budget_is_refused() -> None:
+    """Sibling of R23: an honest stored comment is weighed like a compressed one."""
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=16))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        with open_archive(_fixture("comment__.rar"), config=config):
+            pass

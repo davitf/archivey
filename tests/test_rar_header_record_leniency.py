@@ -861,7 +861,10 @@ def test_a_truncated_member_is_truncated_whatever_its_header_said(
         # Drop the last 9 bytes: the member's data ends before its declared size.
         path.write_bytes(data[:-9])
         with open_archive(path) as archive:
-            (member,) = [m for m in archive.members() if m.is_file]
+            # The listing says so too: the member's data runs past the end of file.
+            report = archive.members_report()
+            assert isinstance(report.error, TruncatedError)
+            (member,) = [m for m in report if m.is_file]
             with pytest.raises(TruncatedError) as raised:
                 archive.read(member)
         # ``.message`` and not ``str()``: the rendering appends the archive path,

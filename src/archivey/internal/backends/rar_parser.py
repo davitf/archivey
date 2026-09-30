@@ -112,6 +112,9 @@ _MAX_SKIPPED_HEADER_RECORDS = 16
 _MAX_DAMAGED_SERVICE_HEADERS = 16
 # BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
 _MAX_SEEK = (1 << 63) - 1
+# A stored comment is read in pieces of this size, so a declared size past the end of
+# the file fails there instead of in one allocation of the declared size.
+_COMMENT_READ_CHUNK = 1 << 20
 # Same default as ListingLimits.max_members. None is the explicit UNLIMITED opt-out.
 _DEFAULT_MAX_MEMBERS = ListingLimits().max_members
 
@@ -408,6 +411,12 @@ class RarArchive:
     #: How many damaged SERVICE headers the cap above kept out of that list. The
     #: reader reports the count, so hitting the cap is itself never silent.
     damaged_service_headers_omitted: int = 0
+    #: Set when the walk ended because a block's packed data ran past the end of the
+    #: file: the members listed are a prefix, and the last one's data is cut short.
+    #: The reader lists them and then reports this as ``TruncatedError``, as TAR does
+    #: for a member whose data runs past the end. The walk cannot tell it at open, so
+    #: raising here would lose the prefix a caller can still read.
+    data_past_end: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +545,7 @@ def parse_rar_volumes(
             merged.damaged_service_headers_omitted += (
                 part.damaged_service_headers_omitted
             )
+            merged.data_past_end = merged.data_past_end or part.data_past_end
             for member in part.members:
                 if member.split_before and merged.members:
                     _merge_split_member(merged.members[-1], member)
@@ -727,6 +737,24 @@ def _require_exact(stream: BinaryIO, n: int, what: str) -> bytes:
     return data
 
 
+def _read_stored_comment(stream: BinaryIO, n: int, what: str) -> bytes:
+    """A stored comment's ``n`` packed bytes, read in pieces.
+
+    A declared size past the end of the file raises ``CorruptionError`` there,
+    having held no more than the file, where one read of ``n`` would first ask for
+    all of it. What the comment then weighs is the reader's to judge against
+    ``max_metadata_bytes`` (``RarReader._check_comment_budget``), since listing
+    limits stay out of this parser.
+    """
+    parts: list[bytes] = []
+    left = n
+    while left > 0:
+        part = _require_exact(stream, min(left, _COMMENT_READ_CHUNK), what)
+        parts.append(part)
+        left -= len(part)
+    return b"".join(parts)
+
+
 def _packed_span_end(data_offset: int, add_size: int) -> int:
     """First byte after a packed-data region, or CorruptionError on a hostile span."""
     if data_offset < 0 or add_size < 0:
@@ -747,6 +775,24 @@ def _seek_to(source: BinaryIO, pos: int) -> None:
         source.seek(pos)
     except (OverflowError, OSError) as exc:
         raise CorruptionError(f"RAR packed-data seek failed at offset {pos}") from exc
+
+
+def _data_past_end(source: BinaryIO) -> str | None:
+    """Why the walk reached end of file inside a block's packed data, or ``None``.
+
+    Called where the walk found no further header. A clean end sits exactly at the
+    end of the file; a skip over packed data that the file does not hold leaves the
+    position past it, and the read there is empty as well.
+    """
+    pos = source.tell()
+    end = source.seek(0, io.SEEK_END)
+    source.seek(pos)
+    if pos <= end:
+        return None
+    return (
+        f"RAR archive is truncated: the last block's packed data ends at byte {pos}, "
+        f"past the end of the file ({end} bytes)"
+    )
 
 
 def _seek_after_packed(source: BinaryIO, data_offset: int, add_size: int) -> None:
@@ -1461,6 +1507,7 @@ def _parse_rar3(
     comment: str | _Rar3Comment | None = None
     members: list[RarMemberInfo] = []
     needs_next_volume = False
+    data_past_end: str | None = None
 
     while True:
         header_fd: _Readable = source
@@ -1484,6 +1531,7 @@ def _parse_rar3(
             header_offset = header_fd.tell()
             buf = read_exact(header_fd, _S_BLK_HDR.size)
             if not buf:
+                data_past_end = _data_past_end(source)
                 break
             if len(buf) < _S_BLK_HDR.size:
                 raise CorruptionError("Unexpected EOF while reading RAR3 block header")
@@ -1609,7 +1657,7 @@ def _parse_rar3(
                 and member.compress_size > 0
             ):
                 source.seek(data_offset)
-                raw = _require_exact(source, member.compress_size, "RAR3 comment")
+                raw = _read_stored_comment(source, member.compress_size, "RAR3 comment")
                 cmt = _decode_comment_text(raw.split(b"\0", 1)[0])
                 if member.file_solid and members:
                     members[-1].comment = cmt
@@ -1639,6 +1687,7 @@ def _parse_rar3(
         is_volume=is_volume,
         needs_next_volume=needs_next_volume,
         old_volume_naming=old_volume_naming,
+        data_past_end=data_past_end,
     )
 
 
@@ -2254,6 +2303,7 @@ def _parse_rar5(
     qo_by_off: dict[int, RarMemberInfo] = {}
     damaged_service_headers: list[DamagedServiceHeader] = []
     damaged_service_headers_omitted = 0
+    data_past_end: str | None = None
 
     while True:
         header_fd: _Readable = source
@@ -2293,6 +2343,7 @@ def _parse_rar5(
         else:
             parsed = _read_rar5_block(header_fd)
         if parsed is None:
+            data_past_end = _data_past_end(source)
             break
         (
             block_type,
@@ -2417,7 +2468,12 @@ def _parse_rar5(
                         damaged_service_headers_omitted += 1
                 if _is_stored_rar5_cmt(member):
                     source.seek(data_offset)
-                    raw = _require_exact(source, member.file_size, "RAR5 comment")
+                    # The packed size, as for any stored payload: the unpacked one
+                    # is only a claim, and bytes past the packed span belong to the
+                    # next header.
+                    raw = _read_stored_comment(
+                        source, member.compress_size, "RAR5 comment"
+                    )
                     comment = _decode_rar5_cmt_bytes(raw)
             _seek_after_packed(source, data_offset, add_size)
             continue
@@ -2436,6 +2492,7 @@ def _parse_rar5(
         needs_next_volume=needs_next_volume,
         damaged_service_headers=damaged_service_headers,
         damaged_service_headers_omitted=damaged_service_headers_omitted,
+        data_past_end=data_past_end,
     )
 
 
