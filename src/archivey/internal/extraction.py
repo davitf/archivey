@@ -1244,14 +1244,15 @@ class ExtractionCoordinator:
         Memoized by ``_member_id`` for every link on the walked path, as
         ``BaseArchiveReader._resolve_link`` does, so a chain of N hard links costs O(N)
         lookups in total rather than O(N²). A lookup depends only on the node it starts
-        at, so the links on one path share its end. The memo is kept across members
-        only while an answer cannot change: when the listing is complete, or when the
-        backend never looks forward for a hard link's target. A streaming walk with the
-        forward fallback can find a target listed later, so there it covers one walk.
+        at, so the links on one path share its end. An end is recorded only for the
+        links after the last lookup whose answer could still change (a forward lookup
+        during a streaming walk); the links before it are walked again next time.
         """
-        stable = not reader._streaming or not reader._HARDLINK_FORWARD_FALLBACK
-        ends = self._hardlink_ends if stable else {}
+        ends = self._hardlink_ends
         path: list[int] = []
+        on_path: set[int] = set()
+        # Links at ``path[:final_from]`` depend on a lookup that may change later.
+        final_from = 0
         end: ArchiveMember | None
         current = member
         while True:
@@ -1265,15 +1266,23 @@ class ExtractionCoordinator:
             if member_id in ends:
                 end = ends[member_id]
                 break
-            # A node already on this path is recorded with the placeholder below.
-            ends[member_id] = None
+            if member_id in on_path:
+                # A cycle. When a lookup that may change is on the cycle itself,
+                # every link on the path depends on it.
+                if final_from > path.index(member_id):
+                    final_from = len(path)
+                end = None
+                break
             path.append(member_id)
-            target = reader._hardlink_direct_target(current)
+            on_path.add(member_id)
+            target, final = reader._hardlink_direct_target(current)
+            if not final:
+                final_from = len(path)
             if target is None:
                 end = None
                 break
             current = target
-        for member_id in path:
+        for member_id in path[final_from:]:
             ends[member_id] = end
         return end
 

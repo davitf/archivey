@@ -631,16 +631,28 @@ def test_a_hardlink_to_a_symlink_is_a_second_symlink(
 
 
 @posix_links
+@pytest.mark.parametrize("forward_fallback", [False, True])
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("shape", ["fan-out", "chain"])
 def test_hard_links_cost_linear_work(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streaming: bool, shape: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
+    shape: str,
+    forward_fallback: bool,
 ) -> None:
     # Counts rather than wall time. Every link names `base` (fan-out, what GNU tar
     # makes) or the link before it (chain). Each link should check one recorded path
     # before linking and look up one direct target; rechecking every earlier path, or
-    # walking the chain from scratch for each link, makes both grow as N².
+    # walking the chain from scratch for each link, makes both grow as N². TAR never
+    # looks forward for a hard link's target; the other backends (RAR) do, which
+    # `forward_fallback` stands in for.
     from archivey.internal import base_reader, extraction
+    from archivey.internal.backends import tar_reader
+
+    monkeypatch.setattr(
+        tar_reader.TarReader, "_HARDLINK_FORWARD_FALLBACK", forward_fallback
+    )
 
     n = 300
     entries: list[tuple] = [("base", "file", b"AB")]
