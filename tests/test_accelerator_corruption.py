@@ -557,10 +557,19 @@ def test_accelerator_gives_up_when_the_start_is_unknown() -> None:
     stream.close()
 
 
-def test_accelerator_gives_up_when_the_rewind_faults_the_source() -> None:
+@pytest.mark.parametrize(
+    "seek_raises", [False, True], ids=["seek_returns", "seek_raises"]
+)
+def test_accelerator_gives_up_when_the_rewind_faults_the_source(
+    seek_raises: bool,
+) -> None:
     """A source fault parked by the rewind does not replace the read's error, and the
-    stream is given up."""
-    decoder = _Decoder(_SourceFailingOnce(b"compressed"), seek_faults_source=True)
+    stream is given up naming that fault, also when the rewind's seek raised as well."""
+    decoder = _Decoder(
+        _SourceFailingOnce(b"compressed"),
+        seek_faults_source=True,
+        seek_raises=seek_raises,
+    )
     stream = _wrap(decoder)
     with pytest.raises(RuntimeError, match="corrupt block"):
         stream.read(10)
@@ -588,6 +597,17 @@ def test_accelerator_never_rewinds_through_a_faulted_source(
     source.failing = False  # the caller's source recovers; the position is still lost
     _assert_given_up(stream, _SOURCE_FAULT)
     assert decoder.seeks == []
+    stream.close()
+
+
+def test_accelerator_stays_usable_after_a_seek_that_raises_alone() -> None:
+    """A caller's seek that raises without faulting the source does not give the stream
+    up: its error propagates, and ``tell()`` still answers, so ``ArchiveStream`` can follow
+    the decoder to where the failed seek left it."""
+    stream = _wrap(_Decoder(seek_raises=True))
+    with pytest.raises(RuntimeError, match="cannot seek there"):
+        stream.seek(0)
+    assert stream.tell() == 0
     stream.close()
 
 

@@ -102,6 +102,10 @@ caller's own stream that fails or is closed mid-read:
   `_AcceleratorStream` re-raises it after the call, marked as the caller's, so an
   `EOFError` from a dropped network stream stays an `EOFError`
   ([`topics/exception-handlers.md`](topics/exception-handlers.md) §C-boundary trap).
+  The decoder took the fault for the end of its input, so the stream is then given up
+  for good: every later `read`, `readinto`, `seek` and `tell()` raises `ReadError`,
+  even after the caller's source recovers. The rapidgzip child does the same
+  (`compressed-streams`, the accelerated-decoder paragraph).
 
 Pinned by `tests/test_accelerator_bug3_trap.py`. The stdlib codec fallbacks raise an
 ordinary `ValueError`.

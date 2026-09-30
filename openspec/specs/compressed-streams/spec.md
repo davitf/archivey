@@ -223,7 +223,9 @@ This requirement scopes to the streams this layer owns: `DecompressorStream`
 here; they already surface content faults from `read` rather than `close`, and
 retargeting them is deferred (see the rapidgzip follow-up). The wording below is
 a standing rule for the in-scope streams, not a claim that every stream type in
-the library has been audited to it.
+the library has been audited to it. The one exception is the paragraph on accelerated
+decoders and its three `Accelerated decoder` matrix rows, which are deliberately
+normative for the in-process bzip2 accelerator and the rapidgzip decoder process.
 
 Decode and verify streams SHALL raise content `TruncatedError` and
 `CorruptionError` from `read` / `readall` (and from size/seek paths that would

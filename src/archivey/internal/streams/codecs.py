@@ -360,17 +360,22 @@ class _AcceleratorStream(DelegatingStream):
                 "decoder cannot be moved back"
             )
         else:
+            rewind_error: Exception | None = None
             try:
                 self._inner.seek(start)
             except Exception as exc:  # noqa: BLE001 - the read's own error is the one raised
-                self._give_up(
-                    f"a read failed, and moving the decoder back to where that read "
-                    f"started failed too ({exc!r})"
-                )
+                rewind_error = exc
+            # A source fault the rewind parked is the cause worth naming, even when the
+            # seek raised too: it is the one the caller can act on.
             if trap is not None and trap.trapped is not None:
                 self._give_up_on_source_fault(trap.trapped)
                 if isinstance(trap.trapped, Exception):
                     trap.trapped = None
+            if rewind_error is not None:
+                self._give_up(
+                    f"a read failed, and moving the decoder back to where that read "
+                    f"started failed too ({rewind_error!r})"
+                )
         self._after_parked_fault()
 
     def _after_parked_fault(self) -> None:
