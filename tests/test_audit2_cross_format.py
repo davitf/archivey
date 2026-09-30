@@ -343,14 +343,6 @@ def _fixture_rar4_symlinks(tmp_path: Path) -> Path:
     return _RAR_FIXTURES / "symlinks_solid__rar4.rar"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "X4: `archivey test` treats every 7z/RAR4 symlink as unverified (its target "
-        "is read at pass end), re-opens it, follows it to a directory, and dies on "
-        "an uncaught ArchiveyUsageError traceback"
-    ),
-)
 @pytest.mark.parametrize(
     "build",
     [
@@ -395,13 +387,6 @@ def test_cli_test_zip_symlink_cycle_control(tmp_path: Path) -> None:
     assert main(["test", str(archive)], out=io.StringIO(), err=io.StringIO()) == 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "X4: `archivey test` FAILs an intact 7z whose symlinks form a cycle "
-        "(re-open raises ReadError 'Link cycle'); the same content as a ZIP is OK"
-    ),
-)
 @requires_binary("7z")
 @pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
 def test_cli_test_7z_symlink_cycle_is_not_a_failure(tmp_path: Path) -> None:
