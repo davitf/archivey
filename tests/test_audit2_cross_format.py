@@ -378,11 +378,13 @@ def test_cli_test_zip_symlink_cycle_control(tmp_path: Path) -> None:
 def test_cli_test_7z_symlink_cycle_is_not_a_failure(tmp_path: Path) -> None:
     names = _symlink_cycle_tree(tmp_path / "src")
     archive = tmp_path / "loop.7z"
-    subprocess.run(
+    made = subprocess.run(
         ["7z", "a", "-snl", "-bd", "-bso0", str(archive), *names],
         cwd=tmp_path / "src",
-        check=True,
+        check=False,
     )
+    if made.returncode != 0:
+        pytest.skip("this 7z cannot store a symlink cycle (macOS builds refuse it)")
     err = io.StringIO()
     assert main(["test", str(archive)], out=io.StringIO(), err=err) == EXIT_OK, (
         err.getvalue()

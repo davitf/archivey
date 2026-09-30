@@ -398,7 +398,10 @@ def test_rar5_comment_never_reads_past_its_packed_span(tmp_path: Path) -> None:
 _OPEN_UNDER_RLIMIT = textwrap.dedent(
     """
     import resource, sys
-    resource.setrlimit(resource.RLIMIT_AS, (2 << 30, 2 << 30))
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (2 << 30, 2 << 30))
+    except (ValueError, OSError):
+        pass  # macOS cannot lower RLIMIT_AS; the chunked read allocates little anyway
     from archivey import open_archive
     from archivey.exceptions import ArchiveyError
     try:
