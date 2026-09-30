@@ -54,9 +54,13 @@ anything before it. How many there are depends on the data; a file can have none
 
 **Codes are packed in groups.** The original `compress` reads codes in groups of eight, so
 after a CLEAR, or a width change, the writer pads to the end of the current group. A decoder
-that does not skip the same padding reads garbage after the first CLEAR. The padding is
-also where a cut can be detected even at a code boundary: a source that ends while padding
-is still owed is cut.
+that does not skip the same padding reads garbage after the first CLEAR. In block mode a
+width lasts a whole number of groups, so only a CLEAR leaves padding. Without block mode
+(`compress -C`) the first free code is 256, not 257, so the first width lasts 257 codes and
+the widening to 10 bits pads too. The padding after a CLEAR is also where a cut can be
+detected even at a code boundary: a source that ends while it is still owed is cut. The
+padding at a widening is written only when another code follows, so a stream may end
+there.
 
 ## 2. The pipeline here
 
@@ -153,7 +157,6 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `UnsupportedFeatureError` naming reserved flags | **archivey** | A header bit this decoder does not know; no known writer sets it |
 | A backward seek re-decodes from the start | **format** | No CLEAR codes in this file, or a non-seekable source |
 | `member.size` is `None` | **format** | No size field |
-| A file written without block mode (`compress -C`) fails with `CorruptionError` once it passes 9-bit codes | **archivey** | The decoder widens after 256 codes in every mode; without block mode the reference widens after 257. §7 |
 
 ## 6. Decisions
 
@@ -168,15 +171,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 ## 7. Open questions
 
-- **Files written without block mode are refused.** Without block mode the first free
-  code is 256, not 257, so `compress` and `gzip -d` widen to 10 bits after 257 codes. The
-  decoder counts 256 codes per width in every mode, so it widens one code early, and the
-  reference's padding after a widening no longer lines up either. Measured on 201 such
-  streams that `gzip -d` reads whole, 200 of them random: every one raised
-  `CorruptionError`, and none decoded to wrong bytes. Only `compress -C` and very old
-  `compress` write such files; `compress` and `ncompress` default to block mode. The fix
-  needs both the code count and the padding alignment. Pinned by the strict xfail
-  `tests/test_codecs.py::test_unix_compress_non_block_mode_decodes_like_the_reference`.
+None.
 
 The truncation gap is the format's, not an open question;
 [`docs/formats.md`](../../docs/formats.md) tells users it is best-effort.
@@ -197,6 +192,7 @@ The truncation gap is the format's, not an open question;
 | CLEAR codes are seek points, merged when empty | `::test_unix_compress_clear_seek_points`, `::test_unix_compress_consecutive_clear_seek_points_no_assert`, `tests/test_detection.py::test_detect_format_atheris_z_clear_collisions_do_not_assert` |
 | One call's output is bounded | `tests/test_codecs.py::test_unix_compress_read_one_bounds_internal_buffer` |
 | The table stays under about 19 MiB, 21 MiB on a free-threaded build (§4) | `tests/test_codecs.py::test_unix_compress_worst_case_table_stays_under_the_stated_bound`, `tests/test_audit_tar_streams.py::test_unix_compress_dictionary_memory_is_bounded` |
+| Files written without block mode decode like `gzip -d` | `tests/test_codecs.py::test_unix_compress_non_block_mode_decodes_like_the_reference`, `::test_unix_compress_non_block_mode_streams_match_gzip`, `::test_unix_compress_non_block_mode_may_end_at_a_widening` |
 | Linked long entries decode exactly | `tests/test_codecs.py::test_unix_compress_long_dictionary_entries_decode_exactly`, `::test_unix_compress_repeated_longest_code_decodes_exactly` |
 | `.tar.Z` is found; a bare `.Z` stays bare | `tests/test_detection.py::test_unix_compress_without_inner_tar_stays_bare_z`, `tests/test_libarchive_corpus.py::test_tar_z_detection_upgrades_via_inner_probe` |
 

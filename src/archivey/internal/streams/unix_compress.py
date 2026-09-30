@@ -137,6 +137,7 @@ class LzwState:
         self._seg_comp = 0
         self._seg_decomp = 0
         self._pending_skip = 0
+        self._skip_after_clear = False
         if not self._need_header:
             assert max_width is not None and block_mode is not None
             self._init_dictionary(max_width, block_mode)
@@ -167,9 +168,10 @@ class LzwState:
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         out, units = self._process(eof=True, max_length=-1)
-        if self._pending_skip:
+        if self._pending_skip and self._skip_after_clear:
             # A compressor writes a CLEAR's realignment padding in full, so a source that
-            # ends while padding is still owed was cut inside it.
+            # ends while padding is still owed was cut inside it. The padding at a width
+            # bump is written only when another code follows, so a stream may end there.
             self._truncation = f"it ends {self._pending_skip} byte(s) short of the padding after a CLEAR"
         # Finished compressors zero-pad the last incomplete code slot. Nonzero leftover
         # bits are a best-effort truncation / corrupt-padding signal (exact mid-code
@@ -218,8 +220,11 @@ class LzwState:
         self._code_width = _INITIAL_CODE_WIDTH
         self._current_mask = _INITIAL_MASK
         self._bytes_in_era = 0
-        self._codes_in_era = 0
+        # Without block mode the first free code is 256, not 257, so the first code
+        # (which adds no entry) is not counted toward the first width bump.
+        self._codes_in_era = 0 if block_mode else -1
         self._pending_skip = 0
+        self._skip_after_clear = False
 
     def _process(
         self, *, eof: bool, max_length: int = -1
@@ -330,6 +335,7 @@ class LzwState:
                         # CLEAR realignment extends past this feed — skip the rest
                         # of the padding at the start of the next feed.
                         self._pending_skip = target - len(self._buf)
+                        self._skip_after_clear = True
                         buf_i = len(self._buf)
                     else:
                         buf_i = target
@@ -388,6 +394,18 @@ class LzwState:
                 prev_len = entry_len
 
                 if codes_in_era >= codes_per_era and code_width < max_width:
+                    # The writer pads to the end of the current group of eight codes.
+                    # A block-mode era is a whole number of groups, so this skips
+                    # nothing there; without block mode the first era is one code
+                    # longer.
+                    if pad := -bytes_in_era % code_width:
+                        seg_comp += pad
+                        if buf_i + pad > len(self._buf):
+                            self._pending_skip = buf_i + pad - len(self._buf)
+                            self._skip_after_clear = False
+                            buf_i = len(self._buf)
+                        else:
+                            buf_i += pad
                     code_width += 1
                     current_mask = (1 << code_width) - 1
                     bit_buffer = 0

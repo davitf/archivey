@@ -928,7 +928,7 @@ def _lzw_non_block_mode_run(codes: int) -> bytes:
 
 @requires_binary("gzip")
 def test_unix_compress_non_block_mode_fixture_is_what_gzip_reads() -> None:
-    """Pins the fixture for the xfail below to the reference decoder."""
+    """Pins the fixture for the test below to the reference decoder."""
     import subprocess
 
     codes = 600
@@ -941,19 +941,99 @@ def test_unix_compress_non_block_mode_fixture_is_what_gzip_reads() -> None:
     assert result.stdout == b"a" * (codes * (codes + 1) // 2)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LzwState widens codes after 256 codes in every mode; without block mode the "
-        "reference widens after 257, so a compress -C stream past 9 bits is refused "
-        "with CorruptionError"
-    ),
-)
 def test_unix_compress_non_block_mode_decodes_like_the_reference() -> None:
     codes = 600
     compressed = _lzw_non_block_mode_run(codes)
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
         assert stream.read() == b"a" * (codes * (codes + 1) // 2)
+
+
+def _lzw_compress_non_block_mode(data: bytes, max_bits: int) -> bytes:
+    """An LZW encoder laid out the way ``compress -C`` writes a stream.
+
+    ncompress 5.0 dropped ``-C``, so no installed tool writes these. Free codes start at
+    256. Before each code, the writer widens once the next free code passes the current
+    width's largest code plus one (ncompress's ``extcode``), padding the current group
+    of eight codes first. Nothing pads after the last code.
+    """
+    out = bytearray(b"\x1f\x9d" + bytes([max_bits]))
+    width, in_group, bits, nbits = 9, 0, 0, 0
+    free_code = 256
+    table = {bytes([i]): i for i in range(256)}
+
+    def put(code: int) -> None:
+        nonlocal bits, nbits, in_group
+        bits |= code << nbits
+        nbits += width
+        in_group = (in_group + 1) % 8
+        while nbits >= 8:
+            out.append(bits & 0xFF)
+            bits >>= 8
+            nbits -= 8
+
+    def emit(code: int) -> None:
+        nonlocal width
+        if free_code > 1 << width and width < max_bits:
+            while in_group:
+                put(0)
+            width += 1
+        put(code)
+
+    prefix = b""
+    for byte in data:
+        extended = prefix + bytes([byte])
+        if extended in table:
+            prefix = extended
+            continue
+        emit(table[prefix])
+        if free_code < 1 << max_bits:
+            table[extended] = free_code
+            free_code += 1
+        prefix = bytes([byte])
+    if prefix:
+        emit(table[prefix])
+    if nbits:
+        out.append(bits & 0xFF)
+    return bytes(out)
+
+
+_NON_BLOCK_PAYLOADS = {
+    "text": CONTENT * 2_000,
+    "random": random.Random(7).randbytes(200_000),
+    "zeros": bytes(1_000_000),
+}
+
+
+@requires_binary("gzip")
+@pytest.mark.parametrize("max_bits", [10, 12, 16])
+@pytest.mark.parametrize("payload", sorted(_NON_BLOCK_PAYLOADS))
+def test_unix_compress_non_block_mode_streams_match_gzip(
+    payload: str, max_bits: int
+) -> None:
+    """Non-block streams across every width decode like ``gzip -d``, whatever the feed
+    size. The random payload fills the table at 10 and 12 bits."""
+    import subprocess
+
+    data = _NON_BLOCK_PAYLOADS[payload]
+    compressed = _lzw_compress_non_block_mode(data, max_bits)
+    reference = subprocess.run(
+        ["gzip", "-dc"], input=compressed, capture_output=True, check=True
+    )
+    assert reference.stdout == data
+    for chunk in (1 << 20, 4097, 7):
+        assert _lzw_decode_in_chunks(compressed, chunk) == data
+
+
+def test_unix_compress_non_block_mode_may_end_at_a_widening() -> None:
+    """A stream whose last code is the one that fills 9-bit codes has no padding after
+    it: the writer pads only before a next code. That end is not a cut."""
+    data = bytes(range(256)) + b"\x00"  # 257 codes, the last widening the table
+    compressed = _lzw_compress_non_block_mode(data, 16)
+    state = LzwState()
+    out, _ = state.feed(compressed)
+    tail, _ = state.flush()
+    assert out + tail == data
+    assert state.truncation is None
 
 
 def test_decompressor_read_one_bounds_internal_buffer() -> None:
