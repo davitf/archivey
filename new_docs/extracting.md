@@ -124,3 +124,10 @@ for result in report:
 ```
 
 If you'd rather stop at the first refused member, `abort_on=["blocked_member"]` raises instead.
+
+## Damaged members
+
+A member that fails partway leaves nothing behind. Archivey writes each file under a temporary
+name and renames it only once it's complete. The files written before the failure stay on disk,
+even with `on_error="stop"`. Going over `limits` stops the extraction even with
+`on_error="continue"`, since it's a sign that the whole archive is hostile.
