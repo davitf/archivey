@@ -368,8 +368,10 @@ decoders live at once: a BCJ2 folder runs all its branch decoders (three as 7-Zi
 it, four if a crafted folder codes `rc`), and the stages of a linear chain are stacked
 streams (`LZMA2 → Copy → LZMA2` keeps two dictionaries live). So for every folder with
 more than one such decoder, `internal/backends/sevenzip_pipeline.py`
-`open_folder_pipeline` checks their summed LZMA dictionaries and PPMd sizes against the
-same cap before building any. Bytes decoded inside a branch
+`open_folder_pipeline` checks their summed LZMA dictionaries, PPMd sizes and zstd windows
+against the same cap before building any. A zstd window is in the frame header, not the
+coder properties, so only the first frame's counts, and only when the zstd coder reads a
+pack stream directly; each later frame is held to the cap on its own. Bytes decoded inside a branch
 never reach the folder stream `ExtractionLimits` counts, so the end-of-output check reads
 at most one byte from each branch.
 

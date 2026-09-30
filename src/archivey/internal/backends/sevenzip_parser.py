@@ -57,6 +57,9 @@ from archivey.internal.streams.streamtools import read_exact
 from archivey.types import CompressionAlgorithm, CompressionMethod
 
 MAGIC_7Z = b"7z\xbc\xaf'\x1c"
+# Every 7z writer puts major version 0 in the signature header; 7-Zip refuses any other
+# as an unsupported version (``ThrowUnsupportedVersion`` in 7zIn.cpp).
+SEVENZIP_MAJOR_VERSION = 0
 
 SIGNATURE_HEADER_SIZE = 32
 _MAX_UINT64_ENCODING = 8
@@ -478,6 +481,10 @@ def read_signature_and_next_header(fp: BinaryIO) -> SignatureInfo:
 
     major_version = signature[6]
     minor_version = signature[7]
+    if major_version != SEVENZIP_MAJOR_VERSION:
+        raise UnsupportedFeatureError(
+            f"7z format version {major_version}.{minor_version} is not supported"
+        )
     start_header_crc = int.from_bytes(signature[8:12], "little")
     start_header = signature[12:32]
     if crc32(start_header) != start_header_crc:

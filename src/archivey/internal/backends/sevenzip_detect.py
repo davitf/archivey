@@ -13,13 +13,11 @@ from collections.abc import Callable
 from archivey.internal.backends.sevenzip_parser import (
     MAGIC_7Z,
     MAX_NEXT_HEADER_SIZE,
+    SEVENZIP_MAJOR_VERSION,
     SIGNATURE_HEADER_SIZE,
     crc32,
 )
 from archivey.internal.sfx import HitOutcome
-
-# 7z writes major version 0. Anything else is not a signature we can confirm.
-_MAJOR_VERSION = 0
 
 
 def validate_sevenzip_signature_header(
@@ -55,7 +53,7 @@ def validate_sevenzip_signature_header(
     if len(header) < SIGNATURE_HEADER_SIZE or header[: len(MAGIC_7Z)] != MAGIC_7Z:
         return HitOutcome.NOT_THIS_FORMAT
     major_version = header[6]
-    if major_version != _MAJOR_VERSION:
+    if major_version != SEVENZIP_MAJOR_VERSION:
         return HitOutcome.NOT_THIS_FORMAT
     start_header_crc = int.from_bytes(header[8:12], "little")
     start_header = header[12:32]

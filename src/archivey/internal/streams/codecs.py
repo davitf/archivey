@@ -2923,6 +2923,15 @@ class UnixCompressCodec(StreamCodec):
         return None
 
 
+# 7-Zip's PPMd7 property bounds (``PPMD7_MIN_ORDER`` .. ``PPMD7_MAX_MEM_SIZE`` in
+# C/Ppmd7.h). Its decoder refuses properties outside them as unsupported
+# (``E_NOTIMPL`` in CPP/7zip/Compress/PpmdDecoder.cpp).
+_PPMD7_MIN_ORDER = 2
+_PPMD7_MAX_ORDER = 64
+_PPMD7_MIN_MEM_SIZE = 1 << 11
+_PPMD7_MAX_MEM_SIZE = 0xFFFFFFFF - 12 * 3
+
+
 def parse_ppmd_var_h_properties(properties: bytes | None) -> tuple[int, int]:
     """Parse 7z PPMd var.H coder properties → ``(order, mem_size)``."""
 
@@ -2937,6 +2946,20 @@ def parse_ppmd_var_h_properties(properties: bytes | None) -> tuple[int, int]:
             f"unsupported PPMd properties length {len(properties)} (expected 5 or 7)"
         )
     return int(order), int(mem)
+
+
+def _check_ppmd7_properties(order: int, mem_size: int) -> None:
+    """Refuse a PPMd7 order or memory size outside 7-Zip's bounds, as 7-Zip does."""
+    if not _PPMD7_MIN_ORDER <= order <= _PPMD7_MAX_ORDER:
+        raise UnsupportedFeatureError(
+            f"7z PPMd order {order} is outside 7-Zip's range "
+            f"{_PPMD7_MIN_ORDER}..{_PPMD7_MAX_ORDER}"
+        )
+    if not _PPMD7_MIN_MEM_SIZE <= mem_size <= _PPMD7_MAX_MEM_SIZE:
+        raise UnsupportedFeatureError(
+            f"7z PPMd memory size {mem_size} is outside 7-Zip's range "
+            f"{_PPMD7_MIN_MEM_SIZE}..{_PPMD7_MAX_MEM_SIZE}"
+        )
 
 
 class PpmdCodec(StreamCodec):
@@ -2983,6 +3006,8 @@ class PpmdCodec(StreamCodec):
         check_decoder_memory(
             mem_size, limits=config.decoder_limits, what="7z PPMd var.H memory size"
         )
+        # After the cap, so a declaration over it still names the cap.
+        _check_ppmd7_properties(order, mem_size)
         return PpmdDecompressorStream(
             source,
             order=order,
