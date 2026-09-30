@@ -44,3 +44,23 @@ archivey.extract(
 
 These are the defaults. `extract_all` takes the same arguments, and the sections below say what
 each one does.
+
+## What the default refuses
+
+By default, `extract` refuses any member that would end up outside the destination folder: names
+with `../`, absolute paths, and links that point outside it, even through other links. It also
+refuses device files, and names with hidden characters that flip the text after them, which can
+make an `.exe` file look like a `.png`. An archive that writes more than `limits` allows stops the
+whole extraction.
+
+A refused member isn't written, and the rest of the archive still extracts. The call returns a
+report with one result for each member, so you can see what was refused:
+
+```python
+report = archivey.extract("download.zip", "out/")
+for result in report:
+    if result.status is archivey.ExtractionStatus.BLOCKED:
+        print(result.member.name, result.error)
+```
+
+If you'd rather stop at the first refused member, `abort_on=["blocked_member"]` raises instead.
