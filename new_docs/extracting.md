@@ -8,7 +8,7 @@ archivey.extract("download.zip", "out/")
 
 `extract` opens the archive, writes every member under the destination folder, and closes it
 again. It's safe by default: nothing lands outside `out/`, and an archive that expands far beyond
-its size is stopped. [What the default refuses](#what-the-default-refuses) has the details.
+its size is stopped. [What is refused](#what-is-refused) has the details.
 
 On an open archive, `extract_all` does the same, and its `members` argument picks what to
 extract. It takes names, [`ArchiveMember`](api.md#archivey.ArchiveMember) objects from a listing,
@@ -42,16 +42,38 @@ archivey.extract(
 )
 ```
 
-These are the defaults. `extract_all` takes the same arguments, and the sections below say what
-each one does.
+These are the defaults, and `extract_all` takes the same arguments. `policy` decides how much of
+what the archive says about names and permissions gets written as it is:
 
-## What the default refuses
+| `policy` | Names | Permissions |
+|---|---|---|
+| `"strict"` (default) | Rewritten to a portable spelling; names built to look like something else are refused | Files at most `rw-r--r--` and never executable, folders at most `rwxr-xr-x` |
+| `"standard"` | As in `"strict"`, but trailing dots and spaces are kept | As stored, without setuid, setgid and sticky bits |
+| `"trusted"` | As stored | As stored, and the owner too when running as root |
 
-By default, `extract` refuses any member that would end up outside the destination folder: names
-with `../`, absolute paths, and links that point outside it, even through other links. It also
-refuses device files, and names with hidden characters that flip the text after them, which can
-make an `.exe` file look like a `.png`. An archive that writes more than `limits` allows stops the
-whole extraction.
+`overwrite` decides what happens when a file is already where a member would go:
+
+| `overwrite` | Effect |
+|---|---|
+| `"error"` (default) | The member fails |
+| `"skip"` | The existing file stays, and the member is skipped |
+| `"replace"` | The existing file is deleted, and the member is written |
+| `"rename"` | The member is written next to it, as `name (1)` |
+
+`on_error` decides what a failed member does to the rest of the extraction:
+
+| `on_error` | Effect |
+|---|---|
+| `"stop"` (default) | The first failure raises, and extraction stops there |
+| `"continue"` | The failure is recorded in the report, and extraction goes on |
+
+## What is refused
+
+Under every policy, `extract` refuses any member that would end up outside the destination folder:
+names with `../`, absolute paths, and links that point outside it, even through other links. It
+also refuses device files. By default it refuses names with hidden characters that flip the text
+after them, which can make an `.exe` file look like a `.png`, and only `policy="trusted"` lets them
+through. An archive that writes more than `limits` allows stops the whole extraction.
 
 A refused member isn't written, and the rest of the archive still extracts. The call returns a
 report with one result for each member, so you can see what was refused:
