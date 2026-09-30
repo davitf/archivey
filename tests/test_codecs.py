@@ -10,6 +10,7 @@ import importlib.util
 import io
 import random
 import re
+import shutil
 import sys
 import sysconfig
 import zlib
@@ -1004,22 +1005,41 @@ _NON_BLOCK_PAYLOADS = {
 }
 
 
-@requires_binary("gzip")
+def _gnu_gzip_decompress(compressed: bytes) -> bytes | None:
+    """GNU gzip's ``-dc`` output, or None where the ``gzip`` on PATH is not GNU gzip.
+
+    GNU gzip's LZW decoder derives from ncompress, the format's reference. macOS ships
+    Apple's gzip, which disagreed with GNU gzip on the zero-run streams below, so it is
+    not used as a reference.
+    """
+    import subprocess
+
+    gzip_path = shutil.which("gzip")
+    if gzip_path is None:
+        return None
+    version = subprocess.run(
+        [gzip_path, "--version"], capture_output=True, text=True, check=False
+    )
+    if not version.stdout.startswith("gzip "):
+        return None
+    return subprocess.run(
+        [gzip_path, "-dc"], input=compressed, capture_output=True, check=True
+    ).stdout
+
+
 @pytest.mark.parametrize("max_bits", [10, 12, 16])
 @pytest.mark.parametrize("payload", sorted(_NON_BLOCK_PAYLOADS))
 def test_unix_compress_non_block_mode_streams_match_gzip(
     payload: str, max_bits: int
 ) -> None:
-    """Non-block streams across every width decode like ``gzip -d``, whatever the feed
-    size. The random payload fills the table at 10 and 12 bits."""
-    import subprocess
-
+    """Non-block streams across every width decode to their input, whatever the feed
+    size, and GNU gzip agrees where it is installed. The random payload fills the table
+    at 10 and 12 bits."""
     data = _NON_BLOCK_PAYLOADS[payload]
     compressed = _lzw_compress_non_block_mode(data, max_bits)
-    reference = subprocess.run(
-        ["gzip", "-dc"], input=compressed, capture_output=True, check=True
-    )
-    assert reference.stdout == data
+    reference = _gnu_gzip_decompress(compressed)
+    if reference is not None:
+        assert reference == data
     for chunk in (1 << 20, 4097, 7):
         assert _lzw_decode_in_chunks(compressed, chunk) == data
 
