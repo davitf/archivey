@@ -537,7 +537,10 @@ The raw exceptions the contract already permits SHALL continue to escape unchang
 `KeyError` for an unknown member **name**, `TypeError` for `len()` / `in` and for a
 wrong-typed `source` or `dest`, `io.UnsupportedOperation` for an unsupported `seek`,
 `ValueError` for I/O on a closed stream, and `OSError`. Boolean flags read for their
-truthiness are not covered, there being no wrong type to find.
+truthiness are not covered, there being no wrong type to find, except
+`ArchiveyConfig`'s guard switches (`rar_allow_glob_member_concatenation`,
+`read_link_targets`), which SHALL be a `bool`: a string such as `"false"` is truthy
+and would silently switch the guard.
 
 #### Scenario: object argument refusal matrix
 
@@ -548,6 +551,7 @@ truthiness are not covered, there being no wrong type to find.
 | `ArchiveyConfig(listing_limits="x")` then listing | `ArchiveyUsageError` at construction, not `AttributeError` mid-listing |
 | `ArchiveyConfig(max_retained_diagnostic_references="x")` | `ArchiveyUsageError` at construction |
 | `ArchiveyConfig(on_diagnostic=0)` | `ArchiveyUsageError` at construction, not when the first diagnostic fires |
+| `ArchiveyConfig(rar_allow_glob_member_concatenation="false")` | `ArchiveyUsageError` at construction; the refusal is never switched off by a truthy string |
 | `ListingLimits(max_members="x")` | `ArchiveyUsageError` at construction, not `TypeError` mid-listing |
 | `ExtractionLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
 | `ExtractionLimits(ratio_activation_threshold=None)` | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |
