@@ -11,8 +11,9 @@ archives 7-Zip writes and reads back correctly, and still live for every other c
 py7zr inherits report 1 unchanged, and has a separate defect of its own —
 [`py7zr-upstream-report.md`](py7zr-upstream-report.md).
 
-Archivey context — what we ship instead, and why the two cheaper fixes below are not
-options — is in `dev-docs/known-issues.md` → "7z BCJ branch filters".
+What archivey ships instead, which archives were affected, the full-size measurements and
+the reproduction recipe are in [Archivey context](#archivey-context) at the end of this page.
+The standing rule is in [`formats/7z.md`](../formats/7z.md) §2.3 and §6.
 
 ---
 
@@ -196,3 +197,101 @@ liblzma does, rather than leaving them in the buffer when the stream ends.
 ### Environment
 
 pybcj 1.0.7, CPython 3.11.15, Linux x86-64.
+
+---
+
+## Archivey context
+
+Found in the 7z sweep. Two ordinary archives, written by 7-Zip, verified by `7z t` and
+read back correctly by 7-Zip itself, were unreadable while archivey ran BCJ branch filters
+through `pybcj`. Archivey now decodes every branch filter through liblzma, for every folder
+shape, and `pybcj` is out of the `[recommended]` extra.
+
+### Which archives reached pybcj
+
+Measured by spying on `bcj.BCJDecoder` while archivey read a small archive of each shape,
+so the rows say where a `pybcj` stage was built at all, not only where 2 GiB was reached:
+
+| Folder coders | pybcj stage built with | Affected |
+| --- | --- | --- |
+| `BCJ` + `LZMA` (LZMA1) | the member's unpack size | yes |
+| `BCJ` + `PPMd` | the member's unpack size | yes |
+| `BCJ` + `BZip2` | the member's unpack size | yes |
+| `BCJ` + `Deflate` | the member's unpack size | yes |
+| `BCJ` + `Copy` | the member's unpack size | yes |
+| `BCJ` + `LZMA2` | *(none built)* | **no** |
+
+`BCJ` + `LZMA2` was exempt because `sevenzip_pipeline._plan_lzma_family` folds the branch
+filter into one liblzma chain there (`[FILTER_X86, FILTER_LZMA2]`). Confirmed at full size:
+the same 2.1 GiB payload written with `7z a -m0=BCJ -m1=LZMA2` read back through archivey
+in 28 s to a SHA-256 matching the source. The other pairs staged BCJ separately: LZMA1
+because of the BPO-21872 truncation `formats/7z.md` §2.3 documents, the rest because
+liblzma will not run a raw chain whose only filter is a BCJ
+(`lzma.LZMADecompressor(FORMAT_RAW, [{"id": FILTER_X86}])` raises
+`LZMAError: Invalid or unsupported options`).
+
+With `pybcj`, `reader.open(member)` on a 2 GiB-plus member raised the builtin
+`OverflowError` from `sevenzip_pipeline.open_folder_pipeline` → `_execute_stage`, before a
+byte was read; listing worked. `OverflowError` is not an `ArchiveyError`, and
+`SevenZipReader._translate_exception` maps only `EOFError`, so `except ArchiveyError`
+missed a failure on a valid archive. A crafted archive reaches the same call more cheaply,
+since a header may declare a multi-GiB unpack size behind a few hundred bytes of pack
+data, but the bug needs no crafting. The IA64 truncation surfaced as `TruncatedError` on
+an archive `7z x` extracts byte for byte.
+
+### What archivey does instead
+
+A BCJ coder inside an LZMA2 chain is folded into that chain. A BCJ coder staged on its own
+(after LZMA1, after a non-LZMA codec, or alone) runs as a raw liblzma chain of
+`[<branch filter>, FILTER_LZMA2]` with its input framed as LZMA2 uncompressed chunks
+(`_Lzma2Framer` in `streams/decompress.py`). The framing exists only because liblzma
+rejects a chain whose last filter is not a compression filter; it compresses nothing and
+costs 3 bytes per 64 KiB, 0.005% of the payload. The declared unpack size does not reach
+the filter; it decides only whether the stream finished.
+
+Measured on the 2.1 GiB BCJ+LZMA1 archive: 2 254 857 830 bytes in 30.7 s, SHA-256 matching
+the source, against 28.0 s for the same payload as BCJ+LZMA2.
+
+Besides clamping and per-window decoding (report 1), the third workaround is `pybcj`'s own
+pure-Python fallback, `bcj._bcjfilter`. It accepts a 3 GiB stream size, but runs at
+3.2 MiB/s against the C extension's 582 MiB/s on the same x86-like data (182x slower,
+roughly eleven minutes for a 2.1 GiB member), and its output is not equivalent (report 2).
+
+### Reproduction
+
+Needs about 2.5 GB of free disk and a few minutes of CPU. The IA64 case needs neither.
+
+```bash
+python - <<'PY'
+pat = bytes([0x8B, 0x45, 0xF8, 0xE8, 0x10, 0x20, 0x00, 0x00,
+             0x89, 0x45, 0xFC, 0xE9, 0x00, 0x01, 0x00, 0x00])
+chunk = (pat * (1 << 16))[: 1 << 20]
+total = int(2.1 * (1 << 30))          # 2 254 857 830 bytes
+with open("big.bin", "wb") as f:
+    written = 0
+    while written < total:
+        n = min(len(chunk), total - written)
+        f.write(chunk[:n])
+        written += n
+PY
+7z a -m0=BCJ -m1=LZMA big_bcj_lzma1.7z big.bin
+7z t big_bcj_lzma1.7z                            # Everything is Ok
+
+head -c 2911 big.bin > ia64.bin
+7z a -m0=IA64 -m1=LZMA ia64.7z ia64.bin
+```
+
+Archivey reads both. A reader built on `pybcj` raises
+`OverflowError: signed integer is greater than maximum` opening the first member and gets
+2896 of 2911 bytes from the second.
+
+| | |
+| --- | --- |
+| Payload | 2 254 857 830 bytes (2.1 GiB) of repeating x86-like code |
+| Archive | 93 760 017 bytes, `Method = BCJ LZMA:24`, one folder, `7z t` Everything is Ok |
+| LZMA2 control | same payload, `Method = BCJ LZMA2:24`, 93 760 614 bytes |
+| Measured | CPython 3.11.15, pybcj 1.0.7, py7zr 1.1.3, 7-Zip 23.01, Linux x86-64 |
+
+The regression tests are in `tests/test_sevenzip_reader.py`: the IA64 case round-trips a
+2911-byte member through `7z`, and the 2 GiB case pins `FilterDecoder` against an
+`unpack_size` of 2^31 without building a fixture, since the size does not reach the filter.

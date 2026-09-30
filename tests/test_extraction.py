@@ -13,6 +13,7 @@ import io
 import os
 import tarfile
 import unicodedata
+import warnings
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +35,7 @@ from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ExtractionError,
     FilterRejectionError,
+    LinkTargetNotFoundError,
     NameCollisionError,
     NameRewrittenError,
     ResourceLimitError,
@@ -1980,9 +1982,11 @@ def test_streaming_duplicate_name_removes_the_copy_when_the_later_one_fails(
         def fail_second(member: ArchiveMember) -> ArchiveMember | None:
             seen.append(member.name)
             if len(seen) == 2:
-                # A streaming pass keeps the earlier copy until the later one's outcome
-                # is known, so a later copy that lands replaces it atomically.
-                assert (dest / "a.txt").exists() is streaming
+                # A one-pass extraction keeps the earlier copy until the later one's
+                # outcome is known, so a later copy that lands replaces it atomically.
+                # TAR extracts in one pass in both modes: random access enforces the
+                # listing limits as members arrive rather than listing first.
+                assert (dest / "a.txt").exists()
                 raise ExtractionError("refused", member_name=member.name)
             return member
 
@@ -2154,14 +2158,24 @@ def test_streaming_duplicate_name_kept_by_a_hardlink_still_counts(
 def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:
     """The two cases ``safe-extraction`` records as differing, pinned so a change shows.
 
-    Both need the future: a streaming pass never sees a later copy the selector
+    Both need the future: a one-pass extraction never sees a later copy the selector
     excludes, and the caller's own file was replaced by the earlier copy before the
-    later copy was known.
+    later copy was known. "Random access" here is a reader that lists before it
+    extracts, a ZIP; a random-access TAR extracts in one pass, so it answers as a
+    streaming pass does (the ``tar`` rows).
     """
-    archive = _tar_bytes([("file", "a.txt", b"first"), ("file", "a.txt", b"last")])
+    tar = _tar_bytes([("file", "a.txt", b"first"), ("file", "a.txt", b"last")])
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w") as zf, warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # the duplicate is the point
+        zf.writestr("a.txt", b"first")
+        zf.writestr("a.txt", b"last")
+    archives = {False: zip_buf.getvalue(), True: tar, "tar": tar}
 
-    def outcome(streaming: bool, dest: Path, **kwargs: object) -> tuple:
-        with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+    def outcome(streaming: bool | str, dest: Path, **kwargs: object) -> tuple:
+        with open_archive(
+            io.BytesIO(archives[streaming]), streaming=streaming is True
+        ) as reader:
             results = reader.extract_all(dest, **kwargs).results  # type: ignore[arg-type]
         target = dest / "a.txt"
         return (
@@ -2173,6 +2187,7 @@ def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:
     for streaming, expected in (
         (False, ([ExtractionStatus.SUPERSEDED], None)),
         (True, ([ExtractionStatus.EXTRACTED], b"first")),
+        ("tar", ([ExtractionStatus.EXTRACTED], b"first")),
     ):
         picked: list[str] = []
 
@@ -2187,6 +2202,7 @@ def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:
     for streaming, expected in (
         (False, ([ExtractionStatus.SUPERSEDED], b"OLD")),
         (True, ([ExtractionStatus.SUPERSEDED], None)),
+        ("tar", ([ExtractionStatus.SUPERSEDED], None)),
     ):
         seen: list[str] = []
 
@@ -2208,11 +2224,13 @@ def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:
         )
 
 
-def test_hardlink_before_source_shares_inode_and_counts_once(tmp_path: Path) -> None:
-    # Regression: a hardlink PRECEDING its source in archive order (legal in crafted /
-    # non-GNU-ordered archives) was re-read in the second pass and written as an
-    # independent copy — content matched but the two paths did not share an inode, and the
-    # source's bytes were bomb-counted twice. It must be os.link'd to the extracted source.
+def test_hardlink_before_source_is_not_linked_forward(tmp_path: Path) -> None:
+    # A TAR hardlink refers to a file archived before it (tarfile searches only the
+    # members before the link; tar(1) links to what it already wrote). A hardlink that
+    # PRECEDES the only member of its target's name therefore has no target: it fails
+    # with LinkTargetNotFoundError, and the later file extracts on its own, read once.
+    # (A hardlink whose earlier source is not selected still goes through the second
+    # pass, which re-reads that source.)
     payload = b"payload bytes"
     src = tmp_path / "a.tar"
     src.write_bytes(
@@ -2223,13 +2241,18 @@ def test_hardlink_before_source_shares_inode_and_counts_once(tmp_path: Path) -> 
 
     with open_archive(src) as r:
         results = r.extract_all(
-            dest, on_progress=lambda p: progress_bytes.append(p.bytes_written)
+            dest,
+            on_error=OnError.CONTINUE,
+            on_progress=lambda p: progress_bytes.append(p.bytes_written),
         ).results
 
-    assert all(res.status is ExtractionStatus.EXTRACTED for res in results)
-    assert (dest / "L1.txt").read_bytes() == payload
-    assert os.path.samefile(dest / "A.txt", dest / "L1.txt")  # one inode, truly linked
-    assert progress_bytes[-1] == len(payload)  # bytes read/counted once, not twice
+    by_name = {res.member.name: res for res in results}
+    assert by_name["A.txt"].status is ExtractionStatus.EXTRACTED
+    assert by_name["L1.txt"].status is ExtractionStatus.FAILED
+    assert isinstance(by_name["L1.txt"].error, LinkTargetNotFoundError)
+    assert (dest / "A.txt").read_bytes() == payload
+    assert not (dest / "L1.txt").exists()
+    assert progress_bytes[-1] == len(payload)  # bytes read/counted once
 
 
 def test_selector_archivemember_entry_matches_by_identity(tmp_path: Path) -> None:

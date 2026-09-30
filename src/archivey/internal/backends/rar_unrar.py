@@ -16,6 +16,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,12 +27,13 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends.rar_parser import _normalize_password_utf16le
 from archivey.internal.external.cli import (
     spawn_for_stdout,
     stat_identity,
     terminate_process,
 )
-from archivey.terminal import display_path
+from archivey.terminal import display_path, quoted
 
 # Inclusive major.minor floor. ``-n`` glob demux and ``-ver`` were checked
 # against RARLAB unrar 6.02, 6.12, 6.24, and 7.00 (RAR data tests plus
@@ -324,24 +326,48 @@ def _password_arg(password: str | bytes | None) -> str:
 def _password_stdin_bytes(password: str | bytes) -> bytes:
     """Encode a password for ``unrar``'s stdin, refusing one it would silently cut.
 
-    ``unrar`` reads the password as a single line, so everything from the first
-    newline on is discarded. Measured against RARLAB ``rar`` 7.00: an archive whose
-    password is ``ab`` decrypts when ``"ab\\nXX"`` is supplied. That is a wrong
-    password accepted, and nothing downstream can tell. The native header path
-    (:func:`rar_parser._rar3_s2k` / :func:`~rar_parser._rar5_s2k`) hashes the whole
-    string, so the same argument would also mean two different things on the two
-    paths. Refuse it instead of clamping it.
+    What is sent is the password the native path hashes
+    (:func:`rar_parser._normalize_password_utf16le`): its first 127 UTF-16 code
+    units. ``unrar`` truncates as well (measured on 7.00: a RAR5 archive whose
+    password is 127 characters decrypts with 100 000 more appended), but its
+    ``wchar_t`` is not UTF-16 on every platform, so its count may differ once a
+    character outside the BMP is involved; it is handed the already-truncated
+    string so the two paths cannot disagree. The truncation also
+    bounds what goes into the pipe to a few hundred bytes, far below any pipe
+    buffer, so :func:`open_unrar_p` can write it all before reading stdout without
+    a deadlock. A password with no Unicode form raises the wrong-password
+    ``EncryptionError`` the native path raises for it.
+
+    ``unrar`` reads the password as a single line that ends at the first newline or
+    NUL, and discards the rest. Measured against RARLAB ``rar`` 7.00: an archive
+    whose password is ``ab`` decrypts when ``"ab\\nXX"`` is supplied, and a RAR4
+    member whose password is ``password`` decrypts with ``"password\\x00zz"``.
+    That is a wrong password accepted, and nothing downstream can tell. The native
+    header path (:func:`rar_parser._rar3_s2k` / :func:`~rar_parser._rar5_s2k`)
+    hashes past a newline or NUL, so the same argument would also mean two
+    different things on the two paths. Refuse it instead of clamping it.
     """
-    raw = (
-        password
-        if isinstance(password, bytes)
-        else password.encode("utf-8", errors="surrogateescape")
-    )
+    wstr = _normalize_password_utf16le(password)
+    try:
+        text = wstr.decode("utf-16le")
+    except UnicodeDecodeError:
+        # The 127th unit is the first half of a surrogate pair, which has no
+        # UTF-8 form to send; dropping or completing it would change the password.
+        raise UnsupportedFeatureError(
+            "This password cannot be passed to unrar: RAR uses only its first 127 "
+            "UTF-16 code units, and that limit falls inside a character."
+        ) from None
+    raw = text.encode("utf-8")
     if b"\n" in raw or b"\r" in raw:
         raise UnsupportedFeatureError(
             "A password containing a line break cannot be passed to unrar: it reads "
             "the password as one line and would silently use only the part before "
             "the break."
+        )
+    if b"\0" in raw:
+        raise UnsupportedFeatureError(
+            "A password containing a NUL character cannot be passed to unrar: it "
+            "would silently use only the part before the NUL."
         )
     return raw
 
@@ -369,8 +395,12 @@ def _unrar_mask_for(member: str) -> str:
     return member.replace("*", "?")
 
 
-def _member_include_switch(member: str) -> str:
+def _member_include_switch(member: str | bytes) -> str | bytes:
     """Build a safe ``unrar`` include-mask switch for one member name.
+
+    ``member`` is ``bytes`` for a name ``unrar`` must be given as stored (an 8-bit
+    RAR3 name, see :func:`unrar_member_argument`); ``*`` is narrowed to ``?`` in
+    it the same way, which is one byte for one byte.
 
     A hostile archive can name a member like a switch (``-inul``) or an ``@listfile``
     argument; passed positionally those are mis-parsed by ``unrar`` (a switch, or a
@@ -391,7 +421,181 @@ def _member_include_switch(member: str) -> str:
     instead — :func:`_unrar_mask_match` is not faithful there, and Windows
     ``unrar`` treats ``\\`` as a separator (see :func:`_unrar_glob_demux_ok`).
     """
+    if isinstance(member, bytes):
+        return b"-n./" + member.replace(b"*", b"?")
     return "-n./" + _unrar_mask_for(member)
+
+
+def unrar_member_argument(
+    presented: str, stored: bytes | None, *, stored_is_8bit: bool
+) -> str | bytes | None:
+    """The name to build ``unrar``'s ``-n`` mask from: text, the stored bytes, or none.
+
+    ``unrar`` turns a mask from argv into characters with the C library's multibyte
+    conversion, and does the same to an 8-bit RAR3 name (one without the Unicode
+    flag) read from the header. Handing it the stored bytes therefore matches in
+    every locale; measured on 7.00 under ``C``, ``POSIX`` and ``C.UTF-8`` with
+    ``caf\\xe9.txt``. The name archivey presents is those bytes decoded (as
+    windows-1252, say), and its UTF-8 form never matches.
+
+    A RAR5 name, and a RAR3 name with the Unicode flag, are Unicode in the header
+    and ``unrar`` compares them as such, so their UTF-8 text is the mask; the
+    child runs under a UTF-8 locale for that (:func:`_unrar_env`).
+
+    Windows argv is Unicode, not bytes. Windows ``unrar`` reads an 8-bit name as
+    OEM text, not as the name archivey presents, so the mask there is the stored
+    bytes put through that same conversion (:func:`_windows_unrar_8bit_name`).
+    ``None`` means the conversion failed, so there is no mask to give;
+    :func:`unrar_member_refusal` turns that into a reason. Backslashes are
+    separators in RAR3's stored bytes and ``/`` in the presented name; the bytes
+    follow the name.
+    """
+    if not stored_is_8bit or stored is None:
+        return presented
+    if sys.platform == "win32":
+        text = _windows_unrar_8bit_name(stored)
+        return None if text is None else text.replace("\\", "/").rstrip("/")
+    return stored.replace(b"\\", b"/").rstrip(b"/")
+
+
+def _windows_unrar_8bit_name(stored: bytes) -> str | None:
+    """An 8-bit RAR3 name as Windows ``unrar`` sees it; ``None`` if it cannot tell.
+
+    ``unrar`` 7.00 (``ArcCharToWide`` with ``ACTW_OEM``) converts the stored bytes
+    with ``OemToCharBuffA`` and then ``MultiByteToWideChar(CP_ACP, 0, …)``. Both use
+    the system code pages, which the child shares, so making the same two calls
+    with the same flags here gives the text its mask must match. Under OEM 437 the
+    ``\\xe9`` of ``caf\\xe9s.txt`` is ``Θ``, not the ``é`` archivey presents
+    (Windows CI).
+
+    The calls are made through ``ctypes`` rather than Python's ``mbcs`` codec
+    because either step can be lossy: ``OemToCharBuffA`` best-fits a character the
+    ANSI code page lacks, and ``MultiByteToWideChar`` with no flags maps an
+    undefined byte to the code page's default character, where the codec would
+    raise or substitute ``U+FFFD``. Reproducing the loss exactly is what keeps the
+    mask on ``unrar``'s own name. Two names the loss makes equal are then the
+    duplicate-name case ``dev-docs/formats/rar.md`` §7 records.
+    """
+    if stored.isascii():
+        return stored.decode("ascii")
+    if sys.platform == "win32":
+        import ctypes
+
+        buffer = ctypes.create_string_buffer(stored, len(stored))
+        ctypes.windll.user32.OemToCharBuffA(buffer, buffer, len(stored))
+        # ``OemToExt`` cuts the converted name at its first NUL.
+        ansi = buffer.raw.split(b"\0", 1)[0]
+        multi_byte_to_wide_char = ctypes.windll.kernel32.MultiByteToWideChar
+        size = multi_byte_to_wide_char(0, 0, ansi, len(ansi), None, 0)
+        if size > 0:
+            wide = ctypes.create_unicode_buffer(size)
+            if multi_byte_to_wide_char(0, 0, ansi, len(ansi), wide, size) == size:
+                return wide[:size]
+    return None
+
+
+# Locale names that select UTF-8, tried in order for unrar's environment. glibc
+# 2.35+ and musl have ``C.UTF-8`` built in; older Debian-family systems ship
+# ``C.utf8``; macOS has ``en_US.UTF-8``.
+_UTF8_LOCALE_NAMES: tuple[str, ...] = ("C.UTF-8", "C.utf8", "en_US.UTF-8", "en_US.utf8")
+# ``LC_ALL_MASK`` for ``newlocale``: every category bit. glibc refuses bits it does
+# not define, so the value is per C library; musl ignores bits past its own.
+_LC_ALL_MASK_LINUX = 8127
+_LC_ALL_MASK_BSD = 63
+_utf8_locale_lock = threading.Lock()
+_utf8_locale_probed = False
+_utf8_locale: str | None = None
+
+
+def _probe_utf8_locale() -> str | None:
+    """The first of :data:`_UTF8_LOCALE_NAMES` the C library can load, or ``None``.
+
+    Asked with ``newlocale``, which builds a locale object without touching this
+    process's own locale, so the probe is thread-safe and spawns nothing.
+    """
+    if sys.platform.startswith("linux"):
+        mask = _LC_ALL_MASK_LINUX
+    elif sys.platform == "darwin" or "bsd" in sys.platform:
+        mask = _LC_ALL_MASK_BSD
+    else:
+        return None
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None)
+        newlocale = libc.newlocale
+        freelocale = libc.freelocale
+    except (ImportError, OSError, AttributeError):
+        return None
+    newlocale.restype = ctypes.c_void_p
+    newlocale.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p)
+    freelocale.argtypes = (ctypes.c_void_p,)
+    for name in _UTF8_LOCALE_NAMES:
+        handle = newlocale(mask, name.encode("ascii"), None)
+        if handle:
+            freelocale(handle)
+            return name
+    return None
+
+
+def _utf8_locale_name() -> str | None:
+    """:func:`_probe_utf8_locale`, run once per process."""
+    global _utf8_locale, _utf8_locale_probed
+    with _utf8_locale_lock:
+        if not _utf8_locale_probed:
+            _utf8_locale = _probe_utf8_locale()
+            _utf8_locale_probed = True
+        return _utf8_locale
+
+
+def _unrar_env() -> dict[str, str] | None:
+    """The environment for an ``unrar`` child, or ``None`` to inherit this one.
+
+    ``unrar`` converts a Unicode member name and an argv mask to and from multibyte
+    text through the C locale. Under ``LC_ALL=C`` (cron, CI, containers) a
+    non-ASCII RAR5 name then never matches its own mask, and the read is reported
+    truncated. ``LC_ALL`` names a UTF-8 locale instead, which is how the mask is
+    encoded. Windows has no such conversion on this path and keeps its environment.
+    """
+    if sys.platform == "win32":
+        return None
+    name = _utf8_locale_name()
+    if name is None:
+        return None
+    return {**os.environ, "LC_ALL": name}
+
+
+def unrar_member_refusal(member: str | bytes | None) -> str | None:
+    """Why ``unrar`` cannot be given ``member`` as a mask, or ``None`` when it can.
+
+    ``None`` is an 8-bit RAR3 name Windows ``unrar`` cannot be matched against
+    (:func:`_windows_unrar_8bit_name`). A NUL cannot be in any process argument.
+    A non-ASCII text name needs the UTF-8 locale :func:`_unrar_env` sets, and
+    without one it would read as truncated. Stored bytes need no locale
+    (:func:`unrar_member_argument`).
+    """
+    if member is None:
+        return (
+            "its stored name could not be converted through this system's OEM and "
+            "ANSI code pages, which is how unrar reads it"
+        )
+    has_nul = b"\0" in member if isinstance(member, bytes) else "\0" in member
+    if has_nul:
+        return (
+            "its stored name contains a NUL character, which cannot be passed to a "
+            "subprocess"
+        )
+    if (
+        isinstance(member, str)
+        and not member.isascii()
+        and sys.platform != "win32"
+        and _utf8_locale_name() is None
+    ):
+        return (
+            "its name is not ASCII, and no UTF-8 locale was found to pass it to "
+            "unrar in"
+        )
+    return None
 
 
 def _unrar_glob_demux_ok(presented: str) -> bool:
@@ -590,7 +794,7 @@ def open_unrar_p(
     archive_path: str | Path,
     *,
     password: str | bytes | None = None,
-    member: str | None = None,
+    member: str | bytes | None = None,
     version_control: bool = False,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """Spawn ``<unrar|rar> p -inul -cfg- [-ver] [-p|-p-] [-n./member] -- archive``.
@@ -602,13 +806,18 @@ def open_unrar_p(
 
     A named ``member`` is passed as a ``-n./`` include mask, never positionally, so a
     hostile member name cannot inject an ``unrar`` switch or ``@listfile`` argument
-    (see :func:`_member_include_switch`).
+    (see :func:`_member_include_switch`). It is ``bytes`` for a name given to
+    ``unrar`` as stored (:func:`unrar_member_argument`). The child runs under a
+    UTF-8 locale (:func:`_unrar_env`).
 
     When a non-empty ``password`` is given, the switch is bare ``-p`` and the password
     (plus a trailing newline) is written to the child's stdin — ``unrar`` reads it from
     stdin when redirected, keeping the secret out of ``argv``. A password containing a
-    line break is refused rather than sent, because ``unrar`` would read only the part
-    before it — see :func:`_password_stdin_bytes`.
+    line break or a NUL is refused rather than sent, because ``unrar`` would read only
+    the part before it, and a longer one is cut to the 127 UTF-16 units RAR hashes —
+    see :func:`_password_stdin_bytes`. That bound is what lets the whole password be
+    written before stdout is read: it always fits in the pipe buffer, so the write
+    cannot block on a child that is itself blocked writing a full stdout.
 
     Reading ``stdout`` has no time bound. A read waits for as long as the child
     takes to produce bytes, and nothing here stops a child that stalls. A solid
@@ -620,12 +829,23 @@ def open_unrar_p(
     Returns ``(proc, stdout)``. Caller must terminate/wait/close.
     """
     unrar = find_rarlab_unrar()
-    cmd = [unrar, "p", "-inul", _RAR_DISABLE_CONFIG]
+    cmd: list[str | bytes] = [unrar, "p", "-inul", _RAR_DISABLE_CONFIG]
     if version_control:
         cmd.append("-ver")
     pass_arg = _password_arg(password)
     cmd.append(pass_arg)
     if member is not None:
+        # subprocess raises a bare ValueError for a NUL in any argument.
+        refusal = unrar_member_refusal(member)
+        if refusal is not None:
+            shown = quoted(
+                member.decode("utf-8", "surrogateescape")
+                if isinstance(member, bytes)
+                else member
+            )
+            raise UnsupportedFeatureError(
+                f"RAR member {shown} cannot be read through unrar: {refusal}."
+            )
         cmd.append(_member_include_switch(member))
     # ``--`` ends switch parsing, so an archive path starting with ``-`` (a
     # caller's ``-inul.rar``) is read as the archive and not as a switch. An
@@ -645,6 +865,7 @@ def open_unrar_p(
         name="unrar",
         not_started=_NOT_INSTALLED_MSG,
         stdin=subprocess.PIPE if feed_password else subprocess.DEVNULL,
+        env=_unrar_env(),
     )
     if stdin_bytes is not None:
         assert proc.stdin is not None
@@ -654,4 +875,12 @@ def open_unrar_p(
         except BrokenPipeError:
             # unrar exited before consuming the password; surface via exit-code mapping.
             pass
+        except BaseException:
+            # Any other failure leaves the caller without ``proc``, so nothing else
+            # would ever reap it.
+            try:
+                stdout.close()
+            finally:
+                terminate_process(proc)
+            raise
     return proc, stdout

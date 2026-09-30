@@ -40,7 +40,7 @@ meaningful only once everything else is addressed), and the parked-from-archive
 table. `STATUS.md` records the intended ordering.
 
 Note that an empty `review/` does **not** mean `0.2.0` is ready: the release bundle
-(`PLAN.md` item 6 — packaging finalize, the free-threading support statement, the
+(packaging finalize, the free-threading support statement, the
 migration guide) was never a review item and is still outstanding.
 
 ## Archive (complete & addressed)
@@ -58,6 +58,7 @@ migration guide) was never a review item and is still outstanding.
 | `archive/2026-07-28-debt-ledger/` | The pre-`0.2.0` **debt ledger** (backlog Topics 4+5) | Whole pay list paid: D1–D7, DD1/DD4, S2/S3, T1/T2/T3/T7, T4 half-test, Q1–Q5. Remaining items are explicit KEEPs. T7 audit: [`corpus-matrix.md`](archive/2026-07-28-debt-ledger/corpus-matrix.md). |
 | `archive/2026-07-28-performance/` | The ≤1.3× stdlib perf budget — gate efficacy + traps | P1/P3/P4/P5/P6 fixed; P2/P7 partial with bands **accepted aspirational** (#191); Q1–Q6 all decided (Q4 → no verify-skip knob, 2026-07-28); P8/P9 + L4/L5 → tracked follow-ups. |
 | `archive/2026-08-15-simplicity-consistency/` | Simplicity & consistency (Topic 9) | Findings #230/#231; W1–W9 paid in #232 (six OpenSpec changes archived 2026-08-09); Q13 expansions #233–#236. **O2b/O2c** decoder-hold under concurrency → `IDEAS.md`. |
+| `archive/2026-09-29-extraction-audit/` | Extraction and backend security audit (PR #512) | About 40 findings with strict-xfail reproducers; all fixed in #512 except the deferred ones, each with a recorded decision: E1 → threat-model O22; RAR names `unrar` cannot address and the RAR dictionary check → `formats/rar.md` §7; `.Z` dictionary and an empty-bzip2-stream accelerator quirk → `IDEAS.md`. Unreproduced suspicions listed for the next audit. |
 
 ## Conventions every brief inherits
 

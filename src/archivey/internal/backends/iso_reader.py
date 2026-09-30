@@ -26,7 +26,7 @@ tracks visited extents — see :func:`_install_pycdlib_directory_cycle_guard`. I
 confined to pycdlib and transparent on well-formed images, but a program that also uses
 pycdlib directly in the same process will see archivey's guarded ``deque`` there too. This
 is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever; see
-``dev-docs/known-issues.md``. The same import wraps ``pycdlib.rockridge.RockRidge.parse``
+``dev-docs/formats/iso.md`` §4. The same import wraps ``pycdlib.rockridge.RockRidge.parse``
 (:func:`_install_pycdlib_system_use_filter`), but the wrapper acts only inside this
 module's own ``open_fp`` call, so other users of pycdlib see no change.
 """
@@ -72,6 +72,7 @@ from archivey.cost import (
 from archivey.diagnostics import (
     DiagnosticCode,
     MemberHeaderRecordContext,
+    MemberTimestampContext,
     NameEncodingContext,
     raw_name_to_base64,
 )
@@ -526,6 +527,46 @@ def _dr_date_to_datetime(
         )
     except (ValueError, AttributeError, TypeError, OverflowError):
         return None
+
+
+def _dr_date_fields(
+    date: DirectoryRecordDate | VolumeDescriptorDate,
+) -> tuple[object, ...] | None:
+    """The date's stored year-to-second fields, or ``None`` for an unknown object."""
+    if _is_long_form_date(date):
+        return (
+            date.year,
+            date.month,
+            date.dayofmonth,
+            date.hour,
+            date.minute,
+            date.second,
+        )
+    if _is_short_form_date(date):
+        return (
+            date.years_since_1900,
+            date.month,
+            date.day_of_month,
+            date.hour,
+            date.minute,
+            date.second,
+        )
+    return None
+
+
+def _dr_date_is_invalid(
+    date: DirectoryRecordDate | VolumeDescriptorDate | None,
+) -> bool:
+    """Whether a stored date is present, specified, and yet not a date.
+
+    All zeros is ISO 9660's "not specified", like ZIP's zero DOS date, and is not
+    reported. Anything else :func:`_dr_date_to_datetime` returns ``None`` for (a
+    month of 13, a day of 0) is a date the image stores and archivey cannot use.
+    """
+    if date is None or _dr_date_to_datetime(date) is not None:
+        return False
+    fields = _dr_date_fields(date)
+    return fields is not None and any(fields)
 
 
 def _is_directory_record(obj: object) -> TypeGuard[DirectoryRecord]:
@@ -1302,7 +1343,7 @@ class IsoReader(BaseArchiveReader):
             else MemberExtra()
         )
 
-        modified, accessed, created, ctime = self._timestamps(record, rr)
+        modified, accessed, created, ctime, invalid_dates = self._timestamps(record, rr)
         mode, uid, gid = self._posix_metadata(rr)
         link_target = self._symlink_target(member_type, record, rr)
 
@@ -1355,6 +1396,23 @@ class IsoReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_system_use_cut(member, rr, index)
+        for field, source, value_repr in invalid_dates:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+                message=(
+                    f"Invalid ISO 9660 date for {quoted(member.name)}: {value_repr}"
+                ),
+                context=MemberTimestampContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    field=field,
+                    source=source,
+                    value_repr=value_repr,
+                ),
+                member=member,
+                attach_to_member=True,
+            )
         if id(record) in self._joliet_named:
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
@@ -1447,12 +1505,32 @@ class IsoReader(BaseArchiveReader):
 
     def _timestamps(
         self, record: DirectoryRecord, rr: RockRidge | None
-    ) -> tuple[datetime | None, datetime | None, datetime | None, datetime | None]:
-        """Return ``(modified, accessed, created, ctime)``.
+    ) -> tuple[
+        datetime | None,
+        datetime | None,
+        datetime | None,
+        datetime | None,
+        list[tuple[str, str, str]],
+    ]:
+        """Return ``(modified, accessed, created, ctime, invalid)``.
 
         ``ctime`` is the Rock Ridge attribute-change time (POSIX ``st_ctime``). It
-        never fills ``created``, which holds only a TF creation time.
+        never fills ``created``, which holds only a TF creation time. ``invalid``
+        lists each stored date that is not a date, as ``(field, source,
+        value_repr)``, for a ``MEMBER_TIMESTAMP_INVALID`` report.
         """
+        invalid: list[tuple[str, str, str]] = []
+
+        def convert(
+            date: DirectoryRecordDate | VolumeDescriptorDate | None,
+            field: str,
+            source: str,
+        ) -> datetime | None:
+            if _dr_date_is_invalid(date):
+                assert date is not None
+                invalid.append((field, source, repr(_dr_date_fields(date))))
+            return _dr_date_to_datetime(date)
+
         modified: datetime | None = None
         accessed: datetime | None = None
         created: datetime | None = None
@@ -1465,20 +1543,22 @@ class IsoReader(BaseArchiveReader):
                 tf = getattr(entries, "tf_record", None)
                 if tf is None:
                     continue
-                modified = modified or _dr_date_to_datetime(
-                    getattr(tf, "modification_time", None)
+                modified = modified or convert(
+                    getattr(tf, "modification_time", None), "modified", "rock_ridge"
                 )
-                accessed = accessed or _dr_date_to_datetime(
-                    getattr(tf, "access_time", None)
+                accessed = accessed or convert(
+                    getattr(tf, "access_time", None), "accessed", "rock_ridge"
                 )
-                created = created or _dr_date_to_datetime(
-                    getattr(tf, "creation_time", None)
+                created = created or convert(
+                    getattr(tf, "creation_time", None), "created", "rock_ridge"
                 )
-                ctime = ctime or _dr_date_to_datetime(
-                    getattr(tf, "attribute_change_time", None)
+                ctime = ctime or convert(
+                    getattr(tf, "attribute_change_time", None), "ctime", "rock_ridge"
                 )
-        modified = modified or _dr_date_to_datetime(getattr(record, "date", None))
-        return modified, accessed, created, ctime
+        modified = modified or convert(
+            getattr(record, "date", None), "modified", "directory_record"
+        )
+        return modified, accessed, created, ctime, invalid
 
     def _px_mode(self, rr: RockRidge | None) -> int | None:
         """The full POSIX mode from a Rock Ridge PX record, file-type bits included."""

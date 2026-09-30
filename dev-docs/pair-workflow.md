@@ -59,7 +59,7 @@ Organised, **no-fluff**, rewritten in place — not an append-only log.
 | `formats/<format>.md` | Per-format: behaviour here, consequences, light decisions, verify — **create with the first real change** that needs it (do not land empty trees) |
 | `topics/<topic>.md` | Cross-cutting notes; **link** registers like [`threat-model.md`](threat-model.md), do not restate them — same “create on first use” rule |
 | [`code-map.md`](code-map.md) | Where to start in the tree |
-| [`threat-model.md`](threat-model.md) | Trust boundaries + open `O*` gap register (sole home for those IDs) |
+| [`threat-model.md`](threat-model.md) | Attackers, trust boundaries, defended properties, accepted non-guarantees, open design gaps (its index maps the old `O*`/`C*` ids) |
 | [`investigations/`](investigations/) | Append-only evidence notebooks; link from handbook, don’t promote to “current truth” |
 | [`decisions/`](decisions/) | **Rare** repo-wide policy only; prefer light notes on format/topic pages once those exist |
 | `openspec/specs/` | **Authoritative** machine-checkable contract (agents/CI) — **not** the primary human reading surface |
@@ -81,7 +81,7 @@ material actually had. Sections are numbered so a brief can cite `zip.md` §2.3.
 | **1. Shape** | The two to four structural properties that generate everything else, each with its consequences attached in the same breath. Not a spec reproduction; the altitude specs skip |
 | **2. The pipeline here** | Fixed subsections — identify · open and list · member data · extract · write. Each says *who does the work*, *what is format-specific rather than general*, and *what is refused*. "Nothing here is format-specific" is a legitimate and useful answer. Member-metadata mapping lives under *open and list*. A stage that hands work to a **separate process** answers a fourth question — *what crosses the boundary*, in both directions — because none of the first three reach it: [`formats/rar.md`](formats/rar.md) §2.3 is argv construction one way and an exit code plus a byte count the other, and that is the page |
 | **3. In the wild** | Variants, producers and what they get wrong, files that are secretly this format, corpus evidence with its provenance |
-| **4. Threat surface** | Format-specific attack surface only; link [`threat-model.md`](threat-model.md) `O*` rows for status |
+| **4. Threat surface** | Format-specific attack surface only; link the [`threat-model.md`](threat-model.md) property or non-guarantee section |
 | **5. Sharp edges** | *Symptoms someone observes*, each tagged **format** (inherent) / **library** (upstream or replace the library) / **archivey** (ours), so a reader can stop thinking about what they cannot fix. Details and fix plans stay behind the register link. **One table, not two**: a reader arrives with a symptom and does not yet know whether it is a bug or the format, so the tag sorts each row after they have found it rather than making them pick the right list first |
 | **6. Decisions** | Choice → why → rejected alternative. Light bullets, not ADRs |
 | **7. Open questions** | What we do not know and cannot settle by reading the code — each with what it would change and what would answer it. When there is nothing honest to put in it, keep the heading with one line saying none are open, so the numbers of §8 and §9 stay what briefs cite |

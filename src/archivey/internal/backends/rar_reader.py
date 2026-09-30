@@ -47,6 +47,7 @@ from archivey.diagnostics import (
     DigestContext,
     EncryptedVerificationContext,
     MemberHeaderRecordContext,
+    MemberTimestampContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -60,6 +61,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import (
+    _RAR3_FILE_UNICODE,
     RAR5_ID,
     RAR_ID,
     DamagedServiceHeader,
@@ -88,6 +90,8 @@ from archivey.internal.backends.rar_unrar import (
     decompress_rar3_blob,
     find_rarlab_unrar,
     open_unrar_p,
+    unrar_member_argument,
+    unrar_member_refusal,
 )
 from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
@@ -213,23 +217,30 @@ def _stream_volume_name(stem: str, index: int, *, old_style: bool) -> str:
     return f"{stem}.{chr(ord('r') + number // 100)}{number % 100:02d}"
 
 
-def _link_for_unar(source: Path, dest: Path) -> bool:
-    """Link ``source`` at ``dest`` for ``unar``: a symlink, else a hard link.
+def _unrar_finds_exactly(paths: list[Path]) -> bool:
+    """Whether unrar, given ``paths[0]``, walks exactly ``paths`` by name.
 
-    Returns ``False`` when the system allows neither, and the caller copies instead.
-    Windows grants symlinks only with Developer Mode or an elevated token, and a hard
-    link cannot cross volumes, so that happens there.
+    unrar looks for each next volume by name beside the one before, which is the
+    lookup :func:`discover_volume_siblings` reproduces.
     """
+    siblings = discover_volume_siblings(paths[0])
+    if siblings is None or len(siblings) != len(paths):
+        return len(paths) == 1
     try:
-        os.symlink(source.absolute(), dest)
-        return True
-    except (OSError, NotImplementedError):
-        pass
-    try:
-        os.link(source, dest)
-        return True
+        return all(
+            os.path.samefile(found, given) for found, given in zip(siblings, paths)
+        )
     except OSError:
         return False
+
+
+def _link_file(src: Path, dest: Path) -> None:
+    """Make ``dest`` name ``src``'s bytes without copying them: a symlink, else a
+    hard link. Raises ``OSError`` when neither is possible."""
+    try:
+        dest.symlink_to(src)
+    except (OSError, NotImplementedError):
+        os.link(src, dest)
 
 
 def _stream_copy_refused_note(program: str, reason: str) -> str:
@@ -271,11 +282,29 @@ def _rar_stream_copy_cost_notes(
     else:
         note = _single_disk_copy_note(program)
         what = "the archive"
+    return _bounded_copy_notes(
+        note, what, "a stream source", limits, copy_size, program
+    )
+
+
+def _bounded_copy_notes(
+    note: str,
+    what: str,
+    source_kind: str,
+    limits: SpoolLimits,
+    copy_size: int | None,
+    program: str,
+) -> tuple[str, ...]:
+    """``note`` with the spool limit in force, or the refusal the limit decides at open.
+
+    ``what`` names what is copied and ``source_kind`` what it is copied from, in the
+    refusal's wording.
+    """
     limit = limits.max_bytes
     if limit is None:
         return (f"{note} The copy has no size limit (SpoolLimits.max_bytes=None).",)
     if limit == 0:
-        reason = "SpoolLimits.max_bytes=0 allows no copy of a stream source"
+        reason = f"SpoolLimits.max_bytes=0 allows no copy of {source_kind}"
         return (_stream_copy_refused_note(program, reason),)
     if copy_size is not None and copy_size > limit:
         reason = (
@@ -477,6 +506,17 @@ def _rar_ctime(info: RarMemberInfo) -> datetime | None:
     if info.host_os in _RAR_BIRTH_TIME_HOSTS:
         return None
     return info.ctime
+
+
+def _timestamp_field_name(info: RarMemberInfo, slot: str) -> str:
+    """The ``ArchiveMember`` field a parser time slot would have filled.
+
+    The creation slot is ``created`` or ``ctime`` by ``host_os``, as in
+    :func:`_rar_created`, so the report names the field the caller sees as ``None``.
+    """
+    if slot == "ctime":
+        return "created" if info.host_os in _RAR_BIRTH_TIME_HOSTS else "ctime"
+    return {"mtime": "modified", "atime": "accessed"}.get(slot, slot)
 
 
 def _tweaked_hash_key(
@@ -875,6 +915,9 @@ class RarReader(BaseArchiveReader):
         self._volume_paths: list[Path] = []
         # Stream volumes, kept unmaterialized until unrar actually needs files.
         self._stream_volume_items: list[Path | BinaryIO] = []
+        # An explicit list of volume files that unrar would not find by name from
+        # the first one, linked into a temp directory on the first read that needs it.
+        self._stage_volume_paths = False
         self._volume0_parse_origin = 0  # set after sibling discovery when origin > 0
         # The data program, with ``AUTO`` resolved once for the life of this reader.
         self._decompressor = _resolve_decompressor(self._config.rar_decompressor)
@@ -946,8 +989,20 @@ class RarReader(BaseArchiveReader):
             and self._volume_set_size() <= 1
             and self._origin + self._archive.sfx_offset > 0
         ):
-            # ``_unar_archive_path`` copies a prefixed file from where the RAR starts.
-            self._cost_notes = (*self._cost_notes, _single_disk_copy_note("unar"))
+            # ``_unar_archive_path`` copies a prefixed file from where the RAR starts,
+            # within the spool limit; the size is known, so the note can say whether
+            # the copy will be refused.
+            self._cost_notes = (
+                *self._cost_notes,
+                *_bounded_copy_notes(
+                    _single_disk_copy_note("unar"),
+                    "the archive",
+                    "a prefixed archive for unar",
+                    self._config.spool_limits,
+                    self._unar_copy_size(),
+                    "unar",
+                ),
+            )
         self._check_rar3_comment_budget()
         self._archive.comment = self._resolve_rar3_comment(self._archive.comment)
         for info in self._archive.members:
@@ -986,10 +1041,17 @@ class RarReader(BaseArchiveReader):
         if isinstance(joined, ConcatenatedFile):
             paths = source.volume_paths
             if paths:
-                # Path volumes: prefer real sibling files for unrar.
+                # An explicit list of volume files is used as given, in the order
+                # given. unrar finds later volumes by name beside the first, so it
+                # is pointed at the files in place only when that finds exactly
+                # this list; otherwise they are staged under the set's own names
+                # (_stage_explicit_volumes) on the first read that needs unrar.
                 self._volume_paths = paths
                 self._volume_count = len(paths)
-                self._archive_path = paths[0]
+                if _unrar_finds_exactly(paths):
+                    self._archive_path = paths[0]
+                else:
+                    self._stage_volume_paths = True
                 return SharedSource(source, wrap_handle=wrap)
             # Stream volumes: parse from the originals; copy for unrar only when
             # a member actually needs one (_ensure_archive_path).
@@ -1066,6 +1128,45 @@ class RarReader(BaseArchiveReader):
         self._volume_paths = paths
         self._archive_path = paths[0]
 
+    def _stage_explicit_volumes(self) -> None:
+        """Link an explicit volume list into a temp dir under the set's own names.
+
+        The caller's files may sit in different directories, or carry names that
+        do not continue one another, and unrar (and unar) find each later volume by
+        name beside the one before. Each file is symlinked, or hard-linked where a
+        symlink is not allowed (Windows without the privilege), so nothing is
+        copied. Where neither works the set is copied, bounded by
+        ``SpoolLimits`` like any other copy this reader makes. Called under
+        ``_materialize_lock`` from :meth:`_ensure_archive_path`.
+        """
+        temp_dir = Path(tempfile.mkdtemp(prefix="archivey-rar-vol-"))
+        self._temp_dir = temp_dir
+        names = [
+            temp_dir
+            / _stream_volume_name(
+                "archive", index, old_style=self._archive.old_volume_naming
+            )
+            for index in range(1, len(self._volume_paths) + 1)
+        ]
+        try:
+            try:
+                for src, dest in zip(self._volume_paths, names):
+                    _link_file(src.absolute(), dest)
+            except OSError:
+                for dest in names:
+                    dest.unlink(missing_ok=True)
+                budget = self._spool_budget("every volume")
+                sizes = [src.stat().st_size for src in self._volume_paths]
+                budget.check_total(sum(sizes))
+                for src, dest in zip(self._volume_paths, names):
+                    with src.open("rb") as handle, dest.open("wb") as out:
+                        budget.copy(handle, out)
+        except BaseException:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            self._temp_dir = None
+            raise
+        self._archive_path = names[0]
+
     def _decompressor_name(self) -> str:
         """The data program as the open-time notes name it."""
         if self._decompressor is RarDecompressor.UNAR:
@@ -1085,6 +1186,32 @@ class RarReader(BaseArchiveReader):
             program = (
                 "unar" if self._decompressor is RarDecompressor.UNAR else "RARLAB unrar"
             )
+            remedy: dict[str, str] = {}
+            source = self._source
+            if source is None:
+                pass
+            elif source.path is not None:
+                # A file copied for unar: from where a prefixed RAR starts, or because
+                # it could not be linked into unar's private directory. unrar reads
+                # a path where it is.
+                remedy["remedy"] = (
+                    "Set ArchiveyConfig.rar_decompressor to 'unrar', which reads an "
+                    "archive file in place, or raise the limit (None removes it)."
+                )
+            elif source.volume_paths and self._decompressor is RarDecompressor.UNAR:
+                # unar reads every set from its private directory, so where the
+                # caller keeps the files does not matter; unrar can read them there.
+                remedy["remedy"] = (
+                    "Set ArchiveyConfig.rar_decompressor to 'unrar', which reads "
+                    "volumes in place when they sit in one directory under their "
+                    "set's names, or raise the limit (None removes it)."
+                )
+            elif source.volume_paths:
+                # Explicit volume files that could not be linked side by side.
+                remedy["remedy"] = (
+                    "Put the volumes in one directory under their set's names, where "
+                    "they are read in place, or raise the limit (None removes it)."
+                )
             self._spool = SpoolBudget(
                 self._config.spool_limits,
                 what=(
@@ -1093,8 +1220,16 @@ class RarReader(BaseArchiveReader):
                 ),
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.RAR,
+                **remedy,
             )
         return self._spool
+
+    def _unar_copy_size(self) -> int | None:
+        """Bytes :meth:`_unar_archive_path` copies from where the RAR starts, if known."""
+        size = self._shared.size
+        if size is None:
+            return None
+        return max(size - self._origin - self._archive.sfx_offset, 0)
 
     def _spool_copy_size(self) -> int | None:
         """Bytes the copy for ``unrar`` would write, or ``None`` when not known.
@@ -1386,8 +1521,12 @@ class RarReader(BaseArchiveReader):
                 self._materialize_stream_volumes()
                 assert self._archive_path is not None
                 return self._archive_path
+            if self._stage_volume_paths:
+                self._stage_explicit_volumes()
+                assert self._archive_path is not None
+                return self._archive_path
             # Single stream source: write one temp .rar for unrar.
-            budget = self._spool_budget("the whole archive of the stream source")
+            budget = self._spool_budget("the whole stream source")
             # Checked before mkstemp, so a refused archive leaves no temp file. With
             # no size known this still refuses a retry after an earlier refusal.
             budget.check_total(self._spool_copy_size())
@@ -1405,12 +1544,10 @@ class RarReader(BaseArchiveReader):
     ) -> Path:
         """Copy the source from ``start`` to a new temp ``.rar``; the caller owns it.
 
-        ``budget`` bounds the copy when given; the caller checks the known total
-        against it first. Every stream source's copy passes one. The one caller that
-        passes none is ``_unar_archive_path`` copying a prefixed *path* source, which
-        the spool limit does not govern (``SpoolLimits``: a path source is read in
-        place); ``RarReader.__init__`` notes that copy at open instead.
-        ``directory`` is where the file is made, the system temp directory if omitted.
+        ``budget`` bounds the copy: a stream source's for ``unrar``, and a single
+        archive's for ``unar`` (a stream, or a prefixed path); the caller checks the known total against it
+        first. ``None`` copies without a bound. ``directory`` is where the file is
+        made, the system temp directory if omitted.
         """
         fd, name = tempfile.mkstemp(suffix=".rar", dir=directory)
         path = Path(name)
@@ -1449,7 +1586,7 @@ class RarReader(BaseArchiveReader):
         :func:`_stream_volume_name` gives them; a single archive is ``archive.rar``
         there, with no name another file could continue.
 
-        Each volume is linked, not copied (:func:`_link_for_unar`). Where the system
+        Each volume is linked, not copied (:func:`_link_file`). Where the system
         allows neither link, the volumes that could not be linked are copied through
         the reader's spool budget: their total is checked before the first byte, so a
         limit below it refuses the read and leaves no directory behind. That copy has
@@ -1490,21 +1627,16 @@ class RarReader(BaseArchiveReader):
         with self._materialize_lock:
             if self._unar_path is not None:
                 return self._unar_path
+            budget = None
+            if not volumes:
+                # Bounded like any other copy, and checked before the directory
+                # exists when the size is known, as it is for a path.
+                budget = self._spool_budget("the archive from where the RAR starts")
+                budget.check_total(self._unar_copy_size())
             temp_dir = Path(tempfile.mkdtemp(prefix="archivey-unar-"))
             try:
-                if not volumes:
+                if budget is not None:
                     target = temp_dir / "archive.rar"
-                    budget = None
-                    if not self._volume_paths:
-                        # A stream (no file behind it) is bounded as it is for
-                        # unrar, and checked before the temp file exists.
-                        budget = self._spool_budget(
-                            "the stream source from where the RAR starts"
-                        )
-                        size = self._shared.size
-                        budget.check_total(
-                            None if size is None else max(size - start, 0)
-                        )
                     self._spool_from(start, budget, directory=temp_dir).replace(target)
                     self._unar_path = target
                 else:
@@ -1532,7 +1664,9 @@ class RarReader(BaseArchiveReader):
             ]
         unlinked: list[tuple[Path, Path]] = []
         for volume, name in zip(volumes, names, strict=True):
-            if not _link_for_unar(volume, temp_dir / name):
+            try:
+                _link_file(volume.absolute(), temp_dir / name)
+            except OSError:
                 unlinked.append((volume, temp_dir / name))
         if unlinked:
             budget = self._spool_budget(
@@ -1684,7 +1818,8 @@ class RarReader(BaseArchiveReader):
     def _emit_member_diagnostics(
         self, info: RarMemberInfo, member: ArchiveMember, presented: str, index: int
     ) -> None:
-        """Name-normalization, dropped-header-record and tweaked-digest diagnostics.
+        """Name-normalization, dropped-header-record, invalid-timestamp and
+        tweaked-digest diagnostics.
 
         All attach onto ``member`` (``attach_to_member=True``) and can raise
         under a strict collector, so this must run before ``_to_member`` returns.
@@ -1697,6 +1832,22 @@ class RarReader(BaseArchiveReader):
             member_id=index,
         )
         self._emit_header_record_diagnostics(info, member.name, member, index)
+        for issue in info.timestamp_issues:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+                message=issue.message,
+                context=MemberTimestampContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    field=_timestamp_field_name(info, issue.field),
+                    source=issue.source,
+                    value_repr=issue.value_repr,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
         # Pure; same predicate ``_rar_member_extra_and_link`` uses for extra keys.
         if not _crc_is_tweaked(info) or self._unrar_password is not None:
             return
@@ -1801,19 +1952,23 @@ class RarReader(BaseArchiveReader):
             pipe_offset += size
 
             hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
-            return self._wrap_member_stream(
-                None,
-                member.name,
-                open_fn=lambda: self._watch_unverified(
-                    _pipe().open_member(member_offset, size, lazy=True), member
-                ),
-                size=member.size,
-                track_output=False,
-                seekable=False,
-                expected_hashes=hashes,
-                expected_size=vsize,
-                digest_transforms=transforms,
-                verify_member=verify_member,
+            # Registered like the base class's lazy pass streams, so the pass takes
+            # the one live-stream slot and is refused beside a live ``open()``.
+            return self._register_public_stream(
+                self._wrap_member_stream(
+                    None,
+                    member.name,
+                    open_fn=lambda: self._watch_unverified(
+                        _pipe().open_member(member_offset, size, lazy=True), member
+                    ),
+                    size=member.size,
+                    track_output=False,
+                    seekable=False,
+                    expected_hashes=hashes,
+                    expected_size=vsize,
+                    digest_transforms=transforms,
+                    verify_member=verify_member,
+                )
             )
 
         def _cleanup() -> None:
@@ -2363,6 +2518,31 @@ class RarReader(BaseArchiveReader):
         presented = _presented_filename(raw)
         version_control = raw.is_file_version_history()
         glob_mask = "*" in presented or "?" in presented
+        # An 8-bit RAR3 name goes to unrar as its stored bytes (on Windows, as
+        # unrar's own OEM reading of them); everything else as the presented text.
+        # The glob skip below is sized on the presented text, which for an 8-bit
+        # name is the same bytes decoded one character apiece; Windows unrar's
+        # reading matches that count only under a single-byte OEM code page.
+        mask_name = unrar_member_argument(
+            presented,
+            raw.orig_filename,
+            stored_is_8bit=self._archive.version == 4
+            and not raw.flags & _RAR3_FILE_UNICODE,
+        )
+        refusal = unrar_member_refusal(mask_name)
+        # ``mask_name is None`` always comes with a refusal; it is tested here so the
+        # checkers narrow it before ``open_unrar_p``, where ``member=None`` means "no
+        # ``-n`` mask at all", every member piped.
+        if mask_name is None or refusal is not None:
+            # unar addresses entries by index, so none of these reasons apply to it.
+            raise UnsupportedFeatureError(
+                f"RAR member {quoted(member.name)} cannot be read through unrar: "
+                f"{refusal}. Set ArchiveyConfig.rar_decompressor to 'unar' to read "
+                "it by position instead.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
         # ``\\`` is a separator to Windows unrar and a literal on Linux; the
         # same ``-n./`` mask therefore matches a different set. Refuse rather
         # than report a valid member truncated (Windows CI on ``a\\b_TGT.txt``).
@@ -2453,7 +2633,7 @@ class RarReader(BaseArchiveReader):
             proc, stdout = open_unrar_p(
                 path,
                 password=data_password,
-                member=presented,
+                member=mask_name,
                 version_control=version_control,
             )
             owned = _UnrarOwnedStream(
@@ -2695,17 +2875,20 @@ class RarReader(BaseArchiveReader):
                     _pipe().open_member(offset, size, lazy=True), member
                 )
             hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
-            return self._wrap_member_stream(
-                None,
-                member.name,
-                open_fn=open_fn,
-                size=member.size,
-                track_output=False,
-                seekable=False,
-                expected_hashes=hashes,
-                expected_size=vsize,
-                digest_transforms=transforms,
-                verify_member=verify_member,
+            # Registered for the live-stream gate, as in the ``unrar`` pass.
+            return self._register_public_stream(
+                self._wrap_member_stream(
+                    None,
+                    member.name,
+                    open_fn=open_fn,
+                    size=member.size,
+                    track_output=False,
+                    seekable=False,
+                    expected_hashes=hashes,
+                    expected_size=vsize,
+                    digest_transforms=transforms,
+                    verify_member=verify_member,
+                )
             )
 
         def _cleanup() -> None:

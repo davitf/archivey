@@ -162,7 +162,7 @@ rewinding seek"). The candidates were:
   **Deferred, and possibly unnecessary:** it is a Cython/C++17 extension "based on
   `indexed_bzip2`" that statically bundles a C++ core, carrying the *same class* of macOS
   dual-load symbol-collision risk that forced Archivey onto a single accelerator library
-  (`known-issues.md`). And frame-granularity seeking is *exactly* what Archivey's own
+  (ADR 0008, `investigations/rapidgzip-upstream-report.md` §7). And frame-granularity seeking is *exactly* what Archivey's own
   `DecompressorStream` already provides for xz and lzip — so a small **native zstd
   frame-index reader** reusing that infrastructure would likely give the same seeking with no
   heavy dependency and no macOS risk. The note is no help for the common **single-frame** `.zst`
@@ -253,8 +253,8 @@ multi-member chaining with GzipFile parity: NUL padding, trailing zeros, trailin
 not `gzip.GzipFile`. CRC/ISIZE outcomes come from zlib’s gzip window. For **random access**,
 the optional `rapidgzip` (`[seekable]`) builds an index for true seeking; without it, the
 stdlib path seeks by re-decompressing from the start (rewind warning). `rapidgzip` is the
-single accelerator library for both gzip and bzip2 — see bzip2 below and `known-issues.md`
-for why the standalone `indexed_gzip`/`indexed_bzip2` are not used.
+single accelerator library for both gzip and bzip2 — see bzip2 below and
+`investigations/rapidgzip-upstream-report.md` §7 for why the standalone `indexed_gzip`/`indexed_bzip2` are not used.
 
 **Truncation trade-off:** on a truncated stream, `data = f.read()` / `readall` **raises
 `TruncatedError` and returns nothing** — a silent lossy success is worse than not salvaging.
@@ -270,7 +270,8 @@ Default decode is stdlib `bz2`. Random access uses **`rapidgzip`'s bundled `Inde
 one process corrupts the heap and aborts on macOS (overlapping statically-linked C++ symbols
 coalesced by dyld). Routing both gzip and bzip2 through `rapidgzip` keeps a single accelerator
 library in the process. This is the **single-accelerator macOS constraint** documented in full in
-[`known-issues.md`](known-issues.md) and matches the rapidgzip author's own guidance.
+[`rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md) §7 and matches
+the rapidgzip author's own guidance.
 
 ### lzip — native `lzip.py` over stdlib `lzma`
 
@@ -309,7 +310,7 @@ inherits the first. liblzma has neither flaw. Because liblzma refuses a raw chai
 only filter is a branch filter, a separately-staged BCJ frames its input as LZMA2
 *uncompressed* chunks (3 bytes per 64 KiB, no compression work) so the chain becomes
 `[<branch filter>, FILTER_LZMA2]`. Output is byte-identical to `pybcj`'s wherever `pybcj`
-is correct, verified across all six filters; see `known-issues.md`. BCJ2 is not a
+is correct, verified across all six filters; see `investigations/pybcj-upstream-report.md`. BCJ2 is not a
 liblzma filter; archivey decodes it in pure Python (`internal/streams/bcj2.py`).
 
 ### raw Deflate / zlib — stdlib `zlib`, accelerated by `rapidgzip`

@@ -364,6 +364,7 @@ desynchronize sizes).
 | Stream source, `max_bytes=0` | Stored members of a non-solid archive read; a member needing `unrar` is refused |
 | Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
 | Path source | `ar.cost.notes` has no disk-copy caveat (under `unrar`); the spool limit never refuses it |
+| Prefixed path source under `unar`, copy over `SpoolLimits.max_bytes` | `ar.cost.notes` says a compressed read will be refused; the read raises `ResourceLimitError` naming `rar_decompressor='unrar'`; no temp file |
 
 ### Requirement: Support benchmark-gated small-member optimization
 
@@ -526,8 +527,12 @@ one first-volume name exists). The native parser SHALL read volume headers in
 order and stitch members that span
 volume boundaries into one logical member using continuation flags.
 `open_archive()` SHALL accept either a path inside the set, with sibling
-discovery in order, or an explicit ordered source sequence. For path sources,
-data reads point `unrar` at the first volume so it can find later volumes. For
+discovery in order, or an explicit ordered source sequence, which SHALL be used as
+given with no discovery. For a path inside the set, data reads point `unrar` at the
+first volume so it can find later volumes. An explicit sequence of paths that `unrar`
+would not find by name beside the first SHALL be linked into a temporary directory
+under the set's own names (copied within `SpoolLimits` only where the filesystem
+refuses a link) on the first data read that needs it. For
 stream sources, data reads SHALL materialize ordered volumes for `unrar` when
 needed. Missing or out-of-order volumes SHALL raise `UnsupportedFeatureError` or
 a truncated error instead of a partial result.
@@ -884,7 +889,9 @@ members, so `unar` never decodes the refused one, and SHALL name at most 4000 of
 them to stay inside `ARG_MAX`. A readable member past the 4000th SHALL be refused in
 that pass with `UnsupportedFeatureError`; opening it on its own is not affected. A
 single archive with a prefix SHALL be copied from the RAR's start before `unar`
-reads it, and `ar.cost.notes` SHALL say so at open, for a path source too. Every
+reads it, bounded by `ArchiveyConfig.spool_limits` for a path source too, and
+`ar.cost.notes` SHALL say so at open, naming the limit or the refusal as for a stream
+source. Every
 member read through `unar` SHALL be checked against its declared
 size and stored digest, because `unar` exits 0 on some failures.
 

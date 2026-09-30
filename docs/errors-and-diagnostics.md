@@ -187,7 +187,7 @@ to an exception with a `DiagnosticPolicy` if your program would rather stop:
 | `PASSWORD_ARGUMENT_UNUSED` | You passed a password or a password list to a format with no encryption (a `PasswordProvider` callable does not count: it was never asked). Passing a keyring across a batch of mixed archives is the intended use, so it is accepted and simply never consulted. |
 | `ENCODING_ARGUMENT_UNUSED` | You passed `encoding=` to a backend that decodes names another way — 7z stores UTF-16, RAR decodes in its own parser, directory and single-file names come from the filesystem. |
 | `MEMBER_SELECTOR_UNMATCHED` | An entry in your `members=` collection matched no member, so a typo does not look like an archive that lacks the file. One diagnostic for each such entry, reported once every member has been offered to the selector: by `stream_members()` only when you iterate to the end, and by `extract_all()` before it writes or creates anything when the listing is free, else at the end. A predicate selector is never reported. If you set this code to `RAISE`, `extract_all()` refuses with nothing written only when the listing is free. On TAR and forward-only streams the members before the end are already on disk, and the error replaces the report. |
-| `MEMBER_NAME_BIDI_CONTROL` | A member name contains a Unicode bidi formatting control. The context names the exact codepoints, because an *override* (U+202A–202E, U+2066–2069 — how `evil‮gnp.exe` displays as a `.png`) is a different thing from a *directional mark* (U+061C, U+200E, U+200F), which appears in ordinary Arabic and Hebrew filenames. |
+| `MEMBER_NAME_BIDI_CONTROL` | A member name or link target contains a Unicode bidi formatting control (the context's `field` says which). The context names the exact codepoints, because an *override* (U+202A–202E, U+2066–2069 — how `evil‮gnp.exe` displays as a `.png`) is a different thing from a *directional mark* (U+061C, U+200E, U+200F), which appears in ordinary Arabic and Hebrew filenames. |
 | `MEMBER_HEADER_RECORD_SKIPPED` | One optional record in a member's header was malformed and was dropped; the member is listed without whatever it carried. Today this is the RAR5 extra area — a checksum, a timestamp, a redirect target. The field it would have filled is **absent, never wrong**, and the context names the record and the parse failure. Refusing the whole archive over one bad checksum record would discard every member that parsed, and `unrar` itself lists such archives. A member header is attacker-sized, so how many records one member may drop is capped, and a record whose declared *size* cannot be used stops the walk outright — there is no way to find the next record. Either way one diagnostic reports it with `list_truncated` set and names which fault ended the walk, and a member whose header was cut short is reported as encrypted rather than as plaintext, since the walk may have stopped before the record that would have said so. That last part also decides how the member reads: a member archivey reads by slicing the archive (stored, not solid, not split) is sliced only once its bytes have been checked against a checksum that survived the damage — where no checksum survived, or the bytes fail it, the read raises `CorruptionError` naming the header. A cut-short member that needs `unrar` is decoded by it as before, with any surviving checksum checked as the member is read. The archive as a whole is not reported encrypted by one such member. A RAR5 archive's own `CMT` and `QO` service headers carry the same records and are reported the same way, in every volume; they are not members, so those diagnostics carry no member name and the message says what the archive does without — the comment, or the quick-open index. How many of them one archive may report is capped, because nothing lists them and `max_members` therefore never counted them; past the cap one more diagnostic says how many went undescribed. |
 
 #### What is *not* here: per-member extraction outcomes
@@ -269,9 +269,9 @@ when listing ends in terminal damage.
 
 ### The integrity guarantee
 
-**Read a member to its end and Archivey checks it.** Where the archive stores a
-checksum or an authentication tag, a full read verifies it and raises if it does not
-match. Stop early and nothing is checked. Errors always come from `read()`, never from
+**Read a member from its start to its end, with no seek, and Archivey checks it.**
+Where the archive stores a checksum or an authentication tag, that read verifies it and
+raises if it does not match. Stop early and nothing is checked. Errors always come from `read()`, never from
 `close()` — so a `finally` block can't mask one.
 
 "To its end" means `read(-1)`, reading until `read()` returns `b""`, or — for a member
@@ -290,8 +290,13 @@ What that does and does not promise:
   member fails mid-stream, some of what you already read is probably fine — but we
   can't tell you which part, or how much. Treat the prefix as unverified: not
   known-good, not known-bad.
-- **A full-length return means the checksum matched.** Trust it as far as you trust
-  that digest.
+- **A full-length return from a read with no seek means the checksum matched.** Trust
+  it as far as you trust that digest.
+- **After a seek, checking is best effort.** Whatever is decoded is still checked, and
+  damage it reaches still raises. But a seek into a `.xz` or `.lz` file jumps by the
+  file's own index, and a crafted index can send it to the wrong bytes with no error.
+  Checking that would mean decoding everything before the target, which is the cost a
+  seek exists to avoid. When the bytes must be right, read from the start.
 - **Once a stream has raised, it keeps raising.** Every later `read()` raises the same
   error. A seek back works and the bytes before the damage read again, but the read
   that reaches the end raises the error again, so seeking back cannot hand you the
@@ -315,9 +320,9 @@ except archivey.ReadError:
     ...  # buf holds everything that was readable; the member is damaged
 ```
 
-If you need certainty regardless of how you read — partial reads, seeks, or "never
-hand me unverified bytes" — `VerificationMode.STRICT` verifies a whole member before
-returning any of it.
+Archivey has no mode that verifies a whole member before returning any of it. If you
+need "never hand me unverified bytes", read the member to its end into a buffer or a
+temporary file, and use the bytes only after that read finishes without raising.
 
 #### What each call does
 

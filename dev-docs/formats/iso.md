@@ -11,7 +11,7 @@ the status — this page states the behaviour and links the row.
 | | |
 | --- | --- |
 | Read | Yes, through `pycdlib` |
-| Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
+| Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
 | Source | Seekable only, in both access modes. `start_offset` is refused: nothing precedes an image |
 | Listing cost | `INDEXED`. The whole tree is parsed inside `open_archive()`, for every tree the image has; listing after that reads nothing, except a directory's own extent to confirm a multi-extent file or recover the declared length of a file whose data ends at the end of the image (§2.3) |
 | Access cost | `DIRECT` — every file is one extent (or one run of extents) at an absolute sector |
@@ -211,7 +211,9 @@ What is ISO-specific in turning a record into a member:
 - **Times.** `modified` is the Rock Ridge `TF` modification time when there is one, else
   the record's 7-byte date; `TF` also supplies `accessed`. `TF` long-form dates (17 bytes,
   hundredths of a second) are read; MagicISO's out-of-range hundredths become 0. A date
-  that is all zeros or invalid is `None` rather than an error. `created` is set only from
+  that is all zeros is unset and `None`. Any other date that is not a date (a month of
+  13) is `None` plus `MEMBER_TIMESTAMP_INVALID`, as in ZIP, TAR and 7z, rather than an
+  error. `created` is set only from
   a `TF` creation time, which few writers record; the `TF` attribute-change time (POSIX
   `st_ctime`) goes to `ctime` and never to `created`. That is the rule after
   PR #470; before it, `created` fell back to the attribute-change time.
@@ -329,7 +331,16 @@ ISO-specific only. General extraction and name hazards are §2.4.
   guards cover it: `_install_pycdlib_directory_cycle_guard` replaces `collections` inside
   `pycdlib.pycdlib` with a proxy whose `deque` drops an already-scheduled extent, and
   archivey's own `_walk_records` enters each extent once. The first is process-global
-  within `pycdlib` and is written up in [`known-issues.md`](../known-issues.md); the
+  within `pycdlib`: `import archivey` imports the ISO backend eagerly to register it, and
+  that import installs the guard once and for good, confined to `pycdlib`'s namespace
+  rather than swapping `collections.deque` for everyone. A program that also uses
+  `pycdlib` directly sees the guarded `deque` too. That is a deliberate trade, hang safety
+  on hostile input over leaving another caller's `pycdlib` untouched, and it changes no
+  result on a valid tree, which never revisits an extent
+  (`test_pycdlib_directory_cycle_does_not_hang`, found on a Joliet tree). The same import
+  replaces `pycdlib.rockridge.RockRidge.parse` with the System Use filter (§2.2), but that
+  wrapper acts only inside `IsoReader`'s own `open_fp` call, where a `ContextVar` is set,
+  so other callers are untouched (`test_pycdlib_used_directly_is_not_filtered`). The
   mutation-harness finding is in [`threat-model.md`](../threat-model.md).
 - **A directory's length sizes `pycdlib`'s read.** `pycdlib` clamps a file's length to the
   image but not a directory's, so a root record declaring 4 GiB asked for 4 GiB inside
@@ -370,7 +381,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A multi-extent file with non-contiguous extents raises `UnsupportedFeatureError` on read | **archivey** | Its `size` is right; reading it would need a chained stream rather than one run. No writer seen does this (§2.3) |
 | Two members share their bytes, and extraction writes both | **format** | Hardlinks are records sharing an extent; there is no hardlink record to map to `HARDLINK` |
 | Opening a large image is slow and listing is instant | **library** | `open_fp` parses every tree up front (§2.2). The cost class `INDEXED` is still right: nothing is decoded |
-| A program that also uses `pycdlib` sees archivey's guarded `deque` inside it | **archivey** | The cycle guard is installed once, at import, in `pycdlib`'s namespace ([`known-issues.md`](../known-issues.md)) |
+| A program that also uses `pycdlib` sees archivey's guarded `deque` inside it | **archivey** | The cycle guard is installed once, at import, in `pycdlib`'s namespace (§4) |
 | `password=` is accepted and has no effect | **archivey** | Dropped with `PASSWORD_ARGUMENT_UNUSED` — shared behaviour, not ISO's own |
 
 ## 6. Decisions
@@ -458,8 +469,7 @@ streams, not as ISO.
   [`format-detection`](../../openspec/specs/format-detection/spec.md)
 - Code: `internal/backends/iso_reader.py` (reader, raw-sector refusal, cycle guard) ·
   `internal/detection.py` (far magic)
-- Registers: [`threat-model.md`](../threat-model.md) O16 and the cycle finding ·
-  [`known-issues.md`](../known-issues.md) (the process-global `pycdlib` patch)
+- Registers: [`threat-model.md`](../threat-model.md) O16 and the cycle finding
 - Handbook: [`zip.md`](zip.md) · [`7z.md`](7z.md) · [`rar.md`](rar.md) (the file-history
   shape plain ISO versions borrow)
 - User-facing: [`docs/formats.md`](../../docs/formats.md#iso-9660)

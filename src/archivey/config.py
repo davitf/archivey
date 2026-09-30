@@ -288,6 +288,8 @@ class ListingLimits:
     enforce these caps. 7z and RAR apply ``max_members`` at parse, and RAR weighs the
     declared sizes of its compressed RAR 1.5/2.x comments against ``max_metadata_bytes``
     before decoding them, so ``open_archive`` raises and neither is an escape hatch.
+    TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
+    more than the whole ``max_metadata_bytes``, before reading it.
     """
 
     max_members: int | None = 1_048_576
@@ -300,7 +302,8 @@ class ListingLimits:
     and the string or bytes values in ``extra``, plus the keys of a dict nested in it
     (such as TAR's PAX keywords), plus the archive comment. The top-level ``extra``
     keys are fixed per format and do not count. Non-ASCII text counts four bytes per
-    character, so it is an upper bound rather than an exact size.
+    character, so it is an upper bound rather than an exact size. A TAR sparse member's
+    map, which the listing keeps to read the member, counts 24 bytes per entry.
     """
 
     UNLIMITED: ClassVar[ListingLimits]
@@ -331,7 +334,9 @@ class DecoderLimits:
     **What is capped today:** both PPMd paths, and the LZMA dictionary size
     wherever an archive declares one — 7z LZMA and LZMA2, ZIP method 14, each xz
     block, ``.lzma`` and each lzip member — and the window each zstd frame declares,
-    on ``.zst``, ZIP method 93 and 7z. The two hazards differ. A refused
+    on ``.zst``, ZIP method 93 and 7z. RAR is not capped: ``unrar`` or ``unar``
+    decodes it in a separate process, and the dictionary size its header declares
+    is not checked. The two hazards differ. A refused
     allocation inside pyppmd takes the process down. liblzma does raise
     ``MemoryError`` when it cannot reserve the dictionary, but a reservation
     that succeeds is its real cost: the dictionary fills as output is written,
@@ -379,9 +384,11 @@ class DecoderLimits:
 
     Attributes:
         max_decoder_memory: Largest archive-declared working set a single
-            decoder may allocate. The default is 2 GiB. A 7z BCJ2 folder runs its
-            branch decoders at once (``main``, ``call`` and ``jump``), so their
-            LZMA dictionaries and PPMd memory sizes count together against it.
+            decoder may allocate. The default is 2 GiB. A 7z folder runs all its
+            decoders at once (the stages of a coder chain, and a BCJ2 folder's
+            ``main``, ``call`` and ``jump`` branches), so when it has more than
+            one, their LZMA dictionaries and PPMd memory sizes count together
+            against it.
 
             That number is a policy choice, not a limit of the format, so here
             is what it was chosen against. Measured on 7-Zip 23.01, a writer
@@ -527,13 +534,14 @@ class SpoolLimits:
     a filesystem path, so a RAR opened from a ``BytesIO`` or another file object is
     copied to a temporary file (a volume set, to a temporary directory) the first time a
     member has to go through one of them. The copy is of the whole archive, and it is
-    removed when the reader closes. These caps bound every such copy.
+    removed when the reader closes.
 
-    A source opened from a path is read in place, with two exceptions, both for
-    ``unar``. When the system can neither symlink nor hard-link the volumes into
-    ``unar``'s private directory, they are copied, and these caps bound that copy. A
-    prefixed (SFX) archive is copied from where the RAR starts, which the reader
-    announces as a cost note when it opens; these caps do not bound that copy.
+    A source opened from a path is read in place and not copied, with two exceptions
+    that are bounded here too. A RAR with a prefix before it (an SFX stub, say) read
+    with ``rar_decompressor='unar'`` is copied from where the RAR starts. And files
+    that must be linked into a temporary directory, which ``unar`` always reads from
+    and ``unrar`` needs for an explicit list of volumes it would not find by name, are
+    copied there when the system can make neither a symlink nor a hard link.
 
     Applied from the reader's open :attr:`ArchiveyConfig.spool_limits` for its lifetime.
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables it.

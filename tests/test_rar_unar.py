@@ -286,13 +286,13 @@ def test_prefixed_stream_copy_for_unar_is_bounded_by_the_spool_limit() -> None:
 def _spy_links(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Record the names ``unar``'s private directory is given."""
     names: list[str] = []
-    link = rar_reader._link_for_unar
+    link = rar_reader._link_file
 
-    def spy(source: Path, dest: Path) -> bool:
+    def spy(source: Path, dest: Path) -> None:
         names.append(dest.name)
-        return link(source, dest)
+        link(source, dest)
 
-    monkeypatch.setattr(rar_reader, "_link_for_unar", spy)
+    monkeypatch.setattr(rar_reader, "_link_file", spy)
     return names
 
 

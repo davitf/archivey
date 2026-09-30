@@ -86,8 +86,9 @@ external `unrar` binary does the proprietary data decompression. `py7zr` and
 
 The build sequence is a **clean-slate rewrite** — new code written fresh against
 the specs, with `archivey-dev` as reference-only (leaf format/codec logic is
-ported as isolated units; the spine is written fresh). See `dev-docs/PLAN.md`
-for the detailed, phase-by-phase task list, the layered port-vs-rewrite split,
+ported as isolated units; the spine is written fresh). The table below is the
+pre-0.2.0 plan, kept for history: every phase is done, dropped, or carried by an
+OpenSpec change. `dev-docs/history/PLAN.md` has the detailed, phase-by-phase task list, the layered port-vs-rewrite split,
 the frozen-oracle test strategy, and the per-phase acceptance criteria (each
 phase's "done" is defined as a set of covered spec scenarios). Phases are
 feature/layer milestones, so a phase typically advances several capabilities at

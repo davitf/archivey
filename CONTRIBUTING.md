@@ -10,7 +10,8 @@ the *design* lives elsewhere and is authoritative:
   threat model / codec analysis / known issues, `investigations/` (finished
   evidence), `history/` (superseded SPEC/ARCHITECTURE/COMPARISON/ASYNC prose,
   not normative).
-- `VISION.md` (repo root), `dev-docs/PLAN.md`, `dev-docs/IDEAS.md` — vision, roadmap, backlog.
+- `VISION.md` (repo root), `dev-docs/IDEAS.md`: vision and backlog. The pre-0.2.0 phase
+  roadmap is in `dev-docs/history/PLAN.md`, kept for history.
 - `openspec/changes/<change>/` — in-flight proposals (propose changes here, don't
   edit shipped specs ad hoc). Default schema is `library` (compact library-style
   deltas); see `openspec/schemas/library/README.md` and `openspec/config.yaml`.
@@ -268,7 +269,7 @@ security fixes one line each, other bug fixes summarized in one line).
   that change being remembered. Three things this rules out:
   - **History.** "Previously", "the old implementation", "this change", "we used to", a
     PR number, an OpenSpec change name, the name of the work batch a change belonged to
-    (`Parcel B`, `Wave 1` — see `dev-docs/open-work-inventory.md`), or a correction of an
+    (`Parcel B`, `Wave 1`), or a correction of an
     argument nobody else can see. If the
     superseded approach is worth recording, it goes in `dev-docs/decisions/` or the
     format handbook, not in a comment next to the code that replaced it.

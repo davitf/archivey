@@ -10,7 +10,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | | |
 | --- | --- |
 | Read | Yes — metadata natively, member data through RARLAB `unrar` or `rar` |
-| Write | **Not shipped**, for any format — no `archivey.create`, no writer module (`PLAN.md` phase 9) |
+| Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
 | Source | Seekable only, in both access modes |
 | Listing cost | `INDEXED` — RAR5 with QO: read the copies, skip matching FILE headers on the walk (§1.1). Otherwise a header-to-header walk cached at open (§1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
@@ -312,7 +312,13 @@ continues `.s00`, `.s01`, …) is not discovered at all — and headers are read
 one logical member. `ArchiveInfo.is_multivolume` is `True` and
 `ArchiveInfo.extra["rar.volume_count"]` carries the count. A lone volume 1 is
 `TruncatedError` ("expects another volume"); a lone later volume is
-`UnsupportedFeatureError` ("Need first volume") rather than a partial listing. Stream
+`UnsupportedFeatureError` ("Need first volume") rather than a partial listing. An
+explicit sequence of volume *paths* is used as given, with no discovery: headers are read
+from those files in that order. `unrar` is pointed at the first one in place only when
+the discovery above, run from it, finds exactly that list; otherwise, on the first read
+that needs `unrar` (or `unar`), the files are symlinked — hard-linked where a symlink is
+refused — into a temp directory under the set's own names, and copied within
+`SpoolLimits` only where neither link works. Stream
 volumes are copied into a temp directory named `…partN.rar` so `unrar` can walk the set
 later (P11 again) — and the **names** are the point, not just the seekability: `unrar`
 discovers later volumes by filename on disk, so neither a `memfd` nor a byte-concatenation
@@ -422,7 +428,7 @@ between to blame or to defer to.
 | `name` | Decoded header name, normalized (backslash is a separator); a file-version row is presented as `path;n`, matching WinRAR and `unrar` | — |
 | `raw_name` | Stored name bytes, verbatim — including RAR3's `path;n` bytes, which are not rewritten | — |
 | `size` / `compressed_size` | Header sizes; RAR3 `FILE_LARGE` extends both to 64 bits, and the packed skip is extended with them so the walk does not misparse past a >4 GiB member (F5, fixed) | — |
-| `modified` | RAR4 DOS time → naive local; RAR5 Unix/FILETIME → aware UTC. Out-of-range values are swallowed rather than aborting the listing | The header carries none, or every value was out of range |
+| `modified` | RAR4 DOS time → naive local; RAR5 Unix/FILETIME → aware UTC. A stored value that is not a date (a DOS month of 13, a FILETIME past `datetime`'s range) is `None` plus `MEMBER_TIMESTAMP_INVALID`, as in ZIP, TAR and 7z; it is not clamped to a nearby date. The same rule covers `accessed` and the creation slot | The header carries none, the DOS word is zero (unset, as in ZIP), or the stored value was invalid |
 | `accessed` / `created` / `ctime` | RAR5 `0x03` time extra (`HAS_ATIME` / `HAS_CTIME`); RAR3 EXTTIME after mtime (ctime then atime; arctime is unused). Same tz convention as that generation's `modified`. No ZIP-style extra-field precedence. The RARLAB writer emits one time extra; a later extra without `HAS_CTIME` / `HAS_ATIME` does not wipe earlier values. The creation slot is `created` from a birth-time host (Win32, and RAR3 MS-DOS / OS2 / Mac / BeOS) and `ctime` from any other. A Unix RARLAB writer fills the slot from `st_ctime` (inode change), which `created` never holds, so a Unix member's slot is `ctime`, and so is an unknown host's | The extra or slot is absent; `created` also when `host_os` is Unix or unknown |
 | `mode` | Unix host: `S_IMODE` of the stored attributes, masked before the C helper so a hostile vint cannot raise `OverflowError` mid-listing | Non-Unix host. A Win32 host puts its attribute word in `windows_attrs`; a FAT, OS/2, Macintosh or BeOS host gets **neither** field |
 | `create_system` | RAR3 `host_os` 0–5 → FAT / OS2 / Win32 / Unix / Mac / BeOS. RAR5 stores only Windows or Unix and the parser maps those to Win32 / Unix | Never — unknown `host_os` is `CreateSystem.UNKNOWN`. Whether the creation slot is a birth time is decided from `host_os` directly, not from this field |
@@ -469,8 +475,9 @@ Two digest rules are worth stating because they look like missing data and are n
 **File-version history is listed, not hidden.** A `-ver` archive's prior revisions appear as
 `path;n` with `is_current=False`, the live revision keeps the plain path, and `read("path;1")`
 returns that revision's bytes. The `;n` split only fires when the suffix after the last `;`
-is all digits and only when the version flag is set, so an ordinary `a;b.txt` is not
-misattributed.
+is one to ten ASCII digits and only when the version flag is set, so an ordinary `a;b.txt`
+is not misattributed. `str.isdigit()` alone let `a;²` and a 5 000-digit suffix through to
+`int()`, which raised a bare `ValueError` from `open_archive`.
 
 ### 2.3 Member data
 
@@ -529,7 +536,32 @@ never starts `unrar` and is never asked for a password.
 - **The password goes to stdin**, not into argv: the switch is a bare `-p` and the secret is
   written to the child's stdin, so it never appears in `/proc/<pid>/cmdline`. With no
   password the switch is `-p-`, which disables the interactive prompt so `unrar` cannot
-  block on stdin.
+  block on stdin. What is written is the first 127 UTF-16 units, the part the native key
+  derivation hashes; `unrar` 7.00 cuts a RAR5 password there too (127 characters plus
+  100 000 more decrypted). That bound is also what makes writing it all before reading
+  stdout safe: a 200 KB password once filled the stdin pipe while `unrar` filled stdout,
+  and both processes waited. A password with a line break or a NUL is refused with
+  `UnsupportedFeatureError`, because `unrar` ends the password there: measured,
+  `"password\x00zz"` decrypts a RAR4 member whose password is `password`.
+- **The mask is built from what `unrar` compares against.** An 8-bit RAR3 name (no
+  Unicode flag) goes into argv as its **stored bytes**: `unrar` runs both the argv mask
+  and the stored name through the C library's multibyte conversion, so the bytes match
+  in every locale. Measured on 7.00 with `caf\xe9.txt`: the stored bytes match under
+  `C`, `POSIX` and `C.UTF-8`; the UTF-8 of the windows-1252 decoding archivey presents
+  never does. A RAR5 name and a Unicode-flagged RAR3 name are Unicode in the header, so
+  their UTF-8 text is the mask (for a Unicode-flagged name written on Linux, the stored
+  bytes *are* UTF-8 and `raw_name` shows them). Windows argv is Unicode, so there the
+  text is used in every case.
+- **`unrar` runs under a UTF-8 locale.** Its child environment sets `LC_ALL` to the
+  first of `C.UTF-8`, `C.utf8`, `en_US.UTF-8`, `en_US.utf8` that the C library loads
+  (asked once per process with `newlocale`, which touches no global state). Measured:
+  under `LC_ALL=C` a non-ASCII RAR5 name never matches its own mask and the read looked
+  truncated. With no UTF-8 locale, a non-ASCII text mask is refused with
+  `UnsupportedFeatureError` naming `rar_decompressor='unar'`. Windows keeps its
+  environment.
+- **A NUL in a member name is refused** before the spawn with `UnsupportedFeatureError`: an
+  argument is a C string, so the mask would end at the NUL and could name another member.
+  `unar` addresses entries by index and reads such a member.
 
 **A path is required, and a stream source pays for it.** The requirement is stronger than
 "prefers a file": `unrar` *seeks* the archive and refuses every non-seekable input. Worth
@@ -648,11 +680,17 @@ unmeasured. Measured across the other candidates
 wider than the one proposed below: RAR5 solid members after an empty file *or a
 directory*, RAR 1.5 compression, encrypted RAR 2.x-4.x data, non-ASCII passwords and
 header-encrypted RAR5 volume sets are refused before `unar` runs; a prefixed single file
-is copied first. Encrypted RAR5 data is read with the password on `unar`'s argv
+is copied first, from where the RAR starts. That copy is bounded by `SpoolLimits` like a
+stream source's (maintainer decision 2026-09-28): the size is known for a path, so
+`cost.notes` says at open whether it will be refused, and an archive over the limit is
+refused before the temp file exists, with `ResourceLimitError` naming
+`rar_decompressor='unrar'`, which reads a prefixed archive in place. Encrypted RAR5 data is read with the password on `unar`'s argv
 (visible to local users; the maintainer accepted that and asked for it to be
 documented), and `"auto"`, the default since the maintainer chose it on 2026-09-26,
 picks RARLAB `unrar` when installed, `unar` otherwise, once per reader. So the "never a
 probe of `PATH`" line in the reasoning below no longer holds for `unar`. Measurements and the reasons are in
+[`alternative-rar-decompressors.md`](../investigations/alternative-rar-decompressors.md)
+§2026-09-26 measurements, and the upstream defect in
 [`known-issues.md`](../known-issues.md) §MacPaw `unar`; the process layer is
 `internal/external/`, the RAR policy `internal/backends/rar_unar.py`. CI's macOS leg now
 runs the fixture parity test against the Homebrew bottle. The upstream report is still
@@ -678,7 +716,11 @@ Any RAR4 archive in the wild today was written by something older than a current
 buffer in place after hashing it. `hashlib.sha1` does not, so `_Rar3Sha1` hashes
 correctly and then corrupts a reused `bytearray` seed so the next of the 0x4000×16
 rounds matches WinRAR. Seed ≤ 64 bytes (a password of 28 UTF-16 code units plus the
-8-byte salt) never hits it. [`known-issues.md`](../known-issues.md).
+8-byte salt) never hits it. Ported from `rarfile` 4.3 `Rar3Sha1`. The committed `-hp`
+fixtures use `header_password` (UTF-16LE plus salt is 38 bytes), so listing them never
+reaches the mutation; `tests/test_rar_parser.py` pins it instead (the digest of the original
+bytes, the seed mutated afterwards, and a long-password string-to-key checked against
+`rarfile`).
 
 **The writer being trialware is also why the corpus fixtures are committed.** The declarative corpus builds each entry
 in every format it declares, and eight entries declare `rar`. All eight ran **nowhere**:
@@ -887,6 +929,110 @@ measurement and these are a reproduction of it.
 Gaps in what *we* know — each would change something here if answered, and none can be
 settled by reading more code. Distinct from §5, which is behaviour a caller already sees.
 
+- **Open: members `unrar` cannot address by name.** Today a RAR5 member whose name is
+  not valid UTF-8 can still serve a **sibling's bytes** on the `unrar` path: archivey
+  decodes the name with U+FFFD, and a sibling literally named that way matches the mask
+  (`tests/test_audit_rar_iso_dir.py::test_invalid_utf8_name_never_reads_a_siblings_bytes`,
+  xfail). Two measured facts point at a fix inside the `unrar` path. (a) `unrar` cuts a
+  RAR5 name at its first invalid UTF-8 byte (`b"ab\xffcd.txt"` lists as `ab`), so a mask
+  of that prefix, plus the glob-skip logic that already sizes earlier matches, could
+  address it. (b) Duplicate names match every copy
+  (`::test_duplicate_named_compressed_rar5_members_read_their_own_bytes`, xfail); the same
+  skip logic could select the Nth. Maintainer direction (2026-09-28): `auto` should pick
+  the best tool per job, so falling back to `unar` per member for these names — and
+  possibly for the refused glob names — is on the table. `unar` addresses entries by
+  index, but has limits of its own on some solid archives (§3). Threat-model C1 says
+  "`auto` decides once … never retried"; the PR that adds a per-member fallback revisits
+  that text. The same PR settles how an 8-bit RAR3 name (no Unicode flag) is *listed*:
+  `_TRY_ENCODINGS` tries UTF-16LE before windows-1252, and almost any even-length byte
+  string decodes as UTF-16LE, so `b"caf\xe9.txt"` lists as `'慣琮瑸'`
+  (`tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_is_not_decoded_as_utf16`,
+  xfail). The candidates are strict UTF-8 then windows-1252 or cp437, plus honouring
+  `encoding=` for RAR as ZIP and TAR do. Reading is not affected: the `-n` mask uses the
+  stored bytes, or on Windows the text Windows `unrar` makes of them (OEM code page, then
+  ANSI). That conversion can be lossy, so two 8-bit names it makes equal are the
+  duplicate-name case (b).
+
+  *For whoever takes this on.* Measured on Linux with `unrar` 7.00, running
+  `unrar p -inul -n./<mask> -- archive` by hand (2026-09-28):
+
+  | Stored name | UTF-8 text as mask | Stored bytes as mask |
+  |---|---|---|
+  | RAR3/4 8-bit (`caf\xe9.txt`) | fails in every locale | matches in every locale (C, POSIX, C.UTF-8) |
+  | RAR5, or RAR3 Unicode-flagged, non-ASCII | matches only under a UTF-8 locale | same bytes, same result |
+  | RAR5 invalid UTF-8 (`\xff`, `ab\xffcd.txt`) | fails | fails; `unrar vb` lists the name cut at the first bad byte (`""`, `ab`) |
+  | two members with the same name | matches both | matches both |
+
+  Those rows are why the mask is now the stored bytes (text on Windows) and why the child
+  gets `LC_ALL` set to a UTF-8 locale. The code is in `rar_unrar.py`:
+  `unrar_member_argument`, `_windows_unrar_8bit_name`, `unrar_member_refusal`,
+  `_probe_utf8_locale` and `_unrar_env`, and the refusal is raised from
+  `RarReader._open_member`.
+
+  Ideas the maintainer raised, and what the measurements say about them:
+  - **Invalid bytes as `?` wildcards,** reusing the glob-name machinery
+    (`_unrar_mask_for` narrows `*` to `?`; `RarReader._unrar_glob_prefix` sizes the skip
+    past earlier matches). As stated, it does not match: `unrar` does not substitute a
+    bad byte, it cuts the name there, so the length changes. Its variant does: use the
+    prefix `unrar` actually sees (`ab`) as the mask, and let the existing skip logic
+    step past earlier members that match that prefix exactly. An empty prefix (a name
+    that starts with a bad byte) needs its own answer.
+  - **Duplicate names by position:** `unrar p` with a shared mask emits each match in
+    archive order, and every match's size is known from its header. So the Nth copy is
+    the bytes after the first N-1 matches' sizes. That is the same arithmetic the glob
+    skip already does. The solid path's `SolidBlockReader` demuxes an unnamed pipe the
+    same way.
+  - **Per-member fallback to `unar`** for exactly these members, and maybe for the
+    refused glob names too (the `rar_allow_glob_member_concatenation` refusal). The
+    maintainer: `auto` "is exactly picking the best tool for each job", and the C1 rule
+    that `auto` decides once "is not something I remember choosing". The fallback would
+    replace the `UnsupportedFeatureError` raised in `RarReader._open_member`. Caveats:
+    `unar` puts the password on its command line (C1), and `unar` has limits of its own
+    on some solid archives (§3). So a fallback can itself refuse, and must say which tool
+    refused.
+
+  Other facts to carry:
+  - The glob skip is sized on the presented text. On Windows that matches `unrar`'s
+    reading of an 8-bit name only under a single-byte OEM code page, so a DBCS OEM
+    (cp932) can mis-size it.
+  - `_probe_utf8_locale` is unverified on macOS/BSD. If it fails there, non-ASCII names
+    are refused rather than misread.
+  - `unrar vb` lists `emoji_😀.txt` in `tests/fixtures/rar/encoding__rar4.rar` as
+    `emoji_.txt`, yet both tools read that member. Probably the unnamed solid path;
+    check it before relying on name matching for non-BMP names.
+  - `tests/test_audit_rar_iso_dir.py` has RAR5/RAR3 header rewriters with CRC fix-up
+    (`_rar5_parse`, `_rar5_build`, `_rar3_parse`, `_rar3_build`) for building these
+    cases from committed fixtures, since `rar` 7.00 cannot write RAR4.
+
+- **Open: should a RAR dictionary size count against `DecoderLimits`?** Every
+  in-process codec checks the dictionary or window its header declares against
+  `max_decoder_memory`; RAR does not, because `unrar` or `unar` decodes it in another
+  process. A RAR5 member patched to declare a 4 GiB dictionary reads under the 2 GiB
+  default, and `unrar` stayed near 33 MB resident on it
+  (`tests/test_audit_cross_format.py::test_rar_declared_dictionary_is_checked_against_decoder_memory`,
+  xfail). `unrar` is believed to shrink the window to the unpacked size of a nonsolid
+  member, so the unmeasured case is a huge dictionary together with a huge declared
+  unpacked size, or a solid archive. Maintainer decision (2026-09-28): measure `unrar`'s
+  and `unar`'s peak memory on that shape first, then either check the size before
+  spawning (as 7z and xz do) or keep RAR out of the cap. `docs/extracting.md` §Limits
+  and the `DecoderLimits` docstring say RAR is not covered today.
+
+  *For whoever takes this on.*
+  - **Where the size is.** In a RAR5 FILE header it is in the compression-information
+    vint, which `rar_parser.py` already reads (`compress_info`, near the
+    `_RAR5_COMPR_SOLID` check). Bits 10–14 are the exponent `N` of `128 KiB << N`, and
+    RAR 7 adds a fraction in bits 15–19, as the audit test patches it. Check both
+    against RARLAB's technote before relying on them. RAR3/4 keeps the size in the file
+    flags (`0x00E0`, where all three bits set means a directory, `_RAR3_FILE_DIRECTORY`).
+  - **The case to measure.** A nonsolid member declaring a 4 GiB dictionary *and* a
+    multi-GiB unpacked size, plus a solid archive whose first member declares the large
+    dictionary. Measure both with `unrar` and `unar`. Peak RSS is enough:
+    `/usr/bin/time -v unrar p -inul archive.rar >/dev/null`, or run the read under
+    `prlimit --as=` to see whether it fails or degrades.
+  - **If the answer is to check it,** put the check where the member is spawned, so both
+    tools are covered, with the same error and message shape as `check_decoder_memory`.
+    Remove the xfail from the audit test.
+
 - **Does the glob-concatenation refusal earn its keep?** It ships and is decided (§6):
   a member whose stored name is an include mask matching earlier members is refused by
   default, on solid and nonsolid archives alike. The ruling is parked for revisiting
@@ -1015,6 +1161,10 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | `seekable_members=True` respawns named `unrar` on a backward seek; stored direct-slice does not; default route stays a pipe | `::test_seekable_members_respawns_unrar_on_backward_seek`, `::test_seekable_members_does_not_respawn_on_stored_direct_slice`, `::test_unrar_route_is_not_seekable_by_default`, `::test_unrar_respawn_overrun_probe_sees_trailing_bytes`, `::test_unrar_respawn_seek_end_does_not_drain_or_respawn`, `::test_unrar_respawn_failed_seek_leaves_position`, `::test_unrar_respawn_boundary_read_is_one_byte` |
 | A solid later-member rewind is loud without lowering the global threshold; a live `unrar` survives close+respawn | `::test_seekable_unrar_emits_stream_rewind`, `::test_rewind_warning_min_redecode_bytes_is_a_cost_floor`, `::test_seekable_unrar_respawns_while_process_still_running` |
 | The password reaches `unrar` on stdin, not in argv | `tests/test_crypto_findings.py::test_f4_password_arg_is_bare_or_dash`, `::test_f4_password_passed_via_stdin_not_argv` |
+| A NUL in a password or a member name is a typed refusal; a password past the pipe buffer does not deadlock the spawn | `tests/test_audit_rar_iso_dir.py::test_password_with_nul_is_not_silently_cut_by_unrar`, `::test_nul_in_member_name_read_raises_an_archivey_error`, `::test_long_password_does_not_deadlock_the_unrar_spawn` |
+| An 8-bit RAR3 name is masked with its stored bytes; `unrar` runs under a UTF-8 locale, and without one a non-ASCII name is refused before spawning | `tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_member_is_readable`, `::test_non_ascii_member_reads_under_the_c_locale`, `tests/test_rar_unrar_argv.py::test_8bit_name_mask_is_the_stored_bytes`, `::test_unrar_child_runs_under_a_utf8_locale`, `::test_non_ascii_name_without_a_utf8_locale_is_refused_before_spawning` |
+| An explicit volume list in separate directories reads as given | `tests/test_audit_rar_iso_dir.py::test_explicit_rar_volume_paths_in_separate_directories_open` |
+| An invalid DOS date or out-of-range FILETIME is `None` plus `MEMBER_TIMESTAMP_INVALID`; a crafted `;n` suffix is not a bare `ValueError` | `tests/test_audit_cross_format.py::test_invalid_timestamp_is_none_and_reported`, `tests/test_audit_rar_iso_dir.py::test_rar3_version_suffix_is_parsed_without_a_bare_value_error` |
 | Exit-code mapping: 11, 2/3, 10, hash-present suppression, solid-pipe suppression, negative rc | `tests/test_rar_reader.py::test_unrar_owned_stream_maps_exit_11_to_encryption_error` and the nine tests after it |
 | A missing stdout pipe is a typed error, not a `RuntimeError` | `::test_open_unrar_p_missing_stdout_pipe_is_typed` |
 | Header-encrypted listing with a password, and a wrong password as `EncryptionError` on both generations | `::test_encrypted_header_lists_with_password`, `::test_header_encryption_wrong_password_is_encryption_error` |

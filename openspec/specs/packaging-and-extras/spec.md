@@ -67,7 +67,7 @@ The system SHALL make `[recommended]` the sensible all-useful install and `[seek
 an opt-in on top of it. `[seekable]` MUST remain separate rather than folded into
 `[recommended]`: it is a heavy native build that can fail to compile, importing it
 re-enables the GIL on free-threaded builds, and it carries the accelerator
-close-before-finalize hazard recorded in `known-issues.md`.
+close-before-finalize hazard recorded in `dev-docs/investigations/rapidgzip-upstream-report.md`.
 
 The system SHALL NOT ship an extra per format. Removed names (`[7z]`, `[rar]`,
 `[crypto]`, `[iso]`, `[zstd]`, `[lz4]`, `[cli]`, `[recommended-lite]`) MUST NOT be

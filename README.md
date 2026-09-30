@@ -16,8 +16,9 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
 - **Resource limits** on listing size, decoder memory, password key-derivation work and
   temporary files, so a hostile archive fails with `ResourceLimitError` instead of
   exhausting the machine.
-- **Verified reads:** a member that fails its checksum or ends short raises, never
-  returns short data.
+- **Verified reads:** a member whose stored checksum fails raises `CorruptionError`,
+  and the bad chunk is withheld. Reading past a truncation raises `TruncatedError`.
+  Integrity errors come from reads, never from `close()`.
 - **Built for streaming:** `stream_members()` hands out each member as a stream, in
   archive order and in one pass, so a solid 7z or RAR is decoded once and a large member
   is read in chunks rather than held in memory. TAR and the single-file formats also
@@ -25,9 +26,10 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
 - **Encrypted archives:** ZipCrypto and WinZip AES in ZIP, AES in 7z, and RAR encryption.
 - **Native 7z and RAR metadata readers.** 7z data decodes in-process; RAR data needs
   RARLAB `unrar` or `rar`, or `unar`.
-- **Zero-dependency core** for ZIP, TAR, directories and the standard-library codecs,
+- **Zero-dependency core** for ZIP, TAR, 7z with the common codecs, RAR listing,
+  directories and the standard-library codecs,
   plus an `archivey` command for listing, testing and extracting from the shell.
-- Tested on Python 3.11 to 3.14 on Linux, macOS and Windows.
+- Tested on Python 3.11 to 3.14 on Linux, and on 3.11 and 3.14 on macOS and Windows.
 
 The API is not frozen until 1.0, but no major changes are expected.
 
@@ -62,6 +64,17 @@ with archivey.open_archive("photos.tar.gz") as reader:
 [Formats and extras](https://davitf.github.io/archivey/formats/) ·
 [Safe extraction](https://davitf.github.io/archivey/extracting/) ·
 [API reference](https://davitf.github.io/archivey/api/)
+
+## How it is built
+
+Almost all of archivey's code, tests and documentation are written by AI coding agents
+(Claude Code and Cursor). The maintainer designs the library, makes the decisions,
+directs the work and reviews the code, especially the architecture and the tricky parts.
+Changes are tested on Linux, macOS and Windows and reviewed by a separate AI session
+that reads them from zero, and several reviews of the whole codebase hunt for bugs,
+unclear or dead code, and API problems. If you are wary of AI-written code, that is
+reasonable: [How it is built](https://davitf.github.io/archivey/how-it-is-built/) says
+how changes are made and checked, and what the process does not promise.
 
 ## Contributing and security
 

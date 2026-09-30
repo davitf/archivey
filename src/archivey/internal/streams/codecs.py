@@ -29,6 +29,7 @@ import importlib
 import io
 import lzma
 import os
+import re
 import struct
 import threading
 import weakref
@@ -77,7 +78,11 @@ from archivey.internal.streams.decompress import (
     ZlibDecompressorStream,
     stream_magic,
 )
-from archivey.internal.streams.decompressor_stream import report_trailing_data
+from archivey.internal.streams.decompressor_stream import (
+    _StreamChecksumError,
+    gzip_corruption,
+    report_trailing_data,
+)
 from archivey.internal.streams.lzip import LzipDecompressorStream
 from archivey.internal.streams.ppmd_child import PpmdChildError
 from archivey.internal.streams.rapidgzip_child import (
@@ -158,7 +163,8 @@ _rapidgzip = _optional("rapidgzip")
 # ``indexed_bzip2`` package. Loading both rapidgzip and indexed_bzip2 into one process corrupts
 # the heap and aborts on macOS (they statically bundle an overlapping C++ core, whose symbols
 # collide under dyld). Routing both gzip and bzip2 through rapidgzip keeps a single accelerator
-# library in the process, which is safe on every platform. See dev-docs/known-issues.md.
+# library in the process, which is safe on every platform. See ADR 0008 and
+# dev-docs/investigations/rapidgzip-upstream-report.md §7.
 _rapidgzip_bzip2 = getattr(_rapidgzip, "IndexedBzip2File", None)
 
 # The DEFLATE-family codecs are stdlib-backed, so they declare no ``requirement`` — rapidgzip
@@ -261,7 +267,9 @@ class _AcceleratorStream(DelegatingStream):
 
         rapidgzip's ``tell_compressed()`` counts bits. After the last read it is where
         the data ended: measured on rapidgzip 0.16's bzip2 decoder, it lands exactly on
-        the end of the last stream, whatever follows it.
+        the end of the last stream that produced data. With ``parallelization=0``, as
+        opened here, empty streams after that one are not counted: for a data stream
+        and then ``bzip2 -c /dev/null``, it lands at the start of the empty stream.
         """
         tell = getattr(self._inner, "tell_compressed", None)
         if tell is None:
@@ -450,7 +458,9 @@ class CodecParams:
     - ``ppmd_order`` / ``ppmd_mem_size`` / ``ppmd_restore_method`` — ZIP method-98 PPMd8
       parameters (mutually exclusive with 7z ``properties`` for :class:`PpmdCodec`).
     - ``unpack_size`` — known uncompressed output length (7z folder unpack size). Passed
-      to PPMd as ``max_length`` so PPMd7 cannot overshoot without an end mark.
+      to PPMd as ``max_length`` so PPMd7 cannot overshoot without an end mark. Raw
+      LZMA1/LZMA2 stop reading at it; pass it only for a stream with no end marker
+      (ZIP LZMA with bit 1 clear), since it also hides output past that size.
     - ``pack_size`` — known compressed length for the PPMd coder input (7z pack stream /
       ZIP compressed size / sized view). Must match the bytes passed to
       ``PpmdDecoder.feed`` (not an enclosing member size). Gates post-eof empty
@@ -826,7 +836,9 @@ def _translate_rapidgzip(exc: Exception, label: str) -> ArchiveyError | None:
     """Map rapidgzip exceptions for a DEFLATE-family codec (gzip / zlib / deflate)."""
     text = str(exc)
     if isinstance(exc, ValueError) and "Mismatching CRC32" in text:
-        return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
+        return _StreamChecksumError(
+            f"Error reading {label} stream (rapidgzip): {exc!r}"
+        )
     if isinstance(exc, RuntimeError) and "IsalInflateWrapper" in text:
         return CorruptionError(f"Error reading {label} stream (rapidgzip): {exc!r}")
     if isinstance(exc, ValueError) and (
@@ -1230,15 +1242,6 @@ def _zlib_adler_trailer(source: CodecSource) -> int | None:
         return None
 
 
-class _StreamChecksumError(CorruptionError):
-    """A whole-stream checksum failed after the stream's bytes were delivered.
-
-    Internal: callers see a :class:`CorruptionError`. A reader that tolerates a decode
-    failure past the end of its own data (the TAR end-of-archive scan) re-raises this
-    one, because the checksum covers bytes it has already handed out.
-    """
-
-
 class _ZlibAdlerCheckStream(DelegatingStream):
     """Check a zlib stream's Adler-32 after rapidgzip, which does not check it.
 
@@ -1459,13 +1462,16 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         return self._begin_stdlib_fallback(size)
 
     def _check_end(self) -> None:
-        """Report non-zero bytes after the last stream, which the accelerator skips.
+        """Report the first byte after the last stream that is neither zero padding nor
+        part of an empty stream. The accelerator skips such bytes.
 
-        rapidgzip's bzip2 decoder reads past them with a warning on stderr and no error,
-        and after the last read its compressed position is exactly where the data
-        ended. The bytes from there to the end of the source are read (a fresh view, so
-        the decoder's cursor does not move) until a non-zero one; zeros are padding,
-        as on the standard-library path.
+        rapidgzip's bzip2 decoder reads past them with a warning on stderr and no error.
+        After the last read its compressed position is the end of the last stream that
+        produced data (see ``compressed_position``), so empty streams after that one are
+        not counted in it. The bytes from there to the end of the source are read (a
+        fresh view, so the decoder's cursor does not move) until one that is neither
+        zero padding nor part of an empty stream. The standard-library path accepts
+        both, so this path accepts both too.
         """
         self._end_unchecked = False
         if not self._config.report_trailing_data:
@@ -1479,17 +1485,27 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
             else self._reopen()
         ) as view:
             view.seek(end)
+            # ``held`` is the start of an empty stream that the previous chunk cut, or
+            # nothing. ``offset`` is the source offset of ``data[0]``.
             offset = end
-            while chunk := view.read(_TRAILING_SCAN_CHUNK):
-                rest = chunk.lstrip(b"\x00")
-                if rest:
+            held = b""
+            while True:
+                chunk = view.read(_TRAILING_SCAN_CHUNK)
+                data = held + chunk
+                skipped = _padding_and_empty_bzip2_streams(data)
+                rest = data[skipped:]
+                # A short ``rest`` that could begin an empty stream waits for the next
+                # chunk. An empty ``chunk`` means the end of the source: ``rest`` cannot
+                # become a whole stream, so it is reported.
+                if rest and not (chunk and _starts_empty_bzip2_stream(rest)):
                     report_trailing_data(
-                        self._config.collector,
-                        "bzip2",
-                        offset + len(chunk) - len(rest),
+                        self._config.collector, "bzip2", offset + skipped
                     )
                     return
-                offset += len(chunk)
+                if not chunk:
+                    return
+                held = rest
+                offset += skipped
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         result = super().seek(offset, whence)
@@ -1516,8 +1532,58 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         return self._inner.read(size)
 
 
-# Bytes read per step while looking past an accelerator's end for a non-zero byte.
+# Bytes read per step while looking past an accelerator's end for the first byte that is
+# neither zero padding nor part of an empty stream.
 _TRAILING_SCAN_CHUNK = 1 << 16
+
+# A bzip2 stream with no blocks: the ``BZh`` header and block-size digit, the
+# end-of-stream magic, and a combined CRC of zero. The header is byte-aligned and the
+# two fields after it fill whole bytes, so the stream has no padding bits. This is what
+# ``bzip2 -c /dev/null`` writes (with the digit ``9``).
+#
+# The pattern is also the guard: bytes that only look like such a stream are not
+# skipped, and so are still reported. The CRC must be zero, because the combined CRC of
+# no blocks is zero; the standard-library engine refuses any other value as corrupt.
+# The digit must be 1 to 9: with any other, the standard-library engine does not start
+# a stream there either (``_BZIP2_STREAMS``), and reports the bytes as trailing data.
+_EMPTY_BZIP2_TEMPLATE = b"BZh9\x17\x72\x45\x38\x50\x90\x00\x00\x00\x00"
+_EMPTY_BZIP2_STREAM_LEN = len(_EMPTY_BZIP2_TEMPLATE)
+_EMPTY_BZIP2_STREAM_BYTES = (
+    re.escape(_EMPTY_BZIP2_TEMPLATE[:3])
+    + rb"[1-9]"
+    + re.escape(_EMPTY_BZIP2_TEMPLATE[4:])
+)
+_EMPTY_BZIP2_STREAM = re.compile(_EMPTY_BZIP2_STREAM_BYTES)
+_EMPTY_BZIP2_STREAM_RUN = re.compile(rb"(?:" + _EMPTY_BZIP2_STREAM_BYTES + rb")*")
+_ZERO_RUN = re.compile(rb"\x00*")
+
+
+def _run_end(pattern: re.Pattern[bytes], data: bytes, pos: int) -> int:
+    match = pattern.match(data, pos)
+    # Both run patterns are repetitions, so they match at least the empty string.
+    assert match is not None
+    return match.end()
+
+
+def _padding_and_empty_bzip2_streams(data: bytes) -> int:
+    """How many bytes at the start of ``data`` are zeros and whole empty streams.
+
+    A run of zeros and a run of empty streams are matched in turn. One pattern with a
+    zero byte and a stream as alternatives costs about fifty times the CPU on a chunk of
+    zeros, and allocates megabytes.
+    """
+    pos = _run_end(_ZERO_RUN, data, 0)
+    while (after := _run_end(_EMPTY_BZIP2_STREAM_RUN, data, pos)) != pos:
+        pos = _run_end(_ZERO_RUN, data, after)
+    return pos
+
+
+def _starts_empty_bzip2_stream(data: bytes) -> bool:
+    """Whether ``data`` is shorter than an empty bzip2 stream and could begin one."""
+    if len(data) >= _EMPTY_BZIP2_STREAM_LEN:
+        return False
+    completed = data + _EMPTY_BZIP2_TEMPLATE[len(data) :]
+    return _EMPTY_BZIP2_STREAM.fullmatch(completed) is not None
 
 
 def gzip_has_additional_member(stream: BinaryIO) -> bool:
@@ -1922,8 +1988,9 @@ class GzipCodec(StreamCodec):
             # Corruption inside the deflate body (a valid gzip header, then bad data) is
             # raised by zlib's gzip window as a raw zlib.error. zlib does not flag
             # truncation distinctly here (a short stream surfaces as TruncatedError via
-            # the decompressor engine), so any zlib.error at this point is corruption.
-            return CorruptionError(f"Error reading gzip stream: {exc!r}")
+            # the decompressor engine), so any zlib.error at this point is corruption,
+            # and a failed CRC-32/ISIZE check a whole-stream one.
+            return gzip_corruption(exc)
         if isinstance(exc, EOFError):
             return TruncatedError(f"gzip stream is truncated: {exc!r}")
         return None
@@ -2062,6 +2129,13 @@ class Bzip2Codec(StreamCodec):
         if from_callers_source(exc):
             return None  # the caller's source raised it, through _TrappingSource
         text = str(exc)
+        if isinstance(exc, UnicodeDecodeError) and isinstance(exc.object, bytes):
+            # rapidgzip quotes the offending input byte in some messages ("…magic
+            # string 'BZh' … with \xf2 …"). When that byte is not UTF-8, the message
+            # itself fails to decode on its way to Python, and the error raised is
+            # this one, holding the message bytes. Read the message from them, so the
+            # arms below match it as they match a message that did decode.
+            text = exc.object.decode("utf-8", "replace")
         if isinstance(exc, RuntimeError) and "Calculated CRC" in text:
             return CorruptionError(
                 f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
@@ -2082,12 +2156,14 @@ class Bzip2Codec(StreamCodec):
         if isinstance(exc, (ValueError, RuntimeError)) and (
             "Huffman" in text
             or "magic" in text  # "Input header is not BZip2 magic string 'BZh'…"
+            or "Blocksize must be one of" in text  # stream header's level byte
             or "bit string" in text
             or "bad optional access" in text  # accelerator read past a corrupt block
         ):
-            # Corrupt Huffman tables, stream/block magic, or internal state, outside a
-            # "[BZip2 block]"-tagged context (e.g. "Constructing a Huffman coding … failed!"
-            # or "bad optional access") — all found by the corpus mutation harness.
+            # Corrupt Huffman tables, stream header, block magic, or internal state,
+            # outside a "[BZip2 block]"-tagged context (e.g. "Constructing a Huffman
+            # coding … failed!" or "bad optional access") — found by the corpus
+            # mutation harness, apart from the header's block-size byte.
             return CorruptionError(
                 f"Error reading bzip2 stream (rapidgzip bzip2): {exc!r}"
             )
@@ -2406,11 +2482,19 @@ class _RawLzmaCodec(_LzmaErrorCodec):
                     limits=config.decoder_limits,
                     what=f"{LZMA_DICTIONARY_FILTERS[spec['id']]} dictionary size",
                 )
-        return ensure_binaryio(
+        decoded = ensure_binaryio(
             lzma.LZMAFile(
                 source, mode="rb", format=lzma.FORMAT_RAW, filters=params.filters
             )
         )
+        if params.unpack_size is None:
+            return decoded
+        # A raw LZMA1 stream written without an end-of-stream marker (ZIP method 14
+        # with general-purpose bit 1 clear) ends where its known output size says.
+        # liblzma cannot tell that from the input, so reading on would ask for input
+        # past the end and fail as truncated; stop at the size instead. The 7z
+        # pipeline bounds its LZMA chains the same way, outside this codec.
+        return SlicingStream(decoded, length=params.unpack_size, owns_inner=True)
 
 
 class LzmaCodec(_RawLzmaCodec):
@@ -2429,7 +2513,8 @@ class _ZlibErrorCodec(StreamCodec):
             text = str(exc)
             if "incomplete" in text or "truncated" in text:
                 return TruncatedError(f"deflate stream is truncated: {exc!r}")
-            return CorruptionError(f"Error reading deflate stream: {exc!r}")
+            # A zlib stream's Adler-32 failing is a whole-stream checksum.
+            return gzip_corruption(exc, "deflate")
         if isinstance(exc, EOFError):
             return TruncatedError(f"deflate stream is truncated: {exc!r}")
         return None
@@ -2678,6 +2763,10 @@ class ZstdCodec(StreamCodec):
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if _zstd is not None and isinstance(exc, _zstd.ZstdError):
+            if "checksum" in str(exc):
+                # The frame's content checksum ("Restored data doesn't match
+                # checksum"), over everything the frame decoded.
+                return _StreamChecksumError(f"Error reading zstd stream: {exc!r}")
             return CorruptionError(f"Error reading zstd stream: {exc!r}")
         if isinstance(exc, EOFError):
             return TruncatedError(f"zstd stream is truncated: {exc!r}")
@@ -2718,6 +2807,10 @@ class Lz4Codec(StreamCodec):
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
         if isinstance(exc, RuntimeError) and str(exc).startswith("LZ4"):
+            if "contentChecksum" in str(exc):
+                # The frame's content checksum, over everything the frame decoded; a
+                # block checksum covers one block and stays a plain corruption.
+                return _StreamChecksumError(f"Error reading lz4 stream: {exc!r}")
             return CorruptionError(f"Error reading lz4 stream: {exc!r}")
         if isinstance(exc, EOFError):
             return TruncatedError(f"lz4 stream is truncated: {exc!r}")

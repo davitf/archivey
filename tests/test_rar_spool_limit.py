@@ -3,7 +3,9 @@
 A RAR opened from a stream is copied to temporary storage the first time a member has
 to go through ``unrar``, which reads only files. These tests pin the bound on that copy:
 refused before anything is written when the size is known, stopped at the limit when it
-is not, measured across a whole volume set, and never applied to a path source.
+is not, measured across a whole volume set, and never applied to a path ``unrar`` reads
+in place. The one path source that is copied, a prefixed archive read with ``unar``, is
+bounded the same way.
 """
 
 from __future__ import annotations
@@ -472,6 +474,54 @@ def test_path_source_is_never_copied_or_refused(temp_artifacts: list[Path]) -> N
     with open_archive(_VOLUMES[0], config=_config(0)) as archive:
         assert archive.read("payload.bin") == _VOLUME_PAYLOAD
     assert temp_artifacts == []
+
+
+# Compressed and not solid: unar reads it, and its members need the copy.
+_UNAR_READABLE = (
+    Path(__file__).parent / "fixtures" / "corpus" / "rar" / "compressed.rar"
+)
+
+
+def _prefixed_copy(tmp_path: Path) -> Path:
+    """A path source with 4 KiB in front of the RAR, which unar needs copied away."""
+    prefixed = tmp_path / "prefixed.rar"
+    prefixed.write_bytes(b"\x00" * 4096 + _UNAR_READABLE.read_bytes())
+    return prefixed
+
+
+_UNAR = {"rar_decompressor": "unar"}
+
+
+@requires_binary("unar")
+def test_prefixed_path_over_the_limit_is_refused_under_unar_before_copying(
+    tmp_path: Path, temp_artifacts: list[Path]
+) -> None:
+    prefixed = _prefixed_copy(tmp_path)
+    limit = _UNAR_READABLE.stat().st_size - 1
+    config = ArchiveyConfig(spool_limits=SpoolLimits(max_bytes=limit), **_UNAR)
+    with open_archive(prefixed, config=config) as archive:
+        (note,) = archive.cost.notes
+        assert note.startswith("Reading a compressed member will be refused")
+        with pytest.raises(ResourceLimitError, match="rar_decompressor to 'unrar'"):
+            archive.read("zeros.bin")
+    assert temp_artifacts == []
+
+
+@requires_binary("unar")
+def test_prefixed_path_within_the_limit_reads_under_unar(
+    tmp_path: Path, temp_artifacts: list[Path]
+) -> None:
+    prefixed = _prefixed_copy(tmp_path)
+    config = ArchiveyConfig(
+        spool_limits=SpoolLimits(max_bytes=_UNAR_READABLE.stat().st_size), **_UNAR
+    )
+    with open_archive(prefixed, config=config) as archive:
+        (note,) = archive.cost.notes
+        assert "SpoolLimits.max_bytes=" in note
+        assert archive.read("zeros.bin") == b"\x00" * 8192
+    # unar's private directory, and the copy made inside it.
+    assert len(temp_artifacts) == 2
+    assert not any(path.exists() for path in temp_artifacts)
 
 
 def test_refusal_is_remembered_so_a_retry_writes_nothing(

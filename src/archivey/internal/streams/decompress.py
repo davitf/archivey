@@ -17,13 +17,14 @@ from collections.abc import Callable, Mapping
 from typing import BinaryIO, NoReturn, Protocol
 
 from archivey.config import DecoderLimits
-from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
+from archivey.exceptions import ResourceLimitError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
     SeekPoint,
+    gzip_corruption,
 )
 from archivey.internal.streams.ppmd_child import (
     PpmdChildAllocationError,
@@ -192,7 +193,8 @@ class GzipDecoder(BaseDecoder):
                 # CorruptionError here so a raw GzipDecompressorStream is consistent
                 # with flush() and does not leak zlib.error (GzipCodec.translate maps
                 # it too, but the decoder must stand on its own).
-                raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+                # A failed CRC-32/ISIZE check is a _StreamChecksumError.
+                raise gzip_corruption(e) from e
             if produced:
                 output.append(produced)
                 produced_total += len(produced)
@@ -244,7 +246,7 @@ class GzipDecoder(BaseDecoder):
                     if not self._decomp.eof:
                         out.extend(self._decomp.flush())
                 except zlib.error as e:
-                    raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+                    raise gzip_corruption(e) from e
                 if not self._decomp.eof:
                     self._pending_error = TruncatedError("gzip stream is truncated")
                     return DecodeOut(bytes(out))
@@ -267,7 +269,7 @@ class GzipDecoder(BaseDecoder):
                 out.extend(self._decomp.decompress(self._decomp.unconsumed_tail))
             out.extend(self._decomp.flush())
         except zlib.error as e:
-            raise CorruptionError(f"Error reading gzip stream: {e!r}") from e
+            raise gzip_corruption(e) from e
         if not self._decomp.eof:
             self._pending_error = TruncatedError("gzip stream is truncated")
         else:
@@ -1368,7 +1370,7 @@ class FilterDecoder(BaseDecoder):
     The filter runs through liblzma, over an :class:`_Lzma2Framer` wrapper because
     liblzma needs a compression filter to close the chain. It must not be ``pybcj``:
     that decoder cannot be constructed for a member of 2 GiB or more, and its IA64
-    filter truncates. See ``dev-docs/known-issues.md`` → "7z BCJ branch filters".
+    filter truncates. See ``dev-docs/investigations/pybcj-upstream-report.md``.
 
     ``lzma_filter`` is the liblzma filter dict, options included (a BCJ
     ``start_offset``, a Delta ``dist``). ``unpack_size`` is the coder's declared

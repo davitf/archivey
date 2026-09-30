@@ -1,903 +1,867 @@
-# Threat model and security/compatibility gap register
-
-> The trust boundaries archivey defends, what is already enforced, and — importantly —
-> the **known open gaps** identified in the 2026-07 architecture review, recorded here so
-> they are not lost. Each open item should become an OpenSpec change (usually a
-> `safe-extraction` or `archive-reading` delta) when tackled; this document is the
-> holding area and the rationale, not the normative spec.
-
-> **The user-facing half of this document is published.** Trust boundaries and the
-> full "what is enforced" list now live on
-> [`docs/extracting.md`](../docs/extracting.md) (review/docs `DECISIONS.md`
-> D8) — unpublishing was about *audience*, not secrecy, and an evaluating user is
-> exactly who needs the enforced-guarantees statement. What remains here is the
-> maintainer register: what is still open, and what is left to implement.
-
-## OPEN gaps — security
-
-### O1. Listing-time resource exhaustion (metadata bombs) — mitigated
-
-`ListingLimits` on `ArchiveyConfig` (`max_members`, `max_metadata_bytes`) are enforced
-when members are registered into a materialized / resolved list (`members()`,
-`scan_members()`, extract-prep materialization). Crossing a cap raises
-`ResourceLimitError`. Defaults match extract `max_entries` on the count side
-(`1_048_576`) and budget 64 MiB of retained string/bytes metadata.
-`stream_members()` / `streaming=True` / forward-only iteration remain unguarded by
-design (O(1) escape hatch). 7z applies `listing_limits.max_members` at
-`open_archive` (folders, unpack streams, `num_files`) and an over-limit
-archive fails at open — `stream_members()` / `streaming=True` are not an
-escape hatch for 7z. Pack streams are a coder-graph quantity (BCJ2 has four
-per folder) and keep the header-size bound only. RAR applies
-`listing_limits.max_members` while parsing the member table at
-`open_archive`, so an over-limit archive fails at open —
-`stream_members()` / `streaming=True` are not an escape hatch for RAR. ZIP
-still caps at `members()`. TAR has no member table to parse at `open_archive`, so its
-caps can only bind the header walk: the random-access walk parses headers in batches
-that stop one header past `max_members` or `max_metadata_bytes`, so an over-limit tar
-costs the cap rather than the archive, PAX keywords and values included. `None`
-(`ListingLimits.UNLIMITED`) disables that bound.
-`max_metadata_bytes` remains a materialization guard on every format,
-including 7z and RAR. RAR also checks it at `open_archive` against the summed
-declared sizes of compressed RAR 1.5/2.x comments, before decoding any, since
-those expand after the parse; that bounds comment bytes, not the one `unrar`
-spawn each still costs. Format-local parser bounds (e.g. 7z count fields vs
-header size → `CorruptionError`; 7z per-folder coder/in-out counts at
-`_MAX_NUM_STREAMS`) stay as defense-in-depth. RAR no longer has a separate
-`_MAX_ARCHIVE_MEMBERS` parser constant. RAR5 QO records that are not FILE
-never reach `_append_member`; their bound is `_RAR5_QO_PAYLOAD_MAX` (16 MiB),
-and parse of that payload is linear (PR #311). 7z may still allocate up to
-its header-size ceilings during `open_archive()` (`max_members` or header
-size, whichever is tighter). `max_metadata_bytes` budgets
-*retained* member metadata; it does not see a transient decode buffer discarded
-before any member exists. (RAR's compressed-comment check above is the one place
-it weighs a declared size before decoding, because the decode is the cost.) RAR3 compressed Unicode names used to expand ~100×
-that way (listing-time CPU at the `uint16` `name_size` ceiling, not unbounded
-memory). Decode now fails closed on overrun (PR #292); O1's status is unchanged.
-
-`read()` / `open()` stream sizes remain unbounded (follow-on); prefer chunked
-reads for untrusted member payloads. A RAR glob-named member is a sharper case
-of the same gap: named `unrar -n` decompresses every earlier match before
-returning a byte. That one case is closed — the read is refused by default when
-the skip is nonzero, with
-`ArchiveyConfig.rar_allow_glob_member_concatenation` as the escape hatch
-([`formats/rar.md`](formats/rar.md) §5, §6). The names are almost always
-constructed; on a nonsolid archive the extra decode was also unadvertised. The
-general gap stands — and that refusal is narrower against it than it looks. An
-out-of-order `open()` of any **solid** member decodes everything ahead of it
-with no glob involved, so an attacker wanting a large decode for one small read
-does not need a glob name at all — solidity alone does it, on a name nobody
-would refuse. On a nonsolid archive the glob adds unbounded extra decode; on a
-solid one it adds only a bounded transfer cost
-([`formats/rar.md`](formats/rar.md) §6). Whether the refusal earns its keep is
-therefore tied to this gap rather than to glob names, and is parked as such
-([`formats/rar.md`](formats/rar.md) §7).
-
-### O2. Case-insensitivity and Unicode-normalization collisions at extraction — implemented
-
-Two members whose names differ only by case (`README` / `readme`) or Unicode
-normalization form (NFC vs NFD `café`) are distinct in the archive but the **same file**
-on default Windows/macOS filesystems. Pre-fix behavior under `OverwritePolicy.ERROR`
-was a confusing "already exists"; under `REPLACE`, a silent merge on case-insensitive
-systems only.
-
-**Implemented** (`cross-platform-name-safety` / ADR 0013 / PR #109): the coordinator
-tracks a casefolded+NFC key per written path and, under `STRICT`/`STANDARD`, treats a
-collision as a first-class event on **all platforms** (`TRUSTED` keys on the exact path
-and defers to the local OS): apply the `OverwritePolicy` deliberately, record the
-outcome on the `ExtractionResult`, and support `OverwritePolicy.RENAME` (extract as
-`photo (1).jpg`, counter before the suffix). Since
-`extraction-results-authoritative`, `results` is the **sole** record — there is no
-collision diagnostic. A `REPLACE` merge revises the clobbered member's result to
-`ExtractionStatus.OVERWRITTEN` (`path=None`, `requested_path` kept as the join to the
-member that took the destination), so the case-insensitive merge is observable rather
-than two members both reporting `EXTRACTED` at one path; a `RENAME` shows as
-`requested_path != path`. A caller who wants a collision to be **fatal** passes
-`abort_on={AbortOn.NAME_COLLISION}`, which fires on every non-`TRUSTED` collision
-whatever resolution follows. Only content-bearing members (file/symlink/hardlink, including the
-deferred orphan-hardlink pass) are tracked; **directories are intentionally untracked**
-(they merge structurally), so a *file* `Foo` vs a *directory* `foo/` collision stays
-OS-dependent — a known, deferred residual (ADR 0013).
-
-### O3. Windows name mangling: reserved names, trailing dots/spaces — implemented
-
-`CON`, `NUL`, `COM1`… are device names; `foo.` and `foo ` are silently stripped by
-Win32 to `foo` (silent clobber / mismatch between reported and actual path).
-
-**Implemented** (ADR 0013, revised 2026-07 / PR #109 + #123): reserved device names and
-`:` are *unsafe* (device capture / NTFS ADS) → rejected under `STRICT` and `STANDARD` on
-every platform. A trailing dot/space is a *legitimate* macOS/Linux name Win32 merely
-trims → `STRICT` **strips** it to the portable spelling (`stuff_etc.` → `stuff_etc`),
-deterministic per-OS, collision-tracked, and recorded as
-`ExtractionResult.presented_name` — the full relative name *before* the rewrite, which
-is the only signal that survives a caller `filter` rename (archive name, filter output,
-and on-disk spelling are three different strings). An all-dots segment like `...` has
-no portable spelling and is still rejected; `STANDARD`/`TRUSTED` keep it faithful. A
-caller who refuses any rewritten on-disk name passes
-`abort_on={AbortOn.NAME_SANITIZED}`, documented as a narrow escape hatch rather than
-part of ordinary strict extraction.
-
-### O4. NTFS alternate data streams — implemented (folded into O3)
-
-A member name containing `:` (`file.txt:hidden`) would write an invisible alternate data
-stream on NTFS.
-
-**Implemented** as part of O3: `:` in names is rejected under `STRICT` and `STANDARD` on
-all platforms (it is never a portable filename character).
-
-### O5. Fuzzing — mutation + Hypothesis + Atheris gate landed; OSS-Fuzz later
-
-The safety claims rest on curated tests plus three complementary fuzz layers. Remaining
-work before any public "safe" claim is release packaging (OSS-Fuzz onboarding);
-disclosure docs are in place (`SECURITY.md`). The in-tree gate:
-
-1. **Landed:** the corpus **mutation harness** (`tests/test_mutation_fuzz.py`) — every
-   corpus archive is deterministically mutated (truncations, bit flips, zeroed blocks,
-   garbage prefixes/suffixes) and driven through open/list/read/extract + detection,
-   asserting *typed `ArchiveyError` or success — never a raw exception, never a hang*. It
-   exercises archivey's own **deterministic zero-dep parsing path** (accelerators forced
-   off) and already found and fixed a batch of untranslated-exception bugs in the ZIP and
-   ISO backends. `ARCHIVEY_FUZZ_MUTATIONS` deepens the sweep; green at 500 mutations/kind.
-   Env-gated 7z parser mutation (`ARCHIVEY_FUZZ=1` / `tests/fuzz_sevenzip_parser.py`)
-   remains available for local deepening.
-2. **Landed:** property-based tests (Hypothesis) for the pure safety logic
-   (`tests/test_property_safety.py` — `normalize_member_name`, `check_universal`,
-   `resolve_link_target_name`, volume discovery, detection over arbitrary prefixes).
-3. **Landed:** coverage-guided **Atheris** harness (`tests/atheris_fuzz/`) over native 7z
-   and RAR header parse (CRC mutate-then-fixup), 7z/RAR open+members (CI installs
-   RARLAB `unrar` so RAR open is not skipped), `detect_format`, ZIP open+list+bounded
-   member read (native codec/AES), TAR/ISO open+list, and standalone stream/codec
-   targets (unix-compress, xz, lzip, gzip, bzip2, lzma-alone, zlib; optional
-   zstd/brotli/lz4/deflate64 skip-clean when absent). CI runs a **short** partition on
-   every **pull request** (sharded for wall time), and the **full** partition on a
-   **change-guarded nightly** (skip unless default-branch HEAD moved in ~3 days) plus
-   **`workflow_dispatch`** — same pattern as the benchmark wall job; not an always-on
-   nightly and not a full run on every `main` push. `atheris` lives in the PEP 735
-   `fuzz` dependency group only — never a runtime extra. See
-   `openspec/specs/testing-contract/spec.md`.
-4. **Landed (disclosure):** root
-   [`SECURITY.md`](https://github.com/davitf/archivey/blob/main/SECURITY.md) —
-   private reporting via GitHub Security Advisories (preferred), scope, and caller
-   guidance (including accelerator-off for hard-latency untrusted input).
-5. **Still open (public release):** OSS-Fuzz onboarding. Accelerator hang sandbox
-   (below) remains a separate follow-up.
-
-**Accelerator hang (found by the mutation harness).** The optional `[seekable]`
-accelerators (`rapidgzip`, and its bundled bzip2 decoder) are third-party C++ that can
-**busy-loop on crafted input** — a hang no Python-level translator can convert into an
-`ArchiveyError`, and one that SIGALRM/pytest-timeout cannot cleanly interrupt (the loop is
-in a C++ thread). So the mutation and Atheris harnesses run with accelerators **off**, and
-fuzzing that native code is deferred to a **resource-limited subprocess sandbox**
-(wall-clock + memory capped, killed on breach). Until then: the accelerators are an
-opt-in performance path, not part of the defended parsing surface for untrusted input —
-callers processing untrusted archives under a hard latency budget should leave them off
-(`AcceleratorMode.OFF`) or enforce their own timeout. Surfaced in
-[`SECURITY.md`](https://github.com/davitf/archivey/blob/main/SECURITY.md).
-
-**pycdlib directory-cycle hang (found by the mutation harness).** `pycdlib` can **loop
-forever** in ``_walk_directories`` whenever corrupt directory records form a back-edge
-(plain ISO 9660 PVD, Rock Ridge PVD, Joliet SVD — any namespace ``open_fp`` walks). The
-harness found a Joliet case (`bitflip@71746:0x01` on `basic-iso`); the same one-bit
-corruption in ``/subdir``'s directory extent reproduces on plain-only and Rock-Ridge-only
-images built the same way (`tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang`
-parametrizes all three). The ISO backend installs a one-time guard that skips
-re-enqueueing a directory extent already scheduled (valid trees never revisit an extent).
-
-**Destination-root poisoning via `"."` file member (found by the mutation harness).**
-Corrupted headers can surface a *file* (not a directory) whose normalized name is `"."`
-— e.g. `bitflip@107:0x10` on `adversarial-tar.tar.gz`. Extracting it would write through
-the destination path itself, replacing the extraction directory with a regular file
-("poisoned dest"). `check_universal` now rejects non-directory members that name the
-extraction root; the parametrized fuzz loop also asserts the destination stays a
-directory after any successful extract. Unit coverage:
-`test_check_universal_rejects_root_named_file` and `test_extract_error_when_dest_is_a_file`
-in `tests/test_extraction.py`.
-
-### O6. Nested-archive amplification
-
-Opening archives-inside-archives is supported (and `size` advertisement makes it
-cheap); recursion is caller-driven, so a zip-quine (`droste.zip`) only loops if the
-caller loops. Still worth an explicit documented stance + a recipe for bounded
-recursive processing, since "index my backups" — the founding use case — does exactly
-this.
-
-### O7. Names representable as bytes but not by the target filesystem — implemented
-
-`check_universal` rejects names that cannot be `os.fsencode`d at all (a lone surrogate
-outside the surrogateescape range — see `internal/filters.py`). Names that *are*
-fsencodable but that some filesystems refuse at `write()` (e.g. surrogateescape
-`caf\udce9.txt` → `EILSEQ` on APFS) used to surface as a platform-dependent per-member
-write failure.
-
-**Implemented** (ADR 0013 / PR #109):
-
-- Write-time `OSError` (`EILSEQ`) for a filter-accepted but unrepresentable name is
-  translated to a typed `ExtractionError` naming the member
-  (`test_unrepresentable_name_oserror_is_translated`).
-- Under `STRICT`/`STANDARD`, non-UTF-8 bytes are **percent-escaped** to a deterministic
-  reversible portable spelling (`%XX`; literal `%` → `%25`), applied on every platform
-  and collision-tracked like O2; only names that cannot be `os.fsencode`d at all are
-  still rejected. `TRUSTED` attempts the faithful bytes and lets the local OS decide.
-
-Residual: a public un-escape helper is deferred (addable non-breakingly). User-facing
-notes: [Gotchas — Extraction](../docs/gotchas.md#extraction), ADR 0013.
-
-### O8. 7z wrong header-decryption password can silently yield an *empty* archive — mitigated
-
-The 7z format has **no password check value** (unlike RAR5's `pswcheck` or WinZip
-AES's verifier bytes), so wrong-password detection on a header-encrypted archive
-(`-mhe=on`) is heuristic: decrypt with the derived key, LZMA-decode the garbage,
-and rely on the decode or the header parse failing. There are two lines of
-defense today:
-
-1. **Decoded-folder CRC** — `decode_folder_to_bytes` verifies the encoded-header
-   folder's `kCRC` digest when the writer stored one
-   (`sevenzip_pipeline.py`). Reference 7-Zip writes it → detection is
-   deterministic (2⁻³²) for those archives. **py7zr does not**
-   (`digest_defined: False` on the encoded-header folder), and the only 7z archives
-   *we* produce are test fixtures written through py7zr (7z writing is not shipped),
-   so those share the gap.
-2. **Structural parse failure** of the garbage — which usually works, but not
-   always.
-
-Measured (2026-07-18, loop of fresh py7zr header-encrypted archives, wrong
-password): **~0.3% of salts slip through both checks** (2/300, 3/1,110 across
-runs — the AES IV/salt is random per write, so the rate is per-archive, not
-per-attempt). Every observed slip-through decodes to a degenerate header that
-parses as **an archive with zero members**: `open_archive(...,
-password="wrong")` returns member_count=0 with no error. Hazard: not traversal
-or corruption, but *silent data invisibility* — a backup-verification or sweep
-tool concludes "empty archive" instead of "wrong password" and reports success.
-This is also the root cause of the flaky
-`test_header_encrypted_wrong_password_mentions_header` (seen on Windows
-py3.14 CI for PR #139; the flake predates that PR — same rate measured on
-`main`).
-
-*Mechanism (not a `num_files == 0` field):* wrong-key AES still feeds LZMA, which
-often emits the full claimed unpack size (e.g. 105 bytes) of garbage.
-`parse_header_block` only inspects the **leading property id** and stops:
-
-- `0x00` (`END`) → empty `PlainHeader` immediately; the remaining ~104 bytes are
-  **never read**.
-- `0x01 0x00` (`HEADER` + `END`) → `_parse_plain_header` exits on the next `END`
-  with empty streams/files; trailing garbage likewise ignored.
-
-Empirically (8 slips in ~2k py7zr writes): 7/8 were leading `END`, 1/8 was
-`HEADER`+`END`. Rate ≈ 1/256 matches “first garbage byte is `0x00`”. A real
-decoded header for the same fixture is a full 105-byte structure
-(`HEADER` → `MAIN_STREAMS_INFO` → `FILES_INFO` → `END`) with **no** trailing
-unread bytes — so the slip is an early terminator in random output, not a
-zeroed `FILES_INFO` count.
-
-*Mitigation:* after decoding a `kEncodedHeader`, a parsed result with **zero file
-records** is treated as a rejected password (`EncryptionError`). Legitimate writers
-never encrypt an empty header (empty archives use `nextHeaderSize == 0` or a plain
-header). Residual: garbage that parses into a *non-empty* plausible header survives
-in principle (inherent to the format absent a check value); requiring the parser to
-consume the entire decoded buffer (reject trailing bytes), stricter property
-bounds, and upstream py7zr writing `kCRC` for the encoded-header folder remain
-optional hardenings. See `format-7z` ("never a silent empty listing") and
-`test_header_encrypted_empty_decoded_header_rejected`.
-
-### O9. Attacker-controlled bytes reaching the terminal via messages — implemented
-
-Member names are attacker-controlled, and a name may carry ANSI control sequences: a
-`README\x1b[2K\rSUCCESS.txt` printed raw lets the archive erase the line it is being
-reported on and author what the operator sees in its place. `cli/format.py`'s
-`escape_member_name` exists for this (GNU `ls` / `tar` quote for the same reason). PR #235
-(whose subject is `extraction-results-authoritative` — the escaping rode in on it) routed
-the **report-line** print sites through it: the report lines themselves, the error detail
-appended to `failed:` / `blocked:`, and the hoist's collision lines (`renamed:`,
-`skipped:`, `Destination already exists:`). That pass was a hand audit and it was not
-complete — see *Print sites after the second audit* below.
-
-**Implemented** (`escape-cli-log-records`): archive-derived text is escaped where it
-**becomes a message**, not where a message is displayed. `ArchiveyError` and
-`ArchiveyUsageError` escape their `message` at construction, `Diagnostic` escapes its
-`message`, and the primitive lives in `archivey/terminal.py` so both can reach it. The
-guarantee is written down as the `error-handling` and `diagnostics` requirements
-*"… messages are inert for terminal display"* and the `cli` requirement *"Archive-derived
-text is escaped before terminal display"*. The same change escaped the print sites that
-render an **exception** rather than a report line — `archivey test`'s `FAIL` detail, the
-extract abort notice, and `main()`'s top-level handlers — which the report-line pass had
-left raw. The gap it closed is below.
-
-The library's own `logging` records used to bypass the print-site escaping.
-`extraction.py` emits
-
-```python
-logger.warning("Skipping %s %r: %s", original.type.value, original.name, error)
-```
-
-and `cli/logging_config.py` attaches a `StreamHandler` to the same stderr the reports go
-to. The name is safe there by accident — `%r` makes Python's `repr` escape it — but the
-**third** field is not: an `ExtractionError` message embeds the destination path, and that
-path is built from the member's name. Reproduced on `main`:
-
-```
-WARNING: Skipping file 'EV\x1b[2KIL\rHARMLESS.TXT': Destination already exists: /…/out/ev<ESC>[2Kil<CR>HARMLESS.txt
-failed: EV\x1b[2KIL\rHARMLESS.TXT: Destination already exists: /…/out/ev\x1b[2Kil\rHARMLESS.txt
-```
-
-The second line is the fixed print site; the first is the same fact, unescaped, one line
-earlier. Any library log record or exception message embedding a member-derived path has
-the same shape — this is not specific to that one call.
-
-**Not platform-specific, and not gated on the write succeeding.** Windows refuses control
-bytes in filenames (`WinError 123`), but the failure path *is* a reporting path: the name
-still reaches stderr, in the log line reporting that it could not be written. The same
-holds for any member that is blocked, superseded, or listed rather than extracted.
-
-*Why the message and not the handler.* The first attempt escaped in a `logging.Formatter`
-installed by the CLI. That guards only records reaching a handler someone configured, and
-the likeliest route an archivey message takes to a terminal has no handler at all: an
-uncaught exception, with the interpreter printing the traceback whose final line is
-`str(exc)`. `print(exc)` in embedding code and third-party error reporters are the same
-shape. Escaping at construction covers every route with no configuration, and it needs one
-place — `ArchiveyError.__init__` — rather than one per call site.
-
-The two layers cannot coexist: a formatter escaping an already-escaped message doubles
-every backslash in it. The formatter was removed, and `format_error_detail` in the CLI
-decides by type in one place, so a call site holding an `ArchiveyError | OSError` union
-(`ExtractionResult.error`) does not have to. Only non-archivey exceptions are escaped at
-the display site, because only they arrive unescaped.
-
-*What stays raw.* The exceptions' `archive_name` / `member_name` / `source_format` and
-`Diagnostic.context` — the structured channels, for callers acting on a value rather than
-printing it. Library log records are likewise unaltered, so an embedding app's handler or
-a test's `caplog` still sees exactly what was emitted.
-
-*Closed residual — `exc_info` tracebacks.* The handler-side design had to accept that a
-rendered traceback's final line is the exception's message and may be archive-derived.
-Escaping at construction closes it: that line is the escaped message.
-
-*Native paths in messages.* Escaping doubles a backslash, so a native Windows path
-interpolated raw would render `C:\\Users\\out\\a.txt`. Every path in a message is
-rendered `/`-separated first by `terminal.display_path()`, leaving the escape nothing to
-double; a backslash that survives is then a character in a *name*, which is what the
-escape is for. Guarded by a static sweep, since the failure is invisible on Linux. Print
-sites follow the same rule: a member-derived path is rendered relative to the extraction
-root, and any other path goes through `cli/format.escape_path` (`display_path`, then the
-escape). That second half is newer than it looks — until the second audit below, the
-hoist's collision lines escaped `str(dest)`, a native path.
-
-*Escape exactly once.* Escaping already-escaped text doubles the backslashes the first
-escape wrote. Review found this was not a rare cosmetic edge: **52 message sites**
-interpolated an archive-derived name with `{name!r}`, which `repr` escapes before the
-message escape escapes its backslashes — essentially every safety error in `filters.py`,
-`extraction.py`, `base_reader.py` and `reader_state.py`. `terminal.quoted()` supplies the
-delimiting quotes without escaping, and all 52 were converted; `raw_message` /
-`raw_message_of()` do the same job for a caught exception embedded in a new message (two
-broad `except Exception` sites in `rar_parser.py` can catch an `ArchiveyError`). `!r`
-stays where the value is not archive-derived.
-
-The **inverse** rule applies to `logger.*` call sites: the CLI handler no longer escapes,
-so `%r` is what makes an interpolated name inert there and must be kept. Both rules are
-guarded by static tests in `tests/test_escaping.py`, since either failure is invisible
-except against a hostile archive.
-
-*Escaping correctness.* Rendering delegates to `repr`, whose escape set is exactly
-`not str.isprintable()` (verified across the whole code space), after review found three
-bugs in the hand-rolled table: astral code points emitted a five-hex-digit `\uXXXXX` that
-reads back as a different character (955,086 code points affected); the surrogateescape
-range was `U+DC00`–`U+DFFF` rather than the `U+DC80`–`U+DCFF` that `surrogateescape`
-actually produces, reversing 768 code points into bytes they never came from; and the
-losslessness claim was false, since `U+009B` and a surrogateescaped byte `0x9B` both
-render `\x9b`. The guarantee is now stated as inertness, not unique recoverability.
-
-Tests for the fixed print sites: `tests/test_cli.py::test_extract_escapes_*`. Those use a
-Windows-legal U+2028 for the cross-platform cases and keep the ANSI/CR spoof in a
-Unix-only test, because a name containing control bytes cannot be created on NTFS.
-
-*Print sites after the second audit.* The first print-site pass missed the widest surface
-of all: `archivey info` printed every field raw, including an archive comment — arbitrary
-bytes, up to 64 KiB in a ZIP — on **stdout**, where `2>/dev/null` hides nothing. It also
-missed the closing extract summary, which names the sole top-level entry (the member's own
-name), and the hoist's `moved to`, `removed wrapper`, `hoist stopped` and `files left in`
-lines. All are escaped now: `info` escapes every value it prints, and the summary and
-hoist lines go through `escape_path`. `main()`'s `OSError` notice escaped *twice* (`!r`
-and then the print-site escape) and now escapes once. Tests:
-`tests/test_cli.py::test_extract_summary_escapes_*`, `test_hoist_escapes_*`,
-`test_info_escapes_*`, `test_missing_archive_name_is_escaped_once`.
-
-Two hand audits in a row each found sites the previous one missed, so print sites are now
-guarded like message sites: `tests/test_escaping.py::test_cli_print_sites_escape_what_they_print`
-walks every `print()` in `cli/` and fails on an interpolated value that is neither passed
-through an escaping renderer nor listed, with its reason, as safe by type;
-`test_cli_does_not_escape_a_native_path` fails on a bare escape of something path-shaped.
-The first sweep follows a local name to its assignments in the enclosing function and a
-same-module helper call to its return values, so `label = f"{escape_path(...)}"` and
-`_summary_dest_label` pass on their own evidence rather than on their spelling.
-*Residual:* what it cannot follow — an attribute, a call into another module, a `str`
-parameter — passes only through the allow-list, and there the reason is trusted. Two
-entries carry real text: `_report_extraction`'s `dest_label` parameter (the hoist's label,
-built with `escape_path`) and `info`'s `_field` arguments (checked at `_field`'s call
-sites instead). A helper that returns text for a print site to escape, like
-`_format_os_error`, is checked only by its own tests. The progress bar hands tqdm an
-escaped `desc` and is outside the sweep, since it does not call `print()`.
-
-### O10. A content probe fabricates a member from arbitrary attacker bytes — narrowed
-
-Brotli has no magic number, so `detect_format` recognizes it by a content probe. Before
-the framing gate that accepted **~8.2%** of random data and **~3.5%** of a real `/usr`
-tree. `open_archive` listed one fabricated `<name>.uncompressed` member.
-
-**Mitigation shipped (framing + completeness + chain walk + 4 KiB sample + whole-source
-completion):** when the source length is known, a first meta-block that declares more
-bytes than the source holds is rejected; a fully visible source that does not decode to
-completion is rejected; and a bounded self-describing block-chain walk rejects later
-overruns / trailing bytes. The probe decodes the whole 4 KiB detection window rather than
-256 bytes, and a hit on a source no larger than `completion_window_bytes` (64 KiB under
-`BALANCED`, off under `FAST`) is re-checked against the whole source. The larger sample
-closed a text-file class: 7 of 800 `/usr/share/perl` modules detected as Brotli with a
-256-byte sample, none with 4 096. Residual measured with the **256-byte sample**, after
-`probe-completeness-gate`, on a re-measured tree (150 623 files): **29 fabricated claims
-(0.019%)**, down from 128 (0.193%) after the first-block gate alone; not re-measured since,
-and kept as the baseline the next census compares against. Probe-only confidence
-is `GUESS` for the uncompressed/metadata-first class; a decode failure there sets
-`format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. Structured residual
-families named in the investigation (OLE/CFB, COFF) are usually claimed end-to-end by the
-**LZMA Alone** probe at `PROBABLE`; after `probe-provenance-unconfirmed` those failures
-stamp too — measured, **0 of 29** fabricated probe claims on the re-measured tree carry
-no signal.
-
-**Three clauses remain:** the listing can be wrong; a full read raises; **and** a prefix
-of fabricated bytes (65 536 measured) may already have been produced before that raise.
-Not a silent success — but also not “every read failed with no output.”
-
-Product triage: `open-issues.md` P12. Investigation:
-[`investigations/brotli-content-probe-results.md`](investigations/brotli-content-probe-results.md).
-Changes: `openspec/changes/archive/2026-08-23-brotli-probe-framing-gate/`,
-`openspec/changes/archive/2026-08-25-probe-completeness-gate/`.
-
-**Adjacent and already closed:** the *archive-behind-a-stub* case (Topic 8 A-34) via
-`sfx-format-detection`.
-
-### O11. Detection-time decode work is unbounded — open
-
-O1 scopes to *listing*-time metadata bombs; `ExtractionLimits` scopes to `extract`.
-Nothing covers the work `detect_format` may do while deciding what a source is.
-
-Measured under a 2 MiB scan window packed with back-to-back decoys: **209 715** valid
-gzip headers, and decoding each to a 64 KiB per-candidate cap costs **1.26 s / 1 365 MiB
-of successful decoding — 683-fold amplification**. Memory is not the problem (each
-candidate's output is discarded); time is. A per-candidate decode cap cannot bound the
-aggregate.
-
-The candidate *search* used to be superlinear independently of decoding:
-`iter_magic_in_prefix` re-ran `bytes.find` per needle per hit, so with an `MZ` stub and
-back-to-back RAR5 decoys a 1 MiB prefix took 29 s (measured on `83ed2ba`; 75 s on
-`e3bc7e7`). It is now linear: `_EarliestFinder` in `internal/sfx.py` carries each
-needle's next position forward, and the same prefix scans in about 0.2 s. What remains
-open here is the per-candidate work the detector does after the search.
-
-`detection-prefix-workspace` ships the `DetectionBudget` / `DetectionCostReceipt` and a
-fuzz assertion that aggregate detection cost stays inside the declared budget. The
-decode input limit is now a per-call aggregate, not per-candidate: `max_decode_input` is
-one allowance that every decoding tier draws on (the content probes, their whole-source
-completion check, the inner-TAR probe), and a tier the remaining allowance cannot cover
-does not run (`detection-cost` spec). Output is bounded per probe by the codec's drain.
-No tier decodes scan candidates today, so the amplification above is not reachable yet;
-a tier that does (makeself compressor needles under `#!`, planned after 0.2.0) must draw
-on the same allowance, which is what keeps this open until it lands and is measured. The
-`detection-evidence-ledger` change that was to own this bound was decided against.
-
-### O12. 7z password confirmation decoded the whole folder into RAM — memory mitigated, work mostly bounded
-
-O1 covers listing-time metadata bombs; `ExtractionLimits` covers bytes *written
-during extract*. Neither saw 7z password confirmation.
-
-`_password_for_folder.confirm` runs on the first read of any member in an
-encrypted folder, before any extract limit, once per password candidate. 7z AES
-has no check value, so a candidate is judged by decoding and CRCing. That CRC is
-unavoidable. Holding the decoded folder is not. Pre-fix `confirm` called
-`read_exact(stream, total)` and then `_verify_decoded_folder` over the resulting
-`bytes`. `read_exact` grows a `bytearray` by doubling and copies to `bytes`.
-
-Measured (200 MiB compressible LZMA):
-
-| archive | peak (`tracemalloc`) | `ru_maxrss` |
+# Threat model
+
+This is a design document. It says who archivey defends against and what they control,
+where trust stops, which property we promise at each boundary, the mechanism that
+enforces it and the tests that pin it, and what we deliberately do not defend. An entry
+here changes when the design changes. A bug in a mechanism belongs in
+[`known-issues.md`](known-issues.md) until it is fixed; this page does not track defects.
+
+The public half is [`docs/extracting.md`](../docs/extracting.md): §Trust boundaries,
+§Known and accepted limits and §What is enforced. This page and that one must agree.
+Disclosure and reporter scope are in [`SECURITY.md`](../SECURITY.md).
+
+Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
+[index](#6-index-of-old-register-ids) maps each one to its section here.
+
+## 1. Scope and attackers
+
+### Who we defend against
+
+- **Whoever wrote the archive.** Every byte is attacker-controlled: member names, link
+  targets, declared sizes, timestamps, comments, header structures, key-derivation costs,
+  indexes, and compressed and encrypted streams. Crafted archives are in scope for every
+  guarantee, not only well-formed ones. So are sources that are not archives at all,
+  since detection runs on whatever the caller hands in.
+- **A process writing to a directory source while archivey reads it.** A caller may read
+  a tree someone else can write to (an upload staging folder, a shared drop folder).
+  That writer can swap files, directories and symlinks between listing and reading.
+  Ruled in scope by davi on 2026-09-27 (PR #496's decision card).
+
+### What is trusted
+
+- **The local process**, including the caller's own configuration, filters, password
+  providers and limit choices. A caller who raises a limit to `UNLIMITED` gets what they
+  asked for.
+- **Other local processes, for the extraction destination.** A local attacker racing
+  extraction by modifying the destination is out of scope. If that changes,
+  `O_NOFOLLOW` / `openat`-style extraction is the direction.
+- **The destination at rest.** What was there before extraction is the caller's. What
+  extraction itself produced is not trusted: an earlier member is untrusted input to
+  the handling of every later one. The destination root is followed if it is a symlink,
+  as `tar -C` and `unzip -d` do.
+- **Optional libraries and external programs** (`pycdlib`, codec packages, the
+  accelerators, `unrar` / `rar` / `unar`) are trusted not to be malicious, but not
+  trusted to be robust on hostile input. Their failures should surface as typed errors;
+  where that cannot hold, it is an [accepted non-guarantee](#4-accepted-non-guarantees).
+
+## 2. Trust boundaries
+
+| Boundary | What crosses it | What holds there |
 | --- | --- | --- |
-| 200 MiB LZMA, no password | 4.6 MB | 35.4 MB |
-| 200 MiB LZMA, **AES**, correct password | **630.2 MB** | 654.5 MB |
-| 200 MiB LZMA, AES, 1 wrong + correct | 630.2 MB | 654.6 MB |
+| Source bytes to parsers | Archive structure | Pure-Python parsers for 7z and RAR headers, stdlib `zipfile` / `tarfile`, `pycdlib` for ISO; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
+| Parsers to decoders | Compressed streams, declared decoder parameters | `DecoderLimits` checked before allocation; crash-prone native decoders in a child process ([errors](#errors-are-typed-and-honest)) |
+| archivey to external programs | Archive path, member selection, password | RARLAB `unrar` / `rar`, or `unar` under `"auto"`; fixed argv; a member name only inside an include-mask switch, or an entry index ([external programs](#external-programs-get-a-fixed-command-line)) |
+| archivey to the destination | Names, link targets, modes, data | `check_universal` and the extraction coordinator ([extraction](#extraction-stays-in-the-destination), [names](#names-are-safe-on-the-target-filesystem)) |
+| archivey to a terminal or log | Messages carrying archive-derived text | Escaped at construction ([terminal](#attacker-bytes-reaching-a-terminal-are-inert)) |
+| Directory source to other processes | The tree between listing and reading | No-follow opens and identity checks ([directory sources](#directory-sources-changed-concurrently)) |
+| Caller to archivey | Recursion into nested archives, time budgets | Not defended: the caller bounds them ([non-guarantees](#4-accepted-non-guarantees)) |
 
-Encrypting a 7z took peak from 4.6 MB to 630 MB — ~3× folder size, not 1×.
-Store+AES (`-m0=Copy`) does not fail fast on a wrong key, so extra candidates
-decode the whole folder (100 MiB): 1 candidate 420.2 MB / 2.7 s; 4 wrong +
-correct 525.1 MB / 8.3 s. Both dimensions are attacker-controlled.
+## 3. Defended properties
 
-`ExtractionLimits(max_extracted_bytes=1024, max_ratio=1.0,
-ratio_activation_threshold=1024)` fired only *after* confirm had already
-buffered ~630 MB (`ERR _AlwaysStopResourceLimitError` at 1048576 bytes written;
-peak still 630.4 MB). The encoded-header path already caps unpack size at
-`_MAX_NEXT_HEADER_SIZE` (64 MiB) before `read_exact`; the folder-data path had
-no analogue.
+Paths are under `src/archivey/` unless they start with `tests/`.
 
-*Mitigation:* confirm now reads the pipeline in 64 KiB chunks and folds a
-running CRC (folder digest, or per-member CRC over consecutive substreams). A
-short stream still raises `EncryptionError`. Peak memory is O(chunk + codec
-buffers), not O(folder).
+### Extraction stays in the destination
 
-*Residual — time, not memory.* Streaming does not bound total work: a hostile
-archive can still force `folder_size × candidate_count` of decoding. A confirm
-byte-cap (first-member CRC rather than a hard ceiling, so a legitimate huge
-folder still opens) or routing confirm through `ExtractionLimits` /
-`_track_decompressed` would close that; neither is in this change. Found on
-PR #315; tracked from PR #318.
+**Property.** No member writes, links or replaces anything outside the destination, and
+no member replaces the destination itself.
 
-*Work bounded (`bounded-password-confirmation`).* Confirmation is now a planned
-ladder (`internal/password_confirm.py`), not a folder walk. It stops at the
-earliest CRC covering at least 4 bytes, so a solid folder's first member
-decides. A chain holding a codec that rejects random input (LZMA1, LZMA2,
-BZip2, Deflate, Deflate64, Zstandard, LZ4) never walks a CRC past
-`PASSWORD_CONFIRM_PREFIX_BYTES` (64 KiB of plaintext): the decoder settles a wrong key
-inside that prefix, and the compressed input feeding it is capped at
-`PASSWORD_CONFIRM_MAX_INPUT_BYTES` (1 MiB). A folder with no CRC is never decoded past
-the prefix just to find that out. The correct password no longer pays a full
-folder decode before its member is served.
+**Mechanism.**
+- `internal/filters.py` `check_universal` runs on every member under every policy,
+  `TRUSTED` included. It rejects `..` components (any separator), absolute paths, drive
+  letters, UNC prefixes, NUL bytes, names `os.fsencode` cannot represent, special files
+  (devices, FIFOs, sockets), and a non-directory member whose normalized name is `"."`
+  or `""` (which would replace the destination root with a file). It resolves the
+  parent and checks containment, and checks symlink and hardlink targets lexically.
+- `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
+  symlink against the live tree after `os.symlink` and removes it if it escapes, which
+  catches a chain staged by earlier members. That is the third layer after the lexical
+  target check and the parent resolution.
+- Hardlink targets resolve positionally to an earlier same-named member
+  (`internal/naming.py` `resolve_link_target_name`), so a duplicate name cannot
+  redirect a link.
+- Overwrites replace a symlink rather than follow it (`_prepare_destination`,
+  `_place_link`), and file data is written to a `.archivey-tmp-<random>` sibling
+  (`_temp_sibling`) and moved with `os.replace` (`_write_file_atomic`), so an
+  interrupted run never leaves a half-written file.
+- `_apply_metadata` strips setuid, setgid and sticky except under `TRUSTED`, and applies
+  ownership only under `TRUSTED` as root.
 
-*What stays open.* One shape: a Copy, PPMd, Brotli or filter-only chain whose
-only CRC is at the folder end, opened with an ambiguous candidate set (several
-passwords, or a provider). Nothing short of that CRC can tell a wrong key there,
-so each candidate still walks the folder. `sevenzip-aes-tail-key-check` closes
-it with an O(1) check on the AES padding at the end of the packed stream. O12
-stays open until then.
+**Residual.** A later member can turn an earlier, valid symlink into one that points
+outside the destination; the link stays on disk, though nothing is written through it
+([open gap](#a-later-member-can-make-an-extracted-symlink-escape)). A local process
+racing the destination (out of scope, §1). A hard kill can leave `.archivey-tmp-*`
+files, which are safe to delete.
 
-### O13. 7z `NumUnpackStreams` allocated an unbounded list — closed
+**Tests.** `tests/test_extraction.py`: `test_check_universal_rejects_traversal`,
+`test_check_universal_rejects_root_named_file`,
+`test_check_universal_rejects_special_file`,
+`test_check_universal_rejects_symlink_escape`,
+`test_chained_symlink_attack_symlink_payload_rejected`,
+`test_chained_symlink_attack_file_payload_rejected`,
+`test_hardlink_duplicate_name_extraction_links_first_inode`,
+`test_replace_symlink_no_write_through`,
+`test_hardlink_replaces_a_destination_symlink_without_following_it`,
+`test_error_when_dest_is_a_file_never_deletes_it`,
+`test_dest_symlink_to_dir_is_followed_into_target`, `test_strict_strips_setuid`.
+`tests/test_property_safety.py` covers `normalize_member_name`, `check_universal` and
+`resolve_link_target_name` over arbitrary input, and the mutation harness asserts the
+destination is still a directory after every successful extract.
 
-`num_files` is bounded against header size (O1 / L1). Pack-stream count was
-bounded by `_MAX_NUM_STREAMS` (65536). `kNumUnPackStream` was not.
+### Names are safe on the target filesystem
 
-When `kSize` and `kCRC` are absent, `_read_substreams_info` did
-`digests.extend([None] * count)` with `count` taken verbatim from the archive.
-No remaining-bytes check can save it: no per-stream bytes are read. The CRC
-`all_defined != 0` path is the same bomb one step earlier:
-`_load_boolean(..., check_all=True)` does `[True] * count` before it tries to
-read any CRC words. Measured: N = 2²⁰ allocated 1,048,576 entries in 0.016 s;
-N = 2⁴⁰ dies on untranslated `MemoryError`. Applying `_MAX_NUM_STREAMS` to
-unpack streams then rejected ordinary solid 7z archives over 65,536 files;
-the same cap already rejected non-solid archives on pack-stream and folder
-counts.
+**Property.** Under `STRICT` and `STANDARD`, a member name cannot capture a device, write
+an NTFS alternate data stream, silently merge with another member on a case-insensitive
+or normalizing filesystem, or fail unpredictably because the filesystem refuses its
+bytes. The outcome is the same on every platform. ADR
+[0013](decisions/0013-cross-platform-name-safety-policies.md) is the design.
 
-*Closed:* member-scaled counts (folders, unpack streams and their sum,
-`num_files`) reject against the header buffer size (`CorruptionError`) and
-against `listing_limits.max_members` (`ResourceLimitError`; `None` disables).
-Pack streams keep the header-size bound only — a BCJ2 folder has four, so
-`max_members` would refuse a legitimate non-solid BCJ2 archive. `_MAX_NUM_STREAMS`
-stays on per-folder coder graphs (coders, in/out streams). Found on PR #315
-(S2-F1); Linear ARC-50.
+**Mechanism.** `internal/filters.py` `apply_name_policy`:
+- Reserved device names (`_RESERVED_NAMES`: `CON`, `NUL`, `COM1`, ...) and `:` are
+  rejected on every platform. Both are unsafe, not merely non-portable.
+- `STRICT` strips a trailing dot or space (`_strip_trailing_dot_space`), because Win32
+  trims it silently and the reported path would differ from the real one. The rewrite is
+  recorded as `ExtractionResult.presented_name`, the only record that survives a caller
+  filter rename. An all-dots segment has no portable spelling and is rejected.
+  `STANDARD` and `TRUSTED` keep the name.
+- Non-UTF-8 bytes are percent-escaped (`_sanitize_portable_name`: `%XX`, literal `%` as
+  `%25`), a deterministic and reversible spelling.
+- `collision_key` casefolds and NFC-normalizes. The coordinator
+  (`_register_collision_key`, `_resolve_collision`, `_derive_free_name`) treats a
+  collision as an event: `OverwritePolicy` applies, `RENAME` writes `photo (1).jpg`, and
+  a `REPLACE` revises the clobbered member's result to `OVERWRITTEN` (`_mark_overwritten`)
+  so the merge is visible. `ExtractionReport.results` is the only record.
+  `abort_on={AbortOn.NAME_COLLISION}` makes any collision fatal;
+  `abort_on={AbortOn.NAME_SANITIZED}` refuses any rewritten name.
+- A name the filter accepted but the filesystem refuses at write (`EILSEQ` on APFS) is
+  translated to a typed `ExtractionError` naming the member (`internal/extraction.py`,
+  the `errno.EILSEQ` branch in `_run_pass`).
+- Bidi overrides and isolates (U+202A to U+202E, U+2066 to U+2069) in a name or link
+  target are rejected under `STRICT` and `STANDARD` (`_reject_bidi_override`); directional
+  marks are allowed. `TRUSTED` lifts this rule because nothing about the write is unsafe,
+  only the name read back later (ADR
+  [0017](decisions/0017-bidi-override-rejection-is-policy-keyed.md)). Listing always
+  presents the stored name with `MEMBER_NAME_BIDI_CONTROL`.
 
-### O14. 7z encoded-header decode had no nesting limit — closed
+`TRUSTED` keys collisions on the exact path and writes faithful bytes; the local OS
+decides.
 
-`while isinstance(block, EncodedHeader)` re-parsed whatever
-`decode_encoded_header` returned. A COPY encoded header whose packed bytes
-*are* that same header decodes to itself. A 66-byte archive hung
-`open_archive` / `parse_sevenzip_archive`; `7z l` 23.01 reports "Headers Error"
-in ~0.2 s. Blast radius is `open_archive`, not a fuzz helper —
-`SevenZipReader._load_archive` ran the same loop.
+**Residual.** Directories are not in the collision map, because they merge structurally,
+so a file `Foo` against a directory `foo/` is OS-dependent (ADR 0013; public in
+extracting.md §What is enforced). There is no public un-escape helper for the
+percent spelling; it can be added without breaking anything.
 
-Related cap in the same function: unpack size was capped at
-`_MAX_NEXT_HEADER_SIZE` **per folder**, so two COPY folders at 40 MiB
-concatenated to 80 MiB past the signature next-header cap.
+**Tests.** `tests/test_extraction.py`: the `test_o2_*` collision tests,
+`test_o3_reserved_name_rejected`, `test_o3_reserved_name_written_under_trusted`,
+`test_o4_colon_rejected_strict_and_standard`,
+`test_o3_trailing_dot_space_stripped_strict_kept_standard`,
+`test_o7_percent_escaped_when_sanitizing`,
+`test_o7_sanitized_name_collides_with_literal_percent_name`,
+`test_unrepresentable_name_oserror_is_translated`, and the `test_bidi_*` tests.
 
-*Closed:* one encoded layer unrolled (no nesting counter); `CorruptionError`
-if the decoded blob is still `EncodedHeader`. Running
-total of folder unpack sizes is capped at `_MAX_NEXT_HEADER_SIZE` before
-concatenation. Found on PR #315 (S2-F2); Linear ARC-50.
+### Resource use is bounded
 
-### O15. A tar extended header sized stdlib `tarfile`'s allocation — closed
+Each budget below is a byte, count or rounds budget. None of them bounds time; that is
+[accepted](#no-cpu-or-wall-clock-bound).
 
-`mode="r:"` hands our raw handle to stdlib `tarfile`, and `TarInfo._proc_pax` /
-`_proc_gnulong` read a PAX extended header or a GNU long name with a single
-`fileobj.read(self._block(self.size))`. `self.size` is the 12-byte octal size field
-of a `typeflag` `x` / `L` / `K` header — attacker-chosen up to 8 GiB, further through
-GNU base-256 — and `BufferedReader.read(n)` allocates `n` before the short read
-reveals the archive is tiny. Measured: a 10 240-byte archive asks for 6 442 450 944
-bytes, and under `RLIMIT_AS` 2 GiB dies on a bare `MemoryError`, outside the
-`ArchiveyError` hierarchy. Amplification ~630 000 : 1. `max_metadata_bytes` does not
-reach it: that is accounted in `_register_member`, after the allocation.
+#### Listing
 
-Streaming (`mode="r|"`) is unaffected — tarfile's own `_Stream.read` loops in
-`bufsize` chunks — so this is `streaming=False`, the default. The compressed
-random-access path is affected too.
+**Property.** Listing a hostile archive costs at most the listing budget, not what the
+archive declares.
 
-*Closed:* the read is bounded where it reaches bytes. On the plain path tarfile reads
-the archive source itself, an `ArchiveSource` (`internal/source.py`), whose ordinary
-`read(n)` never asks the source for more than it can still supply; on the compressed
-path it reads our decompressor through `_EofProbeStream`, which applies the same rule
-(the two share `read_within_reach`). Where the length is a fact (a file's `stat`, a
-`BytesIO`'s buffer) the read is clamped to what is left. Where it is not, the request
-is served in bounded steps, so the peak tracks the bytes the stream really has; that
-covers our own decompressor, whose length would cost a pass to learn, any
-caller-supplied stream that advertises none, and one that advertises an fsspec `size`
-attribute, which is an unverified claim and would truncate a legitimate read if it
-understated. The same holds one layer up: the source reports only a fact as its `size`,
-so a slice or shared view a backend builds over it clamps on a fact or steps too, never
-on the hint. A path naming a FIFO or a device is read once, through the source, with no
-`.path`, so no backend can reopen it and read different bytes. A
-flat metadata cap was the obvious fix and is wrong: member data reads go through the
-same wrapper, so a 40 MiB member arrives as one 41 943 040-byte request. Found on
-PR #315 (S18-K1); tracked internally.
+**Mechanism.**
+- `ListingLimits` (`max_members` 1,048,576, `max_metadata_bytes` 64 MiB) is enforced by
+  `internal/listing_limits.py` `ListingLimitTracker` as members are registered into a
+  materialized list (`members()`, `scan_members()`, extract preparation). Crossing a cap
+  raises `ResourceLimitError`. `None` (`ListingLimits.UNLIMITED`) disables it.
+  `stream_members()` and `streaming=True` are unguarded, as the O(1) escape hatch,
+  except on 7z and RAR, which check `max_members` while parsing. Unguarded bounds memory,
+  not work: a forward-only TAR walk reads through every member it skips, for the bytes
+  present rather than the size a header declares (a member declaring more than the
+  archive holds raises `TruncatedError` at the first short read).
+- 7z checks `max_members` while parsing, at `open_archive`
+  (`internal/backends/sevenzip_parser.py`, the `max_members` checks on folders, unpack
+  streams, their sum and `num_files`). Member-scaled counts are also checked against the
+  header buffer size (`CorruptionError`), because some counts (`NumUnpackStreams` with
+  no sizes or CRCs) read no bytes per entry, and a count of 2^40 would otherwise allocate
+  until `MemoryError`. Pack streams keep the header-size bound only: a BCJ2 folder has
+  four, and `max_members` would refuse a legitimate non-solid BCJ2 archive.
+  Per-folder coder graphs are capped at 7-Zip's own limit of 64 coders and 64 in-streams
+  (`k_Scan_NumCoders_MAX`, `k_Scan_NumCodersStreams_in_Folder_MAX` in 7-Zip 26.03's
+  `CPP/7zip/Archive/7z/7zIn.cpp`), refused as `UnsupportedFeatureError`; out-streams
+  keep the same 64. A larger cap let a small header drive the planner and the nested
+  decode streams into a raw `RecursionError`.
+- 7z decodes one encoded-header layer and raises `CorruptionError` if the result is
+  another encoded header (`internal/backends/sevenzip_pipeline.py`
+  `parse_decoded_header`); a COPY header that decodes to itself would otherwise loop.
+  The running total of encoded-header folder unpack sizes is capped at
+  `MAX_NEXT_HEADER_SIZE` (64 MiB) before any buffer is allocated.
+- RAR checks `max_members` while parsing the member table at `open_archive`. It weighs
+  the summed declared sizes of compressed RAR 1.5/2.x comments against
+  `max_metadata_bytes` before decoding any, because the decode is the cost (one `unrar`
+  spawn each). RAR5 quick-open records that are not FILE never become members; their
+  bound is `_RAR5_QO_PAYLOAD_MAX` (16 MiB, `internal/backends/rar_parser.py`) and their
+  parse is linear.
+- TAR has no member table, so the caps bind the header walk: `tar_reader.py` pulls
+  headers in batches that stop one header past what either cap has left, PAX keywords
+  and values included. `tarfile` reads a PAX extended or global header, or a GNU long
+  name or link name, whole in one call, so the walk refuses such a header from its
+  declared size before that read: in random access when it declares more than is left
+  of `max_metadata_bytes`, and in any mode, streaming included, when it declares more
+  than the whole cap. An over-limit tar then costs about the cap plus one ordinary
+  header. A sparse map is weighed only once parsed (24 bytes per entry), so an old GNU
+  sparse member's chain of extension blocks, or a PAX sparse 1.0 map, is held whole for
+  the one member that crosses the cap.
+- A symlink target stored as member data (ZIP, 7z, RAR3/4) is read with a cap of
+  `MAX_LINK_TARGET_BYTES` (4096, Linux `PATH_MAX`; `internal/base_reader.py`). A member
+  declaring more is not opened; a read with no declared size stops at 4097 bytes. An
+  over-long target is left unset, never truncated, with `SYMLINK_TARGET_UNAVAILABLE`
+  (`reason="target_too_long"`), per the maintainer's ruling that such a target is
+  corrupt or malicious. Without the cap, a 400 KB ZIP whose target was 400 MiB of zeros
+  peaked at 2,400 MiB inside `members()`. A target resolved after registration is added
+  to the tracker as it arrives, so `max_metadata_bytes` sees it. A Windows reparse
+  buffer is read only as far as its own header declares. `read_link_targets=False` stops
+  listing from reading these targets at all.
 
-### O16. An ISO directory record sized pycdlib's allocation — closed
+**Residual.** Format-local parser ceilings allocate up to their limit during
+`open_archive` (7z: `max_members` or header size, whichever is tighter). ZIP builds the
+whole central directory at open through stdlib `zipfile` (ADR
+[0006](decisions/0006-stdlib-zipfile.md)), so its memory at open is linear in the
+central directory and `max_members` binds at `members()`. `max_metadata_bytes` counts
+retained metadata, not a transient decode buffer discarded before any member exists.
 
-pycdlib clamps a *file*'s `data_length` to the image length but not a *directory*'s.
-`_walk_directories` reads `dir_record.get_data_length()` bytes with the raw 32-bit
-field, and `open_fp` walks every namespace present, so the allocation lands inside
-`open_archive()` before a member is listed. Measured on a 51 200-byte image, patching
-only the root directory record's both-endian `data_length` inside the PVD: at
-`0xFFFFFF00` it asks for 4 294 967 040 bytes and dies on a bare `MemoryError` under
-`RLIMIT_AS` 1 GiB; at `0x20000000` it survives 1 GiB and fails on the garbage
-instead. Same class as O15 and the 7z PPMd `mem_size` gap.
+**Tests.** `tests/test_listing_limits.py` (including
+`test_tar_listing_stops_reading_headers_at_max_members`,
+`test_stream_members_unguarded_when_members_would_fail`);
+`tests/test_sevenzip_reader.py::test_num_unpack_streams_count_is_bounded`,
+`::test_num_unpack_streams_sum_across_folders_is_bounded`,
+`::test_member_scaled_counts_respect_max_members`,
+`::test_encoded_header_self_copy_is_typed_corruption`,
+`::test_encoded_header_huge_unpack_size_is_typed_corruption`;
+`tests/test_rar_reader.py::test_rar_parser_max_members_at_parse`,
+`::test_rar3_compressed_comments_over_metadata_budget_refused_before_decode`,
+`::test_rar5_qo_non_file_records_parse_in_linear_time`; `tests/test_link_target_cap.py`.
 
-`MemoryError` is not in `_PYCDLIB_ERRORS`, so it left the pycdlib boundary raw,
-against that boundary's own docstring. A `Path` source also went to `PyCdlib.open`,
-which opens its own handle with nothing of archivey's underneath it, so there was
-nowhere to put a bound.
+#### Allocations sized by a header field
 
-*Closed:* every source goes through `open_fp` as the `ArchiveSource` itself, whose
-ordinary `read` applies O15's rule — a path included, whose handle the source opens
-itself, so there is always something of archivey's under pycdlib. The bound is
-**unconditional**, because the image's length often is not knowable: being seekable
-is not the same as being cheaply measurable. The source clamps only on a length that
-is a fact (a path `stat`, a `BytesIO`'s buffer, a regular file's `fstat`); an ordinary
-caller-supplied file-like has none, and an fsspec `size` attribute is a hint, so both
-are stepped — a bound applied only when the size is known would have left exactly
-those sources unbounded. Where the length is a fact the read is clamped to the bytes
-left in the image; where it is not, the request is served in bounded steps, so the
-peak tracks the bytes the stream really has rather than the field. Stepping is also what keeps this correct when
-the source is a nested member stream, whose `SEEK_END` would decompress the payload a
-probe here was trying to avoid. pycdlib then gets a short read and raises
-`PyCdlibInvalidISO`, which `_translate_exception` maps to `CorruptionError`. The cap
-is generic, so it also closes any other pycdlib read sized from a header field.
+**Property.** A size field in a header never sizes an allocation larger than the bytes
+the source really has.
 
-Opening the handle in archivey brings its release with it: a failure before the
-reader's constructor returns leaves no reader for the caller to close, and the
-exception's traceback pins the frame — and the handle — for as long as a
-catch-and-continue loop holds it, one descriptor per refused image. `open_archive`
-closes the source on any exception before a reader exists, and once one does, the
-reader closes it in its own teardown. Found on PR #315
-(S22-K1); tracked internally.
+**Mechanism.** stdlib `tarfile` reads a PAX extended header or GNU long name with one
+`read(size)`, and pycdlib reads a directory extent with one `read(data_length)`; both
+sizes come straight from the archive. Measured without a bound: a 10 KB tar asked for
+6 GiB, and a 51 KB ISO asked for 4 GiB, both dying on a bare `MemoryError`. So both
+libraries read through archivey's source (`internal/source.py` `ArchiveSource`) or
+decompressor (`tar_reader.py` `_EofProbeStream`), and both apply
+`streams/streamtools/binaryio.py` `read_within_reach`: where the remaining length is a
+fact (a path's `stat`, a `BytesIO` buffer, a regular file's `fstat`) the read is clamped
+to it; otherwise it is served in bounded steps, so the peak tracks the bytes that exist.
+An fsspec `size` attribute is a hint, not a fact, and is stepped. A short read then
+fails in the library and is translated to `CorruptionError`. The ISO reader passes every
+source to `open_fp` as an `ArchiveSource`, a path included, so there is always something
+of archivey's under pycdlib; `open_archive` closes the source if the reader never
+finishes constructing.
 
-### O17. A seek trusts the format's own index, so a crafted `.xz` or `.lz` can misplace bytes — accepted
+A flat metadata cap would be wrong here: member data goes through the same wrapper, so a
+40 MiB member arrives as one 40 MiB request.
 
-Random access into a single-file `.xz` or `.lz` resolves the target offset from the file's
-own index without decompressing what comes before it: the XZ stream index (block
-unpadded and uncompressed sizes), or the lzip member trailers (`data_size`,
-`member_size`). Both are attacker-controlled. An index that is consistent with itself
-but describes different unit boundaries than a forward decode would passes every check
-that does not decompress. A seek straight to an offset, with no full read before it,
-then serves bytes from another unit, and `try_get_size()` / `member.size` report the
-index's total. Nothing raises.
+**Tests.** `tests/test_tar.py::test_extended_header_size_does_not_drive_the_allocation`;
+`tests/test_iso.py::test_directory_data_length_does_not_drive_the_allocation`,
+`::test_a_path_source_refuses_the_same_image`,
+`::test_a_refused_path_source_does_not_hold_its_handle`.
 
-Measured on PR #407 against both formats, with a forward read of the same bytes raising
-`CorruptionError` in each case:
+#### Decoder memory
 
-- **lzip**, three 256-byte members `A`/`B`/`C`: member 1's trailer `member_size` set to
-  cover members 0 and 1. The backward trailer walk lands on member 0's real `LZIP`
-  magic and succeeds with two members; `seek(256)` serves `C`, size reads 512 of 768.
-- **xz**, four 64 KiB blocks: index records 0 and 1 merged into one (unpadded
-  `round_up_4(u0) + u1`, uncompressed `d0`, CRCs recomputed). The stream-header
-  arithmetic still lands on the real header; `seek(65536)` serves block `C`, size reads
-  196 608 of 262 144.
+**Property.** A codec never allocates a working set larger than
+`DecoderLimits.max_decoder_memory` (2 GiB) because the archive declared one.
 
-*Accepted, ruled by davi on 2026-09-23 (PR #407 review round 1).* No cheap check can
-close it: where a unit really ends is known only by decompressing it, and not having to
-do that is the reason the index exists. The alternative, decoding from the start before
-the first cold seek trusts the index, would remove fast random access for every honest
-file. xz's and lzip's own tools trust their indexes the same way.
+**Mechanism.** `internal/config.py` `check_decoder_memory` runs before the decoder is
+built, on `open()` and `read()` as well as extraction. A 7z folder can hold several
+decoders live at once: a BCJ2 folder runs all its branch decoders (three as 7-Zip writes
+it, four if a crafted folder codes `rc`), and the stages of a linear chain are stacked
+streams (`LZMA2 → Copy → LZMA2` keeps two dictionaries live). So for every folder with
+more than one such decoder, `internal/backends/sevenzip_pipeline.py`
+`open_folder_pipeline` checks their summed LZMA dictionaries and PPMd sizes against the
+same cap before building any. Bytes decoded inside a branch
+never reach the folder stream `ExtractionLimits` counts, so the end-of-output check reads
+at most one byte from each branch.
 
-What does hold: a forward read never trusts the index. It verifies every lzip trailer
-field (CRC-32, `data_size` and, since PR #407, `member_size`) and lets liblzma check
-every XZ block against its stream index, so a full read of a crafted file raises. Seek
-points a forward read records are ones the decode has already checked: lzip's come from
-validated trailers, and an XZ stream's block points are read only after liblzma has
-accepted that stream's index.
+**Residual.** Detection decodes an LZMA or compressed-tar sample uncapped, so under a
+memory cap an oversized declaration can surface as `MemoryError` from `open_archive`
+(public in extracting.md §Limits).
 
-A seek that lands *inside* the misdescribed region resumes from a point before the lie
-and decodes through it, so it raises once the decode reaches the end of the lying unit,
-and not before. The bytes returned up to then are the right ones for their offsets. For
-lzip that end is the lying member's trailer: on the file above, `seek(100)` then
-`read(16)` raises, because the 256-byte members decode within the first feed. For xz it
-is the end of the whole stream, where liblzma checks the index: `seek(1000)` then
-`read(70000)` returns correct bytes with no error, and `read()` to the end raises.
+**Tests.**
+`tests/test_sevenzip_bcj2.py::test_bcj2_folder_dictionaries_count_together_against_the_decoder_cap`.
 
-A seek *past* the lie followed by a read to the end is not caught. Every unit after the
-target is genuine and passes its own checks, and the decode reaches the file's last byte
-exactly where the index says it should; only the numbering of offsets is wrong. On the
-two files above, `read()` after the seek ends cleanly at 512 and 196 608. A consumer
-that must not act on misplaced bytes should read the stream through once, or verify a
-digest, before seeking into it. A heuristic diagnostic for an ambiguous trailer walk
-(an `LZIP` magic at a member start the walk skipped) was considered and not taken: an
-attacker who controls the trailers can avoid it.
+#### Key derivation
 
-### O18. The archive chooses what a password attempt costs — closed
+**Property.** The total password-to-key work one open archive can demand is bounded,
+however many salts or candidates it involves.
 
-Both password-based formats store the key-derivation cost in the archive: 7z's
-`NumCyclesPower` (SHA-256 rounds, `1 << n`) and RAR5's `kdf_count` (PBKDF2-HMAC-SHA256,
-`(1 << n) + 32` for the password check). Each is capped at 24, which bounds **one**
-derivation, not the total. Measured on the dev container, one RAR5 check derivation takes
-0.013 s at the usual `n = 15` and **4.4 s at 24**.
+**Mechanism.** 7z (`NumCyclesPower`) and RAR5 (`kdf_count`) store their derivation cost
+in the archive, each capped at 2^24 per derivation. That bounds one derivation, not the
+total: a crafted RAR can use a fresh salt per member at the maximum cost and a PswCheck
+no password matches, which costs 4.4 s per member per candidate (0.013 s at the usual
+2^15). So `DecoderLimits.max_key_derivation_rounds` (default `2**27`, maintainer,
+2026-09-23) bounds summed declared rounds per open archive. `internal/config.py`
+`KeyDerivationBudget.spend` charges a cache miss before the derivation runs, since the
+derivation runs in `hashlib` and cannot be interrupted. The caches
+(`internal/backends/sevenzip_aes.py` `SevenZipKeyCache`, `rar_parser.py` `RarKdfCache`)
+make an honest archive cost one or two derivations. RAR3 is charged its fixed `2**18`;
+ZIP AES's fixed 1000 rounds are not counted. The budget is in rounds, not derivations,
+because a derivation count would either refuse honest per-member salting or admit
+hostile archives depending on declared cost. A spent budget raises `ResourceLimitError`,
+which the RAR header walks let through so candidate iteration stops rather than reading
+it as a wrong password. A stricter preset (`2**24`) is recorded in
+[`IDEAS.md`](IDEAS.md).
 
-The total is derivations × candidates × distinct salts. Both readers cache by salt: 7z's
-`SevenZipKeyCache`, and RAR's `RarKdfCache`, which one reader shares across its header
-parse, every volume and every member read (plus the candidate each encryption record's
-PswCheck accepted). An honest `rar` run writes one salt, so an
-archive costs one derivation per candidate tried. A crafted one does not cooperate: a
-fresh salt per member, `n = 24`, and a well-formed PswCheck that no password matches (its
-four checksum bytes are only `sha256(check[:8])[:4]`, which the writer controls) cost
-4.4 s per member per candidate before `unrar` is ever started. `ExtractionLimits` does
-not reach it, and the RAR5 data path pays it on every encrypted member read, as the
-tweaked-checksum HashKey already did before the candidate check existed.
+**Tests.** `tests/test_key_derivation_budget.py`.
 
-**Closed by `DecoderLimits.max_key_derivation_rounds`**, default `2**27` (maintainer,
-2026-09-23). It is measured in summed declared rounds, not in derivations: an archive
-that salts per folder or per member would make a derivation count refuse honest
-archives or admit hostile ones depending on the cost it declared. Rounds are charged per
-cache miss, before the derivation runs, so an honest archive spends one or two
-derivations; each candidate tried counts. `2**27` is eight derivations at `2**24`, about
-half a minute. A spent budget raises `ResourceLimitError`, which the RAR header walks
-let through their `EncryptionError` re-wrap so candidate iteration stops rather than
-reading it as a wrong password. RAR3 is charged its fixed `2**18`; ZIP AES's fixed 1000
-is not counted. A stricter preset (`2**24`, one maximum-cost derivation) is recorded in
-`dev-docs/IDEAS.md` with the other preset numbers.
+#### 7z password confirmation
 
-### O19. A symlink target stored as member data sized listing's allocation — closed
+**Property.** Confirming a password on an encrypted 7z folder holds O(chunk) memory and,
+for most folders, decodes a bounded prefix per candidate.
 
-ZIP, 7z and RAR3/4 keep a symlink's target in the member's data, and listing reads it to
-fill `link_target`. ZIP and 7z compress that data, and the read was a bare `read()`.
-Measured: a 407 785-byte ZIP whose one symlink "target" was 400 MiB of zeros peaked at
-2 400 MiB (tracemalloc) inside `members()` in 9.9 s, with `max_members=10` and
-`max_metadata_bytes=4096` both set. `max_metadata_bytes` did not reach it for a second
-reason: it weighs `link_target` at registration, and a data-stored target is read after
-every member is registered, so the field was weighed as `None`.
+**Mechanism.** 7z AES has no check value, so a candidate is judged by decoding and
+checking a CRC. `internal/password_confirm.py` plans the confirmation as a ladder: it
+stops at the earliest CRC covering at least 4 bytes, so a solid folder's first member
+decides. A chain holding a codec in `REJECTING_CODECS` (LZMA, LZMA2, BZip2, Deflate,
+Deflate64, Zstandard, LZ4) never walks past `PASSWORD_CONFIRM_PREFIX_BYTES` (64 KiB of
+output), because that decoder settles a wrong key inside the prefix, and its compressed
+input is capped at `PASSWORD_CONFIRM_MAX_INPUT_BYTES` (1 MiB). The decode streams in
+64 KiB chunks with a running CRC; holding the decoded folder instead cost about three
+times the folder size (630 MB peak for a 200 MiB folder).
 
-*Closed:* a data-stored target is capped at `MAX_LINK_TARGET_BYTES` (4096, the Linux
-`PATH_MAX`). A member declaring more is not opened. ZIP and 7z declare a size and verify
-data against it, so a member whose data outruns a smaller declared size fails as
-`CorruptionError` at that size; a read with no declared size stops at 4097 bytes. A
-longer target is left unset with `SYMLINK_TARGET_UNAVAILABLE`
-(`reason="target_too_long"`) and never truncated, per the maintainer's ruling that such
-a target is corrupt or malicious; the code is an archive-integrity one, so
-`DiagnosticPolicy.strict()` refuses the archive. A Windows reparse buffer is read only
-as far as its own header declares (at most `8 + 0xFFFF` bytes, a hundred or so in
-practice) and its parsed target is held to the same cap. A target resolved after
-registration is now added to the listing tracker as it arrives, so `max_metadata_bytes`
-covers it. Header-stored targets (TAR, RAR5, Rock Ridge) were already weighed at
-registration and bounded by their header parsers. Found on PR #315 (S21-K10); tracked
-internally.
+**Residual.** A Copy, PPMd, Brotli or filter-only chain whose only CRC is at the folder
+end, with several candidates, still walks the folder once per candidate: nothing short
+of that CRC tells a wrong key. That is time, not memory, and is an
+[open gap](#7z-password-confirmation-on-a-late-crc).
 
-### O20. A 7z BCJ2 folder decodes in pure Python, and its branches decode unseen — accepted / mitigated
+**Tests.** `tests/test_password_confirm.py`, `tests/test_sevenzip_password_confirm.py`.
 
-**CPU.** The BCJ2 decoder's Python loop runs once per branch candidate (`E8`, `E9`,
-`0F 8x`), not per byte. A `main` stream made of nothing but candidates is the worst case:
-measured 1.8 MB/s for every byte `E8` and 3.4 MB/s for `0F 80` pairs (CPython 3.11),
-against 26 MB/s on a real executable. LZMA2 compresses such a stream to almost nothing,
-so a small archive can declare a large, slow member. *Accepted:* `ExtractionLimits`
-(`max_extracted_bytes`, `max_ratio`) bound it in `extract_all`, and a caller reading
-`open()` to the end has no limit, as with any decompression bomb; the amount is the same,
-only the rate is lower. A "work per output byte" field on `DecoderLimits` was considered
-and not added: no other codec has one.
+#### Spooling a stream source
 
-**Memory.** Every branch decoder of a BCJ2 folder runs at once, each with memory the
-archive declares: three in what 7-Zip writes (`main`, `call`, `jump`, all LZMA), four
-when a crafted folder puts a coder on `rc` too. *Mitigated:* each is capped on its own
-by `DecoderLimits.max_decoder_memory`, and the folder's sum of what that cap bounds per
-decoder (LZMA dictionaries and PPMd memory sizes) is checked against the same cap before
-any of them is built
-(`sevenzip_pipeline.open_folder_pipeline`). Bytes decoded inside a branch never reach the
-folder stream that `ExtractionLimits` counts, so the decoder's end-of-output check reads
-at most one byte from each branch and never drains one.
+**Property.** Copying a stream to a temp file for an external program is bounded.
 
-### O21. A directory source changed by another process between listing and reading — closed
+**Mechanism.** RAR member data goes through a program that reads only files, so a RAR
+opened from a stream is spooled (`internal/spool.py`), capped by `SpoolLimits.max_bytes`
+(1 GiB) and checked before anything is written. A path source is never copied.
 
-The directory reader lists a tree with `lstat` and never walks through a symlink, so the
-listing stays inside the root (Windows on Python 3.11 aside, where a junction may be
-walked: [`formats/directory.md`](formats/directory.md) §7). A member's data is opened
-later, and another process can change the tree in between: replace a listed file or
-directory with a symlink out of the root, replace a file with a FIFO so `open()` blocks,
-or replace or resize a file so the read returns data the listing never described.
+#### Extraction bombs
 
-*In scope*, ruled by davi on 2026-09-27 (PR #496's decision card): a directory source is
-the exception to the published rule that other local processes are trusted
-([`docs/extracting.md`](../docs/extracting.md) §Trust boundaries), because a caller may
-read a tree someone else can write to (an upload staging folder, a shared drop folder).
+**Property.** `extract` stops a decompression bomb before it fills the disk.
 
-*Closed.* On POSIX the reader opens each path component with `O_NOFOLLOW` relative to its
-parent's descriptor and the file with `O_NOFOLLOW | O_NONBLOCK`, so a symlink anywhere on
-the path fails with `ELOOP` and a FIFO does not block. It then `fstat`s the handle and
-refuses, with `OSError(ESTALE)`, anything that is not a regular file with the listing's
-`(st_dev, st_ino)` and listed size (a listed size of 0 is exempt, for procfs and sysfs).
-Windows has no `O_NOFOLLOW`; the identity check carries it there. A member listed with
-no identity (`st_ino` 0: some FUSE and network mounts, or a Windows path the identity
-stat could not reach) is checked on type and size alone, plus, on Windows, a
-reparse-point check on its final path component.
+**Mechanism.** `internal/extraction.py` `BombTracker` enforces `ExtractionLimits`: total
+bytes (2 GiB), per-member ratio and archive-wide ratio (1000, active after 5 MiB), a
+live ratio for sources of unknown size, and an entry cap (1,048,576). The global guards
+raise `_AlwaysStopResourceLimitError`, so they halt even under `OnError.CONTINUE`.
 
-What remains:
-- a same-size rewrite in place, and a change after the open. Both read the listed file,
-  inside the root.
-- a same-size replacement of an identity-less member. On POSIX the path still follows
-  no link, so this could only read a same-size hardlink to a file elsewhere on that
-  mount, on a filesystem that has hard links but no stable inode numbers.
-- on Windows, an identity-less member whose path is resolved with no `O_NOFOLLOW`. The
-  reparse check covers the leaf only and runs after the open, so a directory above it
-  swapped for a junction out of the root, or a swap that races the check, reads a
-  same-size file outside the root. Inferred from the code, not measured.
+**Residual.** The tracker is per archive and not nesting-aware
+([accepted](#nested-archive-amplification)). `read()` and `open()` have no output bound
+([accepted](#reads-have-no-output-bound)).
 
-Pinned by `tests/test_directory.py::test_a_file_swapped_for_a_symlink_after_listing_is_refused`,
+**Tests.** `tests/test_extraction.py::test_per_member_ratio`,
+`::test_archive_wide_ratio`, `::test_archive_wide_ratio_live_denominator`,
+`::test_zip_bomb_per_member_ratio`, `::test_streaming_targz_bomb_caught_by_live_ratio`,
+`::test_streaming_live_ratio_halts_under_continue`.
+
+#### RAR reads by glob-named member
+
+**Property.** Reading one RAR member never quietly decodes other members first.
+
+**Mechanism.** `unrar` selects members by mask, and a member whose name is a glob that
+matches earlier entries would make `unrar -n` decompress every earlier match first. The
+read is refused by default when that skip is nonzero (`internal/backends/rar_reader.py`,
+`rar_allow_glob_member_concatenation` as the escape hatch). The refusal is narrower
+than it looks: on a solid archive an out-of-order `open()` decodes everything ahead of
+the member anyway, with no glob involved, so the glob adds only a bounded transfer cost
+there. Whether the refusal earns its keep is parked with the general unbounded-read
+question ([`formats/rar.md`](formats/rar.md) §5 to §7).
+
+**Tests.** `tests/test_rar_reader.py::test_glob_member_with_earlier_matches_is_refused`,
+`::test_solid_glob_refusal_does_not_claim_an_avoidable_decode`.
+
+### Integrity verdicts come from reads
+
+**Property.** A member read from its start to its end with no seek verifies every
+checksum or tag the archive stores, and raises if one does not match. A verdict is never
+deferred to `close()` (ADR
+[0014](decisions/0014-integrity-verdicts-from-reads-not-close.md)). A wrong password is
+never reported as success. Public:
+[errors-and-diagnostics.md §The integrity guarantee](../docs/errors-and-diagnostics.md#the-integrity-guarantee).
+
+**Mechanism.**
+- `internal/streams/verify.py` `MemberVerifier`, fused into `ArchiveStream`, hashes
+  sequential reads and checks at the declared size or decoder end; a sized mismatch
+  withholds the final chunk.
+- xz and lzip forward reads never trust the file's index: liblzma checks every block
+  against the stream index, and the lzip reader verifies every trailer field (CRC-32,
+  `data_size`, `member_size`). Seek points a forward read records have already been
+  checked. A cold seek is [accepted](#a-seek-trusts-the-files-own-index) to trust the
+  index.
+- 7z header encryption has no check value, so a wrong key is caught by the encoded-header
+  folder CRC when the writer stored one (7-Zip does; py7zr does not), then by the parse
+  failing. About 1 in 256 wrong keys decode to a leading `END` (or `HEADER`+`END`) that
+  parses as an empty archive (measured about 0.3% of py7zr salts). Legitimate writers
+  never encrypt an empty header, so `SevenZipReader._decode_encoded_header_block`
+  rejects a decoded header with zero file records as `EncryptionError`.
+- A password only a weak check accepted, or none tested (RAR3/4 encrypted data has no
+  check), is confirmed by the member's own CRC at EOF. Closing such a stream early emits
+  `ENCRYPTED_MEMBER_UNVERIFIED`.
+
+**Residual.** Wrong-key 7z header garbage that parses into a non-empty plausible header
+survives in principle. Rejecting trailing bytes in the decoded header, or py7zr writing
+the encoded-header CRC, would narrow it further. Bytes returned before an error are of
+unknown quality.
+
+**Tests.**
+`tests/test_codecs.py::test_verify_mismatch_raises_at_eof_without_losing_final_chunk`,
+`::test_verify_sized_mismatch_withholds_on_reaching_read`;
+`tests/test_seekable_streams.py::test_lzip_trailer_member_size_mismatch_raises_on_forward_read`;
+`tests/test_sevenzip_reader.py::test_header_encrypted_empty_decoded_header_rejected`;
+`tests/test_encrypted_member_unverified.py`.
+
+### Errors are typed and honest
+
+**Property.** A hostile archive produces an `ArchiveyError` subclass or success, never a
+raw library exception, and never a silent wrong answer. Genuine I/O errors propagate
+unchanged, and no handler swallows or reclassifies an unknown exception.
+
+**Mechanism.** Each backend translates its library's exceptions. For ISO,
+`IsoReader._translate_exception` maps `_PYCDLIB_ERRORS`: pycdlib's exception base plus
+the bare `IndexError`, `struct.error`, `UnicodeDecodeError`, `AttributeError`,
+`KeyError` and `ValueError` fuzzing found it raising, but never `OSError`. Advisories
+that are not errors are `Diagnostic` values with stable codes and a per-code policy
+(`IGNORE` / `COLLECT` / `RAISE`), attached to the surface they concern, with logging as
+the zero-configuration projection. Native
+decoders known to crash on crafted input run in a child process: the rapidgzip
+accelerator for gzip, zlib and raw DEFLATE (`internal/streams/rapidgzip_child.py`), and
+PPMd members over `DecoderLimits.max_ppmd_in_process_input` (16 MiB,
+`internal/streams/ppmd_child.py`); a fault signal there becomes `CorruptionError` and
+costs only the member.
+
+**Residual.** `MemoryError` passes through, and an in-process native decoder can still
+abort the process ([accepted](#a-native-decoder-crash-or-memoryerror)).
+
+**Tests.** `tests/test_error_translation.py`, `tests/test_ppmd_crash_isolation.py`,
+`tests/test_accelerator_truncation_abort.py`, and the fuzz layers below.
+
+### Parsers survive hostile bytes
+
+**Property.** Container and header parsing (the part of the defended surface archivey
+writes itself) is exercised against mutated and coverage-guided input.
+
+**Mechanism.** Three fuzz layers, all with accelerators off:
+1. `tests/test_mutation_fuzz.py` mutates every corpus archive (truncations, bit flips,
+   zeroed blocks, garbage prefixes and suffixes) and drives open, list, read, extract
+   and detection, asserting a typed error or success, no hang, and a destination that
+   is still a directory. `ARCHIVEY_FUZZ_MUTATIONS` deepens it; `ARCHIVEY_FUZZ=1` enables
+   `tests/fuzz_sevenzip_parser.py` for local runs.
+2. `tests/test_property_safety.py` (Hypothesis) over the pure safety logic.
+3. `tests/atheris_fuzz/` (Atheris, coverage-guided) over 7z and RAR header parse with CRC
+   fix-up, 7z/RAR open and list, `detect_format` with a cost-within-budget assertion,
+   ZIP open and bounded member read, TAR/ISO open and list, and the standalone codecs. A
+   short partition runs on every pull request; the full one on a change-guarded nightly
+   and on `workflow_dispatch` (`.github/workflows/atheris-fuzz.yml`,
+   `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
+   group only.
+
+pycdlib loops forever when corrupt directory records form a back-edge, in any namespace
+`open_fp` walks. `internal/backends/iso_reader.py`
+`_install_pycdlib_directory_cycle_guard` installs a queue, confined to archivey's own
+`open_fp` call, that drops a directory extent already scheduled; valid trees never
+revisit one.
+
+Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](../SECURITY.md)).
+OSS-Fuzz is [after the first release](#oss-fuzz).
+
+**Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
+Ridge and Joliet).
+
+### Directory sources changed concurrently
+
+**Property.** A directory source written by another process while archivey reads it
+never lists or reads anything outside the root, never blocks on a swapped-in FIFO, and
+never returns data the listing did not describe, except for the residuals below. This
+is the one exception to "other local processes are trusted" (§1).
+
+**Mechanism.** `internal/backends/directory_reader.py`:
+- The walk lists with `lstat` and never follows a symlink or junction. On POSIX, where
+  the descriptor walk is available (`_SCAN_BY_FD`), `_open_listed_directory` opens each
+  subdirectory with `O_NOFOLLOW | O_DIRECTORY`, checks it against the
+  `(st_dev, st_ino)` its parent's scan recorded, and scans and `lstat`s through that
+  descriptor, so a directory swapped for a symlink before its scan, or reached through a
+  swapped parent, fails the listing with `OSError(ESTALE)`. A directory listed with no
+  identity is opened one component at a time from the root instead, each with
+  `O_NOFOLLOW`, so a swapped parent fails there too.
+- `_open_listed_file` opens each path component with `O_NOFOLLOW` relative to its
+  parent's descriptor and the file with `O_NOFOLLOW | O_NONBLOCK`, so a symlink on the
+  path fails with `ELOOP` and a FIFO does not block. It then `fstat`s the handle and
+  raises `OSError(ESTALE)` (`_changed_since_listing`) for anything that is not a regular
+  file with the listed identity and size. A listed size of 0 is exempt (procfs, sysfs).
+- A member with no identity (`st_ino` 0: some FUSE and network mounts, or a Windows
+  path the identity stat could not reach) is checked on type and size, plus, on Windows,
+  a reparse-point check on its final component.
+
+**Residual.** A same-size rewrite in place, or a change after the open, reads the
+listed file's new content inside the root. A same-size replacement of an identity-less
+member could read a same-size hardlink to a file elsewhere on that mount, on a
+filesystem with hard links but no stable inodes. Windows is weaker and
+[accepted](#windows-directory-sources). Public in extracting.md §Trust boundaries.
+
+**Tests.**
+`tests/test_directory.py::test_a_file_swapped_for_a_symlink_after_listing_is_refused`,
 `::test_a_directory_swapped_for_a_symlink_after_listing_is_refused`,
 `::test_a_file_replaced_after_listing_is_refused`,
 `::test_a_file_swapped_for_a_fifo_after_listing_is_refused_without_blocking`,
 `::test_a_file_resized_after_listing_is_refused`,
-`::test_an_identityless_member_that_is_now_a_reparse_point_is_refused`. Handbook:
+`::test_an_identityless_member_that_is_now_a_reparse_point_is_refused`,
+`::test_a_directory_swapped_for_a_symlink_before_its_scan_is_refused`,
+`::test_a_parent_swapped_for_a_symlink_before_a_subdirectory_scan_is_refused`,
+`::test_a_parent_swap_is_refused_on_a_filesystem_without_identities`. Handbook:
 [`formats/directory.md`](formats/directory.md) §2.3, §4.
 
-## OPEN gaps — compatibility
+### Attacker bytes reaching a terminal are inert
 
-### C1. The RAR decompressor matrix (and unrar licensing) — won’t-do / closed
+**Property.** Archive-derived text in any archivey message or CLI output cannot move the
+cursor, erase a line or otherwise author what the operator sees. A name like
+`README\x1b[2K\rSUCCESS.txt` renders escaped.
 
-RAR member data requires an external tool. `unrar` is **non-free** (freeware license);
-`unrar-free` handles little of RAR5; `7z`/`bsdtar` coverage varies by build; `unar`
-exists on macOS. A multi-tool fallback matrix would otherwise degrade into "works on my
-machine" plus divergent solid/password behavior.
+**Mechanism.** Text is escaped where it becomes a message, not where it is displayed.
+`ArchiveyError`, `ArchiveyUsageError` and `Diagnostic` escape `message` at construction
+with `terminal.py` `escape_control_chars`. We escape there, not in a logging formatter,
+because the likeliest route to a terminal has no handler: an uncaught exception whose
+traceback ends in `str(exc)`, or `print(exc)` in embedding code. A formatter would also
+double-escape an already escaped message.
+- `escape_control_chars` delegates to `repr`, whose escape set is exactly
+  `not str.isprintable()`, escapes backslash itself, and renders a surrogateescaped byte
+  as its octet. The promise is inertness, not unique recovery: `U+009B` and byte `0x9B`
+  both render `\x9b`.
+- Escape exactly once. Message sites delimit names with `terminal.quoted()`, not `!r`,
+  and embed a caught error with `raw_message_of()`. Library `logger.*` calls are the
+  inverse: records are not escaped, so `%r` is what makes an interpolated name inert
+  there and must stay.
+- Paths in messages are rendered `/`-separated first (`terminal.display_path`), so the
+  escape has no native separator to double.
+- CLI print sites go through `cli/format.py` `escape_member_name`, `escape_path` or
+  `format_error_detail`, which escapes only non-archivey exceptions, since archivey's
+  arrive escaped. `archivey info` escapes every value, including a ZIP comment on
+  stdout.
+- Structured fields stay raw for callers acting on values: `archive_name`,
+  `member_name`, `source_format`, `Diagnostic.context`, and library log records.
 
-*Decision (closed):* Archivey uses **RARLAB `unrar`** for RAR member data by default.
-Non-RARLAB binaries on `PATH` raise `PackageNotInstalledError` naming RARLAB `unrar`;
-there is no silent fallback to `unrar-free` / `unar` / `7z`. *Amended 2026-09-26:* a
-second program exists. `ArchiveyConfig.rar_decompressor` defaults to `"auto"`, which
-takes RARLAB `unrar` when it is installed and `unar` otherwise; the maintainer chose that
-default (2026-09-26, "auto is default"). So `unar` *is* now a fallback, but a bounded one:
-`"auto"` decides once when the archive opens, a read `unar` refuses is never retried
-with `unrar`, `unrar-free` / `7z` / `bsdtar` are still never used, and the reads `unar`
-gets wrong are refused before it runs rather than trusted. `"unrar"` restores the old
-behaviour (RARLAB or `PackageNotInstalledError`); `"unar"` with `unar` missing raises.
-The `unar` path keeps the `unrar` boundary's rules — a banner probe with a timeout and a
-stat-keyed cache, a fixed argv ending in `--` and an absolute archive path, members named
-by decimal entry index (no hostile name reaches argv, no include mask). One rule differs:
-`unar` takes a password only on its command line, so under `unar` the password is
-visible to other local users in `ps` and `/proc/<pid>/cmdline` for the life of the
-process. The maintainer accepted that (2026-09-26, "fine in most cases"); the user docs
-say so and point shared-machine users at `unrar` (installed, or forced with
-`"unrar"`), which reads the password from stdin. Because `"auto"` is the default, a
-caller who never touched the setting can put a password on `unar`'s argv by not having
-RARLAB installed; that is the accepted cost of the default.
-The password is its own argv item after `-p`, before `--`, so a leading `-` cannot turn
-it into an option. Licensing remains a
-documented system dependency (archivey itself stays permissively licensed). See
-ADR [`0002-native-rar-metadata-unrar-data`](decisions/0002-native-rar-metadata-unrar-data.md)
-and OpenSpec `format-rar`.
+**Residual.** The print-site sweep follows a local name to its assignments and a
+same-module helper to its returns. What it cannot follow (an attribute, a cross-module
+call, a `str` parameter) passes only through `_CLI_PRINT_ALLOWED`, where the stated
+reason is trusted. `cli/main.py` `_format_os_error` is checked only by its own tests,
+and tqdm's `desc` (escaped) is outside the sweep.
 
-### C2. Warnings that should be data — addressed
+**Tests.** `tests/test_escaping.py` (primitive, message sites,
+`test_no_message_site_interpolates_an_archive_derived_name_with_repr`,
+`test_library_log_sites_still_escape_interpolated_names`,
+`test_cli_print_sites_escape_what_they_print`,
+`test_cli_does_not_escape_a_native_path`); `tests/test_cli.py::test_extract_escapes_*`,
+`test_extract_summary_escapes_*`, `test_hoist_escapes_*`, `test_info_escapes_*`,
+`test_missing_archive_name_is_escaped_once`. The cross-platform CLI tests use U+2028;
+the ANSI/CR spoof is Unix-only, since NTFS refuses control bytes in names.
 
-Addressed by the lifecycle-aware diagnostics capability (`diagnostics-warnings-as-data`):
-advisories are immutable `Diagnostic` values with stable codes, attached to
-lifecycle-appropriate surfaces (`FormatInfo`, `ArchiveReader`/`ArchiveStream`,
-`ArchiveMember`, `ExtractionReport`), with per-code policy (`IGNORE`/`COLLECT`/`RAISE`)
-and a shared retention budget. Logging remains the zero-config projection.
+### Detection is bounded and says when it guessed
 
-### C3. Metadata fidelity boundary (xattrs/ACLs/forks)
+**Property.** `detect_format` does a bounded amount of work per call, and a content
+probe that cannot confirm what it found says so rather than presenting a fabricated
+member as fact.
 
-PAX xattrs currently survive only inside `extra["tar.pax_headers"]`; ACLs, macOS
-resource forks, and NTFS ADS are untouched. Read-side promotion to a first-class field
-later is additive/cheap; applying xattrs at extraction is moderate (policy
-interactions); true fidelity only binds when **writing** lands (deferred, possibly
-post-1.0). Decision recorded in `IDEAS.md`; revisit at writing-spec time.
+**Mechanism.**
+- `detection_cost.py` `DetectionBudget` bounds prefix, far, scan and decode bytes per
+  call. `max_decode_input` is one allowance every decoding tier draws on (content
+  probes, their whole-source completion check, the inner-TAR probe); a tier the
+  remaining allowance cannot cover does not run. Output is bounded per probe by the
+  codec's drain. A per-candidate cap cannot bound the aggregate: 2 MiB of back-to-back
+  gzip decoys holds 209,715 valid headers, and decoding each to 64 KiB is 1.3 s and
+  683-fold amplification. `DetectionCostReceipt` reports what was spent.
+- The candidate search is linear in the window: `internal/sfx.py` `_EarliestFinder`
+  carries each needle's next position forward.
+- Brotli has no magic, so it is found by a content probe, which without gates accepted
+  about 8% of random data. The probe rejects a first meta-block larger than a
+  known-length source, a fully visible source that does not decode to completion, and
+  later overruns or trailing bytes found by a bounded block-chain walk. It decodes the
+  whole 4 KiB prefix (256 bytes let 7 of 800 Perl modules through; 4,096 let none),
+  and re-checks a hit against the whole source up to `completion_window_bytes` (64 KiB
+  under `BALANCED`, off under `FAST`). Probe-only confidence is `GUESS` for the
+  uncompressed or metadata-first class; a later decode failure sets
+  `format_unconfirmed=True` and emits `PROBE_FORMAT_UNCONFIRMED`. Structured
+  look-alikes (OLE/CFB, COFF) are usually claimed by the LZMA Alone probe at `PROBABLE`
+  and stamp the same way.
 
-### C4. Free-threaded Python
+**Residual.** Measured with the 256-byte sample on a 150,623-file `/usr` tree: 29
+fabricated claims (0.019%), 0 of them without a signal. That is the baseline for the
+next census. A fabricated listing is [accepted](#a-probe-can-fabricate-a-member).
+The aggregate bound [re-opens](#detection-decoding-scan-candidates) when a tier starts
+decoding scan candidates.
 
-`3.13t+` makes data races visible and parallel pure-Python decode realistic.
-On readers that declare `MemberStreams.CONCURRENT`, after random-access member
-materialization, concurrent `open()` plus independent operations on different member
-streams are data-race-free on ordinary builds and on backend/runtime combinations covered
-by the required Linux CPython `3.13t` `free-threaded-concurrency` job; optional backends
-are not claimed covered until a dedicated free-threaded job can run them. The undeclared
-default is one live member stream (a second overlapping open raises `ArchiveyUsageError`),
-so accidental cross-thread stream sharing fails fast instead of racing. Iteration,
-materialization, extraction, `stream_members()`, and reader close remain single-owner,
-with explicit private child scopes allowing extraction to drive its pass and
-yielded-stream I/O. Implementation
-must use real synchronization rather than relying on the GIL. Parallel extraction scheduling
-remains future, and speed claims require measurements proportionate to the mechanism changed.
-Accelerator close-before-finalize
-(`known-issues.md`) still applies, so member-stream lifecycle leases defer backend teardown
-until the final stream closes. See [`parallel-reader.md`](investigations/parallel-reader.md) §4.
+**Tests.** `tests/test_brotli_framing_gate.py`, `tests/test_detection_workspace.py` (the
+`*budget*` and receipt tests), the Atheris `detect_format` target. Investigation:
+[`investigations/brotli-content-probe-results.md`](investigations/brotli-content-probe-results.md).
+
+### External programs get a fixed command line
+
+**Property.** No archive-controlled string reaches an external program as an option, and
+the program that runs is one whose behaviour we have characterized.
+
+**Mechanism.** `rar_decompressor="auto"` (the default; maintainer 2026-09-26, "auto is
+default") takes RARLAB `unrar` or `rar` when installed and `unar` otherwise, decided once
+at open. A read `unar` refuses is not retried with `unrar`, and reads `unar` gets wrong
+are refused before it runs. `unrar-free`, `7z` and `bsdtar` are never used: their
+failures (empty files with a success exit, a missing plugin, gigabytes written for a
+stored member) are invisible to the caller. A non-RARLAB `unrar` raises
+`PackageNotInstalledError`. Both paths use a banner probe with a timeout and a
+stat-keyed cache. `internal/backends/rar_unrar.py` passes a member name only inside a
+`-n./<name>` include-mask switch, so a leading `-` cannot become an option, narrows
+every `*` to `?` (`_unrar_mask_for`) because `unrar`'s matcher backtracks exponentially
+on a hostile mask, and writes the password to stdin. `internal/external/unar.py` ends
+argv with `--` and the absolute archive path, names members by entry index, and puts the
+password as its own item after `-p`. ADR
+[0002](decisions/0002-native-rar-metadata-unrar-data.md),
+[`investigations/alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md).
+
+**Residual.** The program is found on the process `PATH` and is part of the deployment's
+trust boundary. `unar`'s password is [visible to other users](#the-unar-password-is-on-its-command-line).
+
+### Concurrent member streams are race-free where declared
+
+**Property.** On a reader declaring `MemberStreams.CONCURRENT`, after random-access
+materialization, concurrent `open()` and independent use of different member streams is
+data-race-free without the GIL. Otherwise a second overlapping open raises
+`ArchiveyUsageError`, so accidental sharing fails fast. Iteration, extraction,
+`stream_members()` and close are single-owner. Stream leases defer backend teardown
+until the last stream closes, because an accelerator must close before it is finalized
+([`investigations/rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md)
+§6).
+
+**Tests.** The required `free-threaded-concurrency` job (Linux CPython 3.13t,
+`.github/workflows/ci.yml`); optional backends are not claimed until a job runs them.
+Scope: [`docs/support-matrix.md`](../docs/support-matrix.md); design:
+[`investigations/parallel-reader.md`](investigations/parallel-reader.md) §4.
+
+## 4. Accepted non-guarantees
+
+Each of these was chosen, and each has a public line so it is not reported as a
+vulnerability. Most are in
+[extracting.md §Known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
+
+### No CPU or wall-clock bound
+
+Every limit caps bytes, entries or key-derivation rounds, not time. Worst cases we know:
+a 7z BCJ2 `main` stream made only of branch candidates decodes at 1.8 MB/s in pure
+Python (26 MB/s on a real executable), and LZMA2 compresses that stream to almost
+nothing; the key-derivation budget allows about half a minute; a late-CRC 7z folder
+costs folder size times candidates. A "work per output byte" limit for BCJ2 was
+considered and not added: no other codec has one, and `ExtractionLimits` still bounds
+the amount, only the rate is lower. Callers who need a time bound run archivey in a
+worker they can kill. Public: [known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
+
+### A native decoder crash or MemoryError
+
+The stdlib `zlib`, `bz2` and `lzma`, pyppmd below 16 MiB (handed the member whole, which
+avoids the input pattern known to crash it) and the bzip2 accelerator run in-process. A
+crash nobody has found yet would abort the process. The bzip2 accelerator stays
+in-process because no crash has been seen in it. `MemoryError` is not translated, so
+running out of memory is never mistaken for a damaged archive; the limits above exist to
+keep a hostile archive from getting that far. Public:
+[known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
+
+### Accelerators on by default, and unbounded in time
+
+`AcceleratorMode.AUTO` engages the `[seekable]` accelerators when installed and a caller
+asks for seeking. They are third-party C++ that can busy-loop on crafted input, in a
+thread no Python timeout can cleanly interrupt. The gzip-family decoder runs in a child
+process, so an abort costs only the member, but a loop there has no read timeout. The
+fuzz layers run with accelerators off, so they sit outside the fuzzed surface. Callers
+with a hard latency budget set them to `OFF`. Public:
+[known and accepted limits](../docs/extracting.md#known-and-accepted-limits) and
+[hardening notes](../docs/extracting.md#hardening-notes-for-callers).
+
+### A seek trusts the file's own index
+
+A cold seek into a `.xz` or `.lz` goes where the file's index says (XZ block records, or
+lzip member trailers), and both are attacker-controlled. An index consistent with itself
+but not with the data serves bytes from the wrong unit, and `try_get_size()` /
+`member.size` report the index's total, with no error. Accepted, ruled by davi on
+2026-09-23 (PR #407 review round 1): a unit's real end is known only by decompressing
+it, and avoiding that is the index's purpose. Decoding from the start before the first
+cold seek would remove fast random access for every honest file, and xz's and lzip's
+own tools trust their indexes the same way.
+
+What the design still catches: a seek landing inside the misdescribed region resumes
+from a checked point before it and raises when the decode reaches the end of the lying
+unit (the member's trailer for lzip, the stream end for xz); bytes returned before that
+are correct for their offsets. A seek past the lie followed by a read to the end is not
+caught, since every later unit is genuine. A diagnostic for an ambiguous trailer walk was
+considered and not taken: an attacker who controls the trailers can avoid it. Public:
+[the integrity guarantee](../docs/errors-and-diagnostics.md#the-integrity-guarantee) and
+[known and accepted limits](../docs/extracting.md#known-and-accepted-limits). Tests:
+`tests/test_seekable_streams.py::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`,
+`::test_xz_cold_seek_trusts_a_self_consistent_block_index`.
+
+### Windows directory sources
+
+Windows has no `O_NOFOLLOW` and no descriptor-based `scandir`, so the walk scans
+subdirectories by path: a subdirectory swapped for a junction or symlink between its
+parent's scan and its own lists the target's entries. Reads are still refused where the
+listing recorded an identity. For an identity-less member the reparse check covers only
+the leaf and runs after the open, so a junction swapped in above it, or a swap racing
+the check, reads a same-size file outside the root. Both inferred from the code, not
+measured. On Python 3.11, `DirEntry.is_junction()` does not exist, so a junction may be
+walked ([`formats/directory.md`](formats/directory.md) §7). Public:
+[known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
+
+### Nested-archive amplification
+
+Recursion into archives inside archives is caller-driven, so a zip quine loops only if
+the caller loops. The bomb tracker measures one archive, so a zip of zips can pass the
+budget one level at a time. The caller bounds depth and total size. Public:
+[extracting.md §Limits](../docs/extracting.md#limits) and the "Nested archives" row in
+[§Names change on disk](../docs/extracting.md#names-change-on-disk).
+
+### Reads have no output bound
+
+`read()` and `open()` return whatever the member decodes to; `ExtractionLimits` apply to
+`extract` only. Chunk untrusted payloads. Public:
+[extracting.md §Limits](../docs/extracting.md#limits) and
+[`docs/gotchas.md`](../docs/gotchas.md).
+
+### A probe can fabricate a member
+
+When a content probe's identification is wrong (see
+[detection](#detection-is-bounded-and-says-when-it-guessed)), the listing shows one
+fabricated member, a full read raises, and up to 64 KiB of fabricated output may be
+returned before the raise. It is never a silent success, and it carries
+`PROBE_FORMAT_UNCONFIRMED`. Public: [`docs/formats.md`](../docs/formats.md) §Detection
+and [`docs/gotchas.md`](../docs/gotchas.md).
+
+### The unar password is on its command line
+
+`unar` takes a password only on argv, so under `unar` it is visible to other local users
+in `ps` and `/proc/<pid>/cmdline` while the process runs. Accepted by the maintainer
+(2026-09-26, "fine in most cases"). Because `"auto"` is the default, a caller without
+RARLAB installed gets this without choosing it. `RarDecompressor.UNRAR` rules it out.
+Public: [hardening notes](../docs/extracting.md#hardening-notes-for-callers).
+
+## 5. Open design gaps
+
+### 7z password confirmation on a late CRC
+
+The one shape [confirmation](#7z-password-confirmation) cannot settle early: a Copy,
+PPMd, Brotli or filter-only chain whose only CRC is at the folder end, with several
+candidates. The OpenSpec change `sevenzip-aes-tail-key-check` adds an O(1) check on the
+AES padding at the end of the packed stream, which settles it for the archives with at
+least 4 padding bytes. Not implemented (its tasks are open).
+
+### Detection decoding scan candidates
+
+No detection tier decodes scan candidates today, so the 683-fold amplification in
+[detection](#detection-is-bounded-and-says-when-it-guessed) is not reachable. A tier
+that does (makeself compressor needles after a `#!` stub, planned after 0.2.0) must draw
+on the shared `max_decode_input` allowance and be measured before this is settled.
+
+### Accelerator fuzzing
+
+Fuzzing the accelerators needs a sandbox that caps wall-clock and memory and kills the
+child on breach. Until then they stay [outside the fuzzed surface](#accelerators-on-by-default-and-unbounded-in-time).
+
+### OSS-Fuzz
+
+Onboarding comes after the first release. The bar for calling archivey safe (threat
+model, adversarial corpus, coverage-guided fuzzing, disclosure process) is met without
+it.
+
+### A later member can make an extracted symlink escape
+
+Symlinks are re-validated against the live tree once, right after `os.symlink`. A later
+member can change what an earlier link resolves to. Archive `l -> a/../secret`, then
+`a -> .`: when `l` is created, `a` does not exist, so Python's non-strict `resolve()`
+treats the `..` lexically, `l` resolves to `<dest>/secret`, and it passes. `a -> .` is
+harmless on its own and passes too. On disk, `l` now resolves through `a` to
+`<dest>/../secret`, and nothing rechecks it. The same happens when a directory the
+resolution went through is later replaced by a symlink under `OverwritePolicy.REPLACE`.
+
+Nothing is written outside the destination, because every file write resolves its real
+parent first, so a later `l/x` member is `BLOCKED`. What stays is a link in the output
+tree that points outside it, against `docs/extracting.md` ("escaping links are removed
+and rejected"), and anything that reads or copies the tree afterwards follows it.
+Measured the same with `streaming=False` and `streaming=True`.
+
+Deferred for a separate exploration (maintainer, 2026-09-28). The options:
+
+- **Refuse `..` after a normal component in a target** (`a/../x`). Cheap, but refuses
+  legitimate targets some build tools write, and `REPLACE` can still swap a directory
+  for a symlink.
+- **Re-validate every created symlink at the end of the run.** Complete, but the escape
+  stays live on disk until the sweep.
+- **Analyse all targets before extracting.** Not available to a streaming extraction.
+- **Recheck only the affected links when a new link appears** (the maintainer's
+  direction). Record the destination paths each link's resolution depended on (missing
+  components, existing directories, and the dependencies of any link it followed); when
+  a member creates or replaces one of those paths, recheck the dependent links and
+  remove any that now escape, reporting them `BLOCKED`. The escape is then never live on
+  disk, and it works in one streaming pass. To settle: chains of links, renames under
+  `OverwritePolicy.RENAME`, the orphan second pass, a memory bound, and rewriting a
+  result a progress callback already reported as `EXTRACTED`.
+- A narrower refusal: refuse `..` only when the component before it does not exist when
+  the link is created.
+
+A fix is done when the test below passes in both modes, no escaping link is on disk at
+any point a later member could observe, no legitimate `a/../x` target is refused, and
+symlink-heavy extraction stays linear in link count.
+
+Code: `internal/extraction.py` `_write_symlink` (the one re-validation),
+`internal/filters.py` `check_universal` (the lexical check and the parent resolve),
+`_prepare_destination` (where `REPLACE` removes a directory). Pinned by
+`tests/test_audit_extraction.py::test_symlink_made_escaping_by_a_later_member_is_not_left_on_disk`
+(strict xfail).
+
+### Bounded recursion helper
+
+"Index my backups", the founding use case, recurses into nested archives. A recipe or
+helper for bounded recursive processing does not exist yet.
+
+### Metadata fidelity
+
+PAX xattrs survive only in `extra["tar.pax_headers"]`; ACLs, macOS resource forks and
+NTFS ADS are not read. Promoting them to first-class fields on read is additive.
+Applying them at extraction interacts with the policies. Full fidelity binds when
+writing lands (possibly after 1.0), and must be a day-one decision of the writing spec
+([`IDEAS.md`](IDEAS.md)).
+
+## 6. Index of old register ids
+
+| Old id | Title | Now |
+| --- | --- | --- |
+| O1 | Listing-time metadata bombs | [Listing](#listing); unbounded reads: [Reads have no output bound](#reads-have-no-output-bound); glob reads: [RAR reads by glob-named member](#rar-reads-by-glob-named-member) |
+| O2 | Case and Unicode-normalization collisions | [Names are safe](#names-are-safe-on-the-target-filesystem) |
+| O3 | Windows reserved names, trailing dots and spaces | [Names are safe](#names-are-safe-on-the-target-filesystem) |
+| O4 | NTFS alternate data streams | [Names are safe](#names-are-safe-on-the-target-filesystem) |
+| O5 | Fuzzing | [Parsers survive hostile bytes](#parsers-survive-hostile-bytes), [OSS-Fuzz](#oss-fuzz), [Accelerator fuzzing](#accelerator-fuzzing) |
+| O5 (accelerator hang) | | [Accelerators on by default](#accelerators-on-by-default-and-unbounded-in-time) |
+| O5 (pycdlib cycle) | | [Parsers survive hostile bytes](#parsers-survive-hostile-bytes) |
+| O5 (`"."` root poisoning) | | [Extraction stays in the destination](#extraction-stays-in-the-destination) |
+| O6 | Nested-archive amplification | [Nested-archive amplification](#nested-archive-amplification), [Bounded recursion helper](#bounded-recursion-helper) |
+| O7 | Names the filesystem cannot represent | [Names are safe](#names-are-safe-on-the-target-filesystem) |
+| O8 | 7z wrong header password gives an empty archive | [Integrity verdicts](#integrity-verdicts-come-from-reads) |
+| O9 | Attacker bytes reaching the terminal | [Terminal](#attacker-bytes-reaching-a-terminal-are-inert) |
+| O10 | Content probe fabricates a member | [Detection](#detection-is-bounded-and-says-when-it-guessed), [A probe can fabricate a member](#a-probe-can-fabricate-a-member) |
+| O11 | Detection-time decode work | [Detection](#detection-is-bounded-and-says-when-it-guessed), [Detection decoding scan candidates](#detection-decoding-scan-candidates) |
+| O12 | 7z password confirmation | [7z password confirmation](#7z-password-confirmation), [late CRC gap](#7z-password-confirmation-on-a-late-crc) |
+| O13 | 7z `NumUnpackStreams` allocation | [Listing](#listing) |
+| O14 | 7z encoded-header nesting | [Listing](#listing) |
+| O15 | Tar extended header sized an allocation | [Allocations sized by a header field](#allocations-sized-by-a-header-field) |
+| O16 | ISO directory record sized an allocation | [Allocations sized by a header field](#allocations-sized-by-a-header-field) |
+| O17 | Seek trusts the xz/lzip index | [A seek trusts the file's own index](#a-seek-trusts-the-files-own-index) |
+| O18 | Archive chooses the key-derivation cost | [Key derivation](#key-derivation) |
+| O19 | Data-stored symlink target sized an allocation | [Listing](#listing) |
+| O20 | 7z BCJ2 in pure Python | CPU: [No CPU or wall-clock bound](#no-cpu-or-wall-clock-bound); memory: [Decoder memory](#decoder-memory) |
+| O21 | Directory source changed between listing and reading | [Directory sources](#directory-sources-changed-concurrently), [Windows directory sources](#windows-directory-sources) |
+| O22 | A later member turns an extracted symlink into an escape | [A later member can make an extracted symlink escape](#a-later-member-can-make-an-extracted-symlink-escape) |
+| C1 | RAR data through an external program | [External programs](#external-programs-get-a-fixed-command-line), [unar password](#the-unar-password-is-on-its-command-line) |
+| C2 | Warnings that should be data | [Errors are typed and honest](#errors-are-typed-and-honest) |
+| C3 | Metadata fidelity | [Metadata fidelity](#metadata-fidelity) |
+| C4 | Free-threaded Python | [Concurrent member streams](#concurrent-member-streams-are-race-free-where-declared) |

@@ -15,8 +15,8 @@ specific to Claude Code; everything else would drift if it were duplicated here.
   the same `scripts/setup-dev-env.sh` every other environment uses, so they cannot
   drift, and it no-ops unless `CLAUDE_CODE_REMOTE=true` — a developer's own machine is
   left alone.
-- **Read the hook's closing verification block.** `unrar` and `7z` missing makes ~109
-  tests *skip quietly* while the suite still reports green. The script names anything
+- **Read the hook's closing verification block.** `unrar` and `7z` missing makes about a
+  hundred tests *skip quietly* while the suite still reports green. The script names anything
   missing on its last lines; if you did not see them, run it by hand.
 - **The `openspec` CLI installs to `~/.local/bin`** here, because the global npm prefix
   is not user-writable. `AGENTS.md` §OpenSpec CLI has both recipes — use the

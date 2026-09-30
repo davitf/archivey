@@ -54,6 +54,11 @@ mapping, each folder's file count, contiguous file layout inside decompressed
 folder output, and `ArchiveInfo.comment` when present. Anti-items SHALL not
 corrupt the member list.
 
+A `FILES_INFO` property the reader does not handle SHALL be skipped by its size
+prefix, as 7-Zip does, within the header buffer. A member's `raw_name` SHALL be the
+stored UTF-16LE name, backslashes included; only the presented `name` treats `\` as a
+separator.
+
 #### Scenario: native header matrix
 
 | Case | Expected |
@@ -61,6 +66,8 @@ corrupt the member list.
 | Open any supported 7z | Members and folder mapping come from the header without decompressing folders |
 | Archive stores a comment | `ArchiveInfo.comment` contains the comment |
 | Archive contains anti-items | Member list remains correct |
+| `FILES_INFO` holds an unknown property (ID `0x1A` or higher) | Property skipped; members read |
+| Stored name `dir\file.txt` | `name == "dir/file.txt"`; `raw_name` is the stored bytes, backslash included |
 
 ### Requirement: Accept a non-zero archive start offset (SFX)
 
@@ -222,6 +229,39 @@ more than one unbound output, or a multi-input coder other than BCJ2. A branch's
 coders SHALL be planned with that branch's own sizes, so a coder's input length is
 the output length of the coder before it in the same branch.
 
+A folder SHALL hold at most 64 coders and at most 64 coder in-streams and
+out-streams, the limits 7-Zip applies (`k_Scan_NumCoders_MAX` and
+`k_Scan_NumCodersStreams_in_Folder_MAX` in 7-Zip's `7zIn.cpp`). A larger folder SHALL
+raise `UnsupportedFeatureError` at header parse, as 7-Zip reports it unsupported.
+
+An LZMA1 or LZMA2 coder SHALL share a liblzma raw chain only with the Delta and BCJ
+filters decoded after it. A filter decoded before any LZMA1/LZMA2 coder, and a second
+LZMA1/LZMA2 coder in the same run, SHALL be decoded as its own stage, because a liblzma
+raw chain must end, in encode order, in its only LZMA1/LZMA2 filter.
+
+Every decoder of a folder runs at once: the stages of a chain are stacked streams, and
+a BCJ2 folder's branches run side by side. When a folder has more than one decoder
+that declares memory (LZMA dictionary sizes and PPMd memory sizes), their sum SHALL be
+checked against `DecoderLimits.max_decoder_memory` before any of them is built, and
+exceeding it SHALL raise `ResourceLimitError`.
+
+A coder whose codec ends its own stream (LZMA2, Deflate, Deflate64, BZip2, Zstd, LZ4
+and Brotli) that decodes more bytes than its declared unpack size SHALL raise
+`CorruptionError`, as 7-Zip reports a data error. In an encrypted folder the password
+check can decode the folder before the caller's read does; when it meets the surplus
+there, the raised error SHALL be `EncryptionError` ("wrong password or corrupt"), with
+the surplus `CorruptionError` in its cause chain, as for any damage the check decodes.
+The check SHALL count the coder's decoded output, so AES padding in the coder's input
+is not surplus, and the output of concatenated streams in one coder (BZip2 streams,
+Zstd or LZ4 frames) counts together. The check SHALL ask the decoder for at most one
+byte of output past the declared size, and SHALL NOT decode the folder a second time.
+The decoder MAY read the rest of the coder's packed input to produce that byte (a tail
+of streams that decode to nothing), so the check's input cost is bounded by the coder's
+packed size, the same bound as decoding the folder. A decoder error on that one byte
+(input after the end of the stream, such as AES padding after an LZMA2 end marker) is
+not surplus output. LZMA1 and PPMd coders, which 7-Zip writes without an end marker,
+SHALL stop at their declared size, so their surplus output is not detected.
+
 #### Scenario: coder-chain matrix
 
 | Case | Expected |
@@ -238,6 +278,17 @@ the output length of the coder before it in the same branch.
 | Coder output bound to two inputs, or a coder bound to itself | `CorruptionError`; no output bytes |
 | Same malformed graph in an encrypted folder | `CorruptionError` on the first attempt; not reported as a wrong password |
 | BCJ2 folder whose `main` branch is `AES` then `BZip2` | The BZip2 stage's input length is the AES coder's output, not a sibling branch's |
+| Folder of 64 Delta coders | Decodes; no `RecursionError` |
+| Folder of 65 coders, or a coder graph with more than 64 in-streams | `UnsupportedFeatureError` at open |
+| Delta, BCJ or LZMA2 decoded before LZMA2 (`7z a -m0=LZMA2 -m1=BCJ`) | Staged separately; the original bytes return |
+| LZMA2, Copy, LZMA2 whose dictionaries each fit `max_decoder_memory` but together do not | `ResourceLimitError` before a decoder is built |
+| LZMA2 coder decodes past the folder's declared unpack size | `CorruptionError` |
+| Deflate, Deflate64, BZip2, Zstd, LZ4 or Brotli coder decodes past its declared unpack size, also before a Delta or BCJ filter or in a BCJ2 branch | `CorruptionError` |
+| Same, behind AES, in a folder the password check decodes whole (one inside its 64 KiB prefix) | `EncryptionError`, with the surplus `CorruptionError` in its cause chain |
+| Same, behind AES, in a folder the password check does not decode whole | `CorruptionError` |
+| LZMA1 coder whose data decodes past its declared unpack size | Reads clean, cut at the declared size |
+| AES then Deflate, Deflate64, BZip2, Zstd, LZ4 or Brotli, decrypted input ending in AES padding | Original bytes return; the padding is not surplus |
+| Two BZip2 streams, Zstd frames or LZ4 frames in one coder | Original bytes when the unpack size counts both; `CorruptionError` when it stops after the first |
 
 ### Requirement: Reject unsupported codecs without fallback
 
@@ -322,8 +373,9 @@ anchor on the members. If that anchor sits past `PASSWORD_CONFIRM_PREFIX_BYTES` 
 has a rejecting codec, the plan SHALL NOT walk it (codec rejection settles a wrong
 key). If the chain has no rejecting codec, the plan SHALL walk it anyway.
 
-**Codec rejection.** A chain rejects iff it contains a decompressor measured to fail on
-random AES output. Measured as rejecting: LZMA1, LZMA2, BZip2, Deflate, Deflate64,
+**Codec rejection.** A chain rejects iff a decompressor measured to fail on random AES
+output decodes the AES output, directly or through other coders. A decompressor that
+decodes before the AES coder sees the same bytes whatever the key and does not count. Measured as rejecting: LZMA1, LZMA2, BZip2, Deflate, Deflate64,
 Zstandard and LZ4. Measured as non-rejecting: Brotli (about one random input in twenty
 decodes a full 64 KiB prefix) and PPMd. Filters (Delta, BCJ) never reject —
 `MethodKind.LZMA_FAMILY` includes Delta and is the wrong predicate. A codec not measured
@@ -365,6 +417,7 @@ cannot open as a silent empty listing.
 | Rejecting chain, packed input past 1 MiB before the prefix is decoded | Input capped at `PASSWORD_CONFIRM_MAX_INPUT_BYTES`; running out of it is `INCONCLUSIVE`, not a rejection |
 | Solid folder, first member 4 KiB, folder 200 MiB | Confirmation decodes the first member only |
 | Folder carrying both a folder digest and per-member CRCs | Anchors on the earliest member CRC, not the folder digest |
+| LZMA2 decoded before AES, member CRC past the prefix, candidates `wrong` then `right` | Non-rejecting chain: the CRC is walked, `wrong` is rejected, `right` is used |
 
 ### Requirement: Stream solid folders with bounded memory
 
@@ -541,7 +594,8 @@ is produced in bounded blocks, and each input is read in bounded blocks.
 The decoders of a BCJ2 folder's branches run at once, so the memory they declare (LZMA
 dictionary sizes and PPMd memory sizes) SHALL be checked together against
 `DecoderLimits.max_decoder_memory`, before any branch decoder is built, and exceeding it
-SHALL raise `ResourceLimitError`.
+SHALL raise `ResourceLimitError`. This is one case of the folder-wide sum in "Decode
+folder coder chains through compressed-streams".
 
 #### Scenario: BCJ2 decode matrix
 
