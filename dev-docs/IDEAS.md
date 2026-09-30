@@ -528,40 +528,6 @@
 
 ## Performance & robustness
 
-- **Bound the `.Z` decoder's dictionary with a hybrid representation** — the pure-Python
-  LZW decoder (`internal/streams/unix_compress.py`) stores every dictionary entry as its
-  full expansion, so a 16-bit dictionary can hold about 65 536²/2 ≈ 2.1 GiB. Measured
-  in the 2026-09 audit: 8 KB of crafted input peaks at 18 MB, and 130 KB reaches about
-  2.1 GiB. A legitimate zero-filled `.Z` builds the same shape (entries grow by one
-  byte and `compress` never clears), so a flat cap would refuse real files, and a
-  `DecoderLimits` check does nothing at the 2 GiB default. Decided (davitf, 2026-09-28):
-  keep full expansions up to about 256 bytes and store longer entries as a
-  (prefix code, byte) pair rebuilt by walking the chain, which bounds the dictionary
-  near 16 MiB. It goes in its own PR because it needs the benchmark gate on real `.Z`
-  corpora. Reproducer:
-  `tests/test_audit_tar_streams.py::test_unix_compress_dictionary_memory_is_bounded`
-  (strict xfail).
-
-  *Where the code is and what constrains it.*
-  - **Code:** `internal/streams/unix_compress.py`, `LzwState`. The dictionary is a plain
-    `list[bytes]`: the KwKwK case builds `prev_entry + prev_entry[:1]`, each new entry
-    is `dictionary.append(prev_entry + entry[:1])`, and a CLEAR truncates with
-    `del dictionary[starting_code:]`.
-  - **Seek:** seek points are placed only at CLEAR boundaries (`_points_for_units`), where
-    the dictionary is empty, so no dictionary state is snapshotted and changing its
-    representation does not touch seeking.
-  - **Implementation:** the usual one is parallel `prefix: array('H')` and
-    `suffix: bytearray` for every code, plus a cache of full expansions for entries up
-    to the length cap. A longer entry is built by walking prefixes into a reversed
-    `bytearray`. Keeping each entry's length alongside makes the walk a single
-    preallocation.
-  - **Differential test:** `ncompress` is a dev dependency (`tests/test_codecs.py` uses
-    it via `requires("ncompress")`), so real compressor output, the all-zeros file
-    included, can be checked against the new decoder.
-  - **Benchmark:** the harness has no `.Z` workload today. Add one (text-like data and a
-    long zero run) before comparing, and hold the hybrid to the current decoder's speed
-    on the text case.
-
 - **bzip2 accelerator and the standard library disagree past the end of a stream** —
   two cases, found 2026-09-29 while fixing the empty-trailing-stream report.
   - **A stream after zero padding.** For `bzip2 -c a; head -c 100 /dev/zero; bzip2 -c b`,

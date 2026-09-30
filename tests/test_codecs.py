@@ -10,6 +10,8 @@ import importlib.util
 import io
 import random
 import re
+import sys
+import sysconfig
 import zlib
 from pathlib import Path
 from typing import Literal
@@ -38,6 +40,11 @@ from archivey.internal.streams.codecs import (
     codec_requirement,
     open_codec_stream,
     resolve_codec,
+)
+from archivey.internal.streams.unix_compress import (
+    _MAX_ENTRY_TAIL,
+    _MAX_FLAT_ENTRY,
+    LzwState,
 )
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, StreamFormat, crc32_digest
@@ -753,6 +760,202 @@ def test_unix_compress_maxbits_16_accepted() -> None:
     assert (compressed[2] & 0x1F) <= 16
     with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
         assert stream.read() == CONTENT
+
+
+def _lzw_decode_in_chunks(compressed: bytes, chunk: int) -> bytes:
+    from archivey.internal.streams.unix_compress import LzwState
+
+    state = LzwState()
+    out = bytearray()
+    for i in range(0, len(compressed), chunk):
+        out += state.feed(compressed[i : i + chunk])[0]
+        while not state.needs_input:
+            out += state.feed(b"")[0]
+    out += state.flush()[0]
+    return bytes(out)
+
+
+def _lzw_block_mode_run(codes: int, repeats: int) -> bytes:
+    """A 16-bit block-mode ``.Z`` of ``codes`` KwKwK codes (entry ``k`` is ``k`` bytes
+    of ``a``), then the longest code ``repeats`` more times."""
+    out = bytearray(b"\x1f\x9d\x90")
+    width, in_era, bits, nbits = 9, 0, 0, 0
+    seq = [97] + [256 + i for i in range(1, codes)]
+    for code in seq + [seq[-1]] * repeats:
+        bits |= code << nbits
+        nbits += width
+        in_era += 1
+        while nbits >= 8:
+            out.append(bits & 0xFF)
+            bits >>= 8
+            nbits -= 8
+        if in_era >= 1 << (width - 1) and width < 16:
+            width, in_era = width + 1, 0
+    if nbits:
+        out.append(bits & 0xFF)
+    return bytes(out)
+
+
+@requires("ncompress")
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(bytes(3 << 20), id="zeros"),
+        pytest.param(b"ab" * (1 << 20), id="abab"),
+        # A period that does not divide the tail length puts different bytes in each
+        # link, so a walk that joins its tails out of order shows.
+        pytest.param(b"abcdefg" * 300_000, id="period-7"),
+        pytest.param(bytes(range(256)) * 4000 + b"z" * 70_000, id="period-256"),
+        pytest.param(
+            b"".join(
+                random.Random(i).randbytes(150_000) + bytes(200_000 + i)
+                for i in range(3)
+            ),
+            id="random-and-zeros-with-clears",
+        ),
+    ],
+)
+def test_unix_compress_long_dictionary_entries_decode_exactly(data: bytes) -> None:
+    """Entries longer than the flat cap are rebuilt from linked tails; the output must
+    match the input and the C reference decoder, whatever the feed size."""
+    import ncompress
+
+    compressed = make_unix_compress(data)
+    assert ncompress.decompress(compressed) == data
+    for chunk in (1 << 20, 4097, 3):
+        if chunk == 3 and len(compressed) > 100_000:
+            continue
+        assert _lzw_decode_in_chunks(compressed, chunk) == data
+
+
+def test_unix_compress_repeated_longest_code_decodes_exactly() -> None:
+    """Emitting the longest entry again walks its whole chain of tails."""
+    codes, repeats = 3000, 40
+    compressed = _lzw_block_mode_run(codes, repeats)
+    expected = b"a" * (codes * (codes + 1) // 2 + repeats * codes)
+    assert _lzw_decode_in_chunks(compressed, 4097) == expected
+
+
+def _lzw_table_bytes(state: LzwState) -> int:
+    """Bytes held by an ``LzwState``'s dictionary and links, each object counted once."""
+    seen: set[int] = set()
+    total = 0
+
+    def add(obj: object) -> None:
+        nonlocal total
+        if id(obj) not in seen:
+            seen.add(id(obj))
+            total += sys.getsizeof(obj)
+
+    add(state._dictionary)
+    for entry in state._dictionary:
+        add(entry)
+    links = state._links
+    add(links)
+    for code, (base, tail) in links.items():
+        add(code)
+        add(links[code])
+        add(base)
+        add(tail)
+    return total
+
+
+@pytest.mark.parametrize("shape", ["flat", "linked"])
+def test_unix_compress_worst_case_table_stays_under_the_stated_bound(
+    shape: str,
+) -> None:
+    """The dictionary bound stated in ``unix_compress.py`` and ``unix-compress.md`` §4.
+
+    The run's last entry is one byte short of a cap, so every repeat of its code adds
+    an entry exactly at that cap: a distinct flat entry of the largest flat size, or a
+    link with a full tail. The shapes follow the constants, so raising either one
+    raises what this test measures.
+    """
+    if shape == "flat":
+        codes = _MAX_FLAT_ENTRY - 1
+    else:
+        codes = _MAX_FLAT_ENTRY + _MAX_ENTRY_TAIL - 1
+    data = _lzw_block_mode_run(codes, 65_536)
+    state = LzwState()
+    for i in range(0, len(data), 4096):
+        state.feed(data[i : i + 4096])
+        while not state.needs_input:
+            state.feed(b"")
+    assert len(state._dictionary) == 1 << 16  # the table is full
+    if shape == "flat":
+        assert not state._links
+    else:
+        assert len(state._links) > 65_000
+    # A free-threaded build's bytes and int headers are 16 bytes larger; it measures
+    # up to 20.3 MiB where the default build measures 18.8 MiB.
+    free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+    limit_mib = 21 if free_threaded else 19
+    assert _lzw_table_bytes(state) < limit_mib * 2**20
+
+
+def _lzw_non_block_mode_run(codes: int) -> bytes:
+    """A 16-bit ``.Z`` without block mode, laid out the way ``compress -C`` writes it.
+
+    Every code is the KwKwK case, so entry ``k`` is ``k`` bytes of ``a``. Without
+    block mode the first free code is 256, not 257, so the reference widens a code
+    later: after 257 codes at 9 bits rather than 256. At each widening the writer
+    pads the current group of eight codes with zero codes.
+    """
+    out = bytearray(b"\x1f\x9d\x10")
+    width, in_group, bits, nbits = 9, 0, 0, 0
+    free_code = 256
+
+    def emit(code: int) -> None:
+        nonlocal bits, nbits, in_group
+        bits |= code << nbits
+        nbits += width
+        in_group = (in_group + 1) % 8
+        while nbits >= 8:
+            out.append(bits & 0xFF)
+            bits >>= 8
+            nbits -= 8
+
+    for i, code in enumerate([97] + [255 + k for k in range(1, codes)]):
+        emit(code)
+        if i:
+            free_code += 1
+        if free_code > (1 << width) - 1 and width < 16:
+            while in_group:
+                emit(0)
+            width += 1
+    if nbits:
+        out.append(bits & 0xFF)
+    return bytes(out)
+
+
+@requires_binary("gzip")
+def test_unix_compress_non_block_mode_fixture_is_what_gzip_reads() -> None:
+    """Pins the fixture for the xfail below to the reference decoder."""
+    import subprocess
+
+    codes = 600
+    result = subprocess.run(
+        ["gzip", "-dc"],
+        input=_lzw_non_block_mode_run(codes),
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout == b"a" * (codes * (codes + 1) // 2)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "LzwState widens codes after 256 codes in every mode; without block mode the "
+        "reference widens after 257, so a compress -C stream past 9 bits is refused "
+        "with CorruptionError"
+    ),
+)
+def test_unix_compress_non_block_mode_decodes_like_the_reference() -> None:
+    codes = 600
+    compressed = _lzw_non_block_mode_run(codes)
+    with open_codec_stream(Codec.UNIX_COMPRESS, io.BytesIO(compressed)) as stream:
+        assert stream.read() == b"a" * (codes * (codes + 1) // 2)
 
 
 def test_decompressor_read_one_bounds_internal_buffer() -> None:

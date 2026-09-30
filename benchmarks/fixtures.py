@@ -14,6 +14,7 @@ from __future__ import annotations
 import gzip
 import io
 import os
+import random
 import shutil
 import subprocess
 import tarfile
@@ -91,6 +92,8 @@ class FixtureSet:
     targz_path: Path
     tarbz2_path: Path
     gzip_path: Path
+    unix_compress_text_path: Path | None
+    unix_compress_zeros_path: Path | None
     solid_7z: Path | None
     many_7z: Path | None
     nonsolid_7z: Path | None
@@ -177,6 +180,37 @@ def build_tar(path: Path, scale: Scale, *, mode: str = "w") -> None:
 
 def build_gzip(path: Path, scale: Scale) -> None:
     path.write_bytes(gzip.compress(_payload(0, scale.gzip_size), compresslevel=6))
+
+
+def _text_payload(size: int) -> bytes:
+    """Deterministic word salad: LZW dictionary entries stay short, as on real text."""
+    rng = random.Random(0)
+    words = [
+        bytes(
+            rng.choice(b"abcdefghijklmnopqrstuvwxyz") for _ in range(rng.randint(2, 9))
+        )
+        for _ in range(2000)
+    ]
+    out = bytearray()
+    while len(out) < size:
+        out += rng.choice(words)
+        out += b"\n" if rng.random() < 0.08 else b" "
+    return bytes(out[:size])
+
+
+def build_unix_compress(path: Path, data: bytes) -> bool:
+    """Write ``data`` as a ``.Z`` with ncompress (a dev dependency). False without it."""
+    try:
+        import ncompress
+    except ImportError:
+        return False
+    path.write_bytes(ncompress.compress(data))
+    return True
+
+
+def unix_compress_zeros_size(scale: Scale) -> int:
+    """A zero run builds dictionary entries far past the decoder's flat-entry cap."""
+    return 4 * scale.gzip_size
 
 
 def build_solid_7z(path: Path, scale: Scale) -> int:
@@ -411,6 +445,8 @@ def materialize_fixtures(
     targz_path = root / "common.tar.gz"
     tarbz2_path = root / "common.tar.bz2"
     gzip_path = root / "common.gz"
+    z_text_candidate = root / "text.Z"
+    z_zeros_candidate = root / "zeros.Z"
     if not zip_path.exists():
         build_zip(zip_path, scale_obj)
     if not zip_lzma_path.exists():
@@ -423,6 +459,16 @@ def materialize_fixtures(
         build_tar(tarbz2_path, scale_obj, mode="w:bz2")
     if not gzip_path.exists():
         build_gzip(gzip_path, scale_obj)
+    z_text_path: Path | None = z_text_candidate
+    if not z_text_candidate.exists() and not build_unix_compress(
+        z_text_candidate, _text_payload(scale_obj.gzip_size)
+    ):
+        z_text_path = None
+    z_zeros_path: Path | None = z_zeros_candidate
+    if not z_zeros_candidate.exists() and not build_unix_compress(
+        z_zeros_candidate, bytes(unix_compress_zeros_size(scale_obj))
+    ):
+        z_zeros_path = None
 
     zip_aes_path: Path | None = None
     unpacked_zip_aes = 0
@@ -508,6 +554,8 @@ def materialize_fixtures(
         targz_path=targz_path,
         tarbz2_path=tarbz2_path,
         gzip_path=gzip_path,
+        unix_compress_text_path=z_text_path,
+        unix_compress_zeros_path=z_zeros_path,
         solid_7z=solid_7z,
         many_7z=many_7z,
         nonsolid_7z=nonsolid_7z,
