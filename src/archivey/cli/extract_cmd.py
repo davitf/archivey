@@ -505,8 +505,13 @@ def _escaped_where(result: ExtractionResult, target: Path) -> str:
 
 def _has_root(name: str) -> bool:
     """Whether a stored name had a root for extraction to drop: a leading ``/`` or
-    ``\\``, or a drive letter followed by one. Only a re-root sets ``presented_name`` on
-    such a name, since a portable rewrite alone never touches the root."""
+    ``\\``, or a drive letter followed by one.
+
+    A copy of ``archivey.internal.filters._is_rooted``, which the CLI may not import
+    (it uses only the public API); keep the two in step. A rooted ``presented_name``
+    therefore means a re-root ran: ``STRICT`` refuses a rooted name before any rewrite,
+    and at every policy ``check_universal`` refuses a written name that is still
+    absolute, so a rooted name that was not re-rooted never reaches disk."""
     return name[:1] in ("/", "\\") or (
         name[:1].isascii() and name[:1].isalpha() and name[1:3] in (":/", ":\\")
     )

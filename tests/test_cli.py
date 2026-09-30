@@ -2360,7 +2360,8 @@ def _tar_with_dirs(path: Path, names: list[str]) -> Path:
             info = tarfile.TarInfo(name)
             if name.endswith("/"):
                 info.type = tarfile.DIRTYPE
-                # TarInfo defaults to 0o644, which a non-root run cannot write into.
+                # TarInfo defaults to 0o644, and archivey chmods a directory as soon as
+                # it creates it, so a non-root run could not write its children.
                 info.mode = 0o755
                 tf.addfile(info)
             else:
