@@ -397,29 +397,24 @@ def _report_extraction(
             # the same reason as a rename — the on-disk name is not the archive's.
             # A re-root is the exception: a ``tar -P`` backup re-roots every member, so
             # re-roots are counted and reported once, as GNU tar does, and listed per
-            # member only under --verbose. A portable rewrite on top keeps its line.
-            if result.presented_name is not None and _was_rerooted(
-                result.presented_name
-            ):
-                rerooted += 1
-            if result.presented_name is not None and _only_rerooted(
-                result.presented_name, result.path, target
-            ):
-                if verbose:
+            # member only under --verbose. A portable rewrite on top of a re-root goes
+            # with it: the result carries one ``presented_name`` for both, and the CLI
+            # cannot tell them apart from the path (a hoist, a trailing ``/`` or a
+            # collision suffix all change it too), so the verbose line shows both.
+            if result.presented_name is not None:
+                rerooted_name = _has_root(result.presented_name)
+                if rerooted_name:
+                    rerooted += 1
+                if not rerooted_name or verbose:
+                    # ``presented_name`` is the full relative name, so the arrow's other
+                    # side must be too: a basename would print ``dir/foo. -> foo`` and
+                    # invent a destination the member never had.
+                    label = "re-rooted" if rerooted_name else "name rewritten"
                     print(
-                        f"re-rooted: {escape_member_name(result.presented_name)} -> "
+                        f"{label}: {escape_member_name(result.presented_name)} -> "
                         f"{escape_member_name(_relative_name(result.path, target))}",
                         file=err,
                     )
-            elif result.presented_name is not None:
-                # ``presented_name`` is the full relative name, so the arrow's other side
-                # must be too: a basename would print ``dir/foo. -> foo`` and invent a
-                # destination the member never had.
-                print(
-                    f"name rewritten: {escape_member_name(result.presented_name)} -> "
-                    f"{escape_member_name(_relative_name(result.path, target))}",
-                    file=err,
-                )
         elif status is ExtractionStatus.OVERWRITTEN:
             # Written, then clobbered by a later member. Not counted as extracted: its
             # content is not what is on disk. Always reported — data was lost.
@@ -508,32 +503,13 @@ def _escaped_where(result: ExtractionResult, target: Path) -> str:
     return escape_member_name(result.member.name)
 
 
-def _strip_root(name: str) -> str:
-    """``name`` without the root a re-root drops: leading ``/`` or ``\\``, or a drive
-    letter followed by one, repeatedly. Mirrors the library's re-root, which the CLI
-    may not import, closely enough to tell a re-root from a portable rewrite."""
-    while True:
-        if name[:1] in ("/", "\\"):
-            name = name.lstrip("/\\")
-        elif name[:1].isascii() and name[:1].isalpha() and name[1:3] in (":/", ":\\"):
-            name = name[2:]
-        else:
-            return name
-
-
-def _was_rerooted(presented_name: str) -> bool:
-    """Whether the stored name had a root that extraction dropped."""
-    return _strip_root(presented_name) != presented_name
-
-
-def _only_rerooted(
-    presented_name: str, path: PurePath | None, target: PurePath
-) -> bool:
-    """Whether the written name differs from the stored one only by the root it lost.
-
-    Anything else in the difference (a percent-encoded byte, a reserved stem) is a
-    portable rewrite and keeps its own per-member line."""
-    return _strip_root(presented_name) == _relative_name(path, target)
+def _has_root(name: str) -> bool:
+    """Whether a stored name had a root for extraction to drop: a leading ``/`` or
+    ``\\``, or a drive letter followed by one. Only a re-root sets ``presented_name`` on
+    such a name, since a portable rewrite alone never touches the root."""
+    return name[:1] in ("/", "\\") or (
+        name[:1].isascii() and name[:1].isalpha() and name[1:3] in (":/", ":\\")
+    )
 
 
 def _relative_name(path: PurePath | None, target: PurePath) -> str:
