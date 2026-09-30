@@ -260,13 +260,25 @@ def _deflate_member_variants() -> dict[str, bytes]:
     }
 
 
-@requires("rapidgzip")
-@pytest.mark.xfail(
+_Z7_UNDETECTED = pytest.mark.xfail(
     strict=True,
-    reason="Z7: use_rapidgzip=ON reads past the end of a raw DEFLATE member's stream, "
-    "so OFF and ON disagree on whether the same member raises",
+    reason="Z7: use_rapidgzip=ON reads past the end of a raw DEFLATE member's stream; "
+    "when the output still matches the declared size and CRC, nothing short of a "
+    "second decode shows that zlib would have stopped earlier",
 )
-@pytest.mark.parametrize("case", sorted(_deflate_member_variants()))
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param("two_streams_declared_both", marks=_Z7_UNDETECTED),
+        # Fixed: output past the declared size, or a data error, hands the member to
+        # zlib from the position already delivered.
+        "two_streams_declared_first",
+        "trailing_junk",
+    ],
+)
 def test_rapidgzip_on_and_off_agree_on_a_zip_deflate_member(case: str) -> None:
     blob = _deflate_member_variants()[case]
     off = _outcome(blob, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF))

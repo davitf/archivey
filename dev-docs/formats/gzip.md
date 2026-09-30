@@ -223,7 +223,10 @@ they start (§5, §7).
 
 **Other `rapidgzip` workarounds.** Its input is clipped to the known compressed length
 (`_bound_rapidgzip_source`), because it reads past the end of a raw DEFLATE stream looking
-for another member, and a 7z AES stage's padding would look like one. Its error messages
+for another member, and a 7z AES stage's padding would look like one. Inside that bound it
+still reads on past the stream's final block, where zlib stops, so a raw DEFLATE stream
+finishes on the standard library engine (`_StdlibOnAcceleratorError`) when `rapidgzip`
+fails on data or its output passes the size the container declared. Its error messages
 differ by platform (ISA-L on Linux, a different decoder on macOS, a bare
 `RuntimeError("Unknown exception")` for a near-end truncation on Windows), and
 `_translate_rapidgzip` maps each; the Windows one becomes `CorruptionError`, not

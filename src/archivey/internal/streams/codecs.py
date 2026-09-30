@@ -1052,6 +1052,13 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     its data or a damaged one. An error from the caller's own source is not a data
     error and passes through unchanged. So does one from a seek, which the caller asked
     for and which leaves no delivered data to lose.
+
+    ``limit``, the size a container declared, switches the same way when a read would
+    take the output past it. For raw DEFLATE, rapidgzip decodes on past the stream's
+    final block, into a second stream, where zlib stops. Output past the declared size
+    is either that or a stream too long for both decoders, and the standard library
+    decides which, from the position before that read. Up to the end of the first
+    stream the two decoders agree, so a caller sees what the standard library gives.
     """
 
     readinto_passthrough = False
@@ -1064,12 +1071,14 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         fallback_path: str | None,
         open_stdlib: Callable[[CodecSource], BinaryIO],
         label: str,
+        limit: int | None = None,
     ) -> None:
         super().__init__(inner)
         self._reopen = reopen
         self._fallback_path = fallback_path
         self._open_stdlib = open_stdlib
         self._label = label
+        self._limit = limit
         self._position = 0
         self.switched = False
 
@@ -1083,6 +1092,13 @@ class _StdlibOnAcceleratorError(DelegatingStream):
                 or _translate_rapidgzip(exc, self._label) is None
             ):
                 raise
+            self._switch()
+            data = self._inner.read(size)
+        if (
+            self._limit is not None
+            and not self.switched
+            and self._position + len(data) > self._limit
+        ):
             self._switch()
             data = self._inner.read(size)
         self._position += len(data)
@@ -2702,12 +2718,30 @@ class DeflateCodec(_ZlibErrorCodec):
             # rapidgzip auto-detects raw DEFLATE. Bound the input: it over-reads
             # past EOS looking for a concatenated member (AES pad would look
             # like a second member).
-            stream = _open_rapidgzip(
-                _bound_rapidgzip_source(source, params, config),
-                "deflate",
-                config,
+            accel_source, reopen = _accelerator_backstop_source(
+                _bound_rapidgzip_source(source, params, config)
             )
+            # _refuse_forward_only_accelerator has refused a source that cannot seek.
+            assert reopen is not None
+            stream = _open_rapidgzip(accel_source, "deflate", config)
             if stream is not None:
+                # zlib ends the member at the stream's final block; rapidgzip reads on
+                # into whatever follows. The standard library decides both a data
+                # error and output past the declared size (_StdlibOnAcceleratorError).
+                stream = _StdlibOnAcceleratorError(
+                    stream,
+                    reopen=reopen,
+                    fallback_path=(
+                        os.fspath(accel_source)
+                        if isinstance(accel_source, (str, os.PathLike))
+                        else None
+                    ),
+                    open_stdlib=lambda fallback: ZlibDecompressorStream(
+                        fallback, wbits=-15
+                    ),
+                    label="deflate",
+                    limit=config.expected_decompressed_size,
+                )
                 return _StdlibSeekContract(_wrap_accelerated_length(stream, config))
         # Stdlib raw deflate; a backward seek re-decodes from the start (see rewind_warning).
         return ZlibDecompressorStream(source, wbits=-15)
