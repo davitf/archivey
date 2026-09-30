@@ -249,13 +249,6 @@ def test_directory_source_deeper_than_path_max_lists_and_reads(
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "D2: detect_format(path) on a FIFO calls tell() on the pipe and raises a raw "
-        "OSError(ESPIPE); open_archive(path) on the same FIFO reads it fine"
-    ),
-)
 def test_detect_format_on_a_fifo_path_matches_open_archive(tmp_path: Path) -> None:
     fifo = tmp_path / "payload"
     os.mkfifo(fifo)
@@ -302,13 +295,6 @@ def _iso_image() -> bytes:
     or shutil.which("losetup") is None,
     reason="needs root and losetup to attach a loop device",
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "D3: detection stats a device path, reads st_size 0 as the source length, "
-        "size-gates the ISO far-magic tier away and reports 'no bytes to read'"
-    ),
-)
 def test_iso_on_a_block_device_opens(tmp_path: Path) -> None:
     image = tmp_path / "image.iso"
     image.write_bytes(_iso_image())
@@ -332,13 +318,6 @@ def test_iso_on_a_block_device_opens(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not os.path.exists("/dev/zero"), reason="needs /dev/zero")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "D3: detection takes a character device's st_size of 0 as its length and "
-        "says /dev/zero has 'no bytes to read'"
-    ),
-)
 def test_detection_does_not_call_a_character_device_empty() -> None:
     with pytest.raises(FormatDetectionError) as caught:
         detect_format("/dev/zero")
