@@ -3,7 +3,7 @@
 Public surface layout (this package root only — not ``internal`` / ``cli``):
 
 - :mod:`archivey.core` — ``open_archive`` / ``open_stream`` / ``extract`` / detection
-- :mod:`archivey.reader` — ``ArchiveReader`` ABC
+- :mod:`archivey.reader` — ``ArchiveReader`` / ``ForwardArchiveReader`` ABCs
 - :mod:`archivey.types` — formats, members, compression, extraction policies/results,
   format availability
 - :mod:`archivey.detection` — ``FormatInfo`` / ``DetectionConfidence``
@@ -103,8 +103,9 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.filters import sanitize_names
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.reader import ArchiveReader, MemberSelector
+from archivey.reader import ArchiveReader, ForwardArchiveReader, MemberSelector
 from archivey.types import (
     AbortOn,
     ArchiveFormat,
@@ -160,6 +161,7 @@ __all__ = [
     "MemberListReport",
     "MemberSelector",
     "MemberFilter",
+    "sanitize_names",
     "detect_format",
     "FormatInfo",
     "DetectionConfidence",
@@ -170,6 +172,7 @@ __all__ = [
     "FormatAvailability",
     "MissingComponent",
     "ArchiveReader",
+    "ForwardArchiveReader",
     "ArchiveStream",
     "ArchiveFormat",
     "ContainerFormat",
@@ -225,10 +228,10 @@ def _pin_public_module() -> None:
 
     Public data types are defined in public modules (:mod:`archivey.types`,
     :mod:`archivey.detection`, …), so their ``__module__`` is already a stable path and
-    this leaves them alone. Five names in ``__all__`` are still defined under
+    this leaves them alone. Six names in ``__all__`` are still defined under
     ``archivey.internal``: ``ArchiveStream`` (an implementation class on the internal
-    stream base, never pickled) and four functions (``detect_format`` and the three
-    registry queries). ``pickle`` records a class's or function's
+    stream base, never pickled) and five functions (``detect_format``, the three
+    registry queries and ``sanitize_names``). ``pickle`` records a class's or function's
     ``__module__``, so a persisted reference to one would otherwise name an internal path
     that could then never move without breaking the caller's data. Pinned here, it names
     ``archivey``, which is stable, and ``repr()``, ``help()`` and ``inspect.getmodule``

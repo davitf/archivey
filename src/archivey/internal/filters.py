@@ -4,7 +4,11 @@ Two independent stages sit in front of every on-disk write (see ``safe-extractio
 
 * :func:`check_universal` — the non-bypassable path/link/special-file constraints,
   enforced under **every** :class:`ExtractionPolicy` (including ``TRUSTED``). Run on the
-  **original** member before any transform.
+  **final** member, after the policy transform and the caller's filter, so a filter can
+  rename an unsafe member to a safe one; whatever it returns is checked.
+* :func:`reroot_absolute` — under ``STANDARD`` and ``TRUSTED``, an absolute name is
+  moved inside the destination by dropping its root, as tar, unzip and 7-Zip do.
+  ``STRICT`` does not re-root, so ``check_universal`` refuses the member there.
 * the policy transforms in :data:`POLICY_TRANSFORMS` — permission/ownership normalization
   applied to a transient copy of the member, selected by the active policy.
 
@@ -43,6 +47,62 @@ def _is_absolute(name: str) -> bool:
     return len(name) >= 2 and name[0] in string.ascii_letters and name[1] == ":"
 
 
+def _is_rooted(name: str) -> bool:
+    """Whether ``name`` starts at a filesystem root: a leading ``/`` or ``\\`` (POSIX
+    root, UNC share) or a drive letter followed by a separator (``C:/``, ``C:\\``).
+
+    Narrower than :func:`_is_absolute`, on purpose. A drive-relative ``C:x`` is also an
+    ordinary POSIX name (``a:b``), so it has no root to drop: rewriting it to ``x``
+    would put the member where another member named ``x`` belongs. It stays refused.
+    """
+    if name[:1] in ("/", "\\"):
+        return True
+    return _is_absolute(name) and name[2:3] in ("/", "\\")
+
+
+def strip_absolute_root(name: str) -> str:
+    """``name`` with its root removed: every leading ``/`` and ``\\`` and a drive letter
+    followed by a separator, repeatedly, so ``C:\\x``, ``//host/share/x`` and ``/C:/x``
+    all lose their whole root. A name that is nothing but a root becomes ``"."``. A name
+    that is not rooted (see :func:`_is_rooted`), ``C:x`` included, is returned as is.
+
+    ``C:/`` is dropped on every OS, as bsdtar does, so a member extracts to the same
+    place wherever it is extracted. GNU tar keeps it as a literal directory on POSIX.
+    """
+    stripped = name
+    while _is_rooted(stripped):
+        if stripped[:1] in ("/", "\\"):
+            stripped = stripped.lstrip("/\\")
+        else:  # a drive letter and its separator; the next pass strips the separator
+            stripped = stripped[2:]
+    return stripped or "."
+
+
+def reroot_absolute(member: ArchiveMember) -> ArchiveMember:
+    """Move an absolute ``member`` inside the destination by dropping its root.
+
+    ``/etc/x`` extracts as ``etc/x``, which is what GNU tar, bsdtar, unzip, 7-Zip and
+    Python's ``tarfile`` ``data`` filter all do. Only the root goes: a ``..`` component
+    is left in place for :func:`check_universal` to refuse.
+
+    A hardlink's target is re-rooted too, because it names another member of the same
+    archive (``tar -P`` stores both with their ``/``). A symlink's target is left as
+    stored: it is a filesystem path, and an absolute one is refused as an escape.
+
+    Only a rooted name is re-rooted (:func:`_is_rooted`); a drive-relative ``C:x`` is
+    left for :func:`check_universal` to refuse.
+
+    Returns ``member`` itself when there is nothing to change.
+    """
+    changes: dict[str, object] = {}
+    if _is_rooted(member.name):
+        changes["name"] = strip_absolute_root(member.name)
+    target = member.link_target
+    if member.type is MemberType.HARDLINK and target is not None and _is_rooted(target):
+        changes["link_target"] = strip_absolute_root(target)
+    return member.replace(**changes) if changes else member
+
+
 def _within(path: Path, root: Path) -> bool:
     return path == root or path.is_relative_to(root)
 
@@ -78,8 +138,8 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
 
     ``dest`` is the extraction root. Raises :class:`FilterRejectionError` on the first
     violation (an escaping path, an escaping symlink, a special file); returns ``None``
-    when the member is safe to extract. Applied to the
-    original member, before any policy transform, regardless of the active policy.
+    when the member is safe to extract. Applied to the member about to be written, after
+    the policy transform and any caller filter, regardless of the active policy.
 
     Everything here makes the *write itself* dangerous or impossible — escaping the
     destination, a NUL the OS truncates on, a device node. A name that is merely
@@ -92,7 +152,8 @@ def check_universal(member: ArchiveMember, dest: Path) -> None:
     # normalization keeps a leading "/" and every ".."), so the danger is visible directly
     # on member.name — no separate raw_name inspection is needed. Any ".." component is
     # rejected (escaping and internal alike): a well-formed archive has no reason to carry
-    # one. (A future opt-in SANITIZE policy may re-root such names instead of rejecting.)
+    # one. An absolute name reaching here was not re-rooted: STRICT, or a filter that
+    # returned one (see reroot_absolute).
     if "\x00" in name:
         raise FilterRejectionError("Null byte in member name", member_name=name)
     # A name the platform filesystem encoding cannot represent (a lone surrogate outside
@@ -277,10 +338,12 @@ def _sanitize_portable_name(name: str) -> str:
 
     The escaping is therefore reversible within a rewritten name, not across names: a
     stored ``%FF`` is returned verbatim and a raw ``0xFF`` byte is also written ``%FF``.
-    The name alone cannot tell the two apart; ``ExtractionResult.presented_name`` can,
-    since it is set only when the name was rewritten. The collision map sees both
-    spellings as one key, so the second is resolved by the ``OverwritePolicy`` rather
-    than silently overwriting the first.
+    The name alone cannot tell the two apart; ``ExtractionResult.presented_name`` can:
+    after this rewrite it differs from the written name in the escaped bytes. A set
+    ``presented_name`` alone is not enough, since an absolute-name re-root sets it too,
+    and then it differs from the written name only by the root it lost. The collision
+    map sees both spellings as one key, so the second is resolved by the
+    ``OverwritePolicy`` rather than silently overwriting the first.
     """
     if not any("\udc80" <= c <= "\udcff" for c in name):
         return name
@@ -386,6 +449,105 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     if name != member.name:
         return member.replace(name=name)
     return member
+
+
+# --- sanitize_names: a ready-made caller filter ---------------------------------------
+
+
+def _collapse_dotdot(name: str) -> str:
+    """``name`` with every ``..`` resolved lexically and none left over.
+
+    ``a/../b`` becomes ``b``, as the filesystem the archive came from would read it. A
+    ``..`` with nothing left to climb out of is dropped, so ``../x`` becomes ``x``, which
+    is what unzip and 7-Zip do. The separators between the kept segments stay as stored:
+    a TAR name keeps ``\\`` as an ordinary character on POSIX.
+    """
+    parts = _SEP_KEEP_SPLIT.split(name)
+    if ".." not in parts:
+        return name
+    kept: list[str] = []  # alternating segment, separator, segment, ...
+    for index in range(0, len(parts), 2):
+        segment = parts[index]
+        separator = parts[index + 1] if index + 1 < len(parts) else ""
+        if segment == "..":
+            # Drop the segment this one climbs out of, with its separator. An empty
+            # or "." segment is not a directory to climb out of, so it goes too and
+            # the ".." carries on to the real segment before it (a\.\..\b is b).
+            while kept and kept[-2] in ("", "."):
+                del kept[-2:]
+            if kept:
+                del kept[-2:]
+            continue
+        kept += [segment, separator]
+    joined = "".join(kept)
+    return joined.lstrip("/\\") or "."
+
+
+def _sanitize_segment(segment: str) -> str:
+    """A path segment made writable on Windows: ``:`` becomes ``_`` and a reserved
+    device name gets ``_`` after its stem (``CON.txt`` → ``CON_.txt``)."""
+    segment = segment.replace(":", "_")
+    stem, dot, rest = segment.partition(".")
+    if stem.strip().upper() in _RESERVED_NAMES:
+        return stem + "_" + dot + rest
+    return segment
+
+
+def _sanitize_path(name: str) -> str:
+    """Every ``sanitize_names`` rewrite of one path: a member name or a hardlink target."""
+    if not name.isascii():
+        name = "".join(c for c in name if c not in BIDI_REORDERING_CONTROLS)
+    name = name.replace("\x00", "_")
+    # Only a rooted name loses its root. A drive-relative "a:b" is kept, and the
+    # segment rewrite below turns its colon into "_".
+    name = _collapse_dotdot(strip_absolute_root(name))
+    return "".join(
+        part if part in ("/", "\\") else _sanitize_segment(part)
+        for part in _SEP_KEEP_SPLIT.split(name)
+    )
+
+
+def sanitize_names(member: ArchiveMember) -> ArchiveMember:
+    """Rewrite a member's name so that extraction writes it instead of refusing it.
+
+    Pass it as ``filter=`` to :func:`archivey.extract` or ``extract_all()`` (or call it
+    from your own filter) to extract every member that has a safe place to go under a
+    rewritten name, instead of refusing the members with an unsafe one. It changes:
+
+    - a rooted name (``/etc/x``, ``C:\\x``, ``\\\\host\\share\\x``): the root
+      is dropped, so the member lands at ``etc/x`` inside the destination. ``STANDARD``
+      and ``TRUSTED`` already do this; under ``STRICT`` it happens only with this filter.
+    - a ``..`` component: resolved against the segment before it (``a/../b`` → ``b``),
+      and dropped when there is none (``../x`` → ``x``).
+    - a bidirectional override or isolate character: removed.
+    - a Windows-reserved device name (``CON``, ``NUL.txt``) or a ``:`` in a segment:
+      ``_`` is added after the reserved stem (``CON_``, ``NUL_.txt``) and ``:`` becomes
+      ``_``.
+    - a NUL character: becomes ``_``.
+
+    A hardlink's target gets the same rewrite. That keeps the target inside the
+    destination, which extraction checks; it does not choose the linked member, which
+    was resolved from the stored target when the archive was listed. A hardlink whose
+    stored target names no member (``../a``) still fails. A symlink's target is left as
+    stored: it is a path on the filesystem, and one that points outside the destination
+    is still refused.
+
+    Two members can end up with the same name (``a/../x`` and ``x``). The second is then
+    handled by the ``overwrite`` option like any other clash. The result's
+    ``member.name`` keeps the stored name and ``path`` shows where it was written.
+
+    Returns ``member`` unchanged when nothing needed rewriting.
+    """
+    changes: dict[str, object] = {}
+    name = _sanitize_path(member.name)
+    if name != member.name:
+        changes["name"] = name
+    target = member.link_target
+    if member.type is MemberType.HARDLINK and target is not None:
+        new_target = _sanitize_path(target)
+        if new_target != target:
+            changes["link_target"] = new_target
+    return member.replace(**changes) if changes else member
 
 
 def collision_key(name: str, policy: ExtractionPolicy) -> str:

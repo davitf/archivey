@@ -255,20 +255,13 @@ def test_explicit_rar_volume_paths_in_separate_directories_open(
 
 
 @requires_binary("unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: -n./<name> matches every member with that name, so each of two "
-        "same-named compressed members reads as over-long CorruptionError"
-    ),
-)
 def test_duplicate_named_compressed_rar5_members_read_their_own_bytes(
     tmp_path: Path,
 ) -> None:
     """A valid archive whose later entry repeats a name (unrar t: All OK).
 
-    ``unrar x`` extracts it (the last entry wins); archivey refuses both reads and
-    the extraction of the current entry, because ``unrar p -n./-inul`` emits both.
+    ``unrar p -n./-inul`` emits both entries, in archive order; each read skips
+    to its own.
     """
     payloads = _hostile_argv_payloads()
     blocks = _rar5_parse(_fixture("hostile_argv__.rar").read_bytes())
@@ -285,13 +278,6 @@ def test_duplicate_named_compressed_rar5_members_read_their_own_bytes(
 
 
 @requires_binary("unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: an invalid-UTF-8 RAR5 name decodes to U+FFFD and the -n mask then "
-        "selects a sibling literally named U+FFFD; its bytes are returned silently"
-    ),
-)
 def test_invalid_utf8_name_never_reads_a_siblings_bytes(tmp_path: Path) -> None:
     """Bytes returned for a member must be that member's bytes.
 
@@ -377,22 +363,18 @@ def test_rar3_8bit_name_member_is_readable(tmp_path: Path) -> None:
         assert archive.read(member) == expected
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: rar_parser._TRY_ENCODINGS tries utf-16le before windows-1252, so an "
-        "even-length 8-bit RAR3 name lists as CJK/private-use garbage"
-    ),
-)
 def test_rar3_8bit_name_is_not_decoded_as_utf16(tmp_path: Path) -> None:
-    """``caf\\xe9.txt`` is eight bytes; it must not list as ``'慣\\ue966琮瑸'``.
-
-    ``encoding=`` is dropped for RAR, so the caller has no way to correct it.
-    """
+    """``caf\\xe9.txt`` is eight bytes; it must not list as ``'慣\\ue966琮瑸'``."""
     path = _renamed_rar4_hostile(tmp_path, b"caf\xe9.txt")
     with open_archive(path) as archive:
-        name = archive.members()[0].name
-    assert name.endswith(".txt"), repr(name)
+        member = archive.members()[0]
+        # The fixture was written on Unix, so the fallback is windows-1252.
+        assert member.name == "café.txt"
+        assert member.raw_name == b"caf\xe9.txt"
+    with open_archive(path, encoding="cp437") as archive:
+        member = archive.members()[0]
+        assert member.name == "cafΘ.txt"
+        assert member.raw_name == b"caf\xe9.txt"
 
 
 # --- non-ArchiveyError exceptions --------------------------------------------

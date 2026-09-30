@@ -519,8 +519,9 @@ def test_prefixed_path_within_the_limit_reads_under_unar(
         (note,) = archive.cost.notes
         assert "SpoolLimits.max_bytes=" in note
         assert archive.read("zeros.bin") == b"\x00" * 8192
-    assert len(temp_artifacts) == 1
-    assert not temp_artifacts[0].exists()
+    # unar's private directory, and the copy made inside it.
+    assert len(temp_artifacts) == 2
+    assert not any(path.exists() for path in temp_artifacts)
 
 
 def test_refusal_is_remembered_so_a_retry_writes_nothing(

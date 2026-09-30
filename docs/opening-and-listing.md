@@ -307,8 +307,8 @@ handle it:
 - **Keep the original bytes.** `member.raw_name` holds the name as stored in the
   archive, here `b'caf\xe9.txt'`.
 - **Name the encoding.** If you know which encoding the archive uses, pass it:
-  `open_archive(path, encoding="latin-1")` gives `'café.txt'`. Only ZIP, TAR and ISO
-  read `encoding=`; the other formats decode names their own way, and passing it to
+  `open_archive(path, encoding="latin-1")` gives `'café.txt'`. Only ZIP, TAR, ISO and
+  RAR read `encoding=`; the other formats decode names their own way, and passing it to
   them emits `ENCODING_ARGUMENT_UNUSED`. In some cases a name that is valid UTF-8
   ignores it; see the next section.
 
@@ -326,6 +326,9 @@ not valid UTF-8.
 | TAR, a PAX `path` or `linkpath` record | Used only when the bytes are not valid UTF-8 |
 | ISO, a Rock Ridge or plain ISO 9660 name, or a Rock Ridge link target | Used only when the bytes are not valid UTF-8; without it, see below |
 | ISO, a Joliet name | Ignored; Joliet names are UTF-16 |
+| RAR 1.5-4, a name stored only as 8-bit bytes | Decodes the name, and turns off the UTF-8 guess |
+| RAR 1.5-4, a name with the Unicode flag and no UTF-16 copy | Used only when the bytes are not valid UTF-8 |
+| RAR5, or a RAR 1.5-4 name with a UTF-16 copy | Ignored; the name is UTF-8 or UTF-16 |
 
 The UTF-8 flag and PAX records declare UTF-8, so for them UTF-8 wins. An ISO image never says which
 encoding its Rock Ridge names are in. Most tools write UTF-8, and older ones write
@@ -360,7 +363,10 @@ fallback to another encoding, bytes it cannot decode are escaped in the same way
 On extraction, `STRICT` (the default) and `STANDARD` write each escaped byte
 percent-encoded, as `caf%E9.txt`; only `TRUSTED` writes the stored bytes.
 `ExtractionResult.presented_name` holds the name before the rewrite, which also tells
-a rewritten `%E9` apart from one that was stored that way.
+a rewritten `%E9` apart from one that was stored that way: after the rewrite it
+differs from the written name in the escaped bytes. It is also set when an absolute
+name loses its root (`/etc/x` written as `etc/x`), and then differs from the written
+name only by that root.
 
 ## Duplicate names and is_current
 

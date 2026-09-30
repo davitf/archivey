@@ -344,13 +344,15 @@ def resolve_link_target_name(
       (``dir/link -> file`` means ``dir/file``), so it is joined to that directory and
       ``..`` is collapsed, as the filesystem would resolve it.
 
-    Returns ``None`` for a target that cannot be a member: an absolute target of either
-    kind (it points outside the archive namespace) or one that ``..``-escapes the
-    archive root. A leading ``/`` is the one place a hardlink target departs from
-    :func:`normalize_member_name`, which retains it in a name and leaves the refusal to
-    extraction: a link that follows it would lead out of the extraction root, so a
-    hardlink naming ``/abs`` does not resolve even when a member ``/abs`` exists. The escape test runs on the collapsed form for both kinds. The caller looks
-    the result up against normalized member names with :func:`link_target_name_keys`.
+    Returns ``None`` for a target that cannot be a member: an absolute symlink target
+    (a filesystem path outside the archive namespace) or a target of either kind that
+    ``..``-escapes the archive root. A hardlink target with a leading ``/`` keeps it, as
+    :func:`normalize_member_name` does in a name: ``tar -P`` stores ``/a`` and a
+    hardlink ``/b`` naming ``/a``, and the link names that member. Extraction re-roots
+    both or refuses both, and it writes a hardlink from the member, never by following
+    the target path. The escape test runs on the collapsed form for both kinds, with a
+    hardlink's leading ``/`` set aside. The caller looks the result up against
+    normalized member names with :func:`link_target_name_keys`.
 
     A backslash in ``target`` is a literal character, exactly as in member names: the
     backend that decoded the member already converted ``\\`` to ``/`` where the source
@@ -366,14 +368,17 @@ def resolve_link_target_name(
             return None  # absolute: outside the archive namespace
         base_dir = posixpath.dirname(link_name.rstrip("/"))
         joined = posixpath.join(base_dir, target)
+        root = ""
     else:
-        joined = target
+        # A hardlink's leading "/" is part of the member name it refers to.
+        root = "/" if target.startswith("/") else ""
+        joined = target.lstrip("/")
     resolved = posixpath.normpath(joined)
     if resolved in (".", "/") or resolved.startswith(("../", "/")) or resolved == "..":
         return None  # escapes the archive root (or names the root itself)
     if member_type == MemberType.SYMLINK:
         return resolved
-    return "/".join(seg for seg in joined.split("/") if seg not in ("", "."))
+    return root + "/".join(seg for seg in joined.split("/") if seg not in ("", "."))
 
 
 def link_target_name_keys(target_name: str) -> tuple[str, ...]:

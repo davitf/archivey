@@ -177,7 +177,7 @@ Exact matches only (no fuzzy/weak magic). Recognised:
 | ISO 9660 | `CD001` at 32769 |
 | ISO 9660, raw CD sector image | `00 FF×10 00` sector sync at 0 (claimed so `format-iso` can refuse it by name) |
 | TAR | `ustar` at 257 |
-| LZ4 | `04 22 4D 18` |
+| LZ4 | `04 22 4D 18` (frame); `02 21 4C 18` (legacy stream, `lz4 -l`) |
 | lzip | `LZIP` |
 | unix-compress | `1F 9D` |
 
@@ -199,6 +199,7 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 | Magic table consulted for zlib | No zlib entry; CMF/FLG → zlib probe |
 | `ustar` at 257, ≥512 bytes | TAR, `CERTAIN`, `magic` |
 | Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
+| Starts `02 21 4C 18` (legacy LZ4) | LZ4, `CERTAIN`, `magic` |
 
 #### Scenario: zstd frame prefix
 

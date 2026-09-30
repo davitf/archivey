@@ -47,7 +47,9 @@ from archivey.internal.filters import (
     apply_name_policy,
     check_universal,
     collision_key,
+    reroot_absolute,
 )
+from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
 from archivey.internal.selection import (
     CollectionSelector,
@@ -86,6 +88,20 @@ DEFAULT_MAX_EXTRACTED_BYTES = 2 * 2**30  # 2 GiB
 DEFAULT_MAX_RATIO = 1000.0
 DEFAULT_RATIO_ACTIVATION_THRESHOLD = 5 * 2**20  # 5 MiB
 DEFAULT_MAX_ENTRIES = 1_048_576  # 2**20
+
+
+def _symlink_escapes(link_path: Path, target: str, dest_root: Path) -> bool:
+    """Whether the symlink at ``link_path`` resolves outside ``dest_root`` now.
+
+    Resolved through the real filesystem, so links on the way are followed. A
+    cyclic or adversarial link makes ``resolve()`` raise ELOOP or ``RuntimeError``,
+    which counts as an escape: fail safe rather than crash.
+    """
+    try:
+        resolved = (link_path.parent / target).resolve()
+    except (OSError, RuntimeError):
+        return True
+    return not (resolved == dest_root or resolved.is_relative_to(dest_root))
 
 
 def _open_new_file(path: Path, mode: int) -> int:
@@ -393,6 +409,11 @@ class ExtractionCoordinator:
         # it (the pass's own ``written_paths``), for ``_makedirs``. Set per ``run()``.
         self._dest = Path()
         self._written_paths: set[Path] = set()
+        # The symlinks this run created and the paths each one's resolution depends on,
+        # so a later member that changes such a path gets them rechecked. Set per
+        # ``run()``.
+        self._links: LinkWatch | None = None
+        self._dest_root = Path()
 
     # --- entry point ---------------------------------------------------------------
 
@@ -442,6 +463,10 @@ class ExtractionCoordinator:
         # Created only after that report, so a refusal leaves no directory behind.
         self._ensure_dest_root(dest)
         dest_root = dest.resolve()
+        self._dest_root = dest_root
+        # Rechecks share the entry-count bound: a hostile archive can make each member
+        # recheck every link so far, and max_entries is what bounds members.
+        self._links = LinkWatch(dest_root, self._limits.max_entries)
         members_total = len(all_members) if all_members is not None else None
         total_estimate = self._estimate_total_bytes(all_members)
 
@@ -574,6 +599,7 @@ class ExtractionCoordinator:
             self._requested_path = None
             self._collided_with = None
             self._retyped = False
+            link_error: ArchiveyError | None = None
             try:
                 for held, held_index in self._unremoved.pop(original.name, {}).items():
                     # Unless another member has since replaced it under its own claim.
@@ -741,6 +767,9 @@ class ExtractionCoordinator:
                     self._drop_stale_copies(
                         original, results, written_paths, collision_map, dest
                     )
+                link_error = self._recheck_links(results, collision_map, dest)
+            if link_error is not None:
+                raise link_error
 
             if member_started and recorded_index is not None:
                 counted[recorded_index] = tracker.member_bytes
@@ -886,6 +915,8 @@ class ExtractionCoordinator:
         for path, index in stale.items():
             if path == landed:
                 continue
+            if path.is_symlink():
+                self._note_link_change(path)
             try:
                 os.unlink(path)
             except FileNotFoundError:
@@ -908,21 +939,36 @@ class ExtractionCoordinator:
     def _transform(
         self, original: ArchiveMember, dest_root: Path
     ) -> tuple[ArchiveMember | None, str | None]:
-        """Universal check on the original, then policy transform and user filter on a
-        transient copy.
+        """Policy transform and user filter on a transient copy, then the universal check
+        on the result.
 
         Returns ``(member_to_write, presented_name)`` — the member is ``None`` if the user
-        filter skipped it, and ``presented_name`` is the pre-rewrite full name when the
-        portable-name policy rewrote it, else ``None``. Raises a ``FilterRejectionError``
-        on a universal violation."""
-        check_universal(original, dest_root)
+        filter skipped it, and ``presented_name`` is the full name before a safety rewrite
+        (the absolute-name re-root or the portable-name policy) when one reaches disk,
+        else ``None``. Raises a ``FilterRejectionError`` on a universal violation."""
         transformed = POLICY_TRANSFORMS[self._policy](original)
+        # The re-root comes before the filter so the filter sees the name that would be
+        # written, as it already sees the policy's permission changes, and a filter
+        # need not strip roots itself under STANDARD or TRUSTED. Whether the re-root
+        # counts as a rewrite is decided after the filter, like the portable one: a
+        # member the filter drops or renames never reaches disk under the re-rooted name.
+        rerooted_from: str | None = None
+        if self._policy is not ExtractionPolicy.STRICT:
+            rerooted = reroot_absolute(transformed)
+            if rerooted.name != transformed.name:
+                rerooted_from = transformed.name
+            transformed = rerooted
+        rerooted_name = transformed.name
+        # The filter runs before the universal check, so it sees every member, the
+        # unsafe ones included, and can rename one to something safe. Whatever it
+        # returns is what gets checked and written.
         if self._filter is not None:
             transformed = self._filter(transformed)
             if transformed is None:
                 return None, None
-            # A caller filter can rename/relink; re-run the universal check on the result.
-            check_universal(transformed, dest_root)
+            if transformed.name != rerooted_name:
+                rerooted_from = None  # the filter chose this name; it is not a rewrite
+        check_universal(transformed, dest_root)
         if self._reader is not None and self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has
             # read yet: `read_link_targets=False`, or a streaming pass whose own read
@@ -946,9 +992,17 @@ class ExtractionCoordinator:
         # is checked too, and TRUSTED keeps faithful bytes. Reserved names / ':' are
         # rejected; a trailing dot/space (STRICT) or non-representable byte is rewritten to a
         # portable spelling, recorded on the result so the rename is not silent.
+        if rerooted_from is not None and AbortOn.NAME_SANITIZED in self._abort_on:
+            raise _AbortExtraction(
+                NameRewrittenError(
+                    f"Absolute name re-rooted: {quoted(rerooted_from)} -> "
+                    f"{quoted(transformed.name)}",
+                    member_name=original.name,
+                )
+            )
         portable = apply_name_policy(transformed, self._policy)
         if portable.name == transformed.name:
-            return portable, None
+            return portable, rerooted_from
         # The pre-rewrite spelling is the caller filter's output when there is one, which
         # is why it cannot be reconstructed from ``member.name`` and ``path`` alone.
         if AbortOn.NAME_SANITIZED in self._abort_on:
@@ -959,7 +1013,8 @@ class ExtractionCoordinator:
                     member_name=original.name,
                 )
             )
-        return portable, transformed.name
+        # After a re-root, the stored name is the one the caller will recognise.
+        return portable, rerooted_from or transformed.name
 
     @staticmethod
     def _needs_target_read(original: ArchiveMember, transformed: ArchiveMember) -> bool:
@@ -1095,6 +1150,10 @@ class ExtractionCoordinator:
             result = self._write_symlink(original, transformed, dest_root, dest_path)
             if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
                 written_paths.add(result.path)
+                if self._links is not None and transformed.link_target is not None:
+                    self._links.track(
+                        result.path, transformed.link_target, result_index
+                    )
             return result
 
         if transformed.type == MemberType.HARDLINK:
@@ -1317,6 +1376,8 @@ class ExtractionCoordinator:
             os.rmdir(dest_path)
         else:
             os.unlink(dest_path)
+            if stat.S_ISLNK(st.st_mode):
+                self._note_link_change(dest_path)
         written_paths.discard(dest_path)
         self._release_claim(collision_map, dest, dest_path)
         return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
@@ -1437,13 +1498,9 @@ class ExtractionCoordinator:
         # which we also treat as an escape (fail safe rather than crash). This is the third
         # of the three defense-in-depth layers named in the `safe-extraction` spec
         # ("Symlink Escape Re-Validated at Extraction Time"); layers 1-2 are in
-        # check_universal.
-        try:
-            resolved = (dest_path.parent / target).resolve()
-            escaped = not (resolved == dest_root or resolved.is_relative_to(dest_root))
-        except (OSError, RuntimeError):
-            escaped = True
-        if escaped:
+        # check_universal. A *later* member can still change what this link resolves
+        # to; the caller records the link in ``self._links`` for that.
+        if _symlink_escapes(dest_path, target, dest_root):
             try:
                 dest_path.unlink()
             except OSError:
@@ -1570,6 +1627,7 @@ class ExtractionCoordinator:
         )
         for member, stream in reader.stream_members(needed_sources):
             group = orphans_by_source[member.member_id]
+            link_error: ArchiveyError | None = None
             try:
                 self._materialize_orphan_source(
                     member,
@@ -1595,6 +1653,9 @@ class ExtractionCoordinator:
                 )
             finally:
                 self._close(stream)
+                link_error = self._recheck_links(results, collision_map, dest)
+            if link_error is not None:
+                raise link_error
             needed.discard(member.member_id)
             if not needed:
                 break  # every orphaned source is materialized; stop opening members
@@ -1752,70 +1813,159 @@ class ExtractionCoordinator:
         """Link each orphan in ``group`` against the source content already on disk
         (recorded under ``source_id``), applying the OverwritePolicy per link (O2 collisions
         resolved against the map) and recording per-link results; failures follow
-        ``OnError``."""
+        ``OnError``. A link can replace a symlink or a directory, so the symlinks it
+        may have moved are rechecked after each one, whatever its outcome."""
         for orphan in group:
-            resolved, prior, collided_with = self._resolve_collision(
-                orphan.original,
-                orphan.transformed,
-                orphan.dest_path,
-                collision_map,
-                dest,
-            )
             try:
-                if not self._prepare_destination(
-                    orphan.transformed, resolved, atomic=True
-                ):
-                    self._revise_result(
-                        results,
-                        orphan.result_index,
-                        ExtractionResult(
-                            orphan.original,
-                            None,
-                            ExtractionStatus.NOT_OVERWRITTEN,
-                            None,
-                            requested_path=orphan.dest_path,
-                            collided_with=collided_with,
-                        ),
-                    )
-                    continue
-                self._makedirs(resolved.parent, orphan.transformed)
-                self._place_link(
-                    source_paths, source_id, resolved, orphan.transformed, tracker
+                self._link_orphan(
+                    orphan,
+                    source_paths,
+                    source_id,
+                    tracker,
+                    results,
+                    collision_map,
+                    dest,
                 )
-            except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
-                raise
-            except (ArchiveyError, OSError) as exc:
+            finally:
+                link_error = self._recheck_links(results, collision_map, dest)
+            if link_error is not None:
+                raise link_error
+
+    def _link_orphan(
+        self,
+        orphan: _Orphan,
+        source_paths: dict[int, list[Path]],
+        source_id: int,
+        tracker: BombTracker,
+        results: list[ExtractionResult],
+        collision_map: dict[str, _Claim],
+        dest: Path,
+    ) -> None:
+        """One link of ``_link_orphan_group``, which rechecks symlinks after it."""
+        resolved, prior, collided_with = self._resolve_collision(
+            orphan.original,
+            orphan.transformed,
+            orphan.dest_path,
+            collision_map,
+            dest,
+        )
+        try:
+            if not self._prepare_destination(orphan.transformed, resolved, atomic=True):
                 self._revise_result(
                     results,
                     orphan.result_index,
                     ExtractionResult(
                         orphan.original,
                         None,
-                        ExtractionStatus.FAILED,
-                        exc,
+                        ExtractionStatus.NOT_OVERWRITTEN,
+                        None,
                         requested_path=orphan.dest_path,
                         collided_with=collided_with,
                     ),
                 )
-                if self._stops_on_failure():
-                    raise
-                # A single link's failure, not a source fan-out: no group id.
-                logger.warning("Skipping hardlink %r: %s", orphan.original.name, exc)
-                continue
-            result = ExtractionResult(
-                orphan.original,
-                resolved,
-                ExtractionStatus.EXTRACTED,
-                None,
-                requested_path=resolved if prior is not None else orphan.dest_path,
-                collided_with=collided_with,
+                return
+            self._makedirs(resolved.parent, orphan.transformed)
+            self._place_link(
+                source_paths, source_id, resolved, orphan.transformed, tracker
             )
-            self._revise_result(results, orphan.result_index, result)
-            if result.status is ExtractionStatus.EXTRACTED:
-                self._mark_overwritten(results, prior)
-            self._register_collision_key(
-                collision_map, dest, orphan.transformed, result, orphan.result_index
+        except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
+            raise
+        except (ArchiveyError, OSError) as exc:
+            self._revise_result(
+                results,
+                orphan.result_index,
+                ExtractionResult(
+                    orphan.original,
+                    None,
+                    ExtractionStatus.FAILED,
+                    exc,
+                    requested_path=orphan.dest_path,
+                    collided_with=collided_with,
+                ),
             )
+            if self._stops_on_failure():
+                raise
+            # A single link's failure, not a source fan-out: no group id.
+            logger.warning("Skipping hardlink %r: %s", orphan.original.name, exc)
+            return
+        result = ExtractionResult(
+            orphan.original,
+            resolved,
+            ExtractionStatus.EXTRACTED,
+            None,
+            requested_path=resolved if prior is not None else orphan.dest_path,
+            collided_with=collided_with,
+        )
+        self._revise_result(results, orphan.result_index, result)
+        if result.status is ExtractionStatus.EXTRACTED:
+            self._mark_overwritten(results, prior)
+        self._register_collision_key(
+            collision_map, dest, orphan.transformed, result, orphan.result_index
+        )
+
+    def _note_link_change(self, path: Path) -> None:
+        """Report a symlink or directory at ``path`` replaced or removed this member."""
+        if self._links is not None:
+            self._links.note_change(path)
+
+    def _recheck_links(
+        self,
+        results: list[ExtractionResult],
+        collision_map: dict[str, _Claim],
+        dest: Path,
+    ) -> ArchiveyError | None:
+        """Remove the links this run created that the member just handled made escape.
+
+        Called once per member, before the next one is handled, so no later member
+        (or a progress callback) sees an escaping link. A removed link's result
+        becomes ``BLOCKED`` in place, and the progress tallies follow, as they do for
+        ``_mark_overwritten``: a report already sent for that member is not sent again.
+
+        It runs in a ``finally``, so it returns the error that must end the run
+        instead of raising it, which would replace the member's own error: the
+        recheck bound running out, or ``AbortOn.BLOCKED_MEMBER`` with a link removed.
+        """
+        links = self._links
+        if links is None or not links.has_changes:
+            return None
+        dest_root = self._dest_root
+        outcome = links.recheck(
+            lambda path, target: _symlink_escapes(path, target, dest_root)
+        )
+        removed = [
+            (
+                link,
+                "Symlink target escapes destination: a later member changed a path "
+                "it resolves through",
+            )
+            for link in outcome.escaped
+        ] + [
+            (link, "Symlink removed unchecked: the recheck limit was reached")
+            for link in outcome.unchecked
+        ]
+        first: FilterRejectionError | None = None
+        for link, message in removed:
+            prior = results[link.result_index]
+            error = FilterRejectionError(
+                message, member_name=prior.member.name, link_target=link.target
+            )
+            first = first or error
+            self._written_paths.discard(link.dest_path)
+            self._release_claim(collision_map, dest, link.dest_path)
+            if prior.status is ExtractionStatus.EXTRACTED:
+                results[link.result_index] = replace(
+                    prior, path=None, status=ExtractionStatus.BLOCKED, error=error
+                )
+                self._members_extracted -= 1
+                self._members_blocked += 1
+            logger.warning("Removed symlink %r: %s", prior.member.name, error)
+        if outcome.unchecked:
+            return _AlwaysStopResourceLimitError(
+                f"Symlink recheck limit reached: max_entries={self._limits.max_entries}"
+            )
+        if first is not None and AbortOn.BLOCKED_MEMBER in self._abort_on:
+            return first
+        return None
 
     def _mark_overwritten(
         self,
@@ -1923,23 +2073,25 @@ class ExtractionCoordinator:
         ``atomic=False`` (DIR / SYMLINK) keeps the plain unlink-then-create: a symlink
         must be created at its final name for the escape re-validation's cycle check, and
         a directory cannot be renamed over a file at all."""
-        exists = os.path.lexists(dest_path)
-        if not exists:
+        try:
+            existing = os.lstat(dest_path).st_mode
+        except (OSError, ValueError):  # the same errors ``os.path.lexists`` absorbs
             return True
+        # Replacing a symlink or a directory can move where an earlier link resolves;
+        # the member's handler rechecks the links once the member is done.
+        moves_links = stat.S_ISLNK(existing) or stat.S_ISDIR(existing)
         if dest_path in self._stale:
             # A superseded copy of this same name that this run wrote: the member
             # replaces it under any policy, as random access would never have written it.
             # Never a directory (see ``_supersede_written_copy``).
+            if moves_links:
+                self._note_link_change(dest_path)
             if not atomic:
                 dest_path.unlink()
             return True
 
         # A real directory being (re)created as a directory is fine under any policy.
-        if (
-            member.type == MemberType.DIRECTORY
-            and dest_path.is_dir()
-            and not dest_path.is_symlink()
-        ):
+        if member.type == MemberType.DIRECTORY and stat.S_ISDIR(existing):
             return True
 
         if self._overwrite is OverwritePolicy.ERROR:
@@ -1959,7 +2111,9 @@ class ExtractionCoordinator:
             # os.replace handles a file/symlink target atomically, so only a real
             # directory must be removed up front. Otherwise unlink a symlink/file (bytes
             # never follow the link) and rmtree a real directory tree.
-            if dest_path.is_dir() and not dest_path.is_symlink():
+            if moves_links:
+                self._note_link_change(dest_path)
+            if stat.S_ISDIR(existing):
                 shutil.rmtree(dest_path)
                 self._removed_existing = True
             elif not atomic:

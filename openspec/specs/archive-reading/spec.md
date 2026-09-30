@@ -34,8 +34,20 @@ archivey.open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
-) -> ArchiveReader
+) -> ArchiveReader  # ForwardArchiveReader when streaming may be True; see below
 ```
+
+The return type SHALL follow the access mode, through two `typing.overload`
+signatures: `streaming=False` (the default, or the literal `False`) returns
+`ArchiveReader`, and `streaming=True` or a `bool` whose value is not known statically
+returns `ForwardArchiveReader`. `ForwardArchiveReader` is the public ABC that
+declares every reader method except `members()`, `get()`, `open()` and `read()`, the
+four a streaming reader refuses; `ArchiveReader` subclasses it and adds those four.
+The distinction SHALL be static only: every reader returned at run time is an
+`ArchiveReader` instance, and a streaming reader still raises `ArchiveyUsageError`
+from the four methods.
+
+`tests/test_public_api.py` checks each case under both type checkers the project uses (ty and Pyrefly).
 
 `source`, multi-volume ordering, `streaming`, password candidates/providers,
 encoding, configuration precedence, and backend selection retain their existing
@@ -690,8 +702,10 @@ the member-name namespace: `.` and empty segments are dropped and `..` is
 **retained**, exactly as `normalize_member_name` treats a name, so `a/../b` names
 the member stored as `a/../b` and never the member `b`. Symlink targets are
 filesystem paths: they join to the link's directory first and `..` is collapsed.
-Absolute/`..`-escaping targets of either kind stay unresolved (`None`; open →
-`LinkTargetNotFoundError`); the escape test runs on the collapsed form. Directory
+A hardlink target's leading `/` is kept, as in a member name, so `/a` names the member
+stored as `/a` (`tar -P` writes both). Absolute symlink targets and `..`-escaping
+targets of either kind stay unresolved (`None`; open → `LinkTargetNotFoundError`); the
+escape test runs on the collapsed form, with a hardlink's leading `/` set aside. Directory
 lookup tries bare and `/`-suffixed forms.
 
 Follow chains recursively; detect cycles by **member id** (not name); no arbitrary
@@ -713,6 +727,8 @@ that one `open()` operation.
 | Hardlink → `a/../b`, archive holds both `a/../b` and `b` | Resolves to the `a/../b` member; never `b` |
 | Symlink `dir/link` → `../file` | Lookup `file` |
 | Absolute / `..`-escaping symlink | `link_target_member is None`; open → `LinkTargetNotFoundError` |
+| Hardlink `/b` → `/a`, archive holds `/a` | Resolves to the `/a` member |
+| Hardlink → `/../a` | Unresolved (escapes after the `/` is set aside) |
 | Duplicate names, hardlink | Most recent occurrence strictly before the link |
 | Duplicate names, symlink (RA) | Last occurrence overall |
 | Hardlink source only later | TAR: no target in either mode (`LinkTargetNotFoundError`), since a TAR hardlink refers to an earlier member (`format-tar`). Other formats: RA falls back to the later member; streaming cannot resolve |

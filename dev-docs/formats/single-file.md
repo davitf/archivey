@@ -92,7 +92,8 @@ Each stage: who does the work, what is shared across the codecs, what is refused
 
 Seven codecs have magic at offset 0, declared on their codec descriptor in
 `internal/streams/codecs.py` and aggregated by the detector: gzip `1f 8b`, bzip2 `BZh`,
-xz `fd 37 7a 58 5a 00`, lzip `LZIP`, zstd `28 b5 2f fd`, LZ4 `04 22 4d 18`, `.Z` `1f 9d`.
+xz `fd 37 7a 58 5a 00`, lzip `LZIP`, zstd `28 b5 2f fd`, LZ4 `04 22 4d 18` (and its legacy
+stream `02 21 4c 18`), `.Z` `1f 9d`.
 zstd also matches behind a run of skippable frames ([`zstd-lz4.md`](zstd-lz4.md) §2.1).
 The other three have none that is safe to trust, and are found by a **content probe**
 that decodes a bounded sample: LZMA Alone, then zlib, then Brotli, in that order. The
@@ -233,8 +234,10 @@ against a dictionary size the stream declares before the decoder is built: xz pe
 through liblzma's `memlimit`; lzip per member, whose format caps the dictionary at 512 MiB
 anyway; LZMA Alone from its header, refused on the first read so the refusal carries the
 probe's `format_unconfirmed` stamp ([`xz.md`](xz.md) §2.3); zstd per frame, through
-libzstd's `window_log_max` ([`zstd-lz4.md`](zstd-lz4.md) §4). bzip2, LZ4, Brotli, gzip
-and `.Z` have small fixed windows.
+libzstd's `window_log_max` ([`zstd-lz4.md`](zstd-lz4.md) §4). bzip2, LZ4, Brotli and gzip
+have small fixed windows. The `.Z` decoder's table stays under about 19 MiB (about
+20 MiB on a free-threaded build) whatever the stream does
+([`unix-compress.md`](unix-compress.md) §4).
 
 **Bytes after the end.** Each decoder knows where its stream ends: the gzip member's
 trailer, zlib's Adler-32, the end of an xz stream, lzip member or LZMA Alone payload,

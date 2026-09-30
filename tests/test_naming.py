@@ -216,7 +216,7 @@ def test_hardlink_target_retains_dot_dot_like_member_names() -> None:
     assert resolve_link_target_name("x", "./a//b/./c", MemberType.HARDLINK) == "a/b/c"
     assert resolve_link_target_name("x", "a/../../b", MemberType.HARDLINK) is None
     assert resolve_link_target_name("x", "a/..", MemberType.HARDLINK) is None
-    assert resolve_link_target_name("x", "/abs", MemberType.HARDLINK) is None
+    assert resolve_link_target_name("x", "/abs", MemberType.HARDLINK) == "/abs"
     assert resolve_link_target_name("d/l", "../b", MemberType.SYMLINK) == "b"
     assert resolve_link_target_name("d/l", "../../b", MemberType.SYMLINK) is None
 

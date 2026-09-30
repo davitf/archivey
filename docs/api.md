@@ -24,6 +24,7 @@ Authoritative contracts: `openspec/specs/`.
 
 ## The reader interface
 
+::: archivey.ForwardArchiveReader
 ::: archivey.ArchiveReader
 ::: archivey.ArchiveStream
 ::: archivey.MemberSelector
@@ -81,6 +82,7 @@ spec for lifecycle, retention, and policy.
 ::: archivey.OnError
 ::: archivey.AbortOn
 ::: archivey.MemberFilter
+::: archivey.sanitize_names
 
 ## Configuration
 

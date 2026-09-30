@@ -109,7 +109,9 @@ _INNER_TAR_PROBE_BYTES = 512
 # until a whole block is read, and a block holds up to 900 KB uncompressed (level 9), which
 # for incompressible leading data compresses to just over 900 KB. 1 MiB covers a full
 # worst-case first block with margin; a stream-oriented codec (gzip/xz/zstd/…) reaches the
-# header region from the ordinary prefix and never triggers this larger read.
+# header region from the ordinary prefix and never triggers this larger read. The legacy LZ4
+# stream is block-based too, with blocks of up to 8 MiB: one whose first block compresses
+# to more than this bound is left un-upgraded, by choice (handbook ``zstd-lz4.md`` §2.1).
 _INNER_TAR_MAX_PROBE_BYTES = 1 << 20
 
 

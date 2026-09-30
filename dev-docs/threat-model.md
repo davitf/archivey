@@ -67,15 +67,23 @@ no member replaces the destination itself.
 
 **Mechanism.**
 - `internal/filters.py` `check_universal` runs on every member under every policy,
-  `TRUSTED` included. It rejects `..` components (any separator), absolute paths, drive
-  letters, UNC prefixes, NUL bytes, names `os.fsencode` cannot represent, special files
-  (devices, FIFOs, sockets), and a non-directory member whose normalized name is `"."`
-  or `""` (which would replace the destination root with a file). It resolves the
-  parent and checks containment, and checks symlink and hardlink targets lexically.
+  `TRUSTED` included, after the caller's filter, on the name about to be written. Under
+  `STANDARD` and `TRUSTED`, `reroot_absolute` first drops a rooted name's root (a
+  leading `/` or `\`, or a drive letter with a separator after it) and a hardlink
+  target's, so the member lands inside the destination. It rejects `..` components
+  (any separator), absolute paths including drive letters and UNC prefixes (every
+  absolute name under `STRICT`; at any policy a drive-relative `C:x`, which has no
+  root to drop, or an absolute name a filter returned), NUL bytes, names
+  `os.fsencode` cannot represent, special files (devices, FIFOs, sockets), and a
+  non-directory member whose normalized name is `"."` or `""` (which would replace the
+  destination root with a file). It resolves the parent and checks containment, and
+  checks symlink and hardlink targets lexically.
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
   symlink against the live tree after `os.symlink` and removes it if it escapes, which
   catches a chain staged by earlier members. That is the third layer after the lexical
-  target check and the parent resolution.
+  target check and the parent resolution. A later member that changes a path the link
+  resolved through gets it rechecked
+  ([below](#a-later-member-cannot-make-an-extracted-symlink-escape)).
 - Hardlink targets resolve positionally to an earlier same-named member
   (`internal/naming.py` `resolve_link_target_name`), so a duplicate name cannot
   redirect a link.
@@ -86,10 +94,7 @@ no member replaces the destination itself.
 - `_apply_metadata` strips setuid, setgid and sticky except under `TRUSTED`, and applies
   ownership only under `TRUSTED` as root.
 
-**Residual.** A later member can turn an earlier, valid symlink into one that points
-outside the destination; the link stays on disk, though nothing is written through it
-([open gap](#a-later-member-can-make-an-extracted-symlink-escape)). A local process
-racing the destination (out of scope, §1). A hard kill can leave `.archivey-tmp-*`
+**Residual.** A local process racing the destination (out of scope, §1). A hard kill can leave `.archivey-tmp-*`
 files, which are safe to delete.
 
 **Tests.** `tests/test_extraction.py`: `test_check_universal_rejects_traversal`,
@@ -106,6 +111,89 @@ files, which are safe to delete.
 `tests/test_property_safety.py` covers `normalize_member_name`, `check_universal` and
 `resolve_link_target_name` over arbitrary input, and the mutation harness asserts the
 destination is still a directory after every successful extract.
+
+### A later member cannot make an extracted symlink escape
+
+**Property.** No symlink the archive created is left on disk resolving outside the
+destination at any point a later member could observe, in either streaming mode.
+
+A later member can change what an earlier link resolves to. Archive `l -> a/../secret`,
+then `a -> .`: when `l` is created, `a` does not exist, so `l` resolves to
+`<dest>/secret` and passes. `a -> .` is harmless on its own and passes too. On disk, `l`
+then resolves through `a` to `<dest>/../secret`. The same happens when a later member
+replaces a directory the resolution went through (`OverwritePolicy.REPLACE` removes it
+and puts a symlink there), or removes a symlink it went through, so that its name is read
+lexically again. Every file write resolves its real parent first, so nothing was ever
+written through such a link; the risk was the link itself, for anything that reads or
+copies the tree afterwards. Found by the 2026-09 extraction audit
+(`review/archive/2026-09-29-extraction-audit/`, E1).
+
+**Mechanism.** An incremental recheck (the maintainer's direction, 2026-09-28), not an
+end-of-run sweep and not a refusal of `a/../x` targets.
+- **What is recorded.** When a symlink is created and passes, `internal/link_watch.py`
+  walks its target the way `os.path.realpath` does and records every destination path
+  the walk `lstat`s: components that do not exist yet, directories it went through, and
+  the components of every link it followed on the way (at most 64 follows, more than
+  any kernel allows). An absolute target, the link's own or a followed one's, is walked
+  from its anchor, so one that re-enters the destination by name is recorded there.
+  Only the state of those paths decides where the link resolves. The index folds case
+  and Unicode normalization, which can only cause extra rechecks; the record of which
+  link sits at which path does not, so `L` and `l` under `TRUSTED` are both watched.
+- **What counts as a change.** A symlink created at a path, and a symlink or directory
+  removed or replaced there: `REPLACE` and `RENAME`'s directory case in
+  `_prepare_destination`, a streaming pass replacing or dropping a superseded copy, a 7z
+  anti-item, and a hardlink or file the orphan second pass places over one. A file or
+  directory created where nothing was cannot move a resolution and is not reported. A
+  change is reported at the path actually written, so `RENAME`'s `name (N)` is covered.
+- **The recheck.** After each member, before the next one (and after each write of the
+  orphan second pass), every link that depends on a changed path is resolved again
+  against the live tree with the same `Path.resolve()` check that runs at creation. A
+  link that escapes is unlinked and its result becomes `BLOCKED` with a
+  `FilterRejectionError`. Its removal is itself a change, so a link that went through it
+  is rechecked in turn. A link that passes gets its dependencies recorded again.
+- **Results and progress.** The earlier member's result is revised in place, as a
+  `REPLACE` collision revises one to `OVERWRITTEN`. A progress report already sent for
+  that member is not sent again; the tallies of the next report (`members_extracted`,
+  `members_blocked`) follow the revision. The revision is a policy block, so it never
+  stops the run under `OnError.STOP`, and `AbortOn.BLOCKED_MEMBER` ends the run on it.
+
+*Cost.* The walk costs one `lstat` per component, about what the creation check's
+`resolve()` already costs, so a `node_modules`-shaped tree stays linear in link count.
+Measured on that shape at 2,000 and 4,000 links: 94,013 and 188,013 `lstat` calls for
+the whole extraction, against 73,013 and 146,013 with the index disabled, so about 29%
+more, and exactly linear. Memory is one index node per distinct path visited plus one
+entry per path per link, so it is proportional to the walk work already done. A hostile
+archive can still make work quadratic: many links through one path, then many members
+changing that path (a streaming pass does that with repeated copies of one name, under
+the default policy). Rechecks are therefore bounded by `ExtractionLimits.max_entries`,
+the bound on members. Once it is spent, the links still waiting are removed unresolved
+and the run stops with `ResourceLimitError`, so nothing unverified stays on disk.
+
+*Options considered and not taken* (2026-09-28): refusing `..` after a normal component
+(refuses targets some build tools write, and `REPLACE` breaks its completeness
+argument); re-validating every link at the end of the run (the escape stays live on disk
+until then); analysing all targets before extracting (not available to a streaming
+pass).
+
+**Residual.**
+- **Links that were in the destination before the run.** They are followed and their
+  paths recorded when an archive link goes through them, but they are never rechecked
+  or removed: they are the caller's. An archive member can still make such a link
+  escape by creating a path it goes through.
+- **Windows.** The walk splits targets on both separators, joins drive- and
+  root-relative targets the way `pathlib` does, and follows what `os.readlink` returns,
+  but it has not been run there: creating symlinks needs a privilege, and the tests skip
+  on Windows. The creation check is unchanged and still runs.
+- **A link the filesystem refuses to remove.** Its result says `BLOCKED` and a warning is
+  logged, as for a link that escapes when it is created.
+
+**Tests.**
+`tests/test_audit_extraction.py::test_symlink_made_escaping_by_a_later_member_is_not_left_on_disk`
+and `tests/test_symlink_recheck.py`, including a link reached through a chain, `REPLACE`
+in both directions, a streaming pass's later copy, `RENAME`, the orphan second pass, a
+7z anti-item, the order of rechecks inside one member, legitimate `a/../x` targets, the
+bound, and `::test_symlink_heavy_extraction_stays_linear_in_link_count` (counts `lstat`
+calls).
 
 ### Names are safe on the target filesystem
 
@@ -774,51 +862,6 @@ Onboarding comes after the first release. The bar for calling archivey safe (thr
 model, adversarial corpus, coverage-guided fuzzing, disclosure process) is met without
 it.
 
-### A later member can make an extracted symlink escape
-
-Symlinks are re-validated against the live tree once, right after `os.symlink`. A later
-member can change what an earlier link resolves to. Archive `l -> a/../secret`, then
-`a -> .`: when `l` is created, `a` does not exist, so Python's non-strict `resolve()`
-treats the `..` lexically, `l` resolves to `<dest>/secret`, and it passes. `a -> .` is
-harmless on its own and passes too. On disk, `l` now resolves through `a` to
-`<dest>/../secret`, and nothing rechecks it. The same happens when a directory the
-resolution went through is later replaced by a symlink under `OverwritePolicy.REPLACE`.
-
-Nothing is written outside the destination, because every file write resolves its real
-parent first, so a later `l/x` member is `BLOCKED`. What stays is a link in the output
-tree that points outside it, against `docs/extracting.md` ("escaping links are removed
-and rejected"), and anything that reads or copies the tree afterwards follows it.
-Measured the same with `streaming=False` and `streaming=True`.
-
-Deferred for a separate exploration (maintainer, 2026-09-28). The options:
-
-- **Refuse `..` after a normal component in a target** (`a/../x`). Cheap, but refuses
-  legitimate targets some build tools write, and `REPLACE` can still swap a directory
-  for a symlink.
-- **Re-validate every created symlink at the end of the run.** Complete, but the escape
-  stays live on disk until the sweep.
-- **Analyse all targets before extracting.** Not available to a streaming extraction.
-- **Recheck only the affected links when a new link appears** (the maintainer's
-  direction). Record the destination paths each link's resolution depended on (missing
-  components, existing directories, and the dependencies of any link it followed); when
-  a member creates or replaces one of those paths, recheck the dependent links and
-  remove any that now escape, reporting them `BLOCKED`. The escape is then never live on
-  disk, and it works in one streaming pass. To settle: chains of links, renames under
-  `OverwritePolicy.RENAME`, the orphan second pass, a memory bound, and rewriting a
-  result a progress callback already reported as `EXTRACTED`.
-- A narrower refusal: refuse `..` only when the component before it does not exist when
-  the link is created.
-
-A fix is done when the test below passes in both modes, no escaping link is on disk at
-any point a later member could observe, no legitimate `a/../x` target is refused, and
-symlink-heavy extraction stays linear in link count.
-
-Code: `internal/extraction.py` `_write_symlink` (the one re-validation),
-`internal/filters.py` `check_universal` (the lexical check and the parent resolve),
-`_prepare_destination` (where `REPLACE` removes a directory). Pinned by
-`tests/test_audit_extraction.py::test_symlink_made_escaping_by_a_later_member_is_not_left_on_disk`
-(strict xfail).
-
 ### Bounded recursion helper
 
 "Index my backups", the founding use case, recurses into nested archives. A recipe or
@@ -860,7 +903,7 @@ writing lands (possibly after 1.0), and must be a day-one decision of the writin
 | O19 | Data-stored symlink target sized an allocation | [Listing](#listing) |
 | O20 | 7z BCJ2 in pure Python | CPU: [No CPU or wall-clock bound](#no-cpu-or-wall-clock-bound); memory: [Decoder memory](#decoder-memory) |
 | O21 | Directory source changed between listing and reading | [Directory sources](#directory-sources-changed-concurrently), [Windows directory sources](#windows-directory-sources) |
-| O22 | A later member turns an extracted symlink into an escape | [A later member can make an extracted symlink escape](#a-later-member-can-make-an-extracted-symlink-escape) |
+| O22 | A later member turns an extracted symlink into an escape | [A later member cannot make an extracted symlink escape](#a-later-member-cannot-make-an-extracted-symlink-escape) |
 | C1 | RAR data through an external program | [External programs](#external-programs-get-a-fixed-command-line), [unar password](#the-unar-password-is-on-its-command-line) |
 | C2 | Warnings that should be data | [Errors are typed and honest](#errors-are-typed-and-honest) |
 | C3 | Metadata fidelity | [Metadata fidelity](#metadata-fidelity) |
