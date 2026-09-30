@@ -79,6 +79,31 @@ walk.
 | `unrar` missing during listing | Listing succeeds unless header decryption needs unavailable crypto/password |
 | Extract version ≤ 20 alone | No `UnsupportedFeatureError` |
 
+### Requirement: Decode RAR member names
+
+A RAR5 name, and a RAR 1.5-4 name whose UTF-16 field decodes, SHALL be listed as that
+text. A RAR 1.5-4 name stored only as 8-bit bytes records no code page. The system
+SHALL decode it with the caller's `encoding=` when one was passed. Without one it SHALL
+try strict UTF-8 first, then cp437 (the OEM code page WinRAR writes) for a member whose
+host is MS-DOS, OS/2 or Win32, and windows-1252 for any other host. A RAR 1.5-4 name
+with the Unicode flag and no UTF-16 field declares UTF-8, so `encoding=` SHALL apply to
+it only when its bytes are not valid UTF-8. The system MUST NOT decode an 8-bit name as
+UTF-16LE. `raw_name` SHALL be the stored bytes in every case, and RAR SHALL NOT emit
+`ENCODING_ARGUMENT_UNUSED`. How a name is decoded SHALL NOT change which member a read
+returns: the `unrar` mask is built from the stored name, not from the decoded text.
+
+#### Scenario: RAR name decoding matrix
+
+| Case | Expected |
+| --- | --- |
+| 8-bit `caf\x82.txt` written on Windows or DOS | `café.txt` (cp437) |
+| 8-bit `caf\xe9.txt` written on Unix | `café.txt` (windows-1252) |
+| 8-bit name whose bytes are valid UTF-8 | Decoded as UTF-8 |
+| 8-bit name with `encoding="cp1251"` | Decoded with cp1251, also over bytes that are valid UTF-8; still reads |
+| Unicode flag, no UTF-16 field, valid UTF-8, `encoding=` passed | UTF-8 |
+| RAR5 name with `encoding=` passed | Unchanged; no `ENCODING_ARGUMENT_UNUSED` |
+| Any 8-bit name | `raw_name` is the stored bytes |
+
 ### Requirement: Accept a non-zero archive start offset (SFX)
 
 The RAR reader SHALL accept an archive whose marker (`Rar!\x1a\x07\x00` for RAR4
@@ -804,6 +829,38 @@ falling back to the header walk, is a missing answer; the alternative is a wrong
 - **AND** one further `MEMBER_HEADER_RECORD_SKIPPED` SHALL report how many were not
   described individually
 
+### Requirement: Return a named member's own bytes when its mask selects others
+
+`unrar p` with an include mask emits every payload member the mask selects, in archive
+order and with no headers between them. The system SHALL build the mask from the name as
+`unrar` reads it from the header, SHALL compute which members that mask selects the way
+`unrar` 7 does, and SHALL return only the target's bytes: it SHALL skip the unpacked size
+of the selected members before the target and SHALL stop at the target's size. This
+covers members with the same name, names `unrar` reads as the same text, a mask that
+names a directory prefix of another member, and a RAR5 name that is not valid UTF-8,
+which `unrar` reads only up to its first invalid byte.
+
+The system MUST NOT return another member's bytes for a member. When the selection is not
+known, the system SHALL raise `UnsupportedFeatureError` naming
+`rar_decompressor='unar'` before `unrar` is spawned and before a stream source is
+copied. That is the case when `unrar` reads the name as empty or as a path with no name,
+when the name `unrar` reads cannot be passed back to it in argv, when the mask would not
+select the target, and when an earlier member's name cannot be read the way `unrar`
+reads it on this host. A stored name that contains a NUL SHALL be refused the same way.
+
+A mask with no `*` or `?` that selects earlier members SHALL be read without
+`rar_allow_glob_member_concatenation`.
+
+#### Scenario: shared mask matrix
+
+| Case | Expected |
+| --- | --- |
+| Two or three members with the same name, solid or not | Each read returns its own bytes |
+| RAR5 `ab\xffcd.txt` after members `unrar` reads as `ab` | Its own bytes; the earlier ones are skipped |
+| RAR5 name `\xff` beside a sibling named U+FFFD, no stored digest | `UnsupportedFeatureError`; never the sibling's bytes |
+| A name `unrar` reads as empty (`\xc0\x80x`) | `UnsupportedFeatureError` |
+| Earlier 8-bit RAR 1.5-4 name and no UTF-8 locale for `unrar` | A later member's read raises `UnsupportedFeatureError` |
+
 ### Requirement: Refuse a glob member name whose mask also matches earlier members
 
 A RAR member's stored name may contain `*` or `?`. Because `unrar` is addressed by an
@@ -824,7 +881,9 @@ matches as before. The flag SHALL govern only whether the read is attempted; it 
 NOT change what a successful read returns.
 
 A glob name whose mask matches **no** other member SHALL be unaffected and SHALL read
-without the flag.
+without the flag. A name with no `*` or `?` SHALL NOT be refused by this requirement,
+whatever else its mask selects (`Return a named member's own bytes when its mask selects
+others`).
 
 A call site that builds no include mask SHALL be unaffected, whatever the member names
 are. In particular a solid `stream_members()` pass uses one unnamed `unrar p` pipe
@@ -845,7 +904,7 @@ refused.
 | The same read with `rar_allow_glob_member_concatenation=True` | The member's own bytes, earlier matches skipped |
 | `only*.dat`, whose mask matches nothing else, default config | Reads normally; no refusal |
 | Solid `stream_members()` over glob-named members, default config | All members read; no mask is built |
-| A name with no `*` or `?` | Unaffected in either configuration |
+| A name with no `*` or `?`, even one shared with an earlier member | Not refused in either configuration |
 
 ### Requirement: Read RAR member data with unar
 

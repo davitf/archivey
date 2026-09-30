@@ -57,19 +57,18 @@
   images that need the `.cue` (track 1 audio has no sync at offset 0), and EDC/ECC
   verification — the trailing 288 bytes would be dropped unchecked, which the docs must
   then say.
-- **Port `unrar`'s member-mask matcher faithfully, instead of probing it** — a RAR member's
+- **Lift the directory-glob and backslash refusals on the `unrar` path** — a RAR member's
   stored name is handed to `unrar` as an include mask (`-n./<name>`), so archivey has to
   predict which *other* members that mask will also match in order to skip their bytes back
-  out of the pipe. `_unrar_mask_match` is derived from probing unrar 7.00, not from its
-  source, and it over-matches on directory-component globs. That is why a glob in a
-  directory component, and a literal backslash in a stored name, are refused outright today
-  rather than demuxed — a basename glob with no backslash is the only shape we trust
-  (`formats/rar.md` §2.3, §5). Closing it means reading `strfn.cpp` / `match.cpp` in the
-  `unrar` source and replacing the matcher with a faithful port, plus an oracle test that
-  compares predicted skip bytes against a real `unrar p -n<mask>` across the fixture corpus.
-  **Very low priority:** the names this would unlock are adversarial ones, and a wrong port
-  is worse than a refusal, because it silently returns the wrong member's bytes. Tracked
-  internally.
+  out of the pipe. That prediction is now a port of `unrar` 7's own name reading and
+  `CmpName` (`rar_unrar.py`), checked against `unrar` 7.00 on Linux by
+  `tests/test_rar_unrar_names.py`. A glob in a directory component, and a literal
+  backslash in a stored name, are still refused rather than demuxed (`formats/rar.md`
+  §2.3, §5): the first has not been measured, and the second differs by host (Windows
+  `unrar` treats `\` as a separator). Closing it means adding those shapes to the
+  differential test, on Windows too. **Very low priority:** the names this would unlock
+  are adversarial ones, and a wrong model is worse than a refusal, because it silently
+  returns the wrong member's bytes.
 
 - **Native streaming ZIP reader** — a native parser that does what stdlib `zipfile`
   can't: read from **non-seekable** streams (pipes/sockets) and **truncated / no-EOCD**
@@ -154,7 +153,7 @@
   valid UTF-8** currently decode via `surrogateescape` → honest but garbled (`U+DCxx`)
   spellings. Affected: **TAR** (ustar/pax has no charset field at all, so `tarfile` defaults
   to UTF-8 and everything else becomes surrogateescape), **RAR3** non-Unicode names (already
-  falls back to `windows-1252` via `_decode_name`), and **ZIP** unflagged names that aren't
+  fall back to cp437 or windows-1252 by host OS, and honour `encoding=`), and **ZIP** unflagged names that aren't
   valid UTF-8 (falls back to `zip_unflagged_fallback_encoding`, default cp437). The common
   *UTF-8-without-marker* case is already handled everywhere (that was the
   `zip-name-encoding-sniffing` change); this item is only about the genuinely-legacy tail.
