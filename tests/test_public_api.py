@@ -8,8 +8,12 @@ is the safety net that keeps the hand-maintained list from drifting.
 from __future__ import annotations
 
 import inspect
+import json
+import os
+import shutil
 import subprocess
 import sys
+import tomllib
 import typing
 from pathlib import Path
 from types import FunctionType
@@ -29,6 +33,136 @@ def test_open_archive_returns_an_archive_reader(tmp_path) -> None:
     (tmp_path / "f.txt").write_bytes(b"x")
     with archivey.open_archive(tmp_path) as ar:
         assert isinstance(ar, archivey.ArchiveReader)
+
+
+# The four methods a streaming reader refuses at run time, which the narrower
+# ``ForwardArchiveReader`` type leaves out so a type checker refuses them too.
+_RANDOM_ACCESS_METHODS = {"members", "get", "open", "read"}
+
+
+def test_forward_reader_type_leaves_out_exactly_the_random_access_methods() -> None:
+    assert issubclass(archivey.ArchiveReader, archivey.ForwardArchiveReader)
+    streaming_api = {
+        name
+        for name in dir(archivey.ForwardArchiveReader)
+        if not name.startswith("_") or name in ("__iter__", "__contains__")
+    }
+    full_api = {
+        name
+        for name in dir(archivey.ArchiveReader)
+        if not name.startswith("_") or name in ("__iter__", "__contains__")
+    }
+    assert full_api - streaming_api == _RANDOM_ACCESS_METHODS
+
+
+def test_a_streaming_reader_is_still_an_archive_reader_at_run_time(tmp_path) -> None:
+    """The narrowing is static only: one runtime class serves both access modes."""
+    (tmp_path / "f.txt").write_bytes(b"x")
+    with archivey.open_archive(tmp_path, streaming=True) as ar:
+        assert isinstance(ar, archivey.ArchiveReader)
+        with pytest.raises(archivey.ArchiveyUsageError):
+            ar.members()  # type: ignore[attr-defined]  # the call this type refuses
+
+
+_OPEN_ARCHIVE_TYPING_SAMPLE = """\
+from typing import assert_type
+
+import archivey
+from archivey import ArchiveReader, ForwardArchiveReader
+
+
+def check(flag: bool) -> None:
+    assert_type(archivey.open_archive("a.zip"), ArchiveReader)
+    assert_type(archivey.open_archive("a.zip", streaming=False), ArchiveReader)
+    assert_type(archivey.open_archive("a.zip", streaming=True), ForwardArchiveReader)
+    assert_type(archivey.open_archive("a.zip", streaming=flag), ForwardArchiveReader)
+    with archivey.open_archive("a.zip") as full:
+        assert_type(full, ArchiveReader)
+        full.members()
+    with archivey.open_archive("a.zip", streaming=True) as forward:
+        assert_type(forward, ForwardArchiveReader)
+        forward.members()
+"""
+
+
+_PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
+
+
+def _checker_command(
+    checker: str, exe: str, src: Path, python_version: str
+) -> list[str]:
+    """The command line that runs ``checker`` on ``sample.py`` in the working directory.
+
+    Pyrefly reads its search path and Python version from a ``pyrefly.toml`` beside
+    the sample, which the test writes; ty takes both as arguments.
+    """
+    if checker == "ty":
+        return [
+            exe,
+            "check",
+            "--python",
+            sys.executable,
+            "--python-version",
+            python_version,
+            "--extra-search-path",
+            str(src),
+            "--output-format",
+            "concise",
+            "sample.py",
+        ]
+    return [exe, "check", "--output-format", "min-text", "sample.py"]
+
+
+@pytest.mark.parametrize("checker", ["ty", "pyrefly"])
+def test_type_checker_refuses_random_access_on_a_streaming_reader(
+    checker: str, tmp_path: Path
+) -> None:
+    """``open_archive``'s overloads, as seen by each checker CI runs.
+
+    CI type-checks ``src/`` only, so the overloads' effect on a caller is checked here:
+    every ``assert_type`` holds and the one diagnostic is ``forward.members()``. Both
+    checkers, because the library is kept clean on both so that one's blind spot
+    cannot hide what the other would catch.
+    """
+    exe = shutil.which(checker)
+    if exe is None:
+        pytest.skip(f"{checker} is not installed (it is a dev dependency)")
+    # The same Python version CI checks ``src/`` at, so the two cannot drift apart.
+    python_version = tomllib.loads(_PYPROJECT.read_text())["tool"]["pyrefly"][
+        "python_version"
+    ]
+    src = Path(archivey.__file__).resolve().parent.parent
+    (tmp_path / "sample.py").write_text(_OPEN_ARCHIVE_TYPING_SAMPLE)
+    # Without a config file Pyrefly falls back to a preset that reports nothing here.
+    (tmp_path / "pyrefly.toml").write_text(
+        f"search-path = [{json.dumps(src.as_posix())}]\n"
+        f"python_version = {json.dumps(python_version)}\n"
+    )
+    # Both checkers start the Python interpreter to find its search paths. pytest-cov
+    # before 7 measures such a child through its COV_CORE_* variables, and from
+    # tmp_path the child cannot find this repo's coverage config, so it writes
+    # statement-only data that the branch-coverage parent then refuses to combine.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("COV_CORE_")}
+    result = subprocess.run(
+        _checker_command(checker, exe, src, python_version),
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    refused_line = _OPEN_ARCHIVE_TYPING_SAMPLE.splitlines().index(
+        "        forward.members()"
+    )
+    output = result.stdout + result.stderr
+    # ty prints ``sample.py:L:C: ...``; Pyrefly prints ``ERROR sample.py:L:C-C: ...``.
+    diagnostics = [
+        line.removeprefix("ERROR ")
+        for line in output.splitlines()
+        if line.startswith(("sample.py:", "ERROR sample.py:"))
+    ]
+    assert len(diagnostics) == 1, output
+    assert diagnostics[0].startswith(f"sample.py:{refused_line + 1}:"), diagnostics
+    assert "`members`" in diagnostics[0], diagnostics
 
 
 def test_member_streams_is_demoted_from_the_surface(tmp_path) -> None:
@@ -62,6 +196,7 @@ def test_io_measurement_is_not_public() -> None:
         assert not hasattr(archivey, name)
     assert importlib.util.find_spec("archivey.measurement") is None
     assert "io_stats" not in vars(archivey.ArchiveReader)
+    assert "io_stats" not in vars(archivey.ForwardArchiveReader)
     assert "io_stats" in vars(BaseArchiveReader)
 
 
@@ -80,7 +215,9 @@ def test_public_interface_hides_internal_hooks() -> None:
         "_get_archive_info",
         "_close_archive",
     }
-    public_names = set(vars(archivey.ArchiveReader))
+    public_names = set(vars(archivey.ArchiveReader)) | set(
+        vars(archivey.ForwardArchiveReader)
+    )
     leaked = internal_hooks & public_names
     assert not leaked, f"internal hooks leaked onto the public ArchiveReader: {leaked}"
     # They DO live on the internal helper.

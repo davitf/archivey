@@ -212,7 +212,8 @@ def _check_limit(
 class ExtractionLimits:
     """Decompression-bomb limits for extraction.
 
-    Applied by :func:`archivey.extract` and :meth:`~archivey.ArchiveReader.extract_all`.
+    Applied by :func:`archivey.extract` and
+    :meth:`~archivey.ForwardArchiveReader.extract_all`.
 
     ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the three
     guard fields to ``None``; :attr:`ratio_activation_threshold` is a parameter of the
