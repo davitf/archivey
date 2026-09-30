@@ -51,6 +51,7 @@ def _assert_accelerator(stream: object) -> None:
     from archivey.internal.streams.codecs import (
         _GzipTruncationCheckStream,
         _StdlibOnAcceleratorError,
+        _StdlibSeekContract,
         _ZlibAdlerCheckStream,
     )
 
@@ -60,6 +61,7 @@ def _assert_accelerator(stream: object) -> None:
             VerifyingStream,
             _GzipTruncationCheckStream,
             _StdlibOnAcceleratorError,
+            _StdlibSeekContract,
             _ZlibAdlerCheckStream,
         ),
     ):

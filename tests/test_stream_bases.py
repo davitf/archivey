@@ -388,6 +388,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs._ZlibAdlerCheckStream,
         codecs._Bzip2EmptyStreamCheck,
         codecs._StdlibOnAcceleratorError,
+        codecs._StdlibSeekContract,
         counting.OutputCountingStream,
         decompressor_stream.DecompressorStream,
         crypto.AesDecryptStream,  # dense CBC restart; compose with inner
@@ -568,6 +569,7 @@ def test_delegating_stream_close_inventory() -> None:
         codecs._ZlibAdlerCheckStream,
         codecs._Bzip2EmptyStreamCheck,
         codecs._StdlibOnAcceleratorError,
+        codecs._StdlibSeekContract,
         sevenzip_pipeline._DecodedPastSizeCheck,
         zip_reader._UnconfirmedZipCryptoStream,
         password_confirm.UnverifiedPasswordReadWatch,

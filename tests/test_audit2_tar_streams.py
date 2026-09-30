@@ -321,11 +321,6 @@ def _single_member_stream_positions(
 
 
 @requires("rapidgzip")
-@pytest.mark.xfail(
-    strict=True,
-    reason="T17: under rapidgzip, seek past the end returns the size, and a gzip "
-    "SEEK_CUR underflow raises a raw ValueError; the stdlib path does neither",
-)
 @pytest.mark.parametrize("codec", ["gz", "bz2"])
 def test_accelerated_member_stream_seeks_like_the_stdlib_one(codec: str) -> None:
     """An accelerator changes speed, not behaviour. On a 1000-byte member the
