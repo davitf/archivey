@@ -493,6 +493,9 @@ class ExtractionCoordinator:
         # ``_hardlink_chain_end``'s memo: a hard link's ``_member_id`` -> the first
         # member on its chain that is not a HARDLINK, or ``None``. Reset per ``run()``.
         self._hardlink_ends: dict[int, ArchiveMember | None] = {}
+        # Its other memo: a hard link whose own lookup is final -> the next link on its
+        # chain whose lookup may still change. Reset per ``run()``.
+        self._hardlink_resume: dict[int, ArchiveMember] = {}
         # The symlinks this run created and the paths each one's resolution depends on,
         # so a later member that changes such a path gets them rechecked. Set per
         # ``run()``.
@@ -772,6 +775,7 @@ class ExtractionCoordinator:
         self._claim_keys.clear()
         self._resolved_parents.clear()
         self._hardlink_ends.clear()
+        self._hardlink_resume.clear()
         # O2 collision map: casefold(NFC(relpath)) key (exact under TRUSTED) -> the claim
         # (written path + claiming member's result index). Tracks non-directory members
         # written THIS run so a second member resolving to the same key is a deterministic
@@ -1244,15 +1248,21 @@ class ExtractionCoordinator:
         Memoized by ``_member_id`` for every link on the walked path, as
         ``BaseArchiveReader._resolve_link`` does, so a chain of N hard links costs O(N)
         lookups in total rather than O(N²). A lookup depends only on the node it starts
-        at, so the links on one path share its end. An end is recorded only for the
-        links after the last lookup whose answer could still change (a forward lookup
-        during a streaming walk); the links before it are walked again next time.
+        at, so the links on one path share its end.
+
+        A lookup whose answer could still change (a forward lookup during a streaming
+        walk) is redone on every walk. The links after the last such lookup record
+        their end. A link before it whose own lookup is final records the next such
+        link instead, so a later walk jumps there and redoes that one lookup, not the
+        whole path.
         """
         ends = self._hardlink_ends
-        path: list[int] = []
-        on_path: set[int] = set()
-        # Links at ``path[:final_from]`` depend on a lookup that may change later.
-        final_from = 0
+        resume = self._hardlink_resume
+        path: list[ArchiveMember] = []
+        path_ids: list[int] = []
+        on_path: dict[int, int] = {}
+        # Indexes into ``path`` of the links whose lookup was not final.
+        unfinal: list[int] = []
         end: ArchiveMember | None
         current = member
         while True:
@@ -1268,22 +1278,37 @@ class ExtractionCoordinator:
                 break
             if member_id in on_path:
                 # A cycle. When a lookup that may change is on the cycle itself,
-                # every link on the path depends on it.
-                if final_from > path.index(member_id):
-                    final_from = len(path)
+                # every link on the path depends on it, so none records an end.
+                if unfinal and unfinal[-1] >= on_path[member_id]:
+                    unfinal.append(len(path))
                 end = None
                 break
-            path.append(member_id)
-            on_path.add(member_id)
+            if member_id in resume:
+                current = resume[member_id]
+                continue
+            on_path[member_id] = len(path)
+            path.append(current)
+            path_ids.append(member_id)
             target, final = reader._hardlink_direct_target(current)
             if not final:
-                final_from = len(path)
+                unfinal.append(len(path) - 1)
             if target is None:
                 end = None
                 break
             current = target
-        for member_id in path[final_from:]:
+        final_from = unfinal[-1] + 1 if unfinal else 0
+        for member_id in path_ids[final_from:]:
             ends[member_id] = end
+        # Each final link before ``final_from`` resumes at the next unfinal link.
+        next_unfinal = iter(unfinal)
+        stop = next(next_unfinal, None)
+        for index in range(min(final_from, len(path))):
+            while stop is not None and stop < index:
+                stop = next(next_unfinal, None)
+            if stop is None or stop >= len(path):
+                break
+            if stop != index:
+                resume[path_ids[index]] = path[stop]
         return end
 
     def _transform(

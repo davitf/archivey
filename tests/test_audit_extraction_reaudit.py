@@ -686,6 +686,49 @@ def test_hard_links_cost_linear_work(
     assert counts["lookups"] <= 2 * n
 
 
+@pytest.mark.parametrize("forward_fallback", [False, True])
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("bottom", ["names-nothing", "names-a-later-file"])
+def test_a_chain_with_an_unsettled_bottom_costs_linear_lookups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
+    bottom: str,
+    forward_fallback: bool,
+) -> None:
+    # The innermost link's target is not listed before it, so with the forward
+    # fallback in a streaming walk its lookup can still change and is redone. The
+    # links above it must not be walked again each time.
+    from archivey.internal import base_reader
+    from archivey.internal.backends import tar_reader
+
+    monkeypatch.setattr(
+        tar_reader.TarReader, "_HARDLINK_FORWARD_FALLBACK", forward_fallback
+    )
+    n = 300
+    target = "ghost" if bottom == "names-nothing" else "tail"
+    entries: list[tuple] = [("h0", "hard", target)]
+    if bottom == "names-a-later-file":
+        entries.append(("tail", "file", b"AB"))
+    entries += [(f"h{i}", "hard", f"h{i - 1}") for i in range(1, n)]
+    archive = _build_tar(tmp_path / "a.tar", entries)
+    lookups = 0
+    direct_target = base_reader.BaseArchiveReader._hardlink_direct_target
+
+    def counting_lookup(self: Any, member: Any) -> Any:
+        nonlocal lookups
+        lookups += 1
+        return direct_target(self, member)
+
+    monkeypatch.setattr(
+        base_reader.BaseArchiveReader, "_hardlink_direct_target", counting_lookup
+    )
+    with archivey.open_archive(archive, streaming=streaming) as reader:
+        reader.extract_all(tmp_path / "out", policy="standard", on_error="continue")
+
+    assert lookups <= 3 * n
+
+
 @posix_links
 def test_a_filter_sees_a_hardlink_to_a_symlink_as_the_hardlink(tmp_path: Path) -> None:
     archive = _build_tar(

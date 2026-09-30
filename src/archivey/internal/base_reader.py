@@ -2045,8 +2045,16 @@ class BaseArchiveReader(ArchiveReader):
         )
         if found is not None or not self._HARDLINK_FORWARD_FALLBACK:
             return found, True
-        forward = self._lookup_hardlink_target(
-            member, self._listed_by_name, allow_forward_fallback=True
+        # Only the forward half: the backward search above already missed.
+        if not member.link_target or member._member_id is None:
+            return None, True
+        target_name = resolve_link_target_name(
+            member.name, member.link_target, member.type
+        )
+        if target_name is None:
+            return None, True
+        forward = BaseArchiveReader._last_named_member(
+            target_name, self._listed_by_name
         )
         return forward, not self._streaming
 
