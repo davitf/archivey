@@ -2,7 +2,9 @@
 
 With no options, `open_archive` lets you read any member at any time, one at a time. That
 suits most programs. Three options change it for the cases where the default is slow or not
-enough: `streaming`, `seekable_members` and `concurrent_members`.
+enough: `streaming`, `seekable_members` and `concurrent_members`. Opening an archive also applies
+a few limits, such as how many members it may list, which
+[Archives you trust](extracting.md#archives-you-trust) explains how to raise.
 
 ## Solid archives
 

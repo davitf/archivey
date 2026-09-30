@@ -131,3 +131,14 @@ A member that fails partway leaves nothing behind. Archivey writes each file und
 name and renames it only once it's complete. The files written before the failure stay on disk,
 even with `on_error="stop"`. Going over `limits` stops the extraction even with
 `on_error="continue"`, since it's a sign that the whole archive is hostile.
+
+## Archives you trust
+
+By default, an extraction stops after 2 GiB of output, after a million entries, or when data
+expands more than 1000 times. The expansion check starts after the first 5 MiB. To extract
+something bigger, pass higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn them off.
+
+Some limits apply before extraction starts, such as the number of members or how much memory a
+decompressor may use. Those are set when you open the archive, through
+`config=archivey.ArchiveyConfig(...)`, and the [reference](api.md#archivey.ArchiveyConfig) lists
+them.
