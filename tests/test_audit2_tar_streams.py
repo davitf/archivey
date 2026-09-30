@@ -377,21 +377,19 @@ def _sparse_huge(kind: str, realsize: int) -> bytes:
     return _member("GNUSparseFile.0/sp", body, pax_headers=pax) + _TRAILER
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="T19: a sparse real size of 2**70 lists, then read() raises a raw "
-    "OverflowError from tarfile's hole fill",
-)
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("kind", ["old-gnu", "pax-1.0"])
-def test_tar_sparse_realsize_past_any_file_is_typed(kind: str, streaming: bool) -> None:
+@pytest.mark.parametrize("realsize", [2**63, 2**70], ids=["2**63", "2**70"])
+def test_tar_sparse_realsize_past_any_file_is_typed(
+    realsize: int, kind: str, streaming: bool
+) -> None:
     """error-handling: archive content never surfaces as a builtin exception. T3
     refused a plain size of 2**63 or more; a sparse member's logical size comes from
-    the GNU ``realsize`` field or ``GNU.sparse.realsize`` instead, and nothing bounds
+    the GNU ``realsize`` field or ``GNU.sparse.realsize`` instead, and nothing bounded
     it. tarfile fills the trailing hole with ``NUL * length``, which raises
     ``OverflowError: cannot fit 'int' into an index-sized integer`` (and at 2**63
     exactly, ``MemoryError``). A 2 KiB archive; a chunked read(65536) works."""
-    data = _sparse_huge(kind, 2**70)
+    data = _sparse_huge(kind, realsize)
     try:
         with open_archive(io.BytesIO(data), streaming=streaming) as ar:
             for member, stream in ar.stream_members():
