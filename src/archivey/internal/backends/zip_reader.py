@@ -2200,10 +2200,11 @@ def _find_classic_eocd(fp: IO[bytes]) -> tuple[bytes, int, int] | None:
     ``file_size - len(tail) + idx``). ``None`` when the file is too short or holds no
     signature. ``fp``'s position is restored.
 
-    Uses the same last-occurrence ``rfind`` for ``PK\\x05\\x06`` that stdlib
-    ``zipfile._EndRecData`` does, so callers inspect the EOCD stdlib actually parsed: a
-    decoy signature earlier in the file (or in the comment) cannot make the two disagree
-    about which record is real. Callers bound-check the fields they unpack.
+    Uses the same search as stdlib ``zipfile._EndRecData``, so callers inspect the EOCD
+    stdlib actually parsed: first a comment-less record ending at EOF, then the
+    last-occurrence ``rfind`` for ``PK\\x05\\x06``. A decoy signature earlier in the file,
+    in the comment, or inside the record's own fields cannot make the two disagree about
+    which record is real. Callers bound-check the fields they unpack.
     """
     pos = fp.tell()
     try:
@@ -2214,6 +2215,14 @@ def _find_classic_eocd(fp: IO[bytes]) -> tuple[bytes, int, int] | None:
         window = min(size, (1 << 16) + 22)
         fp.seek(size - window)
         tail = fp.read(window)
+        # stdlib's fast path: a record with no comment at the very end of the file.
+        idx = len(tail) - 22
+        if (
+            idx >= 0
+            and tail[idx : idx + 4] == b"PK\x05\x06"
+            and tail[-2:] == b"\x00\x00"
+        ):
+            return tail, idx, size
         idx = tail.rfind(b"PK\x05\x06")
         if idx < 0:
             return None

@@ -399,11 +399,6 @@ def test_zero_declared_size_with_data_does_not_extract_clean(tmp_path: Path) -> 
 # ---------------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Z10: _find_classic_eocd rfinds a signature inside the EOCD stdlib parsed "
-    "(its disk fields), so a non-zero disk number escapes the split refusal",
-)
 def test_eocd_disk_fields_spelling_the_signature_are_still_refused() -> None:
     base = bytearray(_build_zip([_Entry(b"a", b"hi")]))
     eocd = base.rfind(b"PK\x05\x06")
