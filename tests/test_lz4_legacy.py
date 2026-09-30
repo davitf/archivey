@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveFormat, open_archive
+from archivey import ArchiveFormat, detect_format, open_archive
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.streams.lz4_legacy import (
@@ -93,6 +93,13 @@ def test_legacy_and_frame_streams_concatenate() -> None:
     assert (fmt, out, codes) == (ArchiveFormat.LZ4, a + b + c, [])
 
 
+def test_two_legacy_streams_concatenate() -> None:
+    # The second magic, read as a block size, is over the bound, so it ends the first
+    # stream (``cat a.lz4 b.lz4`` of two ``lz4 -l`` outputs).
+    a, b = _payload(4000), _payload(900)
+    assert _read(_legacy(a) + _legacy(b))[1:] == (a + b, [])
+
+
 def test_zero_padding_after_the_stream_is_not_trailing_data() -> None:
     data = _payload(2000)
     for padding in (b"\x00", b"\x00" * 3, b"\x00" * 512):
@@ -154,6 +161,19 @@ def test_a_cut_stream_is_truncated(cut: int) -> None:
         _read(stream[:cut])
 
 
+def test_a_cut_between_blocks_reads_short_with_no_error() -> None:
+    """The legacy stream has no end mark, so a cut on a block boundary is invisible.
+
+    ``lz4 -dc`` reads such a file the same way; the handbook records it as a format
+    limitation (``zstd-lz4.md`` §2.3, §5).
+    """
+    data = _payload(4000)
+    stream = _legacy(data, block_size=2000)
+    first_block_end = 4 + 4 + int.from_bytes(stream[4:8], "little")
+    _fmt, out, codes = _read(stream[:first_block_end])
+    assert (out, codes) == (data[:2000], [])
+
+
 def test_legacy_tar_is_tar_lz4() -> None:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
@@ -164,6 +184,26 @@ def test_legacy_tar_is_tar_lz4() -> None:
     with open_archive(io.BytesIO(_legacy(buf.getvalue()))) as ar:
         assert ar.format == ArchiveFormat.TAR_LZ4
         assert ar.read("inner.txt") == payload
+
+
+def test_legacy_tar_with_a_first_block_over_the_probe_bound_is_not_upgraded() -> None:
+    """Content detection sees a legacy ``.tar.lz4`` as bare LZ4 when its first block is big.
+
+    A legacy block yields nothing until all of it is read, and the inner-TAR probe reads
+    at most 1 MiB of compressed input, so a first block that compresses to more than
+    that leaves the probe with no header to see. The name still resolves ``.tar.lz4``.
+    """
+    import os
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        payload = os.urandom(3 * 2**20)
+        info = tarfile.TarInfo("noise.bin")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    stream = _legacy(buf.getvalue())
+    assert int.from_bytes(stream[4:8], "little") > 2**20
+    assert detect_format(io.BytesIO(stream)).format == ArchiveFormat.LZ4
 
 
 @requires_binary("lz4")

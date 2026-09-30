@@ -19,8 +19,6 @@ Triage (2026-07, vs libarchive ``libarchive/test``) — known failures marked
   method table; correctly raises ``UnsupportedFeatureError`` today.
 
 **Compress / filter**
-* **GAP** gzip trailing junk after a complete member (``test_compat_gzip_2``) —
-  stdlib ``gzip`` raises ``BadGzipFile``; libarchive tolerates trailing bytes.
 * **GAP** ``.tlz`` with raw LZMA Alone payloads — extension maps to TAR+lzip;
   Archivey has no TAR+LZMA-Alone stream format.
 * **HARNESS** bare ``.lz`` that libarchive does not list as an archive
@@ -138,10 +136,6 @@ _XFAIL: dict[str, tuple[bool, str]] = {
         "GAP: ARM64 BCJ method 0x0a not in method table",
     ),
     # --- compress / filter ---
-    "test_compat_gzip_2.tgz": (
-        True,
-        "GAP: stdlib gzip rejects trailing junk after a complete member",
-    ),
     "test_compat_lzma_1.tlz": (
         True,
         "GAP: .tlz extension maps to TAR+lzip; payload is raw LZMA Alone",

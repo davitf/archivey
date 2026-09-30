@@ -20,7 +20,7 @@ behaviour and links the row.
 | Size | `None`, even when the frame header declares it |
 | Digests | None listed. A frame's content checksum, when present, is checked on read; the legacy LZ4 stream has none |
 | Metadata | None beyond the shared fields |
-| Truncation | Always raised, as `TruncatedError` |
+| Truncation | Raised, as `TruncatedError`, except for a legacy LZ4 stream cut exactly between blocks, which reads short with no error (§2.3) |
 | Refuses | zstd: a frame whose window is over `DecoderLimits.max_decoder_memory`, as `ResourceLimitError`, or over libzstd's 2 GiB ceiling, as `UnsupportedFeatureError` (§4). LZ4: nothing |
 
 **Three things a reader might expect and will not find.** `member.size` is `None` for a
@@ -62,9 +62,12 @@ window, and the same command reading standard input declares 2 GiB. LZ4 blocks a
 ### 2.1 Identify
 
 zstd is the magic `28 b5 2f fd` at offset 0, and LZ4 `04 22 4d 18` or the legacy stream's
-`02 21 4c 18`; each is `CERTAIN`.
-The inner-TAR probe then decodes 512 bytes and upgrades a match to `TAR_ZST` or `TAR_LZ4`
-([`single-file.md`](single-file.md) §2.1).
+`02 21 4c 18`; each is `CERTAIN`. The inner-TAR probe then decodes 512 bytes and upgrades
+a match to `TAR_ZST` or `TAR_LZ4` ([`single-file.md`](single-file.md) §2.1). It reads at
+most 1 MiB of compressed input to get them, and a legacy block yields nothing until all
+of it is read, so a legacy `.tar.lz4` whose first block compresses to more than 1 MiB
+(incompressible data at the start of the tar) stays bare `LZ4` unless its name says
+`.tar.lz4`. A frame's blocks decode as they arrive, so no frame file is affected.
 
 For zstd, detection also walks a leading run of skippable frames
 (`streams/zstd_framing.py`): each declares its size, so the next frame's offset is
@@ -112,7 +115,9 @@ input does, at a zero size (zeros after it are padding), or at a size no writer 
 produce (over `LZ4_COMPRESSBOUND(8 MiB)`, 8 421 520 bytes), which is how the `lz4`
 command finds the next frame. Whatever follows is the next stream or trailing data. A
 block that fails to decode, or decodes to more than 8 MiB, is `CorruptionError`; input
-that ends inside a size field or a block is `TruncatedError`.
+that ends inside a size field or a block is `TruncatedError`. Input that ends exactly
+between two blocks cannot be told from the stream's real end, so a file cut there reads
+short with no error; `lz4 -dc` reads it the same way.
 
 Neither codec records resume points, so a backward seek decodes again from the start and
 the rewind report says so ([`single-file.md`](single-file.md) §2.3). A seekable zstd
@@ -142,6 +147,7 @@ Measured with the tools listed on [`single-file.md`](single-file.md) §3.
 | `lz4 --content-size` | Reads; `size=None` |
 | An LZ4 file followed by `junk` | Reads, then `ARCHIVE_TRAILING_DATA` |
 | An LZ4 frame behind a skippable frame, no extension | Not detected |
+| `lz4 -l` of a tar starting with 3 MiB of incompressible data, no extension | `LZ4`, not `TAR_LZ4`: the first block is over the inner-TAR probe's 1 MiB (§2.1) |
 | `lz4 -l` (legacy frame, magic `02 21 4c 18`), one block and several | Detected and read |
 | `lz4 -l` output, a modern frame and another `lz4 -l` output concatenated | Reads, as `lz4 -dc` does |
 | `lz4 -l` output followed by `junk` / by three zero bytes | Reads, then `ARCHIVE_TRAILING_DATA` / reads clean; `lz4 -dc` accepts the first and refuses the second |
@@ -194,6 +200,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `ResourceLimitError` on a zstd file whose window is under the cap | **archivey** | The cap is rounded down to a power of two for zstd (§4) |
 | `member.size` is `None` although the frame header has a content size | **archivey** | One frame's size is not the file's (§1, §7) |
 | A damaged `lz4 -l` file can read with no error | **format** | The legacy stream has no checksum (§2.3) |
+| An `lz4 -l` file cut between two blocks reads short with no error | **format** | The legacy stream has no end mark (§2.3) |
 | An LZ4 file starting with a skippable frame is not detected by content | **archivey** | The skippable-frame walk is zstd's only |
 | A damaged `--no-check` file reads with no error | **format** | No checksum (§1) |
 | A file `zstd -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the last frame are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.strict()` raises |
