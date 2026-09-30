@@ -81,6 +81,7 @@ spec for lifecycle, retention, and policy.
 ::: archivey.OnError
 ::: archivey.AbortOn
 ::: archivey.MemberFilter
+::: archivey.sanitize_names
 
 ## Configuration
 

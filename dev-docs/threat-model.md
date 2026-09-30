@@ -67,8 +67,11 @@ no member replaces the destination itself.
 
 **Mechanism.**
 - `internal/filters.py` `check_universal` runs on every member under every policy,
-  `TRUSTED` included. It rejects `..` components (any separator), absolute paths, drive
-  letters, UNC prefixes, NUL bytes, names `os.fsencode` cannot represent, special files
+  `TRUSTED` included, after the caller's filter, on the name about to be written. Under
+  `STANDARD` and `TRUSTED`, `reroot_absolute` first drops an absolute name's root (and a
+  hardlink target's), so the member lands inside the destination. It rejects `..`
+  components (any separator), absolute paths including drive letters and UNC prefixes
+  (under `STRICT`, or when a filter returned one), NUL bytes, names `os.fsencode` cannot represent, special files
   (devices, FIFOs, sockets), and a non-directory member whose normalized name is `"."`
   or `""` (which would replace the destination root with a file). It resolves the
   parent and checks containment, and checks symlink and hardlink targets lexically.

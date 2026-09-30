@@ -881,8 +881,10 @@ class ArchiveInfo:
 MemberSelectorArg = (
     Collection["str | ArchiveMember"] | Callable[[ArchiveMember], bool] | None
 )
-# ``MemberFilter`` — a per-member sanitize/rename hook run after the safety checks and
-# policy transform; returns a ``.replace()``d copy, or ``None`` to skip the member.
+# ``MemberFilter`` — a per-member sanitize/rename hook run after the policy transform and
+# before the safety checks, so it sees unsafe members too and can rename them; the
+# safety checks run on what it returns. Returns a ``.replace()``d copy, or ``None`` to
+# skip the member. ``archivey.sanitize_names`` is a ready-made one.
 MemberFilter = Callable[[ArchiveMember], "ArchiveMember | None"]
 
 
@@ -897,6 +899,9 @@ class ExtractionPolicy(Enum):
     **deceptive** names (bidi overrides). ``STRICT`` is portable-by-default; ``TRUSTED``
     defers to the local OS (faithful bytes, no name rejection or rewrite). See
     ``dev-docs/decisions/0013-cross-platform-name-safety-policies.md``.
+
+    Absolute names: ``STRICT`` refuses them; ``STANDARD`` and ``TRUSTED`` drop the root
+    and extract inside the destination (``/etc/x`` → ``etc/x``), as tar and unzip do.
 
     What ``TRUSTED`` does **not** relax: anything where the write itself is unsafe — a
     name that escapes the destination, carries a NUL, or names a device node. Those are

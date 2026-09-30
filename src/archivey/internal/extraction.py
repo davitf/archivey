@@ -47,6 +47,7 @@ from archivey.internal.filters import (
     apply_name_policy,
     check_universal,
     collision_key,
+    reroot_absolute,
 )
 from archivey.internal.logs import extraction as logger
 from archivey.internal.selection import (
@@ -908,21 +909,36 @@ class ExtractionCoordinator:
     def _transform(
         self, original: ArchiveMember, dest_root: Path
     ) -> tuple[ArchiveMember | None, str | None]:
-        """Universal check on the original, then policy transform and user filter on a
-        transient copy.
+        """Policy transform and user filter on a transient copy, then the universal check
+        on the result.
 
         Returns ``(member_to_write, presented_name)`` — the member is ``None`` if the user
         filter skipped it, and ``presented_name`` is the pre-rewrite full name when the
         portable-name policy rewrote it, else ``None``. Raises a ``FilterRejectionError``
         on a universal violation."""
-        check_universal(original, dest_root)
         transformed = POLICY_TRANSFORMS[self._policy](original)
+        if self._policy is not ExtractionPolicy.STRICT:
+            rerooted = reroot_absolute(transformed)
+            if (
+                rerooted.name != transformed.name
+                and AbortOn.NAME_SANITIZED in self._abort_on
+            ):
+                raise _AbortExtraction(
+                    NameRewrittenError(
+                        f"Absolute name re-rooted: {quoted(transformed.name)} -> "
+                        f"{quoted(rerooted.name)}",
+                        member_name=original.name,
+                    )
+                )
+            transformed = rerooted
+        # The filter runs before the universal check, so it sees every member, the
+        # unsafe ones included, and can rename one to something safe. Whatever it
+        # returns is what gets checked and written.
         if self._filter is not None:
             transformed = self._filter(transformed)
             if transformed is None:
                 return None, None
-            # A caller filter can rename/relink; re-run the universal check on the result.
-            check_universal(transformed, dest_root)
+        check_universal(transformed, dest_root)
         if self._reader is not None and self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has
             # read yet: `read_link_targets=False`, or a streaming pass whose own read

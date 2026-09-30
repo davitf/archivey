@@ -128,11 +128,28 @@ result tuple on success; there is no no-tracking mode.
 
 ### Requirement: Non-Bypassable Universal Path-Safety Constraints
 
-The system SHALL run universal safety checks on the faithful stored
-`member.name` before any policy transform, user filter, or filesystem write;
-`ExtractionPolicy.TRUSTED` does not bypass them. The default path-safety behavior
-is reject/raise. A future sanitize policy is outside v1 scope and is not part of
-this contract.
+The system SHALL run universal safety checks on the member about to be written:
+after the policy transform, the absolute-name re-root below, and the user `filter`,
+and before any filesystem write. `ExtractionPolicy.TRUSTED` does not bypass them. The
+filter therefore sees every selected member, unsafe ones included, and can rename one
+to a safe name; the checks run on whatever it returns. The default path-safety behavior
+is reject/raise, with one rewrite:
+
+- **Absolute names are re-rooted under `STANDARD` and `TRUSTED`.** Before the filter
+  runs, a name with a leading `/` or `\`, a drive letter or a UNC prefix loses that
+  root, repeatedly (`/etc/x` → `etc/x`, `C:\x` → `x`), and the member extracts inside
+  `dest`. A HARDLINK's absolute `link_target` is re-rooted the same way, since it names
+  another member of the archive. A SYMLINK target is not re-rooted. `STRICT` does not
+  re-root, so the check below refuses the member. This matches GNU tar, bsdtar, unzip,
+  7-Zip and Python's `tarfile` `data` filter, which all strip the root. A re-root is a
+  name rewrite for `AbortOn.NAME_SANITIZED`, which raises `NameRewrittenError` on it.
+- **`archivey.sanitize_names`** is a public `MemberFilter` that rewrites instead of
+  refusing, at any policy: it strips an absolute root, resolves `..` against the
+  segment before it and drops a `..` with nothing to climb out of (`a/../b` → `b`,
+  `../x` → `x`), removes bidi override/isolate characters, appends `_` to a
+  Windows-reserved stem (`CON.txt` → `CON_.txt`), and replaces `:` and NUL with `_`.
+  It applies the same path rewrites to a HARDLINK target and leaves a SYMLINK target
+  as stored. It returns the member unchanged when nothing needs rewriting.
 
 The implementation SHALL enforce defense in depth: first a string check rejects
 absolute paths, Windows drive/UNC roots, any `..` component split on `/` or `\`,
@@ -197,7 +214,13 @@ read back.
 | --- | --- |
 | `"../evil"` or `"../../etc/passwd"` | `FilterRejectionError`; no write; all policies |
 | `"foo/../bar"` | `FilterRejectionError` under reject/raise behavior even if it would stay in root |
-| Leading `/`, Windows drive, UNC path | `FilterRejectionError`; no write; all policies |
+| Leading `/`, Windows drive, UNC path under `STRICT` | `FilterRejectionError`; no write |
+| `"/etc/x"` or `"C:/etc/x"` under `STANDARD` / `TRUSTED` | Extracted at `dest/etc/x`; `result.member.name` keeps the stored name |
+| HARDLINK `"/b"` → `"/a"` under `STANDARD` / `TRUSTED` | Re-rooted to `b` → `a`; linked to the extracted `a` |
+| Absolute name, `abort_on={NAME_SANITIZED}`, `STANDARD` | `NameRewrittenError`; no report |
+| Caller filter returns an absolute or `..` name | `FilterRejectionError`; the check runs on the filter's output |
+| `"../evil"` with `filter=sanitize_names` | Extracted at `dest/evil`, all policies |
+| `"a/../b"` with `filter=sanitize_names` | Extracted at `dest/b`, all policies |
 | Earlier member creates symlink `foo` outside `dest`; later member writes `foo/x` | Parent resolution rejects `foo/x` with `FilterRejectionError` |
 | Name with lone surrogate unencodable by the platform filesystem encoding | `FilterRejectionError` before path resolution; never raw `UnicodeEncodeError` |
 | SYMLINK/HARDLINK `link_target` with `\x00` or unencodable surrogate | `FilterRejectionError`; never raw `ValueError`/`UnicodeEncodeError` |
@@ -394,8 +417,9 @@ source is written, with one read and one bomb-limit count for the source bytes.
 ### Requirement: Policy-Specific Metadata Transforms
 
 The system SHALL apply policy-specific permission and ownership transforms to one
-transient `ArchiveMember` copy after universal checks pass and before I/O. The
-copy receives the policy transform and user `filter` in that order and supplies
+transient `ArchiveMember` copy before the universal checks and I/O. The
+copy receives the policy transform, the absolute-name re-root (`STANDARD` /
+`TRUSTED`) and the user `filter` in that order and supplies
 the on-disk identity (`name`, mode, timestamps, destination path). The original
 mutable member is used for `BombTracker.start_member()` and recorded in
 `ExtractionResult`, so late-bound size/CRC/source metadata remain accurate.
@@ -630,7 +654,7 @@ frequency is bounded by the extraction copy chunk size; when `on_progress` is
 
 `ExtractionReport.results` SHALL contain one `ExtractionResult` for every
 selected member the coordinator processes when the operation completes, including
-members blocked by universal/policy checks before the user filter. Selector
+members blocked by universal/policy checks. Selector
 exclusions are outside the operation and have no result; a user `filter` that
 returns `None` likewise drops the member with **no** `ExtractionResult` (it is a
 caller-elected exclusion, not an extraction outcome).

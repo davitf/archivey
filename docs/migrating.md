@@ -45,7 +45,8 @@ What changes:
 - **`extractall` was never safe.** `zipfile.extractall` sanitizes absolute paths and `..`
   by mangling them, but happily writes symlinks that point outside the destination.
   `extract_all` **blocks** traversal and symlink escapes by default and reports them as
-  `ExtractionStatus.BLOCKED`. See [Safe extraction](extracting.md).
+  `ExtractionStatus.BLOCKED`. Pass `filter=archivey.sanitize_names` to rename such
+  members instead, much as `zipfile` does. See [Safe extraction](extracting.md).
 - **Passwords are an open-time argument**, not per-call `pwd=`:
   `open_archive("secret.zip", password="hunter2")`. Archivey also reads **WinZip AES**
   members (with the `[recommended]` extra), which `zipfile` cannot decrypt at all.
