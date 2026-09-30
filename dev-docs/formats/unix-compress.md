@@ -120,7 +120,21 @@ Measured with `ncompress` 5.0, as listed on [`single-file.md`](single-file.md) �
 | A 16-bit file cut at 200 even points | 100 `TruncatedError`, 100 read short with no error |
 | A 12-bit file cut at 200 even points | 131 `TruncatedError`, 69 read short with no error |
 | A zero-byte `.Z` | `TruncatedError` |
-| `compress -b9` | Reads without error, but a 4 KB text file came back 12 bytes short and different from byte 684. `7z` and `unar` return the same bytes; ncompress and GNU gzip 1.12 refuse the file as corrupt. See §7 |
+| `compress -b9` | Reads, unless the file hit a bug in ncompress 5.0 that writes a code that does not fit in 9 bits. Such a file reads without error but returns wrong bytes, as in `7z` and `unar`; see below |
+
+**9-bit files from ncompress 5.0 can be damaged.** When `compress -b9` fills the table
+partway through a string, ncompress 5.0 adds one entry too many, code 512, and can later
+write it in 9 bits. Its low 9 bits read as the literal byte 0, and its tenth bit lands in
+the next code. Nothing marks the damage, so every decoder reads on: archivey, `7z` and
+`unar` return the same wrong bytes. Whether a file is hit depends on the data. The bug
+has been in ncompress since 4.2.3 (1992). It was fixed in its repository in February
+2021 (commit `3303f31`, "fixed nine bits processing"), after the 5.0 release, and no
+release carries the fix yet. A build of that commit writes 9-bit files that archivey,
+`7z` and `unar` read back to their input.
+
+ncompress 5.0 and GNU gzip 1.12 refuse every 9-bit file, damaged or not. Their decoders
+move to 10-bit codes when the table fills, even when the header says 9, which is the other
+half of the same ncompress fix. So their refusal is not evidence against a file.
 
 Without block mode (`compress -C`) no installed tool writes files, so the tests carry
 their own encoder. GNU gzip 1.12 reads its output like archivey at 10 to 16 bits. The
@@ -164,6 +178,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `UnsupportedFeatureError` naming reserved flags | **archivey** | A header bit this decoder does not know; no known writer sets it |
 | A backward seek re-decodes from the start | **format** | No CLEAR codes in this file, or a non-seekable source |
 | `member.size` is `None` | **format** | No size field |
+| A `compress -b9` file reads with no error but returns wrong bytes | **library** | An ncompress 5.0 writer bug (§3); fixed upstream, not yet released |
 
 ## 6. Decisions
 
@@ -178,13 +193,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 ## 7. Open questions
 
-**9-bit files.** ncompress 5.0's `-b9` output is refused by ncompress's own decoder and
-by GNU gzip, and `7z`, `unar` and archivey agree with each other on it but not with the
-input (§3). Without block mode at 9 bits, archivey and `7z` read the test encoder's
-streams back to their input and GNU gzip refuses them. GNU gzip and ncompress appear to
-move to 10-bit codes when the table fills even at `-b9` (inferred from their source, not
-traced). No 9-bit file from another producer is at hand to say which reading is right,
-so 9 bits is not claimed.
+None.
 
 The truncation gap is the format's, not an open question;
 [`docs/formats.md`](../../docs/formats.md) tells users it is best-effort.
@@ -206,6 +215,7 @@ The truncation gap is the format's, not an open question;
 | One call's output is bounded | `tests/test_codecs.py::test_unix_compress_read_one_bounds_internal_buffer` |
 | The table stays under about 19 MiB, 21 MiB on a free-threaded build (§4) | `tests/test_codecs.py::test_unix_compress_worst_case_table_stays_under_the_stated_bound`, `tests/test_audit_tar_streams.py::test_unix_compress_dictionary_memory_is_bounded` |
 | Files written without block mode decode like GNU `gzip -d` at 10 to 16 bits | `tests/test_codecs.py::test_unix_compress_non_block_mode_decodes_like_the_reference`, `::test_unix_compress_non_block_mode_streams_match_gzip`, `::test_unix_compress_non_block_mode_may_end_at_a_widening`, `::test_unix_compress_non_block_mode_cut_inside_widening_padding_is_truncated` |
+| 9-bit files, in block mode and without, decode to their input | `tests/test_codecs.py::test_unix_compress_nine_bit_streams_decode_exactly` |
 | Linked long entries decode exactly | `tests/test_codecs.py::test_unix_compress_long_dictionary_entries_decode_exactly`, `::test_unix_compress_repeated_longest_code_decodes_exactly` |
 | `.tar.Z` is found; a bare `.Z` stays bare | `tests/test_detection.py::test_unix_compress_without_inner_tar_stays_bare_z`, `tests/test_libarchive_corpus.py::test_tar_z_detection_upgrades_via_inner_probe` |
 

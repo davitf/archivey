@@ -943,7 +943,9 @@ def test_unix_compress_non_block_mode_decodes_like_the_reference() -> None:
         assert stream.read() == b"a" * (codes * (codes + 1) // 2)
 
 
-def _lzw_compress_non_block_mode(data: bytes, max_bits: int) -> bytes:
+def _lzw_compress_non_block_mode(
+    data: bytes, max_bits: int, *, block_mode: bool = False
+) -> bytes:
     """An LZW encoder laid out the way ``compress -C`` writes a stream.
 
     ncompress 5.0 dropped ``-C``, so no installed tool writes these. Free codes start at
@@ -954,10 +956,14 @@ def _lzw_compress_non_block_mode(data: bytes, max_bits: int) -> bytes:
     This widens at the same code as :func:`_lzw_non_block_mode_run`, whose condition is
     one lower only because it checks after emitting a code rather than before. Code 258
     is the first at 10 bits in both.
+
+    With ``block_mode`` free codes start at 257 and the header says so; the same
+    widening rule then pads nothing. It never writes a CLEAR. On 9 000-byte inputs its
+    output matched ncompress 5.1 byte for byte at 9, 10, 12 and 16 bits.
     """
-    out = bytearray(b"\x1f\x9d" + bytes([max_bits]))
+    out = bytearray(b"\x1f\x9d" + bytes([max_bits | (0x80 if block_mode else 0)]))
     width, in_group, bits, nbits = 9, 0, 0, 0
-    free_code = 256
+    free_code = 257 if block_mode else 256
     table = {bytes([i]): i for i in range(256)}
 
     def put(code: int) -> None:
@@ -1032,13 +1038,26 @@ def test_unix_compress_non_block_mode_streams_match_gzip(
 ) -> None:
     """Non-block streams at 10, 12 and 16 bits decode to their input, whatever the feed
     size, and GNU gzip agrees where it is installed. The random payload fills the table
-    at 10 and 12 bits. 9 bits is left out: see ``dev-docs/formats/unix-compress.md``
-    §7."""
+    at 10 and 12 bits. 9 bits has its own test, since gzip refuses 9-bit streams."""
     data = _NON_BLOCK_PAYLOADS[payload]
     compressed = _lzw_compress_non_block_mode(data, max_bits)
     reference = _gnu_gzip_decompress(compressed)
     if reference is not None:
         assert reference == data
+    for chunk in (1 << 20, 4097, 7):
+        assert _lzw_decode_in_chunks(compressed, chunk) == data
+
+
+@pytest.mark.parametrize("block_mode", [True, False])
+@pytest.mark.parametrize("payload", sorted(_NON_BLOCK_PAYLOADS))
+def test_unix_compress_nine_bit_streams_decode_exactly(
+    payload: str, block_mode: bool
+) -> None:
+    """At 9 bits the table fills and codes stay 9 bits wide. GNU gzip is not a
+    reference here: it moves to 10-bit codes when the table fills even at 9 bits, and
+    refuses these streams. See ``dev-docs/formats/unix-compress.md`` §3."""
+    data = _NON_BLOCK_PAYLOADS[payload]
+    compressed = _lzw_compress_non_block_mode(data, 9, block_mode=block_mode)
     for chunk in (1 << 20, 4097, 7):
         assert _lzw_decode_in_chunks(compressed, chunk) == data
 
