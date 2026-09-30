@@ -76,7 +76,7 @@ archivey.extract("download.zip", "out/")
 
 `extract` writes every member under `out/`. By default it refuses anything that would land
 outside that folder, such as `../` paths, absolute paths or links pointing out of it, and it
-stops archives that expand to far more data than they hold. [Safe extraction](extracting.md)
+stops archives that expand to far more data than they hold. [Extracting](extracting.md)
 lists every protection and how to relax them for archives you trust, and also shows how to
 extract only some files.
 
