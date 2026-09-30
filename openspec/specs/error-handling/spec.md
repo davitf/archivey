@@ -584,6 +584,7 @@ The parameters covered:
 | --- | --- |
 | `extract()`, `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_error`, `abort_on` |
 | `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2` |
+| `DiagnosticPolicy(...)` | `default`, and the keys and values of `overrides` |
 | `detect_format()` | `budget` (a `DetectionBudget` passes through unconverted) |
 
 A member SHALL be reachable by its `value`, by its member **name**, in any case, and
@@ -621,6 +622,8 @@ vocabulary rather than two that can drift.
 | `extract(src, dest, overwrite="nonsense")` | `ArchiveyUsageError` naming `overwrite` and the valid spellings; nothing written to `dest` |
 | `ArchiveyConfig(use_rapidgzip="on")` | Field holds `AcceleratorMode.ON`, not the string |
 | `ArchiveyConfig(use_rapidgzip="sometimes")` | `ArchiveyUsageError` at construction, not at the later stream open |
+| `DiagnosticPolicy(default="raise")` | Field holds `DiagnosticDisposition.RAISE`; a diagnostic the policy covers raises |
+| `DiagnosticPolicy(overrides={"ARCHIVE_TRAILING_DATA": "raise"})` | The key is `DiagnosticCode.ARCHIVE_TRAILING_DATA`, so that code raises |
 | `detect_format(src, budget="fast")` | Detects under the FAST preset |
 | `detect_format(src, budget="turbo")` | `ArchiveyUsageError` naming the presets, not `AttributeError` on a budget field |
 | `coerce to OverwritePolicy` given `AbortOn.BLOCKED_MEMBER` | `ArchiveyUsageError` reporting a wrong **type**, though `AbortOn` is a `str` subclass |

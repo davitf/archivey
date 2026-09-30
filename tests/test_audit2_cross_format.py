@@ -232,14 +232,6 @@ def test_diagnostic_policy_raise_control() -> None:
             r.members()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "C3: DiagnosticPolicy stores a string disposition or code name as given and "
-        "never raises for it, so strict mode is silently off (ArchiveyConfig coerces "
-        "the accelerator fields for exactly this reason)"
-    ),
-)
 @pytest.mark.parametrize(
     "kwargs",
     [

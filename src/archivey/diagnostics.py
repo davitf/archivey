@@ -24,7 +24,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, TypeVar
 
-from archivey.exceptions import ArchiveyError
+from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.internal.enum_args import coerce_enum
 from archivey.terminal import escape_control_chars
 from archivey.types import ArchiveMember, ExtractionResult
 
@@ -645,7 +646,33 @@ class DiagnosticPolicy:
     )
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "overrides", _freeze_mapping(self.overrides))
+        # Converted, not only checked, as ``ArchiveyConfig`` converts its enum fields:
+        # ``resolve`` answers by lookup and the collector tests the answer with ``is``,
+        # so ``default="raise"`` or a code spelled as its name would construct fine and
+        # then never raise. After this the fields always hold members.
+        call = "DiagnosticPolicy()"
+        object.__setattr__(
+            self,
+            "default",
+            coerce_enum(
+                self.default, DiagnosticDisposition, call=call, param="default="
+            ),
+        )
+        overrides: dict[DiagnosticCode, DiagnosticDisposition] = {}
+        for key, value in _freeze_mapping(self.overrides).items():
+            code = coerce_enum(key, DiagnosticCode, call=call, param="overrides= key")
+            disposition = coerce_enum(
+                value, DiagnosticDisposition, call=call, param="overrides= value"
+            )
+            if overrides.setdefault(code, disposition) is not disposition:
+                # Two spellings of one code (its name and the member) that disagree:
+                # keeping either would silently drop what the other asked for.
+                raise ArchiveyUsageError(
+                    f"{call} got two dispositions for overrides= key "
+                    f"{code.value!r}: {overrides[code].value!r} and "
+                    f"{disposition.value!r}."
+                )
+        object.__setattr__(self, "overrides", MappingProxyType(overrides))
 
     def __hash__(self) -> int:
         # The generated frozen-dataclass hash would hash ``overrides``, and a
