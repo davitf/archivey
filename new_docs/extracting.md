@@ -38,6 +38,7 @@ archivey.extract(
     policy="strict",     # how much to trust names and permissions
     overwrite="error",   # what to do when a file is already there
     on_error="stop",     # whether a damaged member stops the rest
+    abort_on=[],         # events that stop the whole extraction at once
     limits=archivey.ExtractionLimits(max_extracted_bytes=2 * 2**30),  # how much it may write
 )
 ```
@@ -60,12 +61,29 @@ what the archive says about names and permissions gets written as it is:
 | `"replace"` | The existing file is deleted, and the member is written |
 | `"rename"` | The member is written next to it, as `name (1)` |
 
+A folder that's already there is never a conflict. Members are written into it.
+
 `on_error` decides what a failed member does to the rest of the extraction:
 
 | `on_error` | Effect |
 |---|---|
 | `"stop"` (default) | The first failure raises, and extraction stops there |
 | `"continue"` | The failure is recorded in the report, and extraction goes on |
+
+`abort_on` lists events that stop the whole extraction the first time they happen, even ones that
+aren't failures. It's empty by default:
+
+| `abort_on` value | Raises when |
+|---|---|
+| `"blocked_member"` | A member is refused |
+| `"name_collision"` | Two members end up at the same path, whatever `overwrite` does about it |
+| `"name_sanitized"` | A name is rewritten to its portable spelling |
+
+After an abort there's no report, and the files already written stay on disk.
+
+Each of these strings is also an enum value, so `policy=archivey.ExtractionPolicy.STRICT` works as
+well as `policy="strict"`. The enums are `ExtractionPolicy`, `OverwritePolicy`, `OnError` and
+`AbortOn`. The strings ignore case, and `-` works in place of `_`.
 
 ## What each policy does with unusual members
 
