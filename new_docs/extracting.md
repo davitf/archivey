@@ -26,7 +26,7 @@ with archivey.open_archive("download.zip") as archive:
     archive.extract_all("out/", members=lambda member: member.name.endswith(".txt"))
 ```
 
-A second argument, `filter`, sees each member just before it's written. It can change the member
+A second argument, `filter`, sees each member before it's checked and written. It can change the member
 by returning a changed copy, with a new name or new permissions, for example, or skip it by
 returning `None`.
 
@@ -49,8 +49,8 @@ what the archive says about names and permissions gets written as it is:
 | `policy` | Names | Permissions |
 |---|---|---|
 | `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible | Files at most `rw-r--r--` and never executable, folders at most `rwxr-xr-x` |
-| `"standard"` | As in `"strict"`, but trailing dots and spaces are kept | As stored, without setuid, setgid and sticky bits |
-| `"trusted"` | As stored | As stored, and the owner too when running as root |
+| `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, and absolute paths are placed inside the destination | As stored, without setuid, setgid and sticky bits |
+| `"trusted"` | As stored, but absolute paths are placed inside the destination | As stored, and the owner too when running as root |
 
 `overwrite` decides what happens when a file is already where a member would go:
 
@@ -87,14 +87,12 @@ well as `policy="strict"`. The enums are `ExtractionPolicy`, `OverwritePolicy`, 
 
 ## What each policy does with unusual members
 
-<!-- Revisit after PR 524 lands: it changes how standard/trusted handle absolute names and when
-the filter runs. -->
-
 Some members are refused under every policy, and others depend on it:
 
 | Member in the archive | `"strict"` | `"standard"` | `"trusted"` |
 |---|---|---|---|
-| `../evil.txt`, `/etc/evil.txt` or `C:/evil.txt` | Refused | Refused | Refused |
+| `../evil.txt` or `a/../../evil.txt` | Refused | Refused | Refused |
+| `/etc/evil.txt` or `C:/evil.txt` | Refused | Written as `etc/evil.txt` or `evil.txt` | Written as `etc/evil.txt` or `evil.txt` |
 | A link to `../../outside` or `/etc/passwd` | Refused | Refused | Refused |
 | A device file or a FIFO | Refused | Refused | Refused |
 | `CON`, `aux.txt` or `file:ads`, which Windows can't create | Refused | Refused | Written as is |
@@ -108,9 +106,12 @@ Some members are refused under every policy, and others depend on it:
 they are the same file on macOS and Windows. An archive that writes more than `limits` allows
 stops the whole extraction, whatever the policy.
 
-A `filter` can't bring back a member that every policy refuses, because it never sees one. It does
-see the members that `"strict"` and `"standard"` refuse for their names alone, such as `CON`, and
-if it renames one to a name the policy accepts, that member is written.
+A `filter` sees each member before these checks run, so it can rename one they would refuse,
+such as `../evil.txt`, and that member is then written under its new name. Device files are
+refused whatever the filter does, and a link pointing outside is refused unless the filter also
+changes its target. `archivey.sanitize_names` is a ready-made filter for this. It drops a leading
+`/` or drive letter, resolves or drops `..`, removes the hidden characters, and adds `_` to names
+Windows reserves, such as `CON`. It doesn't change link targets.
 
 A refused member isn't written, and the rest of the archive still extracts. The call returns a
 report with one result for each member, with the path it was written to in `result.path` and the
