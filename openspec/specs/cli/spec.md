@@ -376,3 +376,19 @@ without touching any public name.
 | Any module under `src/archivey/cli/` | No `import archivey.internal…` or `from archivey.internal… import`, except the one allowlisted measurement import |
 | One is added | `tests/test_cli_uses_public_api.py` fails, naming the file and line |
 | The allowlisted import is removed | The same test fails until the allowlist entry goes too |
+
+### Requirement: extract --dry-run reports without writing
+
+`archivey extract --dry-run` SHALL run the extraction with `dry_run=True`. It SHALL
+print the same per-member lines and return the same exit code as the same command
+without `--dry-run` would against an empty destination, and its closing summary SHALL
+say that nothing was written. With no `-d`, it SHALL name the smart default destination
+it would use, and SHALL NOT hoist.
+
+#### Scenario: extract dry-run matrix
+
+| Case | Expected |
+| --- | --- |
+| `archivey extract <archive> --dry-run` | stderr names `would extract into <stem>/`; summary begins `dry run, nothing written:`; nothing created in the cwd |
+| `archivey extract <archive-with-traversal> --dry-run` | `blocked:` line; exit `3` |
+| `archivey extract <archive> -d out --dry-run` | `out` is not created |

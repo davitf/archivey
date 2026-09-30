@@ -79,6 +79,7 @@ examples:
   archivey x archive.zip -d out         extract into out/ (use -d . for cwd)
   archivey x archive.zip '*.py'         extract matching members only
   archivey x archive.zip --exclude 't*' extract all except exclude patterns
+  archivey x archive.zip --dry-run      run every check and read, write nothing
 """
 
 # Classic tar-style flag spellings that are not options here (verbs are bare words).
@@ -345,6 +346,14 @@ def build_parser() -> argparse.ArgumentParser:
             "extraction"
         ),
     )
+    p_extract.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "run the extraction's checks and read every member, but write nothing; "
+            "reports what extracting into an empty destination would do"
+        ),
+    )
     _add_filter_args(p_extract)
     p_extract.set_defaults(_run="extract")
 
@@ -451,6 +460,7 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
             hide_progress=bool(args.hide_progress),
             stop_on_error=bool(getattr(args, "stop_on_error", False)),
             abort_on=list(getattr(args, "abort_on", None) or ()),
+            dry_run=bool(getattr(args, "dry_run", False)),
             out=out,
             err=err,
         )

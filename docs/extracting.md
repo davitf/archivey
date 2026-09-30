@@ -254,6 +254,31 @@ with archivey.open_archive("a.zip") as reader:
     reader.extract_all("out/", members=["only/this.txt"])
 ```
 
+## Dry run
+
+Pass `dry_run=True` to `extract()` or `extract_all()` to see what an extraction would do
+without keeping anything:
+
+```python
+from archivey import ExtractionStatus
+
+report = archivey.extract("backup.tar.gz", "out/", on_error="continue", dry_run=True)
+for result in report.results:
+    if result.status is not ExtractionStatus.EXTRACTED:
+        print(result.status.value, result.member.name, result.error)
+```
+
+A dry run is the real extraction, run into a private scratch directory under the system
+temp directory, which is removed before the call returns. Directories and links are
+created there, so checks that depend on what is already on disk, such as a symlink an
+earlier member created, give the same answer they would in `out/`. Every file body is
+read, decompressed and checked against its stored digest and the limits, then thrown
+away: the files are created empty. A dry run therefore takes as long as an extraction,
+but needs one inode per member instead of the space for the content.
+
+The report reads as if `out/` had been empty. Files already in `out/` are not read, so
+they cause no collisions, and `out/` is neither created nor changed.
+
 ## Names change on disk
 
 Archive order and identity matter more than “the” name.
@@ -278,7 +303,7 @@ Archive order and identity matter more than “the” name.
 | `TRUSTED` still won’t traverse | Ownership / sticky bits only when allowed; path safety stays on. |
 | Hardlinks + filters | Excluding a hardlink’s source can orphan the link (especially on streaming sources); `OnError` decides fail vs continue. |
 | Symlink-hostile filesystems | Unlike `tarfile`, archivey does **not** copy target bytes through a symlink; you get a typed failure or skip. |
-| Staging leftovers | `.archivey-tmp-*` under the destination are safe to delete (left only after hard kill / power loss). |
+| Staging leftovers | `.archivey-tmp-*` under the destination, and `archivey-dry-run-*` directories in the system temp directory, are safe to delete (left only after hard kill / power loss). |
 | Nested archives | Recursion is caller-driven; a zip-quine loops only if you loop. Bound depth/size yourself. |
 | Listing vs extract limits | Bomb guards apply during **extraction**. `ListingLimits` apply when materializing `members()`. `stream_members()` / `streaming=True` are intentionally unguarded, except on formats that already apply `max_members` at parse (7z and RAR): `open_archive` itself raises. RAR also weighs its compressed RAR 1.5/2.x comments against `max_metadata_bytes` at open, and TAR refuses a single PAX or GNU long-name header larger than the whole `max_metadata_bytes` in every mode. Encrypted 7z password confirmation runs on the first member read, before extract limits: peak RAM is one 64 KiB chunk plus codec buffers, and wall time scales with folder size × candidates only for store/copy+AES whose only CRC is at the folder end. |
 

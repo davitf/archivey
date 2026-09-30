@@ -351,6 +351,7 @@ def _report_extraction(
     extra_renamed: int = 0,
     extra_skipped: int = 0,
     dest_label: str | None = None,
+    dry_run: bool = False,
 ) -> tuple[int, int]:
     """Print rename notices + a closing summary from the library report (F3/D2).
 
@@ -360,6 +361,10 @@ def _report_extraction(
     ``extracted``: the report counted that file before the hoist discarded it. ``dest_label`` is the hoist's own
     account of where the content landed, which the report — written before the hoist
     moved anything — cannot know.
+
+    Under ``dry_run`` the per-member lines are the same, since they say what the
+    extraction decided, and the summary says that nothing was written. Its destination
+    is the target as named: the disk cannot say more, because nothing landed there.
 
     Returns ``(blocked_count, failed_count)`` for exit-code selection (Q1).
     """
@@ -456,8 +461,13 @@ def _report_extraction(
     # a direct extraction's ``NOT_OVERWRITTEN`` is not.
     extracted -= extra_skipped
     if dest_label is None:
-        dest_label = _summary_dest_label(target, report)
+        dest_label = (
+            f"{escape_path(target)}/"
+            if dry_run
+            else _summary_dest_label(target, report)
+        )
     print(
+        f"{'dry run, nothing written: ' if dry_run else ''}"
         f"{extracted} extracted, {renamed} renamed, {skipped} skipped"
         f"{f', {blocked} blocked' if blocked else ''}"
         f"{f', {failed} failed' if failed else ''}"
@@ -523,6 +533,7 @@ def run_extract(
     verbose: bool,
     stop_on_error: bool = False,
     abort_on: list[str] | None = None,
+    dry_run: bool = False,
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
@@ -558,9 +569,11 @@ def run_extract(
                 overwrite=overwrite_enum,
             )
             target = plan.target
-            may_hoist = plan.may_hoist
+            # The hoist moves what the extraction wrote; a dry run wrote nothing.
+            may_hoist = plan.may_hoist and not dry_run
             if target != Path("."):
-                print(f"extracting into {escape_path(target)}/", file=err)
+                verb = "would extract" if dry_run else "extracting"
+                print(f"{verb} into {escape_path(target)}/", file=err)
 
         base_progress: ProgressCallback | None = make_progress_callback(
             hide_progress=hide_progress, stream=err
@@ -587,6 +600,7 @@ def run_extract(
                     on_error=on_error,
                     abort_on=abort_on_enum,
                     on_progress=on_progress,
+                    dry_run=dry_run,
                 )
             except (ArchiveyError, OSError) as exc:
                 # STOP-path member failure / always-stop (bomb guards,
@@ -606,6 +620,8 @@ def run_extract(
                     "extraction stopped; remaining members were not extracted",
                     file=err,
                 )
+                if dry_run:
+                    print("dry run: nothing was written", file=err)
                 return EXIT_FAIL
             # Streaming + patterns: empty report means nothing matched (no pre-scan).
             if patterns and members_for_filter is None and len(report) == 0:
@@ -624,6 +640,7 @@ def run_extract(
                 extra_renamed=hoist.renamed,
                 extra_skipped=hoist.skipped,
                 dest_label=hoist.dest_label,
+                dry_run=dry_run,
             )
             return _exit_for_outcomes(blocked=blocked, failed=failed, hoist_ok=hoist.ok)
         finally:

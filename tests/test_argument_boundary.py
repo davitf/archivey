@@ -601,6 +601,8 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
         "rar_allow_glob_member_concatenation",
     ): "truthiness flag",
     ("ArchiveyConfig", "read_link_targets"): "truthiness flag",
+    ("extract", "dry_run"): "truthiness flag",
+    ("extract_all", "dry_run"): "truthiness flag",
     # ``get`` is mapping-shaped on purpose: like ``dict.get`` it answers with the
     # default rather than raising, so ``reader.get(0)`` returning ``None`` is the
     # contract, not an escape. ``reader.open("absent.txt")`` is where a lookup raises.

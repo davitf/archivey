@@ -2684,6 +2684,7 @@ class BaseArchiveReader(ArchiveReader):
         abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         limits: ExtractionLimits | None = None,
+        dry_run: bool = False,
     ) -> ExtractionReport:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
         # At the boundary, not on use: the coordinator tests these with ``is``, so an
@@ -2739,6 +2740,7 @@ class BaseArchiveReader(ArchiveReader):
             members=members,
             filter=filter,
             limits=effective_limits,
+            dry_run=dry_run,
         )
         token = self._state.acquire_pass("extract_all")
         try:
