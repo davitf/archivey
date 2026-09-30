@@ -42,10 +42,12 @@ _MAGIC = bytes([_MAGIC_BYTE0, _MAGIC_BYTE1])
 # but the first in a walk carries a full tail: rebuilding an entry takes about one step
 # per 128 bytes of it. With CPython object overhead the dictionary stays under about
 # 19 MiB: a full table of flat 256-byte entries measures 18.5 to 18.8 MiB on CPython
-# 3.11 to 3.14, and a full table of links with full tails about 14 MiB. A free-threaded
-# build has larger object headers and measures up to 20.3 MiB. Links sit in the list
+# 3.11 to 3.14 (up to 20.3 MiB on a free-threaded build, whose object headers are
+# larger), and a full table of links with full tails about 14 MiB. Links sit in the list
 # itself, not in a side dict keyed by code: that saves a dict slot and a key object per
-# long entry, and decoded the all-links table about 1.3x faster.
+# long entry, and decoded the all-links table about 1.3x faster. The price is an
+# isinstance check per code (about 16 ns more than a truthiness test), which stayed
+# within noise on ordinary compress files.
 #
 # The two caps trade speed against that bound. Shorter tails mean more Python steps per
 # output byte: one-byte links rebuilt 64 KiB entries at about 18 MB/s, against about
@@ -62,7 +64,8 @@ def _expand(dictionary: list[_Entry], link: tuple[int, bytes]) -> bytes:
     """Rebuild a long entry by walking its links back to a flat entry.
 
     A link's base is always a code that was output, so the walk never meets block
-    mode's CLEAR placeholder.
+    mode's CLEAR placeholder. A base that did would end the walk at that b"" and
+    silently drop the prefix, not raise.
     """
     base, tail = link
     parts = [tail]
@@ -367,7 +370,11 @@ class LzwState:
                         dictionary.append(prev_entry + entry[:1])
                     else:
                         # Long: extend the previous entry's tail while it has room,
-                        # else start a new link from the previous code.
+                        # else start a new link from the previous code. prev_code
+                        # always indexes a live entry: a CLEAR sets prev_entry to
+                        # None, so this branch waits for a fresh code, and a KwKwK
+                        # code equals next_code <= current_mask, so its entry was
+                        # appended in the same iteration.
                         link = dictionary[prev_code]
                         if isinstance(link, tuple) and len(link[1]) < _MAX_ENTRY_TAIL:
                             base, tail = link

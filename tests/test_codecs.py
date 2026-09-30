@@ -837,7 +837,7 @@ def test_unix_compress_repeated_longest_code_decodes_exactly() -> None:
 
 
 def _lzw_table_bytes(state: LzwState) -> int:
-    """Bytes held by an ``LzwState``'s dictionary and links, each object counted once."""
+    """Bytes held by an ``LzwState``'s dictionary, links included, each object once."""
     seen: set[int] = set()
     total = 0
 
