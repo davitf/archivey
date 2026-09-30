@@ -1054,7 +1054,7 @@ class RarReader(BaseArchiveReader):
                     "unar",
                 ),
             )
-        self._check_rar3_comment_budget()
+        self._check_comment_budget()
         self._archive.comment = self._resolve_rar3_comment(self._archive.comment)
         for info in self._archive.members:
             info.comment = self._resolve_rar3_comment(info.comment)
@@ -1730,8 +1730,8 @@ class RarReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
 
-    def _check_rar3_comment_budget(self) -> None:
-        """Refuse compressed old-style comments whose declared sizes exceed the budget.
+    def _check_comment_budget(self) -> None:
+        """Refuse comments whose sizes, together, exceed the metadata budget.
 
         Each compressed comment expands to up to 64 KiB, and ``max_members`` alone
         lets one archive carry a million of them. The header declares every
@@ -1749,18 +1749,22 @@ class RarReader(BaseArchiveReader):
         undecodable comment is dropped, is the maintainer's ruling (``review/backlog.md``,
         "#353 F12"): ``max_metadata_bytes`` means retained metadata on every format, and
         an over-budget listing raises on all of them.
+
+        Comments the parser already decoded (stored ones) are weighed in the same
+        total. The parser read them in pieces bounded by the file, so what they hold
+        is data the archive really carries; this is where their size is judged.
         """
         comments = [self._archive.comment]
         comments.extend(info.comment for info in self._archive.members)
         total = sum(
-            comment.unpacked_size
+            comment.unpacked_size if isinstance(comment, _Rar3Comment) else len(comment)
             for comment in comments
-            if isinstance(comment, _Rar3Comment)
+            if comment is not None
         )
         check_metadata_budget(
             self._config.listing_limits,
             total,
-            detail=f"RAR3 compressed comments declare {total} bytes",
+            detail=f"RAR comments hold or declare {total} bytes",
         )
 
     def _resolve_rar3_comment(self, comment: str | _Rar3Comment | None) -> str | None:

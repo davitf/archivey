@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 
-from archivey import ArchiveyConfig, extract, open_archive
+from archivey import ArchiveyConfig, ListingLimits, extract, open_archive
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -385,13 +385,6 @@ def _comment_declaring(tmp_path: Path, unpacked: int) -> Path:
     return path
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R23: the stored RAR5 CMT is sliced by its unpacked size, so the next "
-        "header's bytes are appended to ArchiveInfo.comment"
-    ),
-)
 def test_rar5_comment_never_reads_past_its_packed_span(tmp_path: Path) -> None:
     path = _comment_declaring(tmp_path, 40)
     try:
@@ -422,13 +415,6 @@ _OPEN_UNDER_RLIMIT = textwrap.dedent(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_AS is POSIX")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R23: a stored RAR5 CMT declaring 1 TiB makes open_archive() ask the "
-        "file for 1 TiB in one read, which raises a bare MemoryError"
-    ),
-)
 def test_rar5_comment_huge_declared_size_is_not_a_memory_error(
     tmp_path: Path,
 ) -> None:
@@ -470,13 +456,6 @@ def _rar3_newsub_comment(tmp_path: Path, *, high_packed: int) -> Path:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_AS is POSIX")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R23: a RAR 2.9 CMT sub-block whose LARGE packed size is 1 TiB makes "
-        "open_archive() ask the file for 1 TiB in one read: bare MemoryError"
-    ),
-)
 def test_rar3_comment_huge_packed_size_is_not_a_memory_error(tmp_path: Path) -> None:
     control = _rar3_newsub_comment(tmp_path, high_packed=0)
     with open_archive(control) as archive:
@@ -493,3 +472,11 @@ def test_rar3_comment_huge_packed_size_is_not_a_memory_error(tmp_path: Path) -> 
     assert outcome == "opened" or outcome.startswith("typed "), (
         result.stdout + result.stderr
     )
+
+
+def test_stored_comment_over_the_metadata_budget_is_refused() -> None:
+    """Sibling of R23: an honest stored comment is weighed like a compressed one."""
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=16))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        with open_archive(_fixture("comment__.rar"), config=config):
+            pass

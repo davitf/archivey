@@ -112,6 +112,9 @@ _MAX_SKIPPED_HEADER_RECORDS = 16
 _MAX_DAMAGED_SERVICE_HEADERS = 16
 # BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
 _MAX_SEEK = (1 << 63) - 1
+# A stored comment is read in pieces of this size, so a declared size past the end of
+# the file fails there instead of in one allocation of the declared size.
+_COMMENT_READ_CHUNK = 1 << 20
 # Same default as ListingLimits.max_members. None is the explicit UNLIMITED opt-out.
 _DEFAULT_MAX_MEMBERS = ListingLimits().max_members
 
@@ -725,6 +728,24 @@ def _require_exact(stream: BinaryIO, n: int, what: str) -> bytes:
     if len(data) != n:
         raise CorruptionError(f"Unexpected EOF while reading {what}")
     return data
+
+
+def _read_stored_comment(stream: BinaryIO, n: int, what: str) -> bytes:
+    """A stored comment's ``n`` packed bytes, read in pieces.
+
+    A declared size past the end of the file raises ``CorruptionError`` there,
+    having held no more than the file, where one read of ``n`` would first ask for
+    all of it. What the comment then weighs is the reader's to judge against
+    ``max_metadata_bytes`` (``RarReader._check_comment_budget``), since listing
+    limits stay out of this parser.
+    """
+    parts: list[bytes] = []
+    left = n
+    while left > 0:
+        part = _require_exact(stream, min(left, _COMMENT_READ_CHUNK), what)
+        parts.append(part)
+        left -= len(part)
+    return b"".join(parts)
 
 
 def _packed_span_end(data_offset: int, add_size: int) -> int:
@@ -1609,7 +1630,7 @@ def _parse_rar3(
                 and member.compress_size > 0
             ):
                 source.seek(data_offset)
-                raw = _require_exact(source, member.compress_size, "RAR3 comment")
+                raw = _read_stored_comment(source, member.compress_size, "RAR3 comment")
                 cmt = _decode_comment_text(raw.split(b"\0", 1)[0])
                 if member.file_solid and members:
                     members[-1].comment = cmt
@@ -2417,7 +2438,12 @@ def _parse_rar5(
                         damaged_service_headers_omitted += 1
                 if _is_stored_rar5_cmt(member):
                     source.seek(data_offset)
-                    raw = _require_exact(source, member.file_size, "RAR5 comment")
+                    # The packed size, as for any stored payload: the unpacked one
+                    # is only a claim, and bytes past the packed span belong to the
+                    # next header.
+                    raw = _read_stored_comment(
+                        source, member.compress_size, "RAR5 comment"
+                    )
                     comment = _decode_rar5_cmt_bytes(raw)
             _seek_after_packed(source, data_offset, add_size)
             continue

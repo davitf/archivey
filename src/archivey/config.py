@@ -292,9 +292,10 @@ class ListingLimits:
     Applied from the reader's open :attr:`ArchiveyConfig.listing_limits` for its lifetime.
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables both.
     ``stream_members`` / ``streaming=True`` / forward-only iteration do not
-    enforce these caps. 7z and RAR apply ``max_members`` at parse, and RAR weighs the
-    declared sizes of its compressed RAR 1.5/2.x comments against ``max_metadata_bytes``
-    before decoding them, so ``open_archive`` raises and neither is an escape hatch.
+    enforce these caps. 7z and RAR apply ``max_members`` at parse, and RAR weighs its
+    comments against ``max_metadata_bytes`` (the declared sizes of compressed RAR
+    1.5/2.x comments before decoding them), so ``open_archive`` raises and neither is
+    an escape hatch.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than the whole ``max_metadata_bytes``, before reading it.
     """
