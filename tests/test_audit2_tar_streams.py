@@ -335,11 +335,6 @@ def test_accelerated_member_stream_seeks_like_the_stdlib_one(codec: str) -> None
 
 
 @pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
-@pytest.mark.xfail(
-    strict=True,
-    reason="T18: a TAR uid/gid outside uid_t aborts extract_all(TRUSTED) as root "
-    "with a raw OverflowError",
-)
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("uid", [2**40, -2], ids=["2**40", "-2"])
 def test_tar_out_of_range_uid_does_not_abort_trusted_extraction(
