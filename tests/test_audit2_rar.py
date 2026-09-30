@@ -148,14 +148,6 @@ def _dot_named_archive(tmp_path: Path) -> tuple[Path, dict[str, bytes]]:
 
 
 @requires_binary("unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R17: the unrar selection model counts a './' member under the mask '...', "
-        "so reading the first '...' skips the wrong prefix and returns its "
-        "sibling's bytes"
-    ),
-)
 def test_dot_named_member_never_reads_a_siblings_bytes(tmp_path: Path) -> None:
     path, payloads = _dot_named_archive(tmp_path)
     with open_archive(path, config=_UNRAR_ONLY) as archive:
@@ -172,14 +164,6 @@ def test_dot_named_member_never_reads_a_siblings_bytes(tmp_path: Path) -> None:
 
 
 @requires_binary("unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R18: a member stored as './' reaches unrar with a mask that selects "
-        "nothing and is reported as a truncated (or corrupt) member, not refused "
-        "as a name unrar cannot address"
-    ),
-)
 def test_member_unrar_cannot_address_is_refused_not_reported_corrupt(
     tmp_path: Path,
 ) -> None:
