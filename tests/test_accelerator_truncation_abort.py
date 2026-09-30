@@ -45,6 +45,7 @@ from archivey.internal.streams.rapidgzip_child import (
     RapidgzipChildReportedError,
     RapidgzipChildStream,
 )
+from archivey.internal.streams.rapidgzip_worker import ERR, READ
 from tests.conftest import requires
 from tests.corruption_util import is_corruption_not_truncation
 
@@ -724,6 +725,63 @@ def test_a_refused_seek_keeps_the_position_and_buffer(offset: int, whence: int) 
             child.seek(offset, whence)
         assert child.tell() == 20
         assert child.read(10) == payload[20:30]
+    finally:
+        child.close()
+
+
+def _fail_the_nth_read(child: RapidgzipChildStream, n: int) -> None:
+    """Make the child answer its ``n``-th READ from now with a reported error, as it
+    does for a corrupt (not truncated) stream; the child itself stays usable."""
+    exchange = child._exchange
+    reads = 0
+
+    def failing(tag: int, arg: int, payload: bytes) -> tuple[int, int, bytes] | None:
+        nonlocal reads
+        if tag == READ:
+            reads += 1
+            if reads == n:
+                return ERR, 0, b"RuntimeError\n\ncorrupt block"
+        return exchange(tag, arg, payload)
+
+    child._exchange = failing  # type: ignore[method-assign]
+
+
+@pytest.mark.parametrize("failing_read", [1, 2], ids=["first-chunk", "part-way"])
+def test_a_failed_read_leaves_the_position_where_it_started(failing_read: int) -> None:
+    """A read that fails returns nothing, even when it had already taken a chunk from
+    the child. The stream goes back to where the read started, so ``tell`` does not
+    count bytes the caller never got and the next read returns them (round 3, K15)."""
+    payload = _payload()
+    assert len(payload) > rapidgzip_child._CHUNK  # read() takes two chunks
+    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    try:
+        assert child.read(10) == payload[:10]
+        _fail_the_nth_read(child, failing_read)
+        with pytest.raises(RuntimeError, match="corrupt block"):
+            child.read()
+        assert child.tell() == 10
+        assert child.read(100) == payload[10:110]
+        assert child.read() == payload[110:]
+    finally:
+        child.close()
+
+
+def test_a_negative_seek_after_a_failed_read_is_refused() -> None:
+    """The sign of an absolute target is checked whatever the stream knows of its
+    position, so a failed read cannot let ``seek(-1)`` reach the child, which would
+    clamp it to 0 (round 3, K13)."""
+    payload = _payload()
+    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    try:
+        assert child.read(10) == payload[:10]
+        _fail_the_nth_read(child, 1)
+        with pytest.raises(RuntimeError, match="corrupt block"):
+            child.read(10)
+        child._pos = None  # as a failed read leaves it before the rewind
+        with pytest.raises(ValueError, match="negative seek position"):
+            child.seek(-1)
+        assert child.tell() == 10
+        assert child.read(10) == payload[10:20]
     finally:
         child.close()
 

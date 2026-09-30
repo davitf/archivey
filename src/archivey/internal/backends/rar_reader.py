@@ -1538,16 +1538,16 @@ class RarReader(BaseArchiveReader):
     def _spool_from(
         self,
         start: int,
-        budget: SpoolBudget | None = None,
+        budget: SpoolBudget,
         *,
         directory: Path | None = None,
     ) -> Path:
         """Copy the source from ``start`` to a new temp ``.rar``; the caller owns it.
 
         ``budget`` bounds the copy: a stream source's for ``unrar``, and a single
-        archive's for ``unar`` (a stream, or a prefixed path); the caller checks the known total against it
-        first. ``None`` copies without a bound. ``directory`` is where the file is
-        made, the system temp directory if omitted.
+        archive's for ``unar`` (a stream, or a prefixed path). The caller checks the
+        known total against it first. ``directory`` is where the file is made, the
+        system temp directory if omitted.
         """
         fd, name = tempfile.mkstemp(suffix=".rar", dir=directory)
         path = Path(name)
@@ -1559,16 +1559,10 @@ class RarReader(BaseArchiveReader):
                 # a stream comes here; ``unar`` also sends a prefixed path source.
                 view = self._shared.view(start)
                 try:
-                    if budget is not None:
-                        # The budget stops the copy at the limit when the size
-                        # checked before was not known, or was wrong.
-                        budget.copy(view, out)
-                    else:
-                        # Keep the 1 MiB chunk: each SharedView read takes the lock
-                        # and seek+reads, so copyfileobj's 64 KiB default is ~16×
-                        # the acquisitions. This method already holds the mkstemp
-                        # fd, so copyfileobj writes to it rather than opening dest.
-                        shutil.copyfileobj(view, out, length=1 << 20)
+                    # The budget stops the copy at the limit when the size checked
+                    # before was not known, or was wrong. It reads in 1 MiB chunks,
+                    # which keeps the SharedView lock acquisitions few.
+                    budget.copy(view, out)
                 finally:
                     view.close()
         except BaseException:
