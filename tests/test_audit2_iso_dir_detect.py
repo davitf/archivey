@@ -63,13 +63,6 @@ def _replace_tf(data: bytes, name: bytes, entries: bytes) -> bytes:
 
 
 @requires("pycdlib")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "I1: an ISO TF long-form date of 0001-01-01 +13:00 lists as an aware datetime "
-        "whose UTC form is out of range; modified_utc() raises a raw OverflowError"
-    ),
-)
 def test_iso_long_form_tf_date_at_year_one_does_not_break_modified_utc() -> None:
     def populate(iso: Any) -> None:
         iso.add_fp(io.BytesIO(b"AAAA"), 4, "/AAA.;1", rr_name="aaa")
