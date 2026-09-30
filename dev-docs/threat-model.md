@@ -67,11 +67,17 @@ no member replaces the destination itself.
 
 **Mechanism.**
 - `internal/filters.py` `check_universal` runs on every member under every policy,
-  `TRUSTED` included. It rejects `..` components (any separator), absolute paths, drive
-  letters, UNC prefixes, NUL bytes, names `os.fsencode` cannot represent, special files
-  (devices, FIFOs, sockets), and a non-directory member whose normalized name is `"."`
-  or `""` (which would replace the destination root with a file). It resolves the
-  parent and checks containment, and checks symlink and hardlink targets lexically.
+  `TRUSTED` included, after the caller's filter, on the name about to be written. Under
+  `STANDARD` and `TRUSTED`, `reroot_absolute` first drops a rooted name's root (a
+  leading `/` or `\`, or a drive letter with a separator after it) and a hardlink
+  target's, so the member lands inside the destination. It rejects `..` components
+  (any separator), absolute paths including drive letters and UNC prefixes (every
+  absolute name under `STRICT`; at any policy a drive-relative `C:x`, which has no
+  root to drop, or an absolute name a filter returned), NUL bytes, names
+  `os.fsencode` cannot represent, special files (devices, FIFOs, sockets), and a
+  non-directory member whose normalized name is `"."` or `""` (which would replace the
+  destination root with a file). It resolves the parent and checks containment, and
+  checks symlink and hardlink targets lexically.
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
   symlink against the live tree after `os.symlink` and removes it if it escapes, which
   catches a chain staged by earlier members. That is the third layer after the lexical
