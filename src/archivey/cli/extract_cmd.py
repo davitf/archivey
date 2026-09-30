@@ -111,10 +111,14 @@ def smart_dest(
 
 @dataclass(frozen=True)
 class _SmartDestPlan:
-    """Where to extract, and whether a post-extract single-root hoist may run."""
+    """Where to extract, and whether a post-extract single-root hoist may run.
+
+    ``wrapper_existed`` is set when ``target`` is a wrapper that was already there: the
+    hoist then keeps its content in place and says so."""
 
     target: Path
     may_hoist: bool
+    wrapper_existed: bool = False
 
 
 def resolve_smart_dest(
@@ -140,7 +144,9 @@ def resolve_smart_dest(
         wrapper = _enclosing_dir(archive, format=fmt, overwrite=overwrite)
         # Only a wrapper this run creates may be hoisted out of: a directory that was
         # already there is the operator's, and its only child may be their own file.
-        return _SmartDestPlan(wrapper, may_hoist=not os.path.lexists(wrapper))
+        return _SmartDestPlan(
+            wrapper, may_hoist=True, wrapper_existed=os.path.lexists(wrapper)
+        )
 
     members = [m for m in indexed if pred is None or pred(m)]
     return _SmartDestPlan(
@@ -242,14 +248,19 @@ def _climbs_or_is_absolute(target: str) -> bool:
 
 
 def _links_stay_below_themselves(report: ExtractionReport) -> bool:
-    """Whether every extracted symlink resolves downward from its own directory.
+    """Whether every extracted symlink target is relative and has no ``..`` component.
 
-    The hoist moves the tree one level up after extraction checked its links against
-    the wrapper. A target without ``..`` that is not absolute only descends from the
-    link's directory, and a chain of such links keeps descending, so it means the same
-    thing after the move. Any other target may have gone up into the wrapper and back
-    down by name (``top/l -> ../top/x``), and after the move the same path climbs out
-    of the working directory. Such a tree stays in the wrapper.
+    The hoist moves the entry one level up after extraction checked its links against
+    the wrapper. A link is only changed by the move when its path climbs above the
+    hoisted entry: ``wrapper/top/k -> ../../.ssh/authorized_keys`` stays inside the
+    wrapper when the archive is named ``.ssh.tar``, and points at the operator's own
+    ``.ssh`` once ``top`` is moved up. A target without ``..`` that is not absolute only
+    descends, and a chain of such links keeps descending, so it cannot climb.
+
+    This over-blocks on purpose: most targets with ``..`` stay inside the hoisted entry
+    (``pkg/bin/a -> ../lib/a.so``) and would be moved safely. Telling them apart needs a
+    walk of each link's path through the other links on disk, not a look at the
+    target string, so any ``..`` keeps the tree in the wrapper.
     """
     for result in report:
         member = result.member
@@ -269,11 +280,13 @@ def maybe_hoist_single_root(
     overwrite: OverwritePolicy,
     err: TextIO,
     links_movable: bool = True,
+    wrapper_existed: bool = False,
 ) -> _HoistResult:
     """If ``wrapper`` holds exactly one top-level entry, lift it to cwd (R4/D1).
 
-    ``links_movable`` is :func:`_links_stay_below_themselves` for the extraction: when
-    it is false, the entry stays in the wrapper and a line says why.
+    The entry stays in the wrapper, and a line says why, when the wrapper was already
+    there (``wrapper_existed``), when the entry is a symlink, or when ``links_movable``
+    (:func:`_links_stay_below_themselves` for the extraction) is false.
 
     Recovers unar-style single-root reuse (and filter-aware D1 for streaming)
     after an always-wrap extract, without a pre-extract metadata pass. The final
@@ -292,17 +305,19 @@ def maybe_hoist_single_root(
     if len(children) != 1:
         return _HoistResult(wrapper)
     child = children[0]
-    if child.is_symlink():
+    reason = None
+    if wrapper_existed:
+        # The directory is the operator's, and its only entry may be their own file.
+        reason = "the folder was already there, so its content may be your own"
+    elif child.is_symlink():
         # A link's relative target is read from its own directory, which the move
         # changes from the wrapper to the working directory: `b -> passwd` would then
         # name the operator's own `passwd`, and `b -> ../etc/passwd` one outside it.
-        return _HoistResult(wrapper)
-    if not links_movable:
-        print(
-            f"kept in {escape_path(wrapper)}/: a symlink target uses '..' or an "
-            "absolute path, and moving it would change where it points",
-            file=err,
-        )
+        reason = "its only entry is a symlink, which the move would repoint"
+    elif not links_movable:
+        reason = "a symlink target uses '..' or is absolute, so the tree was not moved"
+    if reason is not None:
+        print(f"kept in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)
     dest = wrapper.parent / child.name
     result = _HoistResult(dest)
@@ -689,6 +704,7 @@ def run_extract(
                 return EXIT_FAIL
 
         may_hoist = False
+        wrapper_existed = False
         if dest is not None:
             target = Path(dest)
         else:
@@ -700,6 +716,7 @@ def run_extract(
             )
             target = plan.target
             may_hoist = plan.may_hoist
+            wrapper_existed = plan.wrapper_existed
             if target != Path("."):
                 verb = "would extract" if dry_run else "extracting"
                 print(f"{verb} into {escape_path(target)}/", file=err)
@@ -766,6 +783,7 @@ def run_extract(
                     overwrite=overwrite_enum,
                     err=err,
                     links_movable=_links_stay_below_themselves(report),
+                    wrapper_existed=wrapper_existed,
                 )
             blocked, failed = _report_extraction(
                 report,

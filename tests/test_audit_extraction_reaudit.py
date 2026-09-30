@@ -105,8 +105,8 @@ def test_hoist_leaves_no_symlink_resolving_outside_the_working_directory(
         # its target is read from.
         pytest.param("etc", [("b", "sym", "../etc/passwd")], id="lone-link-top"),
         pytest.param("etc", [("b", "sym", "passwd")], id="lone-link-no-dotdot"),
-        # A link deep in the tree that goes up into the wrapper and back down into
-        # the top folder by name ends inside it before the move, not after.
+        # This one would mean the same after the move, but the check reads the target
+        # string, and any `..` keeps the tree in the wrapper: it over-blocks on purpose.
         pytest.param(
             "pkg",
             [("top", "dir", None), ("top/a/l", "sym", "../../top/x")],
@@ -115,7 +115,11 @@ def test_hoist_leaves_no_symlink_resolving_outside_the_working_directory(
     ],
 )
 def test_hoist_does_not_move_a_link_whose_meaning_would_change(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stem: str, entries: list
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stem: str,
+    entries: list,
 ) -> None:
     work = tmp_path / "work"
     work.mkdir()
@@ -130,6 +134,7 @@ def test_hoist_does_not_move_a_link_whose_meaning_would_change(
     assert sorted(p.name for p in work.iterdir()) == sorted(
         ["passwd", f"{stem}.tar", stem]
     )
+    assert f"kept in {stem}/: " in capsys.readouterr().err
 
 
 @posix_links
@@ -172,7 +177,10 @@ def test_hoist_flatten_keeps_links_inside_the_reported_destination(
 
 @pytest.mark.parametrize("overwrite", ["error", "skip", "replace"])
 def test_hoist_never_moves_the_operators_own_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overwrite: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overwrite: str,
 ) -> None:
     (tmp_path / "backup").mkdir()
     (tmp_path / "backup" / "notes.txt").write_text("operator data")
@@ -183,6 +191,7 @@ def test_hoist_never_moves_the_operators_own_directory(
 
     assert (tmp_path / "backup" / "notes.txt").read_text() == "operator data"
     assert not (tmp_path / "notes.txt").exists()
+    assert "kept in backup/: the folder was already there" in capsys.readouterr().err
 
 
 # --- Directory members and the caller's directories ---------------------------------
@@ -228,6 +237,22 @@ def test_a_directory_this_run_created_still_gets_its_mode(tmp_path: Path) -> Non
     report = archivey.extract(archive, dest, policy="standard")
 
     assert stat.S_IMODE(os.stat(dest / "d").st_mode) == 0o750
+    assert all(r.kept_mode is None for r in report.results)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_a_destination_this_run_created_gets_the_root_members_mode(
+    tmp_path: Path,
+) -> None:
+    archive = _build_tar(
+        tmp_path / "a.tar",
+        [("./", "dir", None, {"mode": 0o750}), ("./f", "file", b"x")],
+    )
+    dest = tmp_path / "out"
+
+    report = archivey.extract(archive, dest, policy="standard")
+
+    assert stat.S_IMODE(os.stat(dest).st_mode) == 0o750
     assert all(r.kept_mode is None for r in report.results)
 
 
@@ -357,6 +382,41 @@ def test_two_members_written_to_one_file_through_a_symlink_are_not_both_extracte
     by_name = {r.member.name: r for r in report.results}
     assert by_name["s/f"].status is ExtractionStatus.OVERWRITTEN
     assert by_name["d/f"].collided_with is not None
+
+
+@posix_links
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_collision_through_a_repointed_symlink_lands_where_the_member_named(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # ``s/f`` claims ``d1/f`` while ``s -> d1``. After ``s`` is repointed to ``d2``, the
+    # claim's name ``s/f`` names ``d2/f``, so routing ``d1/f`` to that name wrote it
+    # into ``d2``.
+    archive = _build_tar(
+        tmp_path / "a.tar",
+        [
+            ("d1", "dir", None),
+            ("d2", "dir", None),
+            ("s", "sym", "d1"),
+            ("s/f", "file", b"A"),
+            ("s", "sym", "d2"),
+            ("s/f", "file", b"C"),
+            ("d1/f", "file", b"D"),
+        ],
+    )
+    dest = tmp_path / "out"
+
+    with archivey.open_archive(archive, streaming=streaming) as reader:
+        report = reader.extract_all(
+            dest, policy="standard", overwrite="replace", on_error="continue"
+        )
+
+    assert (dest / "d1" / "f").read_bytes() == b"D"
+    assert (dest / "d2" / "f").read_bytes() == b"C"
+    last = report.results[-1]
+    assert last.status is ExtractionStatus.EXTRACTED
+    assert last.path is not None
+    assert os.path.realpath(last.path) == os.path.realpath(dest / "d1" / "f")
 
 
 # --- Untyped errors -----------------------------------------------------------------

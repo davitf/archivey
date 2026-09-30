@@ -393,10 +393,15 @@ class _Claim:
     claiming member's result index as well is what lets a later ``REPLACE`` collision
     revise the earlier result to ``OVERWRITTEN`` instead of leaving two members both
     reporting ``EXTRACTED`` at one path.
+
+    ``physical`` is where the claimed file was when it was claimed, with every parent
+    resolved. The key is taken from it, and a collision is routed to it. ``path`` can
+    run through a symlink the archive later repoints, so it can stop naming that file.
     """
 
     path: Path
     result_index: int
+    physical: Path
 
 
 class ExtractionCoordinator:
@@ -477,6 +482,13 @@ class ExtractionCoordinator:
         # Directories ``_makedirs`` created this run, as parents of what it wrote.
         # Reset per ``run()``.
         self._created_dirs: set[Path] = set()
+        # The key each claimed path was claimed under (see ``_claim``). Reset per
+        # ``run()``.
+        self._claim_keys: dict[Path, str] = {}
+        # ``_physical_path``'s resolved parents. Only a symlink created, replaced or
+        # removed changes a resolution, so each of those clears it (``_note_link_change``
+        # and ``_resolutions_changed``). Reset per ``run()``.
+        self._resolved_parents: dict[Path, Path] = {}
         # The symlinks this run created and the paths each one's resolution depends on,
         # so a later member that changes such a path gets them rechecked. Set per
         # ``run()``.
@@ -707,7 +719,7 @@ class ExtractionCoordinator:
             else:
                 unmatched_pending = selector
         # Created only after that report, so a refusal leaves no directory behind.
-        self._ensure_dest_root(dest)
+        created_root = self._ensure_dest_root(dest)
         dest_root = dest.resolve()
         self._dest_root = dest_root
         # Rechecks share the entry-count bound: a hostile archive can make each member
@@ -752,7 +764,9 @@ class ExtractionCoordinator:
         self._dest = dest
         self._written_paths = written_paths
         self._source_paths = source_paths
-        self._created_dirs = set()
+        self._created_dirs = {dest} if created_root else set()
+        self._claim_keys.clear()
+        self._resolved_parents.clear()
         # O2 collision map: casefold(NFC(relpath)) key (exact under TRUSTED) -> the claim
         # (written path + claiming member's result index). Tracks non-directory members
         # written THIS run so a second member resolving to the same key is a deterministic
@@ -851,8 +865,13 @@ class ExtractionCoordinator:
             try:
                 for held, held_index in self._unremoved.pop(original.name, {}).items():
                     # Unless another member has since replaced it under its own claim.
-                    key = self._collision_key(dest, held)
-                    if collision_map.get(key) == _Claim(held, held_index):
+                    key = self._claimed_key(dest, held)
+                    claim = collision_map.get(key)
+                    if (
+                        claim is not None
+                        and claim.path == held
+                        and claim.result_index == held_index
+                    ):
                         self._stale[held] = held_index
                         del collision_map[key]
                 earlier = current_by_name.get(original.name)
@@ -1167,8 +1186,7 @@ class ExtractionCoordinator:
                     "Could not remove superseded %r: %s", str(self._shown(path)), exc
                 )
                 written_paths.add(path)
-                key = self._collision_key(dest, path)
-                collision_map[key] = _Claim(path, index)
+                self._claim(collision_map, dest, path, index)
                 self._unremoved.setdefault(original.name, {})[path] = index
             else:
                 written_paths.discard(path)
@@ -1513,7 +1531,7 @@ class ExtractionCoordinator:
         if collided is not None:
             assert prior is not None
             self._check_collision_abort(original, transformed, prior)
-            return prior.path, prior, collided
+            return prior.physical, prior, collided
         return requested, None, None
 
     def _stops_on_failure(self) -> bool:
@@ -1567,13 +1585,43 @@ class ExtractionCoordinator:
             and result.status is ExtractionStatus.EXTRACTED
             and result.path is not None
         ):
-            key = self._collision_key(dest, result.path)
-            collision_map[key] = _Claim(result.path, result_index)
+            self._claim(collision_map, dest, result.path, result_index)
 
     @staticmethod
     def _rel_name(dest: Path, path: Path) -> str:
         """``path`` relative to the extraction root, as written, for messages."""
         return path.relative_to(dest).as_posix()
+
+    def _claim(
+        self, collision_map: dict[str, _Claim], dest: Path, path: Path, index: int
+    ) -> None:
+        """Claim ``path`` for result ``index``, keyed on where it physically is now.
+
+        The key is remembered per path, so releasing the claim later finds it even after
+        a symlink in ``path`` was repointed and ``path`` resolves somewhere else."""
+        physical = self._physical_path(dest, path) or path
+        key = self._collision_key(dest, physical)
+        collision_map[key] = _Claim(path, index, physical)
+        self._claim_keys[path] = key
+
+    def _claimed_key(self, dest: Path, path: Path) -> str:
+        """The key ``path`` was claimed under, or its current key if it was not."""
+        key = self._claim_keys.get(path)
+        return key if key is not None else self._collision_key(dest, path)
+
+    def _physical_path(self, dest: Path, path: Path) -> Path | None:
+        """``path`` with its parent resolved, under ``dest``; ``None`` when it does not
+        resolve inside the destination."""
+        root = self._dest_root if self._dest_root != Path() else dest.resolve()
+        parent = path.parent
+        try:
+            resolved = self._resolved_parents.get(parent)
+            if resolved is None:
+                resolved = parent.resolve()
+                self._resolved_parents[parent] = resolved
+            return dest / (resolved / path.name).relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            return None
 
     def _collision_key(self, dest: Path, path: Path) -> str:
         """The collision-map key of the entry at ``path``: where it physically is.
@@ -1585,12 +1633,8 @@ class ExtractionCoordinator:
         resolve inside the destination (it was checked when the member was accepted,
         so only a later change can do that) falls back to the name as written.
         """
-        root = self._dest_root if self._dest_root != Path() else dest.resolve()
-        try:
-            physical = path.parent.resolve() / path.name
-            rel = physical.relative_to(root).as_posix()
-        except (OSError, RuntimeError, ValueError):
-            rel = self._rel_name(dest, path)
+        physical = self._physical_path(dest, path)
+        rel = self._rel_name(dest, physical if physical is not None else path)
         return collision_key(rel, self._policy)
 
     def _derive_free_name(
@@ -1683,7 +1727,7 @@ class ExtractionCoordinator:
         content that no longer exists — which a later same-key member would see as a
         collision, aborting under ``AbortOn.NAME_COLLISION`` against an empty destination
         or revising an already-deleted member to ``OVERWRITTEN``."""
-        key = self._collision_key(dest, path)
+        key = self._claimed_key(dest, path)
         claim = collision_map.get(key)
         if claim is not None and claim.path == path:
             del collision_map[key]
@@ -1774,6 +1818,7 @@ class ExtractionCoordinator:
         # an absolute target that names dest pointing into its scratch copy instead.
         on_disk = self._link_target_on_disk(target)
         os.symlink(on_disk, dest_path)
+        self._resolutions_changed()
 
         # Re-validate the symlink target AFTER creating it, resolving through the real
         # filesystem. check_universal already rejected an escaping target at
@@ -1798,6 +1843,7 @@ class ExtractionCoordinator:
                 dest_path.unlink()
             except OSError:
                 pass
+            self._resolutions_changed()
             raise FilterRejectionError(
                 "Symlink target escapes destination",
                 member_name=transformed.name,
@@ -2222,8 +2268,13 @@ class ExtractionCoordinator:
                 if not paths:
                     del self._source_paths[source_id]
 
+    def _resolutions_changed(self) -> None:
+        """Forget the cached parent resolutions: a symlink was created or removed."""
+        self._resolved_parents.clear()
+
     def _note_link_change(self, path: Path) -> None:
         """Report a symlink or directory at ``path`` replaced or removed this member."""
+        self._resolutions_changed()
         if self._links is not None:
             self._links.note_change(path)
 
@@ -2262,6 +2313,8 @@ class ExtractionCoordinator:
             (link, "Symlink removed unchecked: the recheck limit was reached")
             for link in outcome.unchecked
         ]
+        if removed:
+            self._resolutions_changed()
         first: FilterRejectionError | None = None
         for link, message in removed:
             prior = results[link.result_index]
@@ -2370,10 +2423,11 @@ class ExtractionCoordinator:
             # The first directory mkdir creates is the one it is refused.
             raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(child))
 
-    def _ensure_dest_root(self, dest: Path) -> None:
+    def _ensure_dest_root(self, dest: Path) -> bool:
         """Ensure ``dest`` is a directory to extract into, creating it if absent; under
         ``dry_run``, only refuse a ``dest`` a real run would refuse
-        (``_check_dry_run_dest``).
+        (``_check_dry_run_dest``). Returns whether this call created it, or under
+        ``dry_run`` whether a real run would have.
 
         A dest that resolves to a directory — a real directory or a symlink pointing at
         one — is reused, and members land inside the resolved target (``run`` resolves
@@ -2387,10 +2441,11 @@ class ExtractionCoordinator:
         by mistake (e.g. a CLI given a file argument where a directory was meant).
         """
         if self._shown_dest is not None:
+            existed = self._shown_dest.is_dir()
             self._check_dry_run_dest(self._shown_dest)
-            return
+            return not existed
         if dest.is_dir():  # real directory or symlink resolving to one: reuse / follow
-            return
+            return False
         # ``lexists`` (not ``exists``) so a dangling symlink is caught here rather than
         # surfacing as a raw FileExistsError from ``mkdir`` below.
         if os.path.lexists(dest):
@@ -2398,6 +2453,7 @@ class ExtractionCoordinator:
                 f"Destination exists and is not a directory: {display_path(dest)}"
             )
         dest.mkdir(parents=True, exist_ok=True)
+        return True
 
     def _makedirs(self, path: Path, member: ArchiveMember) -> None:
         """``os.makedirs(path, exist_ok=True)`` for ``member``, typed when the archive
@@ -2438,9 +2494,11 @@ class ExtractionCoordinator:
 
     def _is_callers_directory(self, path: Path) -> bool:
         """Whether ``path`` is a directory that was there before this run: the
-        destination root, or a directory this run neither wrote nor created."""
+        destination root unless this run created it, or a directory this run neither
+        wrote nor created. The root is decided by name, as it may be the caller's
+        symlink to a directory."""
         if path == self._dest:
-            return True
+            return path not in self._created_dirs
         try:
             if not stat.S_ISDIR(os.lstat(path).st_mode):
                 return False
@@ -2453,14 +2511,15 @@ class ExtractionCoordinator:
     ) -> bool:
         """Apply the OverwritePolicy. Returns True to proceed with creation, False to
         skip (SKIP over an existing entry). Raises ExtractionError under ERROR when the
-        entry exists. Uses lstat semantics so a dangling symlink counts as existing.
+        entry exists, and under REPLACE or RENAME when it is a directory that is not
+        empty. Uses lstat semantics so a dangling symlink counts as existing.
 
         ``atomic=True`` is used for FILE and HARDLINK writes, which land via
         ``os.replace()`` over the destination (see ``_write_file_atomic`` /
         ``_place_link``): under REPLACE this leaves an existing **file or symlink** in
         place for that atomic swap (so the old data survives until the new entry is fully
         built, and a symlink is replaced, never written through), removing only an
-        existing **directory** first — ``os.replace`` cannot overwrite a directory.
+        existing empty **directory** first — ``os.replace`` cannot overwrite a directory.
         ``atomic=False`` (DIR / SYMLINK) keeps the plain unlink-then-create: a symlink
         must be created at its final name for the escape re-validation's cycle check, and
         a directory cannot be renamed over a file at all."""
@@ -2502,7 +2561,7 @@ class ExtractionCoordinator:
             # entry here): never write-through a symlink. For an atomic FILE write,
             # os.replace handles a file/symlink target atomically, so only a real
             # directory must be removed up front. Otherwise unlink a symlink/file (bytes
-            # never follow the link) and rmtree a real directory tree.
+            # never follow the link). A directory is removed only when it is empty.
             if stat.S_ISDIR(existing):
                 # Only an empty directory is removed, as GNU tar does without
                 # --recursive-unlink. Removing a tree takes the members this run wrote

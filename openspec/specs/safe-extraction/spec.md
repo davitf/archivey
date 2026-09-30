@@ -510,10 +510,12 @@ would take the members this run wrote into it, which would still report `EXTRACT
 the caller's own files when the directory was already there.
 
 A DIRECTORY member whose destination is a directory that was there before the run (the
-destination root, for a `./` member, or any directory this run neither wrote nor created
-as a parent) SHALL leave that directory's mode, ownership and times unchanged. When the
-member's effective mode differs from the directory's, the result SHALL carry the mode the
-directory kept in `ExtractionResult.kept_mode`; otherwise `kept_mode` is `None`.
+destination root, for a `./` member, when the call did not create it, or any directory
+this run neither wrote nor created as a parent) SHALL leave that directory's mode,
+ownership and times unchanged. When the member's effective mode differs from the
+directory's, the result SHALL carry the mode the directory kept in
+`ExtractionResult.kept_mode`; otherwise `kept_mode` is `None`, and the times were still
+left alone.
 
 A HARDLINK is made against the path its source member was written to only while that
 path still holds the source's content. Once a later member replaces that path, the path
@@ -1034,9 +1036,11 @@ rules compose with — and never bypass — the non-bypassable path-safety const
 a `casefold(NFC(path))` key per written destination and treat a second member resolving to
 the same key as an existing destination on **all** platforms. The key is taken on where
 the entry physically lands (its parent resolved), so a member written through a
-directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`. Such a
-collision SHALL apply `OverwritePolicy`
-deliberately and record the outcome on both members' `ExtractionResult`. `REPLACE`
+directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`. The key
+and the location are fixed when the earlier member is written, and a collision SHALL be
+resolved at that location, so repointing `s` later does not move it. Such a collision
+SHALL apply `OverwritePolicy` deliberately and record the outcome on both members'
+`ExtractionResult`. `REPLACE`
 SHALL NOT silently merge distinct members on case-insensitive filesystems: the earlier
 member's result SHALL be revised to `ExtractionStatus.OVERWRITTEN` so the merge is
 observable in `results`. Under `TRUSTED` the coordinator SHALL key on the exact `Path`

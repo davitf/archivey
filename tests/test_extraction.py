@@ -3295,7 +3295,7 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
     written_paths = {written}
     # The claim the earlier FILE member left behind, keyed casefold(NFC(...)).
-    collision_map = {"readme": _Claim(written, 0)}
+    collision_map = {"readme": _Claim(written, 0, written)}
     anti = ArchiveMember(type=MemberType.ANTI, name="README")
 
     result = coordinator._apply_anti_item(
@@ -3319,13 +3319,13 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
 
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
     other = dest / "other.txt"
-    collision_map = {"other.txt": _Claim(other, 0)}
+    collision_map = {"other.txt": _Claim(other, 0, other)}
     anti = ArchiveMember(type=MemberType.ANTI, name="README")
 
     coordinator._apply_anti_item(anti, pre_existing, set(), collision_map, dest)
 
     assert pre_existing.read_bytes() == b"not ours"  # never ours to delete
-    assert collision_map == {"other.txt": _Claim(other, 0)}
+    assert collision_map == {"other.txt": _Claim(other, 0, other)}
 
 
 def test_anti_item_finds_a_case_variant_through_the_collision_map(
@@ -3346,7 +3346,7 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
 
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
     written_paths = {written}
-    collision_map = {"readme": _Claim(written, 0)}
+    collision_map = {"readme": _Claim(written, 0, written)}
     anti = ArchiveMember(type=MemberType.ANTI, name="readme")
 
     result = coordinator._apply_anti_item(
@@ -3376,7 +3376,7 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
 
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.TRUSTED)
     written_paths = {written}
-    collision_map = {"README": _Claim(written, 0)}
+    collision_map = {"README": _Claim(written, 0, written)}
     anti = ArchiveMember(type=MemberType.ANTI, name="readme")
 
     coordinator._apply_anti_item(
@@ -3385,7 +3385,7 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
 
     assert written.read_bytes() == b"A"
     assert written_paths == {written}
-    assert collision_map == {"README": _Claim(written, 0)}
+    assert collision_map == {"README": _Claim(written, 0, written)}
 
 
 def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
@@ -3407,7 +3407,7 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
 
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
     written_paths = {directory, file_}
-    collision_map = {"x": _Claim(file_, 1)}
+    collision_map = {"x": _Claim(file_, 1, file_)}
     anti = ArchiveMember(type=MemberType.ANTI, name="x")
 
     result = coordinator._apply_anti_item(
@@ -3417,7 +3417,7 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
     assert result.path == directory
     assert not directory.exists()
     assert file_.read_bytes() == b"F"
-    assert collision_map == {"x": _Claim(file_, 1)}
+    assert collision_map == {"x": _Claim(file_, 1, file_)}
 
 
 @pytest.mark.parametrize(
