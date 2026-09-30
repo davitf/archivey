@@ -2360,6 +2360,8 @@ def _tar_with_dirs(path: Path, names: list[str]) -> Path:
             info = tarfile.TarInfo(name)
             if name.endswith("/"):
                 info.type = tarfile.DIRTYPE
+                # TarInfo defaults to 0o644, which a non-root run cannot write into.
+                info.mode = 0o755
                 tf.addfile(info)
             else:
                 info.size = 1
