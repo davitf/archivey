@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import tarfile
 import tempfile
 import zipfile
@@ -36,6 +37,7 @@ from tests.create_adversarial import adversarial_archives
 from tests.sample_archives import CORPUS, corpus_archive_path, skip_unless_runnable
 
 _POLICIES = list(ExtractionPolicy)
+_TMP_NAME = re.compile(r"\.archivey-tmp-[^'\"/]+")
 _SINGLE_FILE_KEYS = {"gz", "gz-meta", "bz2", "xz", "zst", "lz4", "lz", "zz", "br"}
 
 
@@ -62,7 +64,12 @@ def _shape(results, dest: Path) -> list[tuple[object, ...]]:
     shape = []
     for r in results:
         error = r.error
-        message = None if error is None else str(error).replace(str(dest), "<dest>")
+        message = None
+        if error is not None:
+            # The staging file's random suffix is the one thing two runs never share.
+            message = _TMP_NAME.sub(
+                ".archivey-tmp-*", str(error).replace(str(dest), "<dest>")
+            )
         shape.append(
             (
                 r.member.name,
@@ -290,7 +297,9 @@ def test_destination_that_is_a_file_is_refused(tmp_path: Path) -> None:
 def test_scratch_is_removed_when_the_archive_locks_its_own_directories(
     tmp_path: Path,
 ) -> None:
-    blob = _tar([("ro", "dir", 0o555), ("ro/f", "file", 0), ("zero", "dir", 0)])
+    # The file comes first: as a non-root user, nothing can be written into a
+    # directory once it is 0o555, in a dry run or a real one.
+    blob = _tar([("ro/f", "file", 0), ("ro", "dir", 0o555), ("zero", "dir", 0)])
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(blob)) as reader:
         report = reader.extract_all(dest, policy=ExtractionPolicy.TRUSTED, dry_run=True)
