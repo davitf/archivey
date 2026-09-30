@@ -523,9 +523,11 @@ SHALL no longer serve as the source: a re-readable source is re-read by the seco
 as an excluded one is, and a forward-only one fails the link. A source path that is not
 a regular file when the link is made (a symlink put there) SHALL NOT be linked.
 
-A HARDLINK whose target member is a SYMLINK SHALL be written as a symlink with that
-member's target, read from the hardlink's own directory, and checked like any symlink:
-it is a second name for the symlink, as GNU tar creates it.
+A HARDLINK whose target member is a SYMLINK, directly or through other hard links,
+SHALL be written as a symlink with that member's target, read from the hardlink's own
+directory, and checked like any symlink: it is a second name for the symlink, as GNU tar
+creates it. The caller's filter SHALL see the HARDLINK as listed, and the member on its
+`ExtractionResult` stays that HARDLINK; only what is written is a symlink.
 
 Where `REPLACE` removes an existing entry that a **member of this same run** wrote,
 and the replacing write then fails, that earlier member's content is gone. Its

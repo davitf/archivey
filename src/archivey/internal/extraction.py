@@ -485,10 +485,11 @@ class ExtractionCoordinator:
         # The key each claimed path was claimed under (see ``_claim``). Reset per
         # ``run()``.
         self._claim_keys: dict[Path, str] = {}
-        # ``_physical_path``'s resolved parents. Only a symlink created, replaced or
+        # ``_physical_rel``'s resolved parents, as spelled -> relative to the root with a
+        # trailing ``/``. Only a symlink created, replaced or
         # removed changes a resolution, so each of those clears it (``_note_link_change``
         # and ``_resolutions_changed``). Reset per ``run()``.
-        self._resolved_parents: dict[Path, Path] = {}
+        self._resolved_parents: dict[str, str] = {}
         # The symlinks this run created and the paths each one's resolution depends on,
         # so a later member that changes such a path gets them rechecked. Set per
         # ``run()``.
@@ -1197,26 +1198,40 @@ class ExtractionCoordinator:
 
     # --- selection / transform -----------------------------------------------------
 
-    def _as_written(self, original: ArchiveMember) -> ArchiveMember:
-        """``original``, or the SYMLINK it is written as when it is a hard link to a
-        symlink member.
+    def _as_written(
+        self, original: ArchiveMember, transformed: ArchiveMember
+    ) -> ArchiveMember:
+        """``transformed``, or the SYMLINK it is written as when ``original`` is a hard
+        link to a symlink member, through any number of hard links.
 
         A hard link to a symlink is a second name for the symlink itself, which is what
         GNU tar creates. So the member is written as a symlink with the same target, read
         from its own directory, and goes through the same checks as any symlink.
         Following the chain instead looked the target up by member name, which fails
-        when the symlink's target passes through another symlinked directory.
+        when the symlink's target passes through another symlinked directory. It runs
+        after the caller's filter, which sees the HARDLINK the archive lists, and only
+        when the filter kept it a HARDLINK.
         """
-        if original.type is not MemberType.HARDLINK or self._reader is None:
-            return original
-        direct = self._reader._hardlink_direct_target(original)
+        if (
+            original.type is not MemberType.HARDLINK
+            or transformed.type is not MemberType.HARDLINK
+            or self._reader is None
+        ):
+            return transformed
+        direct: ArchiveMember | None = original
+        seen: set[int] = set()
+        while direct is not None and direct.type is MemberType.HARDLINK:
+            if id(direct) in seen:
+                return transformed
+            seen.add(id(direct))
+            direct = self._reader._hardlink_direct_target(direct)
         if (
             direct is None
             or direct.type is not MemberType.SYMLINK
             or direct.link_target is None
         ):
-            return original
-        return original.replace(
+            return transformed
+        return transformed.replace(
             type=MemberType.SYMLINK,
             link_target=direct.link_target,
             link_target_member=direct.link_target_member,
@@ -1232,7 +1247,7 @@ class ExtractionCoordinator:
         filter skipped it, and ``presented_name`` is the full name before a safety rewrite
         (the absolute-name re-root or the portable-name policy) when one reaches disk,
         else ``None``. Raises a ``FilterRejectionError`` on a universal violation."""
-        transformed = POLICY_TRANSFORMS[self._policy](self._as_written(original))
+        transformed = POLICY_TRANSFORMS[self._policy](original)
         # The re-root comes before the filter so the filter sees the name that would be
         # written, as it already sees the policy's permission changes, and a filter
         # need not strip roots itself under STANDARD or TRUSTED. Whether the re-root
@@ -1263,6 +1278,7 @@ class ExtractionCoordinator:
             transformed = filtered
             if transformed.name != rerooted_name:
                 rerooted_from = None  # the filter chose this name; it is not a rewrite
+        transformed = self._as_written(original, transformed)
         check_universal(transformed, dest_root, link_target_on_disk=self._on_disk)
         if self._reader is not None and self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has
@@ -1624,8 +1640,11 @@ class ExtractionCoordinator:
 
         The key is remembered per path, so releasing the claim later finds it even after
         a symlink in ``path`` was repointed and ``path`` resolves somewhere else."""
-        physical = self._physical_path(dest, path) or path
-        key = self._collision_key(dest, physical)
+        rel = self._physical_rel(dest, path)
+        physical = dest / rel if rel is not None else path
+        key = collision_key(
+            rel if rel is not None else self._rel_name(dest, path), self._policy
+        )
         collision_map[key] = _Claim(path, index, physical)
         self._claim_keys[path] = key
 
@@ -1634,19 +1653,31 @@ class ExtractionCoordinator:
         key = self._claim_keys.get(path)
         return key if key is not None else self._collision_key(dest, path)
 
-    def _physical_path(self, dest: Path, path: Path) -> Path | None:
-        """``path`` with its parent resolved, under ``dest``; ``None`` when it does not
-        resolve inside the destination."""
-        root = self._dest_root if self._dest_root != Path() else dest.resolve()
-        parent = path.parent
-        try:
-            resolved = self._resolved_parents.get(parent)
-            if resolved is None:
-                resolved = parent.resolve()
-                self._resolved_parents[parent] = resolved
-            return dest / (resolved / path.name).relative_to(root)
-        except (OSError, RuntimeError, ValueError):
-            return None
+    def _physical_rel(self, dest: Path, path: Path) -> str | None:
+        """Where ``path`` is, relative to the destination root and ``/``-separated, with
+        its parent resolved; ``None`` when that parent does not resolve inside the root.
+
+        It runs several times per member, so it works on strings and caches each
+        parent's answer until a symlink changes (``_resolutions_changed``)."""
+        parent, name = os.path.split(os.fspath(path))
+        rel_parent = self._resolved_parents.get(parent)
+        if rel_parent is None:
+            root = os.fspath(
+                self._dest_root if self._dest_root != Path() else dest.resolve()
+            )
+            try:
+                resolved = os.fspath(Path(parent).resolve())
+            except (OSError, RuntimeError):
+                return None
+            prefix = root if root.endswith(os.sep) else root + os.sep
+            if os.path.normcase(resolved) == os.path.normcase(root):
+                rel_parent = ""
+            elif os.path.normcase(resolved).startswith(os.path.normcase(prefix)):
+                rel_parent = resolved[len(prefix) :].replace(os.sep, "/") + "/"
+            else:
+                return None
+            self._resolved_parents[parent] = rel_parent
+        return rel_parent + name
 
     def _collision_key(self, dest: Path, path: Path) -> str:
         """The collision-map key of the entry at ``path``: where it physically is.
@@ -1658,8 +1689,9 @@ class ExtractionCoordinator:
         resolve inside the destination (it was checked when the member was accepted,
         so only a later change can do that) falls back to the name as written.
         """
-        physical = self._physical_path(dest, path)
-        rel = self._rel_name(dest, physical if physical is not None else path)
+        rel = self._physical_rel(dest, path)
+        if rel is None:
+            rel = self._rel_name(dest, path)
         return collision_key(rel, self._policy)
 
     def _derive_free_name(
@@ -1896,9 +1928,10 @@ class ExtractionCoordinator:
                 link_target=original.link_target,
             )
         if source.type is not MemberType.FILE:
-            # `link_target_member` is the end of the link chain (a hardlink to a
-            # symlink to a file ends at the file), so anything but a file here cannot
-            # share an inode. Only a FILE source is recorded in `source_paths`. Without
+            # `link_target_member` is the end of the link chain, so anything but a
+            # file here (a directory, a device) cannot share an inode. A hard link to
+            # a symlink whose target is known never gets here: `_as_written` writes it
+            # as a symlink. Only a FILE source is recorded in `source_paths`. Without
             # this check, the member went down the branches below for a source that
             # was not written, and the error said the source was excluded.
             reason = (

@@ -297,19 +297,30 @@ def _links_stay_inside(root: Path) -> bool:
     has and the wrapper did not, so that blocks too.
 
     The walk follows each symlink on the way, so a chain cannot hide a climb, and an
-    absolute target always blocks. A path that ends at nothing is walked by name.
+    absolute target always blocks. A path that ends at nothing is walked by name. A
+    directory that cannot be listed blocks too: what is under it was not checked.
     """
-    for dirpath, dirnames, filenames in os.walk(root):
-        for name in dirnames + filenames:
-            path = Path(dirpath) / name
-            if not path.is_symlink():
-                continue
-            try:
-                target = os.readlink(path)
-            except OSError:
-                return False
-            if _walk_stays_inside(path.parent, target, root, [_MAX_LINK_HOPS]) is None:
-                return False
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.is_symlink():
+                        target = os.readlink(entry.path)
+                        if (
+                            _walk_stays_inside(
+                                directory, target, root, [_MAX_LINK_HOPS]
+                            )
+                            is None
+                        ):
+                            return False
+                    elif entry.is_dir():
+                        pending.append(Path(entry.path))
+        except OSError:
+            # A directory the walk cannot list could hold anything: keep the tree
+            # where it is rather than move what was not looked at.
+            return False
     return True
 
 

@@ -17,6 +17,7 @@ import os
 import stat
 import tarfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -94,6 +95,43 @@ def test_hoist_leaves_no_symlink_resolving_outside_the_working_directory(
 
     main(["x", ".ssh.tar"])
 
+    assert _links_escaping(downloads) == []
+
+
+@posix_links
+@pytest.mark.parametrize("policy", ["strict", "standard", "trusted"])
+def test_hoist_does_not_move_a_tree_it_could_not_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: str
+) -> None:
+    # `top/d` stands for a directory the extraction made unreadable (mode 0o300 under
+    # STANDARD or TRUSTED): the walk cannot see `k`, so it must not assume it is safe.
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "authorized_keys").write_text("keys")
+    downloads = home / "Downloads"
+    downloads.mkdir()
+    _build_tar(
+        downloads / ".ssh.tar",
+        [
+            ("top", "dir", None),
+            ("top/d", "dir", None),
+            ("top/d/k", "sym", "../../../.ssh/authorized_keys"),
+            ("top/f", "file", b"data"),
+        ],
+    )
+    monkeypatch.chdir(downloads)
+    real_scandir = os.scandir
+
+    def unlistable(path: str = ".") -> Any:
+        if os.fspath(path).endswith(f"{os.sep}d"):
+            raise PermissionError(13, "Permission denied", os.fspath(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", unlistable)
+
+    main(["x", "--policy", policy, ".ssh.tar"])
+
+    monkeypatch.undo()
     assert _links_escaping(downloads) == []
 
 
@@ -564,6 +602,13 @@ def test_a_directory_source_is_not_extracted_into_itself(
             "sub/x",
             id="plain-chain",
         ),
+        # `h` names another hard link to the symlink, which GNU tar also makes a
+        # symlink.
+        pytest.param(
+            [("sub/x", "file", b"YX"), ("s", "sym", "sub/x"), ("h0", "hard", "s")],
+            "sub/x",
+            id="through-another-hardlink",
+        ),
     ],
 )
 def test_a_hardlink_to_a_symlink_is_a_second_symlink(
@@ -571,7 +616,8 @@ def test_a_hardlink_to_a_symlink_is_a_second_symlink(
 ) -> None:
     # GNU tar makes `h` a second name for the symlink `s`, so `h` is a symlink with
     # the same target.
-    archive = _build_tar(tmp_path / "a.tar", [*entries, ("h", "hard", "s")])
+    link_to = "h0" if entries[-1][0] == "h0" else "s"
+    archive = _build_tar(tmp_path / "a.tar", [*entries, ("h", "hard", link_to)])
     dest = tmp_path / "out"
 
     with archivey.open_archive(archive, streaming=streaming) as reader:
@@ -582,6 +628,26 @@ def test_a_hardlink_to_a_symlink_is_a_second_symlink(
     )
     assert os.readlink(dest / "h") == target
     assert (dest / "h").read_bytes() == b"YX"
+
+
+@posix_links
+def test_a_filter_sees_a_hardlink_to_a_symlink_as_the_hardlink(tmp_path: Path) -> None:
+    archive = _build_tar(
+        tmp_path / "a.tar",
+        [("sub/x", "file", b"YX"), ("s", "sym", "sub/x"), ("h", "hard", "s")],
+    )
+    dest = tmp_path / "out"
+    seen: dict[str, archivey.MemberType] = {}
+
+    def no_hardlinks(member: archivey.ArchiveMember) -> archivey.ArchiveMember | None:
+        seen[member.name] = member.type
+        return None if member.type is archivey.MemberType.HARDLINK else member
+
+    with archivey.open_archive(archive) as reader:
+        reader.extract_all(dest, policy="standard", filter=no_hardlinks)
+
+    assert seen["h"] is archivey.MemberType.HARDLINK
+    assert not os.path.lexists(dest / "h")
 
 
 @posix_links
