@@ -255,7 +255,9 @@ read back.
 A member name can pass `check_universal` (it encodes via `os.fsencode`, e.g. undecodable
 archive bytes carried as `surrogateescape` low surrogates) and still be refused by the
 destination filesystem at write time — a UTF-8-enforcing filesystem (APFS) rejects the
-byte sequence with `EILSEQ`. Extraction SHALL translate that refusal into a typed
+byte sequence with `EILSEQ`, and any filesystem rejects a component, whole path or
+symlink target longer than it allows with `ENAMETOOLONG`. Extraction SHALL translate
+either refusal into a typed
 `ExtractionError` (carrying the member name and the original `OSError` as cause) rather
 than letting the raw `OSError` escape. Under `OnError.CONTINUE` it is an ordinary
 per-member failure result. On filesystems that accept arbitrary bytes (typical Linux),
@@ -501,7 +503,23 @@ SYMLINK and DIRECTORY replacement SHALL remove the existing entry and create fre
 because neither can be staged: a symlink MUST be created at its final name for the
 escape re-validation's cycle check to resolve, and a directory cannot be renamed
 over a non-directory at all. Replacing an existing directory with any member type
-removes the directory first.
+removes the directory first, and only an **empty** one: a directory that holds entries
+SHALL NOT be removed, and the replacing member SHALL fail with an `ExtractionError`
+governed by `OnError` (as GNU tar does without `--recursive-unlink`). Removing a tree
+would take the members this run wrote into it, which would still report `EXTRACTED`, and
+the caller's own files when the directory was already there.
+
+A DIRECTORY member whose destination is a directory that was there before the run (the
+destination root, for a `./` member, or any directory this run neither wrote nor created
+as a parent) SHALL leave that directory's mode, ownership and times unchanged. When the
+member's effective mode differs from the directory's, the result SHALL carry the mode the
+directory kept in `ExtractionResult.kept_mode`; otherwise `kept_mode` is `None`.
+
+A HARDLINK is made against the path its source member was written to only while that
+path still holds the source's content. Once a later member replaces that path, the path
+SHALL no longer serve as the source: a re-readable source is re-read by the second pass,
+as an excluded one is, and a forward-only one fails the link. A source path that is not
+a regular file when the link is made (a symlink put there) SHALL NOT be linked.
 
 Where `REPLACE` removes an existing entry that a **member of this same run** wrote,
 and the replacing write then fails, that earlier member's content is gone. Its
@@ -817,6 +835,8 @@ are the per-result outcome.
 | Case | Expected |
 | --- | --- |
 | User filter returns `None` | No `ExtractionResult`; no result-count impact (like a selector exclusion) |
+| User filter returns anything but an `ArchiveMember` or `None` | `TypeError` naming what it returned; the call ends (a caller bug, not a member outcome) |
+| `extract_all()` on a directory source with `dest` inside that directory | `ExtractionError` before anything is created (the pass would read its own output) |
 | Selector excludes member | No `ExtractionResult`; no result-count impact |
 | Member blocked by `FilterRejectionError` under `CONTINUE` | Result is `BLOCKED` with matching error; no diagnostic emitted |
 | Member write raises `OSError` under `CONTINUE` | Result is `FAILED` with matching error; no diagnostic emitted |
@@ -1012,8 +1032,11 @@ rules compose with — and never bypass — the non-bypassable path-safety const
 
 **Collision determinism (O2).** Under `STRICT` and `STANDARD`, the coordinator SHALL track
 a `casefold(NFC(path))` key per written destination and treat a second member resolving to
-the same key as an existing destination on **all** platforms, applying `OverwritePolicy`
-deliberately and recording the outcome on both members' `ExtractionResult`. `REPLACE`
+the same key as an existing destination on **all** platforms. The key is taken on where
+the entry physically lands (its parent resolved), so a member written through a
+directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`. Such a
+collision SHALL apply `OverwritePolicy`
+deliberately and record the outcome on both members' `ExtractionResult`. `REPLACE`
 SHALL NOT silently merge distinct members on case-insensitive filesystems: the earlier
 member's result SHALL be revised to `ExtractionStatus.OVERWRITTEN` so the merge is
 observable in `results`. Under `TRUSTED` the coordinator SHALL key on the exact `Path`

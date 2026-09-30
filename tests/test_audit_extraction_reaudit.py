@@ -5,9 +5,9 @@ The 2026-09 security audit's extraction pass was its narrowest
 again: ``internal/extraction.py``, ``internal/filters.py``, link handling, and the CLI
 ``extract`` / ``test`` paths. Numbering continues the audit's E1-E4.
 
-Each test asserts the promised behaviour and is ``xfail(strict=True)`` with the defect
-in ``reason``. A fix makes the test XPASS, which fails CI until the marker is removed.
-Triage is pending: nothing here is fixed yet.
+Each test asserts the promised behaviour. The ones still open are
+``xfail(strict=True)`` with the defect in ``reason``: a fix makes the test XPASS, which
+fails CI until the marker is removed. The rest are regression tests for the fixes.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from __future__ import annotations
 import io
 import os
 import stat
-import sys
 import tarfile
 from pathlib import Path
 
@@ -73,13 +72,6 @@ def _links_escaping(root: Path) -> list[str]:
 
 
 @posix_links
-@pytest.mark.xfail(
-    strict=True,
-    reason="E5 (high): the CLI hoist moves an extracted tree up one level after the "
-    "library checked its symlinks. A link that re-entered the wrapper directory by "
-    "name (`../../<stem>/x`) then resolves to `<cwd>/../<stem>/x`, outside the "
-    "destination, and the run exits 0",
-)
 def test_hoist_leaves_no_symlink_resolving_outside_the_working_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -106,12 +98,62 @@ def test_hoist_leaves_no_symlink_resolving_outside_the_working_directory(
 
 
 @posix_links
-@pytest.mark.xfail(
-    strict=True,
-    reason="E5b: the hoist's in-place flatten (`src.tar` holding `src/`) also moves "
-    "links up one level; `src/src/l -> ../x` pointed inside `src/`, and after the "
-    "flatten `src/l` points at the working directory's own `x`",
+@pytest.mark.parametrize(
+    ("stem", "entries"),
+    [
+        # The only top-level entry is itself a link: the move changes the directory
+        # its target is read from.
+        pytest.param("etc", [("b", "sym", "../etc/passwd")], id="lone-link-top"),
+        pytest.param("etc", [("b", "sym", "passwd")], id="lone-link-no-dotdot"),
+        # A link deep in the tree that goes up into the wrapper and back down into
+        # the top folder by name ends inside it before the move, not after.
+        pytest.param(
+            "pkg",
+            [("top", "dir", None), ("top/a/l", "sym", "../../top/x")],
+            id="up-and-back-in",
+        ),
+    ],
 )
+def test_hoist_does_not_move_a_link_whose_meaning_would_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stem: str, entries: list
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "passwd").write_text("the operator's file")
+    _build_tar(work / f"{stem}.tar", entries)
+    monkeypatch.chdir(work)
+
+    main(["x", f"{stem}.tar"])
+
+    # Nothing left the wrapper: the only entry in the working directory besides the
+    # operator's file and the archive is the wrapper itself.
+    assert sorted(p.name for p in work.iterdir()) == sorted(
+        ["passwd", f"{stem}.tar", stem]
+    )
+
+
+@posix_links
+def test_hoist_still_moves_a_tree_whose_links_only_go_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _build_tar(
+        tmp_path / "pkg.tar",
+        [
+            ("top", "dir", None),
+            ("top/x", "file", b"x"),
+            ("top/l", "sym", "x"),
+            ("top/sub/m", "sym", "./n/o"),
+        ],
+    )
+    monkeypatch.chdir(tmp_path)
+
+    main(["x", "pkg.tar"])
+
+    assert (tmp_path / "top" / "l").read_bytes() == b"x"
+    assert not (tmp_path / "pkg").exists()
+
+
+@posix_links
 def test_hoist_flatten_keeps_links_inside_the_reported_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -129,13 +171,6 @@ def test_hoist_flatten_keeps_links_inside_the_reported_destination(
 
 
 @pytest.mark.parametrize("overwrite", ["error", "skip", "replace"])
-@pytest.mark.xfail(
-    strict=True,
-    reason="E6: when a directory named like the archive already exists, the CLI "
-    "extracts into it and then hoists its only child. If the archive added nothing "
-    "(every member blocked, or an empty archive), that child is the operator's own "
-    "file: it is moved into the working directory and their directory is removed",
-)
 def test_hoist_never_moves_the_operators_own_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overwrite: str
 ) -> None:
@@ -155,13 +190,6 @@ def test_hoist_never_moves_the_operators_own_directory(
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 @pytest.mark.parametrize("policy", ["strict", "standard"])
-@pytest.mark.xfail(
-    strict=True,
-    reason="E7: a directory member whose destination already exists gets the "
-    "member's mode, so `./` (what `tar -C dir -cf x.tar .` writes) chmods the "
-    "destination root: STRICT widens a 0o700 destination to 0o755, STANDARD to a "
-    "world-writable 0o777. The same happens to any pre-existing directory",
-)
 def test_a_directory_member_never_widens_an_existing_directory(
     tmp_path: Path, policy: str
 ) -> None:
@@ -179,10 +207,28 @@ def test_a_directory_member_never_widens_an_existing_directory(
     os.chmod(dest, 0o700)
     os.chmod(dest / "pre", 0o700)
 
-    archivey.extract(archive, dest, policy=policy)
+    report = archivey.extract(archive, dest, policy=policy)
 
     assert stat.S_IMODE(os.stat(dest).st_mode) == 0o700
     assert stat.S_IMODE(os.stat(dest / "pre").st_mode) == 0o700
+    # The results say so, since the tree now differs from the archive.
+    kept = {r.member.name: r.kept_mode for r in report.results}
+    assert kept == {".": 0o700, "f": None, "pre/": 0o700}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_a_directory_this_run_created_still_gets_its_mode(tmp_path: Path) -> None:
+    # `d/f` creates `d` before the `d/` member arrives; `d` is still the archive's.
+    archive = _build_tar(
+        tmp_path / "a.tar",
+        [("d/f", "file", b"x"), ("d/", "dir", None, {"mode": 0o750})],
+    )
+    dest = tmp_path / "out"
+
+    report = archivey.extract(archive, dest, policy="standard")
+
+    assert stat.S_IMODE(os.stat(dest / "d").st_mode) == 0o750
+    assert all(r.kept_mode is None for r in report.results)
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -213,13 +259,6 @@ def test_a_directory_keeps_its_stored_mtime(tmp_path: Path, streaming: bool) -> 
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.xfail(
-    strict=True,
-    reason="E8: a hardlink is made to the path its source member was written at, "
-    "even after a later member replaced that path. Under STANDARD + REPLACE, `A` "
-    "replaces `a`, and `h` (a link to `a`) gets `A`'s content. Positional link "
-    "resolution exists so that a later member cannot redirect a link",
-)
 def test_hardlink_to_a_replaced_source_does_not_get_the_replacements_content(
     tmp_path: Path, streaming: bool
 ) -> None:
@@ -235,18 +274,17 @@ def test_hardlink_to_a_replaced_source_does_not_get_the_replacements_content(
         )
 
     link = {r.member.name: r for r in report.results}["h"]
-    # Either the link carries its source's content, or it fails; never another's.
-    if link.status is ExtractionStatus.EXTRACTED:
+    if streaming:
+        # The source's bytes streamed past and its path now holds `A`: out of reach.
+        assert link.status is ExtractionStatus.FAILED
+        assert isinstance(link.error, archivey.ExtractionError)
+    else:
+        # The second pass re-reads the source, as it does for an excluded one.
+        assert link.status is ExtractionStatus.EXTRACTED
         assert (dest / "h").read_bytes() == b"ORIGINAL"
 
 
 @posix_links
-@pytest.mark.xfail(
-    strict=True,
-    reason="E8b: when the member that replaced the source is a symlink, `os.link` "
-    "follows it, so the archive's hardlink becomes a second name for a file that "
-    "was in the destination before the run",
-)
 def test_hardlink_never_links_a_file_the_run_did_not_write(tmp_path: Path) -> None:
     archive = _build_tar(
         tmp_path / "a.tar",
@@ -268,12 +306,6 @@ def test_hardlink_never_links_a_file_the_run_did_not_write(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.xfail(
-    strict=True,
-    reason="E9: REPLACE removes a directory with `rmtree`, including members this "
-    "run wrote into it, and their results stay EXTRACTED. The spec: `a result SHALL "
-    "NOT report EXTRACTED for content that no longer exists`",
-)
 def test_replacing_a_directory_revises_the_members_written_inside_it(
     tmp_path: Path, streaming: bool
 ) -> None:
@@ -292,16 +324,14 @@ def test_replacing_a_directory_revises_the_members_written_inside_it(
             assert os.path.lexists(result.path), result.member.name
     extracted = [r for r in report.results if r.status is ExtractionStatus.EXTRACTED]
     assert len({r.path for r in extracted}) == len(extracted)
+    # REPLACE removes only an empty directory, as GNU tar does.
+    last = report.results[-1]
+    assert last.status is ExtractionStatus.FAILED
+    assert "not empty" in str(last.error)
+    assert (dest / "d" / "f").read_bytes() == b"x"
 
 
 @posix_links
-@pytest.mark.xfail(
-    strict=True,
-    reason="E10: the collision map keys on the member name, so `s/f` (through the "
-    "archive's own `s -> d`) and `d/f` are one file that two EXTRACTED results "
-    "claim; the first one's content is gone. docs/extracting.md: REPLACE `is not a "
-    "silent merge`",
-)
 def test_two_members_written_to_one_file_through_a_symlink_are_not_both_extracted(
     tmp_path: Path,
 ) -> None:
@@ -324,6 +354,9 @@ def test_two_members_written_to_one_file_through_a_symlink_are_not_both_extracte
         and r.status is ExtractionStatus.EXTRACTED
     ]
     assert len({os.path.realpath(r.path) for r in files}) == len(files)
+    by_name = {r.member.name: r for r in report.results}
+    assert by_name["s/f"].status is ExtractionStatus.OVERWRITTEN
+    assert by_name["d/f"].collided_with is not None
 
 
 # --- Untyped errors -----------------------------------------------------------------
@@ -340,13 +373,6 @@ def test_two_members_written_to_one_file_through_a_symlink_are_not_both_extracte
         pytest.param(("s", "sym", "t" * 5000), id="link-target-over-4096"),
     ],
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason="E11: a name or link target longer than the filesystem allows raises a "
-    "raw OSError(ENAMETOOLONG), which ends `extract()` under the default "
-    "OnError.STOP. Like EILSEQ (already typed) and E3/E4, the limit is hit because of "
-    "the archive, not the filesystem's state",
-)
 def test_a_name_too_long_for_the_filesystem_is_a_typed_member_failure(
     tmp_path: Path, entry: tuple
 ) -> None:
@@ -361,13 +387,6 @@ def test_a_name_too_long_for_the_filesystem_is_a_typed_member_failure(
 
 
 @posix_links
-@pytest.mark.xfail(
-    sys.version_info < (3, 13),
-    strict=True,
-    reason="E12: a symlink loop already in the destination makes `Path.resolve()` in "
-    "`check_universal` raise a raw RuntimeError on Python 3.11/3.12. It is neither "
-    "an ArchiveyError nor an OSError, so it escapes `on_error='continue'`",
-)
 def test_a_symlink_loop_in_the_destination_is_not_a_raw_runtime_error(
     tmp_path: Path,
 ) -> None:
@@ -385,12 +404,6 @@ def test_a_symlink_loop_in_the_destination_is_not_a_raw_runtime_error(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="E14: a filter that returns something other than an ArchiveMember or None "
-    "fails with a raw AttributeError from inside the coordinator, naming neither "
-    "the filter nor what it returned",
-)
 def test_a_filter_returning_a_non_member_gets_a_type_error_naming_the_filter(
     tmp_path: Path,
 ) -> None:
@@ -405,13 +418,6 @@ def test_a_filter_returning_a_non_member_gets_a_type_error_naming_the_filter(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.xfail(
-    strict=True,
-    reason="E13: extracting a directory source into a directory inside it reads its "
-    "own output. Streaming recurses (`copy/copy/copy/...`) until the path is too "
-    "long; random access lists the new destination as a member. `cp -r` refuses "
-    "the same request",
-)
 def test_a_directory_source_is_not_extracted_into_itself(
     tmp_path: Path, streaming: bool
 ) -> None:

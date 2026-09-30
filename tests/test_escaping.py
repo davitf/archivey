@@ -518,6 +518,7 @@ _CLI_PRINT_ALLOWED = {
     "common.py: str(stats.compressed_bytes_consumed)": "int counter",
     "common.py: stats.source_seek_count": "int counter",
     "extract_cmd.py: ', '.join(parts)": "counts, built two lines above",
+    "extract_cmd.py: result.kept_mode": "int mode, printed as octal",
     "extract_cmd.py: dest_label": (
         "the hoist's label, built with escape_path in maybe_hoist_single_root"
     ),

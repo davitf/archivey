@@ -122,7 +122,15 @@ single-file/single-stream archive. When no cheap index is available (plain TAR,
 future stdin sources, …), the destination SHALL initially be `./<archive-stem>/`
 (always wrap — no pre-extract metadata pass); after a successful extract, if
 that wrapper contains exactly one top-level entry, the system SHALL hoist it to
-the cwd and remove the wrapper. The hoist SHALL produce the same final layout
+the cwd and remove the wrapper. The hoist SHALL NOT run when the wrapper was
+already there before the extraction (its only entry may be the operator's own),
+when the only entry is a symlink (the move changes the directory its target is
+read from), or when any extracted symlink's target has a `..` component or is
+absolute, on either separator: extraction checked those links against the
+wrapper, and a target that climbs into it and back down by name (`top/l ->
+../top/x`) climbs out of the cwd after the move. A target that only descends
+means the same thing after the move. When the links block it, a line says the
+content was kept in the wrapper and why. The hoist SHALL produce the same final layout
 as extracting directly into the cwd: directories merge into existing
 directories, and per-file collisions resolve by the overwrite policy (`rename`
 derives the library's `name (N)` spelling; `replace` replaces only the

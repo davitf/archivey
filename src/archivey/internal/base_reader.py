@@ -2672,6 +2672,13 @@ class BaseArchiveReader(ArchiveReader):
                 current.close()
             self._state.release_pass(token)
 
+    def _check_extraction_dest(self, dest: Path) -> None:
+        """Refuse a destination this reader's own source would read back.
+
+        No-op here; ``DirectoryReader`` refuses a destination inside its root.
+        Called before anything is created.
+        """
+
     def extract_all(
         self,
         dest: str | Path,
@@ -2712,6 +2719,7 @@ class BaseArchiveReader(ArchiveReader):
         # created. Same reason as filter: a refusal that has already touched the disk
         # is a side effect of a call the caller got wrong.
         normalize_member_selector(members)
+        self._check_extraction_dest(Path(dest))
         # Check (but do not enter) the single-pass guard here, so a second extract_all
         # on a streaming reader fails with this method's name; the coordinator drives
         # the pass through the public stream_members(), which enters it properly.

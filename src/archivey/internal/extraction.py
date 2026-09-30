@@ -108,6 +108,40 @@ def _symlink_escapes(link_path: Path, target: str, dest_root: Path) -> bool:
     return not (resolved == dest_root or resolved.is_relative_to(dest_root))
 
 
+def _typed_os_error(
+    exc: ArchiveyError | OSError, member_name: str
+) -> ArchiveyError | OSError:
+    """``exc``, or an ``ExtractionError`` when the archive's own name caused it.
+
+    Two errors are properties of the name the archive chose, not of the filesystem's
+    state: ``EILSEQ`` (bytes a UTF-8-only filesystem such as APFS refuses) and
+    ``ENAMETOOLONG`` (a component, whole path or symlink target longer than the
+    filesystem allows; the portable rewrite's ``%XX`` escapes can push a name over).
+    They become a typed per-member failure. Every other ``OSError`` stays as it is.
+    """
+    if not isinstance(exc, OSError):
+        return exc
+    if exc.errno == errno.EILSEQ:
+        message = "Member name cannot be represented on the destination filesystem"
+    elif exc.errno == errno.ENAMETOOLONG:
+        message = (
+            "Member name or link target is too long for the destination filesystem"
+        )
+    else:
+        return exc
+    error = ExtractionError(message, member_name=member_name)
+    error.__cause__ = exc
+    return error
+
+
+def _is_regular_file(path: Path) -> bool:
+    """Whether ``path`` is a regular file itself, not a symlink to one."""
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
 def _remove_scratch(root: Path) -> None:
     """Remove a dry run's scratch directory, whatever modes the archive gave its entries.
 
@@ -437,6 +471,12 @@ class ExtractionCoordinator:
         # it (the pass's own ``written_paths``), for ``_makedirs``. Set per ``run()``.
         self._dest = Path()
         self._written_paths: set[Path] = set()
+        # The run's ``source_paths`` (source member id -> paths holding its content),
+        # for ``_forget_source_path``. Set per ``run()``.
+        self._source_paths: dict[int, list[Path]] = {}
+        # Directories ``_makedirs`` created this run, as parents of what it wrote.
+        # Reset per ``run()``.
+        self._created_dirs: set[Path] = set()
         # The symlinks this run created and the paths each one's resolution depends on,
         # so a later member that changes such a path gets them rechecked. Set per
         # ``run()``.
@@ -711,6 +751,8 @@ class ExtractionCoordinator:
         written_paths: set[Path] = set()
         self._dest = dest
         self._written_paths = written_paths
+        self._source_paths = source_paths
+        self._created_dirs = set()
         # O2 collision map: casefold(NFC(relpath)) key (exact under TRUSTED) -> the claim
         # (written path + claiming member's result index). Tracks non-directory members
         # written THIS run so a second member resolving to the same key is a deterministic
@@ -809,7 +851,7 @@ class ExtractionCoordinator:
             try:
                 for held, held_index in self._unremoved.pop(original.name, {}).items():
                     # Unless another member has since replaced it under its own claim.
-                    key = collision_key(self._rel_name(dest, held), self._policy)
+                    key = self._collision_key(dest, held)
                     if collision_map.get(key) == _Claim(held, held_index):
                         self._stale[held] = held_index
                         del collision_map[key]
@@ -913,25 +955,14 @@ class ExtractionCoordinator:
             except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
                 raise
             except (ArchiveyError, OSError) as exc:
-                # A name the universal filter accepted (it is fsencodable) but that the
-                # *destination filesystem* refuses at write time — non-UTF-8 bytes on a
-                # UTF-8-enforcing FS such as APFS/macOS raise OSError EILSEQ ("Illegal
-                # byte sequence") — is not a generic I/O failure. Surface it as a typed
-                # extraction error so callers get "this name is not representable here"
-                # instead of a bare OSError. (Rewriting such names to an always-portable
-                # spelling so the write succeeds is the separate, policy-gated
-                # threat-model O7 follow-up.)
+                # A name the universal filter accepted but that the *destination
+                # filesystem* refuses at write time (EILSEQ on a UTF-8-only filesystem,
+                # ENAMETOOLONG for a name or link target over the limit) is caused by
+                # the archive, not the filesystem's state: see ``_typed_os_error``.
                 if isinstance(exc, OSError):
                     # Before it is recorded or logged: a dry run's error names dest.
                     self._rebase_os_error(exc)
-                error: ArchiveyError | OSError = exc
-                if isinstance(exc, OSError) and exc.errno == errno.EILSEQ:
-                    error = ExtractionError(
-                        "Member name cannot be represented on the destination "
-                        "filesystem",
-                        member_name=original.name,
-                    )
-                    error.__cause__ = exc
+                error = _typed_os_error(exc, original.name)
                 status = (
                     ExtractionStatus.BLOCKED
                     if isinstance(error, FilterRejectionError)
@@ -1136,7 +1167,7 @@ class ExtractionCoordinator:
                     "Could not remove superseded %r: %s", str(self._shown(path)), exc
                 )
                 written_paths.add(path)
-                key = collision_key(self._rel_name(dest, path), self._policy)
+                key = self._collision_key(dest, path)
                 collision_map[key] = _Claim(path, index)
                 self._unremoved.setdefault(original.name, {})[path] = index
             else:
@@ -1175,9 +1206,18 @@ class ExtractionCoordinator:
         # unsafe ones included, and can rename one to something safe. Whatever it
         # returns is what gets checked and written.
         if self._filter is not None:
-            transformed = self._filter(transformed)
-            if transformed is None:
+            filtered = self._filter(transformed)
+            if filtered is None:
                 return None, None
+            if not isinstance(filtered, ArchiveMember):
+                # A caller bug, so a TypeError that ends the call rather than a
+                # per-member result; it names what came back, which the attribute
+                # error from the first use of it did not.
+                raise TypeError(
+                    f"filter= must return an ArchiveMember or None, not "
+                    f"{type(filtered).__name__} (for member {quoted(original.name)})"
+                )
+            transformed = filtered
             if transformed.name != rerooted_name:
                 rerooted_from = None  # the filter chose this name; it is not a rewrite
         check_universal(transformed, dest_root, link_target_on_disk=self._on_disk)
@@ -1348,16 +1388,33 @@ class ExtractionCoordinator:
     ) -> ExtractionResult:
         if transformed.type == MemberType.DIRECTORY:
             existed = self._occupied(dest_path)
+            callers = self._is_callers_directory(dest_path)
             if not self._prepare_destination(transformed, dest_path):
                 return ExtractionResult(
                     original, None, ExtractionStatus.NOT_OVERWRITTEN, None
                 )
             self._makedirs(dest_path, transformed)
-            self._apply_metadata(dest_path, transformed)
+            kept_mode: int | None = None
+            if callers:
+                # A directory the caller already had, the destination root included
+                # (a `./` member): it keeps its own mode and times. Applying the
+                # member's would widen a private 0o700 directory to the policy's
+                # 0o755, or to a world-writable 0o777 under STANDARD. GNU tar has
+                # the same rule as --no-overwrite-dir.
+                wanted = self._effective_mode(transformed)
+                current = stat.S_IMODE(os.stat(dest_path).st_mode)
+                if wanted is not None and wanted != current:
+                    kept_mode = current
+            else:
+                self._apply_metadata(dest_path, transformed)
             if not existed:
                 written_paths.add(dest_path)
             return ExtractionResult(
-                original, dest_path, ExtractionStatus.EXTRACTED, None
+                original,
+                dest_path,
+                ExtractionStatus.EXTRACTED,
+                None,
+                kept_mode=kept_mode,
             )
 
         if transformed.type == MemberType.SYMLINK:
@@ -1435,7 +1492,7 @@ class ExtractionCoordinator:
         """
         if transformed.type == MemberType.DIRECTORY:
             return requested, None, None
-        key = collision_key(self._rel_name(dest, requested), self._policy)
+        key = self._collision_key(dest, requested)
         prior = collision_map.get(key)
         collided = (
             prior.path
@@ -1510,13 +1567,31 @@ class ExtractionCoordinator:
             and result.status is ExtractionStatus.EXTRACTED
             and result.path is not None
         ):
-            key = collision_key(self._rel_name(dest, result.path), self._policy)
+            key = self._collision_key(dest, result.path)
             collision_map[key] = _Claim(result.path, result_index)
 
     @staticmethod
     def _rel_name(dest: Path, path: Path) -> str:
-        """The written path's location relative to the extraction root, for a collision key."""
+        """``path`` relative to the extraction root, as written, for messages."""
         return path.relative_to(dest).as_posix()
+
+    def _collision_key(self, dest: Path, path: Path) -> str:
+        """The collision-map key of the entry at ``path``: where it physically is.
+
+        The parent is resolved, so two members that reach one file by different names
+        collide: ``s/f`` through the archive's own ``s -> d`` is ``d/f``. Keying on the
+        name alone let both report ``EXTRACTED`` for one file. The final component is
+        not followed, as a member's own destination never is. A parent that does not
+        resolve inside the destination (it was checked when the member was accepted,
+        so only a later change can do that) falls back to the name as written.
+        """
+        root = self._dest_root if self._dest_root != Path() else dest.resolve()
+        try:
+            physical = path.parent.resolve() / path.name
+            rel = physical.relative_to(root).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            rel = self._rel_name(dest, path)
+        return collision_key(rel, self._policy)
 
     def _derive_free_name(
         self,
@@ -1544,11 +1619,11 @@ class ExtractionCoordinator:
             stem, suffix = requested.name, ""
         else:
             stem, suffix = requested.stem, requested.suffix
-        counter_key = collision_key(self._rel_name(dest, requested), self._policy)
+        counter_key = self._collision_key(dest, requested)
         n = self._rename_next.get(counter_key, 1)
         while True:
             candidate = parent / f"{stem} ({n}){suffix}"
-            candidate_key = collision_key(self._rel_name(dest, candidate), self._policy)
+            candidate_key = self._collision_key(dest, candidate)
             if candidate_key not in collision_map and not self._occupied(candidate):
                 self._rename_next[counter_key] = n + 1
                 return candidate
@@ -1572,9 +1647,7 @@ class ExtractionCoordinator:
         matches only by its exact path. Nothing is deleted that this run did not write.
         """
         if dest_path not in written_paths:
-            claim = collision_map.get(
-                collision_key(self._rel_name(dest, dest_path), self._policy)
-            )
+            claim = collision_map.get(self._collision_key(dest, dest_path))
             if claim is not None and claim.path in written_paths:
                 dest_path = claim.path
         if dest_path not in written_paths:
@@ -1597,6 +1670,7 @@ class ExtractionCoordinator:
                 self._note_link_change(dest_path)
         written_paths.discard(dest_path)
         self._release_claim(collision_map, dest, dest_path)
+        self._forget_source_path(dest_path)
         return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
 
     def _release_claim(
@@ -1609,7 +1683,7 @@ class ExtractionCoordinator:
         content that no longer exists — which a later same-key member would see as a
         collision, aborting under ``AbortOn.NAME_COLLISION`` against an empty destination
         or revising an already-deleted member to ``OVERWRITTEN``."""
-        key = collision_key(self._rel_name(dest, path), self._policy)
+        key = self._collision_key(dest, path)
         claim = collision_map.get(key)
         if claim is not None and claim.path == path:
             del collision_map[key]
@@ -1788,8 +1862,8 @@ class ExtractionCoordinator:
             # Forward-only: the source's bytes already streamed past — unrecoverable. Per
             # spec this is a per-member ExtractionError handled by OnError.
             raise ExtractionError(
-                "Hardlink source was excluded and cannot be recovered on a "
-                "forward-only stream",
+                "Hardlink source was excluded or replaced by a later member, and "
+                "cannot be recovered on a forward-only stream",
                 link_target=source.name,
                 member_name=transformed.name,
             )
@@ -1866,11 +1940,14 @@ class ExtractionCoordinator:
                 # One failed source, N failed links: the fan-out is recorded on the
                 # results themselves, so a caller can tell N separate failures from one
                 # failure seen N times without joining against a diagnostic.
-                self._record_failure_group(results, group, exc)
+                error = _typed_os_error(exc, member.name)
+                self._record_failure_group(results, group, error)
                 if self._stops_on_failure():
-                    raise
+                    if error is exc:
+                        raise
+                    raise error from exc
                 logger.warning(
-                    "Skipping orphaned hardlink source %r: %s", member.name, exc
+                    "Skipping orphaned hardlink source %r: %s", member.name, error
                 )
             finally:
                 self._close(stream)
@@ -2094,6 +2171,7 @@ class ExtractionCoordinator:
         except (ArchiveyError, OSError) as exc:
             if isinstance(exc, OSError):
                 self._rebase_os_error(exc)
+            error = _typed_os_error(exc, orphan.original.name)
             self._revise_result(
                 results,
                 orphan.result_index,
@@ -2101,15 +2179,17 @@ class ExtractionCoordinator:
                     orphan.original,
                     None,
                     ExtractionStatus.FAILED,
-                    exc,
+                    error,
                     requested_path=orphan.dest_path,
                     collided_with=collided_with,
                 ),
             )
             if self._stops_on_failure():
-                raise
+                if error is exc:
+                    raise
+                raise error from exc
             # A single link's failure, not a source fan-out: no group id.
-            logger.warning("Skipping hardlink %r: %s", orphan.original.name, exc)
+            logger.warning("Skipping hardlink %r: %s", orphan.original.name, error)
             return
         result = ExtractionResult(
             orphan.original,
@@ -2125,6 +2205,22 @@ class ExtractionCoordinator:
         self._register_collision_key(
             collision_map, dest, orphan.transformed, result, orphan.result_index
         )
+
+    def _forget_source_path(self, path: Path) -> None:
+        """Stop offering ``path`` as a hardlink source: something else is going there.
+
+        ``source_paths`` records where each source member's content was written, and a
+        later hardlink to that member is made against it. Once another member replaces
+        the entry at that path, it holds that member's content (or is a symlink that
+        ``os.link`` would follow), so a link made against it would get the wrong bytes.
+        A source left with no path is re-read by the second pass where the source is
+        seekable, as an excluded one is.
+        """
+        for source_id, paths in list(self._source_paths.items()):
+            if path in paths:
+                paths.remove(path)
+                if not paths:
+                    del self._source_paths[source_id]
 
     def _note_link_change(self, path: Path) -> None:
         """Report a symlink or directory at ``path`` replaced or removed this member."""
@@ -2316,6 +2412,13 @@ class ExtractionCoordinator:
         condition, and ``OverwritePolicy`` governs a member's own destination only,
         never its parents.
         """
+        # The components that do not exist yet: this run creates them, so a directory
+        # member naming one later is not the caller's (``_is_callers_directory``).
+        missing: list[Path] = []
+        probe = path
+        while probe != probe.parent and not os.path.lexists(probe):
+            missing.append(probe)
+            probe = probe.parent
         try:
             os.makedirs(path, exist_ok=True)
         except (FileExistsError, NotADirectoryError, FileNotFoundError) as exc:
@@ -2331,6 +2434,19 @@ class ExtractionCoordinator:
                         member_name=member.name,
                     ) from exc
             raise
+        self._created_dirs.update(missing)
+
+    def _is_callers_directory(self, path: Path) -> bool:
+        """Whether ``path`` is a directory that was there before this run: the
+        destination root, or a directory this run neither wrote nor created."""
+        if path == self._dest:
+            return True
+        try:
+            if not stat.S_ISDIR(os.lstat(path).st_mode):
+                return False
+        except OSError:
+            return False
+        return path not in self._written_paths and path not in self._created_dirs
 
     def _prepare_destination(
         self, member: ArchiveMember, dest_path: Path, *, atomic: bool = False
@@ -2363,6 +2479,7 @@ class ExtractionCoordinator:
                 self._note_link_change(dest_path)
             if not atomic:
                 dest_path.unlink()
+            self._forget_source_path(dest_path)
             return True
 
         # A real directory being (re)created as a directory is fine under any policy.
@@ -2386,14 +2503,28 @@ class ExtractionCoordinator:
             # os.replace handles a file/symlink target atomically, so only a real
             # directory must be removed up front. Otherwise unlink a symlink/file (bytes
             # never follow the link) and rmtree a real directory tree.
-            if moves_links:
-                self._note_link_change(dest_path)
             if stat.S_ISDIR(existing):
-                shutil.rmtree(dest_path)
+                # Only an empty directory is removed, as GNU tar does without
+                # --recursive-unlink. Removing a tree takes the members this run wrote
+                # into it, which would then still report EXTRACTED, and the caller's
+                # own files when the directory was already there.
+                with os.scandir(dest_path) as entries:
+                    if next(entries, None) is not None:
+                        raise ExtractionError(
+                            f"Destination is a directory that is not empty: "
+                            f"{display_path(dest_path)}",
+                            member_name=member.name,
+                        )
+                self._note_link_change(dest_path)
+                os.rmdir(dest_path)
                 self._removed_existing = True
-            elif not atomic:
-                dest_path.unlink()
-                self._removed_existing = True
+            else:
+                if moves_links:
+                    self._note_link_change(dest_path)
+                if not atomic:
+                    dest_path.unlink()
+                    self._removed_existing = True
+            self._forget_source_path(dest_path)
             return True
         # This arm destroys the existing entry, so a policy nobody taught this chain
         # must not inherit it: an unknown member stops here.
@@ -2508,10 +2639,21 @@ class ExtractionCoordinator:
         ``os.replace`` moves the link itself and never follows the entry it replaces, so
         a destination symlink is replaced rather than written through."""
         existing = source_paths[source_id]
+        # Each path was a regular file this run wrote, and ``_forget_source_path``
+        # drops one once another member replaces it. Checked again here because
+        # ``os.link`` follows a symlink (``follow_symlinks=False`` is not available on
+        # every platform): a link made through one would name a file this run did not
+        # write.
+        candidates = [path for path in existing if _is_regular_file(path)]
+        if not candidates:
+            raise ExtractionError(
+                "Hardlink source is no longer on disk as a regular file",
+                member_name=member.name,
+            )
         tmp = self._temp_sibling(new_path.parent)
         try:
             copied = False
-            for candidate in existing:
+            for candidate in candidates:
                 try:
                     os.link(candidate, tmp)
                     break
@@ -2527,7 +2669,7 @@ class ExtractionCoordinator:
                     0o600 if self._effective_mode(member) is not None else 0o666
                 )
                 with (
-                    open(existing[0], "rb") as src,
+                    open(candidates[0], "rb") as src,
                     os.fdopen(_open_new_file(tmp, create_mode), "wb") as dst,
                 ):
                     while chunk := src.read(_CHUNK):

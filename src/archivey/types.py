@@ -1165,3 +1165,8 @@ class ExtractionResult:
     # against another result's ``path`` — or its ``requested_path`` when that member was
     # itself later revised to ``OVERWRITTEN`` and no longer holds a live path.
     collided_with: Path | None = None
+    # Set on a DIRECTORY result whose destination was a directory that was there before
+    # the run (the destination root for a ``./`` member, or any directory the caller
+    # already had): that directory keeps its own mode and times, and this is the mode it
+    # kept. ``None`` when the member's mode was applied, or matched what was there.
+    kept_mode: int | None = None

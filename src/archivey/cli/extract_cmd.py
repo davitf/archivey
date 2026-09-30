@@ -35,11 +35,7 @@ from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
 from archivey.reader import ArchiveReader
-from archivey.types import (
-    ArchiveFormat,
-    ArchiveMember,
-    ContainerFormat,
-)
+from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat, MemberType
 
 
 def _archive_stem(path: Path, *, format: ArchiveFormat) -> str:
@@ -141,10 +137,10 @@ def resolve_smart_dest(
 
     indexed = reader.members_report_if_available()
     if indexed is None:
-        return _SmartDestPlan(
-            _enclosing_dir(archive, format=fmt, overwrite=overwrite),
-            may_hoist=True,
-        )
+        wrapper = _enclosing_dir(archive, format=fmt, overwrite=overwrite)
+        # Only a wrapper this run creates may be hoisted out of: a directory that was
+        # already there is the operator's, and its only child may be their own file.
+        return _SmartDestPlan(wrapper, may_hoist=not os.path.lexists(wrapper))
 
     members = [m for m in indexed if pred is None or pred(m)]
     return _SmartDestPlan(
@@ -237,13 +233,47 @@ def _merge_move(
     raise _HoistConflict(dest)
 
 
+def _climbs_or_is_absolute(target: str) -> bool:
+    """Whether a symlink target has a ``..`` component or is absolute, on either
+    separator (a drive letter counts as absolute)."""
+    if target[:1] in ("/", "\\") or target[1:2] == ":":
+        return True
+    return ".." in target.replace("\\", "/").split("/")
+
+
+def _links_stay_below_themselves(report: ExtractionReport) -> bool:
+    """Whether every extracted symlink resolves downward from its own directory.
+
+    The hoist moves the tree one level up after extraction checked its links against
+    the wrapper. A target without ``..`` that is not absolute only descends from the
+    link's directory, and a chain of such links keeps descending, so it means the same
+    thing after the move. Any other target may have gone up into the wrapper and back
+    down by name (``top/l -> ../top/x``), and after the move the same path climbs out
+    of the working directory. Such a tree stays in the wrapper.
+    """
+    for result in report:
+        member = result.member
+        if (
+            result.status is ExtractionStatus.EXTRACTED
+            and member.type is MemberType.SYMLINK
+            and member.link_target is not None
+            and _climbs_or_is_absolute(member.link_target)
+        ):
+            return False
+    return True
+
+
 def maybe_hoist_single_root(
     wrapper: Path,
     *,
     overwrite: OverwritePolicy,
     err: TextIO,
+    links_movable: bool = True,
 ) -> _HoistResult:
     """If ``wrapper`` holds exactly one top-level entry, lift it to cwd (R4/D1).
+
+    ``links_movable`` is :func:`_links_stay_below_themselves` for the extraction: when
+    it is false, the entry stays in the wrapper and a line says why.
 
     Recovers unar-style single-root reuse (and filter-aware D1 for streaming)
     after an always-wrap extract, without a pre-extract metadata pass. The final
@@ -262,6 +292,18 @@ def maybe_hoist_single_root(
     if len(children) != 1:
         return _HoistResult(wrapper)
     child = children[0]
+    if child.is_symlink():
+        # A link's relative target is read from its own directory, which the move
+        # changes from the wrapper to the working directory: `b -> passwd` would then
+        # name the operator's own `passwd`, and `b -> ../etc/passwd` one outside it.
+        return _HoistResult(wrapper)
+    if not links_movable:
+        print(
+            f"kept in {escape_path(wrapper)}/: a symlink target uses '..' or an "
+            "absolute path, and moving it would change where it points",
+            file=err,
+        )
+        return _HoistResult(wrapper)
     dest = wrapper.parent / child.name
     result = _HoistResult(dest)
     try:
@@ -447,6 +489,14 @@ def _report_extraction(
             elif verbose:
                 print(
                     f"extracted: {escape_member_name(result.member.name)}",
+                    file=err,
+                )
+            if result.kept_mode is not None:
+                # The directory was already there: it kept its own mode, not the
+                # archive's. Reported because the tree differs from the archive.
+                print(
+                    f"kept existing directory's mode {result.kept_mode:04o}: "
+                    f"{escape_member_name(_relative_name(result.path, target) or '.')}",
                     file=err,
                 )
             # A portable rewrite is a different event from a collision rename: the member
@@ -712,7 +762,10 @@ def run_extract(
                 hoist = predict_hoist(target, report, err=err)
             elif may_hoist:
                 hoist = maybe_hoist_single_root(
-                    target, overwrite=overwrite_enum, err=err
+                    target,
+                    overwrite=overwrite_enum,
+                    err=err,
+                    links_movable=_links_stay_below_themselves(report),
                 )
             blocked, failed = _report_extraction(
                 report,

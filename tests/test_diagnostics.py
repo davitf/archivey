@@ -740,10 +740,12 @@ def test_eof_marker_ignore_counts_without_raising() -> None:
 
 
 def test_extraction_report_results_frozen(tmp_path: Path) -> None:
-    (tmp_path / "f.txt").write_bytes(b"x")
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "f.txt").write_bytes(b"x")
     dest = tmp_path / "out"
     dest.mkdir()
-    report = extract(tmp_path, dest)
+    report = extract(src, dest)
     assert isinstance(report.results, tuple)
     with pytest.raises(Exception):
         report.results[0].status = ExtractionStatus.FAILED  # type: ignore[misc]
