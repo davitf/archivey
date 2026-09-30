@@ -8,7 +8,7 @@ archivey.extract("download.zip", "out/")
 
 `extract` opens the archive, writes every member under the destination folder, and closes it
 again. It's safe by default: nothing lands outside `out/`, and an archive that expands far beyond
-its size is stopped. [What is refused](#what-is-refused) has the details.
+its size is stopped. [What each policy does with unusual members](#what-each-policy-does-with-unusual-members) has the details.
 
 On an open archive, `extract_all` does the same, and its `members` argument picks what to
 extract. It takes names, [`ArchiveMember`](api.md#archivey.ArchiveMember) objects from a listing,
@@ -47,7 +47,7 @@ what the archive says about names and permissions gets written as it is:
 
 | `policy` | Names | Permissions |
 |---|---|---|
-| `"strict"` (default) | Rewritten to a portable spelling; names built to look like something else are refused | Files at most `rw-r--r--` and never executable, folders at most `rwxr-xr-x` |
+| `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible | Files at most `rw-r--r--` and never executable, folders at most `rwxr-xr-x` |
 | `"standard"` | As in `"strict"`, but trailing dots and spaces are kept | As stored, without setuid, setgid and sticky bits |
 | `"trusted"` | As stored | As stored, and the owner too when running as root |
 
@@ -55,8 +55,8 @@ what the archive says about names and permissions gets written as it is:
 
 | `overwrite` | Effect |
 |---|---|
-| `"error"` (default) | The member fails |
-| `"skip"` | The existing file stays, and the member is skipped |
+| `"error"` (default) | The member fails, and `on_error` decides whether extraction goes on |
+| `"skip"` | The existing file stays. This isn't a failure, so `on_error` doesn't apply |
 | `"replace"` | The existing file is deleted, and the member is written |
 | `"rename"` | The member is written next to it, as `name (1)` |
 
@@ -67,16 +67,29 @@ what the archive says about names and permissions gets written as it is:
 | `"stop"` (default) | The first failure raises, and extraction stops there |
 | `"continue"` | The failure is recorded in the report, and extraction goes on |
 
-## What is refused
+## What each policy does with unusual members
 
-Under every policy, `extract` refuses any member that would end up outside the destination folder:
-names with `../`, absolute paths, and links that point outside it, even through other links. It
-also refuses device files. By default it refuses names with hidden characters that flip the text
-after them, which can make an `.exe` file look like a `.png`, and only `policy="trusted"` lets them
-through. An archive that writes more than `limits` allows stops the whole extraction.
+Some members are refused under every policy, and others depend on it:
+
+| Member in the archive | `"strict"` | `"standard"` | `"trusted"` |
+|---|---|---|---|
+| `../evil.txt`, `/etc/evil.txt` or `C:/evil.txt` | Refused | Refused | Refused |
+| A link to `../../outside` or `/etc/passwd` | Refused | Refused | Refused |
+| A device file or a FIFO | Refused | Refused | Refused |
+| `CON`, `aux.txt` or `file:ads`, which Windows can't create | Refused | Refused | Written as is |
+| A name with hidden characters that make an `.exe` look like a `.png` | Refused | Refused | Written as is |
+| `notes. `, with a trailing dot and space | Written as `notes` | Written as is | Written as is |
+| `caf\xe9.txt`, a name that isn't valid UTF-8 | Written as `caf%E9.txt` | Written as `caf%E9.txt` | Written as is |
+| `README`, then `readme` | The second one counts as a file already there | Same as `"strict"` | Both written, if the disk tells them apart |
+| A file with mode `rwsr-xr-x` | Written as `rw-r--r--` | Written as `rwxr-xr-x` | Written as is |
+
+`"strict"` and `"standard"` treat `README` and `readme` as the same file on every system, since
+they are the same file on macOS and Windows. An archive that writes more than `limits` allows
+stops the whole extraction, whatever the policy.
 
 A refused member isn't written, and the rest of the archive still extracts. The call returns a
-report with one result for each member, so you can see what was refused:
+report with one result for each member, with the path it was written to in `result.path` and the
+member as the archive stored it in `result.member`. That shows what was refused:
 
 ```python
 report = archivey.extract("download.zip", "out/")
@@ -86,14 +99,3 @@ for result in report:
 ```
 
 If you'd rather stop at the first refused member, `abort_on=["blocked_member"]` raises instead.
-
-## Names can change on disk
-
-Some names can't be written as they are on every system, so by default archivey writes a portable
-spelling instead. Bytes that aren't valid UTF-8 become `%` escapes, and trailing dots and spaces
-are removed, since Windows drops them. Names that differ only in case, like `README` and `readme`,
-count as the same file on every system, because on macOS and Windows they are. The second one is
-handled like a file that's already there (next section).
-
-Each result in the report has the path that was written in `result.path`, next to the member with
-its name as the archive stored it, in `result.member.name`.
