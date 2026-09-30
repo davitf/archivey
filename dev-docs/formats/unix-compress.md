@@ -137,7 +137,7 @@ move to 10-bit codes when the table fills, even when the header says 9, which is
 half of the same ncompress fix. So their refusal is not evidence against a file.
 
 Without block mode (`compress -C`) no installed tool writes files, so the tests carry
-their own encoder. GNU gzip 1.12 reads its output like archivey at 10 to 16 bits. The
+their own encoder, which writes both modes. GNU gzip 1.12 reads its output like archivey at 10 to 16 bits. The
 Apple gzip on macOS returned different bytes for the long zero runs, so the tests use
 only GNU gzip as the reference.
 
@@ -178,7 +178,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `UnsupportedFeatureError` naming reserved flags | **archivey** | A header bit this decoder does not know; no known writer sets it |
 | A backward seek re-decodes from the start | **format** | No CLEAR codes in this file, or a non-seekable source |
 | `member.size` is `None` | **format** | No size field |
-| A `compress -b9` file reads with no error but returns wrong bytes | **library** | An ncompress 5.0 writer bug (§3); fixed upstream, not yet released |
+| A `compress -b9` file reads with no error but returns wrong bytes | **format** | No checksum to show the damage; ncompress 5.0 writes such files (§3) |
 
 ## 6. Decisions
 

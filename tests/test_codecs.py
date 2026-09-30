@@ -943,13 +943,11 @@ def test_unix_compress_non_block_mode_decodes_like_the_reference() -> None:
         assert stream.read() == b"a" * (codes * (codes + 1) // 2)
 
 
-def _lzw_compress_non_block_mode(
-    data: bytes, max_bits: int, *, block_mode: bool = False
-) -> bytes:
-    """An LZW encoder laid out the way ``compress -C`` writes a stream.
+def _lzw_compress(data: bytes, max_bits: int, *, block_mode: bool = False) -> bytes:
+    """An LZW encoder for ``compress`` streams, without block mode by default.
 
-    ncompress 5.0 dropped ``-C``, so no installed tool writes these. Free codes start at
-    256. Before each code, the writer widens once the next free code passes the current
+    Without block mode is the ``compress -C`` layout, which ncompress 5.0 dropped, so no
+    installed tool writes these. Free codes start at 256. Before each code, the writer widens once the next free code passes the current
     width's largest code plus one (ncompress's ``extcode``), padding the current group
     of eight codes first. Nothing pads after the last code.
 
@@ -1040,7 +1038,7 @@ def test_unix_compress_non_block_mode_streams_match_gzip(
     size, and GNU gzip agrees where it is installed. The random payload fills the table
     at 10 and 12 bits. 9 bits has its own test, since gzip refuses 9-bit streams."""
     data = _NON_BLOCK_PAYLOADS[payload]
-    compressed = _lzw_compress_non_block_mode(data, max_bits)
+    compressed = _lzw_compress(data, max_bits)
     reference = _gnu_gzip_decompress(compressed)
     if reference is not None:
         assert reference == data
@@ -1057,7 +1055,7 @@ def test_unix_compress_nine_bit_streams_decode_exactly(
     reference here: it moves to 10-bit codes when the table fills even at 9 bits, and
     refuses these streams. See ``dev-docs/formats/unix-compress.md`` §3."""
     data = _NON_BLOCK_PAYLOADS[payload]
-    compressed = _lzw_compress_non_block_mode(data, 9, block_mode=block_mode)
+    compressed = _lzw_compress(data, 9, block_mode=block_mode)
     for chunk in (1 << 20, 4097, 7):
         assert _lzw_decode_in_chunks(compressed, chunk) == data
 
@@ -1066,7 +1064,7 @@ def test_unix_compress_non_block_mode_may_end_at_a_widening() -> None:
     """A stream whose last code is the one that fills 9-bit codes has no padding after
     it: the writer pads only before a next code. That end is not a cut."""
     data = bytes(range(256)) + b"\x00"  # 257 codes, the last widening the table
-    compressed = _lzw_compress_non_block_mode(data, 16)
+    compressed = _lzw_compress(data, 16)
     state = LzwState()
     out, _ = state.feed(compressed)
     tail, _ = state.flush()
@@ -1081,7 +1079,7 @@ def test_unix_compress_non_block_mode_cut_inside_widening_padding_is_truncated(
     """The writer puts a widening's padding down whole, so a source carrying only part
     of it was cut. The first 16-bit era is 257 9-bit codes (290 bytes), padded by 7."""
     data = bytes(range(256)) + b"\x00" * 2000
-    compressed = _lzw_compress_non_block_mode(data, 16)
+    compressed = _lzw_compress(data, 16)
     cut = 3 + 290 + padding_present
     for chunks in ([compressed[:cut]], [compressed[:293], compressed[293:cut]]):
         state = LzwState()
