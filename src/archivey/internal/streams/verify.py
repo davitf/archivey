@@ -476,6 +476,12 @@ class MemberVerifier:
         if self._expected_size is not None:
             remaining = self._expected_size - self._pos
             if remaining <= 0:
+                if self._pos == self._furthest_read_pos:
+                    # Declared size 0, read from the start: this read reaches the
+                    # declared size, so it is the verifying event — over-run probe
+                    # and digests, as a sequential reaching read runs them.
+                    self._finish(inner)
+                    return b""
                 # Logical position already at/past the declared size — only a seek
                 # gets here (a sequential read reaching the size verifies inline).
                 # Verify completeness (reading any seek-skipped gap) instead of

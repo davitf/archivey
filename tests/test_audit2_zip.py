@@ -352,11 +352,6 @@ def test_bzip2_member_with_a_second_stream_after_its_end_reads() -> None:
 # ---------------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Z9: a zero-size member's CRC is never checked by a bounded read(n); "
-    "VerifyingStream treats position 0 >= size 0 as a seek past the end",
-)
 def test_zero_size_member_with_wrong_crc_raises_on_chunked_read() -> None:
     blob = _build_zip([_Entry(b"a", b"", crc=0x12345678)])
     with archivey.open_archive(io.BytesIO(blob)) as ar:
@@ -369,22 +364,12 @@ def test_zero_size_member_with_wrong_crc_raises_on_chunked_read() -> None:
                 stream.read(8192)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Z9: extract() reports EXTRACTED for a zero-size member whose CRC does "
-    "not match, where read() raises CorruptionError",
-)
 def test_zero_size_member_with_wrong_crc_does_not_extract_clean(tmp_path: Path) -> None:
     blob = _build_zip([_Entry(b"a", b"", crc=0x12345678)])
     with pytest.raises(CorruptionError):
         archivey.extract(io.BytesIO(blob), tmp_path / "out")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Z9: a member declaring size 0 but holding data returns b'' and then the "
-    "data on the next read(n), with no over-run check",
-)
 @pytest.mark.parametrize("method", [0, 8])
 def test_zero_declared_size_with_data_raises_rather_than_serving_it(
     method: int,
@@ -401,11 +386,6 @@ def test_zero_declared_size_with_data_raises_rather_than_serving_it(
                 stream.read(8192)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Z9: extract() writes an empty file and reports EXTRACTED for a member "
-    "declaring size 0 whose data decodes to more",
-)
 def test_zero_declared_size_with_data_does_not_extract_clean(tmp_path: Path) -> None:
     blob = _build_zip(
         [_Entry(b"a", _raw_deflate(b"hello"), method=8, plain=b"", usize=0)]
