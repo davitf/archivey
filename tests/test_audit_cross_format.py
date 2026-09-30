@@ -52,17 +52,6 @@ def _vint(buf: bytes | bytearray, pos: int) -> tuple[int, int]:
             return value, pos
 
 
-def _encode_vint(value: int, width: int) -> bytes:
-    """Encode ``value`` as a RAR5 vint of exactly ``width`` bytes (padded)."""
-    out = bytearray()
-    for i in range(width):
-        byte = value & 0x7F
-        value >>= 7
-        out.append(byte | (0x80 if i < width - 1 else 0))
-    assert value == 0
-    return bytes(out)
-
-
 def _rar5_first_file_header(buf: bytearray) -> tuple[int, int, int, int]:
     """``(block_pos, fields_pos, header_end, extra_size)`` of the first FILE header."""
     pos = 8  # RAR5 signature
@@ -368,48 +357,3 @@ def test_stream_members_refused_while_a_member_stream_is_live(
                 for _member, stream in reader.stream_members():
                     if stream is not None:
                         stream.read(1)
-
-
-# ---------------------------------------------------------------------------
-# DecoderLimits.max_decoder_memory — RAR dictionary size is never checked
-# ---------------------------------------------------------------------------
-
-
-@requires_binary("rar", "unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: the RAR5 dictionary size the header declares (up to 4 GiB) is never "
-        "checked against DecoderLimits.max_decoder_memory before unrar decodes"
-    ),
-)
-def test_rar_declared_dictionary_is_checked_against_decoder_memory(
-    tmp_path: Path,
-) -> None:
-    src = tmp_path / "f.txt"
-    src.write_bytes(os.urandom(64 * 1024).hex().encode())
-    archive = tmp_path / "d.rar"
-    subprocess.run(
-        ["rar", "a", "-idq", "-m5", "-ep", str(archive), str(src)], check=True
-    )
-    data = bytearray(archive.read_bytes())
-    block_pos, p, header_end, _extra = _rar5_first_file_header(data)
-    file_flags, p = _vint(data, p)
-    _unpacked, p = _vint(data, p)
-    _attrs, p = _vint(data, p)
-    if file_flags & 0x02:
-        p += 4
-    if file_flags & 0x04:
-        p += 4
-    ci_pos = p
-    comp_info, p = _vint(data, p)
-    assert (comp_info >> 7) & 7, "member must be compressed to reach unrar"
-    # Dictionary exponent 15: 128 KiB << 15 = 4 GiB, over the 2 GiB default.
-    comp_info = (comp_info & ~(0x1F << 10) & ~(0x1F << 15)) | (15 << 10)
-    data[ci_pos:p] = _encode_vint(comp_info, p - ci_pos)
-    _rar5_fix_crc(data, block_pos, header_end)
-    archive.write_bytes(bytes(data))
-
-    with open_archive(archive) as reader:
-        with pytest.raises(ResourceLimitError):
-            reader.read("f.txt")

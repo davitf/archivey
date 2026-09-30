@@ -11,6 +11,9 @@ from the native parse before any process starts:
   unpacked bytes in archive order. That differs from ``unrar p``: every file-version
   history row is included (``unrar`` needs ``-ver``), a RAR3/4 symlink emits its stored
   target, and a directory or a RAR5 redirect emits nothing.
+- **Dictionary cost.** What ``unar`` allocates for a member's dictionary, checked
+  against ``DecoderLimits.max_decoder_memory`` before it runs
+  (:func:`unar_dictionary_costs`).
 - **Refusals.** The reads ``unar`` 1.10 is known to get wrong. Each is refused with
   ``UnsupportedFeatureError`` before ``unar`` runs, because ``unar`` reports several of
   them with exit 0. RAR5 encryption is read, with the password on ``unar``'s command
@@ -104,6 +107,36 @@ def unar_pipe_offsets(archive: RarArchive) -> dict[int, int]:
         offsets[id(info)] = position
         position += unar_emitted_size(info)
     return offsets
+
+
+def unar_dictionary_costs(archive: RarArchive) -> list[int]:
+    """The dictionary bytes ``unar`` allocates to decode each member, in archive order.
+
+    Measured with ``unar`` 1.10.1: it maps the declared dictionary when it starts a
+    stream and writes to every page of it, whatever the member's size. A 64 KiB
+    member declaring 1 GiB peaks at about 1 GiB resident, and a solid pair of 64 KiB
+    members declaring 4 GiB at about 4 GiB. The count is the declared size. It is not
+    capped at the data, which is where the ``unrar`` rule differs.
+
+    In a solid archive ``unar`` keeps one dictionary for a solid stream, which starts
+    at a compressed member without the solid flag. The count for a member is the
+    largest dictionary declared in its stream up to and including it. Measured, only
+    the first member's declaration is allocated, so the largest is an upper bound. A
+    member that starts a new stream does not pay for the one before it: reading it
+    alone stayed near 20 MiB after a 1 GiB stream ahead of it. A stored member and a
+    directory use no dictionary, so they count 0 and neither start nor end a stream.
+    """
+    costs: list[int] = []
+    stream = 0
+    for info in archive.members:
+        if info.is_directory or info.compress_type == _METHOD_STORED:
+            costs.append(0)
+            continue
+        if not info.file_solid:
+            stream = 0
+        stream = max(stream, info.dictionary_size)
+        costs.append(stream)
+    return costs
 
 
 def _rar5_solid_after_empty(archive: RarArchive) -> set[int]:
