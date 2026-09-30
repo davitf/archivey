@@ -25,6 +25,11 @@ from pathlib import Path
 
 # Password for the generated WinZip AES fixture (must match harness open).
 ZIP_AES_PASSWORD = b"bench-secret"
+# Password for the generated ZipCrypto fixture (must match harness open).
+ZIPCRYPTO_PASSWORD = b"bench-secret"
+# Cap on the ZipCrypto member: the pure-Python cipher runs at a few MiB/s, so a
+# ``realistic``-sized member would dominate the run (and the fixture's own build).
+ZIPCRYPTO_MAX_SIZE = 1024 * 1024
 
 # ---------------------------------------------------------------------------
 # Scale profiles
@@ -88,6 +93,7 @@ class FixtureSet:
     zip_path: Path
     zip_lzma_path: Path
     zip_aes_path: Path | None
+    zipcrypto_path: Path
     tar_path: Path
     targz_path: Path
     tarbz2_path: Path
@@ -105,6 +111,7 @@ class FixtureSet:
     unpacked_bcj_7z: int
     unpacked_solid_rar: int
     unpacked_zip_aes: int
+    unpacked_zipcrypto: int
 
 
 def _payload(i: int, size: int) -> bytes:
@@ -166,6 +173,32 @@ def build_zip_aes(
         )
     )
     return sum(len(payload) for _name, payload in members)
+
+
+def _zipcrypto_payload(scale: Scale) -> bytes:
+    size = min(scale.common_members * scale.common_member_size, ZIPCRYPTO_MAX_SIZE)
+    return _payload(0, size)
+
+
+def build_zipcrypto(path: Path, scale: Scale) -> int:
+    """Build a one-member ZipCrypto ZIP; return unpacked bytes.
+
+    The member is STORED so the ciphertext is as long as the payload: with deflate the
+    patterned payload compresses to almost nothing and the case would time the codec,
+    not the decrypt loop it exists to guard.
+    """
+    from tests.zipcrypto import build_zipcrypto_zip
+
+    payload = _zipcrypto_payload(scale)
+    path.write_bytes(
+        build_zipcrypto_zip(
+            ZIPCRYPTO_PASSWORD,
+            b"zipcrypto.bin",
+            payload,
+            compression=zipfile.ZIP_STORED,
+        )
+    )
+    return len(payload)
 
 
 def build_tar(path: Path, scale: Scale, *, mode: str = "w") -> None:
@@ -441,6 +474,7 @@ def materialize_fixtures(
     zip_path = root / "common.zip"
     zip_lzma_path = root / "common-lzma.zip"
     zip_aes_path_candidate = root / "common-aes.zip"
+    zipcrypto_path = root / "common-zipcrypto.zip"
     tar_path = root / "common.tar"
     targz_path = root / "common.tar.gz"
     tarbz2_path = root / "common.tar.bz2"
@@ -451,6 +485,8 @@ def materialize_fixtures(
         build_zip(zip_path, scale_obj)
     if not zip_lzma_path.exists():
         build_zip_lzma(zip_lzma_path, scale_obj)
+    if not zipcrypto_path.exists():
+        build_zipcrypto(zipcrypto_path, scale_obj)
     if not tar_path.exists():
         build_tar(tar_path, scale_obj)
     if not targz_path.exists():
@@ -550,6 +586,7 @@ def materialize_fixtures(
         zip_path=zip_path,
         zip_lzma_path=zip_lzma_path,
         zip_aes_path=zip_aes_path,
+        zipcrypto_path=zipcrypto_path,
         tar_path=tar_path,
         targz_path=targz_path,
         tarbz2_path=tarbz2_path,
@@ -567,4 +604,5 @@ def materialize_fixtures(
         unpacked_bcj_7z=unpacked_bcj_bytes,
         unpacked_solid_rar=unpacked_rar,
         unpacked_zip_aes=unpacked_zip_aes,
+        unpacked_zipcrypto=len(_zipcrypto_payload(scale_obj)),
     )

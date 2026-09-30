@@ -92,6 +92,7 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
     if _crypto_available() and fixtures.zip_aes_path is not None:
         assert "zip_aes_read_all" in by_case
     assert "zip_lzma_read_all" in by_case
+    assert "zipcrypto_read_all" in by_case
     assert "zip_read_all_accel_off" in by_case
 
     # Accelerator ON cases: soft locally without rapidgzip, fail-closed in CI (and
@@ -232,6 +233,7 @@ def test_structural_baseline_committed() -> None:
         "rar_nonsolid_open_list",
         "zip_aes_read_all",
         "zip_lzma_read_all",
+        "zipcrypto_read_all",
         "zip_read_all_accel_off",
         # All three accel-ON cases, matching the fail-closed guard's set: a
         # no-rapidgzip regeneration drops them together, so pinning only ZIP left the
