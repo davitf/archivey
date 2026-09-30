@@ -208,11 +208,6 @@ def test_bz2_fixtures_are_refused_by_the_standard_library() -> None:
 
 
 @requires("rapidgzip")
-@pytest.mark.xfail(
-    strict=True,
-    reason="T15: the bzip2 accelerator skips the combined stream CRC, so a .bz2 "
-    "missing a whole block reads short with no error",
-)
 def test_bz2_accelerator_refuses_a_stream_with_a_block_removed() -> None:
     """compressed-streams: 'An accelerator preserves the error contract of the path
     it replaces'; bzip2.md says every block's CRC and the combined CRC are checked on
@@ -232,16 +227,36 @@ def test_bz2_accelerator_refuses_a_stream_with_a_block_removed() -> None:
 
 
 @requires("rapidgzip")
-@pytest.mark.xfail(
-    strict=True,
-    reason="T15: the bzip2 accelerator accepts a wrong combined stream CRC",
-)
 def test_bz2_accelerator_checks_the_combined_crc() -> None:
     """The narrow form: one bit flipped in the end-of-stream CRC."""
     _payload, damaged = _bz2_with_bad_combined_crc()
     with pytest.raises(CorruptionError):
         _read_single(
             damaged, ArchiveFormat.BZ2, config=_ACCEL_ON, seekable_members=True
+        )
+
+
+@requires("rapidgzip")
+def test_bz2_accelerator_combined_crc_check_per_stream() -> None:
+    """The check runs per stream: concatenated streams (with an empty one between)
+    followed by zero padding read clean, and a stream with a block removed is refused
+    when it is not the first."""
+    payload, damaged = _bz2_without_a_block()
+    head = b"head" * 1000
+    good = (
+        bz2.compress(head) + bz2.compress(b"") + bz2.compress(payload, 1) + b"\0" * 64
+    )
+    out, _diagnostics = _read_single(
+        good, ArchiveFormat.BZ2, config=_ACCEL_ON, seekable_members=True
+    )
+    if out != head + payload:
+        pytest.fail(f"read {len(out)} of {len(head + payload)} bytes")
+    with pytest.raises(CorruptionError):
+        _read_single(
+            bz2.compress(head) + damaged,
+            ArchiveFormat.BZ2,
+            config=_ACCEL_ON,
+            seekable_members=True,
         )
 
 
@@ -265,23 +280,51 @@ def _gzip_cases() -> dict[str, bytes]:
 
 
 @requires("rapidgzip")
-@pytest.mark.xfail(
-    strict=True,
-    reason="T16: rapidgzip accepts a gzip header CRC mismatch, reserved FLG bits "
-    "and a wrong ISIZE on a non-final member",
+@pytest.mark.parametrize(
+    "case",
+    [
+        "header-crc-mismatch",
+        "reserved-flag-bit",
+        pytest.param(
+            "first-member-isize",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="T16: rapidgzip accepts a wrong ISIZE on a non-final member, "
+                "and does not say where members end",
+            ),
+        ),
+    ],
 )
-@pytest.mark.parametrize("case", sorted(_gzip_cases()))
 def test_gzip_accelerator_refuses_what_the_stdlib_refuses(case: str) -> None:
     """compressed-streams: 'An accelerator preserves the error contract of the path
     it replaces'. The standard-library path raises CorruptionError on each (zlib:
     "header crc mismatch", "unknown header flags set", "incorrect length check");
-    under ``use_rapidgzip=ON`` each reads as good data. RFC 1952 §2.3.1.2 requires
-    an error for reserved flag bits."""
+    under ``use_rapidgzip=ON`` each read as good data. The first member's header is
+    now checked with zlib before rapidgzip is started. RFC 1952 §2.3.1.2 requires an
+    error for reserved flag bits."""
     data = _gzip_cases()[case]
     with pytest.raises(CorruptionError):
         _read_single(data, ArchiveFormat.GZ)
     with pytest.raises(CorruptionError):
         _read_single(data, ArchiveFormat.GZ, config=_ACCEL_ON, seekable_members=True)
+
+
+@requires("rapidgzip")
+def test_gzip_accelerator_reads_a_header_with_a_good_crc() -> None:
+    """The header check refuses only what zlib refuses: FNAME plus a matching FHCRC
+    reads back whole under the accelerator."""
+    payload = random.Random(5).randbytes(200_000)
+    member = gzip.compress(payload, mtime=0)
+    header = bytearray(member[:10])
+    header[3] |= 0x02 | 0x08  # FHCRC, FNAME
+    header += b"name.bin\0"
+    crc16 = zlib.crc32(bytes(header)) & 0xFFFF
+    data = bytes(header) + struct.pack("<H", crc16) + member[10:]
+    out, _diagnostics = _read_single(
+        data, ArchiveFormat.GZ, config=_ACCEL_ON, seekable_members=True
+    )
+    if out != payload:
+        pytest.fail(f"read {len(out)} of {len(payload)} bytes")
 
 
 # ---------------------------------------------------------------------------
@@ -306,11 +349,6 @@ def _single_member_stream_positions(
 
 
 @requires("rapidgzip")
-@pytest.mark.xfail(
-    strict=True,
-    reason="T17: under rapidgzip, seek past the end returns the size, and a gzip "
-    "SEEK_CUR underflow raises a raw ValueError; the stdlib path does neither",
-)
 @pytest.mark.parametrize("codec", ["gz", "bz2"])
 def test_accelerated_member_stream_seeks_like_the_stdlib_one(codec: str) -> None:
     """An accelerator changes speed, not behaviour. On a 1000-byte member the
@@ -335,11 +373,6 @@ def test_accelerated_member_stream_seeks_like_the_stdlib_one(codec: str) -> None
 
 
 @pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
-@pytest.mark.xfail(
-    strict=True,
-    reason="T18: a TAR uid/gid outside uid_t aborts extract_all(TRUSTED) as root "
-    "with a raw OverflowError",
-)
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("uid", [2**40, -2], ids=["2**40", "-2"])
 def test_tar_out_of_range_uid_does_not_abort_trusted_extraction(
@@ -382,21 +415,19 @@ def _sparse_huge(kind: str, realsize: int) -> bytes:
     return _member("GNUSparseFile.0/sp", body, pax_headers=pax) + _TRAILER
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="T19: a sparse real size of 2**70 lists, then read() raises a raw "
-    "OverflowError from tarfile's hole fill",
-)
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("kind", ["old-gnu", "pax-1.0"])
-def test_tar_sparse_realsize_past_any_file_is_typed(kind: str, streaming: bool) -> None:
+@pytest.mark.parametrize("realsize", [2**63, 2**70], ids=["2**63", "2**70"])
+def test_tar_sparse_realsize_past_any_file_is_typed(
+    realsize: int, kind: str, streaming: bool
+) -> None:
     """error-handling: archive content never surfaces as a builtin exception. T3
     refused a plain size of 2**63 or more; a sparse member's logical size comes from
-    the GNU ``realsize`` field or ``GNU.sparse.realsize`` instead, and nothing bounds
+    the GNU ``realsize`` field or ``GNU.sparse.realsize`` instead, and nothing bounded
     it. tarfile fills the trailing hole with ``NUL * length``, which raises
     ``OverflowError: cannot fit 'int' into an index-sized integer`` (and at 2**63
     exactly, ``MemoryError``). A 2 KiB archive; a chunked read(65536) works."""
-    data = _sparse_huge(kind, 2**70)
+    data = _sparse_huge(kind, realsize)
     try:
         with open_archive(io.BytesIO(data), streaming=streaming) as ar:
             for member, stream in ar.stream_members():

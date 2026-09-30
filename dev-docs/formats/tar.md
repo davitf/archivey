@@ -236,7 +236,8 @@ map's chunks one after another from the start of the data area and does not know
 much the member stores, so a map claiming more reads the next header and member as this
 member's content. The reader records where each member's data area ends as tarfile
 parses the header, and refuses a map whose chunks add up to more, or that has a negative
-entry, with `CorruptionError` when the member is opened (streaming: on its first read,
+entry, or a logical size past 2**63 - 1 (no file's size), with `CorruptionError` when
+the member is opened (streaming: on its first read,
 so a consumer that skips it is unaffected). The end is known only in whole blocks, so up
 to 511 bytes of the member's own padding can still read as data.
 

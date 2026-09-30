@@ -213,9 +213,20 @@ parallel, so it can reach the cut and abort while the parent is still waiting fo
 bytes: measured under `ON`, a cut 2 or 8 MB gzip gave no data before the error, and a cut
 32 MB one gave 22 to 31 MB. What it does deliver is correct.
 
+**The first member's header is checked before `rapidgzip`.** `rapidgzip` accepts a header
+CRC (`FHCRC`) that does not match and reserved `FLG` bits, which RFC 1952 §2.3.1.2 says a
+decoder must refuse. Before starting it, `_gzip_header_refused` feeds the source to a zlib
+gzip window until the first byte of output; if zlib refuses, the stream opens on the
+standard library engine instead, which raises the same error on the first read as with the
+accelerator off. Later members are not checked, because `rapidgzip` does not say where
+they start (§5, §7).
+
 **Other `rapidgzip` workarounds.** Its input is clipped to the known compressed length
 (`_bound_rapidgzip_source`), because it reads past the end of a raw DEFLATE stream looking
-for another member, and a 7z AES stage's padding would look like one. Its error messages
+for another member, and a 7z AES stage's padding would look like one. Inside that bound it
+still reads on past the stream's final block, where zlib stops, so a raw DEFLATE stream
+finishes on the standard library engine (`_StdlibOnAcceleratorError`) when `rapidgzip`
+fails on data or its output passes the size the container declared. Its error messages
 differ by platform (ISA-L on Linux, a different decoder on macOS, a bare
 `RuntimeError("Unknown exception")` for a near-end truncation on Windows), and
 `_translate_rapidgzip` maps each; the Windows one becomes `CorruptionError`, not
@@ -301,6 +312,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A backward seek on a `.gz` re-decodes from the start | **format** | No restart points (§1). Install `[seekable]` and pass `seekable_members=True`; under `AUTO`, only from 16 MiB |
 | The same truncated `.gz` raises `TruncatedError` on Linux and `CorruptionError` on Windows under `rapidgzip` | **library** | Windows loses the message detail (§2.3). Catch `ReadError` for both |
 | A truncated multi-member `.gz` read through `rapidgzip` can end short with no error | **library** / **archivey** | `rapidgzip` ends softly; the backstop stands down when a second member may exist. Summing each member's ISIZE is deferred (§7) |
+| A member after the first with a wrong ISIZE, a header CRC that does not match or reserved `FLG` bits reads clean under `rapidgzip`; the standard library raises | **library** / **archivey** | `rapidgzip` checks each member's CRC-32 but not these, and hides member boundaries. The first member's header is checked (§2.3); the rest is the per-member question in §7 |
 | A truncated bare raw DEFLATE stream under `use_rapidgzip=ON` can end short with no error | **library** | No size or checksum to check it against (§2.3). `AUTO` never does this |
 | `rapidgzip` does not check a zlib stream's Adler-32 | **library** | archivey checks it after `rapidgzip`, once the stream is read to its end (§2.3). Found by `tests/test_nested_archives.py` |
 | Several zlib streams one after another read as one under `use_rapidgzip=ON`, and as the first alone on the standard library, which reports the rest as bytes after the stream | **library** | RFC 1950 defines one stream per file. The Adler-32 check accepts the `rapidgzip` reading when the standard library reproduces it stream by stream |
