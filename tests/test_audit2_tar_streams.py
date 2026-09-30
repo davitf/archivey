@@ -280,23 +280,51 @@ def _gzip_cases() -> dict[str, bytes]:
 
 
 @requires("rapidgzip")
-@pytest.mark.xfail(
-    strict=True,
-    reason="T16: rapidgzip accepts a gzip header CRC mismatch, reserved FLG bits "
-    "and a wrong ISIZE on a non-final member",
+@pytest.mark.parametrize(
+    "case",
+    [
+        "header-crc-mismatch",
+        "reserved-flag-bit",
+        pytest.param(
+            "first-member-isize",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="T16: rapidgzip accepts a wrong ISIZE on a non-final member, "
+                "and does not say where members end",
+            ),
+        ),
+    ],
 )
-@pytest.mark.parametrize("case", sorted(_gzip_cases()))
 def test_gzip_accelerator_refuses_what_the_stdlib_refuses(case: str) -> None:
     """compressed-streams: 'An accelerator preserves the error contract of the path
     it replaces'. The standard-library path raises CorruptionError on each (zlib:
     "header crc mismatch", "unknown header flags set", "incorrect length check");
-    under ``use_rapidgzip=ON`` each reads as good data. RFC 1952 §2.3.1.2 requires
-    an error for reserved flag bits."""
+    under ``use_rapidgzip=ON`` each read as good data. The first member's header is
+    now checked with zlib before rapidgzip is started. RFC 1952 §2.3.1.2 requires an
+    error for reserved flag bits."""
     data = _gzip_cases()[case]
     with pytest.raises(CorruptionError):
         _read_single(data, ArchiveFormat.GZ)
     with pytest.raises(CorruptionError):
         _read_single(data, ArchiveFormat.GZ, config=_ACCEL_ON, seekable_members=True)
+
+
+@requires("rapidgzip")
+def test_gzip_accelerator_reads_a_header_with_a_good_crc() -> None:
+    """The header check refuses only what zlib refuses: FNAME plus a matching FHCRC
+    reads back whole under the accelerator."""
+    payload = random.Random(5).randbytes(200_000)
+    member = gzip.compress(payload, mtime=0)
+    header = bytearray(member[:10])
+    header[3] |= 0x02 | 0x08  # FHCRC, FNAME
+    header += b"name.bin\0"
+    crc16 = zlib.crc32(bytes(header)) & 0xFFFF
+    data = bytes(header) + struct.pack("<H", crc16) + member[10:]
+    out, _diagnostics = _read_single(
+        data, ArchiveFormat.GZ, config=_ACCEL_ON, seekable_members=True
+    )
+    if out != payload:
+        pytest.fail(f"read {len(out)} of {len(payload)} bytes")
 
 
 # ---------------------------------------------------------------------------

@@ -700,6 +700,40 @@ def _gzip_isize_and_length(source: CodecSource) -> tuple[int | None, int | None]
         return None, None
 
 
+def _gzip_header_refused(source: CodecSource) -> bool:
+    """Whether zlib refuses the first gzip member's header, which rapidgzip accepts.
+
+    rapidgzip 0.16 ignores a header CRC (FHCRC) that does not match and the reserved
+    FLG bits that RFC 1952 says must make a decoder fail; zlib's gzip window, which
+    the standard-library path uses, raises "header crc mismatch" and "unknown header
+    flags set". The header is fed to zlib until the first byte of output, the end of
+    the member, or an error. Any error counts, so a first member that zlib cannot
+    start is left to the engine whose verdict the accelerator must keep. Restores the
+    source position for a caller-owned stream. Only the first member's header is
+    checked: the accelerator does not say where later members start.
+    """
+
+    def refused(view: BinaryIO) -> bool:
+        decoder = zlib.decompressobj(31)
+        while chunk := view.read(1 << 16):
+            try:
+                if decoder.decompress(chunk, 1) or decoder.eof:
+                    return False
+            except zlib.error:
+                return True
+        return False
+
+    if isinstance(source, (str, os.PathLike)):
+        with open(os.fspath(source), "rb") as f:
+            return refused(f)
+    start = source.tell()
+    try:
+        source.seek(0)
+        return refused(source)
+    finally:
+        source.seek(start)
+
+
 def _gzip_isize_from_source(source: CodecSource) -> int | None:
     """The gzip ISIZE trailer when cheaply readable, else ``None`` (see the tri-state helper)."""
     return _gzip_isize_and_length(source)[1]
@@ -2065,6 +2099,10 @@ class GzipCodec(StreamCodec):
                     _RAPIDGZIP_REQUIREMENT.message("gzip random access")
                 )
             _refuse_forward_only_accelerator(source, "use_rapidgzip", "gzip")
+            if _gzip_header_refused(source):
+                # The standard-library engine raises zlib's own error on the first
+                # read, as it does with the accelerator off.
+                return _stdlib_gzip(source, config)
             if config.expected_decompressed_size is not None:
                 # Container-declared size: VerifyingStream owns truncation; no ISIZE backstop.
                 stream = _open_rapidgzip(source, "gzip", config)
