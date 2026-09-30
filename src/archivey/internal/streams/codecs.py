@@ -44,6 +44,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
+    ReadError,
     ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
@@ -210,6 +211,9 @@ class _AcceleratorStream(DelegatingStream):
         # crosses into rapidgzip's C++ and aborts the process) and re-raised here after each
         # accelerator call, as a normal Python exception.
         self._trap = trap
+        # Set when a failed read left the decoder at a position that matches no byte the
+        # caller received; see _after_failed_read.
+        self._lost = False
 
     @staticmethod
     def _close_inner(inner: BinaryIO) -> None:
@@ -281,26 +285,32 @@ class _AcceleratorStream(DelegatingStream):
         return -(-bits // 8)
 
     def read(self, n: int = -1, /) -> bytes:
+        self._raise_if_lost()
         start = self._position()
         try:
             data = super().read(n)
         except Exception:
-            self._rewind(start)
-            self._reraise_trapped()
+            self._after_failed_read(start)
             raise
-        self._reraise_trapped()
+        self._after_parked_fault()
         return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
+        # Symmetry for a direct user of this class: behind _Bzip2EmptyStreamCheck, which
+        # turns off readinto passthrough, every readinto from above arrives at read().
+        self._raise_if_lost()
         start = self._position()
         try:
             n = super().readinto(b)
         except Exception:
-            self._rewind(start)
-            self._reraise_trapped()
+            self._after_failed_read(start)
             raise
-        self._reraise_trapped()
+        self._after_parked_fault()
         return n
+
+    def tell(self, /) -> int:
+        self._raise_if_lost()
+        return super().tell()
 
     def _position(self) -> int | None:
         try:
@@ -308,25 +318,63 @@ class _AcceleratorStream(DelegatingStream):
         except Exception:  # noqa: BLE001 - only a rewind target; the read decides
             return None
 
-    def _rewind(self, start: int | None) -> None:
-        """Move the decoder back to where a read that raised started.
+    def _after_failed_read(self, start: int | None) -> None:
+        """Move the decoder back to where a read that raised started, or give the stream up.
 
         The read returns nothing, but the decoder has moved past the chunks it decoded
         before the failure: measured on rapidgzip 0.16's bzip2 decoder, ``tell()`` read
         1 799 957 after a failed read that had delivered 1 048 576 bytes. Moving it back
         keeps ``tell()`` at the bytes the caller received, and a later read starts there
-        rather than past bytes nobody returned. A fault parked from the caller's source
-        is left alone: the stream cannot read that source, so it is not asked to. A
-        failed rewind leaves the decoder where it is; the read's own error is raised.
+        rather than past bytes nobody returned.
+
+        When the decoder cannot be moved back, its position matches nothing the caller
+        received, and a later read would hand out bytes from past a gap with no error.
+        So the stream is given up, as the rapidgzip child gives up in the same case:
+        every later read, seek or ``tell()`` raises :class:`ReadError`. That happens when:
+
+        - the read's own start was unknown;
+        - the caller's source faulted during the read. A rewind would drive the decoder
+          through that source again, and a fault the rewind parked would replace the one
+          the read hit. This holds for every fault, not only the first: after one, the
+          stream is given up, so no later read reaches the source;
+        - the seek back raised, or parked a fault from the source. A parked ``Exception``
+          is dropped so that the read's error is the one raised; an interrupt stays
+          parked and is raised as itself.
+
+        Then the error is raised: the parked source fault if there is one, else the
+        read's own.
         """
-        if start is None or (self._trap is not None and self._trap.trapped is not None):
-            return
-        try:
-            self._inner.seek(start)
-        except Exception:  # noqa: BLE001 - the read's own error is the one raised
-            pass
+        trap = self._trap
+        if start is not None and (trap is None or trap.trapped is None):
+            try:
+                self._inner.seek(start)
+            except Exception:  # noqa: BLE001 - the read's own error is the one raised
+                self._lost = True
+            if trap is not None and isinstance(trap.trapped, Exception):
+                trap.trapped = None
+                self._lost = True
+            if trap is None or trap.trapped is None:
+                return
+        self._lost = True
+        self._reraise_trapped()
+
+    def _after_parked_fault(self) -> None:
+        # A read that returned data but parked a source fault raises that fault, so the
+        # data is never delivered while the decoder has moved past it: the same gap as a
+        # read that raised, and the rewind is refused for the same reason.
+        if self._trap is not None and self._trap.trapped is not None:
+            self._lost = True
+        self._reraise_trapped()
+
+    def _raise_if_lost(self) -> None:
+        if self._lost:
+            raise ReadError(
+                "a read failed, and the decoder could not be moved back to where that read "
+                "started, so this stream cannot be read further"
+            )
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        self._raise_if_lost()
         try:
             result = super().seek(offset, whence)
         except Exception:
