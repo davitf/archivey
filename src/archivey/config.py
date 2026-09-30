@@ -340,13 +340,14 @@ class DecoderLimits:
     writes to the whole declared dictionary, so the declared size counts. ``unrar``
     writes to it only as output is produced, so the declared size counts only up
     to the unpacked bytes the read decodes: the member's own size, or in a solid
-    archive the members up to and including it. The two hazards differ. A refused
-    allocation inside pyppmd takes the process down. liblzma does raise
-    ``MemoryError`` when it cannot reserve the dictionary, but a reservation
-    that succeeds is its real cost: the dictionary fills as output is written,
-    so a 151 KB stream declaring 4 GiB held 1.1 GiB resident after producing
-    1 GiB, where the same stream declaring 1 MiB held 59 MB. The dictionary
-    bounds how much of the output the decoder keeps, and the archive picks it.
+    archive the members up to and including it. The two in-process hazards, pyppmd
+    and liblzma, differ. A refused allocation inside pyppmd takes the process down.
+    liblzma does raise ``MemoryError`` when it cannot reserve the dictionary, but a
+    reservation that succeeds is its real cost: the dictionary fills as output is
+    written, so a 151 KB stream declaring 4 GiB held 1.1 GiB resident after
+    producing 1 GiB, where the same stream declaring 1 MiB held 59 MB. The
+    dictionary bounds how much of the output the decoder keeps, and the archive
+    picks it.
 
     The same shape holds for key derivation, which costs time rather than memory:
     RAR5 and 7z headers say how many hashing rounds turn a password into a key,

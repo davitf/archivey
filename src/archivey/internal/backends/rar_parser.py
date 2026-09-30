@@ -180,6 +180,8 @@ _RAR5_COMPR_SOLID = 0x40
 # (RAR 7.0) reads all 5 bits and adds bits 15-19 in 1/32 steps of the power of two.
 # The masks follow RARLAB unrar 7.00, the program whose allocation this sizes.
 _RAR3_DICT_BASE = 0x10000
+# The same three bits as ``_RAR3_FILE_DIRECTORY``: all ones is the directory marker.
+_RAR3_DICT_MASK = 0x00E0
 _RAR3_DICT_SHIFT = 5
 _RAR5_DICT_BASE = 0x20000
 _RAR5_DICT_SHIFT = 10
@@ -325,10 +327,11 @@ class RarMemberInfo:
     comment: str | _Rar3Comment | None = None
     spanned_volumes: bool = False
     # The dictionary (sliding window) size the header declares, in bytes; 0 for a
-    # directory. A stored member declares one too, and no decoder uses it. The
-    # header chooses this number: it is not bounded by the member's size, and the
-    # reader checks it against ``DecoderLimits.max_decoder_memory`` before a
-    # decompressor runs.
+    # directory (on RAR5, one that is not also a link: its flag is kept apart from
+    # the dictionary bits). A stored member declares one too, and no decoder uses
+    # it. The header chooses this number: it is not bounded by the member's size,
+    # and the reader checks it against ``DecoderLimits.max_decoder_memory`` before
+    # a decompressor runs.
     dictionary_size: int = 0
     # WinRAR ``-ver`` history: RAR5 FHEXTRA_VERSION vint, or RAR3 ``FILE_VERSION``
     # (``;n`` stripped from ``filename``). ``None`` / ``0`` = live revision.
@@ -1797,9 +1800,11 @@ def _parse_rar3_file_header(
         split_before=bool(flags & _RAR3_FILE_SPLIT_BEFORE),
         split_after=bool(flags & _RAR3_FILE_SPLIT_AFTER),
         file_version=file_version,
+        # The raw flag, not the narrowed field: a directory-flagged symlink's bits are
+        # the directory marker, not a dictionary size.
         dictionary_size=0
         if is_directory
-        else _RAR3_DICT_BASE << ((flags & _RAR3_FILE_DIRECTORY) >> _RAR3_DICT_SHIFT),
+        else _RAR3_DICT_BASE << ((flags & _RAR3_DICT_MASK) >> _RAR3_DICT_SHIFT),
     )
     return member, crc_pos
 
@@ -2795,7 +2800,11 @@ def _parse_rar5_file_block(
         split_before=split_before,
         split_after=split_after,
         file_version=file_version,
-        dictionary_size=0 if is_directory else _rar5_dictionary_size(compress_info),
+        # RAR5 keeps the directory flag apart from the dictionary bits, so a
+        # directory-flagged link reports what its compression info declares.
+        dictionary_size=0
+        if is_directory and not is_symlink
+        else _rar5_dictionary_size(compress_info),
         skipped_header_records=tuple(skipped_records),
         header_walk_stop_reason=stop_reason,
         timestamp_issues=tuple(timestamp_issues) if timestamp_issues else (),

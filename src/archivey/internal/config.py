@@ -115,13 +115,25 @@ def exceeds_decoder_memory(declared: int, limits: DecoderLimits) -> bool:
     return cap is not None and declared > cap
 
 
-def check_decoder_memory(declared: int, *, limits: DecoderLimits, what: str) -> None:
+def check_decoder_memory(
+    declared: int,
+    *,
+    limits: DecoderLimits,
+    what: str,
+    header_value: int | None = None,
+) -> None:
     """Refuse an archive-declared decoder allocation above ``max_decoder_memory``.
 
     ``declared`` is the number the *archive* asked for, read out of a header field —
     not a measurement of anything, and not bounded by the file's own size. ``what``
     names the field for the message, so a caller who raised the cap on purpose can
     tell which archive is asking and for how much.
+
+    ``header_value`` is for a caller that compares a count derived from header
+    fields rather than one field's value: RAR through ``unrar`` counts the declared
+    dictionary only up to the unpacked bytes the read decodes. When it differs from
+    ``declared``, the message gives both, so it does not present the derived count
+    as the number the header holds.
 
     Callers run this before the decoder object is constructed, because the
     allocation it guards is made inside a C extension, and what a refused native
@@ -136,12 +148,19 @@ def check_decoder_memory(declared: int, *, limits: DecoderLimits, what: str) -> 
     Lives here rather than in ``codecs.py`` so the xz and lzip decoders, which
     ``codecs.py`` imports, can call it without an import cycle.
     """
-    if exceeds_decoder_memory(declared, limits):
-        raise ResourceLimitError(
-            f"Decoder limit reached: max_decoder_memory={limits.max_decoder_memory} "
-            f"({what} declares {declared} bytes). The archive chose this number; "
-            f"raise DecoderLimits.max_decoder_memory if the archive is trusted."
+    if not exceeds_decoder_memory(declared, limits):
+        return
+    if header_value is None or header_value == declared:
+        detail = f"{what} declares {declared} bytes). The archive chose this number"
+    else:
+        detail = (
+            f"{what} is {declared} bytes of the {header_value} bytes its header "
+            "declares). The archive chose these numbers"
         )
+    raise ResourceLimitError(
+        f"Decoder limit reached: max_decoder_memory={limits.max_decoder_memory} "
+        f"({detail}; raise DecoderLimits.max_decoder_memory if the archive is trusted."
+    )
 
 
 class KeyDerivationBudget:

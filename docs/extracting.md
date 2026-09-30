@@ -308,7 +308,8 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   size is counted as the program allocates it. `unar` uses the whole declared
   dictionary, so the declared size counts. `unrar` uses no more of it than the data it
   decodes, so the count is capped at the member's unpacked size. In a solid archive the
-  cap is the unpacked size of the members up to and including the one read.
+  cap is the unpacked size of the members up to and including the one read. An earlier
+  member with the same name counts too, because `unrar` decodes it first.
 - **Key-derivation work** — RAR5 and 7z headers say how many hashing rounds turn a
   password into a key, and an archive can salt every member so each needs its own
   (`DecoderLimits.max_key_derivation_rounds`, default `2**27` rounds in total per open

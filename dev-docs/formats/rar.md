@@ -1084,12 +1084,28 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
     second stream paid for the first). The count is min(largest dictionary declared up to and
     including the member, total unpacked size of those members). That is wider than
     "the member's own stream", on purpose.
-  - **Not counted.** A stored member or a directory (no dictionary is used; stored
-    headers from `rar -m0` declare 0 anyway). A RAR 1.5/2.x comment, which `unrar` or
+  - **A shared `unrar` mask.** A named `unrar` read decodes every member its mask
+    selects, in archive order: a glob with `rar_allow_glob_member_concatenation=True`,
+    or a duplicate name, which needs no opt-in. The count is the largest among the
+    target and the selected members before it (`RarReader._unrar_selection` returns
+    it). In a nonsolid archive each earlier match sizes its own window; in a solid one
+    the target's count already covers them. A match after the target is not counted:
+    the read stops at the target's end, and that member's window fills only as
+    `unrar` writes to the pipe.
+  - **Not counted.** A stored member, a directory, and a RAR5 redirect (hardlink, file
+    copy, symlink), which carry no data to decode (`uses_no_dictionary` in
+    `rar_unar.py`; stored headers from `rar -m0` declare 0 anyway). A RAR3 symlink does
+    count: its target is compressed data. A RAR 1.5/2.x comment, which `unrar` or
     `unar` decodes at open: RAR3/4 dictionaries top out at 4 MiB (the 3-bit field over a
-    64 KiB base), and `rar -ma4` is gone from rar 7.00. The other members a shared
-    `unrar` mask also selects (a glob with `rar_allow_glob_member_concatenation=True`,
-    or duplicate names); the count is the target's.
+    64 KiB base), and `rar -ma4` is gone from rar 7.00.
+  - **The refusal message** gives the count and, where they differ (`unrar`), the
+    dictionary the headers declare, so it does not present archivey's count as the
+    archive's number.
+  - **Not signalled at open.** Every count is known from the parse, so `ar.cost.notes`
+    could say at `open_archive` that a read will be refused, as it does for a
+    `SpoolLimits` refusal. Left out: the refusal is per member, and `ar.cost.notes` is
+    one open-time caveat for the archive, not a per-member list. A note would have to
+    say "some members" or name them, which does not scale.
   - **What honest archives declare.** rar 7.00 declares the data size rounded up to a
     power of two (10 MB → 16 MiB, 300 MB → 512 MiB), so a real archive over-declares by
     at most 2×, and small members declare 128 KiB whatever `-md` says. Under the 2 GiB

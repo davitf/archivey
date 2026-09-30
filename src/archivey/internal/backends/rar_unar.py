@@ -83,18 +83,32 @@ def unar_entry_index(archive: RarArchive) -> dict[int, int]:
     return {id(info): index for index, info in enumerate(archive.members)}
 
 
+def _carries_no_data(info: RarMemberInfo) -> bool:
+    """A directory or a RAR5 redirect: the entry has a header and no data to decode.
+
+    A RAR3 symlink is not one of these: its target is stored as compressed data.
+    """
+    return info.is_directory or info.file_redir is not None or info.is_hardlink_or_copy
+
+
 def _carries_no_solid_data(info: RarMemberInfo) -> bool:
-    return (
-        info.is_directory
-        or info.file_redir is not None
-        or info.is_hardlink_or_copy
-        or info.file_size == 0
-    )
+    return _carries_no_data(info) or info.file_size == 0
+
+
+def uses_no_dictionary(info: RarMemberInfo) -> bool:
+    """Whether decoding this entry leaves the dictionary untouched, for both programs.
+
+    An entry with no data decodes nothing, and a stored member is copied. The
+    ``file_size`` a hardlink, copy or redirect declares is not decoded, so it must
+    not count. An empty compressed member still counts: its declared dictionary may
+    start a stream.
+    """
+    return _carries_no_data(info) or info.compress_type == _METHOD_STORED
 
 
 def unar_emitted_size(info: RarMemberInfo) -> int:
     """Bytes ``unar -o -`` writes for this entry in an all-entries run."""
-    if info.is_directory or info.file_redir is not None or info.is_hardlink_or_copy:
+    if _carries_no_data(info):
         return 0
     return info.file_size
 
@@ -124,12 +138,13 @@ def unar_dictionary_costs(archive: RarArchive) -> list[int]:
     the first member's declaration is allocated, so the largest is an upper bound. A
     member that starts a new stream does not pay for the one before it: reading it
     alone stayed near 20 MiB after a 1 GiB stream ahead of it. A stored member and a
-    directory use no dictionary, so they count 0 and neither start nor end a stream.
+    directory, and a redirect, use no dictionary (:func:`uses_no_dictionary`), so they
+    count 0 and neither start nor end a stream.
     """
     costs: list[int] = []
     stream = 0
     for info in archive.members:
-        if info.is_directory or info.compress_type == _METHOD_STORED:
+        if uses_no_dictionary(info):
             costs.append(0)
             continue
         if not info.file_solid:

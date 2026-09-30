@@ -40,7 +40,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import BinaryIO, Literal
+from typing import BinaryIO, Literal, NamedTuple
 
 from archivey.config import ArchiveyConfig, RarDecompressor, SpoolLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -84,6 +84,7 @@ from archivey.internal.backends.rar_unar import (
     UNAR_PURPOSE,
     UnarRarPolicy,
     unar_dictionary_costs,
+    uses_no_dictionary,
 )
 from archivey.internal.backends.rar_unrar import (
     _unrar_glob_demux_ok,
@@ -380,7 +381,22 @@ _COMPRESSION_BY_METHOD: dict[int, tuple[CompressionMethod, ...]] = {
 }
 
 
-def _unrar_dictionary_costs(archive: RarArchive) -> list[int]:
+class _DictionaryCost(NamedTuple):
+    """What one read costs in dictionary memory, and what the headers declared.
+
+    ``count`` is compared against ``DecoderLimits.max_decoder_memory``. ``declared``
+    is the largest dictionary the headers behind ``count`` declare, for the refusal
+    message: under ``unrar`` the count can be the smaller of the two.
+    """
+
+    count: int
+    declared: int
+
+
+_NO_DICTIONARY = _DictionaryCost(0, 0)
+
+
+def _unrar_dictionary_costs(archive: RarArchive) -> list[_DictionaryCost]:
     """The dictionary bytes RARLAB ``unrar`` can touch to decode each member, in order.
 
     Measured with ``unrar`` 7.00 (``dev-docs/formats/rar.md`` §7). ``unrar`` sizes a
@@ -397,20 +413,26 @@ def _unrar_dictionary_costs(archive: RarArchive) -> list[int]:
     The unpacked size is a header value, as the dictionary is. When it is too
     small, the reader's own size check stops reading at that size, and ``unrar``
     then blocks on the full pipe. So the bytes written, and so the pages touched,
-    stay near the declared size. A stored member and a directory use no
-    dictionary and count 0.
+    stay near the declared size. A stored member, a directory and a redirect use
+    no dictionary (:func:`uses_no_dictionary`), count 0 and add no decoded bytes.
+    A RAR3 symlink does count: its target is compressed data. That is why this walk
+    does not use ``is_payload_file()`` as :meth:`RarReader._solid_prefix` does.
     """
-    costs: list[int] = []
+    costs: list[_DictionaryCost] = []
     window = decoded = 0
     for info in archive.members:
-        if info.is_directory or info.compress_type == _RAR_METHOD_STORED:
-            costs.append(0)
+        if uses_no_dictionary(info):
+            costs.append(_NO_DICTIONARY)
         elif not archive.is_solid:
-            costs.append(min(info.dictionary_size, info.file_size))
+            costs.append(
+                _DictionaryCost(
+                    min(info.dictionary_size, info.file_size), info.dictionary_size
+                )
+            )
         else:
             window = max(window, info.dictionary_size)
             decoded += info.file_size
-            costs.append(min(window, decoded))
+            costs.append(_DictionaryCost(min(window, decoded), window))
     return costs
 
 
@@ -1078,7 +1100,7 @@ class RarReader(BaseArchiveReader):
         # ``DecoderLimits.max_decoder_memory`` before that program starts. The two
         # programs allocate differently, so each has a rule.
         costs = (
-            unar_dictionary_costs(self._archive)
+            [_DictionaryCost(c, c) for c in unar_dictionary_costs(self._archive)]
             if self._unar_policy is not None
             else _unrar_dictionary_costs(self._archive)
         )
@@ -2541,8 +2563,8 @@ class RarReader(BaseArchiveReader):
 
     def _unrar_selection(
         self, target: ArchiveMember, mask_view: str, *, version_control: bool
-    ) -> tuple[int, bool]:
-        """Where ``target``'s bytes start in the ``unrar -n`` pipe, and whether it ends there.
+    ) -> tuple[int, bool, _DictionaryCost]:
+        """Where ``target``'s bytes start in the ``unrar -n`` pipe, and what the run needs.
 
         ``unrar p`` emits every payload member the mask selects, concatenated in
         archive order with no headers: a glob, a duplicate name, two names ``unrar``
@@ -2551,6 +2573,13 @@ class RarReader(BaseArchiveReader):
         the target; the second is True when any other member is selected, so the read
         must stop at the target's size. History rows are left out unless
         ``version_control`` is set, as ``unrar`` leaves them out without ``-ver``.
+
+        The third value is the largest :attr:`_dictionary_costs` entry among the
+        target and the selected members before it. ``unrar`` decodes each of those
+        in full, so in a nonsolid archive each earlier match sizes its own window.
+        In a solid archive the target's own count already covers them. A match after
+        the target does not count: the read stops at the target's end, and that
+        member's window fills only as ``unrar`` writes to the pipe.
 
         Raises ``UnsupportedFeatureError`` when the answer is not known: the mask
         does not select the target itself, or an earlier member's name cannot be
@@ -2570,6 +2599,7 @@ class RarReader(BaseArchiveReader):
         prefix = 0
         others = False
         selects_target = False
+        cost = self._dictionary_costs[id(target)]
         for position in candidates:
             view = names.views[position]
             if view is None:
@@ -2585,7 +2615,9 @@ class RarReader(BaseArchiveReader):
                 continue
             others = True
             if position < target_position:
-                prefix += _member_stream_size(self._members[position])
+                earlier = self._members[position]
+                prefix += _member_stream_size(earlier)
+                cost = max(cost, self._dictionary_costs[id(earlier)])
         if not selects_target:
             raise self._unrar_name_refused(
                 target,
@@ -2604,7 +2636,7 @@ class RarReader(BaseArchiveReader):
                     "cannot be sized",
                 )
             others = True
-        return prefix, others
+        return prefix, others, cost
 
     def _unrar_name_refused(
         self, member: ArchiveMember, reason: str
@@ -2649,21 +2681,25 @@ class RarReader(BaseArchiveReader):
             "solid prefix target missing from the payload walk; uses member identity"
         )
 
-    def _check_dictionary_memory(self, member: ArchiveMember, cost: int) -> None:
+    def _check_dictionary_memory(
+        self, member: ArchiveMember, cost: _DictionaryCost
+    ) -> None:
         """Refuse a read whose decompressor would allocate over ``max_decoder_memory``.
 
-        ``cost`` comes from :attr:`_dictionary_costs`, or from
-        :meth:`_pass_dictionary_costs` for a solid pass. Runs before the program
+        ``cost`` comes from :attr:`_dictionary_costs`, from :meth:`_unrar_selection`
+        for a named ``unrar`` read, or from :meth:`_pass_dictionary_costs` for a solid
+        pass. Runs before the program
         is spawned and before a stream source is copied to disk for it.
         """
         program = "unar" if self._unar_policy is not None else "unrar"
         check_decoder_memory(
-            cost,
+            cost.count,
             limits=self._config.decoder_limits,
             what=f"the RAR dictionary {program} needs for member {quoted(member.name)}",
+            header_value=cost.declared,
         )
 
-    def _pass_dictionary_costs(self) -> dict[int, int]:
+    def _pass_dictionary_costs(self) -> dict[int, _DictionaryCost]:
         """:attr:`_dictionary_costs` for one process that decodes the archive in order.
 
         A solid pass runs one process over every member, so a member's read also
@@ -2671,8 +2707,8 @@ class RarReader(BaseArchiveReader):
         dictionary for each solid stream, but the process's peak is still the
         largest one so far.
         """
-        costs: dict[int, int] = {}
-        peak = 0
+        costs: dict[int, _DictionaryCost] = {}
+        peak = _NO_DICTIONARY
         for member in self._members:
             peak = max(peak, self._dictionary_costs[id(member)])
             costs[id(member)] = peak
@@ -2757,7 +2793,7 @@ class RarReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
-        glob_prefix, shares_mask = self._unrar_selection(
+        glob_prefix, shares_mask, dictionary_cost = self._unrar_selection(
             member, mask_view, version_control=version_control
         )
         if (
@@ -2826,7 +2862,9 @@ class RarReader(BaseArchiveReader):
                 source_format=ArchiveFormat.RAR,
             )
 
-        self._check_dictionary_memory(member, self._dictionary_costs[id(member)])
+        # Counts the other members the mask selects too (a duplicate name is enough),
+        # because unrar decodes each of them before the target.
+        self._check_dictionary_memory(member, dictionary_cost)
         # Picked before the copy below: a password no candidate satisfies fails here
         # without spooling a stream source to disk.
         data_password = self._member_data_password(member)
@@ -3071,7 +3109,9 @@ class RarReader(BaseArchiveReader):
         def _refuse(member: ArchiveMember, reason: str) -> BinaryIO:
             raise self._unar_refused(member, reason)
 
-        def _read(member: ArchiveMember, offset: int, size: int, cost: int) -> BinaryIO:
+        def _read(
+            member: ArchiveMember, offset: int, size: int, cost: _DictionaryCost
+        ) -> BinaryIO:
             # Checked on the first read, as the spawn is.
             self._check_dictionary_memory(member, cost)
             return self._watch_unverified(
