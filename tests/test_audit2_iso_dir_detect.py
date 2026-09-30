@@ -225,13 +225,6 @@ def _make_deep_tree(root: Path, component: str, depth: int) -> None:
     sys.platform == "win32" or os.mkdir not in os.supports_dir_fd,
     reason="needs POSIX dir_fd to build the tree",
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "D1: the directory walk opens each subdirectory by its full path, so a tree "
-        "deeper than PATH_MAX fails the whole listing with a raw ENAMETOOLONG"
-    ),
-)
 def test_directory_source_deeper_than_path_max_lists_and_reads(
     tmp_path: Path,
 ) -> None:
