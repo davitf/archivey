@@ -87,6 +87,10 @@ Some members are refused under every policy, and others depend on it:
 they are the same file on macOS and Windows. An archive that writes more than `limits` allows
 stops the whole extraction, whatever the policy.
 
+A `filter` can't bring back a member that every policy refuses, because it never sees one. It does
+see the members that `"strict"` and `"standard"` refuse for their names alone, such as `CON`, and
+if it renames one to a name the policy accepts, that member is written.
+
 A refused member isn't written, and the rest of the archive still extracts. The call returns a
 report with one result for each member, with the path it was written to in `result.path` and the
 member as the archive stored it in `result.member`. That shows what was refused:
