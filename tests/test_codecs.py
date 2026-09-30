@@ -927,19 +927,13 @@ def _lzw_non_block_mode_run(codes: int) -> bytes:
     return bytes(out)
 
 
-@requires_binary("gzip")
 def test_unix_compress_non_block_mode_fixture_is_what_gzip_reads() -> None:
     """Pins the fixture for the test below to the reference decoder."""
-    import subprocess
-
     codes = 600
-    result = subprocess.run(
-        ["gzip", "-dc"],
-        input=_lzw_non_block_mode_run(codes),
-        capture_output=True,
-        check=True,
-    )
-    assert result.stdout == b"a" * (codes * (codes + 1) // 2)
+    reference = _gnu_gzip_decompress(_lzw_non_block_mode_run(codes))
+    if reference is None:
+        pytest.skip("needs GNU gzip as the .Z reference")
+    assert reference == b"a" * (codes * (codes + 1) // 2)
 
 
 def test_unix_compress_non_block_mode_decodes_like_the_reference() -> None:
@@ -956,6 +950,10 @@ def _lzw_compress_non_block_mode(data: bytes, max_bits: int) -> bytes:
     256. Before each code, the writer widens once the next free code passes the current
     width's largest code plus one (ncompress's ``extcode``), padding the current group
     of eight codes first. Nothing pads after the last code.
+
+    This widens at the same code as :func:`_lzw_non_block_mode_run`, whose condition is
+    one lower only because it checks after emitting a code rather than before. Code 258
+    is the first at 10 bits in both.
     """
     out = bytearray(b"\x1f\x9d" + bytes([max_bits]))
     width, in_group, bits, nbits = 9, 0, 0, 0
@@ -1032,9 +1030,10 @@ def _gnu_gzip_decompress(compressed: bytes) -> bytes | None:
 def test_unix_compress_non_block_mode_streams_match_gzip(
     payload: str, max_bits: int
 ) -> None:
-    """Non-block streams across every width decode to their input, whatever the feed
+    """Non-block streams at 10, 12 and 16 bits decode to their input, whatever the feed
     size, and GNU gzip agrees where it is installed. The random payload fills the table
-    at 10 and 12 bits."""
+    at 10 and 12 bits. 9 bits is left out: see ``dev-docs/formats/unix-compress.md``
+    §7."""
     data = _NON_BLOCK_PAYLOADS[payload]
     compressed = _lzw_compress_non_block_mode(data, max_bits)
     reference = _gnu_gzip_decompress(compressed)
@@ -1054,6 +1053,24 @@ def test_unix_compress_non_block_mode_may_end_at_a_widening() -> None:
     tail, _ = state.flush()
     assert out + tail == data
     assert state.truncation is None
+
+
+@pytest.mark.parametrize("padding_present", [1, 3, 6])
+def test_unix_compress_non_block_mode_cut_inside_widening_padding_is_truncated(
+    padding_present: int,
+) -> None:
+    """The writer puts a widening's padding down whole, so a source carrying only part
+    of it was cut. The first 16-bit era is 257 9-bit codes (290 bytes), padded by 7."""
+    data = bytes(range(256)) + b"\x00" * 2000
+    compressed = _lzw_compress_non_block_mode(data, 16)
+    cut = 3 + 290 + padding_present
+    for chunks in ([compressed[:cut]], [compressed[:293], compressed[293:cut]]):
+        state = LzwState()
+        for chunk in chunks:
+            state.feed(chunk)
+        state.flush()
+        assert state.truncation is not None
+        assert "code-width increase" in state.truncation
 
 
 def test_decompressor_read_one_bounds_internal_buffer() -> None:
