@@ -2720,8 +2720,10 @@ class RarReader(BaseArchiveReader):
         solid pass. Runs before the program is spawned and before a stream source is
         copied to disk for it.
 
-        The message names the member whose header declared the dictionary, and says
-        when the count is capped below it, so a caller can find both numbers.
+        The message names the member whose header declared the dictionary, only when
+        the member read does not declare that size itself, and says when the count is
+        capped below it, so a caller can find both numbers. A declarer that shares the
+        read member's name is named by its archive index instead.
         """
         program = "unar" if self._unar_policy is not None else "unrar"
         counted_from = None
@@ -2733,11 +2735,15 @@ class RarReader(BaseArchiveReader):
             own = source is member or (
                 isinstance(raw, RarMemberInfo) and raw.dictionary_size == cost.declared
             )
-            owner = (
-                "its own header"
-                if own
-                else f"the header of member {quoted(source.name)}"
-            )
+            if own:
+                owner = "its own header"
+            elif source.name == member.name:
+                owner = (
+                    "the header of an earlier entry with the same name "
+                    f"(archive index {cost.declarer}, counting from 0)"
+                )
+            else:
+                owner = f"the header of member {quoted(source.name)}"
             if cost.count < cost.declared:
                 counted_from = (
                     f"the {cost.declared}-byte dictionary {owner} declares, capped at "

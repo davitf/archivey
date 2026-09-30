@@ -709,8 +709,14 @@ def test_unrar_counts_an_earlier_member_its_shared_mask_decodes(
         assert members[2].size == 1216
         with pytest.raises(
             ResourceLimitError, match=f"max_decoder_memory={_DEFAULT_LIMIT}"
-        ):
+        ) as excinfo:
             archive.read(members[2])
+    # Both entries are named "-inul", so the declarer is named by its index.
+    assert (
+        f"member '-inul' is {_3_GIB} bytes, counted from the {4 * 2**30}-byte "
+        "dictionary the header of an earlier entry with the same name (archive index "
+        "1, counting from 0) declares, capped at the unpacked bytes the read decodes"
+    ) in str(excinfo.value)
 
 
 @requires_binary("unrar")

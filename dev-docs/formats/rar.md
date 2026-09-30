@@ -1116,8 +1116,10 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
     combinations for the stored member.
   - **The refusal message** gives the count and, when the count is capped below it, the
     declared dictionary. When the dictionary was declared by another member (solid, a
-    shared mask, a pass), the message names that member, so a caller knows which header
-    to look at.
+    shared mask, a pass) and the member read does not declare that size itself, the
+    message names that member, so a caller knows which header to look at. A declarer
+    with the same name as the member read (a duplicate) is named by its archive
+    index.
   - **Not signalled at open.** Every count is known from the parse, so `ar.cost.notes`
     could say at `open_archive` that a read will be refused, as it does for a
     `SpoolLimits` refusal. Left out: the refusal is per member, and `ar.cost.notes` is
