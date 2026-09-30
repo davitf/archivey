@@ -440,28 +440,31 @@ class _SourceFailingOnce(io.BytesIO):
 
 
 class _Decoder(io.BytesIO):
-    """Stands in for the in-process accelerator: a read decodes 100 bytes ahead, then
-    raises (or, with ``fail=False``, returns them), reading the caller's source through
-    the shim when there is one. ``seeks`` records every seek the wrapper asks for."""
+    """Stands in for the in-process accelerator: a read decodes up to 100 bytes ahead,
+    then raises (or, with ``fail=False``, returns them), reading the caller's source
+    through the shim when there is one. ``seeks`` records every seek the wrapper asks
+    for; with ``seek_faults_source`` a seek makes the source fail and then reads it."""
 
     def __init__(
         self,
         source: _SourceFailingOnce | None = None,
         *,
         fail: bool = True,
+        tell_raises: bool = False,
         seek_raises: bool = False,
-        seek_reads_source: bool = False,
+        seek_faults_source: bool = False,
     ) -> None:
         super().__init__(bytes(1000))
         self.source = source
         self.trap = None if source is None else _TrappingSource(source)
         self.fail = fail
+        self.tell_raises = tell_raises
         self.seek_raises = seek_raises
-        self.seek_reads_source = seek_reads_source
+        self.seek_faults_source = seek_faults_source
         self.seeks: list[int] = []
 
     def read(self, size: int | None = -1, /) -> bytes:
-        data = super().read(100)
+        data = super().read(100 if size is None or size < 0 else min(100, size))
         if self.trap is not None:
             self.trap.read(16)
         if self.fail:
@@ -469,13 +472,24 @@ class _Decoder(io.BytesIO):
         return data
 
     def readinto(self, b: WriteableBuffer, /) -> int:
-        data = self.read(len(memoryview(b)))
-        memoryview(b)[: len(data)] = data
+        view = memoryview(b)
+        data = self.read(len(view))
+        view[: len(data)] = data
         return len(data)
+
+    def tell(self) -> int:
+        if self.tell_raises:
+            raise RuntimeError("no position")
+        return super().tell()
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self.seeks.append(offset)
-        if self.seek_reads_source and self.trap is not None:
+        if (
+            self.seek_faults_source
+            and self.source is not None
+            and self.trap is not None
+        ):
+            self.source.failing = True
             self.trap.read(16)
         if self.seek_raises:
             raise RuntimeError("cannot seek there")
@@ -486,14 +500,19 @@ def _wrap(decoder: _Decoder) -> _AcceleratorStream:
     return _AcceleratorStream(decoder, trap=decoder.trap)
 
 
-def _assert_given_up(stream: _AcceleratorStream) -> None:
+_SOURCE_FAULT = r"a read from the stream's source failed \(OSError\('disk gone'\)\)"
+_REWIND_FAILED = r"moving the decoder back to where that read started failed too"
+_START_UNKNOWN = r"the decoder's position before it was not known"
+
+
+def _assert_given_up(stream: _AcceleratorStream, cause: str) -> None:
     for call in (
         lambda: stream.read(10),
         lambda: stream.readinto(bytearray(10)),
         lambda: stream.seek(0),
         stream.tell,
     ):
-        with pytest.raises(ReadError, match="cannot be read further"):
+        with pytest.raises(ReadError, match=f"{cause}.*cannot be read further"):
             call()
 
 
@@ -522,32 +541,39 @@ def test_accelerator_gives_up_when_the_rewind_raises() -> None:
     stream = _wrap(_Decoder(seek_raises=True))
     with pytest.raises(RuntimeError, match="corrupt block"):
         stream.read(10)
-    _assert_given_up(stream)
+    _assert_given_up(stream, _REWIND_FAILED)
+    stream.close()
+
+
+def test_accelerator_gives_up_when_the_start_is_unknown() -> None:
+    """With no known start there is nothing to move back to: the stream is given up
+    without a seek."""
+    decoder = _Decoder(tell_raises=True)
+    stream = _wrap(decoder)
+    with pytest.raises(RuntimeError, match="corrupt block"):
+        stream.read(10)
+    assert decoder.seeks == []
+    _assert_given_up(stream, _START_UNKNOWN)
     stream.close()
 
 
 def test_accelerator_gives_up_when_the_rewind_faults_the_source() -> None:
     """A source fault parked by the rewind does not replace the read's error, and the
     stream is given up."""
-    source = _SourceFailingOnce(b"compressed")
-    decoder = _Decoder(source, seek_reads_source=True)
+    decoder = _Decoder(_SourceFailingOnce(b"compressed"), seek_faults_source=True)
     stream = _wrap(decoder)
-    source.failing = False
-
-    def fail_from_the_seek(offset: int, whence: int = io.SEEK_SET, /) -> int:
-        source.failing = True
-        return _Decoder.seek(decoder, offset, whence)
-
-    decoder.seek = fail_from_the_seek  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="corrupt block"):
         stream.read(10)
     assert decoder.trap is not None and decoder.trap.trapped is None
-    _assert_given_up(stream)
+    _assert_given_up(stream, _SOURCE_FAULT)
     stream.close()
 
 
+@pytest.mark.parametrize("how", ["read", "readinto"])
 @pytest.mark.parametrize("fail", [True, False], ids=["read_raises", "read_returns"])
-def test_accelerator_never_rewinds_through_a_faulted_source(fail: bool) -> None:
+def test_accelerator_never_rewinds_through_a_faulted_source(
+    fail: bool, how: str
+) -> None:
     """When the caller's source faults during a read, that fault is raised, the decoder
     is not driven through the source again, and every later call raises: a second read
     cannot reach the source and park a fault that replaces nothing, or hand out bytes
@@ -557,11 +583,33 @@ def test_accelerator_never_rewinds_through_a_faulted_source(fail: bool) -> None:
     decoder = _Decoder(source, fail=fail)
     stream = _wrap(decoder)
     with pytest.raises(OSError, match="disk gone"):
-        stream.read(10)
+        stream.read(10) if how == "read" else stream.readinto(bytearray(10))
     assert decoder.seeks == []
     source.failing = False  # the caller's source recovers; the position is still lost
-    _assert_given_up(stream)
+    _assert_given_up(stream, _SOURCE_FAULT)
     assert decoder.seeks == []
+    stream.close()
+
+
+@pytest.mark.parametrize(
+    "seek_raises", [False, True], ids=["seek_returns", "seek_raises"]
+)
+def test_accelerator_gives_up_when_a_seek_faults_the_source(seek_raises: bool) -> None:
+    """A caller's seek that faults the source raises that fault, and the stream is
+    given up as after a read: the caller never learned where the decoder ended up."""
+    decoder = _Decoder(
+        _SourceFailingOnce(b"compressed"),
+        fail=False,
+        seek_raises=seek_raises,
+        seek_faults_source=True,
+    )
+    stream = _wrap(decoder)
+    assert stream.read(10) == bytes(10)
+    with pytest.raises(OSError, match="disk gone"):
+        stream.seek(0)
+    assert decoder.source is not None
+    decoder.source.failing = False
+    _assert_given_up(stream, _SOURCE_FAULT)
     stream.close()
 
 
