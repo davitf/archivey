@@ -14,6 +14,7 @@ import io
 import os
 import struct
 import subprocess
+import sys
 import tarfile
 import time
 import zipfile
@@ -300,7 +301,15 @@ def _partial_then_start(stream: io.RawIOBase) -> bytes:
 @pytest.mark.parametrize(
     "ops",
     [
-        pytest.param(_seek_end_then_start, id="seek-end-then-0"),
+        pytest.param(
+            _seek_end_then_start,
+            id="seek-end-then-0",
+            # 3.13 seeks a stored member on the file directly and stops checking its CRC.
+            marks=pytest.mark.skipif(
+                sys.version_info >= (3, 13),
+                reason="zipfile on 3.13+ drops the CRC check after a stored-member seek",
+            ),
+        ),
         pytest.param(_partial_then_start, id="read-then-seek-0"),
     ],
 )
