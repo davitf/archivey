@@ -281,22 +281,50 @@ class _AcceleratorStream(DelegatingStream):
         return -(-bits // 8)
 
     def read(self, n: int = -1, /) -> bytes:
+        start = self._position()
         try:
             data = super().read(n)
         except Exception:
+            self._rewind(start)
             self._reraise_trapped()
             raise
         self._reraise_trapped()
         return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
+        start = self._position()
         try:
             n = super().readinto(b)
         except Exception:
+            self._rewind(start)
             self._reraise_trapped()
             raise
         self._reraise_trapped()
         return n
+
+    def _position(self) -> int | None:
+        try:
+            return self._inner.tell()
+        except Exception:  # noqa: BLE001 - only a rewind target; the read decides
+            return None
+
+    def _rewind(self, start: int | None) -> None:
+        """Move the decoder back to where a read that raised started.
+
+        The read returns nothing, but the decoder has moved past the chunks it decoded
+        before the failure: measured on rapidgzip 0.16's bzip2 decoder, ``tell()`` read
+        1 799 957 after a failed read that had delivered 1 048 576 bytes. Moving it back
+        keeps ``tell()`` at the bytes the caller received, and a later read starts there
+        rather than past bytes nobody returned. A fault parked from the caller's source
+        is left alone: the stream cannot read that source, so it is not asked to. A
+        failed rewind leaves the decoder where it is; the read's own error is raised.
+        """
+        if start is None or (self._trap is not None and self._trap.trapped is not None):
+            return
+        try:
+            self._inner.seek(start)
+        except Exception:  # noqa: BLE001 - the read's own error is the one raised
+            pass
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         try:

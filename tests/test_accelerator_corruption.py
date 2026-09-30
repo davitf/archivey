@@ -10,6 +10,7 @@ ISIZE compare on path sources (see OpenSpec `rapidgzip-truncation-investigation`
 
 from __future__ import annotations
 
+import base64
 import bz2
 import gzip
 import io
@@ -379,6 +380,42 @@ def test_indexed_bzip2_intact_reads_clean(tmp_path: Path) -> None:
     path = _write(tmp_path, "ok.bz2", bz2.compress(payload))
     with open_codec_stream(Codec.BZIP2, path, config=_BZ_ON) as s:
         assert s.read() == payload
+
+
+@pytest.mark.parametrize("source_kind", ["path", "bytesio"])
+@pytest.mark.parametrize("mode", [AcceleratorMode.ON, AcceleratorMode.OFF])
+def test_bzip2_failed_read_keeps_tell_at_the_bytes_delivered(
+    tmp_path: Path, source_kind: str, mode: AcceleratorMode
+) -> None:
+    """A read that fails at damage returns nothing, so ``tell()`` stays at the bytes the
+    caller received. The accelerator's decoder had moved on by the chunks it decoded
+    before the failure (measured: 1 799 957 against 1 048 576 delivered), and so did the
+    position it reported. After the error, reading on raises again and a seek back to
+    the start rereads the good bytes, as on the stdlib path."""
+    if mode is AcceleratorMode.ON:
+        pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    payload = base64.encodebytes(random.Random(1).randbytes(3_000_000))
+    damaged = bytearray(bz2.compress(payload))
+    middle = len(damaged) // 2
+    damaged[middle : middle + 4000] = b"\xff" * 4000
+    source = (
+        _write(tmp_path, "damaged.bz2", bytes(damaged))
+        if source_kind == "path"
+        else io.BytesIO(bytes(damaged))
+    )
+    config = StreamConfig(use_indexed_bzip2=mode, seekable=True)
+    got = bytearray()
+    with open_codec_stream(Codec.BZIP2, source, config=config) as s:
+        with raises_corruption_not_truncation():
+            while block := s.read(65536):
+                got += block
+        assert got and payload.startswith(got)
+        assert s.tell() == len(got)
+        with raises_corruption_not_truncation():
+            s.read(100)
+        assert s.tell() == len(got)
+        assert s.seek(0) == 0
+        assert s.read(1000) == payload[:1000]
 
 
 # The bundled bzip2 decoder ends the stream with no output and no error when the input is
