@@ -1,8 +1,9 @@
 """Second-round audit reproducers for the native 7z backend (findings S9 onwards).
 
-Every test asserts the behaviour the backend should have and is marked
-``xfail(strict=True)`` until the defect it names is fixed. Hand-built archives reuse
-the header builders of ``tests/test_audit_sevenzip.py``.
+Every test asserts the behaviour the backend should have. A test whose defect is still
+open is marked ``xfail(strict=True)`` with the finding's ID; the others are regression
+tests for fixed findings. Hand-built archives reuse the header builders of
+``tests/test_audit_sevenzip.py``.
 """
 
 from __future__ import annotations
@@ -64,19 +65,15 @@ def _run_7z(args: list[str], cwd: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# S9: a coder's declared unpack size is ignored unless it is the folder output
+# S9: every coder's declared unpack size is enforced, not only the folder output's
 # ---------------------------------------------------------------------------
 #
 # 7-Zip gives every coder its own output size and reports "Data Error" when a coder's
 # output does not match it (7-Zip 23.01, ``7z t`` on each archive below). archivey
-# checks only the last size of each liblzma chain and skips COPY entirely, so these
-# archives read clean, with a CRC over bytes 7-Zip never produces.
+# used to check only the last size of each liblzma chain and skip COPY entirely, so
+# these archives read clean, with a CRC over bytes 7-Zip never produces.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="S9: an LZMA2 coder's own unpack size is ignored when a filter follows it",
-)
 def test_lzma2_coder_decoding_past_its_own_size_before_a_filter_is_corruption() -> None:
     packed = lzma.compress(
         _PAYLOAD,
@@ -102,10 +99,6 @@ def test_lzma2_coder_decoding_past_its_own_size_before_a_filter_is_corruption() 
         _read_only_member(_archive(packed, header))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="S9: an LZMA1 coder decodes past its own unpack size when a filter follows",
-)
 def test_lzma1_coder_decoding_past_its_own_size_before_a_filter_is_corruption() -> None:
     lzma1 = {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}
     encoder = lzma.LZMACompressor(format=lzma.FORMAT_RAW, filters=[lzma1])
@@ -133,10 +126,32 @@ def test_lzma1_coder_decoding_past_its_own_size_before_a_filter_is_corruption() 
         _read_only_member(_archive(packed, header))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="S9: a COPY coder's unpack size is ignored; the next coder reads the pack",
-)
+def test_filter_declaring_less_than_its_lzma2_input_is_corruption() -> None:
+    # The mirror of the first S9 case: Delta declares 512 from an LZMA2 coder that
+    # declares (and decodes) 1024. Delta is size-preserving, so no valid folder does it.
+    packed = lzma.compress(
+        _PAYLOAD,
+        format=lzma.FORMAT_RAW,
+        filters=[
+            {"id": lzma.FILTER_DELTA, "dist": 1},
+            {"id": lzma.FILTER_LZMA2, "dict_size": 1 << 16},
+        ],
+    )
+    header = _header(
+        folders=[
+            _two_coder_folder(
+                _coder(_DELTA, props=b"\x00"), _coder(_LZMA2, props=b"\x10")
+            )
+        ],
+        coder_unpack_sizes=[[512, 1024]],
+        pack_sizes=[len(packed)],
+        names=["a"],
+        folder_crcs=[_crc(_PAYLOAD[:512])],
+    )
+    with pytest.raises(CorruptionError):
+        _read_only_member(_archive(packed, header))
+
+
 def test_copy_coder_declared_size_bounds_what_the_next_coder_reads() -> None:
     packed = _lzma2(_PAYLOAD)
     header = _header(
@@ -152,20 +167,16 @@ def test_copy_coder_declared_size_bounds_what_the_next_coder_reads() -> None:
 
 
 # ---------------------------------------------------------------------------
-# S10: a zstd window is not counted in the folder-wide decoder-memory sum
+# S10: a zstd window counts in the folder-wide decoder-memory sum
 # ---------------------------------------------------------------------------
 
 
 @requires_zstd()
-@pytest.mark.xfail(
-    strict=True,
-    reason="S10: the folder-wide decoder-memory sum leaves out zstd windows",
-)
 def test_zstd_window_counts_toward_the_folder_decoder_memory_sum() -> None:
     # One folder, two decoders live at once: zstd (32 MiB window, the frame header's
     # declaration) feeding LZMA2 (32 MiB dictionary). Each passes a 48 MiB cap alone;
-    # together they are 64 MiB. The sum check sees only the LZMA2 dictionary, and with
-    # one counted decoder it does not run at all.
+    # together they are 64 MiB. The sum check used to see only the LZMA2 dictionary,
+    # and with one counted decoder it did not run at all.
     zstd = zstd_backend()
     inner = lzma.compress(
         b"abc" * 1000,
@@ -190,7 +201,7 @@ def test_zstd_window_counts_toward_the_folder_decoder_memory_sum() -> None:
 
 
 # ---------------------------------------------------------------------------
-# S11: PPMd order and memory size are not validated
+# S11: PPMd order and memory size are validated as 7-Zip does
 # ---------------------------------------------------------------------------
 
 
@@ -210,25 +221,17 @@ def _ppmd_archive(order: int, mem_size: int) -> bytes:
 
 
 @requires("pyppmd")
-@pytest.mark.xfail(
-    strict=True,
-    reason="S11: PPMd order outside 2..64 is not refused (order 0/1 reads as truncation)",
-)
 @pytest.mark.parametrize("order", [0, 1, 65, 255])
 def test_ppmd_order_outside_7zip_range_is_refused(order: int) -> None:
     # 7-Zip (PpmdDecoder.cpp) refuses order < 2 or > 64 and mem < 2**11 as
-    # unsupported properties. ZIP's PPMd path checks the order; 7z does not. Today
-    # order 0/1 surface as TruncatedError ("File is truncated") and 65/255 decode.
+    # unsupported properties. Before the fix, order 0/1 surfaced as TruncatedError
+    # ("File is truncated") and 65/255 decoded.
     with pytest.raises(ArchiveyError) as excinfo:
         _read_only_member(_ppmd_archive(order, 1 << 20))
     assert not isinstance(excinfo.value, TruncatedError)
 
 
 @requires("pyppmd")
-@pytest.mark.xfail(
-    strict=True,
-    reason="S11: a PPMd memory size under 7-Zip's 2 KiB minimum decodes to garbage",
-)
 @pytest.mark.parametrize("mem_size", [0, 16, 2047])
 def test_ppmd_memory_size_under_7zip_minimum_is_refused(mem_size: int) -> None:
     # No member CRC, so nothing catches the bytes pyppmd returns for a model that
@@ -237,16 +240,21 @@ def test_ppmd_memory_size_under_7zip_minimum_is_refused(mem_size: int) -> None:
         _read_only_member(_ppmd_archive(6, mem_size))
 
 
+@requires("pyppmd")
+def test_ppmd_memory_size_over_7zip_maximum_is_refused_without_a_cap() -> None:
+    # 7-Zip's ceiling is 0xFFFFFFFF - 36. Under the default cap the memory limit
+    # answers first (tests/test_decoder_limits.py); with no cap, the range check does.
+    config = ArchiveyConfig(decoder_limits=DecoderLimits.UNLIMITED)
+    with pytest.raises(UnsupportedFeatureError):
+        _read_only_member(_ppmd_archive(6, 0xFFFFFFFF), config=config)
+
+
 # ---------------------------------------------------------------------------
-# S12: LZMA1 with lc + lp > 4 (valid 7-Zip output) is reported as corruption
+# S12: LZMA1 with lc + lp > 4 (valid 7-Zip output) is not reported as corruption
 # ---------------------------------------------------------------------------
 
 
 @requires_binary("7z")
-@pytest.mark.xfail(
-    strict=True,
-    reason="S12: a 7-Zip LZMA:lc=8 archive is reported as CorruptionError",
-)
 def test_lzma1_lc8_archive_is_not_reported_as_corruption(tmp_path: Path) -> None:
     payload = os.urandom(3000)
     (tmp_path / "r.bin").write_bytes(payload)
@@ -299,14 +307,10 @@ def test_arm64_filtered_archive_reads(tmp_path: Path, explicit: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# S14: the signature header's major version is not checked at offset 0
+# S14: the signature header's major version is checked at offset 0
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="S14: a 7z with major version != 0 at offset 0 is parsed as version 0",
-)
 def test_unknown_major_version_is_refused() -> None:
     data = bytearray(
         _archive(

@@ -394,8 +394,9 @@ class DecoderLimits:
             decoder may allocate. The default is 2 GiB. A 7z folder runs all its
             decoders at once (the stages of a coder chain, and a BCJ2 folder's
             ``main``, ``call`` and ``jump`` branches), so when it has more than
-            one, their LZMA dictionaries and PPMd memory sizes count together
-            against it.
+            one, their LZMA dictionaries, PPMd memory sizes and zstd windows
+            count together against it. A zstd window counts as the first frame
+            declares it, when the zstd coder reads a packed stream directly.
 
             That number is a policy choice, not a limit of the format, so here
             is what it was chosen against. Measured on 7-Zip 23.01, a writer

@@ -97,6 +97,10 @@ from archivey.internal.streams.streamtools.binaryio import (
     readinto_via_read,
     try_readinto,
 )
+from archivey.internal.streams.zstd_framing import (
+    MAX_FRAME_HEADER_SIZE,
+    frame_window_size,
+)
 
 # Omitting max_members on the archive-level entry point means the ListingLimits
 # default, as in sevenzip_parser and rar_parser. None is the explicit UNLIMITED opt-out.
@@ -193,7 +197,18 @@ class _FilterStage:
     unpack_size: int
 
 
-_Stage = _AesStage | _CodecStage | _LzmaChainStage | _FilterStage
+@dataclass
+class _CopyStage:
+    """A COPY coder reading a pack stream: output past its declared size is refused.
+
+    A COPY coder anywhere else passes its input through unchanged, and needs no stage:
+    the planner has already checked that its size equals its input coder's.
+    """
+
+    unpack_size: int
+
+
+_Stage = _AesStage | _CodecStage | _LzmaChainStage | _FilterStage | _CopyStage
 
 
 @dataclass
@@ -350,12 +365,17 @@ def _plan_run(
     """
     coders = folder.coders
     source_size = source.unpack_size if isinstance(source, _Bcj2Stage) else None
+    _check_size_preserving_coders(folder, run, source_size)
     stages: list[_Stage] = []
     position = 0
     while position < len(run):
         index = run[position]
         method = require(coders[index].method)
         if method.kind is MethodKind.COPY:
+            if position == 0 and source_size is None:
+                # Over a pack stream, whose length the folder does not carry: the
+                # check is on the output, as for a codec.
+                stages.append(_CopyStage(folder.unpack_sizes[index]))
             position += 1
             continue
         if method.kind is MethodKind.BCJ2:
@@ -389,6 +409,39 @@ def _plan_run(
             position += 1
         stages.extend(_plan_lzma_family(lzma_run, sizes))
     return stages
+
+
+def _check_size_preserving_coders(
+    folder: SevenZipFolder, run: list[int], source_size: int | None
+) -> None:
+    """Refuse a COPY, Delta or BCJ coder whose size differs from its input's.
+
+    These coders output exactly as many bytes as they read, so in a valid folder each
+    one's unpack size equals its input's: the preceding coder's unpack size, or a BCJ2
+    source's. (An AES coder declares its output without the block padding, so this
+    holds after AES too.) 7-Zip decodes every coder to its own size and reports a
+    mismatch as a data error. Without this check a filter's size would go unchecked
+    inside a liblzma chain, whose output is checked only at the chain's last size: an
+    LZMA2 coder could decode past its own size in front of a Delta that declares more.
+    A coder over a pack stream has no declared input size here; a COPY there gets a
+    :class:`_CopyStage`.
+    """
+    for position, index in enumerate(run):
+        coder = folder.coders[index]
+        method = require(coder.method)
+        if method.kind is not MethodKind.COPY and not (
+            method is METHOD_DELTA or is_bcj(coder.method)
+        ):
+            continue
+        input_size = (
+            folder.unpack_sizes[run[position - 1]] if position > 0 else source_size
+        )
+        if input_size is not None and input_size != folder.unpack_sizes[index]:
+            raise CorruptionError(
+                f"7z coder {_method_hex(coder.method)} declares "
+                f"{folder.unpack_sizes[index]} bytes of output from "
+                f"{input_size} bytes of input"
+            )
 
 
 def _is_lzma_codec(coder: SevenZipCoder) -> bool:
@@ -430,7 +483,9 @@ def _plan_lzma_family(
             # (BPO-21872). The LZMA1 chain stops before the first BCJ, and is capped
             # at its declared output size: 7-Zip writes LZMA1 without an end marker,
             # so reading past that size would ask for input that is not there. Each
-            # BCJ, and each filter after one, runs as its own stage.
+            # BCJ, and each filter after one, runs as its own stage. The filters are
+            # size-preserving and checked against the codec's size by the planner,
+            # so the chain's last size is the LZMA1 coder's own.
             chain_end = index + 1
             while chain_end < end and not is_bcj(run[chain_end].method):
                 chain_end += 1
@@ -448,6 +503,7 @@ def _plan_lzma_family(
         else:
             # LZMA2 ± Delta ± BCJ: one chain. LZMA2 has an end marker, so it is not
             # capped; its declared size is checked against what it decodes instead.
+            # As above, the chain's last size is the LZMA2 coder's own.
             stages.append(
                 _lzma_chain_stage(
                     run[index:end], cap_size=None, end_check_size=unpack_sizes[end - 1]
@@ -463,6 +519,17 @@ def _decode_lzma_properties(coder: SevenZipCoder, filter_id: int) -> dict:
     try:
         return _decode_filter_properties(filter_id, coder.properties)
     except (lzma.LZMAError, ValueError) as exc:
+        props = coder.properties
+        if filter_id == lzma.FILTER_LZMA1 and len(props) == 5 and props[0] < 9 * 5 * 5:
+            # A well-formed lc/lp/pb byte that liblzma refuses: 7-Zip accepts
+            # lc + lp up to 12 (``7z a -m0=LZMA:lc=8``), liblzma only up to 4
+            # (``LZMA_LCLP_MAX``). The archive is valid; this reader cannot decode it.
+            lc, lp = props[0] % 9, props[0] // 9 % 5
+            if lc + lp > 4:
+                raise UnsupportedFeatureError(
+                    f"7z LZMA coder with lc={lc}, lp={lp} is not supported: "
+                    "liblzma decodes lc + lp up to 4"
+                ) from exc
         raise CorruptionError(
             f"Malformed 7z LZMA coder properties for {_method_hex(coder.method)}"
         ) from exc
@@ -592,6 +659,8 @@ class _DecodedPastSizeCheck(DelegatingStream):
     It wraps the output of every codec in :data:`_CODEC_LABELS`: an LZMA2 chain, and
     Deflate, Deflate64, BZip2, Zstd, LZ4 and Brotli. LZMA1 and PPMd have no end
     marker in 7z, so they are capped at their size and surplus output is not seen.
+    It also wraps a COPY coder that reads a pack stream (:class:`_CopyStage`): pack
+    bytes past the COPY coder's size would otherwise reach the coder after it.
 
     Every reader above this one stops at the declared size (the member slice, a BCJ2
     branch slice, the filter after the codec), so surplus output would otherwise pass
@@ -730,6 +799,8 @@ def _execute_stage(
                 out, size=stage.end_check_size, label=_CODEC_LABELS[Codec.LZMA2]
             )
         return out
+    if isinstance(stage, _CopyStage):
+        return _DecodedPastSizeCheck(stream, size=stage.unpack_size, label="Copy")
     return FilterStream(
         stream,
         lzma_filter=stage.lzma_filter,
@@ -779,14 +850,14 @@ def open_folder_pipeline(
     # checked on its own when it opens; the folder's total is checked here, before
     # any of them is built. One decoder alone is left to its own check, whose
     # message names the field.
-    declared = _declared_decoder_memory(plan)
+    declared = _declared_decoder_memory(plan, sources)
     if len(declared) > 1:
         folder_kind = "7z BCJ2 folder" if plan.has_bcj2() else "7z folder"
         check_decoder_memory(
             sum(declared),
             limits=config.decoder_limits,
             what=f"the sum over a {folder_kind}'s decoders "
-            "(LZMA dictionaries, PPMd memory)",
+            "(LZMA dictionaries, PPMd memory, zstd windows)",
         )
 
     def open_chain(chain: _Chain, *, seekable: bool) -> BinaryIO:
@@ -843,18 +914,32 @@ def open_folder_pipeline(
     return open_chain(plan, seekable=seekable)
 
 
-def _declared_decoder_memory(chain: _Chain) -> list[int]:
+def _declared_decoder_memory(chain: _Chain, sources: Sequence[BinaryIO]) -> list[int]:
     """The decoder memory each decoder of a chain declares, over every BCJ2 branch.
 
-    Counts what ``check_decoder_memory`` bounds per decoder: LZMA1/LZMA2 dictionary
-    sizes and the PPMd memory size. Other codecs declare no working memory in their
-    properties. PPMd properties that do not parse count as 0 here; the PPMd stage
-    refuses them itself when it opens.
+    Counts what ``max_decoder_memory`` bounds per decoder: LZMA1/LZMA2 dictionary
+    sizes, the PPMd memory size and the zstd window. Other codecs declare no working
+    memory. PPMd properties that do not parse count as 0 here; the PPMd stage refuses
+    them itself when it opens.
+
+    A zstd window is declared in the frame header, not in the coder properties, so it
+    is read from the pack stream when the zstd coder reads one directly (the layout
+    7-Zip ZS writes): the first frame's window counts. A zstd coder behind another
+    coder (AES, say) counts as 0, and so do later frames; each frame's window is still
+    held to ``max_decoder_memory`` on its own when the frame starts.
     """
     declared: list[int] = []
     if isinstance(chain.source, _Bcj2Stage):
         for branch in chain.source.branches:
-            declared.extend(_declared_decoder_memory(branch))
+            declared.extend(_declared_decoder_memory(branch, sources))
+    elif (
+        chain.stages
+        and isinstance(chain.stages[0], _CodecStage)
+        and chain.stages[0].codec is Codec.ZSTD
+    ):
+        window = _zstd_first_frame_window(sources[chain.source])
+        if window:
+            declared.append(window)
     for stage in chain.stages:
         if isinstance(stage, _LzmaChainStage):
             declared.extend(
@@ -868,6 +953,19 @@ def _declared_decoder_memory(chain: _Chain) -> list[int]:
             except ValueError:
                 declared.append(0)
     return declared
+
+
+def _zstd_first_frame_window(source: BinaryIO) -> int | None:
+    """The window of the zstd frame at the start of a pack view, which is left as found."""
+    if not source.seekable():
+        return None
+    position = source.tell()
+    try:
+        source.seek(0)
+        header = source.read(MAX_FRAME_HEADER_SIZE)
+    finally:
+        source.seek(position)
+    return frame_window_size(header)
 
 
 def _opens_streams(chain: _Chain) -> bool:
