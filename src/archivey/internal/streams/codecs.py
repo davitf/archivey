@@ -282,6 +282,19 @@ class _AcceleratorStream(DelegatingStream):
             return None
         return -(-bits // 8)
 
+    def block_offsets(self) -> dict[int, int] | None:
+        """The decoder's index, compressed bit offset to decompressed offset, if it has one.
+
+        ``block_offsets()`` forces the complete index, so this is for a caller that has
+        read to the end. Measured on rapidgzip 0.16's bzip2 decoder, the keys are the
+        start of each block's magic, the start of each end-of-stream marker of a stream
+        with data, and the end of the last such marker.
+        """
+        offsets = getattr(self._inner, "block_offsets", None)
+        if offsets is None:
+            return None
+        return dict(offsets())
+
     def read(self, n: int = -1, /) -> bytes:
         try:
             data = super().read(n)
@@ -1469,7 +1482,65 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         self._end_unchecked = False  # the stdlib engine reports its own end
         return self._begin_stdlib_fallback(size)
 
+    def _open_view(self) -> BinaryIO:
+        """A fresh view of the source at offset 0 that leaves the decoder's cursor alone."""
+        if self._fallback_path is not None:
+            return open(self._fallback_path, "rb")
+        return self._reopen()
+
     def _check_end(self) -> None:
+        """Check the combined CRCs, then look for trailing data."""
+        self._end_unchecked = False
+        self._check_combined_crcs()
+        self._check_trailing_data()
+
+    def _check_combined_crcs(self) -> None:
+        """Check each stream's combined CRC, which the accelerator does not.
+
+        rapidgzip's bzip2 decoder checks every block's CRC against its data, but not the
+        stream's combined CRC in the end-of-stream marker, and that is the one check
+        that covers the sequence of blocks: a stream with a whole block cut out reads
+        short with no error. The combined CRC is built from the block CRCs, each stored
+        in its block's header, so the decoder's index (where every block and every
+        end-of-stream marker starts) and 80 bits of the source at each of those places
+        are enough to check it, without decoding anything again.
+        """
+        offsets_fn = getattr(self._inner, "block_offsets", None)
+        offsets = offsets_fn() if offsets_fn is not None else None
+        if not offsets:
+            return
+        with self._open_view() as view:
+            combined = 0
+            stream_end = -1
+            for bit in sorted(offsets):
+                if bit == stream_end:
+                    # The byte-aligned end of the last end-of-stream marker. What
+                    # follows is the next stream's header, or trailing bytes (which
+                    # _check_trailing_data reports), and neither is checked here.
+                    continue
+                view.seek(bit // 8)
+                raw = view.read(11)
+                shift = bit % 8
+                if len(raw) * 8 < shift + 80:
+                    continue
+                field = (int.from_bytes(raw, "big") >> (len(raw) * 8 - shift - 80)) & (
+                    (1 << 80) - 1
+                )
+                magic, crc = field >> 32, field & 0xFFFFFFFF
+                if magic == _BZIP2_BLOCK_MAGIC:
+                    combined = ((combined << 1) | (combined >> 31)) & 0xFFFFFFFF
+                    combined ^= crc
+                elif magic == _BZIP2_EOS_MAGIC:
+                    if crc != combined:
+                        raise CorruptionError(
+                            "bzip2 stream is corrupt: the combined CRC in the "
+                            f"end-of-stream marker at bit {bit} is {crc:#010x}, but "
+                            f"the stream's blocks combine to {combined:#010x}"
+                        )
+                    combined = 0
+                    stream_end = -(-(bit + 80) // 8) * 8
+
+    def _check_trailing_data(self) -> None:
         """Report the first byte after the last stream that is neither zero padding nor
         part of an empty stream. The accelerator skips such bytes.
 
@@ -1481,17 +1552,12 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
         zero padding nor part of an empty stream. The standard-library path accepts
         both, so this path accepts both too.
         """
-        self._end_unchecked = False
         if not self._config.report_trailing_data:
             return
         end = getattr(self._inner, "compressed_position", lambda: None)()
         if end is None:
             return
-        with (
-            open(self._fallback_path, "rb")
-            if self._fallback_path is not None
-            else self._reopen()
-        ) as view:
+        with self._open_view() as view:
             view.seek(end)
             # ``held`` is the start of an empty stream that the previous chunk cut, or
             # nothing. ``offset`` is the source offset of ``data[0]``.
@@ -1539,6 +1605,11 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
             pass
         return self._inner.read(size)
 
+
+# The 48-bit magic numbers that start a bzip2 block and an end-of-stream marker. Each
+# is followed by a 32-bit CRC: the block's, or the stream's combined CRC.
+_BZIP2_BLOCK_MAGIC = 0x314159265359
+_BZIP2_EOS_MAGIC = 0x177245385090
 
 # Bytes read per step while looking past an accelerator's end for the first byte that is
 # neither zero padding nor part of an empty stream.

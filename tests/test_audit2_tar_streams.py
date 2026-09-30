@@ -208,11 +208,6 @@ def test_bz2_fixtures_are_refused_by_the_standard_library() -> None:
 
 
 @requires("rapidgzip")
-@pytest.mark.xfail(
-    strict=True,
-    reason="T15: the bzip2 accelerator skips the combined stream CRC, so a .bz2 "
-    "missing a whole block reads short with no error",
-)
 def test_bz2_accelerator_refuses_a_stream_with_a_block_removed() -> None:
     """compressed-streams: 'An accelerator preserves the error contract of the path
     it replaces'; bzip2.md says every block's CRC and the combined CRC are checked on
@@ -232,16 +227,36 @@ def test_bz2_accelerator_refuses_a_stream_with_a_block_removed() -> None:
 
 
 @requires("rapidgzip")
-@pytest.mark.xfail(
-    strict=True,
-    reason="T15: the bzip2 accelerator accepts a wrong combined stream CRC",
-)
 def test_bz2_accelerator_checks_the_combined_crc() -> None:
     """The narrow form: one bit flipped in the end-of-stream CRC."""
     _payload, damaged = _bz2_with_bad_combined_crc()
     with pytest.raises(CorruptionError):
         _read_single(
             damaged, ArchiveFormat.BZ2, config=_ACCEL_ON, seekable_members=True
+        )
+
+
+@requires("rapidgzip")
+def test_bz2_accelerator_combined_crc_check_per_stream() -> None:
+    """The check runs per stream: concatenated streams (with an empty one between)
+    followed by zero padding read clean, and a stream with a block removed is refused
+    when it is not the first."""
+    payload, damaged = _bz2_without_a_block()
+    head = b"head" * 1000
+    good = (
+        bz2.compress(head) + bz2.compress(b"") + bz2.compress(payload, 1) + b"\0" * 64
+    )
+    out, _diagnostics = _read_single(
+        good, ArchiveFormat.BZ2, config=_ACCEL_ON, seekable_members=True
+    )
+    if out != head + payload:
+        pytest.fail(f"read {len(out)} of {len(head + payload)} bytes")
+    with pytest.raises(CorruptionError):
+        _read_single(
+            bz2.compress(head) + damaged,
+            ArchiveFormat.BZ2,
+            config=_ACCEL_ON,
+            seekable_members=True,
         )
 
 
