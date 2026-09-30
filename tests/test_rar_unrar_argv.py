@@ -69,7 +69,9 @@ def test_archive_path_follows_a_switch_terminator(
     (cmd,) = seen
     assert cmd[-2:] == ["--", "-inul.rar"]
     assert cmd.index("--") == len(cmd) - 2
-    assert "-n./-x.txt" in cmd[: cmd.index("--")]
+    # UTF-8 bytes on POSIX, whatever the filesystem encoding; text on Windows.
+    mask = "-n./-x.txt" if sys.platform == "win32" else b"-n./-x.txt"
+    assert mask in cmd[: cmd.index("--")]
 
 
 @requires_binary("unrar")
@@ -238,11 +240,18 @@ def test_real_hung_unrar_costs_one_probe_timeout(
 # --- the member name in argv, and the child's locale -------------------------
 
 
+def _rar3_8bit_view(stored: bytes) -> str | None:
+    return rar_unrar.unrar_member_view(
+        rar5=False, stored=stored, rar3_unicode_name=None, host_os=2, file_version=None
+    )
+
+
 def test_8bit_name_mask_is_the_stored_bytes() -> None:
     """``*`` narrows to ``?`` byte for byte; the stored bytes are not re-encoded."""
     assert rar_unrar._member_include_switch(b"caf\xe9*.txt") == b"-n./caf\xe9?.txt"
+    stored = b"dir\\caf\xe9.txt"
     argument = rar_unrar.unrar_member_argument(
-        "dir/café.txt", b"dir\\caf\xe9.txt", stored_is_8bit=True
+        _rar3_8bit_view(stored), stored, stored_is_8bit=True
     )
     if sys.platform == "win32":
         # Windows argv is Unicode; the byte goes through the OEM code page as
@@ -264,9 +273,9 @@ def test_unconvertible_windows_8bit_name_is_refused(
     """No mask is better than a guessed one: a miss reads as truncated data."""
     monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
     monkeypatch.setattr(rar_unrar, "_windows_unrar_8bit_name", lambda stored: None)
-    argument = rar_unrar.unrar_member_argument(
-        "café.txt", b"caf\xe9.txt", stored_is_8bit=True
-    )
+    stored = b"caf\xe9.txt"
+    assert _rar3_8bit_view(stored) is None
+    argument = rar_unrar.unrar_member_argument(None, stored, stored_is_8bit=True)
     assert argument is None
     reason = rar_unrar.unrar_member_refusal(argument)
     assert reason is not None

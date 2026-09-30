@@ -3,7 +3,7 @@
 Public surface layout (this package root only — not ``internal`` / ``cli``):
 
 - :mod:`archivey.core` — ``open_archive`` / ``open_stream`` / ``extract`` / detection
-- :mod:`archivey.reader` — ``ArchiveReader`` ABC
+- :mod:`archivey.reader` — ``ArchiveReader`` / ``ForwardArchiveReader`` ABCs
 - :mod:`archivey.types` — formats, members, compression, extraction policies/results,
   format availability
 - :mod:`archivey.detection` — ``FormatInfo`` / ``DetectionConfidence``
@@ -105,7 +105,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.filters import sanitize_names
 from archivey.internal.streams.archive_stream import ArchiveStream
-from archivey.reader import ArchiveReader, MemberSelector
+from archivey.reader import ArchiveReader, ForwardArchiveReader, MemberSelector
 from archivey.types import (
     AbortOn,
     ArchiveFormat,
@@ -172,6 +172,7 @@ __all__ = [
     "FormatAvailability",
     "MissingComponent",
     "ArchiveReader",
+    "ForwardArchiveReader",
     "ArchiveStream",
     "ArchiveFormat",
     "ContainerFormat",

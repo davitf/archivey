@@ -21,6 +21,7 @@ import pytest
 import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
 from archivey import open_archive
 from archivey.exceptions import (
+    CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -441,10 +442,24 @@ def test_hostile_all_candidates_main_decodes() -> None:
 
 
 # A range-coder stream whose first bit decodes as 1 (convert), with no encoder: the
-# first start byte is shifted out of the 32-bit code, so ``code`` is 0xFFFFFFFF, which
-# is above the first bound, ``(0xFFFFFFFF >> 11) * 1024``. The second bit is a 1 too.
-_RC_CONVERT = b"\x00" + b"\xff" * 4
+# code 0xFFFFFFFE is above the first bound, ``(0xFFFFFFFF >> 11) * 1024``. The second
+# bit is a 1 too. (0xFFFFFFFF itself is a start 7-Zip refuses.)
+_RC_CONVERT = b"\x00" + b"\xff" * 3 + b"\xfe"
 _T1, _T2 = 0x12345678, 0x0ABBCCDD
+
+
+@pytest.mark.parametrize(
+    "rc",
+    [b"\xff" + b"\x00" * 4, b"\x00" + b"\xff" * 4],
+    ids=["nonzero-first-byte", "code-all-ones"],
+)
+def test_invalid_range_coder_start_is_refused(rc: bytes) -> None:
+    """The two starts 7-Zip 23.01 refuses are corruption, not a guess (sweep S29-K10)."""
+    main = b"\x90\xe8\x90\x90"
+    with pytest.raises(
+        CorruptionError, match="range coder stream has an invalid start"
+    ):
+        _decode([main, b"", b"", rc], len(main))
 
 
 def _le(target: int, position: int) -> bytes:

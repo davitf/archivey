@@ -9,6 +9,7 @@ import os
 import shutil
 import struct
 import subprocess
+import sys
 import threading
 import time
 import zlib
@@ -3449,11 +3450,16 @@ def test_unrar_member_include_switch_builds_n_mask() -> None:
     an ``@listfile`` if passed positionally."""
     from archivey.internal.backends.rar_unrar import _member_include_switch
 
-    assert _member_include_switch("-inul") == "-n./-inul"
-    assert _member_include_switch("@atfile") == "-n./@atfile"
-    assert _member_include_switch("dir/normal.txt") == "-n./dir/normal.txt"
-    assert _member_include_switch("weird*.txt") == "-n./weird?.txt"
-    assert _member_include_switch("a?b.txt") == "-n./a?b.txt"
+    def switch(text: str) -> str | bytes:
+        # UTF-8 bytes on POSIX, whatever the filesystem encoding; text on Windows.
+        return text if sys.platform == "win32" else text.encode()
+
+    assert _member_include_switch("-inul") == switch("-n./-inul")
+    assert _member_include_switch("@atfile") == switch("-n./@atfile")
+    assert _member_include_switch("dir/normal.txt") == switch("-n./dir/normal.txt")
+    assert _member_include_switch("weird*.txt") == switch("-n./weird?.txt")
+    assert _member_include_switch("a?b.txt") == switch("-n./a?b.txt")
+    assert _member_include_switch("café.txt") == switch("-n./café.txt")
 
 
 def test_unrar_mask_for_narrows_stars_to_question_marks() -> None:
@@ -3476,38 +3482,103 @@ def test_unrar_mask_for_narrows_stars_to_question_marks() -> None:
         assert len(_unrar_mask_for(name)) == len(name)
 
 
-def test_unrar_mask_match_treats_brackets_as_literal() -> None:
+def test_unrar_mask_selection_treats_brackets_as_literal() -> None:
     """``unrar -n`` does not treat ``[]`` as a character class; the skip must not
     either, or a name with both brackets and a glob would desync from the pipe."""
-    from archivey.internal.backends.rar_unrar import _unrar_mask_match
+    from archivey.internal.backends.rar_unrar import unrar_mask_selects
 
-    assert _unrar_mask_match("a*.txt", "a?.txt")
-    assert _unrar_mask_match("aX.txt", "a?.txt")
-    assert _unrar_mask_match("subdir/aY.txt", "a?.txt")
-    assert not _unrar_mask_match("b1.txt", "a?.txt")
+    def selects(name: str, mask: str) -> bool:
+        return unrar_mask_selects("./" + mask, name)
+
+    assert selects("a*.txt", "a?.txt")
+    assert selects("aX.txt", "a?.txt")
+    assert selects("subdir/aY.txt", "a?.txt")
+    assert not selects("b1.txt", "a?.txt")
     # Fixed length: what a ``*`` mask would have swallowed, a ``?`` mask does not.
-    assert not _unrar_mask_match("aXX.txt", "a?.txt")
-    assert not _unrar_mask_match("a.txt", "a?.txt")
-    assert _unrar_mask_match("b?.txt", "b?.txt")
-    assert _unrar_mask_match("b1.txt", "b?.txt")
-    assert _unrar_mask_match("foo[a].txt", "foo[a].txt")
-    assert not _unrar_mask_match("fooa.txt", "foo[a].txt")
-    assert _unrar_mask_match("foo[a]X.txt", "foo[a]?.txt")
-    assert not _unrar_mask_match("fooaX.txt", "foo[a]?.txt")
-    assert _unrar_mask_match("subdir/aY.txt", "subdir/a?.txt")
-    assert not _unrar_mask_match("aX.txt", "subdir/a?.txt")
-    assert not _unrar_mask_match("other/aY.txt", "subdir/a?.txt")
-    assert _unrar_mask_match("aY.txt", "./aY.txt")
-    assert _unrar_mask_match("aY.txt", "aY.txt")
-    assert not _unrar_mask_match("subdir/aY.txt", "aY.txt")
-    # Known over-match vs unrar 7.00 (F1). Directory-glob / backslash names are
-    # refused before this function sizes a skip; these pins keep the divergence
-    # visible rather than silently "fixed" without an oracle.
-    assert _unrar_mask_match("aaa/x.txt", "d?/x.txt")
-    assert _unrar_mask_match("a/b1.txt", r"a\b?.txt")
+    assert not selects("aXX.txt", "a?.txt")
+    assert not selects("a.txt", "a?.txt")
+    assert selects("b?.txt", "b?.txt")
+    assert selects("b1.txt", "b?.txt")
+    assert selects("foo[a].txt", "foo[a].txt")
+    assert not selects("fooa.txt", "foo[a].txt")
+    assert selects("foo[a]X.txt", "foo[a]?.txt")
+    assert not selects("fooaX.txt", "foo[a]?.txt")
+    assert selects("subdir/aY.txt", "subdir/a?.txt")
+    assert not selects("aX.txt", "subdir/a?.txt")
+    assert not selects("other/aY.txt", "subdir/a?.txt")
+    assert selects("aY.txt", "aY.txt")
+    assert not selects("subdir/aY.txt", "aY.txt")
+    # A glob in a directory component matches the whole path, so it does not
+    # select a longer directory (these names are still refused before a read).
+    assert not selects("aaa/x.txt", "d?/x.txt")
+    assert selects("dX/x.txt", "d?/x.txt")
 
 
-def test_unrar_mask_match_windows_fold_does_not_change_wildcard_length(
+def test_unrar_mask_selection_follows_unrar_path_rules() -> None:
+    """The rules measured against ``unrar`` 7.00 in ``test_rar_unrar_names.py``."""
+    from archivey.internal.backends.rar_unrar import unrar_mask_selects
+
+    def selects(name: str, mask: str) -> bool:
+        return unrar_mask_selects("./" + mask, name)
+
+    # A mask selects everything below the path it names.
+    assert selects("ab/x.txt", "ab")
+    assert not selects("abc", "ab")
+    # A trailing dot in the mask may stand for nothing, not the other way round.
+    assert selects("ab", "ab.")
+    assert selects("ab.", "ab..")
+    assert not selects("ab.", "ab")
+    # Leading ``./`` and ``../`` parts are dropped from the name as well.
+    assert selects("../ab", "ab")
+    assert selects("x/../ab", "ab")
+
+
+def test_unrar_mask_selection_on_windows_takes_either_separator_in_the_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows ``unrar`` turns ``/`` into ``\\`` in the name (``ConvertFileHeader``)
+    and in the mask (``CheckArgs``), so a directory part compares equal whichever
+    separator either side was written with. The index keys must agree, or an exact
+    mask would not find its member. Linux keeps ``\\`` as a name character.
+    """
+    from archivey.internal.backends import rar_unrar
+    from archivey.internal.backends.rar_unrar import (
+        unrar_mask_keys,
+        unrar_mask_selects,
+        unrar_selection_keys,
+    )
+
+    monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
+    for name in ("subdir/aY.txt", "subdir\\aY.txt"):
+        assert unrar_mask_selects("./subdir/a?.txt", name)
+        assert unrar_mask_selects("./subdir/aY.txt", name)
+        assert unrar_mask_selects("./subdir", name)
+        assert not unrar_mask_selects("./other/a?.txt", name)
+        keys = unrar_mask_keys("./subdir/aY.txt")
+        assert keys is not None
+        assert set(keys) & set(unrar_selection_keys(name))
+    monkeypatch.setattr(rar_unrar.sys, "platform", "linux")
+    assert unrar_mask_selects("./subdir/a?.txt", "subdir/aY.txt")
+    assert not unrar_mask_selects("./subdir/a?.txt", "subdir\\aY.txt")
+
+
+def test_unrar_name_pos_takes_a_drive_only_after_an_ascii_letter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``GetNamePos`` falls back to 2 only for ``IsDriveLetter``: A-Z, then ``:``."""
+    from archivey.internal.backends import rar_unrar
+    from archivey.internal.backends.rar_unrar import _unrar_name_pos
+
+    monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
+    assert _unrar_name_pos("c:ab") == 2
+    assert _unrar_name_pos("Z:ab") == 2
+    for name in ("1:ab", ":x", "é:ab", "ı:ab"):
+        assert _unrar_name_pos(name) == 0, name
+    monkeypatch.setattr(rar_unrar.sys, "platform", "linux")
+    assert _unrar_name_pos("c:ab") == 0
+
+
+def test_unrar_mask_selection_windows_fold_does_not_change_wildcard_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``?`` is length-sensitive; ``str.casefold()`` is not length-preserving.
@@ -3515,30 +3586,32 @@ def test_unrar_mask_match_windows_fold_does_not_change_wildcard_length(
     ``ß`` casefolds to ``ss``. Whole-string folding then makes ``aßb.txt``
     (7) miss mask ``a?b.txt`` (7) on Windows, while Windows ``unrar`` folds
     per character via ``toupperw`` and still emits the member. The skip
-    would land one member short. Folding inside the per-character walk keeps
+    would land one member short. Folding one character at a time keeps
     the lengths aligned.
 
     The ``AXB.TXT`` assertions pin the fold itself: literals that differ only
     in case. The three ``ß`` checks stay green if ``.upper()`` is deleted.
     """
     from archivey.internal.backends import rar_unrar
-    from archivey.internal.backends.rar_unrar import _unrar_mask_match
+    from archivey.internal.backends.rar_unrar import unrar_mask_selects
 
     monkeypatch.setattr(rar_unrar.sys, "platform", "win32")
-    assert _unrar_mask_match("aßb.txt", "a?b.txt")
-    assert _unrar_mask_match("aßb.txt", "aßb.txt")
-    assert not _unrar_mask_match("aßb.txt", "a??b.txt")
+    assert unrar_mask_selects("./a?b.txt", "aßb.txt")
+    assert unrar_mask_selects("./aßb.txt", "aßb.txt")
+    assert not unrar_mask_selects("./a??b.txt", "aßb.txt")
     # Literals that differ only in case: the per-character fold, not the
     # length check. Deleting ``.upper()`` leaves the three assertions above
     # green and fails these.
-    assert _unrar_mask_match("AXB.TXT", "a?b.txt")
-    assert not _unrar_mask_match("AXB.TXT", "a?c.txt")
+    assert unrar_mask_selects("./a?b.txt", "AXB.TXT")
+    assert not unrar_mask_selects("./a?c.txt", "AXB.TXT")
+    # An exact name folds too: Windows unrar would pipe both.
+    assert unrar_mask_selects("./same.txt", "SAME.TXT")
 
 
 def test_unrar_glob_mask_is_linear_on_a_hostile_member_name() -> None:
     """A hostile member name must not make either matcher backtrack.
 
-    Both operands come from the archive: ``_unrar_glob_prefix`` matches every
+    Both operands come from the archive: ``_unrar_selection`` matches every
     earlier member's name against the mask built from the target's. Two matchers
     used to backtrack on it. Archivey's regex spelled ``*`` as ``.*`` and cost ~8x
     per added ``*`` — 18.2 s at eight of them. ``unrar`` 7.00's own mask matcher
@@ -3549,91 +3622,69 @@ def test_unrar_glob_mask_is_linear_on_a_hostile_member_name() -> None:
     The bound here is wall clock rather than a call count because the defect was
     the shape of the search, not how often it ran.
     """
-    from archivey.internal.backends.rar_unrar import (
-        _unrar_component_match,
-        _unrar_mask_for,
-    )
+    from archivey.internal.backends.rar_unrar import _unrar_mask_for, _unrar_match
 
     name = "a" * 60 + ".txt"
     for stars in (8, 64, 256):
         hostile = "a" + "*a" * stars + "b.txt"
         mask = _unrar_mask_for(hostile)
         started = time.perf_counter()
-        assert not _unrar_component_match(name, mask)
+        assert not _unrar_match(mask, name)
         elapsed = time.perf_counter() - started
         # Microseconds in practice; the old form needed 18 s at stars=8 alone.
         assert elapsed < 1.0, f"{stars} wildcards took {elapsed:.3f}s"
 
 
-def test_unrar_component_match_is_a_fixed_length_walk() -> None:
+def test_unrar_match_is_a_single_walk() -> None:
     """Pin the ``?``-only grammar, including where it differs from ``fnmatch``:
-    ``[]`` literal, ``\\`` literal, and ``?`` matching a newline."""
-    from archivey.internal.backends.rar_unrar import _unrar_component_match
+    ``[]`` literal, ``\\`` literal, ``?`` matching a newline, and a pattern dot
+    that may stand for nothing at the end of the name."""
+    from archivey.internal.backends.rar_unrar import _unrar_match
 
-    assert _unrar_component_match("", "")
-    assert not _unrar_component_match("", "?")
-    assert not _unrar_component_match("a", "")
-    assert _unrar_component_match("a.c", "a?c")
-    assert _unrar_component_match("a\nc", "a?c")
-    assert _unrar_component_match("abc", "a?c")
-    assert not _unrar_component_match("ac", "a?c")
-    assert not _unrar_component_match("abbc", "a?c")
-    assert _unrar_component_match("a[b]c", "a[b]c")
-    assert not _unrar_component_match("abc", "a[b]c")
-    assert _unrar_component_match(r"a\bc", r"a\bc")
-    assert not _unrar_component_match("abc", r"a\bc")
-    assert _unrar_component_match("a+c", "a+c")
-    assert not _unrar_component_match("aac", "a+c")
+    assert _unrar_match("", "")
+    assert not _unrar_match("?", "")
+    assert not _unrar_match("", "a")
+    assert _unrar_match("a?c", "a.c")
+    assert _unrar_match("a?c", "a\nc")
+    assert _unrar_match("a?c", "abc")
+    assert not _unrar_match("a?c", "ac")
+    assert not _unrar_match("a?c", "abbc")
+    assert _unrar_match("a[b]c", "a[b]c")
+    assert not _unrar_match("a[b]c", "abc")
+    assert _unrar_match(r"a\bc", r"a\bc")
+    assert not _unrar_match(r"a\bc", "abc")
+    assert _unrar_match("a+c", "a+c")
+    assert not _unrar_match("a+c", "aac")
+    assert _unrar_match("a.", "a")
+    assert _unrar_match("a..", "a")
+    assert not _unrar_match("a", "a.")
+    assert not _unrar_match("a.b", "a")
     # A ``*`` here means the mask was not built by ``_unrar_mask_for`` and the
     # skip is about to be sized against a mask unrar never saw.
     with pytest.raises(AssertionError):
-        _unrar_component_match("abc", "a*c")
+        _unrar_match("a*c", "abc")
 
 
-def test_unrar_mask_narrowing_keeps_the_member_and_only_narrows() -> None:
-    """Exhaustive check of the two properties the ``*``-to-``?`` swap rests on.
+def test_unrar_mask_narrowing_keeps_the_member() -> None:
+    """The mask built from a name always still selects that name.
 
     A glob member name is matched against its siblings, so wildcards appear on
-    the *name* side too — an alphabet of plain characters cannot show either
-    property. First: the mask built from a name always still matches that name,
-    or a member would go unreadable. Second: it matches a subset of what the
-    ``*`` mask matched, so the pipe can only ever carry fewer siblings to skip,
-    never a sibling the skip does not know about. The ``*`` grammar is spelled as
-    the regex archivey used to run, bounded at length 3 so its own backtracking
-    stays trivial.
+    the *name* side too — an alphabet of plain characters cannot show it. If a
+    mask stopped selecting its own member, the member would go unreadable.
+    Which siblings the narrowed mask selects besides is computed from that mask
+    itself (``unrar_mask_selects``), so it need not be a subset of what the
+    ``*`` mask selected, and under unrar's DOS extension rules it is not always.
     """
     import itertools
-    import re
 
-    from archivey.internal.backends.rar_unrar import (
-        _unrar_component_match,
-        _unrar_mask_for,
-    )
-
-    def star_regex_match(name: str, mask: str) -> bool:
-        pattern = "".join(
-            ".*" if ch == "*" else "." if ch == "?" else re.escape(ch) for ch in mask
-        )
-        return re.fullmatch(pattern, name, flags=re.DOTALL) is not None
+    from archivey.internal.backends.rar_unrar import _unrar_mask_for, _unrar_match
 
     alphabet = "a*?."
     words = [
-        "".join(w) for n in range(4) for w in itertools.product(alphabet, repeat=n)
+        "".join(w) for n in range(5) for w in itertools.product(alphabet, repeat=n)
     ]
-
-    unreachable = [
-        w for w in words if not _unrar_component_match(w, _unrar_mask_for(w))
-    ]
+    unreachable = [w for w in words if not _unrar_match(_unrar_mask_for(w), w)]
     assert not unreachable, f"mask stopped matching its own member: {unreachable[:5]}"
-
-    widened = [
-        (name, member)
-        for member in words
-        for name in words
-        if _unrar_component_match(name, _unrar_mask_for(member))
-        and not star_regex_match(name, member)
-    ]
-    assert not widened, f"{len(widened)} newly matched, e.g. {widened[:5]}"
 
 
 def test_unrar_glob_demux_ok_basename_only() -> None:
@@ -3708,7 +3759,7 @@ def test_glob_member_matching_nothing_else_still_reads(name: str) -> None:
     """A glob name that matches no other member has no prefix, so it is not refused.
 
     ``only*.dat`` is the accidental ``report*.pdf`` case: the mask matches only
-    itself, ``_unrar_glob_prefix`` is 0, and the refusal never triggers. This is the
+    itself, the skip ``_unrar_selection`` sizes is 0, and the refusal never triggers. This is the
     boundary the refusal must not overshoot, so it is pinned without the flag.
     """
     with open_archive(_fixture(name)) as archive:

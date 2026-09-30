@@ -21,16 +21,24 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, RarDecompressor, open_archive
+from archivey import (
+    ArchiveReader,
+    ArchiveyConfig,
+    RarDecompressor,
+    SpoolLimits,
+    open_archive,
+)
 from archivey.exceptions import (
     ArchiveyError,
     EncryptionError,
     PackageNotInstalledError,
     ReadError,
+    ResourceLimitError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import rar_reader, rar_unar
@@ -238,6 +246,150 @@ def test_prefixed_archive_is_copied_for_unar(tmp_path: Path, name: str) -> None:
             if member.is_file
         }
     assert got == {k: v for k, v in expected.items() if not k.startswith("<comment>")}
+
+
+def _unar_limited(max_bytes: int) -> ArchiveyConfig:
+    return ArchiveyConfig(
+        rar_decompressor=RarDecompressor.UNAR,
+        spool_limits=SpoolLimits(max_bytes=max_bytes),
+    )
+
+
+def _file_digests(archive: ArchiveReader) -> dict[str, str]:
+    return {
+        member.name: hashlib.sha256(archive.read(member)).hexdigest()
+        for member in archive.members()
+        if member.is_file
+    }
+
+
+@requires_binary("unar", "unrar")
+def test_prefixed_stream_copy_for_unar_is_bounded_by_the_spool_limit() -> None:
+    """A prefixed stream is copied for unar from where the RAR starts, and that copy
+    is a spool copy like unrar's: a limit below its size refuses the read."""
+    original = (_CORPUS / "compressed.rar").read_bytes()
+    prefixed = b"\x00" * 4096 + original
+    with open_archive(io.BytesIO(prefixed), format="rar", config=_UNRAR) as archive:
+        expected = _file_digests(archive)
+    with open_archive(
+        io.BytesIO(prefixed), format="rar", config=_unar_limited(len(original))
+    ) as archive:
+        assert _file_digests(archive) == expected
+    with open_archive(
+        io.BytesIO(prefixed), format="rar", config=_unar_limited(len(original) - 1)
+    ) as archive:
+        member = next(m for m in archive.members() if m.is_file)
+        with pytest.raises(ResourceLimitError, match=r"SpoolLimits\.max_bytes"):
+            archive.read(member)
+
+
+def _spy_links(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record the names ``unar``'s private directory is given."""
+    names: list[str] = []
+    link = rar_reader._link_file
+
+    def spy(source: Path, dest: Path) -> None:
+        names.append(dest.name)
+        link(source, dest)
+
+    monkeypatch.setattr(rar_reader, "_link_file", spy)
+    return names
+
+
+@requires_binary("unar")
+def test_a_single_archive_is_linked_as_archive_rar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single archive gets a name no other file continues; a set keeps its scheme."""
+    names = _spy_links(monkeypatch)
+    with open_archive(_CORPUS / "compressed.rar", config=_UNAR) as archive:
+        _file_digests(archive)
+    assert names == ["archive.rar"]
+    names.clear()
+    with open_archive(_RAR / "tinyvol.part1.rar", config=_UNAR) as archive:
+        _file_digests(archive)
+    assert names == ["archive.part1.rar", "archive.part2.rar"]
+
+
+def _no_links(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise OSError("links refused for this test")
+
+    monkeypatch.setattr(os, "symlink", refuse)
+    monkeypatch.setattr(os, "link", refuse)
+
+
+@requires_binary("unar", "unrar")
+@pytest.mark.parametrize(
+    "names",
+    [
+        (_CORPUS / "compressed.rar",),
+        (_RAR / "tinyvol.part1.rar", _RAR / "tinyvol.part2.rar"),
+    ],
+    ids=["single", "volumes"],
+)
+def test_a_volume_that_cannot_be_linked_is_copied_within_the_spool_limit(
+    monkeypatch: pytest.MonkeyPatch, names: tuple[Path, ...]
+) -> None:
+    """Where the system allows neither link, unar gets a copy, and the copy is spooled
+    like any other: read correctly within the limit, refused over it."""
+    with open_archive(names[0], format="rar", config=_UNRAR) as archive:
+        expected = _file_digests(archive)
+    total = sum(path.stat().st_size for path in names)
+    _no_links(monkeypatch)
+    with open_archive(names[0], format="rar", config=_unar_limited(total)) as archive:
+        assert _file_digests(archive) == expected
+    before = set(Path(tempfile.gettempdir()).glob("archivey-unar-*"))
+    with open_archive(
+        names[0], format="rar", config=_unar_limited(total - 1)
+    ) as archive:
+        member = next(m for m in archive.members() if m.is_file)
+        with pytest.raises(ResourceLimitError, match=r"SpoolLimits\.max_bytes"):
+            archive.read(member)
+        # The links failed, so the directory was made; the refused copy removed it.
+        assert set(Path(tempfile.gettempdir()).glob("archivey-unar-*")) == before
+
+
+@requires_binary("unar", "unrar")
+def test_a_stream_source_is_copied_once_into_unars_directory() -> None:
+    """A stream source is copied once, straight into unar's private directory, so it is
+    charged once against the spool limit: it reads at a limit of exactly its size and
+    is refused one byte under, before any directory is made (review round 2, K11)."""
+    path = _CORPUS / "compressed.rar"
+    data = path.read_bytes()
+    with open_archive(path, format="rar", config=_UNRAR) as archive:
+        expected = _file_digests(archive)
+    config = _unar_limited(len(data))
+    with open_archive(io.BytesIO(data), format="rar", config=config) as archive:
+        assert _file_digests(archive) == expected
+    before = set(Path(tempfile.gettempdir()).glob("archivey-unar-*"))
+    config = _unar_limited(len(data) - 1)
+    with open_archive(io.BytesIO(data), format="rar", config=config) as archive:
+        member = next(m for m in archive.members() if m.is_file)
+        with pytest.raises(ResourceLimitError, match=r"SpoolLimits\.max_bytes"):
+            archive.read(member)
+        assert set(Path(tempfile.gettempdir()).glob("archivey-unar-*")) == before
+
+
+@requires_binary("unar", "rar")
+def test_numbered_neighbour_is_not_read_as_the_next_volume(tmp_path: Path) -> None:
+    """unar picks a volume set by file name: ``backup2.rar`` beside ``backup1.rar``
+    must still read as itself, not as volume 2 of a set that starts at its neighbour.
+    """
+    for number in (1, 2):
+        source = tmp_path / f"src{number}" / "data.txt"
+        source.parent.mkdir()
+        source.write_bytes(f"contents of archive {number}\n".encode() * 50)
+        subprocess.run(
+            ["rar", "a", "-idq", "-ep", "-m3", str(tmp_path / f"backup{number}.rar")]
+            + [str(source)],
+            check=True,
+        )
+    for number in (1, 2):
+        with open_archive(tmp_path / f"backup{number}.rar", config=_UNAR) as archive:
+            assert archive.read("data.txt") == (
+                f"contents of archive {number}\n".encode() * 50
+            )
 
 
 @requires_binary("unar")
@@ -572,6 +724,24 @@ def test_crash_raises_on_the_completing_read() -> None:
     with pytest.raises(ReadError, match="signal"):
         stream.read()
     stream.close()
+
+
+def test_a_program_archivey_stops_after_end_of_file_is_not_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A program that closed stdout but exits slower than the wait at end of file is
+    stopped by close(); the signal is archivey's own, so the full read is not an error.
+    """
+    monkeypatch.setattr(unar.UnarOutputStream, "_EOF_EXIT_WAIT", 0.05)
+    proc, stream = _child(
+        "import os, sys, time\n"
+        "sys.stdout.buffer.write(b'x' * 10); sys.stdout.flush()\n"
+        "os.close(1); time.sleep(2)"
+    )
+    assert stream.read() == b"x" * 10
+    assert stream.read() == b""
+    stream.close()
+    assert proc.returncode is not None
 
 
 def test_close_before_end_of_file_is_not_an_error() -> None:

@@ -342,12 +342,12 @@ def test_bzip2_accelerator_header_errors_are_typed(prefix: bytes) -> None:
 
 
 def _lzw_run_bomb(codes: int) -> bytes:
-    """A ``.Z`` stream (16-bit, no block mode) whose every code is the KwKwK case,
+    """A ``.Z`` stream (16-bit, block mode) whose every code is the KwKwK case,
     so dictionary entry ``k`` is ``k`` bytes of ``a``: ``codes`` codes decode to
-    ``codes * (codes + 1) / 2`` bytes."""
-    out = bytearray(b"\x1f\x9d\x10")
+    ``codes * (codes + 1) / 2`` bytes. ``gzip -d`` decodes it to the same bytes."""
+    out = bytearray(b"\x1f\x9d\x90")
     width, in_era, bits, nbits = 9, 0, 0, 0
-    for code in [97] + [255 + i for i in range(1, codes)]:
+    for code in [97] + [256 + i for i in range(1, codes)]:
         bits |= code << nbits
         nbits += width
         in_era += 1
@@ -362,18 +362,12 @@ def _lzw_run_bomb(codes: int) -> bytes:
     return bytes(out)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: LzwState stores each dictionary entry as its full expansion, so a "
-        "~130 KB .Z holds ~2 GiB resident while read in small chunks (8 KB -> 18 MB)"
-    ),
-)
 def test_unix_compress_dictionary_memory_is_bounded() -> None:
     """A chunked read of a stream must not retain memory proportional to the output
     (DecoderLimits: a decoder's working set is what the cap is for; LZW's needs only
     a 64 Ki-entry prefix/suffix table). 6 000 codes (~8 KB) decode 18 MB of ``a``;
-    the decoder holds all of it in its dictionary while 64 KiB reads are served."""
+    a dictionary that stored every entry as its full expansion would hold all of it
+    while 64 KiB reads are served."""
     codes = 6_000
     data = _lzw_run_bomb(codes)
     tracemalloc.start()

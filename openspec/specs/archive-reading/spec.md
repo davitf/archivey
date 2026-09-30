@@ -34,8 +34,20 @@ archivey.open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
-) -> ArchiveReader
+) -> ArchiveReader  # ForwardArchiveReader when streaming may be True; see below
 ```
+
+The return type SHALL follow the access mode, through two `typing.overload`
+signatures: `streaming=False` (the default, or the literal `False`) returns
+`ArchiveReader`, and `streaming=True` or a `bool` whose value is not known statically
+returns `ForwardArchiveReader`. `ForwardArchiveReader` is the public ABC that
+declares every reader method except `members()`, `get()`, `open()` and `read()`, the
+four a streaming reader refuses; `ArchiveReader` subclasses it and adds those four.
+The distinction SHALL be static only: every reader returned at run time is an
+`ArchiveReader` instance, and a streaming reader still raises `ArchiveyUsageError`
+from the four methods.
+
+`tests/test_public_api.py` checks each case under both type checkers the project uses (ty and Pyrefly).
 
 `source`, multi-volume ordering, `streaming`, password candidates/providers,
 encoding, configuration precedence, and backend selection retain their existing

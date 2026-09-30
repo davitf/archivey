@@ -284,7 +284,21 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   member (the accidental `report*.pdf` beside `report1.pdf`) reads normally with no
   flag, and a solid `stream_members()` pass reads everything, because it builds no mask
   at all. A glob in a *directory* component, or a backslash, is refused outright either
-  way.
+  way; the one exception is a backslash in a RAR5 name written on Windows, which
+  `unrar` on Linux and macOS reads as `_`.
+- **Member names.** RAR5 stores names as UTF-8, and RAR 1.5-4 usually as UTF-16
+  beside an 8-bit copy. A RAR 1.5-4 name that has only the 8-bit bytes does not say
+  which code page they are in. Archivey decodes it with `encoding=` when you pass one.
+  Otherwise it tries UTF-8, then cp437 for a member written on DOS or Windows (WinRAR
+  writes the OEM code page) and windows-1252 for one written elsewhere. `raw_name` is
+  always the stored bytes. `encoding=` has no effect on a RAR5 name.
+- **Several members under one name.** `unrar` emits every member a name selects, in
+  archive order: two members with the same name, or two names `unrar` reads the same
+  way. Archivey skips to the one you asked for, so each read returns that member's own
+  bytes. A RAR5 name that is not valid UTF-8 is cut by `unrar` at its first invalid
+  byte and is read through that shorter name the same way. A name `unrar` reads as
+  empty, or one archivey cannot give back to `unrar` exactly, raises
+  `UnsupportedFeatureError`; `rar_decompressor="unar"` reads it by position.
 - Solid archives: one `unrar p` pipe for the whole of `stream_members()`. A random
   `open()` out of order is a separate `unrar` run that decodes from the start of the
   archive each time, so reading *n* members that way costs *n* full decodes — stream them

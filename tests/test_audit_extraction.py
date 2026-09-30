@@ -52,14 +52,6 @@ def _build_tar(path: Path, entries: list[tuple[str, str, object]]) -> None:
 
 @pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AUDIT: a symlink whose target runs through a path component created by a "
-        "LATER member (l -> a/../secret, then a -> .) is re-validated only when it "
-        "is created, so it is left on disk resolving outside the destination"
-    ),
-)
 def test_symlink_made_escaping_by_a_later_member_is_not_left_on_disk(
     tmp_path: Path, streaming: bool
 ) -> None:

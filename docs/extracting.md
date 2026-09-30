@@ -89,7 +89,12 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
 - **Symlink escapes, three layers:** lexical target check at planning time; parent-dir
   resolution; and post-`os.symlink` re-resolution against the real filesystem (catches
   chained-symlink attacks staged by earlier members). Escaping links are removed and
-  rejected.
+  rejected. A later member can change where an earlier link points: with `l -> a/../x`
+  extracted first, a later `a -> .` makes `l` point outside. So a link is rechecked
+  when a later member changes a path the link goes through, before the next member is
+  extracted. A link that now escapes is removed, and its result, which a progress
+  callback may already have seen as `EXTRACTED`, becomes `BLOCKED`. A `..` in a target
+  that stays inside the destination is not refused.
 - **Hardlink targets** are containment-checked and resolved positionally (an earlier
   same-named member), so a crafted duplicate-name archive cannot redirect a link.
 - **Never write through a symlink:** overwrite handling replaces symlinks, never

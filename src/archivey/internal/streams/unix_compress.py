@@ -33,6 +33,49 @@ _RESERVED_FLAGS = 0x60
 _HEADER_SIZE = 3
 _MAGIC = bytes([_MAGIC_BYTE0, _MAGIC_BYTE1])
 
+# Dictionary entry representation. An LZW entry is its prefix entry plus one byte, so
+# storing every entry as its full expansion costs up to ~65 536**2 / 2 bytes (2 GiB) at
+# 16 bits, and a long zero run builds that shape. An entry up to _MAX_FLAT_ENTRY bytes
+# is stored flat in the dictionary list as bytes. A longer one is stored there as a
+# (base code, tail) link meaning "the expansion of base, then tail". The tail grows to
+# _MAX_ENTRY_TAIL bytes before a new link starts from the previous code, so every link
+# but the first in a walk carries a full tail: rebuilding an entry takes about one step
+# per 128 bytes of it. With CPython object overhead the dictionary stays under about
+# 19 MiB: a full table of flat 256-byte entries measures 18.5 to 18.8 MiB on CPython
+# 3.11 to 3.14 (up to 20.3 MiB on a free-threaded build, whose object headers are
+# larger), and a full table of links with full tails about 14 MiB. Links sit in the list
+# itself, not in a side dict keyed by code: that saves a dict slot and a key object per
+# long entry, and decoded the all-links table about 1.3x faster. The price is an
+# isinstance check per code (about 16 ns more than a truthiness test), which stayed
+# within noise on ordinary compress files.
+#
+# The two caps trade speed against that bound. Shorter tails mean more Python steps per
+# output byte: one-byte links rebuilt 64 KiB entries at about 18 MB/s, against about
+# 1.6 GB/s at 128. Longer tails or a higher flat cap raise the worst case: 256-byte
+# tails measured 26 MiB.
+_MAX_FLAT_ENTRY = 256
+_MAX_ENTRY_TAIL = 128
+
+
+_Entry = bytes | tuple[int, bytes]
+
+
+def _expand(dictionary: list[_Entry], link: tuple[int, bytes]) -> bytes:
+    """Rebuild a long entry by walking its links back to a flat entry.
+
+    A link's base is always a code that was output, so the walk never meets block
+    mode's CLEAR placeholder. A base that did would end the walk at that b"" and
+    silently drop the prefix, not raise.
+    """
+    base, tail = link
+    parts = [tail]
+    while isinstance(head := dictionary[base], tuple):
+        base, tail = head
+        parts.append(tail)
+    parts.append(head)
+    parts.reverse()
+    return b"".join(parts)
+
 
 def _parse_header(header: bytes) -> tuple[int, bool]:
     """Validate the 3-byte ``.Z`` header → ``(max_width, block_mode)``."""
@@ -94,6 +137,8 @@ class LzwState:
         self._seg_comp = 0
         self._seg_decomp = 0
         self._pending_skip = 0
+        self._skip_may_end_at = 0
+        self._skip_reason = "after a CLEAR"
         if not self._need_header:
             assert max_width is not None and block_mode is not None
             self._init_dictionary(max_width, block_mode)
@@ -124,10 +169,12 @@ class LzwState:
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         out, units = self._process(eof=True, max_length=-1)
-        if self._pending_skip:
-            # A compressor writes a CLEAR's realignment padding in full, so a source that
-            # ends while padding is still owed was cut inside it.
-            self._truncation = f"it ends {self._pending_skip} byte(s) short of the padding after a CLEAR"
+        if self._pending_skip and self._pending_skip != self._skip_may_end_at:
+            # A compressor writes realignment padding in full, so a source that ends
+            # while padding is still owed was cut inside it. The one exception: padding
+            # at a width bump is written only when another code follows, so a stream
+            # may end there with none of it.
+            self._truncation = f"it ends {self._pending_skip} byte(s) short of the padding {self._skip_reason}"
         # Finished compressors zero-pad the last incomplete code slot. Nonzero leftover
         # bits are a best-effort truncation / corrupt-padding signal (exact mid-code
         # cuts that leave only zero bits remain undetectable — no length trailer).
@@ -163,7 +210,7 @@ class LzwState:
     def _init_dictionary(self, max_width: int, block_mode: bool) -> None:
         self._max_width = max_width
         self._block_mode = block_mode
-        self._dictionary: list[bytes] = [i.to_bytes() for i in range(256)]
+        self._dictionary: list[_Entry] = [i.to_bytes() for i in range(256)]
         if block_mode:
             self._dictionary.append(b"")
         self._starting_code = len(self._dictionary)
@@ -171,11 +218,20 @@ class LzwState:
         self._bit_buffer = 0
         self._bits_in_buffer = 0
         self._prev_entry: bytes | None = None
+        self._prev_code = 0
         self._code_width = _INITIAL_CODE_WIDTH
         self._current_mask = _INITIAL_MASK
         self._bytes_in_era = 0
-        self._codes_in_era = 0
+        # Counts the era's codes toward `codes_per_era` (2 ** (width - 1)). 9-bit codes
+        # end once free code 512 is used. In both modes the first code adds no entry. Block
+        # mode starts free codes at 257, so it spends 255 entries plus that code: 256
+        # codes. Without block mode free codes start at 256, so the first era is 257
+        # codes, and starting at -1 absorbs the extra one. Later eras have no code that
+        # adds no entry, so they are 2 ** (width - 1) codes in both modes.
+        self._codes_in_era = 0 if block_mode else -1
         self._pending_skip = 0
+        self._skip_may_end_at = 0
+        self._skip_reason = "after a CLEAR"
 
     def _process(
         self, *, eof: bool, max_length: int = -1
@@ -217,6 +273,11 @@ class LzwState:
         current_mask = self._current_mask
         next_code = self._next_code
         prev_entry = self._prev_entry
+        prev_code = self._prev_code
+        prev_len = len(prev_entry) if prev_entry is not None else 0
+        # Only the flat cap is read for every new entry; _MAX_ENTRY_TAIL is read only on
+        # the long-entry branch, so it stays a module global.
+        max_flat_entry = _MAX_FLAT_ENTRY
         dictionary = self._dictionary
         max_width = self._max_width
         block_mode = self._block_mode
@@ -281,6 +342,8 @@ class LzwState:
                         # CLEAR realignment extends past this feed — skip the rest
                         # of the padding at the start of the next feed.
                         self._pending_skip = target - len(self._buf)
+                        self._skip_may_end_at = 0
+                        self._skip_reason = "after a CLEAR"
                         buf_i = len(self._buf)
                     else:
                         buf_i = target
@@ -304,16 +367,60 @@ class LzwState:
                             f"unix-compress (.Z) invalid code {code} in bitstream"
                         ) from None
 
-                output.extend(entry)
-                seg_decomp += len(entry)
+                if isinstance(entry, tuple):
+                    # A long entry. Entries never change once written, so a repeated
+                    # code reuses the expansion it produced last time instead of
+                    # walking again.
+                    if code == prev_code and prev_entry is not None:
+                        entry = prev_entry
+                    else:
+                        entry = _expand(dictionary, entry)
+                output += entry
+                entry_len = len(entry)
+                seg_decomp += entry_len
 
                 if next_code <= current_mask and prev_entry is not None:
-                    dictionary.append(prev_entry + entry[:1])
+                    if prev_len < max_flat_entry:
+                        dictionary.append(prev_entry + entry[:1])
+                    else:
+                        # Long: extend the previous entry's tail while it has room,
+                        # else start a new link from the previous code. prev_code
+                        # always indexes a live entry: a CLEAR sets prev_entry to
+                        # None, so this branch waits for a fresh code, and a KwKwK
+                        # code equals next_code <= current_mask, so its entry was
+                        # appended in the same iteration.
+                        link = dictionary[prev_code]
+                        if isinstance(link, tuple) and len(link[1]) < _MAX_ENTRY_TAIL:
+                            base, tail = link
+                            dictionary.append((base, tail + entry[:1]))
+                        else:
+                            dictionary.append((prev_code, entry[:1]))
                     next_code += 1
 
                 prev_entry = entry
+                prev_code = code
+                prev_len = entry_len
 
                 if codes_in_era >= codes_per_era and code_width < max_width:
+                    # The writer pads to the end of the current group of eight codes.
+                    # Eight codes of width `code_width` are exactly `code_width` bytes,
+                    # so a group boundary is a multiple of `code_width` bytes from the
+                    # era start. A block-mode era is a whole number of groups, so this
+                    # skips nothing there; without block mode the first era is one
+                    # code longer.
+                    if pad := -bytes_in_era % code_width:
+                        seg_comp += pad
+                        if buf_i + pad > len(self._buf):
+                            self._pending_skip = buf_i + pad - len(self._buf)
+                            # Only a source that stops before any of the padding
+                            # ends here legitimately; part of it means a cut.
+                            self._skip_may_end_at = (
+                                pad if buf_i == len(self._buf) else 0
+                            )
+                            self._skip_reason = "at a code-width increase"
+                            buf_i = len(self._buf)
+                        else:
+                            buf_i += pad
                     code_width += 1
                     current_mask = (1 << code_width) - 1
                     bit_buffer = 0
@@ -342,6 +449,7 @@ class LzwState:
         self._current_mask = current_mask
         self._next_code = next_code
         self._prev_entry = prev_entry
+        self._prev_code = prev_code
         self._seg_comp = seg_comp
         self._seg_decomp = seg_decomp
         self._bytes_in_era = bytes_in_era

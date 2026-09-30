@@ -57,19 +57,18 @@
   images that need the `.cue` (track 1 audio has no sync at offset 0), and EDC/ECC
   verification — the trailing 288 bytes would be dropped unchecked, which the docs must
   then say.
-- **Port `unrar`'s member-mask matcher faithfully, instead of probing it** — a RAR member's
+- **Lift the directory-glob and backslash refusals on the `unrar` path** — a RAR member's
   stored name is handed to `unrar` as an include mask (`-n./<name>`), so archivey has to
   predict which *other* members that mask will also match in order to skip their bytes back
-  out of the pipe. `_unrar_mask_match` is derived from probing unrar 7.00, not from its
-  source, and it over-matches on directory-component globs. That is why a glob in a
-  directory component, and a literal backslash in a stored name, are refused outright today
-  rather than demuxed — a basename glob with no backslash is the only shape we trust
-  (`formats/rar.md` §2.3, §5). Closing it means reading `strfn.cpp` / `match.cpp` in the
-  `unrar` source and replacing the matcher with a faithful port, plus an oracle test that
-  compares predicted skip bytes against a real `unrar p -n<mask>` across the fixture corpus.
-  **Very low priority:** the names this would unlock are adversarial ones, and a wrong port
-  is worse than a refusal, because it silently returns the wrong member's bytes. Tracked
-  internally.
+  out of the pipe. That prediction is now a port of `unrar` 7's own name reading and
+  `CmpName` (`rar_unrar.py`), checked against `unrar` 7.00 on Linux by
+  `tests/test_rar_unrar_names.py`. A glob in a directory component, and a literal
+  backslash in a stored name, are still refused rather than demuxed (`formats/rar.md`
+  §2.3, §5): the first has not been measured, and the second differs by host (Windows
+  `unrar` treats `\` as a separator). Closing it means adding those shapes to the
+  differential test, on Windows too. **Very low priority:** the names this would unlock
+  are adversarial ones, and a wrong model is worse than a refusal, because it silently
+  returns the wrong member's bytes.
 
 - **Native streaming ZIP reader** — a native parser that does what stdlib `zipfile`
   can't: read from **non-seekable** streams (pipes/sockets) and **truncated / no-EOCD**
@@ -154,7 +153,7 @@
   valid UTF-8** currently decode via `surrogateescape` → honest but garbled (`U+DCxx`)
   spellings. Affected: **TAR** (ustar/pax has no charset field at all, so `tarfile` defaults
   to UTF-8 and everything else becomes surrogateescape), **RAR3** non-Unicode names (already
-  falls back to `windows-1252` via `_decode_name`), and **ZIP** unflagged names that aren't
+  fall back to cp437 or windows-1252 by host OS, and honour `encoding=`), and **ZIP** unflagged names that aren't
   valid UTF-8 (falls back to `zip_unflagged_fallback_encoding`, default cp437). The common
   *UTF-8-without-marker* case is already handled everywhere (that was the
   `zip-name-encoding-sniffing` change); this item is only about the genuinely-legacy tail.
@@ -527,40 +526,6 @@
   exploration — the safe default lands first.
 
 ## Performance & robustness
-
-- **Bound the `.Z` decoder's dictionary with a hybrid representation** — the pure-Python
-  LZW decoder (`internal/streams/unix_compress.py`) stores every dictionary entry as its
-  full expansion, so a 16-bit dictionary can hold about 65 536²/2 ≈ 2.1 GiB. Measured
-  in the 2026-09 audit: 8 KB of crafted input peaks at 18 MB, and 130 KB reaches about
-  2.1 GiB. A legitimate zero-filled `.Z` builds the same shape (entries grow by one
-  byte and `compress` never clears), so a flat cap would refuse real files, and a
-  `DecoderLimits` check does nothing at the 2 GiB default. Decided (davitf, 2026-09-28):
-  keep full expansions up to about 256 bytes and store longer entries as a
-  (prefix code, byte) pair rebuilt by walking the chain, which bounds the dictionary
-  near 16 MiB. It goes in its own PR because it needs the benchmark gate on real `.Z`
-  corpora. Reproducer:
-  `tests/test_audit_tar_streams.py::test_unix_compress_dictionary_memory_is_bounded`
-  (strict xfail).
-
-  *Where the code is and what constrains it.*
-  - **Code:** `internal/streams/unix_compress.py`, `LzwState`. The dictionary is a plain
-    `list[bytes]`: the KwKwK case builds `prev_entry + prev_entry[:1]`, each new entry
-    is `dictionary.append(prev_entry + entry[:1])`, and a CLEAR truncates with
-    `del dictionary[starting_code:]`.
-  - **Seek:** seek points are placed only at CLEAR boundaries (`_points_for_units`), where
-    the dictionary is empty, so no dictionary state is snapshotted and changing its
-    representation does not touch seeking.
-  - **Implementation:** the usual one is parallel `prefix: array('H')` and
-    `suffix: bytearray` for every code, plus a cache of full expansions for entries up
-    to the length cap. A longer entry is built by walking prefixes into a reversed
-    `bytearray`. Keeping each entry's length alongside makes the walk a single
-    preallocation.
-  - **Differential test:** `ncompress` is a dev dependency (`tests/test_codecs.py` uses
-    it via `requires("ncompress")`), so real compressor output, the all-zeros file
-    included, can be checked against the new decoder.
-  - **Benchmark:** the harness has no `.Z` workload today. Add one (text-like data and a
-    long zero run) before comparing, and hold the hybrid to the current decoder's speed
-    on the text case.
 
 - **bzip2 accelerator and the standard library disagree past the end of a stream** —
   two cases, found 2026-09-29 while fixing the empty-trailing-stream report.
