@@ -14,7 +14,6 @@ import io
 import os
 import struct
 import subprocess
-import sys
 import tarfile
 import time
 import zipfile
@@ -298,30 +297,16 @@ def _partial_then_start(stream: io.RawIOBase) -> bytes:
     return stream.read()
 
 
-@pytest.mark.parametrize(
-    "ops",
-    [
-        pytest.param(
-            _seek_end_then_start,
-            id="seek-end-then-0",
-            # 3.13 seeks a stored member on the file directly and stops checking its CRC.
-            marks=pytest.mark.skipif(
-                sys.version_info >= (3, 13),
-                reason="zipfile on 3.13+ drops the CRC check after a stored-member seek",
-            ),
-        ),
-        pytest.param(_partial_then_start, id="read-then-seek-0"),
-    ],
-)
-def test_stdlib_zipfile_rechecks_crc_after_rewind_control(
-    ops: Callable[[io.RawIOBase], bytes], tmp_path: Path
-) -> None:
+# Only the partial-read rewind: newer 3.12 and 3.13+ zipfile seek a stored member on
+# the file directly and stop checking its CRC after seek-to-end, so that case is not a
+# stable control across patch releases.
+def test_stdlib_zipfile_rechecks_crc_after_rewind_control(tmp_path: Path) -> None:
     """Control: stdlib ``zipfile`` resets its running CRC on a rewind and raises."""
     path = tmp_path / "damaged.zip"
     _damaged_stored_zip(path)
     with zipfile.ZipFile(path) as zf, zf.open("m.txt") as stream:
         with pytest.raises(zipfile.BadZipFile):
-            ops(stream)  # type: ignore[arg-type]
+            _partial_then_start(stream)  # type: ignore[arg-type]
 
 
 @pytest.mark.xfail(
