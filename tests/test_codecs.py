@@ -837,7 +837,7 @@ def test_unix_compress_repeated_longest_code_decodes_exactly() -> None:
 
 
 def _lzw_table_bytes(state: LzwState) -> int:
-    """Bytes held by an ``LzwState``'s dictionary and links, each object counted once."""
+    """Bytes held by an ``LzwState``'s dictionary, links included, each object once."""
     seen: set[int] = set()
     total = 0
 
@@ -850,13 +850,10 @@ def _lzw_table_bytes(state: LzwState) -> int:
     add(state._dictionary)
     for entry in state._dictionary:
         add(entry)
-    links = state._links
-    add(links)
-    for code, (base, tail) in links.items():
-        add(code)
-        add(links[code])
-        add(base)
-        add(tail)
+        if isinstance(entry, tuple):
+            base, tail = entry
+            add(base)
+            add(tail)
     return total
 
 
@@ -882,10 +879,11 @@ def test_unix_compress_worst_case_table_stays_under_the_stated_bound(
         while not state.needs_input:
             state.feed(b"")
     assert len(state._dictionary) == 1 << 16  # the table is full
+    links = sum(isinstance(entry, tuple) for entry in state._dictionary)
     if shape == "flat":
-        assert not state._links
+        assert links == 0
     else:
-        assert len(state._links) > 65_000
+        assert links > 65_000
     # A free-threaded build's bytes and int headers are 16 bytes larger; it measures
     # up to 20.3 MiB where the default build measures 18.8 MiB.
     free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))

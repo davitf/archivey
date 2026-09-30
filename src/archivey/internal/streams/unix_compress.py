@@ -36,14 +36,18 @@ _MAGIC = bytes([_MAGIC_BYTE0, _MAGIC_BYTE1])
 # Dictionary entry representation. An LZW entry is its prefix entry plus one byte, so
 # storing every entry as its full expansion costs up to ~65 536**2 / 2 bytes (2 GiB) at
 # 16 bits, and a long zero run builds that shape. An entry up to _MAX_FLAT_ENTRY bytes
-# is stored flat in the dictionary list. A longer one holds b"" there, and the links
-# table maps its code to a (base code, tail) pair meaning "the expansion of base, then
-# tail". The tail grows to _MAX_ENTRY_TAIL bytes before a new pair starts from the
-# previous code, so every link but the first in a walk carries a full tail: rebuilding
-# an entry takes about one step per 128 bytes of it. With CPython object overhead the
-# dictionary stays under about 19 MiB: a full table of flat 256-byte entries, or of
-# links with full tails, measures 18.5 to 18.8 MiB on CPython 3.11 to 3.14. A
-# free-threaded build has larger object headers and measures up to 20.3 MiB.
+# is stored flat in the dictionary list as bytes. A longer one is stored there as a
+# (base code, tail) link meaning "the expansion of base, then tail". The tail grows to
+# _MAX_ENTRY_TAIL bytes before a new link starts from the previous code, so every link
+# but the first in a walk carries a full tail: rebuilding an entry takes about one step
+# per 128 bytes of it. With CPython object overhead the dictionary stays under about
+# 19 MiB: a full table of flat 256-byte entries measures 18.5 to 18.8 MiB on CPython
+# 3.11 to 3.14 (up to 20.3 MiB on a free-threaded build, whose object headers are
+# larger), and a full table of links with full tails about 14 MiB. Links sit in the list
+# itself, not in a side dict keyed by code: that saves a dict slot and a key object per
+# long entry, and decoded the all-links table about 1.3x faster. The price is an
+# isinstance check per code (about 16 ns more than a truthiness test), which stayed
+# within noise on ordinary compress files.
 #
 # The two caps trade speed against that bound. Shorter tails mean more Python steps per
 # output byte: one-byte links rebuilt 64 KiB entries at about 18 MB/s, against about
@@ -53,20 +57,20 @@ _MAX_FLAT_ENTRY = 256
 _MAX_ENTRY_TAIL = 128
 
 
-def _expand(
-    dictionary: list[bytes], links: dict[int, tuple[int, bytes]], code: int
-) -> bytes:
+_Entry = bytes | tuple[int, bytes]
+
+
+def _expand(dictionary: list[_Entry], link: tuple[int, bytes]) -> bytes:
     """Rebuild a long entry by walking its links back to a flat entry.
 
-    Every b"" the walk meets is a long entry, so ``links`` holds it: a link's base is
-    always a code that was output, and block mode's CLEAR placeholder, the only other
-    b"" in the dictionary, is never output. A second b"" sentinel would break this and
-    turn the walk into a KeyError.
+    A link's base is always a code that was output, so the walk never meets block
+    mode's CLEAR placeholder. A base that did would end the walk at that b"" and
+    silently drop the prefix, not raise.
     """
-    base, tail = links[code]
+    base, tail = link
     parts = [tail]
-    while not (head := dictionary[base]):
-        base, tail = links[base]
+    while isinstance(head := dictionary[base], tuple):
+        base, tail = head
         parts.append(tail)
     parts.append(head)
     parts.reverse()
@@ -178,7 +182,6 @@ class LzwState:
                 )
         if self._header_params is not None:
             del self._dictionary[self._starting_code :]
-            self._links.clear()
         self._finished = True
         return out, units
 
@@ -203,8 +206,7 @@ class LzwState:
     def _init_dictionary(self, max_width: int, block_mode: bool) -> None:
         self._max_width = max_width
         self._block_mode = block_mode
-        self._dictionary: list[bytes] = [i.to_bytes() for i in range(256)]
-        self._links: dict[int, tuple[int, bytes]] = {}
+        self._dictionary: list[_Entry] = [i.to_bytes() for i in range(256)]
         if block_mode:
             self._dictionary.append(b"")
         self._starting_code = len(self._dictionary)
@@ -265,7 +267,6 @@ class LzwState:
         # the long-entry branch, so it stays a module global.
         max_flat_entry = _MAX_FLAT_ENTRY
         dictionary = self._dictionary
-        links = self._links
         max_width = self._max_width
         block_mode = self._block_mode
         starting_code = self._starting_code
@@ -316,7 +317,6 @@ class LzwState:
                     seg_comp = 0
                     seg_decomp = 0
                     del dictionary[starting_code:]
-                    links.clear()
                     next_code = starting_code
                     code_width = _INITIAL_CODE_WIDTH
                     current_mask = _INITIAL_MASK
@@ -353,14 +353,14 @@ class LzwState:
                             f"unix-compress (.Z) invalid code {code} in bitstream"
                         ) from None
 
-                if not entry:
-                    # A long entry (block mode's CLEAR placeholder never gets here).
-                    # Entries never change once written, so a repeated code reuses
-                    # the expansion it produced last time instead of walking again.
+                if isinstance(entry, tuple):
+                    # A long entry. Entries never change once written, so a repeated
+                    # code reuses the expansion it produced last time instead of
+                    # walking again.
                     if code == prev_code and prev_entry is not None:
                         entry = prev_entry
                     else:
-                        entry = _expand(dictionary, links, code)
+                        entry = _expand(dictionary, entry)
                 output += entry
                 entry_len = len(entry)
                 seg_decomp += entry_len
@@ -370,13 +370,17 @@ class LzwState:
                         dictionary.append(prev_entry + entry[:1])
                     else:
                         # Long: extend the previous entry's tail while it has room,
-                        # else start a new link from the previous code.
-                        link = links.get(prev_code)
-                        if link is not None and len(link[1]) < _MAX_ENTRY_TAIL:
-                            links[next_code] = (link[0], link[1] + entry[:1])
+                        # else start a new link from the previous code. prev_code
+                        # always indexes a live entry: a CLEAR sets prev_entry to
+                        # None, so this branch waits for a fresh code, and a KwKwK
+                        # code equals next_code <= current_mask, so its entry was
+                        # appended in the same iteration.
+                        link = dictionary[prev_code]
+                        if isinstance(link, tuple) and len(link[1]) < _MAX_ENTRY_TAIL:
+                            base, tail = link
+                            dictionary.append((base, tail + entry[:1]))
                         else:
-                            links[next_code] = (prev_code, entry[:1])
-                        dictionary.append(b"")
+                            dictionary.append((prev_code, entry[:1]))
                     next_code += 1
 
                 prev_entry = entry
