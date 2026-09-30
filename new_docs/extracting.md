@@ -26,5 +26,21 @@ with archivey.open_archive("download.zip") as archive:
     archive.extract_all("out/", members=lambda member: member.name.endswith(".txt"))
 ```
 
-A second argument, `filter`, sees each member just before it's written. It can rename the member
-by returning a changed copy, or skip it by returning `None`.
+A second argument, `filter`, sees each member just before it's written. It can change the member
+by returning a changed copy, with a new name or new permissions, for example, or skip it by
+returning `None`.
+
+## Options
+
+```python
+archivey.extract(
+    "download.zip", "out/",
+    policy="strict",     # how much to trust names and permissions
+    overwrite="error",   # what to do when a file is already there
+    on_error="stop",     # whether a damaged member stops the rest
+    limits=archivey.ExtractionLimits(max_extracted_bytes=2 * 2**30),  # how much it may write
+)
+```
+
+These are the defaults. `extract_all` takes the same arguments, and the sections below say what
+each one does.
