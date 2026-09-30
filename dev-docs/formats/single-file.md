@@ -92,7 +92,8 @@ Each stage: who does the work, what is shared across the codecs, what is refused
 
 Seven codecs have magic at offset 0, declared on their codec descriptor in
 `internal/streams/codecs.py` and aggregated by the detector: gzip `1f 8b`, bzip2 `BZh`,
-xz `fd 37 7a 58 5a 00`, lzip `LZIP`, zstd `28 b5 2f fd`, LZ4 `04 22 4d 18`, `.Z` `1f 9d`.
+xz `fd 37 7a 58 5a 00`, lzip `LZIP`, zstd `28 b5 2f fd`, LZ4 `04 22 4d 18` (and its legacy
+stream `02 21 4c 18`), `.Z` `1f 9d`.
 zstd also matches behind a run of skippable frames ([`zstd-lz4.md`](zstd-lz4.md) §2.1).
 The other three have none that is safe to trust, and are found by a **content probe**
 that decodes a bounded sample: LZMA Alone, then zlib, then Brotli, in that order. The

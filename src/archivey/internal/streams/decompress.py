@@ -363,7 +363,9 @@ class FramedDecoder(BaseDecoder):
 
     The first stream is handed to the library as it comes, so a file that is not this
     codec at all fails with the library's own error. An empty source, or one that ends
-    inside a stream, is truncated.
+    inside a stream, is truncated. A stream with no end mark (legacy LZ4) ends with its
+    input instead, when its decompressor's ``complete_at_end_of_input`` says the input
+    stopped between blocks.
     """
 
     def __init__(
@@ -443,6 +445,10 @@ class FramedDecoder(BaseDecoder):
             # be a stream, so it is what follows this one.
             self._past_end(self._held)
             self._held = b""
+            self._done = True
+            return DecodeOut(b"")
+        if getattr(self._decomp, "complete_at_end_of_input", False):
+            # A stream with no end mark (legacy LZ4) ends where its input does.
             self._done = True
             return DecodeOut(b"")
         self._pending_error = TruncatedError(

@@ -365,7 +365,6 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | A source of 32 774 bytes or more that matches nothing near pays the far peek | **archivey** | The price of running far magic before the probes (§2.3) |
 | `detect_format` on a raw pipe leaves the caller without the bytes it read | **archivey** | By design: `open_archive` and `open_stream` keep them (§4.3) |
 | A polyglot opens as whichever format comes first | **archivey** | The tie rule (§3.1); pass `format=` |
-| The legacy LZ4 frame (`lz4 -l`) is not detected | **archivey** | [`formats/single-file.md`](../formats/single-file.md) §3 |
 
 ## 6. Decisions
 

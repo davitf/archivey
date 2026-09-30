@@ -19,8 +19,6 @@ Triage (2026-07, vs libarchive ``libarchive/test``) — known failures marked
   method table; correctly raises ``UnsupportedFeatureError`` today.
 
 **Compress / filter**
-* **GAP** legacy LZ4 frame variants (``test_compat_lz4_{2,3}``) — ``lz4`` frame
-  decoder rejects non-modern frame types.
 * **GAP** gzip trailing junk after a complete member (``test_compat_gzip_2``) —
   stdlib ``gzip`` raises ``BadGzipFile``; libarchive tolerates trailing bytes.
 * **GAP** ``.tlz`` with raw LZMA Alone payloads — extension maps to TAR+lzip;
@@ -143,14 +141,6 @@ _XFAIL: dict[str, tuple[bool, str]] = {
     "test_compat_gzip_2.tgz": (
         True,
         "GAP: stdlib gzip rejects trailing junk after a complete member",
-    ),
-    "test_compat_lz4_2.tar.lz4": (
-        True,
-        "GAP: legacy LZ4 frame type not accepted by lz4.frame",
-    ),
-    "test_compat_lz4_3.tar.lz4": (
-        True,
-        "GAP: legacy LZ4 frame type not accepted by lz4.frame",
     ),
     "test_compat_lzma_1.tlz": (
         True,
