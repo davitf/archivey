@@ -531,15 +531,18 @@ class SpoolLimits:
     """Caps on copying the archive source to temporary storage.
 
     Some reads need the archive as a file on disk even when the caller passed a stream.
-    Today that is RAR: the ``unrar`` binary that decodes member data takes a filesystem
-    path, so a RAR opened from a ``BytesIO`` or another file object is copied to a
-    temporary file (a volume set, to a temporary directory) the first time a member has
-    to go through ``unrar``. The copy is of the whole archive, and it is removed when
-    the reader closes. A source opened from a path is read in place and not copied,
-    with two exceptions that are bounded here too: a RAR with a prefix before it (an
-    SFX stub, say) read with ``rar_decompressor='unar'``, which is copied from where
-    the RAR starts; and an explicit list of RAR volume files that cannot be linked
-    side by side in a temporary directory, which is copied there.
+    Today that is RAR: ``unrar`` and ``unar``, the programs that decode member data, take
+    a filesystem path, so a RAR opened from a ``BytesIO`` or another file object is
+    copied to a temporary file (a volume set, to a temporary directory) the first time a
+    member has to go through one of them. The copy is of the whole archive, and it is
+    removed when the reader closes.
+
+    A source opened from a path is read in place and not copied, with two exceptions
+    that are bounded here too. A RAR with a prefix before it (an SFX stub, say) read
+    with ``rar_decompressor='unar'`` is copied from where the RAR starts. And files
+    that must be linked into a temporary directory, which ``unar`` always reads from
+    and ``unrar`` needs for an explicit list of volumes it would not find by name, are
+    copied there when the system can make neither a symlink nor a hard link.
 
     Applied from the reader's open :attr:`ArchiveyConfig.spool_limits` for its lifetime.
     ``None`` on a field disables that guard. :attr:`UNLIMITED` disables it.

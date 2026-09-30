@@ -204,7 +204,10 @@ AUTO_CHOSE_UNAR_NOTE = (
 
 
 def _stream_volume_name(stem: str, index: int, *, old_style: bool) -> str:
-    """File name of volume ``index`` (1-based) when a stream set is written to disk.
+    """File name of volume ``index`` (1-based) of a set written or linked to disk.
+
+    Used for a stream set copied for either program, and for the set linked into
+    ``unar``'s private directory (``RarReader._unar_archive_path``).
 
     Old-style names run ``.rar``, ``.r00`` … ``.r99``, ``.s00`` … ``.z99``, as RAR
     writes them. That scheme has no name past volume 901, so a longer set falls back
@@ -925,8 +928,10 @@ class RarReader(BaseArchiveReader):
         self._temp_dir: Path | None = None
         self._owned_concat: ConcatenatedFile | None = None
         self._archive_path: Path | None = None
-        # A copy of a prefixed path source that starts at the RAR, for unar only.
-        self._unar_copy_path: Path | None = None
+        # unar's private directory (``_unar_archive_path``) and the path in it that
+        # unar is handed. The directory is removed on close.
+        self._unar_dir: Path | None = None
+        self._unar_path: Path | None = None
         # Guards the check-then-write in ``_ensure_archive_path``: two concurrent
         # compressed opens used to both see ``None`` and both copy, and close
         # only removed the winner.
@@ -1200,8 +1205,9 @@ class RarReader(BaseArchiveReader):
 
         One budget per reader, not per attempt: a copy that was refused, or failed
         part-way, is not given a fresh allowance by the next read. Called under
-        ``_materialize_lock``. A reader has one source shape, so ``what`` is the same
-        on every call.
+        ``_materialize_lock``. ``what`` names the copy in the refusal; the first call
+        fixes it. Only a path source's files are ever linked for ``unar``, so the
+        link-fallback copy never follows a stream source's copy on one reader.
         """
         if self._spool is None:
             program = (
@@ -1212,10 +1218,20 @@ class RarReader(BaseArchiveReader):
             if source is None:
                 pass
             elif source.path is not None:
-                # A prefixed file copied for unar: unrar reads it where it is.
+                # A file copied for unar: from where a prefixed RAR starts, or because
+                # it could not be linked into unar's private directory. unrar reads
+                # a path where it is.
                 remedy["remedy"] = (
-                    "Set ArchiveyConfig.rar_decompressor to 'unrar', which reads a "
-                    "prefixed archive in place, or raise the limit (None removes it)."
+                    "Set ArchiveyConfig.rar_decompressor to 'unrar', which reads an "
+                    "archive file in place, or raise the limit (None removes it)."
+                )
+            elif source.volume_paths and self._decompressor is RarDecompressor.UNAR:
+                # unar reads every set from its private directory, so where the
+                # caller keeps the files does not matter; unrar can read them there.
+                remedy["remedy"] = (
+                    "Set ArchiveyConfig.rar_decompressor to 'unrar', which reads "
+                    "volumes in place when they sit in one directory under their "
+                    "set's names, or raise the limit (None removes it)."
                 )
             elif source.volume_paths:
                 # Explicit volume files that could not be linked side by side.
@@ -1236,7 +1252,7 @@ class RarReader(BaseArchiveReader):
         return self._spool
 
     def _unar_copy_size(self) -> int | None:
-        """Bytes :meth:`_unar_archive_path` copies from a prefixed source, if known."""
+        """Bytes :meth:`_unar_archive_path` copies from where the RAR starts, if known."""
         size = self._shared.size
         if size is None:
             return None
@@ -1550,13 +1566,21 @@ class RarReader(BaseArchiveReader):
             self._archive_path = path
             return path
 
-    def _spool_from(self, start: int, budget: SpoolBudget | None = None) -> Path:
+    def _spool_from(
+        self,
+        start: int,
+        budget: SpoolBudget,
+        *,
+        directory: Path | None = None,
+    ) -> Path:
         """Copy the source from ``start`` to a new temp ``.rar``; the caller owns it.
 
-        ``budget`` bounds the copy: a stream source's for ``unrar``, and a prefixed
-        path source's for ``unar``. ``None`` copies without a bound.
+        ``budget`` bounds the copy: a stream source's for ``unrar``, and a single
+        archive's for ``unar`` (a stream, or a prefixed path). The caller checks the
+        known total against it first. ``directory`` is where the file is made, the
+        system temp directory if omitted.
         """
-        fd, name = tempfile.mkstemp(suffix=".rar")
+        fd, name = tempfile.mkstemp(suffix=".rar", dir=directory)
         path = Path(name)
         try:
             with os.fdopen(fd, "wb") as out:
@@ -1566,16 +1590,10 @@ class RarReader(BaseArchiveReader):
                 # a stream comes here; ``unar`` also sends a prefixed path source.
                 view = self._shared.view(start)
                 try:
-                    if budget is not None:
-                        # The budget stops the copy at the limit when the size
-                        # checked before was not known, or was wrong.
-                        budget.copy(view, out)
-                    else:
-                        # Keep the 1 MiB chunk: each SharedView read takes the lock
-                        # and seek+reads, so copyfileobj's 64 KiB default is ~16×
-                        # the acquisitions. This method already holds the mkstemp
-                        # fd, so copyfileobj writes to it rather than opening dest.
-                        shutil.copyfileobj(view, out, length=1 << 20)
+                    # The budget stops the copy at the limit when the size checked
+                    # before was not known, or was wrong. It reads in 1 MiB chunks,
+                    # which keeps the SharedView lock acquisitions few.
+                    budget.copy(view, out)
                 finally:
                     view.close()
         except BaseException:
@@ -1584,14 +1602,32 @@ class RarReader(BaseArchiveReader):
         return path
 
     def _unar_archive_path(self, member: ArchiveMember | None) -> Path:
-        """A path ``unar`` can open: the RAR must start at byte 0 of the file.
+        """A path ``unar`` can open, in a directory that holds this archive alone.
 
-        ``unar`` does not look for a RAR after a prefix, whether that is an SFX stub
-        or anything else; it reports an unknown format and writes nothing. A single
-        prefixed archive is therefore copied once from where the RAR starts: the
-        detected origin plus any stub the parser skipped past. A prefixed
-        multi-volume set is refused: every volume would need copying under its
-        sibling name, and ``unrar`` reads that set in place.
+        ``unar`` picks a volume set by file name: handed ``report2024.rar`` beside
+        ``report2023.rar``, it reads the pair as one set and returns the neighbour's
+        data. So ``unar`` never gets the caller's path. It gets a private directory
+        holding exactly the volumes archivey found, under the names
+        :func:`_stream_volume_name` gives them; a single archive is ``archive.rar``
+        there, with no name another file could continue.
+
+        Each volume is linked, not copied (:func:`_link_file`). Where the system
+        allows neither link, the volumes that could not be linked are copied through
+        the reader's spool budget: their total is checked before the first byte, so a
+        limit below it refuses the read and leaves no directory behind. That copy has
+        no open-time cost note, because whether a link works is known only when it is
+        tried; the notes cover only the copies known at open (a stream source, and a
+        prefixed path source).
+
+        A single stream source has no file to link, so it is copied once straight
+        into that directory, within the spool budget.
+
+        ``unar`` also does not look for a RAR after a prefix, whether that is an SFX
+        stub or anything else; it reports an unknown format and writes nothing. A
+        single prefixed archive is therefore copied once into that directory from
+        where the RAR starts: the detected origin plus any stub the parser skipped
+        past. A prefixed multi-volume set is refused: every volume would need
+        copying under its sibling name, and ``unrar`` reads that set in place.
         """
         start = self._origin + self._archive.sfx_offset
         if self._volume_set_size() > 1 and (
@@ -1603,16 +1639,69 @@ class RarReader(BaseArchiveReader):
                 "set is not copied for it. Set ArchiveyConfig.rar_decompressor to "
                 "'unrar' to read it with RARLAB unrar.",
             )
-        if start == 0:
+        if self._unar_path is not None:
+            return self._unar_path
+        if start == 0 and self._stream_volume_items:
+            # Stream volumes are already written to a directory of their own, holding
+            # the set and nothing else.
             return self._ensure_archive_path()
+        # A path source's files are linked. A single stream source has none: it is
+        # copied once, straight into the private directory, by the branch below, so
+        # no temp copy of it is made first and then copied again.
+        volumes = self._volume_paths if start == 0 else []
         with self._materialize_lock:
-            if self._unar_copy_path is None:
-                # Bounded like any other copy. Known up front for a path, so an
-                # archive over the limit is refused before the temp file exists.
+            if self._unar_path is not None:
+                return self._unar_path
+            budget = None
+            if not volumes:
+                # Bounded like any other copy, and checked before the directory
+                # exists when the size is known, as it is for a path.
                 budget = self._spool_budget("the archive from where the RAR starts")
                 budget.check_total(self._unar_copy_size())
-                self._unar_copy_path = self._spool_from(start, budget)
-            return self._unar_copy_path
+            temp_dir = Path(tempfile.mkdtemp(prefix="archivey-unar-"))
+            try:
+                if budget is not None:
+                    target = temp_dir / "archive.rar"
+                    self._spool_from(start, budget, directory=temp_dir).replace(target)
+                    self._unar_path = target
+                else:
+                    self._unar_path = self._link_volumes_for_unar(volumes, temp_dir)
+            except BaseException:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise
+            self._unar_dir = temp_dir
+            return self._unar_path
+
+    def _link_volumes_for_unar(self, volumes: list[Path], temp_dir: Path) -> Path:
+        """Put ``volumes`` in ``temp_dir`` for ``unar``; return volume 1's path there.
+
+        A lone archive is ``archive.rar``; a set takes its own naming scheme. A volume
+        the system will not link is copied, within the spool budget (see
+        :meth:`_unar_archive_path`).
+        """
+        if len(volumes) == 1:
+            names = ["archive.rar"]
+        else:
+            old_style = self._archive.old_volume_naming
+            names = [
+                _stream_volume_name("archive", index, old_style=old_style)
+                for index in range(1, len(volumes) + 1)
+            ]
+        unlinked: list[tuple[Path, Path]] = []
+        for volume, name in zip(volumes, names, strict=True):
+            try:
+                _link_file(volume.absolute(), temp_dir / name)
+            except OSError:
+                unlinked.append((volume, temp_dir / name))
+        if unlinked:
+            budget = self._spool_budget(
+                "each volume the system would not link into a private directory"
+            )
+            budget.check_total(sum(volume.stat().st_size for volume, _ in unlinked))
+            for volume, dest in unlinked:
+                with volume.open("rb") as src, dest.open("wb") as out:
+                    budget.copy(src, out)
+        return temp_dir / names[0]
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
@@ -2985,12 +3074,12 @@ class RarReader(BaseArchiveReader):
                 except OSError:
                     pass
                 self._temp_path = None
-            if self._unar_copy_path is not None:
-                try:
-                    self._unar_copy_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                self._unar_copy_path = None
+            if self._unar_dir is not None:
+                # Links, or copies where links are unavailable: removing them leaves
+                # the caller's files alone.
+                shutil.rmtree(self._unar_dir, ignore_errors=True)
+                self._unar_dir = None
+                self._unar_path = None
             if self._temp_dir is not None:
                 # Single-stream copy (_ensure_archive_path) owns _temp_path;
                 # stream volumes (_materialize_stream_volumes) own _temp_dir.

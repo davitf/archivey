@@ -45,6 +45,7 @@ from archivey.internal.streams.rapidgzip_child import (
     RapidgzipChildReportedError,
     RapidgzipChildStream,
 )
+from archivey.internal.streams.rapidgzip_worker import ERR, READ, SEEK
 from tests.conftest import requires
 from tests.corruption_util import is_corruption_not_truncation
 
@@ -471,6 +472,49 @@ def test_a_fault_archivey_raises_about_the_source_is_not_marked_as_the_sources()
     assert not rapidgzip_child.from_callers_source(info.value)
 
 
+class _FailingOnceSource(io.BytesIO):
+    """The caller's stream, failing once, on the first read past its middle; every
+    other read works, so nothing but the stream's own state can stop a later read."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.failed = False
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        size_ = len(self.getbuffer())
+        if not self.failed and size_ // 2 < self.tell() < size_ - 64 * 1024:
+            self.failed = True
+            raise OSError("transient source fault")
+        return super().read(size)
+
+
+@pytest.mark.parametrize("codec", [Codec.GZIP, Codec.ZLIB, Codec.DEFLATE])
+def test_after_a_source_fault_every_later_call_raises(codec: Codec) -> None:
+    """The child was told its input ended where the source failed, so what it decodes
+    after that is not the stream: no later call may return a clean end or a verdict on
+    the data."""
+    source = _FailingOnceSource(_compress(codec, _payload()))
+    with open_codec_stream(codec, source, config=_ON) as stream:
+        with pytest.raises(OSError, match="transient source fault") as first:
+            while stream.read(1 << 16):
+                pass
+        assert rapidgzip_child.from_callers_source(first.value)
+        messages = set()
+        for call in (
+            lambda: stream.read(1 << 16),
+            lambda: stream.read(),
+            lambda: stream.seek(0),
+            lambda: stream.read(1),
+        ):
+            with pytest.raises(ReadError) as later:
+                call()
+            assert not isinstance(later.value, (CorruptionError, TruncatedError))
+            assert "source" in str(later.value)
+            messages.add(str(later.value))
+        assert len(messages) == 1
+        assert _child_stream(stream)._proc is None  # the child is stopped
+
+
 def test_an_interrupt_from_the_callers_source_leaves_the_stream_unusable() -> None:
     source = _FailingSource(_compress(Codec.ZLIB, _payload()), KeyboardInterrupt())
     with open_codec_stream(Codec.ZLIB, source, config=_ON) as stream:
@@ -632,6 +676,154 @@ def test_close_reaps_the_child_and_later_calls_raise(tmp_path: Path) -> None:
     for call in (lambda: child.read(1), lambda: child.read(), child.tell):
         with pytest.raises(ValueError, match="closed file"):
             call()
+
+
+@pytest.mark.parametrize("offset", [2**63, -(2**63) - 1])
+def test_an_offset_past_the_frame_range_is_refused_and_the_stream_survives(
+    offset: int,
+) -> None:
+    """A seek the protocol cannot carry is refused before anything is sent, so the
+    child is still in step and the stream goes on reading."""
+    payload = _payload()
+    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    try:
+        assert child.read(10) == payload[:10]
+        with pytest.raises(OverflowError):
+            child.seek(offset)
+        assert child.seek(0) == 0
+        assert child.read() == payload
+        # An offset that fits, from a position that takes the target past the range.
+        with pytest.raises(OverflowError):
+            child.seek(2**63 - 1, io.SEEK_CUR)
+        assert child.seek(5) == 5
+        assert child.read(10) == payload[5:15]
+        # A second sequential read fills the read-ahead buffer; a refused seek keeps
+        # it and the position, so the next read goes on from where the caller was.
+        assert child.read(10) == payload[15:25]
+        with pytest.raises(OverflowError):
+            child.seek(offset)
+        assert child.tell() == 25
+        assert child.read(10) == payload[25:35]
+    finally:
+        child.close()
+
+
+@pytest.mark.parametrize(
+    ("offset", "whence"),
+    [(-1, io.SEEK_SET), (-100, io.SEEK_CUR), (0, 3), (0, 256)],
+    ids=["negative", "negative-relative", "bad-whence-child", "bad-whence-byte"],
+)
+def test_a_refused_seek_keeps_the_position_and_buffer(offset: int, whence: int) -> None:
+    """A seek refused before the child moves, here or by the child itself, leaves the
+    read-ahead buffer and the position as they were (review round 2, K8)."""
+    payload = _payload()
+    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    try:
+        assert child.read(10) == payload[:10]
+        assert child.read(10) == payload[10:20]  # fills the read-ahead buffer
+        with pytest.raises(ValueError):
+            child.seek(offset, whence)
+        assert child.tell() == 20
+        assert child.read(10) == payload[20:30]
+    finally:
+        child.close()
+
+
+def _fail_the_nth_read(
+    child: RapidgzipChildStream, n: int, *, fail_seeks: bool = False
+) -> None:
+    """Make the child answer its ``n``-th READ from now with a reported error, as it
+    does for a corrupt (not truncated) stream; the child itself stays usable. With
+    ``fail_seeks``, every SEEK after that is refused the same way."""
+    exchange = child._exchange
+    reads = 0
+
+    def failing(tag: int, arg: int, payload: bytes) -> tuple[int, int, bytes] | None:
+        nonlocal reads
+        if tag == READ:
+            reads += 1
+            if reads == n:
+                return ERR, 0, b"RuntimeError\n\ncorrupt block"
+        if tag == SEEK and fail_seeks and reads >= n:
+            return ERR, 0, b"RuntimeError\n\nseek refused"
+        return exchange(tag, arg, payload)
+
+    child._exchange = failing  # type: ignore[method-assign]
+
+
+@pytest.mark.parametrize("failing_read", [1, 2], ids=["first-chunk", "part-way"])
+def test_a_failed_read_leaves_the_position_where_it_started(failing_read: int) -> None:
+    """A read that fails returns nothing, even when it had already taken a chunk from
+    the child. The stream goes back to where the read started, so ``tell`` does not
+    count bytes the caller never got and the next read returns them (round 3, K15)."""
+    payload = _payload()
+    assert len(payload) > rapidgzip_child._CHUNK  # read() takes two chunks
+    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    try:
+        assert child.read(10) == payload[:10]
+        _fail_the_nth_read(child, failing_read)
+        with pytest.raises(RuntimeError, match="corrupt block"):
+            child.read()
+        assert child.tell() == 10
+        assert child.read(100) == payload[10:110]
+        assert child.read() == payload[110:]
+    finally:
+        child.close()
+
+
+def test_a_failed_read_that_cannot_move_back_leaves_the_stream_unusable() -> None:
+    """When the seek back to where a failed read started fails too, nobody knows the
+    position: the read raises its own error, the child is stopped, and every later
+    call raises ``ReadError`` (round 4, K18)."""
+    payload = _payload()
+    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    try:
+        assert child.read(10) == payload[:10]
+        _fail_the_nth_read(child, 1, fail_seeks=True)
+        with pytest.raises(RuntimeError, match="corrupt block"):
+            child.read()
+        assert child._proc is None
+        for call in (lambda: child.read(1), child.tell, lambda: child.seek(0)):
+            with pytest.raises(ReadError, match="moving back to where it started"):
+                call()
+    finally:
+        child.close()
+
+
+def test_a_negative_seek_after_a_failed_read_is_refused() -> None:
+    """The sign of an absolute target is checked whatever the stream knows of its
+    position, so a failed read cannot let ``seek(-1)`` reach the child, which would
+    clamp it to 0 (round 3, K13)."""
+    payload = _payload()
+    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    try:
+        assert child.read(10) == payload[:10]
+        _fail_the_nth_read(child, 1)
+        with pytest.raises(RuntimeError, match="corrupt block"):
+            child.read(10)
+        child._pos = None  # as a failed read leaves it before the rewind
+        with pytest.raises(ValueError, match="negative seek position"):
+            child.seek(-1)
+        assert child.tell() == 10
+        assert child.read(10) == payload[10:20]
+    finally:
+        child.close()
+
+
+@_POSIX
+def test_a_sigint_to_the_child_does_not_stop_it(tmp_path: Path) -> None:
+    """A terminal's Ctrl-C signals the whole foreground process group, the decoder child
+    included. The child ignores it: the parent decides what an interrupt means."""
+    payload = _payload()
+    path = _write(tmp_path, "valid.gz", gzip.compress(payload))
+    with open_codec_stream(Codec.GZIP, str(path), config=_ON) as stream:
+        child = _child_stream(stream)
+        assert stream.read(10) == payload[:10]
+        assert child._proc is not None
+        os.kill(child._proc.pid, signal.SIGINT)
+        with pytest.raises(subprocess.TimeoutExpired):
+            child._proc.wait(timeout=0.5)
+        assert stream.read() == payload[10:]
 
 
 def test_an_interrupted_request_leaves_the_stream_unusable(tmp_path: Path) -> None:

@@ -203,12 +203,16 @@ class CliToolFinder:
         )
 
 
-def terminate_process(proc: subprocess.Popen[bytes] | None) -> None:
-    """Stop a child process if it is still running, and reap it."""
+def terminate_process(proc: subprocess.Popen[bytes] | None) -> bool:
+    """Stop a child process if it is still running, and reap it.
+
+    Returns whether archivey stopped it, so its exit status is archivey's doing.
+    """
     if proc is None or proc.poll() is not None:
-        return
+        return False
     proc.terminate()
     wait_or_kill(proc)
+    return True
 
 
 def spawn_for_stdout(
@@ -249,7 +253,8 @@ class ProcessOutputStream(DelegatingStream):
     """A program's stdout that owns the program: close stops and reaps it.
 
     ``_raise_for_returncode`` maps the exit status once: on the read at end of file
-    (``_at_eof``) if the program has exited by then, else on close. ``read(0)`` is not
+    (``_at_eof``) if the program has exited by then, else on close. A program that close
+    has to stop is not mapped: its status reports archivey's signal. ``read(0)`` is not
     end of file. The stream owns the program from the ``try`` in ``__init__`` on: a
     raise from there stops the program first. A subclass's own assignments before
     ``super().__init__`` run before that, so they must not raise.
@@ -259,7 +264,8 @@ class ProcessOutputStream(DelegatingStream):
     # read() counts and checks the exit; readinto must go through it.
     readinto_passthrough = False
     # Seconds the read at end of file waits for the program to exit. The program closed
-    # its stdout, so it is exiting; one that takes longer is checked on close.
+    # its stdout, so it is exiting; one that takes longer is stopped on close, and its
+    # status is not mapped.
     _EOF_EXIT_WAIT = 1.0
 
     def __init__(self, stdout: BinaryIO, proc: subprocess.Popen[bytes]) -> None:
@@ -312,7 +318,11 @@ class ProcessOutputStream(DelegatingStream):
         # BaseException: close must reap the program even on KeyboardInterrupt.
         except BaseException as exc:  # noqa: BLE001
             close_error = exc
-        terminate_process(self._proc)
+        if terminate_process(self._proc):
+            # archivey sent the signal: the status reports that, not the program. This
+            # includes a program that closed its stdout but was slower to exit than
+            # ``_EOF_EXIT_WAIT``, whose output was read in full.
+            self._exit_checked = True
         # Marks this stream closed; _SUBCLASS_CLOSES_INNER keeps it from closing inner.
         super().close()
         # Map the status now if no read at end of file mapped it.
