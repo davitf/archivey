@@ -87,9 +87,9 @@ encrypted members fail as if no password had been given.
   extract through the link on purpose.
 - When the wrapper ends up holding a single entry, `extract` moves that entry up into the
   working directory. It skips the move when the wrapper folder was already there before the
-  run, when the entry is a symlink, or when any extracted symlink's target contains `..` or
-  is absolute, because such a link could point somewhere else after the move. It prints
-  a line saying why the files stayed in the wrapper.
+  run, when the entry is a symlink, or when a symlink in it leaves it on the way to its
+  target (or is absolute), because such a link would point somewhere else after the
+  move. It prints a line saying why the files stayed in the wrapper.
 - `test` exits `1` when its summary reports members as not tested, or digests as not
   verified, even if none failed. A digest is not verified when the library could not
   check it (`DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED`), for example a gzip

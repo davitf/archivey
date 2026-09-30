@@ -1197,6 +1197,31 @@ class ExtractionCoordinator:
 
     # --- selection / transform -----------------------------------------------------
 
+    def _as_written(self, original: ArchiveMember) -> ArchiveMember:
+        """``original``, or the SYMLINK it is written as when it is a hard link to a
+        symlink member.
+
+        A hard link to a symlink is a second name for the symlink itself, which is what
+        GNU tar creates. So the member is written as a symlink with the same target, read
+        from its own directory, and goes through the same checks as any symlink.
+        Following the chain instead looked the target up by member name, which fails
+        when the symlink's target passes through another symlinked directory.
+        """
+        if original.type is not MemberType.HARDLINK or self._reader is None:
+            return original
+        direct = self._reader._hardlink_direct_target(original)
+        if (
+            direct is None
+            or direct.type is not MemberType.SYMLINK
+            or direct.link_target is None
+        ):
+            return original
+        return original.replace(
+            type=MemberType.SYMLINK,
+            link_target=direct.link_target,
+            link_target_member=direct.link_target_member,
+        )
+
     def _transform(
         self, original: ArchiveMember, dest_root: Path
     ) -> tuple[ArchiveMember | None, str | None]:
@@ -1207,7 +1232,7 @@ class ExtractionCoordinator:
         filter skipped it, and ``presented_name`` is the full name before a safety rewrite
         (the absolute-name re-root or the portable-name policy) when one reaches disk,
         else ``None``. Raises a ``FilterRejectionError`` on a universal violation."""
-        transformed = POLICY_TRANSFORMS[self._policy](original)
+        transformed = POLICY_TRANSFORMS[self._policy](self._as_written(original))
         # The re-root comes before the filter so the filter sees the name that would be
         # written, as it already sees the policy's permission changes, and a filter
         # need not strip roots itself under STANDARD or TRUSTED. Whether the re-root

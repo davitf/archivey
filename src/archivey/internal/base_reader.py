@@ -2025,6 +2025,19 @@ class BaseArchiveReader(ArchiveReader):
             return BaseArchiveReader._last_named_member(target_name, by_name_lists)
         return None
 
+    def _hardlink_direct_target(self, member: ArchiveMember) -> ArchiveMember | None:
+        """The member a HARDLINK names, before following any link: the latest member
+        with that name listed before it. Extraction uses it to tell a hard link to a
+        symlink from one to a file, which ``link_target_member`` (the end of the chain)
+        cannot."""
+        if member.type is not MemberType.HARDLINK:
+            return None
+        return self._lookup_hardlink_target(
+            member,
+            self._listed_by_name,
+            allow_forward_fallback=self._HARDLINK_FORWARD_FALLBACK,
+        )
+
     def _lookup_link_target_for_member(
         self,
         member: ArchiveMember,

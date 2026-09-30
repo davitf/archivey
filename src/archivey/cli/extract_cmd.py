@@ -35,7 +35,7 @@ from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
 from archivey.exceptions import ArchiveyError
 from archivey.reader import ArchiveReader
-from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat, MemberType
+from archivey.types import ArchiveFormat, ArchiveMember, ContainerFormat
 
 
 def _archive_stem(path: Path, *, format: ArchiveFormat) -> str:
@@ -239,38 +239,77 @@ def _merge_move(
     raise _HoistConflict(dest)
 
 
-def _climbs_or_is_absolute(target: str) -> bool:
-    """Whether a symlink target has a ``..`` component or is absolute, on either
-    separator (a drive letter counts as absolute)."""
-    if target[:1] in ("/", "\\") or target[1:2] == ":":
-        return True
-    return ".." in target.replace("\\", "/").split("/")
+_MAX_LINK_HOPS = 40  # the Linux ``MAXSYMLINKS``
 
 
-def _links_stay_below_themselves(report: ExtractionReport) -> bool:
-    """Whether every extracted symlink target is relative and has no ``..`` component.
+def _is_absolute_target(target: str) -> bool:
+    """Whether a symlink target is absolute, on either separator (a drive letter
+    counts)."""
+    return target[:1] in ("/", "\\") or target[1:2] == ":"
 
-    The hoist moves the entry one level up after extraction checked its links against
-    the wrapper. A link is only changed by the move when its path climbs above the
-    hoisted entry: ``wrapper/top/k -> ../../.ssh/authorized_keys`` stays inside the
-    wrapper when the archive is named ``.ssh.tar``, and points at the operator's own
-    ``.ssh`` once ``top`` is moved up. A target without ``..`` that is not absolute only
-    descends, and a chain of such links keeps descending, so it cannot climb.
 
-    This over-blocks on purpose: most targets with ``..`` stay inside the hoisted entry
-    (``pkg/bin/a -> ../lib/a.so``) and would be moved safely. Telling them apart needs a
-    walk of each link's path through the other links on disk, not a look at the
-    target string, so any ``..`` keeps the tree in the wrapper.
+def _walk_stays_inside(
+    start: Path, target: str, root: Path, hops: list[int]
+) -> Path | None:
+    """Follow ``target`` from the directory ``start`` one component at a time, through
+    any symlink on the way, and return where it ends; ``None`` when a step leaves
+    ``root`` or reaches ``root``'s parent. ``hops`` is the symlink budget left, shared
+    by the nested walks."""
+    if _is_absolute_target(target):
+        return None
+    current = start
+    for part in target.replace("\\", "/").split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if current == root:
+                return None
+            current = current.parent
+            continue
+        step = current / part
+        if step.is_symlink():
+            hops[0] -= 1
+            if hops[0] < 0:
+                return None
+            try:
+                inner = os.readlink(step)
+            except OSError:
+                return None
+            landed = _walk_stays_inside(current, inner, root, hops)
+            if landed is None:
+                return None
+            current = landed
+        else:
+            current = step
+    return current
+
+
+def _links_stay_inside(root: Path) -> bool:
+    """Whether every symlink under ``root`` reaches its target without leaving ``root``.
+
+    The hoist moves ``root`` one level up after extraction checked its links against
+    the wrapper. A link whose path stays inside ``root`` at every step means the same
+    thing after the move, because the whole tree moves together. A step above ``root``
+    is where the move changes the meaning: ``wrapper/top/k ->
+    ../../.ssh/authorized_keys`` stays inside the wrapper when the archive is named
+    ``.ssh.tar``, and names the operator's own ``.ssh`` once ``top`` is moved up. Even
+    one step up into the wrapper and back down can land on a name the working directory
+    has and the wrapper did not, so that blocks too.
+
+    The walk follows each symlink on the way, so a chain cannot hide a climb, and an
+    absolute target always blocks. A path that ends at nothing is walked by name.
     """
-    for result in report:
-        member = result.member
-        if (
-            result.status is ExtractionStatus.EXTRACTED
-            and member.type is MemberType.SYMLINK
-            and member.link_target is not None
-            and _climbs_or_is_absolute(member.link_target)
-        ):
-            return False
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            path = Path(dirpath) / name
+            if not path.is_symlink():
+                continue
+            try:
+                target = os.readlink(path)
+            except OSError:
+                return False
+            if _walk_stays_inside(path.parent, target, root, [_MAX_LINK_HOPS]) is None:
+                return False
     return True
 
 
@@ -279,14 +318,13 @@ def maybe_hoist_single_root(
     *,
     overwrite: OverwritePolicy,
     err: TextIO,
-    links_movable: bool = True,
     wrapper_existed: bool = False,
 ) -> _HoistResult:
     """If ``wrapper`` holds exactly one top-level entry, lift it to cwd (R4/D1).
 
     The entry stays in the wrapper, and a line says why, when the wrapper was already
-    there (``wrapper_existed``), when the entry is a symlink, or when ``links_movable``
-    (:func:`_links_stay_below_themselves` for the extraction) is false.
+    there (``wrapper_existed``), when the entry is a symlink, or when a symlink in the
+    entry leaves it on the way to its target (:func:`_links_stay_inside`).
 
     Recovers unar-style single-root reuse (and filter-aware D1 for streaming)
     after an always-wrap extract, without a pre-extract metadata pass. The final
@@ -314,8 +352,8 @@ def maybe_hoist_single_root(
         # changes from the wrapper to the working directory: `b -> passwd` would then
         # name the operator's own `passwd`, and `b -> ../etc/passwd` one outside it.
         reason = "its only entry is a symlink, which the move would repoint"
-    elif not links_movable:
-        reason = "a symlink target uses '..' or is absolute, so the tree was not moved"
+    elif child.is_dir() and not _links_stay_inside(child):
+        reason = "a symlink in it points outside it, and would point elsewhere if moved"
     if reason is not None:
         print(f"kept in {escape_path(wrapper)}/: {reason}", file=err)
         return _HoistResult(wrapper)
@@ -782,7 +820,6 @@ def run_extract(
                     target,
                     overwrite=overwrite_enum,
                     err=err,
-                    links_movable=_links_stay_below_themselves(report),
                     wrapper_existed=wrapper_existed,
                 )
             blocked, failed = _report_extraction(

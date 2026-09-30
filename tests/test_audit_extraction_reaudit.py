@@ -5,7 +5,7 @@ The 2026-09 security audit's extraction pass was its narrowest
 again: ``internal/extraction.py``, ``internal/filters.py``, link handling, and the CLI
 ``extract`` / ``test`` paths. Numbering continues the audit's E1-E4.
 
-Each test asserts the promised behaviour. The ones still open are
+Each test asserts the promised behaviour. The one still open is
 ``xfail(strict=True)`` with the defect in ``reason``: a fix makes the test XPASS, which
 fails CI until the marker is removed. The rest are regression tests for the fixes.
 """
@@ -105,12 +105,24 @@ def test_hoist_leaves_no_symlink_resolving_outside_the_working_directory(
         # its target is read from.
         pytest.param("etc", [("b", "sym", "../etc/passwd")], id="lone-link-top"),
         pytest.param("etc", [("b", "sym", "passwd")], id="lone-link-no-dotdot"),
-        # This one would mean the same after the move, but the check reads the target
-        # string, and any `..` keeps the tree in the wrapper: it over-blocks on purpose.
+        # A step up into the wrapper blocks even when it comes back down by name:
+        # from the working directory, the same step could reach another name.
         pytest.param(
             "pkg",
             [("top", "dir", None), ("top/a/l", "sym", "../../top/x")],
             id="up-and-back-in",
+        ),
+        # `a/../passwd` never climbs on paper, but `a` is `top`, so `..` is the
+        # wrapper, and after the move the working directory's own `passwd`.
+        pytest.param(
+            "pkg",
+            [
+                ("top", "dir", None),
+                ("top/sub", "dir", None),
+                ("top/sub/a", "sym", ".."),
+                ("top/sub/l", "sym", "a/../passwd"),
+            ],
+            id="chain-hides-a-climb",
         ),
     ],
 )
@@ -135,6 +147,28 @@ def test_hoist_does_not_move_a_link_whose_meaning_would_change(
         ["passwd", f"{stem}.tar", stem]
     )
     assert f"kept in {stem}/: " in capsys.readouterr().err
+
+
+@posix_links
+@pytest.mark.parametrize("top", ["pkg", "top"], ids=["flatten", "merge-move"])
+def test_hoist_moves_a_tree_whose_links_stay_inside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, top: str
+) -> None:
+    # The ordinary package shape: a relative `..` link that stays inside the tree.
+    _build_tar(
+        tmp_path / "pkg.tar",
+        [
+            (top, "dir", None),
+            (f"{top}/lib/a.so", "file", b"so"),
+            (f"{top}/bin/a", "sym", "../lib/a.so"),
+        ],
+    )
+    monkeypatch.chdir(tmp_path)
+
+    main(["x", "pkg.tar"])
+
+    assert (tmp_path / top / "bin" / "a").read_bytes() == b"so"
+    assert not (tmp_path / top / top).exists()
 
 
 @posix_links
@@ -514,30 +548,52 @@ def test_a_directory_source_is_not_extracted_into_itself(
 
 
 @posix_links
-@pytest.mark.xfail(
-    strict=True,
-    reason="E15 (low): a TAR hardlink to a symlink member is resolved by following "
-    "the symlink through the member list, by name. When the symlink goes through "
-    "another symlinked directory, that lookup finds no member and the hardlink "
-    "fails. GNU tar links the symlink itself",
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("entries", "target"),
+    [
+        # The symlink's target passes through another symlinked directory, where a
+        # lookup by member name finds nothing.
+        pytest.param(
+            [("y/x", "file", b"YX"), ("sub", "sym", "y"), ("s", "sym", "sub/x")],
+            "sub/x",
+            id="through-a-symlinked-directory",
+        ),
+        pytest.param(
+            [("sub/x", "file", b"YX"), ("s", "sym", "sub/x")],
+            "sub/x",
+            id="plain-chain",
+        ),
+    ],
 )
-def test_a_hardlink_to_a_symlink_through_a_symlinked_directory_is_extracted(
-    tmp_path: Path,
+def test_a_hardlink_to_a_symlink_is_a_second_symlink(
+    tmp_path: Path, streaming: bool, entries: list, target: str
 ) -> None:
-    archive = _build_tar(
-        tmp_path / "a.tar",
-        [
-            ("y/x", "file", b"YX"),
-            ("sub", "sym", "y"),
-            ("s", "sym", "sub/x"),
-            ("h", "hard", "s"),
-        ],
-    )
+    # GNU tar makes `h` a second name for the symlink `s`, so `h` is a symlink with
+    # the same target.
+    archive = _build_tar(tmp_path / "a.tar", [*entries, ("h", "hard", "s")])
     dest = tmp_path / "out"
 
-    report = archivey.extract(archive, dest, policy="standard", on_error="continue")
+    with archivey.open_archive(archive, streaming=streaming) as reader:
+        report = reader.extract_all(dest, policy="standard", on_error="continue")
 
     assert {r.member.name: r.status for r in report.results}["h"] is (
         ExtractionStatus.EXTRACTED
     )
+    assert os.readlink(dest / "h") == target
     assert (dest / "h").read_bytes() == b"YX"
+
+
+@posix_links
+def test_a_hardlink_to_an_escaping_symlink_is_blocked_like_it(tmp_path: Path) -> None:
+    archive = _build_tar(
+        tmp_path / "a.tar",
+        [("s", "sym", "../outside"), ("h", "hard", "s")],
+    )
+    dest = tmp_path / "out"
+
+    report = archivey.extract(archive, dest, policy="standard")
+
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses == {"s": ExtractionStatus.BLOCKED, "h": ExtractionStatus.BLOCKED}
+    assert not os.path.lexists(dest / "h")
