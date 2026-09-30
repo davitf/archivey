@@ -382,18 +382,27 @@ _COMPRESSION_BY_METHOD: dict[int, tuple[CompressionMethod, ...]] = {
 
 
 class _DictionaryCost(NamedTuple):
-    """What one read costs in dictionary memory, and what the headers declared.
+    """What one read costs in dictionary memory, and which header the cost came from.
 
     ``count`` is compared against ``DecoderLimits.max_decoder_memory``. ``declared``
-    is the largest dictionary the headers behind ``count`` declare, for the refusal
-    message: under ``unrar`` the count can be the smaller of the two.
+    is the dictionary behind ``count``, and ``declarer`` the archive index of the
+    member whose header declared it (-1 when the count is 0). Both are for the
+    refusal message: under ``unrar`` the count can be smaller than ``declared``, and
+    in a solid archive, a shared mask or a pass the declarer can be another member.
+    Compare two costs with :func:`_larger_cost`, not ``max``.
     """
 
     count: int
     declared: int
+    declarer: int
 
 
-_NO_DICTIONARY = _DictionaryCost(0, 0)
+_NO_DICTIONARY = _DictionaryCost(0, 0, -1)
+
+
+def _larger_cost(a: _DictionaryCost, b: _DictionaryCost) -> _DictionaryCost:
+    """The larger count, with the declaration behind that count."""
+    return b if b.count > a.count else a
 
 
 def _unrar_dictionary_costs(archive: RarArchive) -> list[_DictionaryCost]:
@@ -414,25 +423,35 @@ def _unrar_dictionary_costs(archive: RarArchive) -> list[_DictionaryCost]:
     small, the reader's own size check stops reading at that size, and ``unrar``
     then blocks on the full pipe. So the bytes written, and so the pages touched,
     stay near the declared size. A stored member, a directory and a redirect use
-    no dictionary (:func:`uses_no_dictionary`), count 0 and add no decoded bytes.
+    no dictionary (:func:`uses_no_dictionary`) and add nothing to the window or
+    to the decoded bytes. In a nonsolid archive they count 0. In a solid one they
+    count the window built ahead of them, because ``unrar`` decodes every earlier
+    member to reach them: measured, a stored 64 KiB member behind a 300 MB member
+    declaring 1 GiB took 314 MiB resident. ``rar -s`` writes that shape for any
+    file it stores, and a solid member is never sliced out of the archive directly.
     A RAR3 symlink does count: its target is compressed data. That is why this walk
     does not use ``is_payload_file()`` as :meth:`RarReader._solid_prefix` does.
     """
     costs: list[_DictionaryCost] = []
     window = decoded = 0
-    for info in archive.members:
-        if uses_no_dictionary(info):
-            costs.append(_NO_DICTIONARY)
-        elif not archive.is_solid:
+    declarer = -1
+    for index, info in enumerate(archive.members):
+        if not archive.is_solid:
             costs.append(
-                _DictionaryCost(
-                    min(info.dictionary_size, info.file_size), info.dictionary_size
+                _NO_DICTIONARY
+                if uses_no_dictionary(info)
+                else _DictionaryCost(
+                    min(info.dictionary_size, info.file_size),
+                    info.dictionary_size,
+                    index,
                 )
             )
-        else:
-            window = max(window, info.dictionary_size)
+            continue
+        if not uses_no_dictionary(info):
+            if info.dictionary_size > window or declarer < 0:
+                window, declarer = info.dictionary_size, index
             decoded += info.file_size
-            costs.append(_DictionaryCost(min(window, decoded), window))
+        costs.append(_DictionaryCost(min(window, decoded), window, declarer))
     return costs
 
 
@@ -1100,7 +1119,10 @@ class RarReader(BaseArchiveReader):
         # ``DecoderLimits.max_decoder_memory`` before that program starts. The two
         # programs allocate differently, so each has a rule.
         costs = (
-            [_DictionaryCost(c, c) for c in unar_dictionary_costs(self._archive)]
+            [
+                _DictionaryCost(count, count, declarer)
+                for count, declarer in unar_dictionary_costs(self._archive)
+            ]
             if self._unar_policy is not None
             else _unrar_dictionary_costs(self._archive)
         )
@@ -2617,7 +2639,7 @@ class RarReader(BaseArchiveReader):
             if position < target_position:
                 earlier = self._members[position]
                 prefix += _member_stream_size(earlier)
-                cost = max(cost, self._dictionary_costs[id(earlier)])
+                cost = _larger_cost(cost, self._dictionary_costs[id(earlier)])
         if not selects_target:
             raise self._unrar_name_refused(
                 target,
@@ -2687,16 +2709,31 @@ class RarReader(BaseArchiveReader):
         """Refuse a read whose decompressor would allocate over ``max_decoder_memory``.
 
         ``cost`` comes from :attr:`_dictionary_costs`, from :meth:`_unrar_selection`
-        for a named ``unrar`` read, or from :meth:`_pass_dictionary_costs` for a solid
-        pass. Runs before the program
-        is spawned and before a stream source is copied to disk for it.
+        for a named ``unrar`` read, or from :meth:`_pass_dictionary_costs` for a
+        solid pass. Runs before the program is spawned and before a stream source is
+        copied to disk for it.
+
+        The message names the member whose header declared the dictionary, and says
+        when the count is capped below it, so a caller can find both numbers.
         """
         program = "unar" if self._unar_policy is not None else "unrar"
+        counted_from = None
+        if cost.declarer >= 0:
+            source = self._members[cost.declarer]
+            if source is not member or cost.count != cost.declared:
+                owner = (
+                    "its own header"
+                    if source is member
+                    else f"the header of member {quoted(source.name)}"
+                )
+                counted_from = f"the {cost.declared}-byte dictionary {owner} declares"
+                if cost.count < cost.declared:
+                    counted_from += ", capped at the unpacked bytes the read decodes"
         check_decoder_memory(
             cost.count,
             limits=self._config.decoder_limits,
             what=f"the RAR dictionary {program} needs for member {quoted(member.name)}",
-            header_value=cost.declared,
+            counted_from=counted_from,
         )
 
     def _pass_dictionary_costs(self) -> dict[int, _DictionaryCost]:
@@ -2710,7 +2747,7 @@ class RarReader(BaseArchiveReader):
         costs: dict[int, _DictionaryCost] = {}
         peak = _NO_DICTIONARY
         for member in self._members:
-            peak = max(peak, self._dictionary_costs[id(member)])
+            peak = _larger_cost(peak, self._dictionary_costs[id(member)])
             costs[id(member)] = peak
         return costs
 

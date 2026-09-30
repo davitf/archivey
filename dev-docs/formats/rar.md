@@ -1094,13 +1094,23 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
     `unrar` writes to the pipe.
   - **Not counted.** A stored member, a directory, and a RAR5 redirect (hardlink, file
     copy, symlink), which carry no data to decode (`uses_no_dictionary` in
-    `rar_unar.py`; stored headers from `rar -m0` declare 0 anyway). A RAR3 symlink does
-    count: its target is compressed data. A RAR 1.5/2.x comment, which `unrar` or
-    `unar` decodes at open: RAR3/4 dictionaries top out at 4 MiB (the 3-bit field over a
-    64 KiB base), and `rar -ma4` is gone from rar 7.00.
-  - **The refusal message** gives the count and, where they differ (`unrar`), the
-    dictionary the headers declare, so it does not present archivey's count as the
-    archive's number.
+    `rar_unar.py`; stored headers from `rar -m0` declare 0 anyway). They add nothing to
+    the window or the decoded bytes. A RAR3 symlink does count: its target is compressed
+    data. A RAR 1.5/2.x comment, which `unrar` or `unar` decodes at open: RAR3/4
+    dictionaries top out at 4 MiB (the 3-bit field over a 64 KiB base), and `rar -ma4`
+    is gone from rar 7.00.
+  - **A stored member of a solid archive** is never sliced directly (`file_solid`), and
+    `rar -s` writes one for every file it stores (`-ms`). Measured 2026-09-30 with a
+    300 MB member declaring 1 GiB (patched) ahead of a stored 64 KiB member: `unrar p`
+    of the stored member peaked at 314 MiB, the same as reading the 300 MB member
+    (309 MiB), so `unrar` decodes the prefix and the stored member counts the window
+    ahead of it. `unar -i` of the stored member stayed at 41 MiB, against 1044 MiB for
+    the 300 MB member, so under `unar` it counts 0. (Peaks include the 41 MiB Python
+    parent; `unrar` exited 3 on the patched archive, as in the table.)
+  - **The refusal message** gives the count and, when the count is capped below it, the
+    declared dictionary. When the dictionary was declared by another member (solid, a
+    shared mask, a pass), the message names that member, so a caller knows which header
+    to look at.
   - **Not signalled at open.** Every count is known from the parse, so `ar.cost.notes`
     could say at `open_archive` that a read will be refused, as it does for a
     `SpoolLimits` refusal. Left out: the refusal is per member, and `ar.cost.notes` is

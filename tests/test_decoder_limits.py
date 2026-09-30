@@ -124,23 +124,26 @@ def test_check_decoder_memory_boundaries(
     assert str(cap) in message
 
 
-@pytest.mark.parametrize("header_value", [None, 5000])
-def test_check_decoder_memory_names_the_header_value_only_when_it_differs(
-    header_value: int | None,
+@pytest.mark.parametrize("counted_from", [None, "the 5000-byte field X declares"])
+def test_check_decoder_memory_says_when_the_number_is_counted(
+    counted_from: str | None,
 ) -> None:
-    """A count derived from header fields is not reported as the declared number."""
+    """A count derived from header fields is not reported as a declared number."""
     limits = DecoderLimits(max_decoder_memory=1024)
     with pytest.raises(ResourceLimitError) as excinfo:
         check_decoder_memory(
-            2000, limits=limits, what="test field", header_value=header_value
+            2000, limits=limits, what="test field", counted_from=counted_from
         )
     message = str(excinfo.value)
-    if header_value is None:
-        assert "test field declares 2000 bytes" in message
-    else:
-        assert "test field is 2000 bytes of the 5000 bytes its header declares" in (
+    if counted_from is None:
+        assert "(test field declares 2000 bytes). The archive chose this number;" in (
             message
         )
+    else:
+        assert (
+            "(test field is 2000 bytes, counted from the 5000-byte field X declares)."
+            " The archive chose these numbers;"
+        ) in message
         assert "declares 2000" not in message
 
 

@@ -123,7 +123,7 @@ def unar_pipe_offsets(archive: RarArchive) -> dict[int, int]:
     return offsets
 
 
-def unar_dictionary_costs(archive: RarArchive) -> list[int]:
+def unar_dictionary_costs(archive: RarArchive) -> list[tuple[int, int]]:
     """The dictionary bytes ``unar`` allocates to decode each member, in archive order.
 
     Measured with ``unar`` 1.10.1: it maps the declared dictionary when it starts a
@@ -137,20 +137,28 @@ def unar_dictionary_costs(archive: RarArchive) -> list[int]:
     largest dictionary declared in its stream up to and including it. Measured, only
     the first member's declaration is allocated, so the largest is an upper bound. A
     member that starts a new stream does not pay for the one before it: reading it
-    alone stayed near 20 MiB after a 1 GiB stream ahead of it. A stored member and a
-    directory, and a redirect, use no dictionary (:func:`uses_no_dictionary`), so they
-    count 0 and neither start nor end a stream.
+    alone stayed near 20 MiB after a 1 GiB stream ahead of it. A stored member, a
+    directory and a redirect use no dictionary (:func:`uses_no_dictionary`), so they
+    count 0 and neither start nor end a stream. For a stored member of a solid
+    archive that is measured too: ``unar -i`` read a stored 64 KiB member behind a
+    300 MB member declaring 1 GiB at 41 MiB resident, where reading the 300 MB
+    member took 1044 MiB. ``unar`` does not decode the stream ahead of it.
+
+    Each entry is ``(count, declarer)``: the bytes, and the archive index of the
+    member whose header declared that dictionary, or -1 for a count of 0.
     """
-    costs: list[int] = []
+    costs: list[tuple[int, int]] = []
     stream = 0
-    for info in archive.members:
+    declarer = -1
+    for index, info in enumerate(archive.members):
         if uses_no_dictionary(info):
-            costs.append(0)
+            costs.append((0, -1))
             continue
         if not info.file_solid:
-            stream = 0
-        stream = max(stream, info.dictionary_size)
-        costs.append(stream)
+            stream, declarer = 0, -1
+        if info.dictionary_size > stream or declarer < 0:
+            stream, declarer = info.dictionary_size, index
+        costs.append((stream, declarer))
     return costs
 
 

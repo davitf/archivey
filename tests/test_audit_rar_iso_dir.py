@@ -621,7 +621,10 @@ def test_unrar_refuses_a_nonsolid_member_declaring_4_gib_and_3_gib_by_default(
         ) as excinfo:
             archive.read("canary.txt")
     message = str(excinfo.value)
-    assert f"is {_3_GIB} bytes of the {4 * 2**30} bytes its header declares" in message
+    assert (
+        f"is {_3_GIB} bytes, counted from the {4 * 2**30}-byte dictionary its own "
+        "header declares, capped at the unpacked bytes the read decodes"
+    ) in message
 
 
 @requires_binary("unrar")
@@ -635,12 +638,51 @@ def test_unrar_refuses_a_solid_member_behind_a_big_declared_prefix_by_default(
     with open_archive(path, config=_UNRAR_ONLY) as archive:
         with pytest.raises(
             ResourceLimitError, match=f"max_decoder_memory={_DEFAULT_LIMIT}"
-        ):
+        ) as excinfo:
             archive.read("tail.txt")
+    # tail.txt's own header declares a different dictionary: the numbers are
+    # prefix.bin's, and the message says so.
+    assert (
+        f"member 'tail.txt' is {_3_GIB + 12} bytes, counted from the {4 * 2**30}-byte "
+        "dictionary the header of member 'prefix.bin' declares, capped at the "
+        "unpacked bytes the read decodes"
+    ) in str(excinfo.value)
     with pytest.raises(
         ResourceLimitError, match=f"max_decoder_memory={_DEFAULT_LIMIT}"
-    ):
+    ) as excinfo:
         _stream_all(path, _UNRAR_ONLY)
+    # The pass stops at prefix.bin, whose own header declares the dictionary.
+    assert (
+        f"member 'prefix.bin' is {_3_GIB} bytes, counted from the {4 * 2**30}-byte "
+        "dictionary its own header declares"
+    ) in str(excinfo.value)
+
+
+@requires_binary("unrar")
+def test_unrar_counts_the_window_ahead_of_a_stored_solid_member(
+    tmp_path: Path, no_spawn: None
+) -> None:
+    """unrar decodes the solid prefix to reach a stored member, so it pays the window.
+
+    ``rar -s`` writes this shape for any file it stores, and a solid member is never
+    sliced out of the archive directly. Here ``tail.txt`` is marked stored, and
+    ``prefix.bin`` ahead of it declares 4 GiB and 3 GiB unpacked.
+    """
+    blocks = _rar5_parse(_fixture("seek_respawn_solid__.rar").read_bytes())
+    prefix, tail = _rar5_file_blocks(blocks)
+    _declare_dictionary(prefix, _RAR5_DICT_4GIB, unpacked=_3_GIB)
+    tail["cinfo"] &= ~(7 << 7)  # method 0, stored; the solid flag stays
+    path = tmp_path / "stored_tail.rar"
+    path.write_bytes(_rar5_build(blocks))
+    with open_archive(path, config=_UNRAR_ONLY) as archive:
+        with pytest.raises(
+            ResourceLimitError, match=f"max_decoder_memory={_DEFAULT_LIMIT}"
+        ) as excinfo:
+            archive.read("tail.txt")
+    assert "the header of member 'prefix.bin' declares" in str(excinfo.value)
+    # unar does not decode the stream ahead of a stored member (measured, rar.md 7).
+    with path.open("rb") as f:
+        assert unar_dictionary_costs(parse_rar_archive(f))[1] == (0, -1)
 
 
 @requires_binary("unrar")
@@ -696,6 +738,13 @@ def test_unar_refuses_every_member_of_a_solid_stream_declaring_4_gib(
         for name in ("prefix.bin", "tail.txt"):
             with pytest.raises(ResourceLimitError, match="max_decoder_memory"):
                 archive.read(name)
+        with pytest.raises(ResourceLimitError) as excinfo:
+            archive.read("tail.txt")
+    # unar's count is the declared size, and it is prefix.bin's header that declares it.
+    assert (
+        f"for member 'tail.txt' is {4 * 2**30} bytes, counted from the "
+        f"{4 * 2**30}-byte dictionary the header of member 'prefix.bin' declares)"
+    ) in str(excinfo.value)
     with pytest.raises(ResourceLimitError, match="max_decoder_memory"):
         _stream_all(path, config)
 
@@ -758,8 +807,12 @@ def test_rar3_dictionary_counts_the_same_way(no_spawn: None) -> None:
             ResourceLimitError, match="max_decoder_memory=16"
         ) as excinfo:
             archive.read("subdir/file2.txt")
-    # The count is 29 bytes; the header's own 1 MiB is in the message too.
-    assert "is 29 bytes of the 1048576 bytes its header declares" in str(excinfo.value)
+    # The count is 29 bytes. Every member declares 1 MiB; the first to declare it,
+    # ``empty_file.txt``, is the one named.
+    assert (
+        "is 29 bytes, counted from the 1048576-byte dictionary the header of member "
+        "'empty_file.txt' declares, capped at the unpacked bytes the read decodes"
+    ) in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
@@ -802,4 +855,4 @@ def test_an_entry_with_no_data_adds_nothing_to_the_dictionary_count(
     assert unrar[0].count == 0
     assert unrar[1].count <= archive.members[1].file_size
     unar = unar_dictionary_costs(archive)
-    assert unar == [0, archive.members[1].dictionary_size]
+    assert unar == [(0, -1), (archive.members[1].dictionary_size, 1)]
