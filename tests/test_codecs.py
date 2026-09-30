@@ -943,26 +943,44 @@ def test_unix_compress_non_block_mode_decodes_like_the_reference() -> None:
         assert stream.read() == b"a" * (codes * (codes + 1) // 2)
 
 
-def _lzw_compress(data: bytes, max_bits: int, *, block_mode: bool = False) -> bytes:
+def _lzw_compress(
+    data: bytes,
+    max_bits: int,
+    *,
+    block_mode: bool = False,
+    clear_every: int = 0,
+    table_limit: int | None = None,
+) -> bytes:
     """An LZW encoder for ``compress`` streams, without block mode by default.
 
-    Without block mode is the ``compress -C`` layout, which ncompress 5.0 dropped, so no
-    installed tool writes these. Free codes start at 256. Before each code, the writer widens once the next free code passes the current
-    width's largest code plus one (ncompress's ``extcode``), padding the current group
-    of eight codes first. Nothing pads after the last code.
+    Without block mode is the ``compress -C`` layout, which ncompress 5.0 dropped, so
+    no installed tool writes these. Free codes start at 256. Before each code, the
+    writer widens once the next free code passes the current width's largest code plus
+    one (ncompress's ``extcode``), padding the current group of eight codes first.
+    Nothing pads after the last code.
 
     This widens at the same code as :func:`_lzw_non_block_mode_run`, whose condition is
     one lower only because it checks after emitting a code rather than before. Code 258
     is the first at 10 bits in both.
 
-    With ``block_mode`` free codes start at 257 and the header says so; the same
-    widening rule then pads nothing. It never writes a CLEAR. On 9 000-byte inputs its
-    output matched ncompress 5.1 byte for byte at 9, 10, 12 and 16 bits.
+    With ``block_mode`` free codes start at 257 and the header says so. The same
+    widening rule then pads nothing, since a width now spans 256 codes, a whole number
+    of groups of eight. ``clear_every`` writes a CLEAR after that many codes, padded to
+    the end of its group like ncompress's. Without CLEARs, on 9 000-byte inputs, its
+    output matched a build of ncompress commit ``3303f31`` (which reports itself as 5.1)
+    byte for byte at 9, 10, 12 and 16 bits.
+
+    ``table_limit`` is the last free code the table may take, ``2 ** max_bits - 1`` by
+    default. ncompress 5.0's ``-b9`` bug is ``table_limit=512``: a code that does not
+    fit in 9 bits, written anyway.
     """
     out = bytearray(b"\x1f\x9d" + bytes([max_bits | (0x80 if block_mode else 0)]))
     width, in_group, bits, nbits = 9, 0, 0, 0
-    free_code = 257 if block_mode else 256
+    first_free = 257 if block_mode else 256
+    free_code = first_free
+    last_free = (1 << max_bits) - 1 if table_limit is None else table_limit
     table = {bytes([i]): i for i in range(256)}
+    codes = 0
 
     def put(code: int) -> None:
         nonlocal bits, nbits, in_group
@@ -975,12 +993,13 @@ def _lzw_compress(data: bytes, max_bits: int, *, block_mode: bool = False) -> by
             nbits -= 8
 
     def emit(code: int) -> None:
-        nonlocal width
+        nonlocal width, codes
         if free_code > 1 << width and width < max_bits:
             while in_group:
                 put(0)
             width += 1
         put(code)
+        codes += 1
 
     prefix = b""
     for byte in data:
@@ -989,10 +1008,17 @@ def _lzw_compress(data: bytes, max_bits: int, *, block_mode: bool = False) -> by
             prefix = extended
             continue
         emit(table[prefix])
-        if free_code < 1 << max_bits:
+        if free_code <= last_free:
             table[extended] = free_code
             free_code += 1
         prefix = bytes([byte])
+        if clear_every and codes % clear_every == 0:
+            emit(256)
+            while in_group:
+                put(0)
+            width = 9
+            free_code = first_free
+            table = {bytes([i]): i for i in range(256)}
     if prefix:
         emit(table[prefix])
     if nbits:
@@ -1046,18 +1072,55 @@ def test_unix_compress_non_block_mode_streams_match_gzip(
         assert _lzw_decode_in_chunks(compressed, chunk) == data
 
 
-@pytest.mark.parametrize("block_mode", [True, False])
+def _seven_zip_decompress(compressed: bytes, tmp_path: Path) -> bytes:
+    """``7z``'s reading of a ``.Z`` stream, through a file in ``tmp_path``."""
+    import subprocess
+
+    path = tmp_path / "data.Z"
+    path.write_bytes(compressed)
+    return subprocess.run(
+        ["7z", "e", "-so", str(path)], capture_output=True, check=True
+    ).stdout
+
+
+# (block_mode, clear_every): without block mode, block mode with no CLEAR, and block
+# mode with a CLEAR every 300 codes, which lands both before and after the table fills.
+_NINE_BIT_LAYOUTS = [(False, 0), (True, 0), (True, 300)]
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize(("block_mode", "clear_every"), _NINE_BIT_LAYOUTS)
 @pytest.mark.parametrize("payload", sorted(_NON_BLOCK_PAYLOADS))
 def test_unix_compress_nine_bit_streams_decode_exactly(
-    payload: str, block_mode: bool
+    payload: str, block_mode: bool, clear_every: int, tmp_path: Path
 ) -> None:
-    """At 9 bits the table fills and codes stay 9 bits wide. GNU gzip is not a
-    reference here: it moves to 10-bit codes when the table fills even at 9 bits, and
-    refuses these streams. See ``dev-docs/formats/unix-compress.md`` §3."""
+    """At 9 bits the table fills and codes stay 9 bits wide; after a CLEAR the table
+    restarts at 9 bits. ``7z`` is the reference. GNU gzip is not: it moves to 10-bit
+    codes when the table fills even at 9 bits, and refuses these streams. See
+    ``dev-docs/formats/unix-compress.md`` §3."""
     data = _NON_BLOCK_PAYLOADS[payload]
-    compressed = _lzw_compress(data, 9, block_mode=block_mode)
+    compressed = _lzw_compress(data, 9, block_mode=block_mode, clear_every=clear_every)
+    assert _seven_zip_decompress(compressed, tmp_path) == data
     for chunk in (1 << 20, 4097, 7):
         assert _lzw_decode_in_chunks(compressed, chunk) == data
+
+
+@requires_binary("7z")
+def test_unix_compress_ncompress_5_0_nine_bit_damage_reads_as_wrong_bytes(
+    tmp_path: Path,
+) -> None:
+    """ncompress 5.0's ``-b9`` bug: the table takes code 512, which is later written in
+    9 bits. The stream decodes with no error to wrong bytes, the same as ``7z`` reads,
+    because nothing in the format marks the damage (``unix-compress.md`` §3)."""
+    data = _NON_BLOCK_PAYLOADS["random"]
+    damaged = _lzw_compress(data, 9, block_mode=True, table_limit=512)
+    assert damaged != _lzw_compress(data, 9, block_mode=True)
+    state = LzwState()
+    out, _ = state.feed(damaged)
+    tail, _ = state.flush()
+    assert out + tail != data
+    assert state.truncation is None
+    assert out + tail == _seven_zip_decompress(damaged, tmp_path)
 
 
 def test_unix_compress_non_block_mode_may_end_at_a_widening() -> None:

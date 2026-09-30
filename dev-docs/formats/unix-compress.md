@@ -127,7 +127,8 @@ partway through a string, ncompress 5.0 adds one entry too many, code 512, and c
 write it in 9 bits. Its low 9 bits read as the literal byte 0, and its tenth bit lands in
 the next code. Nothing marks the damage, so every decoder reads on: archivey, `7z` and
 `unar` return the same wrong bytes. Whether a file is hit depends on the data. The bug
-has been in ncompress since 4.2.3 (1992). It was fixed in its repository in February
+is in the oldest version in ncompress's repository, 4.2.3 (commit `4b59db4`, 1992), which
+already sets the 9-bit limit one too high. It was fixed in its repository in February
 2021 (commit `3303f31`, "fixed nine bits processing"), after the 5.0 release, and no
 release carries the fix yet. A build of that commit writes 9-bit files that archivey,
 `7z` and `unar` read back to their input.
@@ -215,7 +216,8 @@ The truncation gap is the format's, not an open question;
 | One call's output is bounded | `tests/test_codecs.py::test_unix_compress_read_one_bounds_internal_buffer` |
 | The table stays under about 19 MiB, 21 MiB on a free-threaded build (§4) | `tests/test_codecs.py::test_unix_compress_worst_case_table_stays_under_the_stated_bound`, `tests/test_audit_tar_streams.py::test_unix_compress_dictionary_memory_is_bounded` |
 | Files written without block mode decode like GNU `gzip -d` at 10 to 16 bits | `tests/test_codecs.py::test_unix_compress_non_block_mode_decodes_like_the_reference`, `::test_unix_compress_non_block_mode_streams_match_gzip`, `::test_unix_compress_non_block_mode_may_end_at_a_widening`, `::test_unix_compress_non_block_mode_cut_inside_widening_padding_is_truncated` |
-| 9-bit files, in block mode and without, decode to their input | `tests/test_codecs.py::test_unix_compress_nine_bit_streams_decode_exactly` |
+| 9-bit files, in block mode with and without CLEAR codes and without block mode, decode to their input like `7z` | `tests/test_codecs.py::test_unix_compress_nine_bit_streams_decode_exactly` |
+| A 9-bit file with ncompress 5.0's damage reads with no error to the same wrong bytes as `7z` | `tests/test_codecs.py::test_unix_compress_ncompress_5_0_nine_bit_damage_reads_as_wrong_bytes` |
 | Linked long entries decode exactly | `tests/test_codecs.py::test_unix_compress_long_dictionary_entries_decode_exactly`, `::test_unix_compress_repeated_longest_code_decodes_exactly` |
 | `.tar.Z` is found; a bare `.Z` stays bare | `tests/test_detection.py::test_unix_compress_without_inner_tar_stays_bare_z`, `tests/test_libarchive_corpus.py::test_tar_z_detection_upgrades_via_inner_probe` |
 
