@@ -565,9 +565,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             self.tell()
         start = self._pos
         want = -1 if n is None or n < 0 else n
-        parts: list[bytes] = []
         try:
-            return self._read_into(parts, want)
+            return self._read_into(want)
         except Exception:
             self._rewind_after_failed_read(start)
             raise
@@ -590,8 +589,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             if self._death is None:
                 self._death = (
                     ReadError,
-                    f"this {self._label} stream cannot continue: a read failed "
-                    f"part-way, and moving back to where it started failed too "
+                    f"this {self._label} stream cannot continue: a read failed, "
+                    f"and moving back to where it started failed too "
                     f"({exc!r})",
                 )
                 self._stop(kill=True)
@@ -600,8 +599,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._sequential = False
         self._pos = position
 
-    def _read_into(self, parts: list[bytes], want: int) -> bytes:
-        """The body of :meth:`read`; ``parts`` collects what it takes."""
+    def _read_into(self, want: int) -> bytes:
+        """The body of :meth:`read`."""
+        parts: list[bytes] = []
         if self._buffer_at < len(self._buffer):
             end = len(self._buffer) if want < 0 else self._buffer_at + want
             part = self._buffer[self._buffer_at : end]

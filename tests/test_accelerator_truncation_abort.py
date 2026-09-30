@@ -45,7 +45,7 @@ from archivey.internal.streams.rapidgzip_child import (
     RapidgzipChildReportedError,
     RapidgzipChildStream,
 )
-from archivey.internal.streams.rapidgzip_worker import ERR, READ
+from archivey.internal.streams.rapidgzip_worker import ERR, READ, SEEK
 from tests.conftest import requires
 from tests.corruption_util import is_corruption_not_truncation
 
@@ -729,9 +729,12 @@ def test_a_refused_seek_keeps_the_position_and_buffer(offset: int, whence: int) 
         child.close()
 
 
-def _fail_the_nth_read(child: RapidgzipChildStream, n: int) -> None:
+def _fail_the_nth_read(
+    child: RapidgzipChildStream, n: int, *, fail_seeks: bool = False
+) -> None:
     """Make the child answer its ``n``-th READ from now with a reported error, as it
-    does for a corrupt (not truncated) stream; the child itself stays usable."""
+    does for a corrupt (not truncated) stream; the child itself stays usable. With
+    ``fail_seeks``, every SEEK after that is refused the same way."""
     exchange = child._exchange
     reads = 0
 
@@ -741,6 +744,8 @@ def _fail_the_nth_read(child: RapidgzipChildStream, n: int) -> None:
             reads += 1
             if reads == n:
                 return ERR, 0, b"RuntimeError\n\ncorrupt block"
+        if tag == SEEK and fail_seeks and reads >= n:
+            return ERR, 0, b"RuntimeError\n\nseek refused"
         return exchange(tag, arg, payload)
 
     child._exchange = failing  # type: ignore[method-assign]
@@ -762,6 +767,25 @@ def test_a_failed_read_leaves_the_position_where_it_started(failing_read: int) -
         assert child.tell() == 10
         assert child.read(100) == payload[10:110]
         assert child.read() == payload[110:]
+    finally:
+        child.close()
+
+
+def test_a_failed_read_that_cannot_move_back_leaves_the_stream_unusable() -> None:
+    """When the seek back to where a failed read started fails too, nobody knows the
+    position: the read raises its own error, the child is stopped, and every later
+    call raises ``ReadError`` (round 4, K18)."""
+    payload = _payload()
+    child = RapidgzipChildStream(io.BytesIO(gzip.compress(payload)), label="gzip")
+    try:
+        assert child.read(10) == payload[:10]
+        _fail_the_nth_read(child, 1, fail_seeks=True)
+        with pytest.raises(RuntimeError, match="corrupt block"):
+            child.read()
+        assert child._proc is None
+        for call in (lambda: child.read(1), child.tell, lambda: child.seek(0)):
+            with pytest.raises(ReadError, match="moving back to where it started"):
+                call()
     finally:
         child.close()
 
