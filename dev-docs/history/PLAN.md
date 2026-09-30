@@ -1,5 +1,12 @@
 # Archivey — Implementation Plan (v2 Clean-Slate Rewrite)
 
+> **Historical.** This is the phase roadmap from before 0.2.0, kept for history. Every
+> phase is done, dropped, or carried by an OpenSpec change, and parts of it no longer
+> match the code. For current state, read the open OpenSpec changes under
+> `openspec/changes/`, the backlog in [`IDEAS.md`](../IDEAS.md), and
+> [`CHANGELOG.md`](../../CHANGELOG.md). Writing (Phase 9 below) now lives in
+> [`investigations/archive-writing-design.md`](../investigations/archive-writing-design.md).
+
 > **Approach:** clean-slate rewrite. New code is written fresh against the
 > authoritative `openspec/specs/` capability specs (historical prose lives under
 > `dev-docs/history/SPEC.md` and `dev-docs/history/ARCHITECTURE.md`). The
@@ -30,7 +37,7 @@ are archived to `openspec/changes/archive/`). Phases without a change yet need a
 | 6 | Native 7z + RAR read (was Phase 7; **fuzzing is an entry gate** — see cross-cutting) | `format-7z`, `format-rar`, `testing-contract` (oracle cross-validation) | — |
 | 7 | CLI (was Phase 9; pulled forward as dev tool + the safe-extraction demo, per `VISION.md`) | `cli` | — |
 | 8 | Seekable zstd + blocked gzip (rescoped; original zst/lz4 read goals landed in Phases 2–3, `w:zst` moved to the writing phase) | `seekable-decompressor-streams`, `format-single-file-compressors` | `seekable-gzip-and-block-writing` (partial) |
-| 9 | Writing support (was Phase 6; **not a 1.0 requirement** — may land after; spec must design in reproducible output + the metadata-fidelity decision, see `IDEAS.md`) | No capability yet — the `archive-writing` spec and the ZIP/TAR write requirements were retired in 2026-09 and preserved as [`investigations/archive-writing-design.md`](investigations/archive-writing-design.md) | — |
+| 9 | Writing support (was Phase 6; **not a 1.0 requirement** — may land after; spec must design in reproducible output + the metadata-fidelity decision, see `IDEAS.md`) | No capability yet — the `archive-writing` spec and the ZIP/TAR write requirements were retired in 2026-09 and preserved as [`investigations/archive-writing-design.md`](../investigations/archive-writing-design.md) | — |
 | 10 | Polish + release readiness (test-strategy revision per the `retire-dev-oracle` change) | `packaging-and-extras` (finalize), `cli`, `testing-contract` (full corpus) | — |
 
 > **Resequenced (2026-07, per `VISION.md`):** native 7z/RAR reading moved **before**
@@ -39,22 +46,22 @@ are archived to `openspec/changes/archive/`). Phases without a change yet need a
 > below are renumbered accordingly; archived changes keep their historical numbering.
 
 **In-flight changes unrelated to a PLAN phase** (do not block Phase 4, but may land
-alongside): `seekable-gzip-and-block-writing`, `rapidgzip-truncation-investigation`.
+alongside): `seekable-gzip-and-block-writing`.
 
 **The detection round** (from the #263 analysis) is five changes with a fixed order; each
 states its own position and reasoning in task `0.0`, following the convention #264 set:
 
 | # | change | depends on |
 | --- | --- | --- |
-| 1 | `detection-format-gaps` — three false negatives + the far-magic reorder that unblocks one | — |
+| 1 | `detection-format-gaps` — three false negatives + the far-magic reorder that unblocks one. **Done, archived 2026-08-30** | — |
 | 2 | `single-file-open-time-validation` — P15 and P16; not a detection change, can run in parallel with 1. **Done, archived 2026-09-25** | — (before 4) |
-| 3 | `detection-prefix-workspace` — one monotone prefix buffer, access-shape rule, budget/capability/receipt | after 1 (avoids colliding in `_detect_format_body`) |
+| 3 | `detection-prefix-workspace` — one monotone prefix buffer, access-shape rule, budget/capability/receipt. **Done, archived 2026-08-31** | after 1 (avoids colliding in `_detect_format_body`) |
 | 4 | ~~`detection-evidence-ledger`~~ — **decided against 2026-09-25**, archived unimplemented; small fixes on the existing detector shipped instead | — |
 | 5 | `detection-result-surface` — cut to the `detection=` handoff (the reader keeping its `FormatInfo` shipped) | after 0.2.0 |
 
-`prefixed-archive-detection` is **revised**, not implemented as written: it rebases onto 3 and
-4, adding its tiers as declarations on the scheduler, and drops the far-magic move (which
-ships in 1) and its provisional first-match-wins note (which 4 replaces).
+`prefixed-archive-detection` is **revised**, not implemented as written: it rebases onto 3,
+adding its tiers as declarations on the scheduler, and drops the far-magic move (which
+ships in 1).
 `diagnostics-warnings-as-data` is explicitly a **Phase 5 public-API follow-on** rather
 than an unsequenced cross-cutting change; its implementation must land before Phase 6
 native readers add more diagnostic-producing paths.
@@ -133,7 +140,8 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
   backups) and the highest-value *feature*, but the largest item (its own spec; ZIP
   local-header walk, TAR resync, single-file decodable-prefix). First fast-follow after
   `0.2.0`; ranks above `ArchivePath`/fsspec-write. (Backlog: `IDEAS.md`.)
-- **Fully-native ZIP parser** — VISION's "eventually ZIP" memory-safety differentiator +
+- **Fully-native ZIP parser**: archivey's own parser in place of stdlib `zipfile`, so
+  ZIP reading no longer inherits `zipfile`'s behaviour and bugs, plus
   salvage-via-local-headers. `zip-native-codec-streams` (item 4) captures most of the
   near-term compat value incrementally; the full central-directory/EOCD parser is a
   post-`0.2.0` change.
@@ -142,8 +150,7 @@ Recently archived stream-layer / refactor follow-ons: `codec-descriptor-refactor
   public), and defer `ArchivePath` and the fsspec **write** direction past 1.0.
 
 OpenSpec changes for this sequencing (active vs archived):
-`cross-platform-name-safety` remains active (lands `OverwritePolicy.RENAME`). Archived:
-`benchmark-gate`, `zip-native-codec-streams`, `zip-aes-decryption`,
+Archived: `cross-platform-name-safety` (2026-07-16); `benchmark-gate`, `zip-native-codec-streams`, `zip-aes-decryption`,
 `rapidgzip-deflate-zlib-acceleration` (2026-07-15); `stored-digest-dedupe-parity`,
 `rar-blake2sp-verification`, `adversarial-string-corpus-contract` (2026-07-14);
 `rar-file-version-members` (2026-07-15). (Provenance: the `review/` deep-review set —
@@ -162,7 +169,7 @@ Port-vs-rewrite is decided by **layer**, not file-by-file:
   `DecompressorStream`, `XzStream`, `LzipStream`). Pull these from DEV as units and
   adapt only their interface to the new ABC. Rewriting them from memory is pure downside
   risk — lost edge cases. (DEV's `RewindableStreamWrapper`/`RecordableStream` are *not*
-  ported as-is — they are folded into the new `PeekableStream`; see the detection phase.)
+  ported as-is — they are folded into the new `PrefixWorkspace`; see the detection phase.)
 - **Write fresh against SPEC/ARCHITECTURE** (never copy-then-delete) — the
   *spine*: the public API, the `BaseArchiveReader` ABC, the backend registry,
   `ExtractionCoordinator`, and the `internal/streams/` package layout. These are
@@ -210,7 +217,8 @@ Port-vs-rewrite is decided by **layer**, not file-by-file:
    seed corpus for the mutation harness and the Phase-6 Atheris harnesses.
 
 Foundations (declarative corpus, on-demand generation + content-keyed cache under
-`ARCHIVEY_TEST_CACHE`, no committed binaries, flat `tests/`) are in place;
+`ARCHIVEY_TEST_CACHE`, no committed binaries except the RAR fixtures ADR 0016 allows,
+flat `tests/`) are in place;
 `testing-contract` remains a through-line, finalized in Phase 10.
 
 ---
@@ -235,7 +243,7 @@ hierarchy, the new declarative test framework, and the **directory pseudo-backen
 exercised end-to-end (iterate → read/open → link resolution → cost) from day one.
 All codec/detection-dependent formats stay unwired until Phases 2–3.
 
-**Entry criteria:** fresh repo; `archivey-dev` cloned per `CLAUDE.md`.
+**Entry criteria:** fresh repo; `archivey-dev` cloned per `AGENTS.md` §Reference repository.
 
 ### Tasks
 1. **`pyproject.toml`** (clean slate): `hatchling`; `[project]` `archivey`,
@@ -316,7 +324,7 @@ fresh with the good DEV primitives ported in.
    `self.read = self._raw.read` method-swap), and ported `decompress.py`/`xz.py`/
    `lzip.py`. Keep `archive_stream.py`. (The detection peek/rewind primitive —
    DEV's `RecordableStream`/`RewindableStreamWrapper` — is **not** built here; it becomes
-   `PeekableStream` in Phase 3 with `format-detection`.)
+   `PrefixWorkspace` in Phase 3 with `format-detection`.)
 2. **`compressed-streams`**: the uniform pull-based codec layer — one default
    backend per codec, a single wrapped crypto (AES) stage, missing-backend →
    `PackageNotInstalledError`, decompression-error translation, optional
@@ -356,7 +364,7 @@ detection covers them.
    only the reader lands here so the two stdlib formats and the inner-TAR detection
    result cohere in one phase.
 3. Port **format detection** magic table + extension fallback + conflict warning +
-   inner-TAR probe for these formats; the new `PeekableStream` peek/replay shared by
+   inner-TAR probe for these formats; the new `PrefixWorkspace` peek/replay shared by
    the opener.
 4. Wire **CostReceipt** values for these formats; `archive-reading` random/by-name
    access on indexed sources. Backend registry: always-register + tri-state
@@ -366,7 +374,7 @@ detection covers them.
 ### Tests added
 `format-zip`, `format-single-file-compressors`, `format-iso`
 scenarios; `format-detection` scenarios for these formats; `backend-registry`
-selection + *ISO without pycdlib* + *list_formats() excludes unavailable*;
+selection + *ISO without pycdlib* + *`list_supported_formats()` excludes unavailable*;
 `access-mode-and-cost` indexed-listing / random-access (default `streaming=False`)
 scenarios for ZIP; equivalence matrix seeded; non-seekable ZIP fail-fast. Retire
 matching frozen-oracle coverage.
@@ -461,8 +469,7 @@ warning-producing paths use the lifecycle-aware diagnostics contract before nati
    traceback preserved; genuine I/O not reclassified; context filled by base reader).
 4. **Finalize the public config surface** — **decided** (see the `phase-5-public-api`
    change): a frozen `ArchiveyConfig` object passed explicitly (`config=`), carrying the
-   accelerator modes, `strict_archive_eof` (the renamed Phase 4 `strict_eof` stopgap,
-   default False), and `ExtractionLimits` (the bomb knobs). Extraction policies
+   accelerator modes and `ExtractionLimits` (the bomb knobs). Extraction policies
    (`ExtractionPolicy` / `OverwritePolicy` / `OnError`) stay per-call keyword args. No
    ambient (contextvars/global) configuration. Also decided there: the password
    candidate-sequence + provider model, multi-source acceptance + path volume-set
@@ -470,7 +477,7 @@ warning-producing paths use the lifecycle-aware diagnostics contract before nati
 5. **Diagnostics follow-on** (specified by `diagnostics-warnings-as-data`) — add the
    bounded lifecycle collector and exact counts; reader/stream/format/member/result
    projections; first-class `ExtractionReport`; per-code policy/callback/escalation;
-   typed `DiagnosticRaisedError`; and migrate all 17 current warning calls. Runtime
+   typed `DiagnosticRaisedError`; and migrate every warning call. Runtime
    rewind/index/EOF events stay off frozen `CostReceipt` / `ArchiveInfo`. This task is
    ordered after `phase-5-public-api` and before Phase 6.
 
@@ -563,7 +570,8 @@ blocked gzip (BGZF/mgzip), per the `seekable-gzip-and-block-writing` change and 
 seekable-zstd analysis in `IDEAS.md` (now scheduled).
 
 ### Tasks
-1. **Native zstd frame-index reader** on `SegmentedDecompressorStream`: build the frame
+1. **Native zstd frame-index reader** as a `Decoder` for `DecompressorStream` (the
+   seek-point machinery xz already uses): build the frame
    index from frame headers (`Frame_Content_Size`) and/or the *Seekable Zstd* seek
    table; fall back to the sequential/rewind path when sizes are absent. Benchmark
    against stdlib `compression.zstd` and `indexed_zstd` first (per IDEAS: decide with
@@ -593,7 +601,7 @@ thorough exploration pass covering **reproducible output** (`SOURCE_DATE_EPOCH`,
 stable ordering, normalized metadata) and the **metadata-fidelity boundary**
 (xattrs/ACLs round-trip — see `IDEAS.md`), both of which shape the writer API and
 are costly to retrofit. Start from
-[`investigations/archive-writing-design.md`](investigations/archive-writing-design.md) —
+[`investigations/archive-writing-design.md`](../investigations/archive-writing-design.md) —
 the retired `archive-writing` capability, kept because its analysis is real, but written
 before either exploration.
 
@@ -619,7 +627,7 @@ The writing capability's scenarios; a `testing-contract` ZIP/TAR round-trip; con
 
 ### Acceptance — spec scenarios covered
 The requirements this phase re-specifies, starting from
-[`investigations/archive-writing-design.md`](investigations/archive-writing-design.md):
+[`investigations/archive-writing-design.md`](../investigations/archive-writing-design.md):
 the writer surface, the ZIP/TAR round-trips, and ZIP streaming write via data descriptor.
 **Gates:** Pyrefly + ty + ruff clean; no full-archive buffering during stream conversion.
 
@@ -630,7 +638,8 @@ the writer surface, the ZIP/TAR round-trips, and ZIP streaming write via data de
 **Goal:** `0.2.0` release-ready; the new test suite is the **sole** suite.
 
 ### Tasks
-1. README, Google-style docstrings (`mkdocstrings`), `list_formats()`, CHANGELOG.
+1. README, Google-style docstrings (`mkdocstrings`), `list_supported_formats()` /
+   `list_known_formats()`, CHANGELOG.
 2. **Final CI tuning** — the matrix was stood up in Phase 1 (reduced ~12-job: Linux ×
    `{3.11,3.12,3.13,3.14}` × `{core-only, [all]}`; macOS + Windows on min/max Python with
    `[all]`); here, confirm the generated-archive cache works per Python version and the
@@ -645,7 +654,8 @@ the writer surface, the ZIP/TAR round-trips, and ZIP streaming write via data de
 `cli`, and the full `testing-contract` (equivalence matrix across all formats,
 adversarial corpus, round-trip, non-seekable coverage, oracle cross-validation).
 **Gates:** CI matrix green on a fresh checkout (all archives generated from scratch;
-coverage **reported, not gated**); no committed generated binaries.
+coverage **reported, not gated**); no committed generated binaries beyond the RAR
+fixtures ADR 0016 allows.
 
 ---
 

@@ -54,9 +54,13 @@ anything before it. How many there are depends on the data; a file can have none
 
 **Codes are packed in groups.** The original `compress` reads codes in groups of eight, so
 after a CLEAR, or a width change, the writer pads to the end of the current group. A decoder
-that does not skip the same padding reads garbage after the first CLEAR. The padding is
-also where a cut can be detected even at a code boundary: a source that ends while padding
-is still owed is cut.
+that does not skip the same padding reads garbage after the first CLEAR. In block mode a
+width lasts a whole number of groups, so only a CLEAR leaves padding. Without block mode
+(`compress -C`) the first free code is 256, not 257, so the first width lasts 257 codes and
+the widening to 10 bits pads too. The padding after a CLEAR is also where a cut can be
+detected even at a code boundary: a source that ends while it is still owed is cut. The
+padding at a widening is written only when another code follows, so a stream may end
+there with none of it; a stream that ends partway into it is cut.
 
 ## 2. The pipeline here
 
@@ -89,7 +93,8 @@ impossible code (one past the next table entry) is `CorruptionError`. At the end
 `TruncatedError` is armed when any of these holds:
 
 - the source ended inside the three-byte header, including a zero-byte source;
-- the source ended while CLEAR padding was still owed;
+- the source ended while CLEAR padding was still owed, or after part of a widening's
+  padding;
 - bits were left over after the last whole code, and they are not all zero.
 
 Otherwise the data ends there, with no error. As with every codec, sized reads return the
@@ -115,6 +120,12 @@ Measured with `ncompress` 5.0, as listed on [`single-file.md`](single-file.md) �
 | A 16-bit file cut at 200 even points | 100 `TruncatedError`, 100 read short with no error |
 | A 12-bit file cut at 200 even points | 131 `TruncatedError`, 69 read short with no error |
 | A zero-byte `.Z` | `TruncatedError` |
+| `compress -b9` | Reads without error, but a 4 KB text file came back 12 bytes short and different from byte 684. `7z` and `unar` return the same bytes; ncompress and GNU gzip 1.12 refuse the file as corrupt. See §7 |
+
+Without block mode (`compress -C`) no installed tool writes files, so the tests carry
+their own encoder. GNU gzip 1.12 reads its output like archivey at 10 to 16 bits. The
+Apple gzip on macOS returned different bytes for the long zero runs, so the tests use
+only GNU gzip as the reference.
 
 ## 4. Threat surface
 
@@ -122,8 +133,15 @@ Measured with `ncompress` 5.0, as listed on [`single-file.md`](single-file.md) �
 
 - **Native code, but Python.** The decoder is archivey's own, in Python, and covered by the
   fuzzers; there is no native library to crash.
-- **Memory is fixed by the format.** The table holds at most 2¹⁶ entries; no header field
-  sizes an allocation.
+- **Memory is bounded by the decoder.** The table holds at most 2¹⁶ entries and no header
+  field sizes an allocation, but an entry can be up to about 64 KiB long, so storing each
+  entry as its full expansion would reach about 2 GiB. A zero run builds that shape, and
+  130 KB of crafted input fills it. The decoder stores an entry of up to 256 bytes flat.
+  A longer entry is a link to an earlier code plus a tail of up to 128 bytes, rebuilt on
+  use by walking the links (about one step per 128 bytes of output). The table stays under
+  about 19 MiB in the worst case (18.5 to 18.8 MiB measured on CPython 3.11 to 3.14; up to
+  20.3 MiB on a free-threaded build, whose object headers are larger). That is well under
+  the `DecoderLimits.max_decoder_memory` default, so that limit is not consulted.
 - **Expansion.** Each code emits at most the longest string in the table, so one read's
   output is bounded per call like every codec's ([`single-file.md`](single-file.md) §4).
 - **A cut or damaged file can pass.** The format carries no length or checksum (§1). A
@@ -160,14 +178,22 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 ## 7. Open questions
 
-None. The truncation gap is the format's; [`docs/formats.md`](../../docs/formats.md) tells
-users it is best-effort.
+**9-bit files.** ncompress 5.0's `-b9` output is refused by ncompress's own decoder and
+by GNU gzip, and `7z`, `unar` and archivey agree with each other on it but not with the
+input (§3). Without block mode at 9 bits, archivey and `7z` read the test encoder's
+streams back to their input and GNU gzip refuses them. GNU gzip and ncompress appear to
+move to 10-bit codes when the table fills even at `-b9` (inferred from their source, not
+traced). No 9-bit file from another producer is at hand to say which reading is right,
+so 9 bits is not claimed.
+
+The truncation gap is the format's, not an open question;
+[`docs/formats.md`](../../docs/formats.md) tells users it is best-effort.
 
 ## 8. Verify
 
 ```bash
 ./scripts/test.sh tests/test_codecs.py tests/test_single_file.py tests/test_detection.py \
-    -k "unix_compress or _z_"
+    tests/test_audit_tar_streams.py -k "unix_compress or _z_"
 ```
 
 | Claim | Pinned by |
@@ -178,6 +204,9 @@ users it is best-effort.
 | Truncation keeps raising, after a rewind too | `::test_unix_compress_truncated_readall_raises`, `::test_unix_compress_truncated_readall_then_rewind_raises_again` |
 | CLEAR codes are seek points, merged when empty | `::test_unix_compress_clear_seek_points`, `::test_unix_compress_consecutive_clear_seek_points_no_assert`, `tests/test_detection.py::test_detect_format_atheris_z_clear_collisions_do_not_assert` |
 | One call's output is bounded | `tests/test_codecs.py::test_unix_compress_read_one_bounds_internal_buffer` |
+| The table stays under about 19 MiB, 21 MiB on a free-threaded build (§4) | `tests/test_codecs.py::test_unix_compress_worst_case_table_stays_under_the_stated_bound`, `tests/test_audit_tar_streams.py::test_unix_compress_dictionary_memory_is_bounded` |
+| Files written without block mode decode like GNU `gzip -d` at 10 to 16 bits | `tests/test_codecs.py::test_unix_compress_non_block_mode_decodes_like_the_reference`, `::test_unix_compress_non_block_mode_streams_match_gzip`, `::test_unix_compress_non_block_mode_may_end_at_a_widening`, `::test_unix_compress_non_block_mode_cut_inside_widening_padding_is_truncated` |
+| Linked long entries decode exactly | `tests/test_codecs.py::test_unix_compress_long_dictionary_entries_decode_exactly`, `::test_unix_compress_repeated_longest_code_decodes_exactly` |
 | `.tar.Z` is found; a bare `.Z` stays bare | `tests/test_detection.py::test_unix_compress_without_inner_tar_stays_bare_z`, `tests/test_libarchive_corpus.py::test_tar_z_detection_upgrades_via_inner_probe` |
 
 **Building fixtures.** No Python library writes `.Z`. The `ncompress` package installs

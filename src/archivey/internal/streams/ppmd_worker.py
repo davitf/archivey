@@ -28,6 +28,7 @@ Protocol, all integers little-endian, over the child's stdin and stdout:
 
 from __future__ import annotations
 
+import signal
 import struct
 import sys
 from typing import IO
@@ -61,6 +62,9 @@ def _error_payload(exc: BaseException) -> bytes:
 
 
 def main() -> None:
+    # A terminal's Ctrl-C signals the whole foreground process group, this child too.
+    # The parent decides what an interrupt means.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     stdin = sys.stdin.buffer
     stdout = sys.stdout.buffer
     header = _read_exact(stdin, _OPEN.size)

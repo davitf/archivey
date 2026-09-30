@@ -21,11 +21,13 @@ before `0.2.0`). Keep `rarfile` as a test oracle only.
 
 - Listing works without `unrar`; reading compressed members requires it on `PATH`.
 - Solid `stream_members()` uses one `unrar p` pipe, not one process per member.
-- Refuse silent fallbacks to `unrar-free` / `unar`.
+- Refuse silent fallbacks to `unrar-free` / `unar`. (For `unar`, see the amendments
+  below: the default `"auto"` uses `unar` when no RARLAB program is installed.)
 - **Amended 2026-09-26:** `unar` is an **opt-in** second data program
   (`ArchiveyConfig.rar_decompressor="unar"`), requested by the maintainer after the
   2026-09-01 decompressor matrix left it open. It is still never a fallback: selecting it
   with `unar` missing raises `PackageNotInstalledError`, and the default stays `unrar`.
+  (The third amendment below makes `"auto"` the default.)
   The reads `unar` gets wrong are refused from the native listing before it runs
   (`internal/backends/rar_unar.py`); the process layer (`internal/external/`) is
   format-agnostic so `unar` can later serve other formats.

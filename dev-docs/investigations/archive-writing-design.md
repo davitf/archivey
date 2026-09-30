@@ -13,7 +13,11 @@ It is kept because the analysis is real and would otherwise be redone from scrat
 the `CompressionSpec` resolution matrix, the `add_members` conversion semantics, and the
 `add_file` naming argument are all decisions someone reached once. Treat it as a
 starting point for the writing phase's own exploration, not as a design to implement.
-`PLAN.md` phase 9 owns the work; §Before re-specifying below is its entry gate.
+This page is the home for the writing work until an OpenSpec change takes it over.
+Writing is not a 1.0 requirement (`VISION.md`). The planned scope is an `ArchiveWriter`
+ABC, ZIP and TAR writers (including compressed-tar output such as `w:zst`),
+`CompressionSpec`, and streaming conversion (`tar.gz` to `zip` and back) with bounded
+memory. §Before re-specifying below is the entry gate for that change.
 
 ## The writer surface as specified
 
@@ -153,7 +157,7 @@ writer to test.
 
 ## Never resolved
 
-Two questions the spec left open, recorded in `PLAN.md` phase 9:
+Two questions the spec left open:
 
 - **Per-entry `compression` on stream-compressed containers.** For `tar.gz` / `tar.zst`
   the codec is a property of the outer stream, so a per-entry algorithm is meaningless.
@@ -167,7 +171,7 @@ Two questions the spec left open, recorded in `PLAN.md` phase 9:
 
 ## Before re-specifying
 
-`PLAN.md` phase 9 makes two explorations an entry gate, both because they shape the API
+Two explorations are the entry gate for a writing spec, both because they shape the API
 and are expensive to retrofit:
 
 - **Reproducible output** — `SOURCE_DATE_EPOCH`, stable member ordering, normalized
@@ -183,7 +187,8 @@ document as a starting point rather than a plan.
 
 - Removed by `openspec/changes/archive/2026-09-02-retire-archive-writing-specs/` and
   `2026-09-02-drop-unshipped-write-claims/`
-- [`PLAN.md`](../PLAN.md) phase 9 · [`IDEAS.md`](../IDEAS.md) §Writing, done properly, later
+- [`IDEAS.md`](../IDEAS.md) §Writing, done properly, later
+- [`history/PLAN.md`](../history/PLAN.md) §Phase 9, the pre-0.2.0 roadmap entry this page replaces
 - [`threat-model.md`](../threat-model.md) C3 (metadata fidelity)
 - [`history/ARCHITECTURE.md`](../history/ARCHITECTURE.md) §5.4 — why writing is create-only
   and ZIP append is refused

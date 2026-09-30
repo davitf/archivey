@@ -57,7 +57,7 @@ Useful helpers in those files:
 | T5 | Out-of-range base-256 mode: `OverflowError` | Fixed (masked `& 0o7777`) |
 | T6 | Codec checksum failures after the tar trailer were swallowed; past 1 MiB the checksum was never reached | Fixed: decisions **D6** / **D6b**, extended in review (K2, K5) |
 | T7 | PAX sparse 1.0 map not weighed against `max_metadata_bytes` | Fixed (24 bytes per entry) |
-| T8 | `.Z` LZW dictionary holds full expansions: 130 KB of input reaches about 2.1 GiB | **Deferred:** decision **D7**, `IDEAS.md` |
+| T8 | `.Z` LZW dictionary holds full expansions: 130 KB of input reaches about 2.1 GiB | Fixed in #519 (decision **D7**): entries past 256 bytes are stored as links, so the table stays under about 19 MiB (`formats/unix-compress.md` §4) |
 | T9 | bzip2 accelerator: raw `ValueError` / `UnicodeDecodeError` | Fixed |
 | T10 | Sparse map running past the stored data served the next header as content | Fixed. Up to 511 bytes of the member's own zero padding can still be served |
 | T11 | **High** (found by the cross-format agent). A compressed PAX header was allocated before the metadata cap; a 185-byte `.tar.bz2` peaked at 160 MB | Fixed: decision **D5** |
@@ -71,7 +71,7 @@ Useful helpers in those files:
 | S2 | Decoder-memory sum checked only for BCJ2 folders | Fixed (every folder) |
 | S3 | A rejecting codec *upstream* of AES was taken as evidence the password was right | Fixed |
 | S4 | 200+ filters or 400 nested BCJ2 coders: raw `RecursionError` | Fixed: 64 coders per folder. The 7-Zip constants were cited from memory; see open item 6 |
-| S5 | Surplus LZMA2 output past the declared size was accepted silently | Fixed for LZMA2 only. See residuals |
+| S5 | Surplus LZMA2 output past the declared size was accepted silently | Fixed for LZMA2; the other end-marked codecs closed by #518. See residuals |
 | S6 | `raw_name` had backslashes rewritten | Fixed |
 | S7 | Unknown size-prefixed `FILES_INFO` properties refused the archive | Fixed (skipped, as 7-Zip does) |
 | S8 | Member-pass streams bypassed the one-live-stream guard | Fixed |
@@ -127,11 +127,13 @@ Useful helpers in those files:
 
 ## Residuals of the fixes (known limits, accepted or noted)
 
-- **7z (S5):** the past-size check covers LZMA2 only. Deflate, BZip2, Zstd, LZ4 and Brotli
-  stages can also decode past a coder's declared size. The fix agent did not risk
+- **7z (S5):** ~~the past-size check covers LZMA2 only. Deflate, BZip2, Zstd, LZ4 and
+  Brotli stages can also decode past a coder's declared size. The fix agent did not risk
   probing them, because AES padding and multi-stream handling in those wrappers were
-  unclear. LZMA1 is capped at its size, so surplus LZMA1 output is truncated rather than
-  detected: without an end marker it cannot be told from valid data.
+  unclear.~~ **Closed by #518:** Deflate, Deflate64, BZip2, Zstd, LZ4 and Brotli are
+  checked too (`dev-docs/formats/7z.md` §2.3). Still open: LZMA1 (and PPMd) is capped at
+  its size, so surplus LZMA1 output is truncated rather than detected: without an end
+  marker it cannot be told from valid data.
 - **ZIP (Z1):** with bit 1 clear, decoder output past the declared size is not read or
   reported.
 - **TAR (T7, T11):** old-GNU sparse extension blocks and the PAX sparse 1.0 map have no
@@ -158,7 +160,8 @@ Useful helpers in those files:
    name".
 3. **R13 / D9:** `dev-docs/formats/rar.md` §7, "should a RAR dictionary size count
    against `DecoderLimits`?".
-4. **T8 / D7:** `dev-docs/IDEAS.md`, "Bound the `.Z` decoder's dictionary".
+4. **T8 / D7:** closed by #519; the bound is described in `dev-docs/formats/unix-compress.md`
+   §4.
 5. **P1:** `dev-docs/IDEAS.md`, "Empty trailing bzip2 stream under the accelerator".
 6. **S4 constants:** confirm 7-Zip's `k_Scan_NumCoders_MAX` /
    `k_Scan_NumCodersStreams_in_Folder_MAX` (64) against `CPP/7zip/Archive/7z/7zIn.cpp`.

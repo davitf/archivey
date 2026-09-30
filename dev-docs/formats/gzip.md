@@ -124,8 +124,11 @@ a member that did not reach its trailer arms a `TruncatedError` at the end of in
 | `AUTO` | `rapidgzip` only when all hold: seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`); the source is seekable; `rapidgzip` is installed; the compressed input is known to be at least 16 MiB (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`); and the decoded length can be checked, either because the container declared it or because a gzip trailer is readable. Otherwise the standard library engine, silently |
 
 The 16 MiB gate is the break-even of the child process: it costs about 45 ms to start and
-open, and saves about 3.4 ms per MB of compressed input on a full read, so below about
-13 MB the standard library is faster (`scripts/bench_rapidgzip_child.py`). The last `AUTO`
+open (about 25 ms of it starting the child), plus about 70 µs per round trip, which the
+parent's read-ahead buffer reduces, and saves about 3.4 ms per MB of compressed input on a
+full read, so below about 13 MB the standard library is faster
+(`scripts/bench_rapidgzip_child.py`; the numbers are in the design of the archived
+`rapidgzip-deflate-child-process` OpenSpec change). The last `AUTO`
 condition keeps a bare zlib or raw DEFLATE stream on the standard library: nothing could
 catch `rapidgzip` ending a raw DEFLATE stream early, and a zlib stream's Adler-32 is checked
 only once the stream is read to its end (below).
@@ -217,6 +220,13 @@ differ by platform (ISA-L on Linux, a different decoder on macOS, a bare
 `RuntimeError("Unknown exception")` for a near-end truncation on Windows), and
 `_translate_rapidgzip` maps each; the Windows one becomes `CorruptionError`, not
 `TruncatedError`, since the detail is lost.
+
+**Every accelerator object is closed, never only joined.** `rapidgzip`'s C++ worker
+threads call `std::terminate` if they are still running at interpreter finalization, and
+only `close()` stops them. `_AcceleratorStream` wraps each object with a `weakref.finalize`
+guard that closes it exactly once, whether the wrapper is collected or the interpreter
+exits. The measurements and the canary that watches for an upstream fix are in
+[`rapidgzip-upstream-report.md`](../investigations/rapidgzip-upstream-report.md) §6.
 
 **Bytes after the stream under `rapidgzip`.** `rapidgzip` has no end of stream: it takes
 bytes after a gzip member for the start of another and fails on them, or, in the child,
@@ -322,6 +332,15 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 - **Summing ISIZE per member.** It would make the `rapidgzip` backstop sure for
   multi-member files, but needs the member boundaries, which `rapidgzip`'s index does not
   expose; a byte walk of the headers is the only way. Tracked internally.
+  Measured on 0.16.0 with 2- and 3-member files of distinct member sizes, read to the end:
+  `block_offsets()` and `available_block_offsets()` hold seek points chosen for chunked
+  random access, and no member start appears among them at any `parallelization`. With
+  `parallelization=0`, archivey's setting, they hold only the start and the end of the
+  stream; other settings add mid-member chunk points unrelated to member starts. There is no member or stream count accessor either:
+  `add_deflate_stream_crc32` and `set_deflate_stream_crc32s` feed an imported index, they
+  do not enumerate streams at decode time. So the backstop's byte scan for a further
+  `1f 8b 08` stays, and the per-member sum cannot use the index. A change proposal to
+  detect multi-member files through the index was closed on this finding.
 - **Native random access for BGZF and other block-reset gzip.** bgzip and `pigz -i` write
   restart points into the file, and BGZF names each block's size; reading them would give
   seeking without `rapidgzip`. Tracked internally.
@@ -368,8 +387,9 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 - SAM/BAM specification §4.1 (BGZF)
 - [`rapidgzip`](https://github.com/mxmlnkn/rapidgzip), version 0.16
 - Investigation: [`rapidgzip-upstream-report.md`](../investigations/rapidgzip-upstream-report.md)
-- Registers: [`known-issues.md`](../known-issues.md) (accelerator bugs 1 to 4, soft end,
-  the index without member boundaries) · [`threat-model.md`](../threat-model.md) O5, O11
+  (soft end, Bugs 1 and 2, debugging scripts)
+- Registers: [`known-issues.md`](../known-issues.md) (rapidgzip Bugs 3 and 4) ·
+  [`threat-model.md`](../threat-model.md) O5, O11
 - Decisions: [ADR 0008](../decisions/0008-single-accelerator-rapidgzip.md) ·
   [ADR 0014](../decisions/0014-integrity-verdicts-from-reads-not-close.md) ·
   [`library-analysis.md`](../library-analysis.md) §gzip, §raw Deflate / zlib

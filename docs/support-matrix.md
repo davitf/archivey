@@ -32,7 +32,7 @@ Not tested. Archivey's core is pure Python, but the optional accelerators and co
 backends are C/C++ extensions, so PyPy or GraalPy would at best run the core plus
 whatever extras build there.
 
-## Free-threaded Python (3.13t and later)
+## Free-threaded Python (3.13t)
 
 Free-threaded builds remove the GIL, which turns "we were accidentally safe" into real
 data races. Archivey does not rely on the GIL for correctness — the reader uses explicit
@@ -61,8 +61,7 @@ then the core plus the extras that keep the GIL disabled.
 
 This is the part that catches people out. When a C extension has not declared
 free-thread support, importing it makes CPython **silently re-enable the GIL** — your
-program keeps working, but you are no longer running free-threaded. Measured on CPython
-3.13.7t:
+program keeps working, but you are no longer running free-threaded.
 
 **`pip install archivey[free-threaded]`** is the install line for these builds: it is
 exactly the measured subset that leaves the GIL disabled. Measured on CPython 3.13.7t:

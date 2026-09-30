@@ -2254,7 +2254,7 @@ def test_double_dash_lists_dash_named_archive(
     assert "inner.txt" in capsys.readouterr().out
 
 
-# --- ARC-125: the bpo-26240 workaround matches the ``pattern`` metavar ---
+# --- The bpo-26240 workaround matches the ``pattern`` metavar ---
 
 
 def test_missing_archive_message_omits_optional_patterns(

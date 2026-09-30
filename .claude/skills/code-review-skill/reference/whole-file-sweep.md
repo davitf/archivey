@@ -22,7 +22,7 @@ anything**:
   therefore gets its findings *and* a marker comment, which is the point: the marker says
   the file was read end to end, and the findings say what was in it. Keeping markers in one
   comment type is what makes the whole set fetchable in one call — the counting command in
-  [`open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md) reads the issue
+  [`scripts/sweep_coverage.py`](../../../../scripts/sweep_coverage.py) reads the issue
   comments and nothing else.
 - Its **first line** is the marker, in exactly this shape:
 
@@ -89,8 +89,7 @@ landed in is, and the old path stays in the orphan list as the record. First use
 `terminal.py`.
 
 **Why this exists.** Findings are evidence of a read; the absence of findings is not. The
-coverage figure on [`open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md)
-was overstated by twelve points in two consecutive snapshots because threads were counted as
+hand-counted coverage figure was overstated by twelve points in two consecutive snapshots because threads were counted as
 coverage, and `backends/rar_parser.py` — the largest file in the repository and its most
 exposed hostile-input surface — was believed swept when no agent had ever read it. Two sweep
 threads also reached opposite conclusions about the same two files from the same evidence.
@@ -101,6 +100,5 @@ the "Open every comment with a header" opener (`SKILL.md` §6) rather than sitti
 — a sweep marker comment has no round and no verdict, and the marker line already carries
 the reviewer and the head. Attribution and footer rules are unchanged.
 
-Coverage is counted from these markers, never from thread counts —
-[`dev-docs/open-work-inventory.md`](../../../../dev-docs/open-work-inventory.md) §How sweep
-coverage is counted, and `scripts/sweep_coverage.py`, which does the counting.
+Coverage is counted from these markers, never from thread counts, by
+`scripts/sweep_coverage.py` (its docstring has the recipe).

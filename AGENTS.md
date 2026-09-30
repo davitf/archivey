@@ -14,7 +14,7 @@ application" normally means exercising the library API:
 `archivey.open_archive(path)` / `archivey.extract(path, dest)` plus the detection
 helpers (`detect_format`, `format_availability`, `list_supported_formats`).
 All backends ship: ZIP, TAR, **7z**, **RAR**, ISO, directory, and
-single-file-compressed (gz/bz2/xz/lzip/zstd/lz4/.Z).
+single-file-compressed (gz/bz2/xz/lzip/LZMA Alone/zstd/lz4/zlib/Brotli/.Z).
 
 ## Where things live
 
@@ -29,13 +29,13 @@ that one is the code map.
 - `VISION.md` — the product vision: positioning, priorities, perf budget, adoption
   strategy; the tie-breaker when trade-offs conflict. End-user distill:
   `docs/philosophy.md`.
-- `dev-docs/PLAN.md` — phased implementation roadmap (resequenced 2026-07: native
-  7z/RAR before CLI before writing). `dev-docs/IDEAS.md` — speculative future/backlog
-  ideas (not committed, not in `PLAN.md`).
+- Committed work is the open OpenSpec changes under `openspec/changes/`.
+  `dev-docs/IDEAS.md` is the speculative backlog (not committed). The pre-0.2.0 phase
+  roadmap is kept for history in `dev-docs/history/PLAN.md`.
 - `docs/` — the **published** end-user guide, and nothing else: `index`, `install`,
   `opening-and-listing`, `reading-members`, `extracting`, `gotchas`, `access-and-cost`,
   `formats`, `errors-and-diagnostics`, `cli`, `migrating`, `support-matrix`, `philosophy`,
-  `api`, `acknowledgements`. Every file under `docs/` has a nav entry in `mkdocs.yml` and
+  `how-it-works`, `api`, `acknowledgements`. Every file under `docs/` has a nav entry in `mkdocs.yml` and
   `scripts/check_docs_nav.py` fails CI otherwise. Placement rule for a new doc:
   `CONTRIBUTING.md` §"Where does a new doc go?".
 - `dev-docs/` — **unpublished** maintainer material: pair workflow, format/topic handbook,
@@ -155,7 +155,7 @@ hand after a manual clone; it is idempotent.
 
 **Do not skip this.** RAR data tests and the benchmark gate's `rar_*` cases *skip*
 when `unrar` is absent, and encrypted-ZIP fixtures skip without `7z` — quietly. A
-container missing them runs ~109 fewer tests while still reporting all-green, and
+container missing them runs about a hundred fewer tests while still reporting all-green, and
 `--update-baselines` there would rewrite `structural.json` without those cases. The
 script ends by printing what is missing; read that line.
 
@@ -265,9 +265,8 @@ Non-obvious gotchas:
   ZIP fixtures by shelling out to it (`tests/test_password.py`, the encrypted corpus
   entries in `tests/test_corpus_sweep.py`); they skip cleanly when it is absent.
   The setup script installs `p7zip-full` automatically.
-- Both of the above skip **quietly**, which is the trap: a container without them ran
-  1900 passed / 167 skipped where a provisioned one runs 2009 / 58 — ~109 tests gone
-  with the suite still green. `--update-baselines` in that state would also rewrite
+- Both of the above skip **quietly**, which is the trap: a container without them runs
+  about a hundred fewer tests, with the suite still green. `--update-baselines` in that state would also rewrite
   `structural.json` without the `rar_*` cases (it now refuses instead). If you are
   unsure whether the environment is complete, run `scripts/setup-dev-env.sh`; its
   closing verification block names anything missing.
@@ -402,8 +401,10 @@ Notes:
   (core, zero-dep). PPMd/Deflate64 and AES decryption via the `[recommended]` extra;
   BCJ2 decodes in pure Python. `py7zr` is a **dev oracle** only
 
-- RAR: native RAR3/RAR5 metadata parser (drops `rarfile`); the external `unrar`
-  binary remains the decompressor for member data. Encrypted headers are decrypted
+- RAR: native RAR3/RAR5 metadata parser (drops `rarfile`); member data goes through
+  an external program: RARLAB `unrar` (or `rar`), or `unar` under the default
+  `rar_decompressor="auto"` when no RARLAB program is installed (`unar` refuses the
+  reads it is known to get wrong). Encrypted headers are decrypted
   natively via `cryptography` (`[recommended]`). `rarfile` is a test oracle only.
 
 See `openspec/specs/format-7z/spec.md`, `format-rar/spec.md`,
@@ -529,8 +530,7 @@ Two things about this repo make the handoff sharper than it looks:
   such a phrase said reproduces it, which closed the hub a second time on 2026-09-21 from
   the text explaining the first. Describe the phrase instead, or break the string. The
   failure is silent: threads still serve, `sweep_coverage.py` is unaffected, nothing goes
-  red. [`dev-docs/open-work-inventory.md`](dev-docs/open-work-inventory.md) has both
-  incidents. There is a net under this —
+  red. There is a net under this —
   [`review-hub-watchdog.yml`](.github/workflows/review-hub-watchdog.yml) reopens the hub
   and says which surface closed it — but it is recovery, not prevention. A pull request
   body could be checked before the merge; a squash body could not, because whoever merges

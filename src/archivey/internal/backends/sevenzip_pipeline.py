@@ -36,7 +36,7 @@ import lzma
 import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.config import ListingLimits
 from archivey.exceptions import (
@@ -92,11 +92,18 @@ from archivey.internal.streams.decompress import FilterStream
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import SlicingStream, read_exact
 from archivey.internal.streams.streamtools.base import DelegatingStream
-from archivey.internal.streams.streamtools.binaryio import read_blocking
+from archivey.internal.streams.streamtools.binaryio import (
+    read_blocking,
+    readinto_via_read,
+    try_readinto,
+)
 
 # Omitting max_members on the archive-level entry point means the ListingLimits
 # default, as in sevenzip_parser and rar_parser. None is the explicit UNLIMITED opt-out.
 _DEFAULT_MAX_MEMBERS = ListingLimits().max_members
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
 
 # stdlib exposes no public decoder for a raw LZMA1/LZMA2 property blob → filter dict;
 # py7zr relies on the same private `lzma._decode_filter_properties`. Bind once at import.
@@ -132,7 +139,9 @@ class _CodecStage:
     """A single self-contained codec (Deflate, BZip2, Zstd, PPMd, …).
 
     ``unpack_size`` is the coder's output length from the folder header. It is passed
-    through for codecs that need a bound (PPMd7 has no end mark); other codecs ignore it.
+    through for codecs that need a bound (PPMd7 has no end mark). The codecs in
+    :data:`_CODEC_LABELS` end their own stream, so their output is checked against
+    this size instead (:class:`_DecodedPastSizeCheck`).
 
     ``pack_size`` is the coder's *input* length — the output of the preceding coder in
     its chain, or a BCJ2 source's declared output (``None`` when this coder consumes
@@ -562,24 +571,60 @@ def _lzma_chain_stage(
     return _LzmaChainStage(codec, filters, cap_size, end_check_size)
 
 
+# The codecs whose output _DecodedPastSizeCheck checks, with 7-Zip's name for each.
+# This is an allowlist: a codec belongs here only when it ends its own stream, so that
+# output past its declared size is surplus and not data. A codec that relies on the
+# declared size to stop (LZMA1, PPMd) must stay out, or valid archives fail the check.
+_CODEC_LABELS = {
+    Codec.LZMA2: "LZMA2",
+    Codec.DEFLATE: "Deflate",
+    Codec.DEFLATE64: "Deflate64",
+    Codec.BZIP2: "BZip2",
+    Codec.ZSTD: "Zstd",
+    Codec.LZ4: "LZ4",
+    Codec.BROTLI: "Brotli",
+}
+
+
 class _DecodedPastSizeCheck(DelegatingStream):
-    """Refuse an LZMA2 chain that decodes more than its coder's declared unpack size.
+    """Refuse a coder that decodes more than its declared unpack size.
+
+    It wraps the output of every codec in :data:`_CODEC_LABELS`: an LZMA2 chain, and
+    Deflate, Deflate64, BZip2, Zstd, LZ4 and Brotli. LZMA1 and PPMd have no end
+    marker in 7z, so they are capped at their size and surplus output is not seen.
 
     Every reader above this one stops at the declared size (the member slice, a BCJ2
-    branch slice), so surplus output would otherwise pass unseen. 7-Zip reports such
-    a folder as a data error. When the output reaches the declared size, this reads
-    **one** more byte from the decoder, so the check costs one small read per
-    decode, never a second pass. A decoder error on that read is not surplus output:
-    it is input after the LZMA2 end marker, such as AES padding, which 7-Zip also
-    does not treat as a data error.
+    branch slice, the filter after the codec), so surplus output would otherwise pass
+    unseen. 7-Zip reports such a folder as a data error. When the output reaches the
+    declared size, this reads **one** more byte of output from the decoder. Only
+    decoded bytes count, so a further stream in the same coder (a second BZip2
+    stream, a second Zstd or LZ4 frame) is surplus when it decodes to one byte or
+    more.
+
+    The probe is one read of output, not a second decode, but its input cost is not
+    one read. To produce that byte, the decoder consumes as much input as it needs,
+    up to the end of the coder's packed slice: a tail of streams that decode to
+    nothing is read to its end. That cost is linear in the archive's own size, the
+    same bound as decoding the folder, so it is accepted rather than bounded here.
+    Bounding it would need a counter on the codec's input, outside this wrapper.
+
+    AES padding in the codec's input is not output, so it is never surplus: LZMA2
+    raises on input after its end marker, and the other decoders end the stream at it
+    (or, for the rapidgzip accelerators, never see it: their input is cut to
+    ``pack_size``). So a decoder error on the probe read is not surplus output either;
+    7-Zip also does not treat input after the end of the stream as a data error.
+    Discarding that error is safe because every codec wrapped here verifies its data
+    before or together with delivering it (the BZip2 block CRC, the Zstd and LZ4
+    content checksums), so a failed check of the declared data raises on the read
+    that delivers that data, before the probe: only input after the stream reaches
+    the probe read. A codec that verifies only after
+    its last byte must not be added to :data:`_CODEC_LABELS` without revisiting this.
     """
 
-    # read() counts the output; readinto must not bypass it.
-    readinto_passthrough = False
-
-    def __init__(self, inner: BinaryIO, *, size: int) -> None:
+    def __init__(self, inner: BinaryIO, *, size: int, label: str) -> None:
         super().__init__(inner)
         self._size = size
+        self._label = label
         self._position = 0
         self._checked = False
 
@@ -587,7 +632,18 @@ class _DecodedPastSizeCheck(DelegatingStream):
         if n == 0:
             return b""
         data = read_blocking(self._inner, n)
-        self._position += len(data)
+        self._count(len(data))
+        return data
+
+    def readinto(self, b: WriteableBuffer, /) -> int:
+        n = try_readinto(self._inner, b)
+        if n is None:
+            return readinto_via_read(self, b)  # read() counts
+        self._count(n)
+        return n
+
+    def _count(self, n: int) -> None:
+        self._position += n
         if self._position > self._size:
             self._raise_surplus()
         if self._position == self._size and not self._checked:
@@ -598,11 +654,11 @@ class _DecodedPastSizeCheck(DelegatingStream):
                 surplus = b""
             if surplus:
                 self._raise_surplus()
-        return data
 
     def _raise_surplus(self) -> None:
         raise CorruptionError(
-            f"7z LZMA2 coder decodes past its declared unpack size of {self._size} bytes"
+            f"7z {self._label} coder decodes past its declared unpack size of "
+            f"{self._size} bytes"
         )
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
@@ -638,7 +694,7 @@ def _execute_stage(
             stream, stage.coder, password=password, key_cache=key_cache
         )
     if isinstance(stage, _CodecStage):
-        return open_codec_stream(
+        decoded = open_codec_stream(
             stage.codec,
             stream,
             config=stream_config,
@@ -650,6 +706,14 @@ def _execute_stage(
             collector=collector,
             seekable=seekable,
         )
+        label = _CODEC_LABELS.get(stage.codec)
+        if label is None:
+            # Not on the allowlist: PPMd, which has no end mark in 7z and is capped
+            # at unpack_size by the codec itself, so nothing past it can be seen.
+            return decoded
+        # The planner always sets unpack_size; None is only the dataclass default.
+        assert stage.unpack_size is not None
+        return _DecodedPastSizeCheck(decoded, size=stage.unpack_size, label=label)
     if isinstance(stage, _LzmaChainStage):
         out = open_codec_stream(
             stage.codec,
@@ -662,7 +726,9 @@ def _execute_stage(
         if stage.cap_size is not None:
             out = SlicingStream(out, length=stage.cap_size, owns_inner=True)
         elif stage.end_check_size is not None:
-            out = _DecodedPastSizeCheck(out, size=stage.end_check_size)
+            out = _DecodedPastSizeCheck(
+                out, size=stage.end_check_size, label=_CODEC_LABELS[Codec.LZMA2]
+            )
         return out
     return FilterStream(
         stream,

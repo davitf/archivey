@@ -162,9 +162,10 @@ rather than as the EOCD adjustment — are on [`formats/zip.md`](../formats/zip.
 with no copy. The parser scan (`scan_for_magic`) takes the same hit validator the
 detector uses, so an invalid decoy is skipped rather than opened; if nothing
 validates, the first identified candidate is the origin so a damaged payload still
-reaches the parser. A CRC-valid decoy that is `VALID` still wins as first-valid
-and then fails loudly at parse — that is the unlanded exact-EOF ranking, not a
-scan miss.
+reaches the parser. A 7z hit whose declared end falls short of the source is graded
+`VALID_SHORT`: the scan keeps the first one as a fallback and looks on for a `VALID` hit
+that ends exactly at EOF, so a CRC-valid decoy in a stub loses to the real payload
+behind it.
 
 **Compressed streams are a different search.** A makeself-style `.run` wraps a compressed
 *stream*, not a container, so there is no container magic to find — the needle has to be a
@@ -193,7 +194,7 @@ produced a confidently wrong one.
 | Choice | Why | Rejected |
 | --- | --- | --- |
 | One shared `SFX_MAX` for the detector and both native parsers | Separate bounds drift into a file that opens under `format=` and fails under auto-detect | A bound per call site |
-| `scan_for_magic` takes an optional `HitValidator` (same `(peek_more, remaining)` shape as the detector), returns earliest VALID else earliest identified, and caps rejected candidates at 256 | Parser scans had no hook, so a decoy ahead of the real payload made forced `format=` fail. Peek is served from the scan window (forward-only; source need not be seekable). The iterating detector path is left uncapped: its search is linear in the window (`_EarliestFinder` carries each needle's next position), and what the detector spends per candidate belongs to the detection budget (threat-model O11), not to a structural candidate cap | Seeking back to the origin to validate; applying the 256 cap to `iter_magic_in_prefix` in the same diff |
+| `scan_for_magic` takes an optional `HitValidator` (same `(peek_more, remaining)` shape as the detector), returns earliest VALID, else earliest VALID_SHORT, else earliest identified, and caps rejected candidates at 256 | Parser scans had no hook, so a decoy ahead of the real payload made forced `format=` fail. Peek is served from the scan window (forward-only; source need not be seekable). The iterating detector path is left uncapped: its search is linear in the window (`_EarliestFinder` carries each needle's next position), and what the detector spends per candidate belongs to the detection budget (threat-model O11), not to a structural candidate cap | Seeking back to the origin to validate; applying the 256 cap to `iter_magic_in_prefix` in the same diff |
 | Cue is a cost gate; validators are the correctness gate | Keeps two different questions from being answered by one mechanism, which is how the gate got reasoned about as false-positive defence | Treating the cue as the filter and skipping validation |
 | Two-tier cue, with `STRONG` suppressing content probes | `MZ` is two bytes; a real Brotli stream may start with it. Only a structurally confirmed executable is strong enough to overrule a probe | One boolean cue |
 | Mach-O raises no weak cue | `ca fe ba be` is Java class-file magic; a weak cue would scan every `.class` | Treating the magic as a weak cue like `MZ` |
@@ -236,7 +237,7 @@ behaviour a test holds.
 | 7z and RAR are opened *at* the offset, and a format with no stub story refuses one (§5) | `::test_forced_format_opens_a_7z_behind_a_stub`, `::test_forced_format_opens_packed_and_encoded_header_behind_a_stub`, `::test_start_offset_on_a_path_equals_an_offset_view_on_a_stream`, `::test_a_format_without_stubs_refuses_a_start_offset` |
 | The shapes in §1 detect end to end: `zipapp`, a shebang concatenation, a real SFX | `::test_zipapp_detects_as_zip_and_lists_members`, `::test_shebang_plus_concatenated_zip_detects_and_lists_members`, `::test_shebang_plus_real_7z_detects_and_lists_members`, `::test_shebang_plus_real_rar_detects`, `::test_a_real_sfx_archive_auto_opens` |
 | An uncued prefix (JPEG polyglot) is **not** detected — the §6 gap, pinned so it cannot close silently | `::test_jpeg_plus_appended_zip_stays_undetected_under_balanced` |
-| Exact-EOF ranking among CRC-valid 7z hits is still unlanded | `::test_inexact_7z_decoy_loses_to_a_later_exact_payload` — `xfail(strict=True)`, so it fails the suite the day the tie-break lands. Task 2.3 in `prefixed-archive-detection` is `[~]` for the same reason |
+| Among CRC-valid 7z hits, one that ends exactly at EOF beats an earlier one that ends short | `::test_inexact_7z_decoy_loses_to_a_later_exact_payload` |
 
 **Building fixtures.** Most stubs here are synthetic — `MZ` plus filler, a seven-byte ELF
 ident, a hand-built Mach-O header — because the cue only reads the leading bytes and a real

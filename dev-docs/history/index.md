@@ -11,6 +11,7 @@ time.
 | [SPEC.md](SPEC.md) | **Superseded as authority** by `openspec/specs/` | Large prose contract; useful archaeology; may drift |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Partially superseded | Module layout + trade-offs; load-bearing “why” extracted to `dev-docs/decisions/` |
 | [COMPARISON.md](COMPARISON.md) | Historical | DEV vs clean-slate comparison; Intent-enum recommendation later reversed |
+| [PLAN.md](PLAN.md) | Historical | Pre-0.2.0 phase roadmap. Current state: open OpenSpec changes, `IDEAS.md`, `CHANGELOG.md`; writing design in `investigations/archive-writing-design.md` |
 | [ASYNC.md](ASYNC.md) | Exploration | Not a v1 decision; sync-only stands; seams still interesting |
 | [parallel-reader.md](../investigations/parallel-reader.md) | Exploration → mostly landed | Filed under `investigations/` — still cited from `src/`. Concurrent-member-streams superseded much of this; keep for audit notes / benchmarks pointers |
 
@@ -24,6 +25,6 @@ time.
 5. Shrink `parallel-reader.md` to a short “historical audit” or move lock-order tables
    next to `reader-concurrency` if still useful.
 
-Root docs that stay put: `VISION.md`, `PLAN.md`, `IDEAS.md`, `CONTRIBUTING.md`,
+Root docs that stay put: `VISION.md`, `IDEAS.md`, `CONTRIBUTING.md`,
 `CLAUDE.md`, `AGENTS.md`. Thin redirect stubs remain at the old root paths for
 `SPEC.md` / `ARCHITECTURE.md` / `COMPARISON.md` / `ASYNC.md`.

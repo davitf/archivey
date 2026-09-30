@@ -693,3 +693,223 @@ python scripts/pyppmd_crash_repro.py 50 --mode warmup-overshoot
 python scripts/ppmd_uaf_valgrind.py --scenario all --strict-pyppmd
 uv run --no-sync pytest tests/test_ppmd_raw_streams.py -q
 ```
+
+---
+
+## K. Field record: fingerprints, version matrix, stress setup and mitigations
+
+This section holds the evidence that used to sit in `dev-docs/known-issues.md`. That
+page keeps the live upstream defect and the residual risk; the measurements are here.
+
+### K.1 How the defect showed up in CI
+
+**Windows: `STATUS_HEAP_CORRUPTION` on fresh PPMd children.** On `windows-latest` the
+suite intermittently aborted during
+`tests/test_sevenzip_reader.py::test_py7zr_codec_fixtures_roundtrip` with
+`Windows fatal exception: code 0xc0000374`. Re-runs of identical commits often passed.
+Early reports named Windows/py3.14; isolation pinned the same abort on Windows/py3.11
+(`pyppmd==1.3.1` win_amd64), and py3.14 could pass on the commit where py3.11 failed.
+Per-label subprocess isolation and a dedicated stress run produced:
+
+| Field | Value |
+|-------|--------|
+| Label / filters | `ppmd` / `("PPMD",)` |
+| Exit | `0xC0000374` (`STATUS_HEAP_CORRUPTION`) |
+| Library | `pyppmd` 1.3.1 |
+| First pin phase | `read_member:nested/beta.bin:start` (after `alpha.txt` OK) |
+| Stress pin (50×) | 2/50 on py3.11 at `read_member:alpha.txt:start`; 0/50 on py3.14 that run |
+| Stack | `_open_member` → `skip_forward` / decode → `pyppmd` |
+
+Fresh PPMd-only subprocesses were enough; prior pytest cases were not required. The
+fixture was a py7zr-built solid PPMd archive of plain members (`b"alpha\n" * 100`,
+`bytes(range(64)) * 16`).
+
+**Linux: SIGSEGV or `malloc(): invalid size` after other-codec warmup.** Stress on Linux
+reproduced a flaky native abort when other 7z codecs ran in the same process before PPMd
+(the `warmup_codecs` scenario):
+
+| Observation | Detail |
+|-------------|--------|
+| Rate | about 10/30 children in one local soak; also seen on a single first run |
+| Signals | `SIGSEGV` (−11) and `SIGABRT` (−6) with `malloc(): invalid size (unsorted)` |
+| Typical phase | PPMd read after LZMA2/Deflate/Bzip2 warmup (`read_member:…:start` or stream open) |
+| `fresh_baseline` alone | 0/20 crashes in the same soak |
+| Raw `pyppmd` encode/decode alone | 0/40 subprocesses |
+| Raw archivey `PpmdDecompressorStream` alone | clean in short soaks |
+| Warmup without PPMd (LZMA2/Deflate/Bzip2 only) | 0/30 crashes |
+| Same warmup, then PPMd | 10/30 crashes |
+
+So the Linux abort is PPMd-related: the warmup alone does not fire it. The warmup only
+shifts allocator layout; the crash reproduces with no archivey imports (§D).
+
+### K.2 Version matrix and the `pyppmd>=1.3.1` floor
+
+The same Linux `warmup_codecs` stress, with archivey's PPMd adapter forced back to
+unbounded `max_length=-1`, across published versions, 40 children each:
+
+| pyppmd | native crashes | other failures | passes |
+|--------|----------------|----------------|--------|
+| 1.1.1 | 0/40 | 27 (CRC mismatch on solid 2nd member) | 13 |
+| 1.2.0 | 0/40 | 27 (same CRC pattern) | 13 |
+| 1.3.1 | 12/40 (`SIGSEGV`/`SIGABRT`) | 0 | 28 |
+
+`pyppmd==1.3.0` had no installable artifact on the test platform; 1.3.1 (2025-11-27) is
+the first 1.3.x wheel that ran. The abort reproduces on 1.3.1 and not on 1.1.1 or 1.2.0
+under the same unbounded path, which matches the `#126` regression window (§C). Older
+versions return wrong bytes instead: their worker stopped at input-empty, which prevented
+the runaway but cut symbols short at chunk boundaries (§G). With decodes bounded by
+`unpack_size`, the same soak was 0/80 on 1.3.1.
+
+The `[recommended]` extra requires `pyppmd>=1.3.1` (the comment in `pyproject.toml`
+points here). Older is worse on every axis: 1.1.x and 1.2.0 silently return wrong bytes
+on chunked bounded decodes, `py7zr` 1.1 and later hard-require `pyppmd>=1.3.1` (a conflict
+with the test oracle and any 7z-writing extra), and 1.3.1 is the first line with CPython
+3.14 wheels. With the floor raised, the 1.1.x premature-eof recovery pumps were removed
+from `PpmdDecoder.flush`.
+
+### K.3 Crash shapes and the exact-bound rule
+
+`scripts/pyppmd_crash_repro.py` depends only on `pyppmd` and the stdlib:
+
+| mode | what | crash rate (5 cycles per child, 1.3.1) |
+|------|------|------|
+| `extra-null` | sized to eof, then `decode(b"\0", -1)` | about 40% (up to 30/30 seen) |
+| `overshoot` | `decode(packed, -1)` only | 15 to 25% (19/30 seen) |
+| `sized-safe` / `pre-eof-null` / `skip-after-eof` | controls | 0% |
+| `underfed-sized` / `hostile-tail` | adversarial-shape controls (truncation, garbage tail) | 0% |
+
+```bash
+pip install 'pyppmd==1.3.1'
+python scripts/pyppmd_crash_repro.py 30 --mode extra-null
+python scripts/pyppmd_crash_repro.py 30 --mode overshoot
+python scripts/pyppmd_crash_repro.py 30 --mode sized-safe
+uv run --no-sync python scripts/ppmd_native_stress.py 30 --scenarios warmup_codecs
+uv run --no-sync pytest -m ppmd_native_stress -k warmup --timeout=600 -o addopts=
+```
+
+"Bounded" is not enough; the bound must be exact. A/B soaks of the `oversized` mode: a
+sized request 65 536 bytes over the true remaining output crashed 13/20 and 10/20 in two
+soaks; 64 or 4096 bytes over, 0/20 each; large multi-chunk members with the exact bound,
+0/20. Hence the decoder contract: unsized PPMd7 is refused at construction (no end mark,
+no declared size, so no safe request size; the 7z header always gives the folder size),
+and unsized PPMd8 decodes in bounded 64 KiB requests in a drain loop, never `-1`, since its
+end mark stops the worker on valid data. The adversarial shapes a damaged archive can
+force (truncation, early close mid-member, an inflated declared size with a garbage tail)
+are pinned in `tests/test_ppmd_raw_streams.py` and as soak modes in the repro script, all
+0-crash on 1.3.1 with bounding in place.
+
+### K.4 Random input: decode after an early end
+
+Random bytes, which is what a wrong 7z AES key hands the PPMd coder and what a hostile
+archive can hand it directly, crash pyppmd by a second route. A PPMd7 stream whose first
+byte is not 0 fails the range decoder's init, and pyppmd returns `NULL` without setting an
+exception (`SystemError`, mapped to `CorruptionError`; it also leaks a buffer export per
+call). The crash is the other 1 in 256: with a zero first byte the model decodes garbage
+until it returns its end result after a few hundred symbols, pyppmd raises `eof` and
+returns short, and the caller feeds it the rest of the member. The next `decode` starts a
+new worker thread on a finished model, and within one or two calls the process segfaults
+in `Ppmd7_DecodeSymbol` (gdb: `ThreadDecoder.c:124`). Deterministic: 64 KiB feeds of
+`random.Random(3011).randbytes(256 * 1024)` with a 512 KiB request crash on the third call.
+PPMd8 (ZIP method 98) crashes the same way, and pyppmd 1.2.0 crashes too, so no version pin
+avoids it.
+
+A caller cannot just stop at "short and `eof`". pyppmd also raises `eof` when the range
+coder's `Code` is 0 and never clears it, and that happens on valid streams: at a feed
+boundary inside a run of zero bytes in the compressed data (a 7z of a file with 2 MB of
+zeros raised it on half its 64-byte feed boundaries), and one byte before the end of most
+7-Zip-written streams. `needs_input` reads the same in both cases. A first fix that stopped
+there broke those valid files.
+
+The shipped fix hands pyppmd the whole member in its first `decode`, so any short return
+is the end; members past `DecoderLimits.max_ppmd_in_process_input` (16 MiB) decode in a
+child process. Before it, 10 of 10 hostile runs crashed; after it, 0 crashes in 1200
+hostile members across both paths, and 111 valid 7-Zip-written members byte-exact on both
+paths (`tests/test_ppmd_crash_isolation.py`).
+
+The same spent-payload state reached password iteration. 7z AES has no password check
+value, so confirmation decodes the folder, and on some wrong keys the garbage stops PPMd
+short of the declared size at native `eof` with the whole pack fed; the next empty drain
+raised `MemoryError`, which is not an `ArchiveyError`, so the candidate loop died before
+the right password. On the 194-byte fixture now pinned in
+`test_aes_ppmd_wrong_key_moves_on_to_the_next_password`, a sweep of `wrong0`..`wrong2999`
+over the old code gave `EncryptionError` 2998 times and `MemoryError` twice (`wrong856`,
+`wrong2552`). The spent-payload stop below removed it.
+
+### K.5 Exit-after-green: the in-process mitigations
+
+Lab notes and the pre-mitigation symptom are in
+[`ppmd-exit-after-green-exploration.md`](ppmd-exit-after-green-exploration.md); the root
+cause is §D and the quiesce measurement §I. What `PpmdDecoder`
+(`src/archivey/internal/streams/decompress.py`) does:
+
+- Caps extra-NUL recovery output at `_PPMD_EXTRA_NUL_MAX_OUTPUT` (64) in `flush` and in
+  empty-`feed` NUL injection, with at most one synthetic NUL. The uncapped shape,
+  `decode(b"\0", remaining)` on a truncated mid-stream member, crashed 85/100 bare-pyppmd
+  children; capped at 64, 0/100. Happy-path tests alone: 0/40.
+- Runs post-eof empty drains only when `fed_compressed >= pack_size` and a container
+  `unpack_size` bounds them. Unknown or short `pack_size` and unsized decodes get the one
+  capped NUL only.
+- Requires `pack_size` for PPMd7. Without it a premature native `eof` is
+  indistinguishable from truncation, and draining to finish the tail raised `MemoryError`
+  on 1.3.x in 36/36 cuts at 50 to 99% of the pack, so the decoder would have to choose
+  between truncating a valid member and a crash.
+- Plumbs `pack_size` through the 7z pipeline. A standalone PPMd folder reads it from the
+  sized pack slice; an encrypted one is fed from an AES stream of unknown length, so
+  `sevenzip_pipeline.plan_folder` sets `_CodecStage.pack_size` from the preceding coder's
+  output size (`test_encrypted_ppmd_chunked_reads_roundtrip`).
+- Gives unsized PPMd8 no post-eof drain: its end mark ends valid decodes, and a drain with
+  no `unpack_size` clamp only fabricated trailing bytes (+3 on an all-zero payload). Sized
+  PPMd8 keeps the drain.
+- Quiesces a parked worker before dispose (`_quiesce_worker`, from `close()` and
+  `__del__`) with bounded `decode(b"\0", 1)` until it exits on budget, so `Ppmd7T_Free`
+  becomes a no-op. `scripts/ppmd_uaf_valgrind.py` reports 0 memcheck errors on the archivey
+  scenarios and still reports the UAF on the bare-pyppmd overshoot reproducer.
+- Stops at a spent payload (`_note_decoded`): a sized `decode` that returns short, at
+  native `eof`, with every compressed byte fed, ends decoding, and `flush` reports
+  `TruncatedError`. Another `decode` would resume a worker parked on empty input, which
+  reads past the input buffer and surfaces as a bare `MemoryError`. Reached from a 7z
+  folder that overstates `unpack_size` and from a wrong AES key (K.4). `_quiesce_worker`
+  still sends its NUL in that state: without it valgrind shows the Free-time invalid
+  write, and a later decoder in the same process starts from corrupted state.
+- Caps each request at a C `int` (`_PPMD_MAX_REQUEST`): pyppmd parses `length` as one,
+  and a larger value raised `OverflowError` reading a member over 2 GiB.
+
+| Soak | Overshoot (large NUL) | Free-race residual |
+|------|----------------------|--------------------|
+| Bare half-pack + NUL(rem) | about 85/100 → 0/100 with cap 64 | n/a |
+| Adversarial tests in subprocess | Contained | Child may still SIGSEGV after `ok` |
+| Parent `test_ppmd_raw_streams` session | Soft-pass via `--allow-exit-after-green` | Intermittent exit-after-green possible |
+| `ppmd_uaf_valgrind.py` (deterministic) | archivey scenarios 0 errors | quiesce-on-close: 0 errors with the fix; bare overshoot still reproduces |
+
+### K.6 CI coverage
+
+In the required matrix, the 7z PPMd roundtrip runs on every platform with decodes bounded
+by the folder unpack size; other Windows codec labels keep per-label subprocess isolation;
+default pytest runs `-m 'not ppmd_native_stress'`; `tests/test_ppmd_raw_streams.py` covers
+raw PPMd with no 7z container. In-process PPMd7 create/destroy loops and
+`test_encrypted_ppmd_chunked_reads_roundtrip` stay skipped on Windows, where the stress
+workflow covers them.
+
+The non-blocking **PPMd native stress** workflow
+(`.github/workflows/ppmd-native-stress.yml`) runs on every PR and main push, on
+`windows-latest` and `ubuntu-latest` × Python 3.11 and 3.14: `scripts/ppmd_native_stress.py`
+plus `pytest -m ppmd_native_stress`, a `--repeat 20` soak of `tests/test_ppmd_raw_streams.py`
+through `scripts/ci_run_native_modules.py` that hard-fails on an exit-after-green abort,
+and on Linux the valgrind gate `scripts/ppmd_uaf_valgrind.py`. It exits non-zero when any
+child crashes and must not become a required check. Default scenarios go from the minimal
+surface up:
+
+| Scenario | Surface | Notes |
+|----------|---------|--------|
+| `raw_pyppmd7` / `raw_pyppmd8` | bare `pyppmd` only | No archivey, no 7z |
+| `raw_archivey_ppmd7` / `raw_archivey_ppmd8` | `PpmdDecompressorStream` / `open_codec_stream` | No 7z container |
+| `fresh_baseline` | py7zr PPMd 7z + archivey read | The original CI fixture |
+| `warmup_codecs` | LZMA2→Deflate→Bzip2 then PPMd | The Linux repro (K.1) |
+| `same_process` / `fresh_varied` | optional | Reuse and payload-shape axes |
+
+```bash
+uv sync --group dev --extra all
+uv run --no-sync python scripts/ppmd_native_stress.py
+uv run --no-sync python scripts/ppmd_native_stress.py --scenarios raw_pyppmd7 raw_archivey_ppmd7
+ARCHIVEY_PPMD_STRESS_ITERS=30 uv run --no-sync python scripts/ppmd_native_stress.py --scenarios warmup_codecs
+```

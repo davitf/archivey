@@ -47,7 +47,8 @@ Comparing two revisions (read this before believing a wall-time delta):
 - Structural fields (``bytes_decompressed``, ``source_seek_count``) are exact and need
   none of this: diff them directly.
 
-Formats covered here: ZIP (deflate / LZMA / WinZip AES), TAR, gzip,
+Formats covered here: ZIP (deflate / LZMA / WinZip AES / ZipCrypto), TAR, gzip,
+``.Z`` (text-like and a long zero run, which builds long LZW dictionary entries),
 tar.gz/tar.bz2 (+ accelerators), in-ZIP accelerated deflate, solid 7z, and RAR
 data paths on committed fixtures when RARLAB ``unrar`` is present (large solid
 RAR when the ``rar`` writer can build one). Listing wall peers: ``zipfile`` /
@@ -79,6 +80,7 @@ from archivey.internal.measurement import enable_measurement
 from benchmarks.fixtures import (
     SCALES,
     ZIP_AES_PASSWORD,
+    ZIPCRYPTO_PASSWORD,
     FixtureSet,
     materialize_fixtures,
 )
@@ -411,6 +413,12 @@ def _rapidgzip_available() -> bool:
         return False
 
 
+def _ncompress_available() -> bool:
+    """True when ``ncompress`` (dev dependency) is importable — it writes the ``.Z``
+    fixtures."""
+    return importlib.util.find_spec("ncompress") is not None
+
+
 def _unrar_available() -> bool:
     """True when RARLAB ``unrar`` is on PATH (needed for RAR *data* cases)."""
     try:
@@ -451,6 +459,10 @@ def missing_baseline_requirements() -> list[str]:
         (
             _unrar_available(),
             "unrar — the RARLAB binary on PATH; the rar_* data cases",
+        ),
+        (
+            _ncompress_available(),
+            "ncompress — builds the .Z fixtures behind the z_* cases; dev group",
         ),
     )
     return [why for available, why in checks if not available]
@@ -632,6 +644,23 @@ def run_cases(
             )
         )
 
+    # --- ZIP ZipCrypto (pure-Python decrypt loop; STORED so the cipher dominates) ---
+    _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+        lambda: _op_read_all(fixtures.zipcrypto_path, password=ZIPCRYPTO_PASSWORD)
+    )
+    results.append(
+        CaseResult(
+            "zipcrypto_read_all",
+            "zip",
+            "read_all",
+            _m_wall,
+            bdec,
+            seeks,
+            unpacked_bytes=unpacked,
+            notes="ZipCrypto STORED member; times the pure-Python decrypt loop",
+        )
+    )
+
     # --- In-ZIP accelerated deflate (forced ON/OFF; mirrors tar.gz accelerator cases) ---
     # AUTO would decline below RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE; ON exercises the
     # per-member rapidgzip path that G7 noted was missing from the harness.
@@ -751,6 +780,50 @@ def run_cases(
             wall_ratio=(wall / std_wall) if std_wall > 0 else None,
         )
     )
+
+    # --- unix-compress (.Z) single-file: archivey's own pure-Python LZW decoder ---
+    # No stdlib peer, and a C decoder (ncompress) would sit far past the wall ceiling,
+    # so these rows carry wall time and structure only. The zero run builds dictionary
+    # entries longer than the flat-entry cap, so it times the linked-entry path.
+    for z_case, z_path in (
+        ("z_text_read_all", fixtures.unix_compress_text_path),
+        ("z_zeros_read_all", fixtures.unix_compress_zeros_path),
+    ):
+        if z_path is None:
+            results.append(
+                CaseResult(
+                    z_case,
+                    "Z",
+                    "read_all",
+                    0.0,
+                    0,
+                    0,
+                    notes="skipped: ncompress not installed (dev group)",
+                    skipped=True,
+                )
+            )
+            continue
+        _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
+            lambda p=z_path: _op_read_all(p)
+        )
+        wall, _ = timed_with_optional_warmup(
+            lambda p=z_path: _op_read_all_unmeasured(p)
+        )
+        results.append(
+            CaseResult(
+                z_case,
+                "Z",
+                "read_all",
+                wall,
+                bdec,
+                seeks,
+                unpacked_bytes=unpacked,
+                notes=(
+                    "pure-Python LZW; no stdlib peer; "
+                    "+1 byte is the one-byte probe read at open"
+                ),
+            )
+        )
 
     # --- .tar.gz / .tar.bz2 with accelerators off vs on ---
     # Default AUTO leaves accelerators off unless SEEKABLE is declared; we force ON/OFF
@@ -975,9 +1048,10 @@ def run_cases(
 
     # --- 7z BCJ branch filter (x86) ---
     # archivey stages branch filters through liblzma rather than through pybcj
-    # (see dev-docs/known-issues.md). liblzma refuses a raw chain whose only filter
-    # is a branch filter, so a separately-staged BCJ reframes its input as LZMA2
-    # uncompressed chunks; these cases are what makes that reframing cost visible.
+    # (see dev-docs/investigations/pybcj-upstream-report.md). liblzma refuses a raw
+    # chain whose only filter is a branch filter, so a separately-staged BCJ reframes
+    # its input as LZMA2 uncompressed chunks; these cases are what makes that
+    # reframing cost visible.
     # ``copy`` isolates the filter, ``lzma1`` is the shape that forces the staging
     # (the 7-Zip CLI writes LZMA1 without an end-of-stream marker), and ``lzma2``
     # is the common executable-archive shape, where liblzma runs the whole chain
@@ -1237,7 +1311,7 @@ def _structural_checks(
             # read; over-decode catches decode-twice-deliver-once (each open still
             # increments the shared ByteCounter even when only the second handle
             # is delivered to the caller).
-            if r.format in ("zip", "tar", "gzip", "tar.gz", "tar.bz2", "rar"):
+            if r.format in ("zip", "tar", "gzip", "Z", "tar.gz", "tar.bz2", "rar"):
                 if r.bytes_decompressed < r.unpacked_bytes:
                     failures.append(
                         f"{r.case}: bytes_decompressed={r.bytes_decompressed} "

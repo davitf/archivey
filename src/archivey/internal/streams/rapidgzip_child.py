@@ -54,6 +54,8 @@ from archivey.internal.streams.child_process import (
     spawn,
 )
 from archivey.internal.streams.rapidgzip_worker import (
+    ARG_MAX,
+    ARG_MIN,
     ERR,
     FRAME,
     OK,
@@ -83,6 +85,13 @@ _MIN_AHEAD = 64 << 10
 # bounds the child's buffer; measured, 64 KiB and 1 MiB round trips read a large stream
 # equally fast, and 4 MiB ones more slowly.
 _CHUNK = 1 << 20
+
+
+def _check_arg(arg: int) -> None:
+    """Refuse an integer a frame cannot carry, as ``io.BytesIO.seek`` refuses one."""
+    if not ARG_MIN <= arg <= ARG_MAX:
+        raise OverflowError(f"{arg} is out of range for the rapidgzip decoder process")
+
 
 # What rapidgzip 0.16 writes to stderr as it aborts on a stream that ends early.
 _TRUNCATION_ABORT = b"The bit buffer should not contain more data than have been read"
@@ -260,9 +269,10 @@ def _scan_stderr(stderr: IO[bytes]) -> tuple[bool, str]:
 class RapidgzipChildStream(ReadOnlyIOStream):
     """A seekable stream of rapidgzip's decoded output, decoded in a child process.
 
-    One child per instance. After the child dies, every later call raises the same
-    error again; :meth:`close` still reaps it, and a garbage-collected instance is
-    reaped by its finalizer. ``tell`` needs no round trip: the position is kept here.
+    One child per instance. After the child dies, or a read of the caller's source
+    fails, every later call raises the same error; :meth:`close` still reaps it, and a
+    garbage-collected instance is reaped by its finalizer. ``tell`` needs no round
+    trip: the position is kept here.
 
     ``label`` names the codec in error messages (``gzip``, ``zlib``, ``deflate``).
     """
@@ -353,7 +363,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         """Serve one read, seek or tell of the caller's source for the child.
 
         An ``Exception`` from the source is parked and raised when the current call
-        ends; the child is told the read failed, and treats it as the end of input.
+        ends; the child is told the read failed, and treats it as the end of input. So
+        nothing it decodes after that is the stream, and ``_call`` then stops it.
         Anything else (``KeyboardInterrupt``) propagates at once.
         """
         source = self._source
@@ -412,6 +423,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self, tag: int, arg: int = 0, payload: bytes = b"", *, keep_parked: bool = False
     ) -> tuple[int, bytes]:
         self._raise_if_unusable()
+        # Refused before anything is written, so the child is still in step.
+        _check_arg(arg)
         try:
             frame = self._exchange(tag, arg, payload)
         except BaseException:
@@ -429,6 +442,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 raise parked
             raise death
         if parked is not None:
+            self._poison(parked)
             raise parked
         reply, value, data = frame
         if reply == ERR:
@@ -447,6 +461,21 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             ArchiveyUsageError,
             "the rapidgzip decoder process was interrupted in the middle of a "
             "request, and this stream cannot continue",
+        )
+        self._stop(kill=True)
+
+    def _poison(self, fault: Exception) -> None:
+        """Stop the child after a read of the caller's source failed.
+
+        The child took the failure for the end of its input, so a later read would get
+        an early end of the stream, or a false verdict on the data. The caller gets
+        ``fault`` itself once, then every later call raises ``ReadError``.
+        """
+        self._death = (
+            ReadError,
+            f"this {self._label} stream cannot continue: a read from its source "
+            f"failed ({fault!r}), and the rapidgzip decoder process took that for "
+            "the end of its input",
         )
         self._stop(kill=True)
 
@@ -534,7 +563,44 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             return b""
         if self._pos is None:
             self.tell()
+        start = self._pos
         want = -1 if n is None or n < 0 else n
+        try:
+            return self._read_into(want)
+        except Exception:
+            self._rewind_after_failed_read(start)
+            raise
+
+    def _rewind_after_failed_read(self, start: int | None) -> None:
+        """Put the stream back where a read that failed started.
+
+        The failed read returns nothing, but the child may be past bytes the caller
+        never got: the chunks this read already took, or what the child decoded before
+        it failed. Asking the child where it is would skip them. The child is moved
+        back to ``start`` instead, so the position the caller sees is where it was,
+        and a caller that goes on reading gets those bytes. When that seek fails too,
+        the position is known to nobody, and the stream cannot be used again.
+        """
+        if self._death is not None or self._proc is None or start is None:
+            return
+        try:
+            position, _ = self._call(SEEK, start, bytes([io.SEEK_SET]))
+        except Exception as exc:  # noqa: BLE001 - the read's own error is raised
+            if self._death is None:
+                self._death = (
+                    ReadError,
+                    f"this {self._label} stream cannot continue: a read failed, "
+                    f"and moving back to where it started failed too "
+                    f"({exc!r})",
+                )
+                self._stop(kill=True)
+            return
+        self._drop_buffer()
+        self._sequential = False
+        self._pos = position
+
+    def _read_into(self, want: int) -> bytes:
+        """The body of :meth:`read`."""
         parts: list[bytes] = []
         if self._buffer_at < len(self._buffer):
             end = len(self._buffer) if want < 0 else self._buffer_at + want
@@ -579,24 +645,44 @@ class RapidgzipChildStream(ReadOnlyIOStream):
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._raise_if_unusable()
-        pos = self._pos
-        if pos is not None and whence in (io.SEEK_SET, io.SEEK_CUR):
-            target = offset if whence == io.SEEK_SET else pos + offset
+        if whence in (io.SEEK_SET, io.SEEK_CUR):
+            if whence == io.SEEK_CUR and self._pos is None:
+                self.tell()
+            pos = self._pos
+            if whence == io.SEEK_SET:
+                target = offset
+            else:
+                assert pos is not None
+                target = pos + offset
+            _check_arg(target)  # as io.BytesIO: OverflowError before the sign
+            if target < 0:
+                # rapidgzip would clamp it to 0; refuse it as io streams do.
+                raise ValueError(f"negative seek position {target}")
             # A target inside the read-ahead buffer needs no round trip.
-            buffer_start = pos - self._buffer_at
-            if buffer_start <= target <= buffer_start + len(self._buffer):
-                self._buffer_at = target - buffer_start
-                self._pos = target
-                return target
+            if pos is not None:
+                buffer_start = pos - self._buffer_at
+                if buffer_start <= target <= buffer_start + len(self._buffer):
+                    self._buffer_at = target - buffer_start
+                    self._pos = target
+                    return target
             # The child is past the buffer, so a relative seek is made absolute here.
             offset, whence = target, io.SEEK_SET
+        # State changes only after the child moved. A seek refused here, by the frame
+        # range or by the child (an ERR reply) leaves the child where it was, so the
+        # buffer and the position stay. A child that died or was stopped is unusable,
+        # so its position is never asked for again. The one other place the position
+        # is dropped is ``_fetch``, after a failed read; ``read`` then moves the child
+        # back to where the read started (``_rewind_after_failed_read``), so a usable
+        # stream never has its position taken from a child that is past the caller.
+        payload = bytes([whence])
+        try:
+            position, _ = self._call(SEEK, offset, payload)
+        except BaseException:
+            if self._death is not None:
+                self._pos = None
+            raise
         self._drop_buffer()
         self._sequential = False
-        try:
-            position, _ = self._call(SEEK, offset, bytes([whence]))
-        except BaseException:
-            self._pos = None
-            raise
         self._pos = position
         return position
 

@@ -19,13 +19,13 @@ with archivey.open_archive("photos.zip") as reader:
 
 **By default you can open any member you like, in any order.** That is what most
 callers want, and it is what the example above relies on. It is not always the
-cheapest way to read, though — [Reading members](reading-members.md#two-ways-to-read)
-covers when to make one forward pass instead.
+cheapest way to read, though. When you only need to read some or all of the files once,
+in any order, open with `streaming=True`; [Which options to set](#which-options-to-set)
+says why.
 
-If your source is a pipe or another non-seekable stream, pass `streaming=True` for a
-forward-only single pass. Without it the open fails immediately rather than halfway
-through — see [What you can open](#what-you-can-open) for which formats can be read
-this way at all.
+If your source is a pipe or another non-seekable stream, `streaming=True` is required.
+Without it the open fails immediately rather than halfway through. See
+[What you can open](#what-you-can-open) for which formats can be read this way at all.
 
 ### `open_archive` or `open_stream`?
 
@@ -41,6 +41,65 @@ archivey.open_stream("access.log.gz")  # a stream: the decompressed bytes
 `open_archive` works on a plain `.gz` too — you get an archive with exactly one
 member, named after the file. Use `open_stream` when you just want the bytes and
 know there is no tar inside.
+
+## Which options to set
+
+The two openers take these keyword arguments:
+
+```python
+archivey.open_archive(source, *, format=None, streaming=False,
+                      seekable_members=False, concurrent_members=False,
+                      password=None, encoding=None, config=None)
+archivey.open_stream(source, *, format=None, seekable=False, config=None)
+```
+
+The table below covers the three access options of `open_archive`: `streaming`,
+`seekable_members` and `concurrent_members`. `open_stream` has only one of them,
+`seekable`, which works like `seekable_members` for the one stream it returns.
+
+Most programs need no option at all, or exactly one. The options exist so that you
+never do something expensive without knowing it: without them, a seek, a second open
+stream or random access on a pipe raises instead of quietly costing time. Before you set
+one, look at what it costs in the table, and at whether a cheaper way of reading would
+do the job.
+
+| What you need | Open with | Limitations |
+|---|---|---|
+| Read or extract some or all of the members once, and the order does not matter: hash them, index them, load the data once | `streaming=True`, then `stream_members()` or `extract_all()` (`for member in reader` walks the members without their data) | No random access: `members()`, `get()`, `open()` and `read()` raise. You get one pass, even if you `break` out of it early. You do not get the full member list before the pass starts: each member is known only when the pass reaches it. `scan_members()` and `members_report()` still list the archive, but they use up the pass to do it. [More below](#streaming-for-one-pass) |
+| Read one member, or a few, by name; list the archive and then read from it | Nothing (the defaults) | One member stream open at a time. On a solid archive, opening members out of archive order can decode the same block again ([details](access-and-cost.md#solid-archives-prefer-one-forward-pass)) |
+| Call `seek()` on a member stream, or pass it to a library that seeks (a nested ZIP, a Parquet file, an image decoder) | `seekable_members=True` | Some extra work as you read, which depends on the codec: the stream may read the format's own index (xz, lzip), keep track of points it can seek back to, or hand a gzip or bzip2 member of 16 MiB compressed or more to the `[seekable]` accelerator when it is installed. A seek backwards may decompress the member again from its start; how far back it has to go depends on those same mechanisms, and the `[seekable]` extra only helps a large gzip or bzip2 member unless you force it on. Any seek that moves the position gives up the check of the member's stored checksum. If you will seek a lot, extract the member to a file first. [Details](access-and-cost.md#seeking-inside-compressed-members) |
+| Several member streams open at once, for example a thread pool that reads different members | `concurrent_members=True`; call `members()` once before you fan out | A second overlapping `open()` no longer raises, so the check that catches an accidental overlap is gone. Reads from several members at once can make the reader seek back and forth in the archive, and decompress data again: on a solid archive, each stream decodes its block from the start. Reads are correct but not always faster: on formats that share one file handle, each read takes a lock, and workers can wait on it. Opening the archive several times, one reader per worker without this option, can be cheaper; it can also cost more, because each reader parses the archive's index again. Cannot be combined with `streaming=True`. [Details](access-and-cost.md#concurrent-member-streams) |
+| Read from a pipe, a socket or an HTTP response | `streaming=True` | The same as the first row. Only TAR and the single-file compressors can be read this way; see [below](#what-you-can-open) |
+
+`seekable_members` and `concurrent_members` combine freely with each other. To extract a
+whole archive with safe defaults and no reader at all, call
+`archivey.extract(src, dest)` ([Extracting](extracting.md)).
+
+### Streaming for one pass
+
+`streaming=True` is not only for pipes. On a file it tells archivey that you will read
+the archive once, from start to end, and never go back. In return, a slow access pattern
+fails instead of running slowly: a random `open()` raises `ArchiveyUsageError`, so an
+out-of-order read on a solid archive cannot slip in and decode a block again. And no
+member stream can seek, so every member you read to its end gets its stored checksum
+checked, where the format stores one (ZIP, 7z, RAR). A TAR member has no checksum of its
+own. A compressed TAR, or a single-file stream such as a `.gz` or `.xz`, has its codec's
+trailer checked when the pass reaches the end.
+[Details](access-and-cost.md#streaming-mode-is-one-pass)
+
+Its other limitations:
+
+- **Listing limits on the pass.** On a streaming reader, `stream_members()`,
+  `for member in reader` and `extract_all()` are deliberately outside `ListingLimits`.
+  `scan_members()` and `members_report()` enforce the limits as `members()` does, and
+  7z and RAR check `max_members` when the archive is opened. See
+  [Limits](extracting.md#limits).
+- **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported
+  as a missing end-of-archive marker, not as corruption
+  ([TAR](formats.md#tar-and-compressed-tar)).
+- **Hard links after a filter.** On a TAR or a directory, when an `extract_all()`
+  filter leaves out the first name of a hard link, extracting a later name fails,
+  because the data has already gone past.
 
 ## What you can open
 
@@ -248,8 +307,8 @@ handle it:
 - **Keep the original bytes.** `member.raw_name` holds the name as stored in the
   archive, here `b'caf\xe9.txt'`.
 - **Name the encoding.** If you know which encoding the archive uses, pass it:
-  `open_archive(path, encoding="latin-1")` gives `'café.txt'`. Only ZIP, TAR and ISO
-  read `encoding=`; the other formats decode names their own way, and passing it to
+  `open_archive(path, encoding="latin-1")` gives `'café.txt'`. Only ZIP, TAR, ISO and
+  RAR read `encoding=`; the other formats decode names their own way, and passing it to
   them emits `ENCODING_ARGUMENT_UNUSED`. In some cases a name that is valid UTF-8
   ignores it; see the next section.
 
@@ -267,6 +326,9 @@ not valid UTF-8.
 | TAR, a PAX `path` or `linkpath` record | Used only when the bytes are not valid UTF-8 |
 | ISO, a Rock Ridge or plain ISO 9660 name, or a Rock Ridge link target | Used only when the bytes are not valid UTF-8; without it, see below |
 | ISO, a Joliet name | Ignored; Joliet names are UTF-16 |
+| RAR 1.5-4, a name stored only as 8-bit bytes | Decodes the name, and turns off the UTF-8 guess |
+| RAR 1.5-4, a name with the Unicode flag and no UTF-16 copy | Used only when the bytes are not valid UTF-8 |
+| RAR5, or a RAR 1.5-4 name with a UTF-16 copy | Ignored; the name is UTF-8 or UTF-16 |
 
 The UTF-8 flag and PAX records declare UTF-8, so for them UTF-8 wins. An ISO image never says which
 encoding its Rock Ridge names are in. Most tools write UTF-8, and older ones write

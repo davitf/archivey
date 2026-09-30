@@ -26,7 +26,7 @@ layer; what differs is on [`tar.md`](tar.md) §2.3.
 | | |
 | --- | --- |
 | Read | Yes, ten codecs, one reader (`SingleFileReader`). Each is `ContainerFormat.RAW_STREAM` plus a `StreamFormat` (`ArchiveFormat.GZ`, …) |
-| Write | **Not shipped**, for any format (`PLAN.md` phase 9) |
+| Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | Any. Random access needs a seekable source; a pipe needs `streaming=True` and gives one forward pass. `start_offset` is refused |
 | Listing cost | `INDEXED`. The one member is built at open without decoding; the few fields that need the source come from its header or its end (§2.2) |
 | Access cost | `DIRECT` — one member, nothing solid in front of it |
@@ -233,8 +233,10 @@ against a dictionary size the stream declares before the decoder is built: xz pe
 through liblzma's `memlimit`; lzip per member, whose format caps the dictionary at 512 MiB
 anyway; LZMA Alone from its header, refused on the first read so the refusal carries the
 probe's `format_unconfirmed` stamp ([`xz.md`](xz.md) §2.3); zstd per frame, through
-libzstd's `window_log_max` ([`zstd-lz4.md`](zstd-lz4.md) §4). bzip2, LZ4, Brotli, gzip
-and `.Z` have small fixed windows.
+libzstd's `window_log_max` ([`zstd-lz4.md`](zstd-lz4.md) §4). bzip2, LZ4, Brotli and gzip
+have small fixed windows. The `.Z` decoder's table stays under about 19 MiB (about
+20 MiB on a free-threaded build) whatever the stream does
+([`unix-compress.md`](unix-compress.md) §4).
 
 **Bytes after the end.** Each decoder knows where its stream ends: the gzip member's
 trailer, zlib's Adler-32, the end of an xz stream, lzip member or LZMA Alone payload,

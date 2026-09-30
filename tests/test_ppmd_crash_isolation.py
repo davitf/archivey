@@ -10,6 +10,7 @@ interpreter so that a regression fails the test instead of killing the session.
 from __future__ import annotations
 
 import io
+import os
 import random
 import signal
 import struct
@@ -349,6 +350,23 @@ def test_child_decoder_round_trip_and_errors() -> None:
         bad.close()
     with pytest.raises(ArchiveyUsageError, match="closed"):
         bad.decode(b"\x00" * 16, 10)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_a_sigint_to_the_child_does_not_stop_it() -> None:
+    """A terminal's Ctrl-C signals the whole foreground process group, the decoder child
+    included. The child ignores it: the parent decides what an interrupt means."""
+    data = b"hello child " * 50
+    child = PpmdChildDecoder(variant=7, order=_ORDER, mem_size=_MEM)
+    try:
+        assert child.decode(_encode_ppmd7(data), 100) == data[:100]
+        assert child._proc is not None
+        os.kill(child._proc.pid, signal.SIGINT)
+        with pytest.raises(subprocess.TimeoutExpired):
+            child._proc.wait(timeout=0.5)
+        assert child.decode(b"", len(data) - 100) == data[100:]
+    finally:
+        child.close()
 
 
 def test_a_decode_after_close_is_not_a_corruption_verdict() -> None:

@@ -2,7 +2,7 @@
 
 > End-user framing of what Archivey is for. The full maintainer vision (adoption
 > strategy, quality scaffolding, non-goals) lives in the repository root as
-> `VISION.md`.
+> [`VISION.md`](https://github.com/davitf/archivey/blob/main/VISION.md).
 
 ## One sentence
 
@@ -25,8 +25,10 @@ not as silent guesses or a different API per backend.
 ## Safe by design
 
 Extraction cannot be zip-slipped, symlink-escaped, or decompression-bombed unless you
-explicitly opt out. Safety is a contract, not a marketing flag. See
-[Safe extraction](extracting.md).
+explicitly opt out. Listing size, decoder memory, password key-derivation work and
+temporary files are bounded too (`ListingLimits`, `DecoderLimits`, `SpoolLimits`), so a
+hostile archive fails with `ResourceLimitError` instead of exhausting the machine.
+Safety is a contract, not a marketing flag. See [Safe extraction](extracting.md).
 
 ## Don’t-shoot-yourself by design
 
@@ -41,18 +43,20 @@ Archivey’s defaults are the **cheap, honest path**:
 - no concurrent opens until you ask (`concurrent_members=True`)
 - random-access open fails fast on a non-seekable source (no silent buffering)
 
-When you need more, you **declare** it. Escape hatches are explicit, not ambient. See
-[Access costs and pitfalls](access-and-cost.md).
+When you need more, you **declare** it. Escape hatches are explicit, not ambient. For
+which one fits which job, and what each costs, see
+[Which options to set](opening-and-listing.md#which-options-to-set).
 
 ## Escape hatches for advanced use
 
 | Need | How |
 | --- | --- |
+| Read each member once, in any order | `open_archive(..., streaming=True)` — random access is refused, so it cannot slip in by accident |
 | Pipes / sockets | `open_archive(..., streaming=True)` — TAR and the single-file compressors; ZIP, ISO, 7z and RAR need a seekable source in either mode |
 | Seek inside a member | `seekable_members=True` |
 | Many open members / workers | `concurrent_members=True` |
 | Trusted / unlimited extract | `ExtractionPolicy.TRUSTED`, `ExtractionLimits.UNLIMITED` |
-| Tune accelerators / EOF / listing caps | `ArchiveyConfig` (`listing_limits`, …) |
+| Tune limits, strictness, accelerators, the RAR program | `ArchiveyConfig` (`listing_limits`, `decoder_limits`, `spool_limits`, `diagnostic_policy`, `use_rapidgzip`, `rar_decompressor`, …) |
 
 ## Content-first, not extraction-first
 
@@ -63,9 +67,10 @@ second in priority. Writing is a natural extension and may land after a “reads
 ## Honest about damage and cost
 
 Wrong extensions, truncated archives, and solid blocks are normal. Identification is
-evidence-based (magic first). Access cost is queryable (`reader.cost`). Prefer
-`stream_members()` when order matters. Prefer stored hashes (`member.hashes`) when you
-only need integrity fingerprints.
+evidence-based (magic first). A truncated archive still gives you what was recoverable:
+`members_report()` returns the recovered members plus the error. Access cost is
+queryable (`reader.cost`). Prefer `stream_members()` when order matters. Prefer stored
+hashes (`member.hashes`) when you only need integrity fingerprints.
 
 Wall-time expectations are **aspirational peer-ratio bands** (not a silent promise):
 see [Access costs — wall-time bands](access-and-cost.md#wall-time-bands-aspirational). Re-run the
@@ -73,7 +78,7 @@ harness if you want numbers on your machine.
 
 ## What this is not
 
-- Not an everything-tool (no in-place modify, no async in v1)
+- Not an everything-tool (no in-place modify, no async before 1.0)
 - Not a backup engine by itself
 - Not a compatibility shim for `zipfile` / `tarfile` / `py7zr` APIs — one clean API, with
   a [migration guide](migrating.md) rather than a drop-in replacement

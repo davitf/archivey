@@ -105,7 +105,7 @@ paid W1–W9 and the Q13/O-23 follow-ons (`#233`–`#236`) landed.
 
 | Review | Archived as | Closing work |
 |--------|-------------|--------------|
-| Extraction and backend security audit | [`archive/2026-09-29-extraction-audit/`](archive/2026-09-29-extraction-audit/SUMMARY.md) | Reproducers and fixes in **#512**; O22 (E1), deferred there, closed in **#516**; the other deferred items (`rar.md` §7, `IDEAS.md`) and next-audit seeds in its SUMMARY. |
+| Extraction and backend security audit | [`archive/2026-09-29-extraction-audit/`](archive/2026-09-29-extraction-audit/SUMMARY.md) | Reproducers and fixes in **#512**; O22 (E1), deferred there, closed in **#516**; T8 (`.Z` dictionary memory) closed by **#519**; the other deferred items (`rar.md` §7, `IDEAS.md`) and next-audit seeds in its SUMMARY. |
 | `simplicity-consistency/` (Topic 9) | [`archive/2026-08-15-simplicity-consistency/`](archive/2026-08-15-simplicity-consistency/) | Findings #230/#231; W1–W9 in **#232** (six OpenSpec changes + ADRs 0015–0017); expansions **#233–#236**. Guardrails in `tests/test_review_simplicity_consistency.py`. **O2b/O2c** → `IDEAS.md`. |
 | `debt-ledger/` | `archive/2026-07-28-debt-ledger/` | T7 audit ([`corpus-matrix.md`](archive/2026-07-28-debt-ledger/corpus-matrix.md)) + T4 `members_report_if_available` multithread tests |
 | `performance/` | `archive/2026-07-28-performance/` | Q4 decided: verification stays unconditional, no skip knob |
@@ -115,9 +115,9 @@ explicit KEEP / park with a recorded justification — see each review's `SUMMAR
 
 ## What is next
 
-Ranked, from `backlog.md` and `PLAN.md`:
+Ranked, from `backlog.md` and the release checklist:
 
-1. **Release bundle** (`PLAN.md` item 6) — the critical path to `0.2.0`. Landed since:
+1. **Release bundle** ([`release-checklist.md`](../dev-docs/release-checklist.md)) — the critical path to `0.2.0`. Landed since:
    the free-threading support statement and migration guide (`docs/support-matrix.md`,
    `docs/migrating.md`, #206) and the PyPI metadata (#207). **Remaining:** drop the
    `0.2.0.dev0` suffix when cutting the tag, and the repo-cutover leftovers
@@ -146,7 +146,7 @@ Ranked, from `backlog.md` and `PLAN.md`:
 
 The two reviews commissioned 2026-09-11 (`typing-escape-hatches/`, `exception-catchalls/`) were taken early on the freeze-proximity argument — a public signature tightened after `0.2.0`, or a change in which exceptions escape the public API, is a compatibility event — and both are now done (rows above).
 
-**Also in flight, outside this table:** the whole-codebase reading pass ([`sweep/`](sweep/README.md)), whose state lives on its hub PR #315 and whose coverage `scripts/sweep_coverage.py` counts; and the OpenSpec changes in [`openspec/changes/`](../openspec/changes/), whose tasks and order are in [`open-work-inventory.md`](../dev-docs/open-work-inventory.md) §OpenSpec changes. Neither is restated here, so this page does not go stale with them.
+**Also in flight, outside this table:** the whole-codebase reading pass ([`sweep/`](sweep/README.md)), whose state lives on its hub PR #315 and whose coverage `scripts/sweep_coverage.py` counts; and the OpenSpec changes in [`openspec/changes/`](../openspec/changes/), whose tasks are in each change's `tasks.md`. Neither is restated here, so this page does not go stale with them.
 
 `api-freeze/` (commissioned 2026-09-21) is **not ranked either**, and takes that same freeze-proximity argument furthest: it is the only review whose whole subject is what `0.2.0` makes permanent. It is also the one with a deadline rather than an ordering — its verdicts are worth having *before* the tag, and worth much less after. It shares sources with `typing-escape-hatches/` (both read the public signatures) but asks a different question: that one asks whether a type is honest, this one whether the name should exist.
 

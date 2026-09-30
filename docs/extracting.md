@@ -23,14 +23,49 @@ archivey.extract("archive.zip", "out/")
   attacker racing us) is out of scope; if that ever changes, `O_NOFOLLOW`/`openat`-style
   extraction is the direction.
 - **A directory opened as a source is the exception.** Another process may change a tree
-  while archivey reads it. Reading a member follows no symlink and checks that the file is
-  still the one listed, at the listed size; if not, the read fails with `OSError`. A file
-  rewritten in place at the same size reads its new content. On a filesystem that reports
-  no file identity (some FUSE and network mounts), only the file type and size are
-  checked.
+  while archivey reads it. On POSIX the walk opens each subdirectory without following a
+  symlink and checks it is the directory it listed; if not, the listing fails with
+  `OSError` (Windows is weaker, see below). Reading a member follows no symlink and
+  checks that the file is still the one listed, at the listed size; if not, the read
+  fails with `OSError`. A file rewritten in place at the same size reads its new
+  content. On a filesystem that reports no file identity (some FUSE and network mounts),
+  only the file type and size are checked.
 - **Optional dependencies and external tools** (`pycdlib`, codec packages, the `unrar`
-  binary) are trusted code but *not* trusted to be robust: their failures must surface
-  as translated archivey errors, never silently wrong data.
+  and `unar` programs) are trusted code but *not* trusted to be robust: their failures
+  surface as translated archivey errors, except in the accepted cases below.
+
+### Known and accepted limits
+
+These are the places where the guarantees above stop. Each one is a trade-off that was
+chosen, not a bug waiting for a fix, so please don't report them as vulnerabilities.
+
+- **A native decoder that crashes can take the process with it.** Decoders written in
+  C run inside your process: the standard library's `zlib`, `bz2` and `lzma`, pyppmd
+  for PPMd members up to `DecoderLimits.max_ppmd_in_process_input` (16 MiB by default),
+  and the optional bzip2 accelerator. The known crashes have been designed around: the
+  rapidgzip accelerator for gzip, zlib and raw DEFLATE runs in a child process, a larger
+  PPMd member is decoded in a child process, and a smaller one is handed to pyppmd whole,
+  which avoids the input pattern that crashes it. A crash nobody has found yet in an
+  in-process decoder would still abort the process. The bzip2 accelerator stays
+  in-process because no crash has been seen in it.
+- **`MemoryError` is not translated.** It passes through as itself, so that running out
+  of memory is never mistaken for a damaged archive. The `DecoderLimits` and
+  `ListingLimits` caps are there to keep a hostile archive from getting that far.
+- **Nothing bounds CPU or wall-clock time.** The limits cap bytes, entries and key
+  derivation work, not time. A slow decode of a legitimate-looking member is not an
+  error. Enforce a timeout outside archivey if you need one (a worker process you can
+  kill is the reliable way).
+- **Accelerators are on by default when installed.** `AcceleratorMode.AUTO` uses them
+  when the `[seekable]` extra is present and a caller asks for seeking. They sit outside
+  the fuzzed surface (see the hardening notes below); set them to `OFF` for untrusted
+  input under a strict threat model.
+- **After a seek, a crafted `.xz` or `.lz` index can serve the wrong bytes with no
+  error.** The integrity guarantee covers a read from start to end with no seek
+  ([Errors and diagnostics](errors-and-diagnostics.md#the-integrity-guarantee)).
+- **On Windows, a directory source is less protected against concurrent changes.**
+  There is no `O_NOFOLLOW`, so the walk scans subdirectories by path: a subdirectory
+  swapped for a junction or symlink while the walk runs can list entries from outside
+  the root. Reads still check the file identity where the filesystem reports one.
 
 ## What is enforced
 
@@ -54,7 +89,9 @@ archivey.extract("archive.zip", "out/")
   same-named member), so a crafted duplicate-name archive cannot redirect a link.
 - **Never write through a symlink:** overwrite handling replaces symlinks, never
   follows them; atomic temp-file + `os.replace` writes mean interrupted extraction
-  never leaves a half-written destination file.
+  never leaves a half-written destination file. The destination root itself is yours,
+  so if it is a symlink to a directory, archivey follows it and extracts into the
+  target (as `tar -C` and `unzip -d` do).
 - **Special files** (devices, FIFOs, sockets) are always rejected; an NTFS junction is
   never traversed, because it is a link and extraction never follows one. It is
   *flagged* as a junction — `extra["is_junction"]` — only where the archive says so,
@@ -116,11 +153,15 @@ archivey.extract("archive.zip", "out/")
 - **Cross-platform name safety (STRICT/STANDARD):** casefold+NFC collision tracking,
   reserved device names and `:` rejected, trailing-dot/space strip, non-UTF-8
   percent-escape sanitization, `OverwritePolicy.RENAME` (ADR 0013 / PRs #109/#123).
+  Directories are not in the collision map, so a *file* `Foo` and a *directory* `foo/`
+  that differ only by case are not detected as a collision: the outcome depends on
+  whether the destination filesystem is case-sensitive.
 - **Error honesty:** codec/library exceptions are translated to typed `ArchiveyError`s
-  with context; genuine I/O errors propagate unchanged; no catch-all handlers.
+  with context; genuine I/O errors propagate unchanged; no handler swallows or
+  reclassifies an unknown exception.
 - **Accelerator lifecycle:** C++-threaded accelerators are close-guarded
   (`weakref.finalize`) so crafted-input error paths cannot leave aborting threads
-  (see `known-issues.md`).
+  (see [the rapidgzip report](https://github.com/davitf/archivey/blob/main/dev-docs/investigations/rapidgzip-upstream-report.md), §6).
 
 Atomic file writes stage into temp siblings named `.archivey-tmp-<random>` inside the
 destination directory. Any Python-level failure removes them; only a hard kill
@@ -246,19 +287,20 @@ Archive order and identity matter more than “the” name.
 Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLimits` on
 `ArchiveyConfig`) cap:
 
-- **Extraction bombs** — total extracted bytes, compression ratio, and entry count
-  (`ExtractionLimits`). Trips raise `ResourceLimitError`.
-- **Listing materialization** — member count and retained metadata bytes
-  (`ListingLimits`) on `members()` / `scan_members()` / extract-prep materialization.
-  Trips raise `ResourceLimitError`. A TAR extraction does not list first: it checks
-  the limits as each member arrives in its one pass, so members before the one that
-  crosses a cap are already written when it raises. A damaged TAR behaves the same
-  way (see above). `stream_members()` / `streaming=True` stay unguarded by design,
-  except on 7z and RAR where `max_members` is checked at `open_archive`. Raise
-  `listing_limits.max_members` to open a larger 7z or RAR. That parse bound is a
-  member count, not a byte budget: `max_metadata_bytes` still fires when the list is
-  materialized. RAR also checks it at `open_archive` against the declared sizes of
-  compressed RAR 1.5/2.x comments, before decoding them.
+- **Extraction bombs** — total extracted bytes (default 2 GiB), compression ratio
+  (default 1000, checked once 5 MiB has been written), and entry count (default
+  1,048,576) (`ExtractionLimits`). Trips raise `ResourceLimitError`.
+- **Listing materialization** — member count (default 1,048,576) and retained metadata
+  bytes (default 64 MiB) (`ListingLimits`) on `members()` / `scan_members()` /
+  extract-prep materialization. Trips raise `ResourceLimitError`. A TAR extraction
+  does not list first: it checks the limits as each member arrives in its one pass, so
+  members before the one that crosses a cap are already written when it raises. A
+  damaged TAR behaves the same way (see above). `stream_members()` / `streaming=True`
+  stay unguarded by design, except on 7z and RAR where `max_members` is checked at
+  `open_archive`. Raise `listing_limits.max_members` to open a larger 7z or RAR. That
+  parse bound is a member count, not a byte budget: `max_metadata_bytes` still fires
+  when the list is materialized. RAR also checks it at `open_archive` against the
+  declared sizes of compressed RAR 1.5/2.x comments, before decoding them.
 - **Decoder memory** — the working set a codec allocates because the *archive's* header
   said to, such as a 7z PPMd window or an LZMA dictionary (`DecoderLimits`, default
   2 GiB). Checked before the allocation, on `open()` / `read()` as much as on
@@ -276,10 +318,11 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   Keys the reader already derived are reused for free, so an ordinary encrypted
   archive spends one or two derivations; each wrong candidate password counts. Trips
   raise `ResourceLimitError` before the derivation starts.
-- **Temporary copies of a stream source** — RAR member data goes through `unrar`, which
-  reads only files, so a RAR opened from a stream is copied to a temp file first
-  (`SpoolLimits.max_bytes` on `ArchiveyConfig.spool_limits`, default 1 GiB across the
-  whole copy). Checked before anything is written. Trips raise `ResourceLimitError`.
+- **Temporary copies of a stream source** — RAR member data goes through an external
+  program (`unrar` or `unar`), which reads only files, so a RAR opened from a stream is
+  copied to a temp file first (`SpoolLimits.max_bytes` on
+  `ArchiveyConfig.spool_limits`, default 1 GiB across the whole copy). Checked before
+  anything is written. Trips raise `ResourceLimitError`.
   A path source is read in place, with two exceptions bounded by the same limit: a
   RAR with a prefix before it (an SFX stub) read with `rar_decompressor="unar"`, and
   a list of RAR volume files where the system allows no link to them.
@@ -346,16 +389,23 @@ members as archives, bound the depth and the cumulative size yourself.
 ## Hardening notes for callers
 
 **Optional `[seekable]` accelerators** (`rapidgzip` and its bundled bzip2
-decoder) are a performance path, not part of the defended fuzz surface. Third-
-party C++ can busy-loop on crafted input in a way Python timeouts cannot cleanly
-interrupt. Callers processing untrusted archives under a hard latency budget
-should leave accelerators off (`AcceleratorMode.OFF`) or enforce their own
-resource limits. Mutation and Atheris harnesses run with accelerators off for
-this reason.
+decoder) are a performance path, not part of the defended fuzz surface. The default is
+`AcceleratorMode.AUTO`, which engages them when the `[seekable]` extra is installed and
+a caller asks for seeking, so turning them off is something you do yourself. The
+gzip, zlib and raw DEFLATE decoder runs in a child process, so a native abort there
+costs only the member; a busy loop in that child is not bounded by a timeout. The bzip2
+decoder runs in-process. Third-party C++ can busy-loop on crafted input in a way Python
+timeouts cannot cleanly interrupt. Callers processing untrusted archives under a hard
+latency budget should turn accelerators off (`use_rapidgzip` and `use_indexed_bzip2`
+set to `AcceleratorMode.OFF`) or enforce their own resource limits. Mutation and
+Atheris harnesses run with accelerators off for this reason.
 
-**External tools:** RAR member *data* may be decompressed by the system `unrar` or
-`rar` binary. Keep that tool updated; treat its availability and behaviour as part of
-your deployment’s trust boundary.
+**External tools:** RAR member *data* is decompressed by an external program: RARLAB
+`unrar` or `rar`, or `unar` under the default `rar_decompressor="auto"` when no RARLAB
+program is installed. Each is found on the process `PATH`. `unar` receives a password on
+its command line, where other local users can see it while it runs; select
+`RarDecompressor.UNRAR` to rule that out. Keep these tools updated; treat their
+availability and behaviour as part of your deployment’s trust boundary.
 
 Prefer extracting untrusted archives into a dedicated directory with limited
 permissions, then validating results before promoting them elsewhere.

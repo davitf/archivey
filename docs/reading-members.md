@@ -42,7 +42,9 @@ with archivey.open_archive(
     ...
 ```
 
-Neither flag is free — see [Access costs](access-and-cost.md#concurrent-member-streams).
+Neither flag is free, and each one turns off a check that stops an expensive access
+pattern from happening by accident. What each costs, and which option fits which job, is
+in [Which options to set](opening-and-listing.md#which-options-to-set).
 
 ## Two ways to read
 
@@ -181,6 +183,15 @@ methods — `members()`, `get()`, `open()`, `read()` — raise
 `ArchiveyUsageError`. What you have instead is `__iter__`, `stream_members()`
 and `extract_all()`, and you get **one** of them: the first consumes the source, even
 if you `break` out early.
+
+A type checker catches the random-access calls before you run the code:
+`open_archive(..., streaming=True)` is typed to return `ForwardArchiveReader`, which
+has no `members()`, `get()`, `open()` or `read()`. The same goes for a `streaming=`
+value the checker cannot prove is `False`, such as a `bool` variable: if the code needs
+random access in one branch, branch on the flag rather than pass it through. What a type
+checker still cannot see is the one-pass rule.
+Annotate a function that takes a reader of either kind, and only makes one pass, with
+`ForwardArchiveReader`; the full `ArchiveReader` is a subclass of it.
 
 ## One-shot extract
 

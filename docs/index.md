@@ -77,9 +77,10 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
 10. **[Migrating](migrating.md)** — coming from `zipfile`, `tarfile`, `shutil`, `patool`
 11. **[Platforms and threading](support-matrix.md)** — supported Pythons/OSes and what free-threading claims
 12. **[Philosophy](philosophy.md)** — why Archivey exists and the defaults that follow
-13. **[How it works](how-it-works.md)** — how it is built, and the decisions behind it
-14. **[API reference](api.md)** — generated from source
-15. **[Acknowledgements](acknowledgements.md)** — libraries, oracles, and design references
+13. **[How it is built](how-it-is-built.md)** — AI-written code, and how it is reviewed and checked
+14. **[How it works](how-it-works.md)** — the internals, and the decisions behind them
+15. **[API reference](api.md)** — generated from source
+16. **[Acknowledgements](acknowledgements.md)** — libraries, oracles, and design references
 
 ## For contributors
 

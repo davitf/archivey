@@ -146,6 +146,9 @@ _RAR3_FILE_EXTTIME = 0x1000
 _RAR3_LONG_BLOCK = 0x8000
 
 _RAR3_OS_UNIX = 3
+# MS-DOS, OS/2 and Win32: hosts whose RAR writers store an 8-bit name in the OEM
+# code page (see ``_decode_rar3_8bit_name``).
+_RAR3_OEM_HOSTS = frozenset({0, 1, 2})
 _RAR3_M0 = 0x30
 
 # RAR5 block types / flags
@@ -232,7 +235,7 @@ _S_COMMENT_HDR = struct.Struct("<HBBH")
 _S_LONG = struct.Struct("<L")
 _S_SHORT = struct.Struct("<H")
 
-_TRY_ENCODINGS = ("utf8", "utf-16le", "windows-1252")
+_COMMENT_TRY_ENCODINGS = ("utf8", "utf-16le", "windows-1252")
 
 
 def rar3_main_crc_end(flags: int) -> int:
@@ -311,6 +314,11 @@ class RarMemberInfo:
     # WinRAR ``-ver`` history: RAR5 FHEXTRA_VERSION vint, or RAR3 ``FILE_VERSION``
     # (``;n`` stripped from ``filename``). ``None`` / ``0`` = live revision.
     file_version: int | None = None
+    # A RAR3 name whose Unicode field decoded, as decoded: what ``unrar`` compares
+    # a ``-n`` mask against. ``filename`` can differ from it
+    # (``_fix_rar3_astral_truncation``). ``None`` for RAR5 and for a RAR3 name
+    # ``unrar`` reads from the 8-bit field.
+    rar3_unicode_name: str | None = None
     # RAR5 FHEXTRA records that were malformed and dropped, as
     # ``(record_name, record_type, reason)``. Empty for every well-formed archive,
     # and the shared empty tuple keeps that case at one slot rather than an object:
@@ -414,6 +422,7 @@ def parse_rar_archive(
     use_qo: bool = True,
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     kdf_cache: RarKdfCache | None = None,
+    name_encoding: str | None = None,
 ) -> RarArchive:
     """Parse from current position (archive start). Source must be seekable.
 
@@ -429,6 +438,9 @@ def parse_rar_archive(
     ``kdf_cache`` holds the header-key derivations. ``RarReader`` passes its own,
     so a member's PswCheck reuses the header's; without one the parse makes a
     fresh cache.
+
+    ``name_encoding`` is the caller's ``encoding=``, for RAR 1.5-4 names stored
+    as 8-bit bytes (``_decode_rar3_8bit_name``). RAR5 names are UTF-8.
     """
     return _parse_rar_volume(
         source,
@@ -438,6 +450,7 @@ def parse_rar_archive(
         allow_continuation=False,
         use_qo=use_qo,
         max_members=max_members,
+        name_encoding=name_encoding,
     )
 
 
@@ -448,6 +461,7 @@ def parse_rar_volumes(
     use_qo: bool = True,
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     kdf_cache: RarKdfCache | None = None,
+    name_encoding: str | None = None,
 ) -> RarArchive:
     """Parse an ordered multi-volume RAR set, merging split members across volumes.
 
@@ -480,6 +494,7 @@ def parse_rar_volumes(
             allow_continuation=index > 0,
             use_qo=use_qo,
             max_members=max_members,
+            name_encoding=name_encoding,
         )
         # Reject sets that do not start at volume 1.
         if index == 0 and (
@@ -605,6 +620,7 @@ def _parse_rar_volume(
     allow_continuation: bool,
     use_qo: bool = True,
     max_members: int | None,
+    name_encoding: str | None = None,
 ) -> RarArchive:
     """Parse one volume — one seekable source — into a :class:`RarArchive`.
 
@@ -637,6 +653,7 @@ def _parse_rar_volume(
             sfx_offset=sfx_offset,
             volume_index=volume_index,
             max_members=max_members,
+            name_encoding=name_encoding,
         )
     if (
         not allow_continuation
@@ -887,13 +904,51 @@ def _normalize_password_utf16le(password: str | bytes) -> bytes:
     return wstr[: _RAR_MAX_PASSWORD * 2]
 
 
-def _decode_name(raw: bytes) -> str:
-    for enc in _TRY_ENCODINGS:
+def _decode_comment_text(raw: bytes) -> str:
+    for enc in _COMMENT_TRY_ENCODINGS:
         try:
             return raw.decode(enc)
         except UnicodeError:
             continue
     return raw.decode("windows-1252", "replace")
+
+
+def _decode_rar3_8bit_name(
+    raw: bytes, *, host_os: int, encoding: str | None, declared_unicode: bool
+) -> str:
+    """Decode a RAR 1.5-4 name stored as 8-bit bytes, whose code page is not recorded.
+
+    ``encoding=`` decides, as it does for a TAR name or a ZIP name without the UTF-8
+    flag, except when the header's Unicode flag declares the bytes UTF-8
+    (``declared_unicode``): then it is used only for bytes that are not valid UTF-8.
+    Without it, strict UTF-8 is tried first, because ``rar`` on Unix stores the
+    locale's bytes, which today are UTF-8. Other bytes are in the writer's code page.
+    WinRAR on DOS, OS/2 and Windows writes the OEM code page, which is how Windows
+    ``unrar`` reads the name back (``ArcCharToWide`` with ``ACTW_OEM``), so cp437 is
+    used for those hosts. For a Unix or other host it is the locale's single-byte
+    charset, and windows-1252 is used. ``dev-docs/formats/rar.md`` §7 has the
+    evidence. UTF-16LE is never tried: almost any even-length byte string decodes as
+    UTF-16LE, and a RAR3 UTF-16 name is stored in its own encoded field.
+
+    A codec ``open_archive`` accepted can still fail on these bytes (``idna``, which
+    has no ``surrogateescape``); the name then decodes as it would without one.
+    """
+    if encoding is not None and not declared_unicode:
+        try:
+            return raw.decode(encoding, errors="surrogateescape")
+        except UnicodeError:
+            pass
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    if encoding is not None and declared_unicode:
+        try:
+            return raw.decode(encoding, errors="surrogateescape")
+        except UnicodeError:
+            pass
+    fallback = "cp437" if host_os in _RAR3_OEM_HOSTS else "windows-1252"
+    return raw.decode(fallback, "replace")
 
 
 def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
@@ -1368,7 +1423,7 @@ def _parse_rar3_old_comment_subblocks(
                 comment = None
             elif compress_type == _RAR3_M0:
                 if _crc32(packed) & 0xFFFF == crc16:
-                    comment = _decode_name(packed)
+                    comment = _decode_comment_text(packed)
             else:
                 comment = _Rar3Comment(
                     packed=packed,
@@ -1395,6 +1450,7 @@ def _parse_rar3(
     sfx_offset: int,
     volume_index: int = 0,
     max_members: int | None,
+    name_encoding: str | None = None,
 ) -> RarArchive:
     _require_exact(source, len(RAR_ID), "RAR3 signature")
 
@@ -1512,6 +1568,7 @@ def _parse_rar3(
                 data_offset=data_offset,
                 volume_index=volume_index,
                 is_service=(block_type == _RAR3_SUB),
+                name_encoding=name_encoding,
             )
             calc = _crc32(hdata[2:crc_pos]) & 0xFFFF
             if header_crc != calc:
@@ -1553,7 +1610,7 @@ def _parse_rar3(
             ):
                 source.seek(data_offset)
                 raw = _require_exact(source, member.compress_size, "RAR3 comment")
-                cmt = _decode_name(raw.split(b"\0", 1)[0])
+                cmt = _decode_comment_text(raw.split(b"\0", 1)[0])
                 if member.file_solid and members:
                     members[-1].comment = cmt
                 else:
@@ -1603,6 +1660,7 @@ def _parse_rar3_file_header(
     data_offset: int,
     volume_index: int,
     is_service: bool,
+    name_encoding: str | None = None,
 ) -> tuple[RarMemberInfo, int]:
     if pos + _S_FILE_HDR.size > len(hdata):
         raise CorruptionError("Truncated RAR3 file header")
@@ -1629,20 +1687,30 @@ def _parse_rar3_file_header(
 
     name, pos = _load_bytes(hdata, name_size, pos)
     orig_filename: bytes | None
+    unicode_name: str | None = None
     if flags & _RAR3_FILE_UNICODE and b"\0" in name:
         nul = name.find(b"\0")
         orig_filename = name[:nul]
         decoded = _decode_rar3_unicode_name(orig_filename, name[nul + 1 :])
-        if decoded is None:
-            filename = _decode_name(orig_filename)
+        if not decoded:
+            # ``unrar`` falls back to the 8-bit field on an empty decode too.
+            filename = _decode_rar3_8bit_name(
+                orig_filename,
+                host_os=host_os,
+                encoding=name_encoding,
+                declared_unicode=False,
+            )
         else:
+            unicode_name = decoded
             filename = _fix_rar3_astral_truncation(decoded, orig_filename)
-    elif flags & _RAR3_FILE_UNICODE:
-        orig_filename = name
-        filename = name.decode("utf8", "replace")
     else:
         orig_filename = name
-        filename = _decode_name(name)
+        filename = _decode_rar3_8bit_name(
+            name,
+            host_os=host_os,
+            encoding=name_encoding,
+            declared_unicode=bool(flags & _RAR3_FILE_UNICODE),
+        )
 
     filename = filename.replace("\\", "/").rstrip("/")
     is_directory = (flags & _RAR3_FILE_DIRECTORY) == _RAR3_FILE_DIRECTORY
@@ -1680,6 +1748,7 @@ def _parse_rar3_file_header(
     member = RarMemberInfo(
         filename=filename,
         orig_filename=orig_filename,
+        rar3_unicode_name=unicode_name,
         file_size=file_size,
         compress_size=compress_size,
         compress_type=compress_type,
