@@ -69,13 +69,6 @@ def _stored_member_declaring_more_than_it_packs(tmp_path: Path) -> tuple[Path, b
     return path, original
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R15: a stored RAR5 member is sliced by its unpacked size, so a header "
-        "declaring more than its packed span returns the next header's bytes as data"
-    ),
-)
 def test_stored_member_never_reads_past_its_packed_span(tmp_path: Path) -> None:
     """``unrar p`` emits the 13 packed bytes; archivey returned 40.
 
@@ -226,14 +219,6 @@ def _solid_encrypted_rar4(tmp_path: Path) -> Path:
 
 
 @requires_binary("unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R19: a wrong password on a solid RAR3/4 archive surfaces as TruncatedError "
-        "from stream_members()/extract(); the named-open path maps the same unrar "
-        "exit to EncryptionError"
-    ),
-)
 @pytest.mark.parametrize("via", ["stream_members", "extract"])
 def test_solid_rar4_wrong_password_is_an_encryption_error(
     tmp_path: Path, via: str

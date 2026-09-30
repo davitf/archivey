@@ -1951,8 +1951,15 @@ class RarReader(BaseArchiveReader):
                 # Each payload member in the pipe is verified individually (CRC/BLAKE2sp
                 # and declared length via fused ArchiveStream verify), so the pipe-level
                 # unrar exit code is redundant for corruption and is suppressed here to
-                # avoid legacy-format false positives; wrong-password (11) still maps.
-                owned = _UnrarOwnedStream(stdout, proc, has_verifiable_hash=True)
+                # avoid legacy-format false positives; wrong-password (11) still maps,
+                # and so does RAR4's wrong-password exit 2/3 with nothing emitted,
+                # which is why the pipe is told whether the archive is encrypted.
+                owned = _UnrarOwnedStream(
+                    stdout,
+                    proc,
+                    has_verifiable_hash=True,
+                    encrypted=self._archive_has_encryption,
+                )
                 with _close_on_error(owned):
                     tracked = self._track_decompressed(owned)
                 with _close_on_error(tracked):
@@ -2365,7 +2372,11 @@ class RarReader(BaseArchiveReader):
             view.close()
 
     def _direct_view(self, info: RarMemberInfo, length: int | None = None) -> BinaryIO:
-        size = info.file_size if length is None else length
+        # Never past the packed span: whatever the unpacked size claims, the bytes
+        # after ``compress_size`` belong to the next header, not to this member. A
+        # stored member that declares more than it packs then ends short, and the
+        # size check reports it as truncated.
+        size = min(info.file_size, info.compress_size) if length is None else length
         return self._shared.view(info.data_offset, size)
 
     def _ensure_link_target(self, member: ArchiveMember) -> None:
@@ -2597,6 +2608,19 @@ class RarReader(BaseArchiveReader):
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
+
+        if self._can_direct_read(raw) and raw.compress_size != raw.file_size:
+            # A plaintext stored member packs exactly its own bytes; only encryption
+            # (padding to the AES block) makes the two sizes differ, and encrypted
+            # members never take this path. ``unrar`` trusts the packed size here,
+            # the size check trusts the unpacked one, and neither is the member.
+            raise CorruptionError(
+                f"This stored RAR member declares {raw.file_size} bytes but packs "
+                f"{raw.compress_size}; a stored member's two sizes must match.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
 
         if self._can_direct_read(raw):
             inner: BinaryIO = self._direct_view(raw)
