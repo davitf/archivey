@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import io
 import os
 import shutil
 import struct
@@ -741,9 +742,10 @@ def test_unar_refuses_every_member_of_a_solid_stream_declaring_4_gib(
         with pytest.raises(ResourceLimitError) as excinfo:
             archive.read("tail.txt")
     # unar's count is the declared size, and it is prefix.bin's header that declares it.
+    # The count is the declared size, so the number is not given twice.
     assert (
         f"for member 'tail.txt' is {4 * 2**30} bytes, counted from the "
-        f"{4 * 2**30}-byte dictionary the header of member 'prefix.bin' declares)"
+        "dictionary the header of member 'prefix.bin' declares)"
     ) in str(excinfo.value)
     with pytest.raises(ResourceLimitError, match="max_decoder_memory"):
         _stream_all(path, config)
@@ -807,11 +809,11 @@ def test_rar3_dictionary_counts_the_same_way(no_spawn: None) -> None:
             ResourceLimitError, match="max_decoder_memory=16"
         ) as excinfo:
             archive.read("subdir/file2.txt")
-    # The count is 29 bytes. Every member declares 1 MiB; the first to declare it,
-    # ``empty_file.txt``, is the one named.
+    # The count is 29 bytes. Every member declares 1 MiB, the one read included, so
+    # the message points at its own header, not at the first member to declare it.
     assert (
-        "is 29 bytes, counted from the 1048576-byte dictionary the header of member "
-        "'empty_file.txt' declares, capped at the unpacked bytes the read decodes"
+        "is 29 bytes, counted from the 1048576-byte dictionary its own header "
+        "declares, capped at the unpacked bytes the read decodes"
     ) in str(excinfo.value)
 
 
@@ -856,3 +858,37 @@ def test_an_entry_with_no_data_adds_nothing_to_the_dictionary_count(
     assert unrar[1].count <= archive.members[1].file_size
     unar = unar_dictionary_costs(archive)
     assert unar == [(0, -1), (archive.members[1].dictionary_size, 1)]
+
+
+def _set_main_solid(blocks: list[dict[str, Any]], solid: bool) -> None:
+    """Set or clear the MAIN header's solid flag (archive flags bit 2)."""
+    main = next(block for block in blocks if block["type"] == 1)
+    flags, rest = _read_vint(main["body"], 0)
+    flags = flags | 4 if solid else flags & ~4
+    main["body"] = _vint(flags) + main["body"][rest:]
+
+
+@pytest.mark.parametrize("member_solid", [True, False], ids=["member", "no_member"])
+@pytest.mark.parametrize("main_solid", [True, False], ids=["main", "no_main"])
+def test_unrar_solid_walk_follows_the_main_solid_flag(
+    main_solid: bool, member_solid: bool
+) -> None:
+    """unrar decodes the members ahead of a stored one when the MAIN flag says solid.
+
+    Measured (rar.md section 7): with the MAIN flag set, reading the stored member
+    took 314 MiB behind a 1 GiB declaration whatever its own flag said; with it
+    clear, unrar decoded nothing ahead, whatever the member's flag said.
+    """
+    blocks = _rar5_parse(_fixture("seek_respawn_solid__.rar").read_bytes())
+    prefix, tail = _rar5_file_blocks(blocks)
+    _declare_dictionary(prefix, _RAR5_DICT_4GIB, unpacked=_3_GIB)
+    tail["cinfo"] &= ~(7 << 7)  # stored
+    tail["cinfo"] = tail["cinfo"] | 0x40 if member_solid else tail["cinfo"] & ~0x40
+    _set_main_solid(blocks, main_solid)
+    archive = parse_rar_archive(io.BytesIO(_rar5_build(blocks)))
+    assert (archive.is_solid, archive.members[1].file_solid) == (
+        main_solid,
+        member_solid,
+    )
+    count = rar_reader._unrar_dictionary_costs(archive)[1].count
+    assert count == (min(4 * 2**30, _3_GIB) if main_solid else 0)

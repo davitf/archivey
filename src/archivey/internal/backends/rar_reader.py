@@ -386,7 +386,10 @@ class _DictionaryCost(NamedTuple):
 
     ``count`` is compared against ``DecoderLimits.max_decoder_memory``. ``declared``
     is the dictionary behind ``count``, and ``declarer`` the archive index of the
-    member whose header declared it (-1 when the count is 0). Both are for the
+    member whose header declared it. ``declarer`` is -1, and ``declared`` 0, when no
+    header is behind the count: a member that uses no dictionary outside a solid
+    ``unrar`` walk, or one ahead of every member that does. A count of 0 does not
+    imply -1 (an empty compressed member is its own declarer). Both are for the
     refusal message: under ``unrar`` the count can be smaller than ``declared``, and
     in a solid archive, a shared mask or a pass the declarer can be another member.
     Compare two costs with :func:`_larger_cost`, not ``max``.
@@ -427,8 +430,12 @@ def _unrar_dictionary_costs(archive: RarArchive) -> list[_DictionaryCost]:
     to the decoded bytes. In a nonsolid archive they count 0. In a solid one they
     count the window built ahead of them, because ``unrar`` decodes every earlier
     member to reach them: measured, a stored 64 KiB member behind a 300 MB member
-    declaring 1 GiB took 314 MiB resident. ``rar -s`` writes that shape for any
-    file it stores, and a solid member is never sliced out of the archive directly.
+    declaring 1 GiB took 314 MiB resident. The walk keys on the archive's MAIN
+    solid flag, as ``unrar`` does: with it set and the member's own solid flag
+    clear, the read still took 314 MiB; with it clear and the member's flag set,
+    ``unrar`` decoded nothing ahead (47 MiB, the parent's own). ``rar -s`` writes
+    both flags on every member after the first, and the reader slices a stored
+    member only when its own flag is clear, so such a member does reach ``unrar``.
     A RAR3 symlink does count: its target is compressed data. That is why this walk
     does not use ``is_payload_file()`` as :meth:`RarReader._solid_prefix` does.
     """
@@ -2720,15 +2727,24 @@ class RarReader(BaseArchiveReader):
         counted_from = None
         if cost.declarer >= 0:
             source = self._members[cost.declarer]
-            if source is not member or cost.count != cost.declared:
-                owner = (
-                    "its own header"
-                    if source is member
-                    else f"the header of member {quoted(source.name)}"
+            raw = member._raw
+            # The member read declaring the same size is named in place of the
+            # member that happened to declare it first.
+            own = source is member or (
+                isinstance(raw, RarMemberInfo) and raw.dictionary_size == cost.declared
+            )
+            owner = (
+                "its own header"
+                if own
+                else f"the header of member {quoted(source.name)}"
+            )
+            if cost.count < cost.declared:
+                counted_from = (
+                    f"the {cost.declared}-byte dictionary {owner} declares, capped at "
+                    "the unpacked bytes the read decodes"
                 )
-                counted_from = f"the {cost.declared}-byte dictionary {owner} declares"
-                if cost.count < cost.declared:
-                    counted_from += ", capped at the unpacked bytes the read decodes"
+            elif not own:
+                counted_from = f"the dictionary {owner} declares"
         check_decoder_memory(
             cost.count,
             limits=self._config.decoder_limits,

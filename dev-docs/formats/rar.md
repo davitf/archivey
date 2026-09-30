@@ -1099,14 +1099,21 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
     data. A RAR 1.5/2.x comment, which `unrar` or `unar` decodes at open: RAR3/4
     dictionaries top out at 4 MiB (the 3-bit field over a 64 KiB base), and `rar -ma4`
     is gone from rar 7.00.
-  - **A stored member of a solid archive** is never sliced directly (`file_solid`), and
-    `rar -s` writes one for every file it stores (`-ms`). Measured 2026-09-30 with a
+  - **A stored member of a solid archive.** `rar -s` sets the member's own solid flag
+    on it (`file_solid`), and the reader slices a stored member directly only when that
+    flag is clear, so the member goes to the program. Measured 2026-09-30 with a
     300 MB member declaring 1 GiB (patched) ahead of a stored 64 KiB member: `unrar p`
     of the stored member peaked at 314 MiB, the same as reading the 300 MB member
     (309 MiB), so `unrar` decodes the prefix and the stored member counts the window
     ahead of it. `unar -i` of the stored member stayed at 41 MiB, against 1044 MiB for
-    the 300 MB member, so under `unar` it counts 0. (Peaks include the 41 MiB Python
-    parent; `unrar` exited 3 on the patched archive, as in the table.)
+    the 300 MB member, so under `unar` it counts 0. (Peaks include the 41–47 MiB
+    Python parent; `unrar` exited 3 on the patched archives, as in the table.)
+  - **Which solid flag.** `unrar` decides from the MAIN header's solid flag
+    (`RarArchive.is_solid`), not the member's. With the MAIN flag set and the stored
+    member's own flag cleared, `unrar p` still peaked at 314 MiB; with the MAIN flag
+    cleared and the member's flag set, it stayed at 47 MiB (the parent). So the
+    `unrar` solid walk keys on `is_solid`. `unar` stayed at 47 MiB in all four
+    combinations for the stored member.
   - **The refusal message** gives the count and, when the count is capped below it, the
     declared dictionary. When the dictionary was declared by another member (solid, a
     shared mask, a pass), the message names that member, so a caller knows which header

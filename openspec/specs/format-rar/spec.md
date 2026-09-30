@@ -998,7 +998,8 @@ program that will run, so under `rar_decompressor="auto"` it is the rule of the 
   selects, the smaller of that member's declared dictionary and its unpacked size; the
   largest of these.
 - `unrar`, solid: the smaller of the largest dictionary declared up to and including the
-  member and the unpacked size of those members.
+  member and the unpacked size of those members. "Solid" here is the MAIN header's solid
+  flag, which is what `unrar` decides by; a member's own solid flag does not.
 
 A stored member, a directory and a RAR5 redirect add nothing to either count. Under
 `unar` and in a nonsolid archive they SHALL count 0; under `unrar` in a solid archive
@@ -1007,8 +1008,8 @@ decodes those members to reach them. A `stream_members()` pass that runs one pro
 over the archive SHALL count, for each member, the largest count of any member up to
 and including it, and SHALL check it on that member's first read, so a pass that lists
 or skips a member is not refused for it. The message SHALL name the member whose header
-declared the dictionary behind the count when that is not the member read, and SHALL
-give the declared size when the count is smaller.
+declared the dictionary behind the count when the member read does not declare it, and
+SHALL give the declared size when the count is smaller.
 
 #### Scenario: dictionary cap matrix
 
