@@ -70,13 +70,13 @@ A folder that's already there is never a conflict. Members are written into it.
 | `"stop"` (default) | The first failure raises, and extraction stops there |
 | `"continue"` | The failure is recorded in the report, and extraction goes on |
 
-`abort_on` lists events that stop the whole extraction the first time they happen, even ones that
+`abort_on` lists events that stop the whole extraction immediately if they happen, even ones that
 aren't failures. It's empty by default:
 
 | `abort_on` value | Raises when |
 |---|---|
 | `"blocked_member"` | A member is refused |
-| `"name_collision"` | Two members end up at the same path, whatever `overwrite` does about it (not checked under `"trusted"`) |
+| `"name_collision"` | Two members of the archive would be written to the same path. This raises before `overwrite` is applied, so even with `"rename"` the second member isn't written. Not checked under `"trusted"` |
 | `"name_sanitized"` | A name is rewritten to its portable spelling |
 
 After an abort there's no report, and the files already written stay on disk.
@@ -86,6 +86,9 @@ well as `policy="strict"`. The enums are `ExtractionPolicy`, `OverwritePolicy`, 
 `AbortOn`. The strings ignore case, and `-` works in place of `_`.
 
 ## What each policy does with unusual members
+
+<!-- Revisit after PR 524 lands: it changes how standard/trusted handle absolute names and when
+the filter runs. -->
 
 Some members are refused under every policy, and others depend on it:
 
