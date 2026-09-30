@@ -19,7 +19,7 @@ from archivey.cli.format import escape_member_name, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
-from archivey.exceptions import ArchiveyError, LinkTargetNotFoundError
+from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.types import ArchiveMember, MemberType
 
 
@@ -151,11 +151,19 @@ def run_test(
             if on_progress is not None:
                 on_progress.close()
 
-        # Counted only now: the index can be read before listing has looked at the
-        # link targets, so which links need this is known only once the pass is over.
-        if members_total is not None:
-            members_total += len(pending_links)
+        # Decided only now: a 7z or RAR4 link's target is member data the pass reads
+        # at its end, so which links need this is known only once the pass is over. A
+        # target the pass read was checked by that read, as listing checks a ZIP
+        # link's, and the link is skipped like a ZIP link.
+        unverified: list[ArchiveMember] = []
         for link in pending_links:
+            if _link_needs_verification(link):
+                unverified.append(link)
+            elif verbose:
+                print(f"skip {escape_member_name(link.name)}", file=err)
+        if members_total is not None:
+            members_total += len(unverified)
+        for link in unverified:
             try:
                 _verify_link(reader, link)
             except (ArchiveyError, OSError) as exc:
@@ -202,12 +210,13 @@ def _verify_link(reader: ArchiveReader, member: ArchiveMember) -> None:
 
     ``open()`` reads a link's target before it follows the link, and that read raises
     the fault that listing only reported. Once the target is read, the rest is about
-    where the link points, not about this member's data: a target outside the archive
-    is not a fault, and a target inside it is verified as a member of its own.
+    where the link points, not about this member's data: a target outside the archive,
+    a directory or a link cycle is not a fault, and a target inside it is verified as
+    a member of its own.
     """
     try:
         reader.open(member).close()
-    except LinkTargetNotFoundError:
+    except (ArchiveyError, ArchiveyUsageError):
         if member.link_target is None:
             raise
 

@@ -63,13 +63,6 @@ def _replace_tf(data: bytes, name: bytes, entries: bytes) -> bytes:
 
 
 @requires("pycdlib")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "I1: an ISO TF long-form date of 0001-01-01 +13:00 lists as an aware datetime "
-        "whose UTC form is out of range; modified_utc() raises a raw OverflowError"
-    ),
-)
 def test_iso_long_form_tf_date_at_year_one_does_not_break_modified_utc() -> None:
     def populate(iso: Any) -> None:
         iso.add_fp(io.BytesIO(b"AAAA"), 4, "/AAA.;1", rr_name="aaa")
@@ -232,13 +225,6 @@ def _make_deep_tree(root: Path, component: str, depth: int) -> None:
     sys.platform == "win32" or os.mkdir not in os.supports_dir_fd,
     reason="needs POSIX dir_fd to build the tree",
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "D1: the directory walk opens each subdirectory by its full path, so a tree "
-        "deeper than PATH_MAX fails the whole listing with a raw ENAMETOOLONG"
-    ),
-)
 def test_directory_source_deeper_than_path_max_lists_and_reads(
     tmp_path: Path,
 ) -> None:
@@ -263,13 +249,6 @@ def test_directory_source_deeper_than_path_max_lists_and_reads(
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "D2: detect_format(path) on a FIFO calls tell() on the pipe and raises a raw "
-        "OSError(ESPIPE); open_archive(path) on the same FIFO reads it fine"
-    ),
-)
 def test_detect_format_on_a_fifo_path_matches_open_archive(tmp_path: Path) -> None:
     fifo = tmp_path / "payload"
     os.mkfifo(fifo)
@@ -316,13 +295,6 @@ def _iso_image() -> bytes:
     or shutil.which("losetup") is None,
     reason="needs root and losetup to attach a loop device",
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "D3: detection stats a device path, reads st_size 0 as the source length, "
-        "size-gates the ISO far-magic tier away and reports 'no bytes to read'"
-    ),
-)
 def test_iso_on_a_block_device_opens(tmp_path: Path) -> None:
     image = tmp_path / "image.iso"
     image.write_bytes(_iso_image())
@@ -346,13 +318,6 @@ def test_iso_on_a_block_device_opens(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not os.path.exists("/dev/zero"), reason="needs /dev/zero")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "D3: detection takes a character device's st_size of 0 as its length and "
-        "says /dev/zero has 'no bytes to read'"
-    ),
-)
 def test_detection_does_not_call_a_character_device_empty() -> None:
     with pytest.raises(FormatDetectionError) as caught:
         detect_format("/dev/zero")

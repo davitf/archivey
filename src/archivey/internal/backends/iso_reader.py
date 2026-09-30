@@ -495,7 +495,8 @@ def _dr_date_to_datetime(
     (``VolumeDescriptorDate``, a four-digit year and hundredths of a second) when its
     LONG_FORM flag is set. ``gmtoffset`` is in 15-minute units in both. Returns
     ``None`` on a missing, unspecified (all zeros) or malformed date rather than
-    raising: a bad date field must not sink the whole listing.
+    raising: a bad date field must not sink the whole listing. A date whose UTC
+    form falls outside :class:`datetime`'s range is malformed too.
     """
     if date is None:
         return None
@@ -503,7 +504,7 @@ def _dr_date_to_datetime(
         tz = timezone(timedelta(minutes=date.gmtoffset * 15))
         if _is_long_form_date(date):
             hundredths = date.hundredthsofsecond
-            return datetime(
+            value = datetime(
                 date.year,
                 date.month,
                 date.dayofmonth,
@@ -514,19 +515,24 @@ def _dr_date_to_datetime(
                 hundredths * 10_000 if 0 <= hundredths <= 99 else 0,
                 tzinfo=tz,
             )
-        if not _is_short_form_date(date):
+        elif _is_short_form_date(date):
+            value = datetime(
+                1900 + date.years_since_1900,
+                date.month,
+                date.day_of_month,
+                date.hour,
+                date.minute,
+                date.second,
+                tzinfo=tz,
+            )
+        else:
             return None
-        return datetime(
-            1900 + date.years_since_1900,
-            date.month,
-            date.day_of_month,
-            date.hour,
-            date.minute,
-            date.second,
-            tzinfo=tz,
-        )
+        # 0001-01-01 at +13:00 is a valid local time whose UTC form is before year
+        # 1; modified_utc() would raise OverflowError on it later. No usable date.
+        value.astimezone(timezone.utc)
     except (ValueError, AttributeError, TypeError, OverflowError):
         return None
+    return value
 
 
 def _dr_date_fields(

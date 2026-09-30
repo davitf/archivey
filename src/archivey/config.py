@@ -770,6 +770,15 @@ class ArchiveyConfig:
             object.__setattr__(
                 self, "detection_budget", DetectionBudget.for_preset(preset)
             )
+        # Guard switches: a string such as "false" is truthy, so it would silently
+        # turn a refusal off. Only a real bool is accepted.
+        for field_name in ("rar_allow_glob_member_concatenation", "read_link_targets"):
+            check_instance(
+                getattr(self, field_name),
+                bool,
+                call=f"ArchiveyConfig({field_name}=…)",
+                allow_none=False,
+            )
         check_callable(self.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
         check_encoding(
             self.zip_unflagged_fallback_encoding,
