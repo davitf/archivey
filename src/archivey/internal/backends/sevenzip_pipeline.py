@@ -79,6 +79,7 @@ from archivey.internal.config import (
     check_decoder_memory,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams.arm64 import FILTER_ARM64
 from archivey.internal.streams.bcj2 import Bcj2DecoderStream
 from archivey.internal.streams.codecs import (
     LZMA_DICTIONARY_FILTERS,
@@ -396,6 +397,11 @@ def _is_lzma_codec(coder: SevenZipCoder) -> bool:
     return method is METHOD_LZMA or method is METHOD_LZMA2
 
 
+def _in_liblzma_chain(coder: SevenZipCoder) -> bool:
+    method = lookup(coder.method)
+    return method is not None and method.in_liblzma_chain
+
+
 def _plan_lzma_family(
     run: list[SevenZipCoder], unpack_sizes: list[int]
 ) -> list[_Stage]:
@@ -406,7 +412,8 @@ def _plan_lzma_family(
     it. The run is therefore cut into segments, each an LZMA1/LZMA2 coder and the
     filters decoded after it, up to liblzma's filter limit. A filter decoded before
     any codec of its segment (``7z a -m0=LZMA2 -m1=BCJ`` stores BCJ first in decode
-    order), or past the limit, runs as its own stage.
+    order), or past the limit, runs as its own stage. So does a filter Python's
+    ``lzma`` will not build (ARM64), and every filter decoded after it in its segment.
     """
     if len(run) != len(unpack_sizes):
         raise CorruptionError("7z LZMA-family run length does not match unpack sizes")
@@ -423,6 +430,7 @@ def _plan_lzma_family(
             end < len(run)
             and end - index < _LIBLZMA_MAX_FILTERS
             and not _is_lzma_codec(run[end])
+            and _in_liblzma_chain(run[end])
         ):
             end += 1
         if lookup(run[index].method) is METHOD_LZMA:
@@ -508,6 +516,15 @@ def _bcj_filter(coder: SevenZipCoder, filter_id: int) -> dict:
     if start_offset == 0:
         return {"id": filter_id}
     lzma_filter = {"id": filter_id, "start_offset": start_offset}
+    if filter_id == FILTER_ARM64:
+        # Decoded in Python (Python's lzma refuses the id). 7-Zip refuses an offset
+        # that is not a multiple of 4 (E_NOTIMPL), and so does liblzma.
+        if start_offset % 4:
+            raise UnsupportedFeatureError(
+                f"7z BCJ coder {_method_hex(coder.method)} start offset "
+                f"{start_offset} is not supported for this filter"
+            )
+        return lzma_filter
     try:
         # liblzma rejects an offset the architecture's alignment forbids (ARM needs
         # 4, IA64 16); find that at plan time, not on the first read.

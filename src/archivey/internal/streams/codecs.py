@@ -65,6 +65,7 @@ from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
 )
+from archivey.internal.streams.arm64 import FILTER_ARM64
 from archivey.internal.streams.brotli_framing import (
     chain_proves_invalid,
     first_block_overruns_source,
@@ -436,6 +437,7 @@ class Codec(Enum):
     BCJ_PPC = "bcj_ppc"
     BCJ_SPARC = "bcj_sparc"
     BCJ_IA64 = "bcj_ia64"
+    BCJ_ARM64 = "bcj_arm64"
 
 
 # LZMA raw-filter ids for the filter-only codecs, for assembling 7z coder chains.
@@ -447,6 +449,8 @@ LZMA_FILTER_IDS: dict[Codec, int] = {
     Codec.BCJ_PPC: lzma.FILTER_POWERPC,
     Codec.BCJ_SPARC: lzma.FILTER_SPARC,
     Codec.BCJ_IA64: lzma.FILTER_IA64,
+    # liblzma's id; Python's lzma refuses it, so archivey decodes it in Python.
+    Codec.BCJ_ARM64: FILTER_ARM64,
 }
 
 

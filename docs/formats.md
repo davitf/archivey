@@ -183,6 +183,9 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **BCJ2** (what 7-Zip writes for x86 executables at `-mx9`) reads on a core install,
   encrypted or not. Its decoder is pure Python, about half the speed of the same file under
   BCJ. It keeps no seek points, so a backward seek decodes again from the folder start.
+- **ARM64** (what 7-Zip 23 writes for AArch64 executables) reads on a core install. Python's
+  `lzma` cannot build that filter, so archivey decodes it in pure Python; a read runs at
+  roughly four fifths of the speed of the same file with no filter.
 - Solid folders: `stream_members()` decodes each folder once; random `open()` of a mid-
   folder member may re-decode from the folder start.
 - **AES + store/copy with no folder digest and no member CRC:** 7z has no password check
