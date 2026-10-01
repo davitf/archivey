@@ -101,6 +101,10 @@ error. `test` MUST NOT require emitting computed content hashes. By default
 index is available and the stream ends before every selected file member has
 been counted OK or failed (archive-wide error or solid/poisoned abort), the
 summary SHALL append `, K not tested` where `K` is the untested remainder.
+When the run emits `DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED` (a member
+or archive-level digest that went unchecked), the summary SHALL append
+`, V not verified` where `V` counts those diagnostics. `test` SHALL exit `1` when
+the summary reports anything as not tested or not verified, even if no member failed.
 
 `extract` SHALL use safe-extraction defaults and SHALL expose
 `--policy {strict,standard,trusted}` mapping to `ExtractionPolicy` (CLI default
@@ -341,6 +345,7 @@ than `2` as a failure and MUST NOT assume `1` is the only failure code.
 | `archivey test <archive-with-failing-member>` | Exit `1` |
 | `archivey test <archive>` with a symlink whose target is stored as data (ZIP, 7z, RAR4) and fails its check | That link is reported `FAIL`; exit `1`. A link for which the archive records no target is not a failure |
 | `archivey test <indexed-archive>` when the member stream aborts early | Summary includes `K not tested` for the untested remainder; exit `1` |
+| `archivey test <archive>` when a digest goes unchecked (`DIGEST_UNVERIFIABLE` / `ENCRYPTED_MEMBER_UNVERIFIED`) | Summary includes `V not verified`; exit `1` |
 | `archivey extract <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` |
 | `archivey extract --stop-on-error <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` (blocks always continue) |
 | `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |

@@ -421,14 +421,6 @@ def test_cli_output_survives_unencodable_member_text(verb: str, tmp_path: Path) 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "X6: `archivey test` exits 0 ('1 OK, 0 failed') on a .tar.gz whose member "
-        "bytes are damaged, when >1 MiB of padding keeps the gzip CRC from being "
-        "checked (DIGEST_UNVERIFIABLE is only logged); gzip -t fails it"
-    ),
-)
 def test_cli_test_fails_when_the_stream_digest_went_unchecked(tmp_path: Path) -> None:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tf:
@@ -450,6 +442,8 @@ def test_cli_test_fails_when_the_stream_digest_went_unchecked(tmp_path: Path) ->
     assert main(["test", str(archive)], out=io.StringIO(), err=err) == EXIT_FAIL, (
         err.getvalue()
     )
+    # The summary says why the run failed: nothing failed, one digest went unchecked.
+    assert "1 OK, 0 failed, 1 not verified" in err.getvalue()
 
 
 # ---------------------------------------------------------------------------

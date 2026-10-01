@@ -79,7 +79,10 @@ encrypted members fail as if no password had been given.
   If a symlink already has that name, `extract` never writes through it, whatever
   `--overwrite` says: it uses the next free `name (N)` instead. Pass `-d name` to
   extract through the link on purpose.
-- `test` exits `1` when its summary reports members as not tested, even if none failed.
+- `test` exits `1` when its summary reports members as not tested, or digests as not
+  verified, even if none failed. A digest is not verified when the library could not
+  check it (`DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED`), for example a gzip
+  trailer past the trailing-data scan bound; the warning logged for it says why.
 - Member names, paths and messages are printed with control characters escaped, so a
   hostile name cannot rewrite the terminal line that reports it
   (see [Errors and diagnostics](errors-and-diagnostics.md#the-exception-tree)).

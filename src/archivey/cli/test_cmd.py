@@ -19,8 +19,17 @@ from archivey.cli.format import escape_member_name, format_error_detail
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.config import PasswordInput
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.types import ArchiveMember, MemberType
+
+# Codes saying a digest went unchecked: the bytes were read but nothing confirmed them,
+# so the run is not a clean verification (X6). Archive-level digests count too, such as
+# a gzip trailer past the trailing-data scan bound.
+_UNVERIFIED_CODES = (
+    DiagnosticCode.DIGEST_UNVERIFIABLE,
+    DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED,
+)
 
 
 def run_test(
@@ -182,10 +191,23 @@ def run_test(
             warn_unmatched_includes(patterns, err=err)
             return EXIT_FAIL
 
-    print(_test_summary(ok=ok, failed=failed, members_total=members_total), file=err)
-    # An untested remainder is an incomplete verification, whatever ended the stream.
+        # Read before the reader closes; each such diagnostic was already logged with
+        # its reason, so the summary only counts them.
+        counts = reader.diagnostics.counts
+        not_verified = sum(counts.get(code, 0) for code in _UNVERIFIED_CODES)
+
+    print(
+        _test_summary(
+            ok=ok,
+            failed=failed,
+            members_total=members_total,
+            not_verified=not_verified,
+        ),
+        file=err,
+    )
+    # An untested remainder or an unchecked digest is an incomplete verification.
     not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)
-    return EXIT_FAIL if failed or not_tested else EXIT_OK
+    return EXIT_FAIL if failed or not_tested or not_verified else EXIT_OK
 
 
 def _link_needs_verification(member: ArchiveMember) -> bool:
@@ -231,10 +253,16 @@ def _not_tested(*, ok: int, failed: int, members_total: int | None) -> int:
     return max(members_total - ok - failed, 0)
 
 
-def _test_summary(*, ok: int, failed: int, members_total: int | None) -> str:
-    """Format the quiet test summary, including untested remainder when known (P8)."""
-    base = f"{ok} OK, {failed} failed"
+def _test_summary(
+    *, ok: int, failed: int, members_total: int | None, not_verified: int = 0
+) -> str:
+    """Format the quiet test summary, with the untested remainder (P8) and unchecked
+    digests (X6) when there are any.
+    """
+    summary = f"{ok} OK, {failed} failed"
     not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)
-    if not not_tested:
-        return base
-    return f"{base}, {not_tested} not tested"
+    if not_tested:
+        summary += f", {not_tested} not tested"
+    if not_verified:
+        summary += f", {not_verified} not verified"
+    return summary
