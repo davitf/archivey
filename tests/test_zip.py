@@ -1570,6 +1570,8 @@ def test_unflagged_utf8_name_is_sniffed() -> None:
     assert names == {"Español.txt", "Català.txt", "Português.txt", "emoji_😀.txt"}
     # One inference diagnostic per unflagged name that was decoded as UTF-8.
     assert counts[DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED] == 4
+    # The cp437 text the sniff replaced is not reported as a normalization.
+    assert DiagnosticCode.MEMBER_NAME_NORMALIZED not in counts
 
 
 def test_unflagged_ascii_name_is_not_an_encoding_override(tmp_path: Path) -> None:
