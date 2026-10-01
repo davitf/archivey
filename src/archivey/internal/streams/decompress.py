@@ -19,6 +19,7 @@ from typing import BinaryIO, NoReturn, Protocol
 from archivey.config import DecoderLimits
 from archivey.exceptions import ResourceLimitError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams.arm64 import FILTER_ARM64, arm64_decode
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -1435,6 +1436,70 @@ class FilterDecoder(BaseDecoder):
         return not self._pending
 
 
+class Arm64FilterDecoder(BaseDecoder):
+    """Apply the ARM64 branch filter in Python (:mod:`archivey.internal.streams.arm64`).
+
+    The :class:`FilterDecoder` counterpart for the one branch filter Python's ``lzma``
+    will not build. Each fed chunk is decoded in whole 4-byte words as it arrives; up
+    to 3 bytes wait for the next chunk, and at the end of the input they are passed
+    through unchanged, as liblzma and 7-Zip do. ``max_length`` bounds what one call
+    returns; decoded bytes past it are held for the next call.
+    """
+
+    def __init__(self, *, start_offset: int, unpack_size: int) -> None:
+        self._start_offset = start_offset
+        self._unpack_size = unpack_size
+        self._position = start_offset  # pc of the first byte in self._raw
+        self._produced = 0
+        self._raw = b""  # input not yet decoded: fewer than 4 bytes
+        self._ready = b""  # decoded output not yet returned
+        self._ready_offset = 0
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> Arm64FilterDecoder:
+        del point, inner
+        return Arm64FilterDecoder(
+            start_offset=self._start_offset, unpack_size=self._unpack_size
+        )
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        if chunk:
+            data = self._raw + chunk if self._raw else bytes(chunk)
+            decoded = arm64_decode(data, self._position)
+            self._position += len(decoded)
+            self._raw = data[len(decoded) :]
+            if self._ready_offset < len(self._ready):
+                decoded = self._ready[self._ready_offset :] + decoded
+            self._ready = decoded
+            self._ready_offset = 0
+        return DecodeOut(self._take(max_length))
+
+    def _take(self, max_length: int) -> bytes:
+        start = self._ready_offset
+        end = len(self._ready)
+        if 0 <= max_length < end - start:
+            end = start + max_length
+        out = self._ready[start:end]  # the object itself when it is all of it
+        self._ready_offset = end
+        self._produced += len(out)
+        return out
+
+    def flush(self) -> DecodeOut:
+        out = self._take(-1) + self._raw
+        self._produced += len(self._raw)
+        self._raw = b""
+        if not self.finished:
+            self._pending_error = TruncatedError("File is truncated")
+        return DecodeOut(out)
+
+    @property
+    def finished(self) -> bool:
+        return self._produced >= self._unpack_size
+
+    @property
+    def needs_input(self) -> bool:
+        return self._ready_offset >= len(self._ready)
+
+
 class _Inflate64Inflater(Protocol):
     """The ``inflate64.Inflater`` methods this adapter calls.
 
@@ -1637,6 +1702,16 @@ def PpmdDecompressorStream(
     )
 
 
+def _filter_decoder(
+    lzma_filter: Mapping[str, int], unpack_size: int
+) -> FilterDecoder | Arm64FilterDecoder:
+    if lzma_filter["id"] == FILTER_ARM64:
+        return Arm64FilterDecoder(
+            start_offset=lzma_filter.get("start_offset", 0), unpack_size=unpack_size
+        )
+    return FilterDecoder(lzma_filter=lzma_filter, unpack_size=unpack_size)
+
+
 def FilterStream(
     path: str | os.PathLike[str] | BinaryIO,
     *,
@@ -1648,6 +1723,9 @@ def FilterStream(
 ) -> DecompressorStream:
     """Apply a filter-only stage — BCJ branch filter or Delta (forward-only).
 
+    ``lzma_filter`` is a liblzma filter dict. The ARM64 filter (``FILTER_ARM64``),
+    which Python's ``lzma`` refuses, runs in Python (:class:`Arm64FilterDecoder`).
+
     ``owns_inner`` is True when this filter wraps a private previous stage
     (later 7z BCJ stages, including the LZMA1 cap slice). First-stage
     BCJ (Copy+BCJ, BCJ-alone) leaves the default so the pack view is borrowed.
@@ -1655,9 +1733,7 @@ def FilterStream(
     del collector  # accepted for call-site uniformity; BCJ emits no diagnostics today
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: FilterDecoder(
-            lzma_filter=lzma_filter, unpack_size=unpack_size
-        ),
+        make_decoder=lambda _p, _i: _filter_decoder(lzma_filter, unpack_size),
         codec_name="filter",
         seekable=seekable,
         owns_inner=owns_inner,
