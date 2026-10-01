@@ -368,6 +368,18 @@ backend SHALL emit a `diagnostics` warning identifying the member and the chosen
 the decision is observable and escalatable via `DiagnosticPolicy`. Decoding SHALL NOT raise a
 bare `UnicodeDecodeError`; the fallback encoding (cp437 by default) decodes every byte.
 
+An Info-ZIP Unicode Path extra field (`0x7075`) in the central directory outranks both the
+sniff and an explicit `encoding=` for an unflagged name: when the field is version 1, its
+CRC-32 equals the CRC-32 of the stored name bytes, and its name is non-empty valid UTF-8,
+the member name SHALL be that UTF-8 name, `raw_name` SHALL be its UTF-8 bytes, and
+`extra["alternate_raw_name"]` SHALL hold the stored header bytes. No inference diagnostic
+is emitted, since the field declares the encoding. A field that fails any of those tests
+SHALL be ignored, and the name decoded as above, with one exception owed to stdlib: on
+Python 3.12 and later, `zipfile` refuses the archive while reading the central directory
+when a field with a matching CRC holds invalid UTF-8, and the open fails with
+`CorruptionError`. A field in the local header only SHALL be ignored. `name` is always
+`raw_name` decoded and normalized.
+
 #### Scenario: UTF-8 bytes without the flag
 
 - **WHEN** an archive stores a member name as valid UTF-8 bytes (e.g. `Español.txt`,
@@ -386,3 +398,13 @@ bare `UnicodeDecodeError`; the fallback encoding (cp437 by default) decodes ever
 - **WHEN** bit 11 is set, **or** the caller passed an explicit `encoding=`
 - **THEN** the name is decoded as UTF-8 (flag) or with the caller's `encoding` respectively,
   with no sniff and no override diagnostic
+
+#### Scenario: Unicode Path extra field
+
+| Case | Expected |
+| --- | --- |
+| Unflagged cp866 name `Привет.txt`, central `0x7075` version 1 with a matching CRC | `name == "Привет.txt"`; `raw_name` is its UTF-8 bytes; `extra["alternate_raw_name"]` is the cp866 bytes; no diagnostic |
+| The same, `encoding="latin-1"` | The same: the field outranks `encoding=` |
+| The field's CRC does not match the stored bytes, or its version is not 1, or its name is empty | Field ignored: cp437 decode (or `encoding=`), `raw_name` is the stored bytes, no `alternate_raw_name` |
+| The field in the local header only | Field ignored |
+| The CRC matches, the name is not valid UTF-8 | Field ignored on Python 3.11; `CorruptionError` at open on 3.12+ (stdlib) |

@@ -14,6 +14,7 @@ import hashlib
 import io
 import os
 import struct
+import sys
 import zipfile
 import zlib
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ class _Entry:
     crc: int | None = None
     usize: int | None = None
     extra: bytes = b""  # central-directory extra field
+    local_extra: bytes = b""  # local-header extra field
     header_offset: int | None = None  # central-directory value; default the real one
     extract_version: int = 20
     external_attr: int = 0o100644 << 16
@@ -69,9 +71,9 @@ def _build_zip(entries: list[_Entry]) -> bytes:
             len(e.data),
             min(usize, 0xFFFFFFFF),
             len(e.name),
-            0,  # local extra length
+            len(e.local_extra),
         )
-        out += e.name + e.data
+        out += e.name + e.local_extra + e.data
     cd_start = len(out)
     cd = bytearray()
     for e, offset in zip(entries, offsets, strict=True):
@@ -195,30 +197,114 @@ def test_zip64_header_offset_past_ssize_max_symlink_lists() -> None:
 # ---------------------------------------------------------------------------------------
 
 
-def _unicode_path_zip() -> tuple[bytes, str]:
-    real = "Привет.txt"
-    stored = real.encode("cp866")  # an OEM code page name, UTF-8 flag clear
-    field = struct.pack("<BI", 1, zlib.crc32(stored)) + real.encode("utf-8")
-    extra = struct.pack("<HH", 0x7075, len(field)) + field
-    return _build_zip([_Entry(stored, b"hi", extra=extra)]), real
+_UNICODE_PATH_REAL = "Привет.txt"
+_UNICODE_PATH_STORED = _UNICODE_PATH_REAL.encode("cp866")  # OEM code page, flag clear
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Z6: a CRC-matching Unicode Path extra (0x7075) is ignored; the name is "
-    "the cp437 garble of the legacy bytes",
-)
+def _unicode_path_field(
+    stored: bytes = _UNICODE_PATH_STORED,
+    name: bytes = _UNICODE_PATH_REAL.encode("utf-8"),
+    *,
+    version: int = 1,
+) -> bytes:
+    field = struct.pack("<BI", version, zlib.crc32(stored)) + name
+    return struct.pack("<HH", 0x7075, len(field)) + field
+
+
+def _unicode_path_zip(
+    *, extra: bytes | None = None, local_extra: bytes = b""
+) -> tuple[bytes, str]:
+    field = _unicode_path_field() if extra is None else extra
+    entry = _Entry(_UNICODE_PATH_STORED, b"hi", extra=field, local_extra=local_extra)
+    return _build_zip([entry]), _UNICODE_PATH_REAL
+
+
 def test_unicode_path_extra_field_names_the_member() -> None:
     blob, real = _unicode_path_zip()
     # 7-Zip and Info-ZIP unzip present the 0x7075 name; so does stdlib zipfile on
     # 3.12+ (ZipInfo.filename). The field's CRC covers the stored name, so it is
-    # the in-band oracle zip.md §5 says the format lacks.
+    # an in-band oracle for that name.
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
         assert zf.infolist()[0].orig_filename == real.encode("cp866").decode("cp437")
     with archivey.open_archive(io.BytesIO(blob)) as ar:
         (member,) = ar.members()
-        assert member.raw_name == real.encode("cp866")
         assert member.name == real
+        # name is raw_name decoded: raw_name is the field's UTF-8 bytes, and the
+        # header's legacy bytes are kept as the alternate.
+        assert member.raw_name == real.encode("utf-8")
+        assert member.extra["alternate_raw_name"] == real.encode("cp866")
+        # The field declares the encoding: nothing was inferred or normalized.
+        assert member.diagnostics == ()
+        assert ar.read(real) == b"hi"
+
+
+def test_unicode_path_extra_field_wins_over_encoding() -> None:
+    # The field is UTF-8 tied to the stored bytes by their CRC, so it names the
+    # member even when the caller passes a (here wrong) encoding=.
+    blob, real = _unicode_path_zip()
+    with archivey.open_archive(io.BytesIO(blob), encoding="latin-1") as ar:
+        (member,) = ar.members()
+        assert member.name == real
+        assert member.raw_name == real.encode("utf-8")
+        assert member.extra["alternate_raw_name"] == real.encode("cp866")
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        # Stale: the entry was renamed and the field kept the old name's CRC.
+        pytest.param(_unicode_path_field(stored=b"old.txt"), id="crc_mismatch"),
+        pytest.param(_unicode_path_field(version=2), id="unknown_version"),
+        pytest.param(
+            _unicode_path_field(name=b""),
+            id="empty_name",
+            # stdlib zipfile 3.12+ warns about it while reading the directory.
+            marks=pytest.mark.filterwarnings("ignore:Empty unicode path extra field"),
+        ),
+    ],
+)
+def test_unicode_path_extra_field_that_does_not_vouch_is_ignored(field: bytes) -> None:
+    blob, _ = _unicode_path_zip(extra=field)
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        # The header bytes decode as before (not UTF-8, so cp437).
+        assert member.name == _UNICODE_PATH_STORED.decode("cp437")
+        assert member.raw_name == _UNICODE_PATH_STORED
+        assert "alternate_raw_name" not in member.extra
+    with archivey.open_archive(io.BytesIO(blob), encoding="cp866") as ar:
+        (member,) = ar.members()
+        assert member.name == _UNICODE_PATH_REAL
+        assert member.raw_name == _UNICODE_PATH_STORED
+
+
+def test_unicode_path_extra_field_with_invalid_utf8() -> None:
+    blob, _ = _unicode_path_zip(extra=_unicode_path_field(name=b"\xff.txt"))
+    if sys.version_info >= (3, 12):
+        # stdlib zipfile refuses the whole directory over it; archivey types that.
+        with pytest.raises(CorruptionError, match="0x7075"):
+            archivey.open_archive(io.BytesIO(blob))
+        return
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        assert member.raw_name == _UNICODE_PATH_STORED
+        assert "alternate_raw_name" not in member.extra
+
+
+def test_unicode_path_extra_field_is_read_from_the_central_directory() -> None:
+    # The listing comes from the central directory, as in stdlib zipfile; a field in
+    # the local header alone does not rename the member.
+    blob, _ = _unicode_path_zip(extra=b"", local_extra=_unicode_path_field())
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        assert member.raw_name == _UNICODE_PATH_STORED
+        assert member.name == _UNICODE_PATH_STORED.decode("cp437")
+        assert ar.read(member) == b"hi"
+    # A central field names it whatever the local header carries.
+    blob, real = _unicode_path_zip(local_extra=_unicode_path_field(stored=b"x"))
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        assert member.name == real
+        assert ar.read(member) == b"hi"
 
 
 # ---------------------------------------------------------------------------------------

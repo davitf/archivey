@@ -98,7 +98,10 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   to a configurable legacy encoding (`ArchiveyConfig.zip_unflagged_fallback_encoding`,
   default `cp437`). When UTF-8 is inferred for an unflagged name, a
   `member_name_encoding_inferred` diagnostic records it. Passing `encoding=` to
-  `open_archive` is authoritative — it is used verbatim and disables the sniff.
+  `open_archive` is authoritative — it is used verbatim and disables the sniff. One signal
+  outranks it: an Info-ZIP Unicode Path extra field (`0x7075`) whose checksum matches the
+  stored bytes names the member in UTF-8. `raw_name` is then the field's UTF-8 bytes and
+  `extra["alternate_raw_name"]` holds the stored ones.
 - **A wrongly-set UTF-8 flag can make the whole archive unlistable.** When general-purpose
   bit 11 claims UTF-8 but the stored bytes are not, stdlib `zipfile` raises while
   parsing the central directory, so the failure is archive-wide rather than confined to
