@@ -328,8 +328,9 @@ bound is measured on the *decoded* header, and header compression shrinks a unif
 table to almost nothing: a 315-byte 7z declaring 1 000 000 directory entries costs about
 858 MB and 16 s at open under the default `max_members` (about 860 bytes and 16 µs per
 member, the fixed cost of a member object, so names add little and `max_metadata_bytes`
-does not see it). That is accepted: it is linear in the count the caller allowed, and a
-caller opening untrusted 7z, RAR or ISO should lower `max_members`. ZIP builds the
+does not see it). The cost is linear in the count the caller allowed, so lowering
+`max_members` is the mitigation for a caller opening untrusted 7z, RAR or ISO. Whether
+the default of 1 048 576 should stay has not been ruled on. ZIP builds the
 whole central directory at open through stdlib `zipfile` (ADR
 [0006](decisions/0006-stdlib-zipfile.md)), so its memory at open is linear in the
 central directory and `max_members` binds at `members()`. `max_metadata_bytes` counts
@@ -339,8 +340,8 @@ and the Rock Ridge `rr_moved` scaffolding count as members, and the bytes are re
 stored, System Use areas included, not only the text kept. An image right at a cap can
 therefore be refused at open. Below the caps `pycdlib` still builds the whole tree, so
 memory at open stays linear in the records the budget allows: about 0.8 KB per plain
-record measured, so roughly 1 GiB at the default `max_members`. The UDF descriptors `pycdlib` also walks are not counted; archivey lists
-no UDF namespace.
+record measured, so roughly 1 GiB at the default `max_members`. The UDF descriptors
+`pycdlib` also walks are not counted; archivey lists no UDF namespace.
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,

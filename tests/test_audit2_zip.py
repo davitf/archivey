@@ -1,7 +1,7 @@
-"""Audit reproducers for the ZIP backend (second extraction audit, Z5 onward).
+"""Regression tests for the ZIP backend's findings of the second audit (Z5 onward).
 
-Each test asserts the promised behaviour and is marked ``xfail(strict=True)`` while the
-bug stands; the ``reason`` names the defect. Remove the marker when the fix lands.
+Each test asserts the promised behaviour that the finding in its name or section
+heading broke.
 
 Fixtures are built byte by byte with :func:`_build_zip`, so a test can set any central
 or local header field independently of the other.

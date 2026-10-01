@@ -111,20 +111,21 @@ than `CD001`, and High Sierra has `CDROM` at 32 777, so neither is detected.
 `pycdlib` sizes from a header field lands on archivey's bounded read (threat-model O16).
 `open_fp` then reads every volume descriptor, checks that the little- and big-endian path
 tables agree, and walks every tree the image has: the PVD tree, the Joliet tree, and UDF
-descriptors when present. That is where the cost is, so `ListingLimits` are checked
-there, as `pycdlib` parses, rather than only when members are registered: a hook on
+descriptors when present. That is where the cost is, so `ListingLimits` are checked there,
+as `pycdlib` parses, rather than only when members are registered: a hook on
 `DirectoryRecord.parse` counts each record but `.` and `..` against `max_members`, per
 volume descriptor tree, and weighs the bytes of each record, plus each Rock Ridge
 continuation area every time `pycdlib` parses it, against `max_metadata_bytes`. Crossing
-either raises `ResourceLimitError` from `open_archive`, before any member is listed or streamed. The counts
-are a superset of the listing's (a multi-extent file's extra records and `rr_moved`
-count), so an image right at a cap can be refused at open; `ListingLimits.UNLIMITED`
-turns the hook off. UDF descriptors are not counted. After it, listing touches only
-records already in memory (`test_listing_reads_nothing_from_the_image`), which is what
-lets the member walk run without the handle lock. Two exceptions read a directory's
-extent once more, under the handle lock (§2.3): a directory holding a repeated
-identifier, to check the multi-extent flags as written, and a directory holding a file
-whose data ends at the end of the image, to recover its declared length.
+either raises `ResourceLimitError` from `open_archive`, before any member is listed or
+streamed. The counts are a superset of the listing's (a multi-extent file's extra records
+and `rr_moved` count), so an image right at a cap can be refused at open;
+`ListingLimits.UNLIMITED` turns the hook off. UDF descriptors are not counted. After it,
+listing touches only records already in memory
+(`test_listing_reads_nothing_from_the_image`), which is what lets the member walk run
+without the handle lock. Two exceptions read a directory's extent once more, under the
+handle lock (§2.3): a directory holding a repeated identifier, to check the multi-extent
+flags as written, and a directory holding a file whose data ends at the end of the image,
+to recover its declared length.
 
 **The namespace is picked once for the image: Rock Ridge, then Joliet, then plain.**
 `ArchiveInfo.extra["iso.namespace"]` reports which. Rock Ridge counts as present when
@@ -220,11 +221,11 @@ What is ISO-specific in turning a record into a member:
   the record's 7-byte date; `TF` also supplies `accessed`. `TF` long-form dates (17 bytes,
   hundredths of a second) are read; MagicISO's out-of-range hundredths become 0. A date
   that is all zeros is unset and `None`. Any other date that is not a date (a month of
-  13, or 0001-01-01 at a positive GMT offset, whose UTC form is before year 1) is `None` plus `MEMBER_TIMESTAMP_INVALID`, as in ZIP, TAR and 7z, rather than an
-  error. `created` is set only from
-  a `TF` creation time, which few writers record; the `TF` attribute-change time (POSIX
-  `st_ctime`) goes to `ctime` and never to `created`. That is the rule after
-  PR #470; before it, `created` fell back to the attribute-change time.
+  13, or 0001-01-01 at a positive GMT offset, whose UTC form is before year 1) is `None`
+  plus `MEMBER_TIMESTAMP_INVALID`, as in ZIP, TAR and 7z, rather than an error.
+  `created` is set only from a `TF` creation time, which few writers record; the `TF`
+  attribute-change time (POSIX `st_ctime`) goes to `ctime` and never to `created`. That
+  is the rule after PR #470; before it, `created` fell back to the attribute-change time.
 - **POSIX fields.** `mode` (permission bits only), `uid` and `gid` come from `PX`, and
   are `None` outside Rock Ridge. `link_target` is the `SL` path.
 - **Archive info.** `comment` is the volume identifier. `format_version` is `None`:

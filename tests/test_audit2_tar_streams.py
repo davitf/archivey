@@ -1,8 +1,7 @@
-"""Second audit, reproducers: TAR and single-file compressed streams.
+"""Regression tests for the second audit: TAR and single-file compressed streams.
 
-Each test asserts the promised behaviour and is marked ``xfail(strict=True)`` with the
-defect it reproduces, so the file stays green until a fix lands and then flags the
-marker for removal. The promise each test checks is named in its docstring.
+Each test asserts the promised behaviour that one of that audit's findings broke. The
+promise each test checks is named in its docstring.
 """
 
 from __future__ import annotations
