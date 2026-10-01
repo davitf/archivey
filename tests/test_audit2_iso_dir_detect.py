@@ -119,8 +119,9 @@ def test_iso_listing_limits_bound_the_memory_spent_at_open() -> None:
     # of an over-limit ISO should likewise be about the budget, not a multiple of
     # the image. Before the fix the peak was 15-20x the image (hundreds of bytes of
     # Python objects per directory record), so a 64 MiB image of records cost about
-    # 1 GiB. The bound leaves room for the copies of the directory extent pycdlib reads.
-    assert peak < 4 * len(data), (peak, len(data))
+    # 1 GiB. The bound leaves room for the copies of the directory extent pycdlib reads,
+    # and for the source buffer itself: the free-threaded 3.13 build peaked at 4.3x.
+    assert peak < 8 * len(data), (peak, len(data))
 
 
 # ---------------------------------------------------------------------------------

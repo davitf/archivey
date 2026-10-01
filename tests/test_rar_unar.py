@@ -35,10 +35,12 @@ from archivey import (
 )
 from archivey.exceptions import (
     ArchiveyError,
+    CorruptionError,
     EncryptionError,
     PackageNotInstalledError,
     ReadError,
     ResourceLimitError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import rar_reader, rar_unar
@@ -74,6 +76,21 @@ _REFUSED: dict[tuple[str, str], str] = {
     },
     ("rar15-comment.rar", "FILE1.TXT"): "RAR 1.5",
 }
+# Members unar 1.10.1 drops, and the members after them in a solid run, whose bytes
+# then go missing or are stale: ``scripts/gen_rar_fixtures.py`` ``_build_unar_drop``.
+# Each must read back exactly or fail as truncated or corrupt, never as wrong bytes.
+_UNAR_DROPS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("unar_drop__.rar", "f.txt"),
+        ("unar_drop_solid__.rar", "f.txt"),
+        *(
+            (fixture, name)
+            for fixture in ("unar_stale_solid__.rar", "unar_stale_nocrc_solid__.rar")
+            for name in ("c.txt", "d.txt", "e.txt")
+        ),
+    }
+)
+_DROP_ERRORS = ("TruncatedError", "CorruptionError")
 # The password each encrypted fixture was written with.
 _PASSWORDS = {
     "encryption__.rar": "password",
@@ -183,7 +200,71 @@ def test_unar_matches_unrar_or_refuses(
             # Without a password, unrar's solid pass reports a later member of the
             # same pipe as truncated; unar's pipe is empty, which says why.
             continue
+        if (path.name, name) in _UNAR_DROPS and got.startswith(_DROP_ERRORS):
+            continue
         assert got == with_unrar[name], name
+
+
+def _unrar_bytes(path: Path) -> dict[str, bytes]:
+    with open_archive(path, config=_UNRAR) as archive:
+        return {m.name: archive.read(m) for m in archive.members() if m.is_file}
+
+
+@requires_binary("unar", "unrar")
+@pytest.mark.parametrize("how", ["read", "stream", "extract"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "unar_drop__.rar",
+        "unar_drop_solid__.rar",
+        "unar_stale_solid__.rar",
+        "unar_stale_nocrc_solid__.rar",
+    ],
+)
+def test_a_member_unar_drops_is_an_error_not_wrong_bytes(
+    tmp_path: Path, name: str, how: str
+) -> None:
+    """unar 1.10.1 drops a compressed RAR5 member whose last packed byte uses 6-8
+    bits, with exit 0. In one solid run over ``unar_stale_*``, ``c.txt`` is dropped
+    and stale window bytes follow, so the bytes at ``c.txt``'s offset are not its own.
+    ``unar_stale_nocrc_solid__.rar`` has ``c.txt``'s CRC32 removed: only a run of its
+    own, which is exact or empty, keeps those bytes from being served as it."""
+    path = _RAR / name
+    expected = _unrar_bytes(path)
+    got: dict[str, bytes | ArchiveyError] = {}
+    with open_archive(path, config=_UNAR) as archive:
+        if "nocrc" in name:
+            assert not archive.get("c.txt").hashes
+        if how == "read":
+            for member in archive.members():
+                if member.is_file:
+                    try:
+                        got[member.name] = archive.read(member)
+                    except ArchiveyError as exc:
+                        got[member.name] = exc
+        elif how == "stream":
+            for member, stream in archive.stream_members():
+                if stream is not None:
+                    try:
+                        got[member.name] = stream.read()
+                    except ArchiveyError as exc:
+                        got[member.name] = exc
+        else:
+            report = archive.extract_all(tmp_path / "out", on_error="continue")
+            for result in report:
+                if result.error is not None:
+                    assert isinstance(result.error, ArchiveyError), result
+                    got[result.member.name] = result.error
+                else:
+                    assert result.path is not None
+                    got[result.member.name] = result.path.read_bytes()
+    assert got.keys() == expected.keys()
+    for member_name, outcome in got.items():
+        if isinstance(outcome, ArchiveyError):
+            assert (name, member_name) in _UNAR_DROPS, (member_name, outcome)
+            assert isinstance(outcome, (TruncatedError, CorruptionError)), outcome
+        else:
+            assert outcome == expected[member_name], member_name
 
 
 @requires_binary("unar")
