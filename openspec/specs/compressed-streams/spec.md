@@ -223,7 +223,9 @@ This requirement scopes to the streams this layer owns: `DecompressorStream`
 here; they already surface content faults from `read` rather than `close`, and
 retargeting them is deferred (see the rapidgzip follow-up). The wording below is
 a standing rule for the in-scope streams, not a claim that every stream type in
-the library has been audited to it.
+the library has been audited to it. The one exception is the paragraph on accelerated
+decoders and its three `Accelerated decoder` matrix rows, which are deliberately
+normative for the in-process bzip2 accelerator and the rapidgzip decoder process.
 
 Decode and verify streams SHALL raise content `TruncatedError` and
 `CorruptionError` from `read` / `readall` (and from size/seek paths that would
@@ -306,8 +308,22 @@ digest check. A read reaches the end when it returns short or empty, is `read(-1
 leaves the stream at or past the member's declared size; a full-length
 `read(member.size)` after `seek(0)` is one. A caller who catches the verdict and seeks
 back SHALL NOT read the damaged member as complete, clean data. `tell()`, `seekable()`
-and `close()` are not gated, and `close()` still does not raise the verdict. Opening
-the member again gives a fresh stream.
+and `close()` are not gated by the verdict, and `close()` still does not raise it.
+Opening the member again gives a fresh stream.
+
+An accelerated decoder (the in-process bzip2 accelerator, or the rapidgzip decoder
+process) SHALL leave `tell()` at the bytes the caller received after a read that raised,
+by moving the decoder back to where that read started. When it cannot, its position
+matches no byte the caller received, and the stream SHALL be given up rather than read
+on from past a gap. That is the case when the caller's own source raised during a read or
+a seek (the decoder took the fault for the end of its input), or when a read raised and
+the decoder could not be moved back. The call that met the fault SHALL raise it: the
+source's error, or the read's own. From then on, for the life of the stream, every
+`read`, `readinto`, `seek` and `tell()` that reaches the decoder SHALL raise `ReadError`
+with a message naming the cause. This narrows the paragraph above: after a verdict on a
+given-up stream, a seek raises `ReadError` instead of restarting the decode, and
+`tell()` raises too. `close()` SHALL still succeed. Opening the member again gives a
+fresh stream.
 
 #### Scenario: close vs read matrix
 
@@ -336,6 +352,9 @@ the member again gives a fresh stream.
 | Same, then `seek(0)` and a read that reaches the end | Raises the same error object again; that call returns no bytes |
 | Same, retried many times | Traceback stays the first one; it does not grow per call |
 | Same, `tell()` or `close()` | Not gated; `close()` does not raise the verdict |
+| Accelerated decoder; a read raises and the decoder moves back | `tell()` equals the bytes delivered; the stream stays usable |
+| Accelerated decoder; a read raises and the decoder cannot be moved back | That read raises its own error; every later `read` / `readinto` / `seek` / `tell()` raises `ReadError` naming the cause; `close()` succeeds |
+| Accelerated decoder; the caller's source raises during a read or a seek | That call raises the source's error; then as the row above, even if the source recovers |
 
 ### Requirement: Decompressed output digests are verified at clean EOF
 

@@ -44,6 +44,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
+    ReadError,
     ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
@@ -180,7 +181,13 @@ _RAPIDGZIP_REQUIREMENT = MissingComponent(
 class _AcceleratorStream(DelegatingStream):
     """Wrap a threaded accelerator (``rapidgzip``) so its underlying object is always *closed*
     before it is freed, and so a fault the :class:`_TrappingSource` parked is re-raised after
-    each read / readinto / seek (other methods are inherited delegation).
+    each read / readinto / seek.
+
+    A read that raises moves the decoder back to where it started, so ``tell()`` stays at
+    the bytes the caller received. When that is not possible, or the caller's source
+    faulted during a read or seek, the stream is given up for good: every later read,
+    readinto, seek or ``tell()`` raises :class:`ReadError` naming the cause, and ``close()``
+    still works. See :meth:`_after_failed_read`.
 
     The accelerators spawn C++ ``std::thread``s (invisible to Python's ``threading`` module).
     A worker thread still running when the interpreter finalizes aborts the process with
@@ -212,6 +219,9 @@ class _AcceleratorStream(DelegatingStream):
         # crosses into rapidgzip's C++ and aborts the process) and re-raised here after each
         # accelerator call, as a normal Python exception.
         self._trap = trap
+        # Why the stream was given up, once a call left the decoder at a position that
+        # matches no byte the caller received; see _after_failed_read.
+        self._lost: str | None = None
 
     @staticmethod
     def _close_inner(inner: BinaryIO) -> None:
@@ -283,30 +293,124 @@ class _AcceleratorStream(DelegatingStream):
         return -(-bits // 8)
 
     def read(self, n: int = -1, /) -> bytes:
+        self._raise_if_lost()
+        start = self._position()
         try:
             data = super().read(n)
         except Exception:
-            self._reraise_trapped()
+            self._after_failed_read(start)
             raise
-        self._reraise_trapped()
+        self._after_parked_fault()
         return data
 
     def readinto(self, b: "WriteableBuffer", /) -> int:
+        # Symmetry for a direct user of this class: behind _Bzip2EmptyStreamCheck, which
+        # turns off readinto passthrough, every readinto from above arrives at read().
+        self._raise_if_lost()
+        start = self._position()
         try:
             n = super().readinto(b)
         except Exception:
-            self._reraise_trapped()
+            self._after_failed_read(start)
             raise
-        self._reraise_trapped()
+        self._after_parked_fault()
         return n
 
+    def tell(self, /) -> int:
+        self._raise_if_lost()
+        return super().tell()
+
+    def _position(self) -> int | None:
+        try:
+            return self._inner.tell()
+        except Exception:  # noqa: BLE001 - only a rewind target; the read decides
+            return None
+
+    def _after_failed_read(self, start: int | None) -> None:
+        """Move the decoder back to where a read that raised started, or give the stream up.
+
+        The read returns nothing, but the decoder has moved past the chunks it decoded
+        before the failure: measured on rapidgzip 0.16's bzip2 decoder, ``tell()`` read
+        1 799 957 after a failed read that had delivered 1 048 576 bytes. Moving it back
+        keeps ``tell()`` at the bytes the caller received, and a later read starts there
+        rather than past bytes nobody returned.
+
+        When the decoder cannot be moved back, its position matches nothing the caller
+        received, and a later read would hand out bytes from past a gap with no error.
+        So the stream is given up, as the rapidgzip child gives up in the same case:
+        every later read, readinto, seek or ``tell()`` raises :class:`ReadError` with a
+        message naming the cause. That happens when:
+
+        - the read's own start was unknown, because the decoder's ``tell()`` raised;
+        - the caller's source faulted during the read. A rewind would drive the decoder
+          through that source again, and a fault the rewind parked would replace the one
+          the read hit. After the first such fault the stream is given up, so no later
+          call reaches the source;
+        - the seek back raised, or parked a fault from the source. A parked ``Exception``
+          is dropped so that the read's error is the one raised; an interrupt is not
+          dropped: it is raised as itself, with the read's error as its context.
+
+        Then the error is raised: the parked source fault if there is one, else the
+        read's own.
+        """
+        trap = self._trap
+        if trap is not None and trap.trapped is not None:
+            pass  # _after_parked_fault below gives the stream up on the source's fault
+        elif start is None:
+            self._give_up(
+                "a read failed, and the decoder's position before it was not known, so the "
+                "decoder cannot be moved back"
+            )
+        else:
+            rewind_error: Exception | None = None
+            try:
+                self._inner.seek(start)
+            except Exception as exc:  # noqa: BLE001 - the read's own error is the one raised
+                rewind_error = exc
+            # A source fault the rewind parked is the cause worth naming, even when the
+            # seek raised too: it is the one the caller can act on.
+            if trap is not None and trap.trapped is not None:
+                self._give_up_on_source_fault(trap.trapped)
+                if isinstance(trap.trapped, Exception):
+                    trap.trapped = None
+            if rewind_error is not None:
+                self._give_up(
+                    f"a read failed, and moving the decoder back to where that read "
+                    f"started failed too ({rewind_error!r})"
+                )
+        self._after_parked_fault()
+
+    def _after_parked_fault(self) -> None:
+        # A call that parked a source fault raises that fault. The decoder took the fault
+        # for the end of its input and may have moved anywhere, so whatever the call
+        # returned is never delivered and no later call can know the position: a read,
+        # readinto or seek alike.
+        if self._trap is not None and self._trap.trapped is not None:
+            self._give_up_on_source_fault(self._trap.trapped)
+        self._reraise_trapped()
+
+    def _give_up_on_source_fault(self, fault: BaseException) -> None:
+        self._give_up(
+            f"a read from the stream's source failed ({fault!r}), and the decoder took "
+            "that for the end of its input"
+        )
+
+    def _give_up(self, cause: str) -> None:
+        if self._lost is None:
+            self._lost = cause
+
+    def _raise_if_lost(self) -> None:
+        if self._lost is not None:
+            raise ReadError(f"{self._lost}, so this stream cannot be read further")
+
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        self._raise_if_lost()
         try:
             result = super().seek(offset, whence)
         except Exception:
-            self._reraise_trapped()
+            self._after_parked_fault()
             raise
-        self._reraise_trapped()
+        self._after_parked_fault()
         return result
 
     def close(self) -> None:
