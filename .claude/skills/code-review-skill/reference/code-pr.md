@@ -216,6 +216,8 @@ tests; do not re-run the suite (`SKILL.md` §6).
 - [ ] A bug fix has a red–green repro
 - [ ] **A parity promise has its comparison test** (a dry run against a real run, say),
   over every entry point and input spelling it covers, with each stated exception asserted
+  and the comparison shown to fail; agreement on a platform where both sides take another
+  path proves nothing
 - [ ] **A new guard, property or inventory test names the mutation it failed against.**
   The PR must say which one was applied. "Passes vacuously", "cannot fail for its stated
   reason" and "the fixture never reaches this path" are the recurring shapes here

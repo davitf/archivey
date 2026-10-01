@@ -417,15 +417,18 @@ security fixes one line each, other bug fixes summarized in one line).
   reach the path it named. For a test the PR says fails on `main`,
   `uv run python scripts/review_prep.py red-on-base <test ids>` runs it against the
   merge base's `src/` and prints a table for the PR body.
-- **A parity promise gets its comparison test first.** When a feature promises to
-  behave like another archivey path (a dry run like a real extraction), write the test
-  that runs both and compares them first, before the feature itself. This generalises
-  the oracle cross-validation above from third-party libraries to archivey's own
-  paths. Run it over every surface the promise covers: each entry point, the CLI as
-  well as the library, and each spelling of the inputs (a relative path, one through a
-  symlink, one with `..`). Where the promise has stated exceptions, the test asserts
-  each one explicitly rather than skipping the case. A surface you don't compare is
-  where a divergence ships, and in practice where review finds it.
+- **A parity promise gets its comparison test first.** When a feature promises to behave
+  like another archivey path (a dry run like a real extraction), write the test that
+  runs both and compares them first, before the feature itself. This generalises the
+  oracle cross-validation above from third-party libraries to archivey's own paths. Run
+  it over every surface the promise covers: each entry point, the CLI as well as the
+  library, and each spelling of the inputs (a relative path, one through a symlink, one
+  with `..`). Where the promise has stated exceptions, the test asserts each one
+  explicitly rather than skipping the case. Like any guard test, the comparison has to
+  be shown to fail, and the environment is one of its surfaces: two runs that agree
+  because both took another path (a missing symlink privilege, a skipped backend, an
+  absent extra) compare nothing. A surface you don't compare is where a divergence
+  ships, and in practice where review finds it.
 
 ### Coverage-guided fuzz (Atheris)
 
