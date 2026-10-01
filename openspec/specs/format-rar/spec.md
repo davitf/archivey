@@ -555,7 +555,7 @@ The system SHALL support multi-volume RAR archives named `name.partN.rar`
 (RAR5/newer RAR4), including an SFX first volume named `name.partN.sfx` or
 `name.partN.exe` beside later `.partN.rar` parts, or `name.rar` + `name.r00`,
 `name.r01`, ... (older RAR4), including an old-scheme SFX first volume named
-`name.exe` or `name.sfx` beside those `.rNN` parts (prefer `.rar` when more than
+`name.exe` or `name.sfx` beside those parts (prefer `.rar` when more than
 one first-volume name exists). The native parser SHALL read volume headers in
 order and stitch members that span
 volume boundaries into one logical member using continuation flags.

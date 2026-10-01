@@ -324,8 +324,9 @@ first volume `name.part1.sfx` / `name.part1.exe` beside later `.partN.rar` parts
 (older RAR4) are all discovered from any member of
 the set — the old scheme by walking names from volume 1 under unrar's rule (one added
 to the letter's character code, so `.r99` → `.s00` and `.z99` → `.{00`) until a name is
-missing, so a later volume past a gap is a lone file — and headers are read across the volumes in order with split members stitched into
-one logical member. `ArchiveInfo.is_multivolume` is `True` and
+missing, so a later volume past a gap is a lone file. Every old-scheme name, volume 1's
+included, is matched case-insensitively from one directory listing. Headers are then
+read across the volumes in order with split members stitched into one logical member. `ArchiveInfo.is_multivolume` is `True` and
 `ArchiveInfo.extra["rar.volume_count"]` carries the count. A lone volume 1 is
 `TruncatedError` ("expects another volume"); a lone later volume is
 `UnsupportedFeatureError` ("Need first volume") rather than a partial listing. An

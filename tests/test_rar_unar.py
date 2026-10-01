@@ -992,6 +992,21 @@ def test_stream_volume_names_are_the_names_unrar_walks(old_style: bool) -> None:
         ) == rar_reader._stream_volume_name("a", index + 1, old_style=old_style)
 
 
+def test_unrar_name_walk_on_an_unencodable_next_name_is_not_found(
+    tmp_path: Path,
+) -> None:
+    """The name after an extension of U+D7FF and ``99`` holds a lone surrogate.
+
+    A POSIX filesystem cannot encode it, and ``os.stat`` raised
+    ``UnicodeEncodeError`` out of ``open_archive`` for an explicit sequence starting
+    with such a volume. A name that cannot exist on disk is one unrar cannot find.
+    """
+    paths = [tmp_path / "a.\ud7ff99", tmp_path / "b.rar"]
+    assert not rar_reader._unrar_finds_exactly(
+        paths, is_volume=True, old_numbering=True
+    )
+
+
 @requires_binary("unar")
 @pytest.mark.parametrize("streamed", [False, True])
 def test_unar_is_refused_past_its_old_style_volume_limit(

@@ -302,7 +302,10 @@ def _unrar_finds_exactly(
             if not os.path.samefile(candidate, paths[index]):
                 return False
             current = candidate
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError: a predicted name the filesystem cannot encode (a lone
+        # surrogate, the name after an extension of U+D7FF and "99", on POSIX)
+        # cannot exist, so unrar cannot find it either.
         return False
     return True
 

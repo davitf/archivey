@@ -339,6 +339,54 @@ def test_discover_old_scheme_matches_continuations_case_insensitively(
         assert [p.name for p in siblings] == names
 
 
+def test_discover_old_scheme_set_named_in_upper_case(tmp_path: Path) -> None:
+    """Volume 1 is found case-insensitively too, not only the continuations.
+
+    Upper-case names are the usual shape of an old-scheme set copied off DOS or
+    Windows media. Looking volume 1 up by an exact ``<base>.rar`` found nothing on a
+    case-sensitive filesystem, so the set was discovered from none of its members.
+    """
+    names = ["ARCHIVE.RAR", "ARCHIVE.R00", "ARCHIVE.R01"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    for anchor in names:
+        siblings = discover_volume_siblings(tmp_path / anchor)
+        assert siblings is not None
+        assert [p.name for p in siblings] == names
+
+
+def test_discover_old_scheme_upper_case_sfx_first_volume(tmp_path: Path) -> None:
+    names = ["ARCHIVE.EXE", "ARCHIVE.R00", "ARCHIVE.R01"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    for anchor in names:
+        siblings = discover_volume_siblings(tmp_path / anchor)
+        assert siblings is not None
+        assert [p.name for p in siblings] == names
+
+
+def test_discover_old_scheme_first_volume_prefers_the_opened_case(
+    tmp_path: Path,
+) -> None:
+    """Files that differ only in case: the one spelling the opened name's base wins.
+
+    Neither ``archive.RAR`` nor ``archive.r00`` is the exact name the walk predicts
+    from the other, and both sort after their upper-case twins, so only the
+    base-spelling preference picks them. Only a case-sensitive filesystem can hold
+    both spellings.
+    """
+    names = ["ARCHIVE.RAR", "archive.RAR", "ARCHIVE.R00", "archive.r00"]
+    for name in names:
+        (tmp_path / name).write_bytes(name.encode())
+    if len({p.name for p in tmp_path.iterdir()}) < len(names):
+        pytest.skip("case-insensitive filesystem")
+    upper = discover_volume_siblings(tmp_path / "ARCHIVE.R00")
+    lower = discover_volume_siblings(tmp_path / "archive.r00")
+    assert upper is not None and lower is not None
+    assert [p.name for p in upper] == ["ARCHIVE.RAR", "ARCHIVE.R00"]
+    assert [p.name for p in lower] == ["archive.RAR", "archive.r00"]
+
+
 def test_discover_old_scheme_stops_at_the_first_missing_name(tmp_path: Path) -> None:
     """Volumes are walked from volume 1 by name, as unrar does: a file past a gap is
     not in the set, and opening it on its own is a lone later volume. Neither is an
@@ -432,6 +480,17 @@ def test_old_scheme_set_past_r99_opens_from_any_volume(
             assert archive.info.extra["rar.volume_count"] == 150
             assert [m.name for m in archive.members()] == ["payload.bin"]
             assert archive.read("payload.bin") == _OLD_SCHEME_PAYLOAD
+
+
+def test_old_scheme_set_with_a_gap_is_a_truncated_set(tmp_path: Path) -> None:
+    """Discovery stops at the first missing name, and the open then reports the set
+    as truncated: the volume before the gap says another one follows. A gapped set
+    is not joined across the gap."""
+    paths = _write_old_scheme_rar4_set(tmp_path, "big", _OLD_SCHEME_PAYLOAD, 4)
+    paths[2].unlink()
+    with pytest.raises(TruncatedError, match="expects another volume"):
+        with open_archive(paths[0]) as archive:
+            list(archive.members())
 
 
 @pytest.mark.parametrize(
@@ -1641,6 +1700,35 @@ def test_old_scheme_rar_volumes_from_two_sets_are_refused(tmp_path: Path) -> Non
         join_volumes([tmp_path / "alpha.rar", tmp_path / "beta.r00"])
 
     assert "different sets" in str(excinfo.value)
+
+
+def test_old_scheme_volumes_past_r99_from_two_sets_are_refused(
+    tmp_path: Path,
+) -> None:
+    """The old scheme runs on past ``.r99`` (``.s00`` …), and so does the check.
+
+    Classifying only ``.rNN`` names let ``beta.s00`` through as a stray after 101
+    volumes of ``alpha``, where ``beta.r01`` in the same place is refused.
+    """
+    names = [*_old_scheme_names("alpha.rar", 101), "beta.s00"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"A")
+
+    with pytest.raises(ArchiveyUsageError, match="different sets"):
+        join_volumes([tmp_path / name for name in names])
+
+
+def test_old_scheme_volumes_past_r99_of_one_set_still_join(tmp_path: Path) -> None:
+    """The widened check must not refuse a set discovery accepts."""
+    names = _old_scheme_names("alpha.rar", 103)
+    assert names[-2:] == ["alpha.s00", "alpha.s01"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"A")
+
+    discovered = discover_volume_siblings(tmp_path / "alpha.s01")
+    assert discovered is not None
+    assert [path.name for path in discovered] == names
+    assert join_volumes(discovered).read() == b"A" * len(names)
 
 
 @pytest.mark.parametrize(

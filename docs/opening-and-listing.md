@@ -163,9 +163,11 @@ for Linux 7-Zip and Windows 7-Zip, including when you pass `format=` after
 (magic behind the stub) still opens as that archive, even if numbered parts sit
 beside it.
 The old RAR scheme needs a first volume either way: `<base>.rar`, or an SFX
-`<base>.exe` / `<base>.sfx` beside the `.rNN` files. The later volumes are found by
+`<base>.exe` / `<base>.sfx` beside the later volumes. The later volumes are found by
 name from there, the way unrar finds them (`.r99` is followed by `.s00`, `.z99` by
-`.{00`), and the set ends at the first name that is missing. A later volume with no
+`.{00`), and the set ends at the first name that is missing. Names match in any
+letter case, the first volume's included, so `ARCHIVE.RAR` + `ARCHIVE.R00` is a set
+on Linux too. A later volume with no
 first volume beside it, or one past such a gap, is read as a lone file rather than as
 part of a set. A lone numbered part
 (`.7z.001` / `.zip.001` / `.exe.001` with no siblings) is an incomplete set,
@@ -196,9 +198,9 @@ raises.
 
 And a name that carries no part number but is shaped like a first volume
 (`backup.rar`, `backup.exe`, `backup.sfx`) only belongs beside the marked parts
-around it, and which parts those are decides what is checked. Beside `.rNN` parts it
-is their volume 1 and must share their stem, so `[alpha.rar, alpha.r00]` joins and
-`[beta.rar, alpha.r00]` raises. Beside a `.partN` set it has no role at all, that
+around it, and which parts those are decides what is checked. Beside old-scheme parts
+(`.r00` … `.r99`, `.s00` …) it is their volume 1 and must share their stem, so
+`[alpha.rar, alpha.r00]` joins and `[beta.rar, alpha.r00]` raises. Beside a `.partN` set it has no role at all, that
 scheme spelling its own volume 1 `movie.part1.rar`, so `[movie.part1.rar,
 movie.part2.rar, readme.rar]` raises. Beside a numbered set only the stub executable
 7-Zip writes there makes sense, which has no part number and need not share their
