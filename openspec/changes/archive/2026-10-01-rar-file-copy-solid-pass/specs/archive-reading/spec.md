@@ -116,9 +116,10 @@ strategy keeps on disk (today, `format-rar`'s kept file-copy sources in a solid 
 counted while the data is on disk: kept data SHALL count from its first written byte
 until it is deleted, and SHALL NOT count after that. A keep over the limit SHALL be
 declined, not refused: the read falls back to decoding again. `None` SHALL disable the
-guard; `SpoolLimits.UNLIMITED` sets it to `None`. A copy over the limit SHALL raise `ResourceLimitError`, naming
-`SpoolLimits.max_bytes`, before any byte is written when the size is known, and otherwise
-before the written total passes the limit, with the partial copy removed. A path source
+guard; `SpoolLimits.UNLIMITED` sets it to `None`. A copy over the limit SHALL raise
+`ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when the
+size is known, and otherwise before the written total passes the limit, with the partial
+copy removed. A path source
 that is read in place is not copied and SHALL NOT be refused by it; a path source that
 has to be copied (`format-rar`: a prefixed archive read with `unar`, or explicit volume
 files that cannot be linked side by side) is bounded like a stream source.
