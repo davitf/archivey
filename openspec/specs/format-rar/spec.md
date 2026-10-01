@@ -919,11 +919,17 @@ refused.
 When `ArchiveyConfig.rar_decompressor` is `unar`, or `auto` with no usable RARLAB
 `unrar` or `rar` on `PATH`, the system SHALL read compressed
 member data by invoking `unar` 1.10 or later, identified on `PATH` by its `unar -h`
-banner with the same probe timeout and stat-keyed cache as RARLAB `unrar`. Stored,
+banner with the same probe timeout and stat-keyed cache as RARLAB `unrar`. An
+identified `unar` SHALL also decode a small embedded RAR5 archive once, under the same
+timeout and cache, and SHALL NOT be used unless it writes that archive's one member
+exactly and exits 0: Debian and Ubuntu `unar` packages before 1.10.8+ds1-10 write
+nothing for such members, and their version string does not tell them apart. A
+refused `unar` SHALL count as absent under `auto`, and the refusal SHALL say what the
+check saw; it names the Debian patch only for exit 0 with a short member. Stored,
 unencrypted, unsplit members SHALL still be read directly. The system MUST NOT use
-`unrar` in that mode, and MUST NOT use `unar` in any other mode; a missing or
-unidentified `unar` SHALL raise `PackageNotInstalledError` naming `unar`. `auto` SHALL
-choose once per reader, when the archive opens; a read `unar` refuses MUST NOT be
+`unrar` in that mode, and MUST NOT use `unar` in any other mode; a missing,
+unidentified or refused `unar` SHALL raise `PackageNotInstalledError` naming `unar`.
+`auto` SHALL choose once per reader, when the archive opens; a read `unar` refuses MUST NOT be
 retried with `unrar`, and with neither program present `auto` SHALL raise the
 `PackageNotInstalledError` that names RARLAB `unrar` or `rar`. When `auto` chooses
 `unar`, `ar.cost.notes` SHALL say so at open, naming the password exposure and the
@@ -972,11 +978,12 @@ missing, the comment SHALL be `None`, as it is with `unrar`.
 | Case | Expected |
 | --- | --- |
 | Default config (`auto`), RARLAB `unrar` present, compressed member | `unrar` is spawned; `unar` is not |
-| Default config (`auto`), only `unar` present, compressed member | `unar` is spawned; `ar.cost.notes` says why at open |
+| Default config (`auto`), only a `unar` that passes the RAR5 check, compressed member | `unar` is spawned; `ar.cost.notes` says why at open |
 | `rar_decompressor="unrar"`, only `unar` present | `PackageNotInstalledError` names RARLAB `unrar` or `rar`; `unar` is not used |
 | `rar_decompressor="unar"`, `unar` missing, `unrar` present | `PackageNotInstalledError` names `unar`; `unrar` is not used |
 | `rar_decompressor="auto"`, RARLAB `unrar` present | `unrar` is spawned; `unar` is not |
-| `rar_decompressor="auto"`, only `unar` present | `unar` is spawned |
+| `rar_decompressor="auto"`, only a `unar` that passes the RAR5 check | `unar` is spawned |
+| Only a `unar` that fails the RAR5 check (`tests/test_unar_probe.py`), `auto` or `"unar"` | `auto`: as with neither present; `"unar"`: `PackageNotInstalledError` saying what the check saw |
 | `rar_decompressor="auto"`, neither present | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
 | `unar` selected, member name contains `*` | Read by index; no `rar_allow_glob_member_concatenation` needed |
 | `unar` selected, encrypted RAR5 member, right password | Read correctly; the password is passed with `-p` |

@@ -22,7 +22,8 @@ before `0.2.0`). Keep `rarfile` as a test oracle only.
 - Listing works without `unrar`; reading compressed members requires it on `PATH`.
 - Solid `stream_members()` uses one `unrar p` pipe, not one process per member.
 - Refuse silent fallbacks to `unrar-free` / `unar`. (For `unar`, see the amendments
-  below: the default `"auto"` uses `unar` when no RARLAB program is installed.)
+  below: the default `"auto"` uses `unar` when no RARLAB program is installed and the
+  `unar` passes a RAR5 check.)
 - **Amended 2026-09-26:** `unar` is an **opt-in** second data program
   (`ArchiveyConfig.rar_decompressor="unar"`), requested by the maintainer after the
   2026-09-01 decompressor matrix left it open. It is still never a fallback: selecting it
@@ -41,5 +42,14 @@ before `0.2.0`). Keep `rarfile` as a test oracle only.
   default"). A machine with `unar` and no RARLAB program now reads RAR member data with
   `unar` instead of raising; `"unrar"` keeps the RARLAB-only behaviour. This supersedes
   "the default stays `unrar`" above; `unrar-free` and `7z` are still never used.
+- **Amended 2026-10-01:** at the maintainer's direction, only a `unar` that decodes
+  correctly is used. Each `unar` decodes a small RAR5 archive once
+  (`internal/external/unar.py`, `unar_rar5_probe_failure`) and is refused unless it
+  writes the member exactly with exit 0. Debian and Ubuntu packages before
+  1.10.8+ds1-10 (Ubuntu 22.04 to 26.04; Debian 13 expected) carry a patch that drops one
+  compressed RAR5 member in about 25 and fail the check. So on those machines the third
+  amendment no longer holds: with no RARLAB program, `"auto"` raises the `unrar`
+  refusal as if `unar` were absent, and `"unar"` raises a refusal naming the patch.
+  No setting accepts a refused `unar`. `dev-docs/known-issues.md` has the measurements.
 - The spec’s optional “extract-hack” (single-member temp RAR for tiny random opens) is
   **deferred** — allowed by `format-rar` but not implemented in the native reader change.

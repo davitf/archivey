@@ -49,10 +49,13 @@ else. Debian's 1.10.8 packages before 1.10.8+ds1-10 do the same (see Cause).
 **What archivey does.** `find_unar` runs each `unar` it finds once, after the banner
 check, on a 118-byte RAR5 archive embedded in `internal/external/unar.py` (the
 `unar_drop__.rar` fixture), and requires the member's exact 47 bytes back. A build that
-writes anything else, cannot run the check, or runs out of time is not used, and the
-answer is cached per binary like the banner's. Under `"auto"` that `unar` counts as
-absent; with `rar_decompressor="unar"` a read raises `PackageNotInstalledError` that
-names the patch and says to install RARLAB `unrar` or a `unar` without the patch.
+writes anything else, exits non-zero, or runs out of time is not used, and the answer
+is cached per binary like the banner's. Under `"auto"` that `unar` counts as absent;
+with `rar_decompressor="unar"` a read raises `PackageNotInstalledError`. For the
+patch's signature (exit 0, less than the member) it names the patch and says to install
+RARLAB `unrar` or a `unar` without the patch; any other failure says what the run did
+(its exit status, a signal, the wrong bytes). A check that cannot run at all, such as a
+temporary directory with no space, is reported as that and is not cached.
 `unar_rar5_probe_failure(path)` runs the check on any binary. Before the check existed,
 and still as a second line for a build that passes it: every member read with `unar` is
 checked against its declared size and its stored CRC32 or BLAKE2sp, so a dropped member

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -63,7 +64,10 @@ def _runs(log: Path) -> list[str]:
     return log.read_text().splitlines() if log.exists() else []
 
 
-_GOOD = "printf 'ellaltagma\\nlpa \\n  gaa deta del beta ama \\n bealp'\n"
+# A single-quoted shell string holds the member's newlines as they are; the member has no
+# quote of its own. ``tests/test_rar_unar.py`` uses this script too.
+assert b"'" not in _MEMBER
+GOOD_UNAR_EXTRACT = f"printf '%s' '{_MEMBER.decode('ascii')}'\n"
 _PATCHED = "exit 0\n"
 
 
@@ -77,7 +81,7 @@ def test_embedded_archive_is_the_fixture() -> None:
 def test_a_unar_that_decodes_the_member_is_used_and_checked_once(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    binary, log = _stand_in(tmp_path, _GOOD)
+    binary, log = _stand_in(tmp_path, GOOD_UNAR_EXTRACT)
     monkeypatch.setenv("PATH", str(tmp_path))
     for _ in range(3):
         assert unar.find_unar(purpose="for a test") == os.path.abspath(binary)
@@ -117,6 +121,92 @@ def test_wrong_bytes_are_a_failure_too(
         unar.find_unar(purpose="for a test")
 
 
+def test_47_wrong_bytes_say_so_without_naming_the_patch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The member's length with other bytes, as stale window bytes would give."""
+    _stand_in(tmp_path, f"printf '%s' '{'x' * 47}'\n")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(PackageNotInstalledError) as info:
+        unar.find_unar(purpose="for a test")
+    message = str(info.value)
+    assert (
+        "wrote 47 bytes for a test archive's 47-byte member, but not the member's"
+        in (message)
+    )
+    assert "not 47" not in message
+    assert "CSInputBuffer" not in message
+
+
+def test_a_failed_exit_is_reported_as_such_not_as_the_patch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only exit 0 with a short member is the patch; a non-zero exit says what it was,
+    even after the right bytes."""
+    _stand_in(tmp_path, GOOD_UNAR_EXTRACT + "exit 3\n")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(PackageNotInstalledError) as info:
+        unar.find_unar(purpose="for a test")
+    message = str(info.value)
+    assert "failed on a test archive (exit status 3) after writing 47 of its 47" in (
+        message
+    )
+    assert "CSInputBuffer" not in message
+
+
+def test_a_crash_is_reported_as_a_signal_not_as_the_patch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _stand_in(tmp_path, "kill -SEGV $$\n")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(PackageNotInstalledError) as info:
+        unar.find_unar(purpose="for a test")
+    message = str(info.value)
+    assert "stopped on a signal (killed by SIGSEGV)" in message
+    assert "after writing 0 of its 47 bytes" in message
+    assert "CSInputBuffer" not in message
+
+
+def test_output_past_the_member_is_not_read_to_the_end(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A program that writes without end is stopped once it passes the member's length;
+    the check does not wait for the timeout, and the leak oracle sees it reaped."""
+    _stand_in(tmp_path, "while :; do printf 'xxxxxxxxxxxxxxxx'; done\n")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(cli, "PROBE_TIMEOUT_SECONDS", 60)
+    start = time.monotonic()
+    with pytest.raises(PackageNotInstalledError, match="wrote more than 47 bytes"):
+        unar.find_unar(purpose="for a test")
+    assert time.monotonic() - start < 30
+
+
+def test_a_check_that_cannot_run_is_reported_and_not_remembered(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An ``OSError`` before the run (no temp space) is about the machine, not the
+    binary: the refusal says the check could not run, with the error, and the next
+    lookup tries again."""
+    binary, log = _stand_in(tmp_path, GOOD_UNAR_EXTRACT)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    def no_space(*_args: object, **_kwargs: object) -> str:
+        raise OSError(28, "No space left on device")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(unar.tempfile, "mkdtemp", no_space)
+        for _ in range(2):
+            with pytest.raises(PackageNotInstalledError) as info:
+                unar.find_unar(purpose="for a test")
+            message = str(info.value)
+            assert "could not run its check" in message
+            assert "No space left on device" in message
+            assert "not found on PATH" not in message
+    assert _runs(log) == []
+    assert unar.find_unar(purpose="for a test") == os.path.abspath(binary)
+    assert len(_runs(log)) == 1
+
+
 def test_a_check_that_runs_out_of_time_is_a_failure_and_costs_one_timeout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -152,7 +242,7 @@ def test_auto_treats_a_refused_unar_as_absent(
 def test_auto_uses_a_unar_that_passes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _stand_in(tmp_path, _GOOD)
+    _stand_in(tmp_path, GOOD_UNAR_EXTRACT)
     monkeypatch.setenv("PATH", str(tmp_path))
     auto = ArchiveyConfig(rar_decompressor=RarDecompressor.AUTO)
     with open_archive(_COMPRESSED, config=auto) as archive:

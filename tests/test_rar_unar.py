@@ -47,6 +47,7 @@ from archivey.internal.backends import rar_reader, rar_unar
 from archivey.internal.external import cli, unar
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.test_unar_probe import GOOD_UNAR_EXTRACT
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 _CORPUS = Path(__file__).parent / "fixtures" / "corpus" / "rar"
@@ -766,8 +767,7 @@ def test_replaced_binary_is_probed_again(
         tmp_path,
         'if [ "$1" = "-h" ]; then\n'
         '  echo "unar v1.10.8, a tool for extracting the contents of"; exit 0\n'
-        "fi\n"
-        "printf 'ellaltagma\\nlpa \\n  gaa deta del beta ama \\n bealp'\n",
+        "fi\n" + GOOD_UNAR_EXTRACT,
     )
     assert unar.find_unar(purpose="for a test") == os.path.abspath(binary)
 

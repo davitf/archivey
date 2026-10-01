@@ -287,8 +287,10 @@ jobs:
         with:
           path: ${{ runner.temp }}/unar-1.10.8
           key: unar-xadmaster-v1.10.8-ud1.1-${{ hashFiles('scripts/install-unar-from-source.sh') }}-${{ steps.unar-image.outputs.image }}-${{ runner.arch }}
-      - name: Install unar build dependencies (Linux, cache miss)
-        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux' && steps.unar-cache.outputs.cache-hit != 'true'
+      # Installed on a cache hit too: the script rebuilds over a cached binary that does
+      # not print its banner (a cache saved after a failed step), and that needs these.
+      - name: Install unar build dependencies (Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         run: >
           sudo apt-get install -y gnustep-make libgnustep-base-dev gobjc
           libbz2-dev zlib1g-dev libicu-dev libwavpack-dev
