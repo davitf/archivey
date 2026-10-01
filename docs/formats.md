@@ -268,6 +268,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
 - **File-version history (`-ver`):** revision rows appear in `members()` as names like
   `path;1` with `extra["rar.file_version"]` and `is_current=False`; the live path stays
   `is_current=True`. Default extract **skips** non-current rows.
+- **Links and file copies.** A RAR5 hard link (`rar -oh`) is a `HARDLINK`. A RAR5
+  file copy (`rar -oi`, which `unrar` lists as "File reference") stores a duplicate
+  file once and names the earlier member that holds the bytes. It is a `FILE` with
+  `extra["is_file_copy"] = True`; `link_target` is the source's stored path and
+  `link_target_member` the source member. Reading it gives the source's bytes, and
+  extraction writes an independent file, as `unrar` does. A copy whose source is not an
+  earlier file member raises `LinkTargetNotFoundError` when read.
 - **Compression:** M0 is `STORED`. M1–M5 is `CompressionAlgorithm.RAR` with `level` 1–5.
   Any other method byte stays `UNKNOWN` (`level` omitted). Unpack version is
   `extra["rar.extract_version"]` on every member whose FILE header recorded one,

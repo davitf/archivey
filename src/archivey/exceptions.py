@@ -194,7 +194,7 @@ class EncryptionError(ReadError):
 
 
 class LinkTargetNotFoundError(ReadError):
-    """A symlink/hardlink target is absent from the archive."""
+    """A symlink/hardlink target, or a file copy's source, is absent from the archive."""
 
 
 class ExtractionError(ArchiveyError):
