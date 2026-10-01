@@ -424,6 +424,15 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 - **Whether UDF should be read.** `pycdlib` parses UDF already, so listing from it is
   reachable; the question is whether DVD and Blu-ray images are in scope for 0.2.x.
+- **What `raw_name` holds when a path borrows Joliet names.** ZIP follows the rule that
+  `name` is `raw_name` decoded and normalized: a member named by its 0x7075 Unicode Path
+  field gets those bytes as `raw_name` and keeps the header bytes in
+  `extra["alternate_raw_name"]`. ISO does not yet. Its `raw_name` is a path of
+  per-record names, and the Joliet fallback can borrow a single component, so taking
+  each component "as stored" would mix UTF-16BE and Rock Ridge bytes in one value. The
+  candidate fix is to make the whole path UTF-16BE whenever any component is borrowed,
+  with the Rock Ridge path in `alternate_raw_name`. For now `raw_name` stays the Rock
+  Ridge path bytes, a documented exception (maintainer, 2026-10-01).
 
 ## 8. Verify
 
