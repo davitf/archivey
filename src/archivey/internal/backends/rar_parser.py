@@ -307,7 +307,7 @@ class RarMemberInfo:
     file_solid: bool
     is_directory: bool
     is_symlink: bool  # RAR4 unix mode or RAR5 redir symlink types
-    is_hardlink_or_copy: bool  # RAR5 HARD_LINK or FILE_COPY
+    is_hardlink_or_copy: bool  # RAR5 HARD_LINK or FILE_COPY: no data stream of its own
     is_encrypted: bool
     volume_index: int
     split_before: bool
@@ -366,6 +366,19 @@ class RarMemberInfo:
     def is_payload_file(self) -> bool:
         """True if ``unrar p`` emits this member's bytes (regular file, not dir/link/redir)."""
         return not (self.is_directory or self.is_symlink or self.is_hardlink_or_copy)
+
+    def is_file_copy(self) -> bool:
+        """True for a RAR5 ``FILE_COPY`` redirect (``rar -oi``, "file reference").
+
+        A regular file whose bytes are those of an earlier member, stored once. Unlike a
+        hard link it is extracted as an independent file, so it is presented as one.
+        """
+        redir = self.file_redir
+        return (
+            redir is not None
+            and redir[0] == _RAR5_XREDIR_FILE_COPY
+            and not self.is_directory
+        )
 
     def is_file_version_history(self) -> bool:
         """True for a prior ``-ver`` revision (presented as ``path;n``)."""

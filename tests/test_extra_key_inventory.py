@@ -32,6 +32,7 @@ from pathlib import Path
 import pytest
 
 from archivey.types import (
+    EXTRA_IS_FILE_COPY,
     EXTRA_IS_JUNCTION,
     EXTRA_IS_REPARSE_POINT,
     EXTRA_RAR_EXTRACT_VERSION,
@@ -43,6 +44,7 @@ REPO_SRC = Path(__file__).resolve().parents[1] / "src" / "archivey"
 REPO_TESTS = Path(__file__).resolve().parents[0]
 
 _CONST_KEYS = {
+    "EXTRA_IS_FILE_COPY": EXTRA_IS_FILE_COPY,
     "EXTRA_IS_JUNCTION": EXTRA_IS_JUNCTION,
     "EXTRA_IS_REPARSE_POINT": EXTRA_IS_REPARSE_POINT,
     "EXTRA_RAR_EXTRACT_VERSION": EXTRA_RAR_EXTRACT_VERSION,

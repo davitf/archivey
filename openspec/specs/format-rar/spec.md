@@ -273,7 +273,8 @@ The system SHALL invoke RARLAB `unrar` with member path arguments only as follow
 
 The system MUST NOT pass multiple member paths, globs, or `@listfile` filters in this
 capability’s initial implementation. Hardlink / file-copy members are never named on the
-`unrar` command line; the shared link-following layer opens the target FILE instead.
+`unrar` command line; the shared link-following layer opens a hardlink's target FILE,
+and the RAR reader opens a file copy's source FILE.
 
 #### Scenario: unrar argv matrix
 
@@ -281,7 +282,7 @@ capability’s initial implementation. Hardlink / file-copy members are never na
 | --- | --- |
 | Solid full or filtered `stream_members()` | One `unrar p` with no member path args |
 | Nonsolid `open()` / lazy stream of a FILE | `unrar p … <archive> <member>` |
-| `open()` on hardlink / `FILE_COPY` | `unrar` receives the target FILE path only (after link follow), or equivalent target open |
+| `open()` on hardlink / `FILE_COPY` | `unrar` receives the target (source) FILE path only, or equivalent target open |
 | Symlink member | No `unrar` data read for the link payload |
 
 ### Requirement: Stream solid RAR archives through one unrar pipe
@@ -460,9 +461,14 @@ member type.
 ### Requirement: Handle RAR5 redirect link types natively
 
 The system SHALL read RAR5 link semantics from native `file_redir` metadata.
-Hardlinks and file-copies (`RAR5_XREDIR_HARD_LINK`, `RAR5_XREDIR_FILE_COPY`)
-SHALL be exposed as `MemberType.HARDLINK` with `link_target` set from the
-redirect, so `ArchiveReader` link following returns the target FILE's data.
+Hardlinks (`RAR5_XREDIR_HARD_LINK`) SHALL be exposed as `MemberType.HARDLINK`
+with `link_target` set from the redirect, so `ArchiveReader` link following returns
+the target FILE's data. File copies (`RAR5_XREDIR_FILE_COPY`, `rar -oi`) SHALL be
+exposed as `MemberType.FILE` with `extra["is_file_copy"] == True`, `link_target` set
+to the stored source path and `link_target_member` set to the source: the latest
+earlier `FILE` member that path names. Reading a copy SHALL return the source's bytes,
+and extraction SHALL write it as an independent file, as `unrar` does. A copy with no
+such source SHALL raise `LinkTargetNotFoundError` when read.
 Unix symlinks and Windows symlinks/junctions (`RAR5_XREDIR_UNIX_SYMLINK`,
 `RAR5_XREDIR_WINDOWS_SYMLINK`, `RAR5_XREDIR_WINDOWS_JUNCTION`) SHALL be
 exposed as `MemberType.SYMLINK` with `link_target` from the redirect and
@@ -473,7 +479,8 @@ NOT appear in the solid `unrar p` demux size map.
 
 | Case | Expected |
 | --- | --- |
-| RAR5 hardlink / `FILE_COPY` `open()` | Follows to target FILE data |
+| RAR5 hardlink `open()` | Follows to target FILE data |
+| RAR5 `FILE_COPY` | `type=FILE`, `extra["is_file_copy"]`; `open()`, `stream_members()` and extraction give the source's bytes; extracted as an independent file |
 | RAR5 Unix/Windows symlink `open()` | Link following resolves target; symlink itself has no `unrar p` payload |
 | Solid stream past a redirect member | Demux does not advance the pipe for that member |
 
@@ -485,7 +492,7 @@ The system SHALL set `ArchiveMember.link_target` during member registration /
 | Variant | Source of `link_target` |
 | --- | --- |
 | RAR5 symlink / Windows symlink / junction | native `file_redir` target string |
-| RAR5 hardlink / `FILE_COPY` | native `file_redir` target string (`MemberType.HARDLINK`) |
+| RAR5 hardlink / `FILE_COPY` | native `file_redir` target string (`MemberType.HARDLINK` / `MemberType.FILE`) |
 | RAR4 Unix symlink | stored member bytes (direct read when M0 / readable without `unrar`), only while `read_link_targets` is `True` |
 
 Encrypted link targets without a usable password MAY leave `link_target` unset and emit
@@ -499,7 +506,8 @@ targets stored as member data are read only when configured").
 | Case | Expected |
 | --- | --- |
 | RAR5 symlink | `type=SYMLINK`, `link_target` set from `file_redir` |
-| RAR5 hardlink or `FILE_COPY` | `type=HARDLINK`, `link_target` set; `open()` follows to target data |
+| RAR5 hardlink | `type=HARDLINK`, `link_target` set; `open()` follows to target data |
+| RAR5 `FILE_COPY` | `type=FILE`, `link_target` and `link_target_member` name the source; `open()` reads the source's data |
 | RAR4 stored symlink | `link_target` equals stored target bytes decoded as text |
 | Encrypted RAR4 symlink, no password | `link_target` may be unset; no crash on list |
 | RAR4 stored symlink, `read_link_targets=False` | `link_target=None`; no member bytes read; RAR5 targets still set |

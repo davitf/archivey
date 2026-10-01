@@ -56,6 +56,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     EncryptionError,
+    LinkTargetNotFoundError,
     PackageNotInstalledError,
     ReadError,
     StreamNotSeekableError,
@@ -117,7 +118,11 @@ from archivey.internal.external.unar import (
 from archivey.internal.listing_limits import check_metadata_budget
 from archivey.internal.logs import backends as logger
 from archivey.internal.logs import integrity as integrity_logger
-from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
+from archivey.internal.naming import (
+    emit_member_name_normalized,
+    normalize_member_name,
+    resolve_link_target_name,
+)
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
@@ -141,6 +146,7 @@ from archivey.internal.streams.verify import build_member_verifier
 from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
 from archivey.terminal import quoted
 from archivey.types import (
+    EXTRA_IS_FILE_COPY,
     EXTRA_IS_JUNCTION,
     EXTRA_IS_REPARSE_POINT,
     EXTRA_RAR_EXTRACT_VERSION,
@@ -525,11 +531,13 @@ def _member_hashes(info: RarMemberInfo) -> dict[HashAlgorithm, bytes]:
 def _rar_member_extra_and_link(
     info: RarMemberInfo,
 ) -> tuple[MemberExtra, str | None]:
-    """Build ``ArchiveMember.extra`` and the symlink/junction target."""
+    """Build ``ArchiveMember.extra`` and the link target (or a file copy's source)."""
     extra = MemberExtra()
     link_target: str | None = None
     if info.file_redir is not None:
         link_target = info.file_redir[2]
+        if info.is_file_copy():
+            extra[EXTRA_IS_FILE_COPY] = True
         if info.file_redir[0] in _RAR5_XREDIR_REPARSE_POINTS:
             extra[EXTRA_IS_REPARSE_POINT] = True
         if info.file_redir[0] == _RAR5_XREDIR_WINDOWS_JUNCTION:
@@ -1121,6 +1129,7 @@ class RarReader(BaseArchiveReader):
             self._to_member(info, index)
             for index, info in enumerate(self._archive.members)
         ]
+        self._resolve_file_copies()
         # SERVICE headers (``CMT``, ``QO``) are not members, so the walk above never
         # reaches them, and a damaged one would otherwise report nothing under any
         # policy.
@@ -2013,10 +2022,72 @@ class RarReader(BaseArchiveReader):
                 logger=integrity_logger,
             )
 
+    def _resolve_file_copies(self) -> None:
+        """Point each RAR5 file copy's ``link_target_member`` at its source.
+
+        The source is the latest member before the copy whose name the stored target
+        names (read as a hard link's target is: archive-root relative), and it must be
+        a ``FILE``. ``rar`` always writes the source first, and ``unrar`` copies from a
+        file it has already extracted, so only earlier members count; that also rules
+        out a copy of itself and any cycle. A source that is itself a copy stands for
+        its own source, so a chain collapses to the one member that holds the bytes.
+        A copy left unresolved stays listed and raises ``LinkTargetNotFoundError``
+        when read (:meth:`_open_file_copy`).
+        """
+        latest: dict[str, ArchiveMember] = {}
+        for member in self._members:
+            raw = member._raw
+            assert isinstance(raw, RarMemberInfo)
+            if raw.is_file_copy() and member.link_target:
+                target_name = resolve_link_target_name(
+                    member.name, member.link_target, MemberType.HARDLINK
+                )
+                source = latest.get(target_name) if target_name is not None else None
+                if source is not None and source.type is MemberType.FILE:
+                    source_raw = source._raw
+                    assert isinstance(source_raw, RarMemberInfo)
+                    member.link_target_member = (
+                        source.link_target_member
+                        if source_raw.is_file_copy()
+                        else source
+                    )
+            latest[member.name] = member
+
+    def _open_file_copy(self, member: ArchiveMember) -> ArchiveStream:
+        """Serve a RAR5 file copy from its source member.
+
+        A copy carries no data stream: ``unrar p`` emits nothing for it in a full run
+        and ``unar`` emits nothing at all, so the bytes are the source's, read and
+        verified as the source. The copy's own CRC32 covers zero bytes
+        (``_member_hashes``); its declared size must match the source's, or the copy
+        would read as a different length than it lists.
+        """
+        source = member.link_target_member
+        if source is None:
+            raise LinkTargetNotFoundError(
+                "The source of this RAR file copy is not an earlier file member of "
+                "the archive",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                link_target=member.link_target,
+            )
+        if source.size != member.size:
+            raise CorruptionError(
+                f"This RAR file copy declares {member.size} bytes but its source "
+                f"{quoted(source.name)} declares {source.size}.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
+        return self._open_member(source)
+
     @staticmethod
     def _member_type(info: RarMemberInfo) -> MemberType:
         if info.is_directory:
             return MemberType.DIRECTORY
+        if info.is_file_copy():
+            # Extracted as an independent file, as ``unrar`` does, not as a link.
+            return MemberType.FILE
         if info.is_hardlink_or_copy:
             return MemberType.HARDLINK
         if info.is_symlink:
@@ -2084,6 +2155,9 @@ class RarReader(BaseArchiveReader):
             nonlocal pipe_offset
             raw = member._raw
             assert isinstance(raw, RarMemberInfo)
+            if raw.is_file_copy():
+                # Not in the pipe; its source's bytes come from a named open.
+                return self._lazy_member_stream(member)
             if not raw.is_payload_file() or not member.is_file:
                 return None
             size = _member_stream_size(member)
@@ -2720,6 +2794,8 @@ class RarReader(BaseArchiveReader):
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
+        if raw.is_file_copy():
+            return self._open_file_copy(member)
 
         if self._can_direct_read(raw) and raw.compress_size != raw.file_size:
             # A plaintext stored member packs exactly its own bytes; only encryption
@@ -3123,6 +3199,9 @@ class RarReader(BaseArchiveReader):
         def _open(member: ArchiveMember) -> ArchiveStream | None:
             raw = member._raw
             assert isinstance(raw, RarMemberInfo)
+            if raw.is_file_copy():
+                # As in the ``unrar`` pass: not in the pipe, read from its source.
+                return self._lazy_member_stream(member)
             if not raw.is_payload_file() or not member.is_file:
                 return None
             size = _member_stream_size(member)

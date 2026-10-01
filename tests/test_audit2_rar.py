@@ -25,12 +25,19 @@ from typing import Any
 
 import pytest
 
-from archivey import ArchiveyConfig, ListingLimits, extract, open_archive
+from archivey import (
+    ArchiveyConfig,
+    ListingLimits,
+    MemberType,
+    extract,
+    open_archive,
+)
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
     EncryptionError,
+    LinkTargetNotFoundError,
     ResourceLimitError,
     UnsupportedFeatureError,
 )
@@ -89,18 +96,34 @@ def test_stored_member_never_reads_past_its_packed_span(tmp_path: Path) -> None:
     assert data == original
 
 
-# --- R16: a RAR5 file-copy redirect is extracted as a hard link --------------
+# --- R16: a RAR5 file-copy redirect is a FILE, not a hard link -----------------
+
+
+def _rar_with_copies(tmp_path: Path, *flags: str) -> tuple[Path, bytes]:
+    """``r1.bin``, ``other.txt``, ``d/r2.bin``: ``rar -oi`` stores the second copy of
+    the payload as a file reference to ``r1.bin`` (redirect type 5), with no data.
+
+    The payload is text, not random bytes: ``unar`` 1.10 fails to decode some solid
+    RAR5 archives of near-incompressible data (with or without a copy in them), which
+    would make the ``unar`` cases flaky for a reason unrelated to copies."""
+    src = tmp_path / "src"
+    (src / "d").mkdir(parents=True)
+    payload = b"".join(b"line %05d of the copied file\n" % i for i in range(200))
+    (src / "r1.bin").write_bytes(payload)
+    (src / "other.txt").write_bytes(b"other")
+    (src / "d" / "r2.bin").write_bytes(payload)
+    archive = tmp_path / "copies.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-oi:1000", *flags, str(archive)]
+        + ["r1.bin", "other.txt", "d/r2.bin"],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    return archive, payload
 
 
 @requires_binary("rar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R16: a RAR5 FILE_COPY redirect (rar -oi) is presented as HARDLINK and "
-        "extracted as a hard link sharing the source's inode, where unrar writes "
-        "an independent copy"
-    ),
-)
 def test_file_copy_redirect_extracts_as_an_independent_file(tmp_path: Path) -> None:
     src = tmp_path / "src"
     src.mkdir()
@@ -120,6 +143,140 @@ def test_file_copy_redirect_extracts_as_an_independent_file(tmp_path: Path) -> N
     assert first.read_bytes() == second.read_bytes() == payload
     # A "file reference" is a copy: writing to one must not change the other.
     assert os.stat(first).st_ino != os.stat(second).st_ino
+
+
+_COPY_CASES = [
+    pytest.param("unrar", (), id="unrar-nonsolid"),
+    pytest.param("unrar", ("-s",), id="unrar-solid"),
+    pytest.param("unar", (), id="unar-nonsolid"),
+    pytest.param("unar", ("-s",), id="unar-solid"),
+]
+
+
+def _copy_reader_config(decompressor: str) -> ArchiveyConfig:
+    if shutil.which("rar") is None or shutil.which(decompressor) is None:
+        pytest.skip(f"needs rar and {decompressor}")
+    if decompressor == "unar":
+        return ArchiveyConfig(rar_decompressor="unar")
+    return _UNRAR_ONLY
+
+
+@pytest.mark.parametrize(("decompressor", "flags"), _COPY_CASES)
+def test_file_copy_lists_as_a_file_that_names_its_source(
+    tmp_path: Path, decompressor: str, flags: tuple[str, ...]
+) -> None:
+    config = _copy_reader_config(decompressor)
+    archive, payload = _rar_with_copies(tmp_path, *flags)
+    with open_archive(archive, config=config) as reader:
+        source = reader.get("r1.bin")
+        copy_member = reader.get("d/r2.bin")
+        assert copy_member.type is MemberType.FILE
+        assert copy_member.is_file and not copy_member.is_link
+        # The two markers that say it is a copy, and of what.
+        assert copy_member.extra["is_file_copy"] is True
+        assert copy_member.link_target == "r1.bin"
+        assert copy_member.link_target_member is source
+        assert copy_member.size == source.size == len(payload)
+        # Its own CRC field covers no bytes; the source's digest checks the read.
+        assert copy_member.hashes == {}
+        assert "is_file_copy" not in source.extra
+        assert reader.read(copy_member) == payload
+        with reader.open("d/r2.bin") as stream:
+            assert stream.read() == payload
+
+
+@pytest.mark.parametrize(("decompressor", "flags"), _COPY_CASES)
+def test_file_copy_yields_its_bytes_in_stream_members_order(
+    tmp_path: Path, decompressor: str, flags: tuple[str, ...]
+) -> None:
+    config = _copy_reader_config(decompressor)
+    archive, payload = _rar_with_copies(tmp_path, *flags)
+    seen: list[tuple[str, bytes | None]] = []
+    with open_archive(archive, config=config) as reader:
+        for member, stream in reader.stream_members():
+            seen.append((member.name, None if stream is None else stream.read()))
+    # The copy is not in the solid pipe; reading it does not shift its neighbours.
+    assert dict(seen) == {"r1.bin": payload, "other.txt": b"other", "d/r2.bin": payload}
+    names = [name for name, _ in seen]
+    assert names.index("r1.bin") < names.index("d/r2.bin")
+
+
+@pytest.mark.parametrize(("decompressor", "flags"), _COPY_CASES)
+def test_file_copy_extracts_as_an_independent_file_on_every_path(
+    tmp_path: Path, decompressor: str, flags: tuple[str, ...]
+) -> None:
+    config = _copy_reader_config(decompressor)
+    archive, payload = _rar_with_copies(tmp_path, *flags)
+    dest = tmp_path / "out"
+    extract(archive, dest, config=config)
+    first, second = dest / "r1.bin", dest / "d" / "r2.bin"
+    assert first.read_bytes() == second.read_bytes() == payload
+    assert (dest / "other.txt").read_bytes() == b"other"
+    assert os.stat(first).st_ino != os.stat(second).st_ino
+
+
+@requires_binary("rar")
+@requires_binary("unrar")
+def test_file_copy_without_a_matching_source_is_a_typed_error(tmp_path: Path) -> None:
+    """The source must be an earlier FILE of the same size; a copy whose target names
+    no member lists, and raises ``LinkTargetNotFoundError`` when read, and a copy
+    declaring a size its source does not have raises ``CorruptionError``."""
+    archive, _ = _rar_with_copies(tmp_path)
+    blocks = _rar5_parse(archive.read_bytes())
+    copy_block = _rar5_file_blocks(blocks)[-1]
+    assert copy_block["name"] == b"d/r2.bin"
+
+    dangling = copy.deepcopy(blocks)
+    dangling_copy = _rar5_file_blocks(dangling)[-1]
+    extra = dangling_copy["extra"]
+    at = extra.rindex(b"r1.bin")
+    dangling_copy["extra"] = extra[:at] + b"r9.bin" + extra[at + 6 :]
+    path = tmp_path / "dangling.rar"
+    path.write_bytes(_rar5_build(dangling))
+    with open_archive(path, config=_UNRAR_ONLY) as reader:
+        member = reader.get("d/r2.bin")
+        assert member.type is MemberType.FILE
+        assert member.link_target == "r9.bin"
+        assert member.link_target_member is None
+        with pytest.raises(LinkTargetNotFoundError):
+            reader.read(member)
+
+    resized = copy.deepcopy(blocks)
+    _rar5_file_blocks(resized)[-1]["unpacked"] = 4000
+    path = tmp_path / "resized.rar"
+    path.write_bytes(_rar5_build(resized))
+    with (
+        open_archive(path, config=_UNRAR_ONLY) as reader,
+        pytest.raises(CorruptionError),
+    ):
+        reader.read("d/r2.bin")
+
+
+@requires_binary("rar")
+@requires_binary("unrar")
+def test_rar5_hard_link_stays_a_hardlink(tmp_path: Path) -> None:
+    """Control: a real hard link (``rar -oh``) is still ``HARDLINK`` and extracts as one."""
+    src = tmp_path / "src"
+    src.mkdir()
+    payload = os.urandom(3000)
+    (src / "a.bin").write_bytes(payload)
+    os.link(src / "a.bin", src / "b.bin")
+    archive = tmp_path / "hard.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-oh", str(archive), "a.bin", "b.bin"],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    with open_archive(archive, config=_UNRAR_ONLY) as reader:
+        link = reader.get("b.bin")
+        assert link.type is MemberType.HARDLINK
+        assert "is_file_copy" not in link.extra
+        assert link.link_target == "a.bin"
+        assert reader.read(link) == payload
+    dest = tmp_path / "out"
+    extract(archive, dest)
+    assert os.stat(dest / "a.bin").st_ino == os.stat(dest / "b.bin").st_ino
 
 
 # --- R17/R18: names made only of dots and slashes ------------------------------

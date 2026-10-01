@@ -448,13 +448,13 @@ between to blame or to defer to.
 | `accessed` / `created` / `ctime` | RAR5 `0x03` time extra (`HAS_ATIME` / `HAS_CTIME`); RAR3 EXTTIME after mtime (ctime then atime; arctime is unused). Same tz convention as that generation's `modified`. No ZIP-style extra-field precedence. The RARLAB writer emits one time extra; a later extra without `HAS_CTIME` / `HAS_ATIME` does not wipe earlier values. The creation slot is `created` from a birth-time host (Win32, and RAR3 MS-DOS / OS2 / Mac / BeOS) and `ctime` from any other. A Unix RARLAB writer fills the slot from `st_ctime` (inode change), which `created` never holds, so a Unix member's slot is `ctime`, and so is an unknown host's | The extra or slot is absent; `created` also when `host_os` is Unix or unknown |
 | `mode` | Unix host: `S_IMODE` of the stored attributes, masked before the C helper so a hostile vint cannot raise `OverflowError` mid-listing | Non-Unix host. A Win32 host puts its attribute word in `windows_attrs`; a FAT, OS/2, Macintosh or BeOS host gets **neither** field |
 | `create_system` | RAR3 `host_os` 0–5 → FAT / OS2 / Win32 / Unix / Mac / BeOS. RAR5 stores only Windows or Unix and the parser maps those to Win32 / Unix | Never — unknown `host_os` is `CreateSystem.UNKNOWN`. Whether the creation slot is a birth time is decided from `host_os` directly, not from this field |
-| `type` | Directory flag; RAR5 `file_redir` gives `HARDLINK` for hard links and file copies, `SYMLINK` for Unix/Windows symlinks and junctions (a Windows one also sets `extra["is_reparse_point"]`, and a junction `extra["is_junction"]`) | — |
-| `link_target` | RAR5: the redirect's target string, at list time. RAR4: the member's **data**, read directly when it is stored and unencrypted | An encrypted or compressed RAR4 target with no direct bytes — left unset; listing still succeeds |
+| `type` | Directory flag; RAR5 `file_redir` gives `HARDLINK` for hard links, `FILE` for a file copy (`rar -oi`, "file reference"; below), `SYMLINK` for Unix/Windows symlinks and junctions (a Windows one also sets `extra["is_reparse_point"]`, and a junction `extra["is_junction"]`) | — |
+| `link_target` | RAR5: the redirect's target string, at list time; on a file copy, the source's stored path. RAR4: the member's **data**, read directly when it is stored and unencrypted | An encrypted or compressed RAR4 target with no direct bytes — left unset; listing still succeeds |
 | `compression` | Method id → `CompressionMethod`. Stored members report `STORED`; M1–M5 report `CompressionAlgorithm.RAR` with `level` 1–5 (method byte − 0x30). A method byte outside M0–M5 stays `UNKNOWN` with `level` omitted. Unpack version is `extra["rar.extract_version"]`, not `level` | — |
 | `hashes` | `crc32` and/or `blake2sp` as bytes | A RAR5 **redirect** (see below), or an encrypted member whose digests are tweaked |
 | `is_encrypted` | Per-member encryption flag | — |
 | `is_current` | `False` for a file-version history row, `True` for the live revision | — |
-| `extra` | `is_junction` on a Windows junction, `is_reparse_point` on a Windows symlink or junction (redirect types 2 and 3) — RAR is the one format that names the kind in a header field, so both are set while listing with nothing read; `rar.file_version` on a history row; `rar.tweaked_crc32` / `rar.tweaked_blake2sp` on a tweaked-digest member; `rar.extract_version` when the FILE header recorded one (stored and compressed) — RAR3 `UNP_VER` as stored (unvalidated), RAR5 reports 50 | — |
+| `extra` | `is_file_copy` on a file copy; `is_junction` on a Windows junction, `is_reparse_point` on a Windows symlink or junction (redirect types 2 and 3) — RAR is the one format that names the kind in a header field, so both are set while listing with nothing read; `rar.file_version` on a history row; `rar.tweaked_crc32` / `rar.tweaked_blake2sp` on a tweaked-digest member; `rar.extract_version` when the FILE header recorded one (stored and compressed) — RAR3 `UNP_VER` as stored (unvalidated), RAR5 reports 50 | — |
 | `comment` | RAR3 CMT SERVICE when the solid flag is set (attaches to the preceding member) and RAR 1.5 / 2.x FILE COMMENT subblocks. Stored old-style comments decode natively; compressed old-style comments decode through RARLAB `unrar` when available | No member comment block, a RAR5 `CMT` (archive-only, below), a compressed old-style comment without `unrar` / with an invalid CRC16, or an encrypted old-style comment (known limitation, §5) |
 
 **Archive comments are `ArchiveInfo.comment`.** RAR5 `CMT` is archive-only — it never
@@ -462,6 +462,22 @@ becomes a member comment. RAR3 `CMT` without the solid flag is the archive comme
 with it, the preceding member (row above). RAR 1.5 / 2.x COMMENT subblocks on MAIN are
 the archive comment. Stored old-style archive comments decode natively; a compressed
 one without `unrar` stays `None` and listing still succeeds.
+
+**A RAR5 file copy is a `FILE`.** `rar -oi` stores a second identical file as a
+redirect of type 5 (`FILE_COPY`; `unrar lt` says "File reference") naming an earlier
+member, with no data of its own: packed size 0, unpacked size the source's, CRC32
+`0x00000000`. `unrar x` writes it as an independent file, a copy and not a hard link, so
+archivey lists it as `MemberType.FILE` with `extra["is_file_copy"] = True`,
+`link_target` set to the stored source path and `link_target_member` set to the source
+member. Reading it (`open()`, `stream_members()`, `extract`, on `unrar` and `unar`,
+solid or not) returns the source's bytes, verified by the source's digest; `unrar p` with
+no member names and `unar` emit nothing for a copy, so its bytes come from a named open
+of the source, and a solid pass does not move for it. The source is the latest
+**earlier** member whose name the target names (archive-root relative, like a hard link
+target) and it must be a `FILE`; a copy of a copy stands for the first source. A copy
+with no such source still lists, and reading it raises `LinkTargetNotFoundError`; a copy
+whose declared size differs from its source's raises `CorruptionError`. A RAR5 hard link
+(`rar -oh`, type 4) stays `HARDLINK`.
 
 Two digest rules are worth stating because they look like missing data and are not:
 
@@ -868,8 +884,9 @@ RAR-specific only. General extraction and name hazards are §2.4.
   archive is RAR3-family (`-ma4`); only its stored link members declare extract
   version 20 (RAR 2.0). The RARLAB writer stores those targets M0 — it does not
   produce a compressed (LZ-data) RAR3 symlink target, which is why that case is
-  not in the fixtures. Residual is unfixtured existing kinds — `FILE_COPY`
-  (RAR5 redirect type 5), Windows symlink, Windows junction — and future kinds
+  not in the fixtures. `FILE_COPY` (RAR5 redirect type 5) is pinned with
+  archives `rar -oi` writes at test time (`tests/test_audit2_rar.py`). Residual is
+  unfixtured existing kinds — Windows symlink, Windows junction — and future kinds
   whose emission `is_payload_file()` gets wrong
   ([`open-issues.md`](../open-issues.md) P6). A later reader must not conclude
   the current kinds are all pinned.
@@ -1216,7 +1233,8 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | Tweaked digests kept out of `hashes`, and BLAKE2sp verified / cross-checked against `unrar` | `::test_blake2sp_only_hash`, `::test_blake2sp_verified_no_unverifiable_diagnostic`, `::test_blake2sp_corrupt_payload_raises`, `::test_blake2sp_unrar_oracle_crosscheck` |
 | RAR5 redirect digests dropped without losing RAR4's genuine ones | `tests/test_review_simplicity_consistency.py::test_rar4_link_digests_survive_the_rar5_fix`, `tests/test_corpus_sweep.py::test_corpus_conformance` (8 RAR entries) |
 | Solid symlink / hardlink demux does not consume pipe bytes | `tests/test_rar_reader.py::test_solid_symlink_demux_and_link_targets`, `::test_solid_hardlink_demux_and_targets` |
-| Solid link emission per generation: RAR5 packed 0 / unpacked > 0, RAR4 packed > 0 / unpacked > 0, both emit 0; `is_payload_file()` is False | `::test_solid_symlink_demux_and_link_targets` (the `symlinks_solid__` pair; `__rar4` links are stored M0), `::test_solid_hardlink_demux_and_targets` (RAR5 hardlinks), `::test_named_unrar_p_bytes_rejects_no_match`. No RAR 1.5/2.x solid-symlink fixture. Unfixtured existing kinds: `FILE_COPY` (RAR5 redirect type 5), Windows symlink, junction |
+| Solid link emission per generation: RAR5 packed 0 / unpacked > 0, RAR4 packed > 0 / unpacked > 0, both emit 0; `is_payload_file()` is False | `::test_solid_symlink_demux_and_link_targets` (the `symlinks_solid__` pair; `__rar4` links are stored M0), `::test_solid_hardlink_demux_and_targets` (RAR5 hardlinks), `::test_named_unrar_p_bytes_rejects_no_match`. No RAR 1.5/2.x solid-symlink fixture. Unfixtured existing kinds: Windows symlink, junction |
+| A RAR5 file copy lists as `FILE` with `is_file_copy` and its source, reads and extracts as an independent file (both programs, solid and not); a dangling or wrong-size copy raises; a hard link stays `HARDLINK` | `tests/test_audit2_rar.py::test_file_copy_redirect_extracts_as_an_independent_file`, `::test_file_copy_lists_as_a_file_that_names_its_source`, `::test_file_copy_yields_its_bytes_in_stream_members_order`, `::test_file_copy_extracts_as_an_independent_file_on_every_path`, `::test_file_copy_without_a_matching_source_is_a_typed_error`, `::test_rar5_hard_link_stays_a_hardlink` |
 | File-version rows list, read, stay out of `extract_all`, and keep solid demux aligned | `::test_file_version_list_and_read`, `::test_file_version_extract_all_skips_history`, `::test_file_version_solid_demux_aligned` |
 | M0 is `STORED`; M1–M5 is `RAR` with `level` 1–5; unpack version in `extra["rar.extract_version"]` (stored included; RAR3 `UNP_VER` unvalidated, RAR5 reports 50); method bytes outside M0–M5 stay `UNKNOWN` with no `level` | `tests/test_rar_reader.py::test_member_reports_exact_compression_and_extract_version`, `::test_rar3_unp_ver_byte_is_reported_unvalidated`, `::test_unknown_method_byte_omits_level`, `::test_stored_m0_direct_read`, `tests/test_rar_oracle.py::test_native_rar_matches_rarfile_metadata_and_bytes` |
 | Volume sets (`partN` and `.rNN`, including an SFX `.exe`/`.sfx` first volume), stream volumes, and refusal of an incomplete or later-first set | `::test_multi_volume_roundtrip`, `::test_multi_volume_rnn_roundtrip`, `::test_multi_volume_stream_materialization`, `::test_incomplete_multi_volume_raises`, `tests/test_volumes.py::test_discover_rar_part_volumes`, `::test_discover_old_rar_rnn_volumes`, `::test_discover_old_scheme_sfx_rnn_first_volume`, `::test_old_scheme_sfx_exe_opens_rnn_set`, `::test_multi_volume_rar_opens_volume_set_or_rejects_stub` |

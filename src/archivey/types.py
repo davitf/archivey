@@ -433,6 +433,13 @@ EXTRA_IS_JUNCTION: Final = "is_junction"
 # point. So a junction written by 7-Zip carries this key and not that one.
 EXTRA_IS_REPARSE_POINT: Final = "is_reparse_point"
 
+# Key in ArchiveMember.extra marking a FILE member whose bytes the archive stores once,
+# under an earlier member: a RAR5 "file reference" (``rar -oi``). The member reads and
+# extracts as an independent file; ``link_target`` names the source as stored and
+# ``link_target_member`` is the source member. Only RAR sets it today; not namespaced,
+# as the idea is not RAR's alone.
+EXTRA_IS_FILE_COPY: Final = "is_file_copy"
+
 # RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
 # because RAR5 records no per-file unpack version. Lives here, not on
 # CompressionMethod.level, which carries the method-byte offset instead.
@@ -460,6 +467,9 @@ class MemberExtra(dict[str, object]):
     * ``is_reparse_point`` (``bool``) — ZIP, 7z, RAR, directory. The weaker,
       metadata-only sibling of ``is_junction``: a Windows symlink or junction
       rather than a POSIX one.
+    * ``is_file_copy`` (``bool``) — RAR. A ``FILE`` member whose bytes the archive
+      stores once under an earlier member (a RAR5 file reference, ``rar -oi``).
+      ``link_target`` names that source and ``link_target_member`` is it.
     * ``rar.extract_version`` (``int``)
     * ``rar.file_version`` (``int``)
     * ``rar.tweaked_crc32`` (``int``)
@@ -494,6 +504,8 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["is_junction"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["is_reparse_point"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["is_file_copy"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["rar.extract_version"], /) -> int: ...
     @overload
@@ -634,12 +646,16 @@ class ArchiveMember:
     """Owner group name, if recorded."""
 
     link_target: str | None = None
-    """For a symlink/hardlink, the raw target path string as stored."""
+    """For a symlink/hardlink, the raw target path string as stored. For a ``FILE``
+    that is a stored copy of an earlier member (``extra["is_file_copy"]``), the
+    source's path as stored."""
 
     # compare=False: identity is path/type/metadata, not the resolved peer object
     # (resolution is late-bound and would make equality order-dependent).
     link_target_member: "ArchiveMember | None" = field(default=None, compare=False)
-    """For a link, the resolved target member within this archive, if found."""
+    """For a link, the resolved target member within this archive, if found. For a
+    ``FILE`` that is a stored copy (``extra["is_file_copy"]``), the member whose bytes
+    it repeats."""
 
     compression: tuple[CompressionMethod, ...] = field(default_factory=tuple)
     """Codec chain in compress order — pre-filters first, packing codec last."""
