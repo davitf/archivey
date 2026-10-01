@@ -51,6 +51,7 @@ Two recurring notes:
 | lzip | native `lzip.py` over stdlib `lzma` | core | **yes** (trailer scan) | yes (CRC) | yes |
 | LZMA1/LZMA2 (raw) | stdlib `lzma` `FORMAT_RAW` | core | n/a (container-owned) | yes | yes |
 | Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | stdlib `lzma` raw filters throughout | core | n/a (filter stage) | yes | yes |
+| BCJ ARM64 (7z) | archivey's own decoder (pure Python; stdlib `lzma` refuses filter id 10) | core | n/a (filter stage) | yes | yes |
 | raw Deflate / zlib | stdlib `zlib` | core | no (rewind) | yes | yes |
 | zstd | **stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14)** | `[recommended]` on <3.14; core on 3.14+ | no (rewind) | yes (frame checksum) | **yes** |
 | lz4 | `lz4` | `[recommended]` | no (rewind) | yes | yes |

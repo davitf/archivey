@@ -7,7 +7,9 @@
   batch into the same liblzma staging run as LZMA1/2
 
 BCJ entries carry both short and long on-disk method ids (``aliases``) — 7-Zip
-has historically written either form.
+has historically written either form. ARM64 (``0x0A``) has only the short id, and is
+the one branch filter Python's ``lzma`` will not build (``in_liblzma_chain`` False):
+it is decoded in Python, always as its own stage.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from archivey.exceptions import UnsupportedFeatureError
+from archivey.internal.streams.arm64 import FILTER_ARM64
 from archivey.internal.streams.codecs import Codec
 from archivey.types import CompressionAlgorithm
 
@@ -44,13 +47,17 @@ class SevenZipMethod:
     lzma_filter_id: int | None = None
     is_branch_filter: bool = False
     aliases: tuple[bytes, ...] = ()
+    # False for a filter Python's lzma refuses: it never joins a liblzma chain.
+    in_liblzma_chain: bool = True
 
 
 def _bcj(
     short: bytes,
-    long: bytes,
+    long: bytes | None,
     codec: Codec,
     filter_id: int,
+    *,
+    in_liblzma_chain: bool = True,
 ) -> SevenZipMethod:
     return SevenZipMethod(
         short,
@@ -59,7 +66,8 @@ def _bcj(
         codec=codec,
         lzma_filter_id=filter_id,
         is_branch_filter=True,
-        aliases=(long,),
+        aliases=(long,) if long is not None else (),
+        in_liblzma_chain=in_liblzma_chain,
     )
 
 
@@ -98,6 +106,7 @@ _METHODS: tuple[SevenZipMethod, ...] = (
     _bcj(b"\x07", b"\x03\x03\x05\x01", Codec.BCJ_ARM, lzma.FILTER_ARM),
     _bcj(b"\x08", b"\x03\x03\x07\x01", Codec.BCJ_ARMT, lzma.FILTER_ARMTHUMB),
     _bcj(b"\x09", b"\x03\x03\x08\x05", Codec.BCJ_SPARC, lzma.FILTER_SPARC),
+    _bcj(b"\x0a", None, Codec.BCJ_ARM64, FILTER_ARM64, in_liblzma_chain=False),
     SevenZipMethod(b"\x03\x03\x01\x1b", CompressionAlgorithm.BCJ2, MethodKind.BCJ2),
     _single(b"\x04\x01\x08", CompressionAlgorithm.DEFLATE, Codec.DEFLATE),
     _single(b"\x04\x01\x09", CompressionAlgorithm.DEFLATE64, Codec.DEFLATE64),
