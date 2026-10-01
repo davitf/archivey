@@ -121,8 +121,9 @@ def unar_rar5_probe_failure(unar: str) -> str | None:
 
     Otherwise, why this ``unar`` is not used, as text that follows its path. A run that
     cannot start, runs out of time (``PROBE_TIMEOUT_SECONDS``), exits non-zero or
-    writes the wrong bytes is a failure. Only the two file-system steps before the run
-    raise ``OSError``: creating the private directory and writing the archive into it.
+    writes the wrong bytes is a failure. ``OSError`` comes from the two file-system
+    steps before the run, creating the private directory and writing the archive into
+    it; a program that cannot start is a failure, not an ``OSError``.
 
     The archive is written as ``archive.rar`` in a directory of its own, because
     ``unar`` picks a volume set by file name (``RarReader._unar_archive_path``).
