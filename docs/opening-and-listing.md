@@ -167,9 +167,8 @@ The old RAR scheme needs a first volume either way: `<base>.rar`, or an SFX
 name from there, the way unrar finds them (`.r99` is followed by `.s00`, `.z99` by
 `.{00`), and the set ends at the first name that is missing. Names match in any
 letter case, the first volume's included, so `ARCHIVE.RAR` + `ARCHIVE.R00` is a set
-on Linux too. A later volume with no
-first volume beside it, or one past such a gap, is read as a lone file rather than as
-part of a set. A lone numbered part
+on Linux too. A later volume with no first volume beside it, or one past such a gap,
+is read as a lone file rather than as part of a set. A lone numbered part
 (`.7z.001` / `.zip.001` / `.exe.001` with no siblings) is an incomplete set,
 not a silent mis-parse. A part that does not exist at all raises
 `FileNotFoundError`, as any missing path does.
@@ -200,11 +199,12 @@ And a name that carries no part number but is shaped like a first volume
 (`backup.rar`, `backup.exe`, `backup.sfx`) only belongs beside the marked parts
 around it, and which parts those are decides what is checked. Beside old-scheme parts
 (`.r00` … `.r99`, `.s00` …) it is their volume 1 and must share their stem, so
-`[alpha.rar, alpha.r00]` joins and `[beta.rar, alpha.r00]` raises. Beside a `.partN` set it has no role at all, that
-scheme spelling its own volume 1 `movie.part1.rar`, so `[movie.part1.rar,
-movie.part2.rar, readme.rar]` raises. Beside a numbered set only the stub executable
-7-Zip writes there makes sense, which has no part number and need not share their
-name, so an `.exe` or `.sfx` is let through — a `.rar` in the same position is not.
+`[alpha.rar, alpha.r00]` joins and `[beta.rar, alpha.r00]` raises. Beside a `.partN`
+set it has no role at all, that scheme spelling its own volume 1 `movie.part1.rar`, so
+`[movie.part1.rar, movie.part2.rar, readme.rar]` raises. Beside a numbered set only the
+stub executable 7-Zip writes there makes sense, which has no part number and need not
+share their name, so an `.exe` or `.sfx` is let through — a `.rar` in the same position
+is not.
 
 When *no* name in the sequence carries a part number, nothing in it says any of them
 is a volume and none of this applies: `[alpha.rar, beta.rar]` joins, giving you bytes
