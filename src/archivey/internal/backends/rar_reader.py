@@ -218,17 +218,24 @@ def _stream_volume_name(stem: str, index: int, *, old_style: bool) -> str:
     Used for a stream set copied for either program, and for the set linked into
     ``unar``'s private directory (``RarReader._unar_archive_path``).
 
-    Old-style names run ``.rar``, ``.r00`` … ``.r99``, ``.s00`` … ``.z99``, as RAR
-    writes them. That scheme has no name past volume 901, so a longer set falls back
-    to ``partN``; ``unrar`` reads either, and ``unar`` would not find the next volume
-    of such a set under any name.
+    Old-style names run ``.rar``, ``.r00`` … ``.r99``, ``.s00`` … ``.z99`` and on
+    past ``z`` (``.{00``, ``.|00`` …), because unrar's next-volume rule just adds one
+    to the letter's character code; it reads a set of 1 500 volumes named that way.
+    It does not follow ``partN`` names for an old-style set, so those are never used
+    for one. ``unar`` stops after volume 901 whatever the names, and is refused for
+    a longer set (:data:`_UNAR_MAX_OLD_STYLE_VOLUMES`).
     """
-    if not old_style or index > 901:
+    if not old_style:
         return f"{stem}.part{index}.rar"
     if index == 1:
         return f"{stem}.rar"
     number = index - 2
     return f"{stem}.{chr(ord('r') + number // 100)}{number % 100:02d}"
+
+
+# unar 1.10 reads an old-style set as far as ``.z99`` and no further: ``lsar``
+# reports 901 volumes for a longer set, and the member is then short.
+_UNAR_MAX_OLD_STYLE_VOLUMES = 901
 
 
 _UNRAR_PART_NAME_RE = re.compile(
@@ -1208,9 +1215,9 @@ class RarReader(BaseArchiveReader):
         """Write ordered volumes into a temp dir under the names the set's own scheme uses.
 
         ``name.partN.rar``, or ``name.rar``, ``name.r00``, ``name.r01`` … for a RAR
-        1.5-2.x set without the new-numbering flag. ``unrar`` finds the next volume
-        under either scheme; ``unar`` looks only under the one the header names, and
-        reads an old-style set written as ``partN`` as volume 1 alone.
+        1.5-2.x set without the new-numbering flag. ``unrar`` and ``unar`` both look
+        for the next volume only under the scheme the header names: an old-style set
+        written as ``partN`` reads as volume 1 alone.
 
         Called from :meth:`_ensure_archive_path`, on the first read ``unrar``
         has to serve — not from ``__init__``. Listing a stream-volume set never
@@ -1748,6 +1755,17 @@ class RarReader(BaseArchiveReader):
                 "unar does not find a RAR after a prefix, and a prefixed multi-volume "
                 "set is not copied for it. Set ArchiveyConfig.rar_decompressor to "
                 "'unrar' to read it with RARLAB unrar.",
+            )
+        if (
+            self._archive.old_volume_naming
+            and self._volume_set_size() > _UNAR_MAX_OLD_STYLE_VOLUMES
+        ):
+            raise self._unar_refused(
+                member,
+                f"unar reads at most {_UNAR_MAX_OLD_STYLE_VOLUMES} volumes of an "
+                "old-style (.rar, .r00 ...) set and reports the rest as a damaged "
+                "member. Set ArchiveyConfig.rar_decompressor to 'unrar' to read it "
+                "with RARLAB unrar.",
             )
         if self._unar_path is not None:
             return self._unar_path
@@ -3153,6 +3171,14 @@ class RarReader(BaseArchiveReader):
         (:class:`UnarRarPolicy`), decided from the parse before anything is spooled or
         spawned.
         """
+        return self._open_spawned_member(
+            member, self._unar_member_spawner(member, raw, policy)
+        )
+
+    def _unar_member_spawner(
+        self, member: ArchiveMember, raw: RarMemberInfo, policy: UnarRarPolicy
+    ) -> Callable[[], BinaryIO]:
+        """Check what ``unar -i <index>`` needs for this member; return its spawner."""
         refusal = policy.member_refusal(raw)
         if refusal is not None:
             raise self._unar_refused(member, refusal)
@@ -3182,7 +3208,7 @@ class RarReader(BaseArchiveReader):
             with _close_on_error(owned):
                 return self._track_decompressed(owned)
 
-        return self._open_spawned_member(member, _spawn)
+        return _spawn
 
     def _iter_solid_with_unar(
         self, policy: UnarRarPolicy
@@ -3195,6 +3221,14 @@ class RarReader(BaseArchiveReader):
         set of entries than ``unrar p`` (history rows always, RAR3/4 symlink targets
         too), or only the entries the policy names. A refused member raises on its first
         read, so a pass that only lists, or skips it, is not refused.
+
+        A member with no digest to check is not served from this run: it gets its own
+        ``unar -i <index>`` run, as :meth:`_open_member_with_unar` would give it. When
+        ``unar`` 1.10.1 drops a member from this run (exit 0), the bytes at that
+        member's offset are the next members' or stale window bytes, often enough of
+        them to pass the size check; only a digest tells them from the member's. A run
+        of one entry writes that entry exactly or not at all, which the size check
+        catches.
         """
         solid: SolidBlockReader | None = None
 
@@ -3210,10 +3244,13 @@ class RarReader(BaseArchiveReader):
                     password=password,
                 )
                 # Every member read from this pipe is checked against its declared
-                # size, and against its stored CRC32 or BLAKE2sp when it has one.
-                # unar's failures are short or missing output, which the size check
-                # catches, so its exit status adds nothing. A wrong password gives no
-                # output at all, reported as such when a password was needed.
+                # size and its stored CRC32 or BLAKE2sp; a member without one is read
+                # by its own run instead (``_open``). unar 1.10.1 drops a compressed
+                # RAR5 member whose last packed byte uses 6-8 bits, exit 0; the bytes
+                # then read in its place are later members' or stale window bytes,
+                # which the digest catches and the size check often does not. The
+                # exit status adds nothing. A wrong password gives no output at all,
+                # reported as such when a password was needed.
                 owned = UnarOutputStream(
                     stdout,
                     proc,
@@ -3241,15 +3278,20 @@ class RarReader(BaseArchiveReader):
                 return None
             size = _member_stream_size(member)
             refusal = policy.solid_pass_refusal(raw)
+            hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
             open_fn: Callable[[], BinaryIO]
             if refusal is not None:
                 open_fn = lambda: _refuse(member, refusal)  # noqa: E731
+            elif not hashes:
+                # No digest would catch misplaced bytes from the shared run (above).
+                open_fn = lambda: self._watch_unverified(  # noqa: E731
+                    self._unar_member_spawner(member, raw, policy)(), member
+                )
             else:
                 offset = policy.solid_pass_offset(raw)
                 open_fn = lambda: self._watch_unverified(  # noqa: E731
                     _pipe().open_member(offset, size, lazy=True), member
                 )
-            hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
             # Registered for the live-stream gate, as in the ``unrar`` pass.
             return self._register_public_stream(
                 self._wrap_member_stream(
