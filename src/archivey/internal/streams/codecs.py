@@ -440,7 +440,8 @@ class Codec(Enum):
     BCJ_ARM64 = "bcj_arm64"
 
 
-# LZMA raw-filter ids for the filter-only codecs, for assembling 7z coder chains.
+# liblzma raw-filter ids for the filter-only codecs. Each one but ARM64 can join a 7z
+# raw liblzma chain; ARM64 is decoded in Python (see sevenzip_pipeline).
 LZMA_FILTER_IDS: dict[Codec, int] = {
     Codec.DELTA: lzma.FILTER_DELTA,
     Codec.BCJ_X86: lzma.FILTER_X86,

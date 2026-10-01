@@ -236,10 +236,11 @@ out-streams, the limits 7-Zip applies (`k_Scan_NumCoders_MAX` and
 raise `UnsupportedFeatureError` at header parse, as 7-Zip reports it unsupported.
 
 An LZMA1 or LZMA2 coder SHALL share a liblzma raw chain only with the Delta and BCJ
-filters decoded after it, ARM64 excepted: stdlib `lzma` does not build that filter, so
-ARM64, and every filter decoded after it in its run, SHALL be decoded as its own stage. A filter decoded before any LZMA1/LZMA2 coder, and a second
-LZMA1/LZMA2 coder in the same run, SHALL be decoded as its own stage, because a liblzma
-raw chain must end, in encode order, in its only LZMA1/LZMA2 filter.
+filters decoded after it, ARM64 excepted: stdlib `lzma` does not build that filter,
+so ARM64, and every filter decoded after it in its run, SHALL be decoded as its own
+stage. A filter decoded before any LZMA1/LZMA2 coder, and a second LZMA1/LZMA2 coder
+in the same run, SHALL be decoded as its own stage, because a liblzma raw chain must
+end, in encode order, in its only LZMA1/LZMA2 filter.
 
 Every decoder of a folder runs at once: the stages of a chain are stacked streams, and
 a BCJ2 folder's branches run side by side. When a folder has more than one decoder

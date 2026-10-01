@@ -217,7 +217,7 @@ def test_arm64_after_lzma2_is_its_own_stage() -> None:
 def test_misaligned_arm64_start_offset_is_refused_at_plan_time() -> None:
     # 7-Zip refuses it too (E_NOTIMPL): the filter works on 4-byte words.
     arm64 = SevenZipCoder(_ARM64, 1, 1, (2).to_bytes(4, "little"))
-    with pytest.raises(UnsupportedFeatureError, match="start offset 2"):
+    with pytest.raises(UnsupportedFeatureError, match="start offset 2 .*multiple of 4"):
         plan_folder(_folder([arm64], 16))
 
 
