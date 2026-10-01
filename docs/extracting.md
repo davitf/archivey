@@ -291,7 +291,7 @@ they cause no collisions, and `out/` is neither created nor changed. A symlink w
 absolute target names a path inside `out/` is checked against that path, as in a real
 extraction.
 
-Two answers can differ from a real extraction, because the scratch directory is not
+A few answers can differ from a real extraction, because the scratch directory is not
 `out/`:
 
 - If a link target leaves `out/` and comes back in through a symlink outside it, or
@@ -300,6 +300,9 @@ Two answers can differ from a real extraction, because the scratch directory is 
 - Everything is on one filesystem. If `out/` spans a mount point, a real extraction
   copies a hardlink that crosses it and counts the copy against `max_extracted_bytes`.
   The dry run does not count those bytes.
+- If `out/` does not exist, the dry run checks that it could be created from the
+  permissions of the nearest directory that exists. An ACL or a read-only filesystem
+  that would stop a real extraction there is not seen.
 
 ## Names change on disk
 

@@ -327,18 +327,31 @@ def predict_hoist(
     """What :func:`maybe_hoist_single_root` would do after a real run, for a dry run.
 
     A dry run writes nothing, so there is no wrapper to look into. The report says what
-    a real run would have put there: the top-level entries of the members it extracted.
-    A single one is lifted to the wrapper's parent under its own name, as the hoist
-    lifts it. Where that name exists already, the hoist would merge into it, and the
-    collisions that merge could meet are not checked.
+    a real run would have put there: the top-level entries of the members it extracted,
+    and the directories made for a member that then failed, which a real run leaves in
+    place. A single one is lifted to the wrapper's parent under its own name, as the
+    hoist lifts it. Where that name exists already, the hoist would merge into it, and
+    the collisions that merge could meet are not checked.
     """
     tops: dict[str, bool] = {}  # name -> whether it is a directory
     for result in report:
-        if result.status is not ExtractionStatus.EXTRACTED or result.path is None:
+        if result.status is ExtractionStatus.EXTRACTED:
+            path = result.path
+        elif result.status is ExtractionStatus.FAILED:
+            # Its own file is not left behind, but the directories above it are.
+            path = result.requested_path
+        else:
+            continue
+        if path is None:
             continue
         try:
-            parts = result.path.relative_to(wrapper).parts
+            parts = path.relative_to(wrapper).parts
         except ValueError:
+            continue
+        if result.status is ExtractionStatus.FAILED:
+            if len(parts) < 2:
+                continue
+            tops[parts[0]] = True
             continue
         if not parts:
             continue

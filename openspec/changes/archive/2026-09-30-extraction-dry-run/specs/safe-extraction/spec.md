@@ -20,10 +20,16 @@ exempt, because the scratch directory cannot reproduce them: a link target that 
 `dest` and comes back into it through a symlink outside `dest`, or by climbing above
 the directory that holds `dest`, MAY be refused where a real extraction accepts it; and
 bytes a real extraction counts for copying a hardlink across a filesystem boundary
-inside `dest` are not counted. A `dest` that exists and is not a directory, or that
-cannot be created because part of its path is not a directory, SHALL be refused as a
-real extraction refuses it. Errors raised, recorded or logged SHALL name paths under
-`dest`, not the scratch directory. The scratch directory SHALL be removed before
+inside `dest` are not counted. A `dest` that exists and is not a directory SHALL be
+refused as a real extraction refuses it. A `dest` that does not exist SHALL be refused
+with the error a real extraction gets creating it when the nearest part of its path
+that exists cannot be resolved, is not a directory, or cannot be written to; whether
+it can be written to is predicted from its permissions, so a refusal that comes from
+an ACL or a read-only filesystem MAY appear only in a real extraction. File names in
+errors raised, recorded or logged SHALL be the ones a real extraction's errors give,
+spelled from `dest` as given or as it resolves, and never the scratch directory's,
+except in the warning that the scratch directory itself could not be removed. The
+scratch directory SHALL be removed before
 the call returns or raises, including when the archive stored modes that make its
 directories unwritable or its files read-only.
 
@@ -37,6 +43,8 @@ directories unwritable or its files read-only.
 | `dest` holds a file of the same name as a member | Member `EXTRACTED` at `dest/<name>`; the existing file is unchanged |
 | `dest` is a regular file | `ExtractionError`; nothing created |
 | `dest`'s parent is a regular file | `OSError`, as in a real extraction; nothing created |
+| `dest`'s parent is a directory the caller cannot write to, or a symlink loop | The `OSError` a real extraction raises; nothing created |
+| `dest` is relative and a member fails with an `OSError` | Its file names match a real extraction's, absolute where those are |
 | A symlink whose absolute target names a file under `dest` | `EXTRACTED`, as in a real extraction |
 | A symlink at the top of `dest` whose target is `../<dest name>/<file>` | `EXTRACTED`, as in a real extraction |
 | `dest` does not exist | Not created |

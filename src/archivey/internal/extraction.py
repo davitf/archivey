@@ -448,6 +448,14 @@ class ExtractionCoordinator:
         # real run.
         self._scratch: Path | None = None
         self._shown_dest: Path | None = None
+        # Dry run only: the scratch directory spelled as the pass is handed it, and
+        # where a path under its resolved spelling is shown (``_shown``). A real run
+        # reports paths built from ``dest`` as given and hands the filesystem the ones
+        # built from ``dest.resolve()``, so with a relative dest, an OSError names an
+        # absolute path. Handing the pass a relative spelling of the scratch directory
+        # keeps the two apart the same way.
+        self._scratch_given: Path | None = None
+        self._shown_resolved: Path | None = None
         # Dry run only: the caller's destination as the absolute path they gave and as
         # it resolves, which an absolute link target is matched against
         # (``_link_target_on_disk``), and each rewritten target's original, for errors.
@@ -497,8 +505,14 @@ class ExtractionCoordinator:
         # target that climbs out of dest by name (``../out/x``) comes back in.
         scratch = Path(tempfile.mkdtemp(prefix=_DRY_RUN_PREFIX)).resolve()
         work = scratch / (resolved.name or "dest")
+        work_given = work
+        if not dest.is_absolute():
+            with contextlib.suppress(ValueError):  # Windows: on another drive
+                work_given = Path(os.path.relpath(work))
         self._scratch = work
+        self._scratch_given = work_given
         self._shown_dest = dest
+        self._shown_resolved = resolved if work_given != work else dest
         self._dest_spellings = (given, resolved)
         self._shown_targets = {}
         try:
@@ -506,7 +520,7 @@ class ExtractionCoordinator:
                 self._sink = sink
                 try:
                     work.mkdir()
-                    results = self._run(reader, work)
+                    results = self._run(reader, work_given)
                 except OSError as exc:
                     self._rebase_os_error(exc)
                     raise
@@ -515,7 +529,9 @@ class ExtractionCoordinator:
             self._sink = None
             _remove_scratch(scratch)
             self._scratch = None
+            self._scratch_given = None
             self._shown_dest = None
+            self._shown_resolved = None
             self._dest_spellings = ()
             self._shown_targets = {}
 
@@ -549,14 +565,19 @@ class ExtractionCoordinator:
         return target
 
     def _shown(self, path: Path) -> Path:
-        """``path`` as the caller sees it: a dry run's scratch path under their dest."""
-        if self._scratch is None or self._shown_dest is None:
-            return path
-        try:
-            rel = path.relative_to(self._scratch)
-        except ValueError:
-            return path
-        return self._shown_dest / rel
+        """``path`` as the caller sees it: a dry run's scratch path under their dest,
+        spelled as a real run would spell it (see ``_scratch_given``)."""
+        for scratch, shown in (
+            (self._scratch_given, self._shown_dest),
+            (self._scratch, self._shown_resolved),
+        ):
+            if scratch is None or shown is None:
+                continue
+            try:
+                return shown / path.relative_to(scratch)
+            except ValueError:
+                continue
+        return path
 
     def _rebase_result(self, result: ExtractionResult) -> ExtractionResult:
         if isinstance(result.error, OSError):
@@ -2190,8 +2211,13 @@ class ExtractionCoordinator:
         """Refuse a dry run's ``dest`` where a real run would, without creating it.
 
         The pass itself writes into the scratch directory, which exists already. Here
-        ``dest`` gets the refusal below, and then the question ``mkdir(parents=True)``
-        would answer: the nearest part of it that exists must be a directory.
+        ``dest`` gets the refusal below, and then the questions ``mkdir(parents=True)``
+        would answer about the nearest part of it that exists: that it can be resolved,
+        is a directory, and can be written to. Each raises the error ``mkdir`` raises,
+        naming the path it names. Whether it can be written to is asked with
+        ``os.access``, which approximates it: it does not see every ACL or a read-only
+        mount, for root it allows everything, as ``mkdir`` mostly does, and on Windows
+        it is not asked.
         """
         if dest.is_dir():
             return
@@ -2199,17 +2225,32 @@ class ExtractionCoordinator:
             raise ExtractionError(
                 f"Destination exists and is not a directory: {display_path(dest)}"
             )
-        ancestor = Path(os.path.abspath(dest)).parent
+        child, ancestor = dest, dest.parent
         while not os.path.lexists(ancestor) and ancestor != ancestor.parent:
-            ancestor = ancestor.parent
-        if ancestor.is_dir():
-            return
-        if ancestor.is_symlink() and not ancestor.exists():
-            # mkdir meets a dangling symlink as an existing entry.
-            raise FileExistsError(
-                errno.EEXIST, os.strerror(errno.EEXIST), str(ancestor)
+            child, ancestor = ancestor, ancestor.parent
+        try:
+            st = os.stat(ancestor)
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                # A dangling symlink: mkdir meets it as an existing entry.
+                raise FileExistsError(
+                    errno.EEXIST, os.strerror(errno.EEXIST), str(ancestor)
+                ) from None
+            # ELOOP and the like, met while resolving dest itself.
+            raise OSError(exc.errno, exc.strerror, str(dest)) from None
+        if not stat.S_ISDIR(st.st_mode):
+            raise NotADirectoryError(
+                errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(dest)
             )
-        raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(dest))
+        if os.name == "nt":
+            # os.access there reads the read-only attribute, which does not stop
+            # creating entries in a directory.
+            return
+        if not os.access(ancestor, os.X_OK):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(dest))
+        if not os.access(ancestor, os.W_OK):
+            # The first directory mkdir creates is the one it is refused.
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(child))
 
     def _ensure_dest_root(self, dest: Path) -> None:
         """Ensure ``dest`` is a directory to extract into, creating it if absent; under

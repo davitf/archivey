@@ -58,20 +58,37 @@ def _assert_nothing_left(tmp_path: Path, dest: Path) -> None:
 
 
 def _rel(path: Path | None, dest: Path) -> str | None:
-    return None if path is None else path.relative_to(dest).as_posix()
+    if path is None:
+        return None
+    try:
+        return path.relative_to(dest).as_posix()
+    except ValueError:  # spelled unlike dest: shown as is, to fail the comparison
+        return f"elsewhere: {path.as_posix()}"
 
 
-def _shape(results, dest: Path) -> list[tuple[object, ...]]:
+def _normalize(text: str, dest: Path, cwd: Path) -> str:
+    """``text`` with dest factored out, keeping apart how it was spelled.
+
+    An absolute spelling becomes ``<abs>`` and a relative one ``<rel>``, so a run that
+    reports ``out/x`` where the other reports ``/tmp/.../out/x`` does not compare equal.
+    """
+    try:
+        absolute = str((cwd / dest).resolve())
+    except (OSError, RuntimeError):  # a symlink loop on the way
+        absolute = os.path.abspath(cwd / dest)
+    text = text.replace(absolute, "<abs>").replace(str(cwd.resolve()), "<cwd>")
+    if not dest.is_absolute():
+        text = re.sub(rf"(?<=['\"]){re.escape(str(dest))}(?=['\"/\\])", "<rel>", text)
+    # The staging file's random suffix is the one thing two runs never share.
+    return _TMP_NAME.sub(".archivey-tmp-*", text)
+
+
+def _shape(results, dest: Path, cwd: Path) -> list[tuple[object, ...]]:
     """What a caller can observe of a report, with the destination factored out."""
     shape = []
     for r in results:
         error = r.error
-        message = None
-        if error is not None:
-            # The staging file's random suffix is the one thing two runs never share.
-            message = _TMP_NAME.sub(
-                ".archivey-tmp-*", str(error).replace(str(dest), "<dest>")
-            )
+        message = None if error is None else _normalize(str(error), dest, cwd)
         shape.append(
             (
                 r.member.name,
@@ -88,24 +105,41 @@ def _shape(results, dest: Path) -> list[tuple[object, ...]]:
     return shape
 
 
-def _both(source, tmp_path: Path, **kwargs) -> tuple[list, list]:
-    """Extract ``source`` for real and as a dry run; return both report shapes."""
-    real_dest = tmp_path / "real" / "out"
-    dry_dest = tmp_path / "dry" / "out"
+def _both(
+    source,
+    tmp_path: Path,
+    *,
+    relative: bool = False,
+    dest_name: str = "out",
+    **kwargs,
+):
+    """Extract ``source`` for real and as a dry run; return both report shapes.
+
+    Each run extracts into ``<tmp_path>/<real|dry>/<dest_name>``. With ``relative``,
+    it is given ``dest_name`` relative to the current directory, as the CLI gives it.
+    """
     kwargs.setdefault("on_error", OnError.CONTINUE)
     open_kwargs = kwargs.pop("open_kwargs", {})
     outcomes = []
-    for dest, dry_run in ((real_dest, False), (dry_dest, True)):
-        with open_archive(source(), **open_kwargs) as reader:
-            try:
-                report = reader.extract_all(dest, dry_run=dry_run, **kwargs)
-            except archivey.ArchiveyError as exc:
-                outcomes.append(
-                    ("raised", type(exc), str(exc).replace(str(dest), "<dest>"))
-                )
-            else:
-                outcomes.append(_shape(report.results, dest))
-    _assert_nothing_left(tmp_path, dry_dest)
+    for kind, dry_run in (("real", False), ("dry", True)):
+        cwd = tmp_path / kind
+        cwd.mkdir(exist_ok=True)
+        dest = Path(dest_name) if relative else cwd / dest_name
+        previous = os.getcwd()
+        os.chdir(cwd)
+        try:
+            with open_archive(source(), **open_kwargs) as reader:
+                try:
+                    report = reader.extract_all(dest, dry_run=dry_run, **kwargs)
+                except (archivey.ArchiveyError, OSError) as exc:
+                    outcomes.append(
+                        ("raised", type(exc), _normalize(str(exc), dest, cwd))
+                    )
+                else:
+                    outcomes.append(_shape(report.results, dest, cwd))
+        finally:
+            os.chdir(previous)
+    _assert_nothing_left(tmp_path, tmp_path / "dry" / dest_name)
     return outcomes[0], outcomes[1]
 
 
@@ -220,8 +254,13 @@ _FILESYSTEM_CASES = {
     "overwrite",
     [OverwritePolicy.ERROR, OverwritePolicy.RENAME, OverwritePolicy.REPLACE],
 )
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
 def test_filesystem_dependent_outcomes_match(
-    case: str, overwrite: OverwritePolicy, streaming: bool, tmp_path: Path
+    case: str,
+    overwrite: OverwritePolicy,
+    streaming: bool,
+    relative: bool,
+    tmp_path: Path,
 ) -> None:
     blob = _tar(_FILESYSTEM_CASES[case])
     for policy in _POLICIES:
@@ -231,6 +270,7 @@ def test_filesystem_dependent_outcomes_match(
         real, dry = _both(
             lambda: io.BytesIO(blob),
             work,
+            relative=relative,
             policy=policy,
             overwrite=overwrite,
             open_kwargs={"streaming": streaming},
@@ -362,10 +402,65 @@ def test_destination_under_a_file_is_refused(tmp_path: Path) -> None:
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
-@pytest.mark.skipif(
+_NON_ROOT = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes anywhere"
 )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes and symlinks")
+@_NON_ROOT
+@pytest.mark.parametrize(
+    "shape", ["unwritable-parent", "unwritable-grandparent", "symlink-loop"]
+)
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
+def test_destination_that_cannot_be_created_is_refused_alike(
+    shape: str, relative: bool, tmp_path: Path
+) -> None:
+    for kind in ("real", "dry"):
+        cwd = tmp_path / kind
+        cwd.mkdir()
+        if shape == "symlink-loop":
+            (cwd / "base").symlink_to("base")
+        else:
+            (cwd / "base").mkdir(mode=0o555)
+    tail = "a/out" if shape == "unwritable-grandparent" else "out"
+    try:
+        real, dry = _both(
+            lambda: io.BytesIO(_tar([("data", "file", 0)])),
+            tmp_path,
+            relative=relative,
+            dest_name=f"base/{tail}",
+        )
+    finally:
+        for kind in ("real", "dry"):
+            if not (tmp_path / kind / "base").is_symlink():
+                (tmp_path / kind / "base").chmod(0o755)
+    assert real[0] == "raised"
+    assert dry == real
+    assert not os.path.lexists(tmp_path / "dry" / "base" / tail)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+@_NON_ROOT
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
+def test_member_errors_match_with_either_dest_spelling(
+    relative: bool, tmp_path: Path
+) -> None:
+    # The directory is locked before its file is written, so the write fails.
+    blob = _tar([("ro", "dir", 0o555), ("ro/f", "file", 0)])
+    real, dry = _both(
+        lambda: io.BytesIO(blob),
+        tmp_path,
+        relative=relative,
+        policy=ExtractionPolicy.TRUSTED,
+    )
+    (tmp_path / "real" / "out" / "ro").chmod(0o755)
+    assert real[-1][1] is ExtractionStatus.FAILED
+    assert dry == real
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+@_NON_ROOT
 def test_errors_and_warnings_name_dest(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -451,23 +546,29 @@ def test_cli_dry_run_writes_nothing(
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
+_TOO_LONG = "x" * 300  # longer than any filesystem's name limit: fails at write time
+
+
 @pytest.mark.parametrize(
-    ("root", "existing", "expected"),
+    ("root", "names", "existing", "expected"),
     [
-        ("src", None, "would move to src/"),
-        ("bundle", None, "would remove wrapper; content at bundle/"),
-        ("src", "src", "would move to src/, which exists already"),
+        ("src", ["a", "b"], None, "would move to src/"),
+        ("bundle", ["a", "b"], None, "would remove wrapper; content at bundle/"),
+        ("src", ["a", "b"], "src", "would move to src/, which exists already"),
+        # The root exists only because a member under it was given a directory.
+        ("src", [_TOO_LONG], None, "would move to src/"),
     ],
-    ids=["moved", "flattened", "onto-existing"],
+    ids=["moved", "flattened", "onto-existing", "only-a-failed-member"],
 )
 def test_cli_dry_run_names_where_a_single_root_lands(
     root: str,
+    names: list[str],
     existing: str | None,
     expected: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    blob = _tar([(f"{root}/a", "file", b"x"), (f"{root}/b", "file", b"y")])
+    blob = _tar([(f"{root}/{name}", "file", b"x") for name in names])
     runs = {}
     for dry_run in (False, True):
         cwd = tmp_path / ("dry" if dry_run else "real")
