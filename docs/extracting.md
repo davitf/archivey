@@ -69,9 +69,19 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
 
 ## What is enforced
 
-- **Path traversal:** `..` components (any separator), absolute paths, drive letters,
-  UNC prefixes, and null bytes are rejected before any write; the destination parent is
-  resolved and containment-checked (`safe-extraction`, `internal/filters.py`).
+- **Path traversal:** `..` components (any separator) and null bytes are rejected
+  before any write; the destination parent is resolved and containment-checked
+  (`safe-extraction`, `internal/filters.py`). An absolute name (a leading `/`, a drive
+  letter or a UNC prefix) is refused under `STRICT`. `STANDARD` and `TRUSTED` drop the
+  root and extract it inside the destination (`/etc/x` → `etc/x`, `C:/x` → `x`), as
+  GNU tar, bsdtar, unzip and 7-Zip do, and record the stored name in
+  `ExtractionResult.presented_name`; a hardlink's absolute target is re-rooted the same
+  way. A drive letter with no separator after it (`a:b`) is refused at every policy: it
+  is also an ordinary POSIX name, so there is no root to drop. Your
+  `filter` runs before these checks, so it sees every member and can rename an unsafe
+  one; the name it returns is the one checked. `archivey.sanitize_names` is a ready-made
+  filter that renames instead of refusing: it drops roots, resolves or drops `..`,
+  removes bidi overrides, and adds `_` to Windows-reserved names and `:`.
 - **Extraction-root overwrite:** a *file* member whose normalized name is `"."` or `""`
   is rejected (`FilterRejectionError`); only a directory member may name the extraction
   root. Prevents a corrupt archive from replacing the destination directory with a
@@ -224,7 +234,7 @@ archivey.extract("untrusted.zip", "out/", abort_on={AbortOn.BLOCKED_MEMBER})
 | --- | --- | --- |
 | `BLOCKED_MEMBER` | a member is refused by a path-safety check or a policy filter | the underlying `FilterRejectionError` |
 | `NAME_COLLISION` | a second member resolves to an already-written destination (non-`TRUSTED`) | `NameCollisionError` |
-| `NAME_SANITIZED` | a name is rewritten to its portable spelling | `NameRewrittenError` |
+| `NAME_SANITIZED` | a name is rewritten to its portable spelling, or an absolute name is re-rooted | `NameRewrittenError` |
 
 An abort is immediate: no later member is processed and **no report is returned** — so
 handle the exception, not a return value. Output already written for earlier members
@@ -345,8 +355,14 @@ Defaults (via `ExtractionLimits` / `ListingLimits` / `DecoderLimits` / `SpoolLim
   `ResourceLimitError`. Format detection is the exception: a `.lzma` or compressed-tar
   sample is decoded uncapped to recognise it, so under a memory cap an oversized
   declaration can surface as `MemoryError` from `open_archive` instead.
-  RAR is not covered: its data is decoded by `unrar` or `unar` in a separate process,
-  and archivey does not check the dictionary size a RAR header declares.
+  RAR is covered too, although `unrar` or `unar` decodes its data in a separate process.
+  The dictionary size a RAR header declares is checked before that process starts. The
+  size is counted as the program allocates it. `unar` uses the whole declared
+  dictionary, so the declared size counts. `unrar` uses no more of it than the data it
+  decodes, so the count is capped at the member's unpacked size. In a solid archive the
+  cap is the unpacked size of the members up to and including the one read. An earlier
+  member that `unrar`'s include mask also selects counts too, because `unrar` decodes it
+  first: a duplicate name, or a glob under `rar_allow_glob_member_concatenation`.
 - **Key-derivation work** — RAR5 and 7z headers say how many hashing rounds turn a
   password into a key, and an archive can salt every member so each needs its own
   (`DecoderLimits.max_key_derivation_rounds`, default `2**27` rounds in total per open

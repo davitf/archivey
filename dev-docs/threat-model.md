@@ -67,11 +67,17 @@ no member replaces the destination itself.
 
 **Mechanism.**
 - `internal/filters.py` `check_universal` runs on every member under every policy,
-  `TRUSTED` included. It rejects `..` components (any separator), absolute paths, drive
-  letters, UNC prefixes, NUL bytes, names `os.fsencode` cannot represent, special files
-  (devices, FIFOs, sockets), and a non-directory member whose normalized name is `"."`
-  or `""` (which would replace the destination root with a file). It resolves the
-  parent and checks containment, and checks symlink and hardlink targets lexically.
+  `TRUSTED` included, after the caller's filter, on the name about to be written. Under
+  `STANDARD` and `TRUSTED`, `reroot_absolute` first drops a rooted name's root (a
+  leading `/` or `\`, or a drive letter with a separator after it) and a hardlink
+  target's, so the member lands inside the destination. It rejects `..` components
+  (any separator), absolute paths including drive letters and UNC prefixes (every
+  absolute name under `STRICT`; at any policy a drive-relative `C:x`, which has no
+  root to drop, or an absolute name a filter returned), NUL bytes, names
+  `os.fsencode` cannot represent, special files (devices, FIFOs, sockets), and a
+  non-directory member whose normalized name is `"."` or `""` (which would replace the
+  destination root with a file). It resolves the parent and checks containment, and
+  checks symlink and hardlink targets lexically.
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
   symlink against the live tree after `os.symlink` and removes it if it escapes, which
   catches a chain staged by earlier members. That is the third layer after the lexical
@@ -367,12 +373,22 @@ same cap before building any. Bytes decoded inside a branch
 never reach the folder stream `ExtractionLimits` counts, so the end-of-output check reads
 at most one byte from each branch.
 
+RAR data is decoded by `unrar` or `unar` in another process, and the dictionary its
+headers declare is checked the same way, before that process starts
+(`internal/backends/rar_reader.py` `RarReader._check_dictionary_memory`). The count is
+what the program that will run allocates, measured per program (rar.md §7): `unar`
+touches the whole declared dictionary; `unrar` touches at most the unpacked bytes the
+read decodes, including the earlier members a shared name mask makes it decode.
+
 **Residual.** Detection decodes an LZMA or compressed-tar sample uncapped, so under a
 memory cap an oversized declaration can surface as `MemoryError` from `open_archive`
-(public in extracting.md §Limits).
+(public in extracting.md §Limits). The RAR counts rest on measurements of `unrar` 7.00
+and `unar` 1.10.1; another version that allocates differently is not measured.
 
 **Tests.**
-`tests/test_sevenzip_bcj2.py::test_bcj2_folder_dictionaries_count_together_against_the_decoder_cap`.
+`tests/test_sevenzip_bcj2.py::test_bcj2_folder_dictionaries_count_together_against_the_decoder_cap`;
+for RAR, the tests after "the RAR dictionary counts against
+DecoderLimits.max_decoder_memory" in `tests/test_audit_rar_iso_dir.py`.
 
 #### Key derivation
 
@@ -459,8 +475,14 @@ the member anyway, with no glob involved, so the glob adds only a bounded transf
 there. Whether the refusal earns its keep is parked with the general unbounded-read
 question ([`formats/rar.md`](formats/rar.md) §5 to §7).
 
+**Residual.** A mask with no glob that still selects earlier members (a duplicate name,
+or two names `unrar` reads the same way) is not refused, so `unrar` decodes those
+members first. Their dictionaries count against `DecoderLimits.max_decoder_memory`
+([Decoder memory](#decoder-memory)); the bytes they decode count against no limit.
+
 **Tests.** `tests/test_rar_reader.py::test_glob_member_with_earlier_matches_is_refused`,
-`::test_solid_glob_refusal_does_not_claim_an_avoidable_decode`.
+`::test_solid_glob_refusal_does_not_claim_an_avoidable_decode`,
+`tests/test_audit_rar_iso_dir.py::test_unrar_counts_an_earlier_member_its_shared_mask_decodes`.
 
 ### Integrity verdicts come from reads
 

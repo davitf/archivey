@@ -458,7 +458,11 @@ def test_resolve_link_never_returns_escaping_name(
     if result is None:
         return
     # Returned names must not escape the archive namespace (same gate as the impl).
-    assert result not in (".", "/", "..")
+    # A hardlink target keeps a leading "/": it names the member stored with one
+    # (``tar -P``), which extraction re-roots or refuses along with the link.
+    if member_type is MemberType.HARDLINK:
+        result = result.lstrip("/")
+    assert result not in ("", ".", "/", "..")
     assert not result.startswith("../")
     assert not result.startswith("/")
 

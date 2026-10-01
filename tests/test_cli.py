@@ -2320,3 +2320,80 @@ def test_test_early_stop_without_error_exits_fail(
     monkeypatch.setattr(BaseArchiveReader, "stream_members", _one_then_stop)
     assert main(["test", str(sample_zip)]) == EXIT_FAIL
     assert "1 OK, 0 failed, 2 not tested" in capsys.readouterr().err
+
+
+def test_extract_reports_reroots_once_not_per_member(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A ``tar -P`` backup re-roots every member; one summary line says so, and the
+    per-member lines appear only under --verbose, including for a member whose name
+    was also rewritten for portability."""
+    archive = _tar(
+        tmp_path / "t.tar",
+        {"/etc/a": b"1", "/etc/b": b"2", "/var/log/c": b"3", "/d/y\udcff": b"4"},
+    )
+    dest = tmp_path / "out"
+    assert main(["x", str(archive), "-d", str(dest), "--policy", "standard"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "re-rooted 4 absolute member names inside the destination" in err
+    assert "re-rooted: " not in err
+    assert "name rewritten:" not in err
+    assert (dest / "etc" / "a").read_bytes() == b"1"
+
+    dest2 = tmp_path / "out2"
+    assert (
+        main(["x", str(archive), "-d", str(dest2), "--policy", "standard", "-v"])
+        == EXIT_OK
+    )
+    err = capsys.readouterr().err
+    assert "re-rooted: /etc/a -> etc/a" in err
+    assert "re-rooted: /var/log/c -> var/log/c" in err
+    assert "re-rooted: /d/y\\xff -> d/y%FF" in err
+    assert "name rewritten:" not in err
+
+
+def _tar_with_dirs(path: Path, names: list[str]) -> Path:
+    import tarfile
+
+    with tarfile.open(path, "w") as tf:
+        for name in names:
+            info = tarfile.TarInfo(name)
+            if name.endswith("/"):
+                info.type = tarfile.DIRTYPE
+                # TarInfo defaults to 0o644, and archivey chmods a directory as soon as
+                # it creates it, so a non-root run could not write its children.
+                info.mode = 0o755
+                tf.addfile(info)
+            else:
+                info.size = 1
+                tf.addfile(info, io.BytesIO(b"x"))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("names", "extra_args"),
+    [
+        # No -d: the smart enclosing directory adds a component to every path.
+        (["/etc/a", "/etc/b"], []),
+        # Directory members keep their trailing ``/``; their paths do not.
+        (["/etc/", "/etc/a", "/var/", "/var/log/", "/var/log/c"], ["-d", "out"]),
+        # A collision suffix makes the path differ by more than the root.
+        (["etc/a", "/etc/a"], ["-d", "out", "--overwrite", "rename"]),
+    ],
+    ids=["no-dest", "directories", "collision-rename"],
+)
+def test_extract_reroot_never_prints_a_default_rewrite_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    names: list[str],
+    extra_args: list[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    archive = _tar_with_dirs(tmp_path / "backup.tar", names)
+    assert main(["x", str(archive), "--policy", "standard", *extra_args]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "name rewritten:" not in err
+    assert "re-rooted: " not in err
+    rooted = sum(1 for n in names if n.startswith("/"))
+    assert f"re-rooted {rooted} absolute member name" in err

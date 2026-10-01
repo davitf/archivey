@@ -47,6 +47,7 @@ from archivey.internal.filters import (
     apply_name_policy,
     check_universal,
     collision_key,
+    reroot_absolute,
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
@@ -1107,21 +1108,36 @@ class ExtractionCoordinator:
     def _transform(
         self, original: ArchiveMember, dest_root: Path
     ) -> tuple[ArchiveMember | None, str | None]:
-        """Universal check on the original, then policy transform and user filter on a
-        transient copy.
+        """Policy transform and user filter on a transient copy, then the universal check
+        on the result.
 
         Returns ``(member_to_write, presented_name)`` — the member is ``None`` if the user
-        filter skipped it, and ``presented_name`` is the pre-rewrite full name when the
-        portable-name policy rewrote it, else ``None``. Raises a ``FilterRejectionError``
-        on a universal violation."""
-        check_universal(original, dest_root, link_target_on_disk=self._on_disk)
+        filter skipped it, and ``presented_name`` is the full name before a safety rewrite
+        (the absolute-name re-root or the portable-name policy) when one reaches disk,
+        else ``None``. Raises a ``FilterRejectionError`` on a universal violation."""
         transformed = POLICY_TRANSFORMS[self._policy](original)
+        # The re-root comes before the filter so the filter sees the name that would be
+        # written, as it already sees the policy's permission changes, and a filter
+        # need not strip roots itself under STANDARD or TRUSTED. Whether the re-root
+        # counts as a rewrite is decided after the filter, like the portable one: a
+        # member the filter drops or renames never reaches disk under the re-rooted name.
+        rerooted_from: str | None = None
+        if self._policy is not ExtractionPolicy.STRICT:
+            rerooted = reroot_absolute(transformed)
+            if rerooted.name != transformed.name:
+                rerooted_from = transformed.name
+            transformed = rerooted
+        rerooted_name = transformed.name
+        # The filter runs before the universal check, so it sees every member, the
+        # unsafe ones included, and can rename one to something safe. Whatever it
+        # returns is what gets checked and written.
         if self._filter is not None:
             transformed = self._filter(transformed)
             if transformed is None:
                 return None, None
-            # A caller filter can rename/relink; re-run the universal check on the result.
-            check_universal(transformed, dest_root, link_target_on_disk=self._on_disk)
+            if transformed.name != rerooted_name:
+                rerooted_from = None  # the filter chose this name; it is not a rewrite
+        check_universal(transformed, dest_root, link_target_on_disk=self._on_disk)
         if self._reader is not None and self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has
             # read yet: `read_link_targets=False`, or a streaming pass whose own read
@@ -1147,9 +1163,17 @@ class ExtractionCoordinator:
         # is checked too, and TRUSTED keeps faithful bytes. Reserved names / ':' are
         # rejected; a trailing dot/space (STRICT) or non-representable byte is rewritten to a
         # portable spelling, recorded on the result so the rename is not silent.
+        if rerooted_from is not None and AbortOn.NAME_SANITIZED in self._abort_on:
+            raise _AbortExtraction(
+                NameRewrittenError(
+                    f"Absolute name re-rooted: {quoted(rerooted_from)} -> "
+                    f"{quoted(transformed.name)}",
+                    member_name=original.name,
+                )
+            )
         portable = apply_name_policy(transformed, self._policy)
         if portable.name == transformed.name:
-            return portable, None
+            return portable, rerooted_from
         # The pre-rewrite spelling is the caller filter's output when there is one, which
         # is why it cannot be reconstructed from ``member.name`` and ``path`` alone.
         if AbortOn.NAME_SANITIZED in self._abort_on:
@@ -1160,7 +1184,8 @@ class ExtractionCoordinator:
                     member_name=original.name,
                 )
             )
-        return portable, transformed.name
+        # After a re-root, the stored name is the one the caller will recognise.
+        return portable, rerooted_from or transformed.name
 
     @staticmethod
     def _needs_target_read(original: ArchiveMember, transformed: ArchiveMember) -> bool:

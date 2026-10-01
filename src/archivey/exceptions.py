@@ -224,7 +224,8 @@ class NameCollisionError(ExtractionError):
 
 
 class NameRewrittenError(ExtractionError):
-    """A member name was rewritten to its portable spelling.
+    """A member name was rewritten: to its portable spelling, or re-rooted inside the
+    destination.
 
     Raised only when the caller opted in with ``AbortOn.NAME_SANITIZED`` — a narrow
     escape hatch for callers who require the on-disk name to match the archive's byte
