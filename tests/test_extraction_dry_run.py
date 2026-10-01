@@ -69,14 +69,23 @@ def _rel(path: Path | None, dest: Path) -> str | None:
 def _normalize(text: str, dest: Path, cwd: Path) -> str:
     """``text`` with dest factored out, keeping apart how it was spelled.
 
-    An absolute spelling becomes ``<abs>`` and a relative one ``<rel>``, so a run that
-    reports ``out/x`` where the other reports ``/tmp/.../out/x`` does not compare equal.
+    Each spelling gets its own label: ``<given>`` for an absolute dest as given,
+    ``<abs>`` for ``os.path.abspath`` of it, ``<resolved>`` for its resolution and
+    ``<rel>`` for a relative dest as given. A run that reports ``out/x`` where the other
+    reports ``/tmp/.../out/x``, or a symlink's target where the other names the
+    symlink, does not compare equal.
     """
+    absolute = os.path.abspath(cwd / dest)
     try:
-        absolute = str((cwd / dest).resolve())
+        resolved = str((cwd / dest).resolve())
     except (OSError, RuntimeError):  # a symlink loop on the way
-        absolute = os.path.abspath(cwd / dest)
-    text = text.replace(absolute, "<abs>").replace(str(cwd.resolve()), "<cwd>")
+        resolved = absolute
+    labels = {resolved: "<resolved>", absolute: "<abs>"}
+    if dest.is_absolute():
+        labels.setdefault(str(dest), "<given>")
+    for spelling in sorted(labels, key=len, reverse=True):
+        text = text.replace(spelling, labels[spelling])
+    text = text.replace(str(cwd.resolve()), "<cwd>")
     if not dest.is_absolute():
         text = re.sub(rf"(?<=['\"]){re.escape(str(dest))}(?=['\"/\\])", "<rel>", text)
     # The staging file's random suffix is the one thing two runs never share.
@@ -443,18 +452,27 @@ def test_destination_that_cannot_be_created_is_refused_alike(
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
 @_NON_ROOT
 @pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
+@pytest.mark.parametrize(
+    "dest_name", ["out", "link/out", "x/../out"], ids=["plain", "symlink", "dotdot"]
+)
 def test_member_errors_match_with_either_dest_spelling(
-    relative: bool, tmp_path: Path
+    relative: bool, dest_name: str, tmp_path: Path
 ) -> None:
+    for kind in ("real", "dry"):
+        cwd = tmp_path / kind
+        (cwd / "realdir").mkdir(parents=True)
+        (cwd / "link").symlink_to("realdir")
+        (cwd / "x").mkdir()
     # The directory is locked before its file is written, so the write fails.
     blob = _tar([("ro", "dir", 0o555), ("ro/f", "file", 0)])
     real, dry = _both(
         lambda: io.BytesIO(blob),
         tmp_path,
         relative=relative,
+        dest_name=dest_name,
         policy=ExtractionPolicy.TRUSTED,
     )
-    (tmp_path / "real" / "out" / "ro").chmod(0o755)
+    (tmp_path / "real" / dest_name / "ro").chmod(0o755)
     assert real[-1][1] is ExtractionStatus.FAILED
     assert dry == real
 
@@ -550,25 +568,38 @@ _TOO_LONG = "x" * 300  # longer than any filesystem's name limit: fails at write
 
 
 @pytest.mark.parametrize(
-    ("root", "names", "existing", "expected"),
+    ("members", "existing", "expected"),
     [
-        ("src", ["a", "b"], None, "would move to src/"),
-        ("bundle", ["a", "b"], None, "would remove wrapper; content at bundle/"),
-        ("src", ["a", "b"], "src", "would move to src/, which exists already"),
+        (["src/a", "src/b"], None, "would move to src/\n"),
+        (["bundle/a", "bundle/b"], None, "would remove wrapper; content at bundle/\n"),
+        (["src/a", "src/b"], "src", "would move to src/, which exists already"),
         # The root exists only because a member under it was given a directory.
-        ("src", [_TOO_LONG], None, "would move to src/"),
+        ([f"src/{_TOO_LONG}"], None, "would move to src/\n"),
+        # The failed member's directory would be the file an earlier member wrote.
+        (["a", "a/f"], None, "would move to a\n"),
+        # The failure is creating the root itself: nothing is left to move.
+        ([f"{_TOO_LONG}/f"], None, None),
+        # ...so the one root a real run moves is the other one.
+        (["good/f", f"{_TOO_LONG}/f"], None, "would move to good/\n"),
     ],
-    ids=["moved", "flattened", "onto-existing", "only-a-failed-member"],
+    ids=[
+        "moved",
+        "flattened",
+        "onto-existing",
+        "only-a-failed-member",
+        "failed-under-a-file",
+        "failed-creating-the-root",
+        "beside-a-root-that-failed",
+    ],
 )
 def test_cli_dry_run_names_where_a_single_root_lands(
-    root: str,
-    names: list[str],
+    members: list[str],
     existing: str | None,
-    expected: str,
+    expected: str | None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    blob = _tar([(f"{root}/{name}", "file", b"x") for name in names])
+    blob = _tar([(name, "file", b"x") for name in members])
     runs = {}
     for dry_run in (False, True):
         cwd = tmp_path / ("dry" if dry_run else "real")
@@ -580,7 +611,11 @@ def test_cli_dry_run_names_where_a_single_root_lands(
         argv = ["x", "bundle.tar", "--hide-progress"]
         runs[dry_run] = _cli([*argv, "--dry-run"] if dry_run else argv)
     (real_code, real_err), (dry_code, dry_err) = runs[False], runs[True]
-    assert expected in dry_err
+    if expected is None:
+        assert "would move" not in dry_err
+        assert "would remove wrapper" not in dry_err
+    else:
+        assert expected in dry_err
     assert dry_code == real_code
     # The summary names where the real run put the content.
     assert (

@@ -300,9 +300,11 @@ A few answers can differ from a real extraction, because the scratch directory i
 - Everything is on one filesystem. If `out/` spans a mount point, a real extraction
   copies a hardlink that crosses it and counts the copy against `max_extracted_bytes`.
   The dry run does not count those bytes.
-- If `out/` does not exist, the dry run checks that it could be created from the
-  permissions of the nearest directory that exists. An ACL or a read-only filesystem
-  that would stop a real extraction there is not seen.
+- If `out/` does not exist, the dry run predicts whether it could be created by asking
+  the system whether the nearest directory that exists can be written to. The answer
+  is for your real user and group ids, so a program running setuid can get a
+  different answer from the real extraction. On Windows nothing is checked, so a
+  permission problem there shows only in a real extraction.
 
 ## Names change on disk
 

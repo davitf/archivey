@@ -449,13 +449,16 @@ class ExtractionCoordinator:
         self._scratch: Path | None = None
         self._shown_dest: Path | None = None
         # Dry run only: the scratch directory spelled as the pass is handed it, and
-        # where a path under its resolved spelling is shown (``_shown``). A real run
-        # reports paths built from ``dest`` as given and hands the filesystem the ones
-        # built from ``dest.resolve()``, so with a relative dest, an OSError names an
-        # absolute path. Handing the pass a relative spelling of the scratch directory
-        # keeps the two apart the same way.
+        # where a path under its ``os.path.abspath`` spelling is shown (``_shown``). A
+        # real run reports paths built from ``dest`` as given, but an OSError about a
+        # staging file names it as ``tempfile`` spells it, through ``os.path.abspath``:
+        # absolute, ``..`` collapsed, symlinks kept. Where those two spellings of dest
+        # differ, the pass is handed a spelling of the scratch directory that differs
+        # from its own ``abspath`` the same way, so each path can be shown in the
+        # spelling a real run would give it. (``dest.resolve()`` spells nothing a real
+        # run reports; it is only for matching link targets, ``_dest_spellings``.)
         self._scratch_given: Path | None = None
-        self._shown_resolved: Path | None = None
+        self._shown_abspath: Path | None = None
         # Dry run only: the caller's destination as the absolute path they gave and as
         # it resolves, which an absolute link target is matched against
         # (``_link_target_on_disk``), and each rewritten target's original, for errors.
@@ -506,13 +509,19 @@ class ExtractionCoordinator:
         scratch = Path(tempfile.mkdtemp(prefix=_DRY_RUN_PREFIX)).resolve()
         work = scratch / (resolved.name or "dest")
         work_given = work
-        if not dest.is_absolute():
-            with contextlib.suppress(ValueError):  # Windows: on another drive
-                work_given = Path(os.path.relpath(work))
+        detour: Path | None = None
+        if str(dest) != str(given):
+            if not dest.is_absolute():
+                with contextlib.suppress(ValueError):  # Windows: on another drive
+                    work_given = Path(os.path.relpath(work))
+            else:
+                # Spelled with ``..``: so is the scratch directory, through a sibling.
+                detour = scratch / ("_" if work.name != "_" else "__")
+                work_given = detour / ".." / work.name
         self._scratch = work
         self._scratch_given = work_given
         self._shown_dest = dest
-        self._shown_resolved = resolved if work_given != work else dest
+        self._shown_abspath = given if work_given != work else dest
         self._dest_spellings = (given, resolved)
         self._shown_targets = {}
         try:
@@ -520,6 +529,8 @@ class ExtractionCoordinator:
                 self._sink = sink
                 try:
                     work.mkdir()
+                    if detour is not None:
+                        detour.mkdir()
                     results = self._run(reader, work_given)
                 except OSError as exc:
                     self._rebase_os_error(exc)
@@ -531,7 +542,7 @@ class ExtractionCoordinator:
             self._scratch = None
             self._scratch_given = None
             self._shown_dest = None
-            self._shown_resolved = None
+            self._shown_abspath = None
             self._dest_spellings = ()
             self._shown_targets = {}
 
@@ -569,7 +580,7 @@ class ExtractionCoordinator:
         spelled as a real run would spell it (see ``_scratch_given``)."""
         for scratch, shown in (
             (self._scratch_given, self._shown_dest),
-            (self._scratch, self._shown_resolved),
+            (self._scratch, self._shown_abspath),
         ):
             if scratch is None or shown is None:
                 continue
@@ -2215,9 +2226,9 @@ class ExtractionCoordinator:
         would answer about the nearest part of it that exists: that it can be resolved,
         is a directory, and can be written to. Each raises the error ``mkdir`` raises,
         naming the path it names. Whether it can be written to is asked with
-        ``os.access``, which approximates it: it does not see every ACL or a read-only
-        mount, for root it allows everything, as ``mkdir`` mostly does, and on Windows
-        it is not asked.
+        ``os.access``, which is a prediction, not the write: it checks the real user
+        and group ids where ``mkdir`` uses the effective ones, the directory can change
+        after it is asked, and on Windows it is not asked.
         """
         if dest.is_dir():
             return

@@ -1166,15 +1166,17 @@ bytes a real extraction counts for copying a hardlink across a filesystem bounda
 inside `dest` are not counted. A `dest` that exists and is not a directory SHALL be
 refused as a real extraction refuses it. A `dest` that does not exist SHALL be refused
 with the error a real extraction gets creating it when the nearest part of its path
-that exists cannot be resolved, is not a directory, or cannot be written to; whether
-it can be written to is predicted from its permissions, so a refusal that comes from
-an ACL or a read-only filesystem MAY appear only in a real extraction. File names in
+that exists cannot be resolved, is not a directory, or cannot be written to. Whether
+it can be written to is a prediction made with `access(2)`, which checks the real user
+and group ids rather than the effective ones, and on Windows it is not made; so a
+refusal that comes from a process whose real and effective ids differ, from a change
+after the check, or on Windows, MAY appear only in a real extraction. File names in
 errors raised, recorded or logged SHALL be the ones a real extraction's errors give,
-spelled from `dest` as given or as it resolves, and never the scratch directory's,
-except in the warning that the scratch directory itself could not be removed. The
-scratch directory SHALL be removed before
-the call returns or raises, including when the archive stored modes that make its
-directories unwritable or its files read-only.
+spelled from `dest` as given or as `os.path.abspath` spells it, and never the scratch
+directory's, except in the warning that the scratch directory itself could not be
+removed. The scratch directory SHALL be removed before the call returns or raises,
+including when the archive stored modes that make its directories unwritable or its
+files read-only.
 
 #### Scenario: dry-run matrix
 
@@ -1187,7 +1189,7 @@ directories unwritable or its files read-only.
 | `dest` is a regular file | `ExtractionError`; nothing created |
 | `dest`'s parent is a regular file | `OSError`, as in a real extraction; nothing created |
 | `dest`'s parent is a directory the caller cannot write to, or a symlink loop | The `OSError` a real extraction raises; nothing created |
-| `dest` is relative and a member fails with an `OSError` | Its file names match a real extraction's, absolute where those are |
+| `dest` is relative, or reached through a symlink, or spelled with `..`, and a member fails with an `OSError` | Its file names match a real extraction's, spelled as those are |
 | A symlink whose absolute target names a file under `dest` | `EXTRACTED`, as in a real extraction |
 | A symlink at the top of `dest` whose target is `../<dest name>/<file>` | `EXTRACTED`, as in a real extraction |
 | `dest` does not exist | Not created |
