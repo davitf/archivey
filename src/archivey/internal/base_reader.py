@@ -2025,38 +2025,26 @@ class BaseArchiveReader(ArchiveReader):
             return BaseArchiveReader._last_named_member(target_name, by_name_lists)
         return None
 
-    def _hardlink_direct_target(
-        self, member: ArchiveMember
-    ) -> tuple[ArchiveMember | None, bool]:
-        """The member a HARDLINK names, before following any link, and whether that
-        answer is final.
+    def _hardlink_direct_target(self, member: ArchiveMember) -> ArchiveMember | None:
+        """The member a HARDLINK names, before following any link.
 
         The member is the latest one with that name listed before it. Extraction uses
         it to tell a hard link to a symlink from one to a file, which
-        ``link_target_member`` (the end of the chain) cannot. A backward answer is
-        final, because members listed later have higher ids. Only the forward
-        fallback, or its failure to find anything, can change while a streaming walk
-        is still listing members.
+        ``link_target_member`` (the end of the chain) cannot. The forward fallback is
+        used only once the listing is complete. During a streaming walk a forward
+        answer can still change as members are listed, and an answer that can change
+        cannot be memoized, which made a crafted chain of forward links quadratic. A
+        backward answer never changes, because members listed later have higher ids.
         """
         if member.type is not MemberType.HARDLINK:
-            return None, True
-        found = self._lookup_hardlink_target(
-            member, self._listed_by_name, allow_forward_fallback=False
+            return None
+        return self._lookup_hardlink_target(
+            member,
+            self._listed_by_name,
+            allow_forward_fallback=(
+                self._HARDLINK_FORWARD_FALLBACK and not self._streaming
+            ),
         )
-        if found is not None or not self._HARDLINK_FORWARD_FALLBACK:
-            return found, True
-        # Only the forward half: the backward search above already missed.
-        if not member.link_target or member._member_id is None:
-            return None, True
-        target_name = resolve_link_target_name(
-            member.name, member.link_target, member.type
-        )
-        if target_name is None:
-            return None, True
-        forward = BaseArchiveReader._last_named_member(
-            target_name, self._listed_by_name
-        )
-        return forward, not self._streaming
 
     def _lookup_link_target_for_member(
         self,

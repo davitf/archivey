@@ -688,17 +688,20 @@ def test_hard_links_cost_linear_work(
 
 @pytest.mark.parametrize("forward_fallback", [False, True])
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("bottom", ["names-nothing", "names-a-later-file"])
-def test_a_chain_with_an_unsettled_bottom_costs_linear_lookups(
+@pytest.mark.parametrize(
+    "shape", ["bottom-names-nothing", "bottom-names-a-later-file", "forward-run"]
+)
+def test_a_chain_with_forward_names_costs_linear_lookups(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     streaming: bool,
-    bottom: str,
+    shape: str,
     forward_fallback: bool,
 ) -> None:
-    # The innermost link's target is not listed before it, so with the forward
-    # fallback in a streaming walk its lookup can still change and is redone. The
-    # links above it must not be walked again each time.
+    # Chains whose links name members not listed before them. In a streaming walk a
+    # forward answer could still change, so it is not used, and every answer that is
+    # used can be memoized. "forward-run" is a run of links that each name the next,
+    # entered by many later links.
     from archivey.internal import base_reader
     from archivey.internal.backends import tar_reader
 
@@ -706,11 +709,18 @@ def test_a_chain_with_an_unsettled_bottom_costs_linear_lookups(
         tar_reader.TarReader, "_HARDLINK_FORWARD_FALLBACK", forward_fallback
     )
     n = 300
-    target = "ghost" if bottom == "names-nothing" else "tail"
-    entries: list[tuple] = [("h0", "hard", target)]
-    if bottom == "names-a-later-file":
-        entries.append(("tail", "file", b"AB"))
-    entries += [(f"h{i}", "hard", f"h{i - 1}") for i in range(1, n)]
+    entries: list[tuple]
+    if shape == "forward-run":
+        half = n // 2
+        entries = [(f"n{i}", "hard", f"n{i + 1}") for i in range(1, half)]
+        entries.append((f"n{half}", "file", b"AB"))
+        entries += [(f"z{j}", "hard", "n1") for j in range(half)]
+    else:
+        target = "ghost" if shape == "bottom-names-nothing" else "tail"
+        entries = [("h0", "hard", target)]
+        if shape == "bottom-names-a-later-file":
+            entries.append(("tail", "file", b"AB"))
+        entries += [(f"h{i}", "hard", f"h{i - 1}") for i in range(1, n)]
     archive = _build_tar(tmp_path / "a.tar", entries)
     lookups = 0
     direct_target = base_reader.BaseArchiveReader._hardlink_direct_target
@@ -726,7 +736,59 @@ def test_a_chain_with_an_unsettled_bottom_costs_linear_lookups(
     with archivey.open_archive(archive, streaming=streaming) as reader:
         reader.extract_all(tmp_path / "out", policy="standard", on_error="continue")
 
-    assert lookups <= 3 * n
+    assert lookups <= 2 * n
+
+
+@posix_links
+@pytest.mark.parametrize("forward_fallback", [False, True])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_chain_through_a_later_symlink_extracts_the_same_in_every_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
+    forward_fallback: bool,
+) -> None:
+    # `h0` names a symlink listed after it, and `h3` and `h4` reach it through `h0`
+    # after it is listed. A streaming walk does not use that forward answer, so the
+    # result must not depend on the mode or on the fallback.
+    from archivey.internal.backends import tar_reader
+
+    archive = _build_tar(
+        tmp_path / "a.tar",
+        [
+            ("sub", "dir", None),
+            ("sub/x", "file", b"X"),
+            ("h0", "hard", "late"),
+            ("h1", "hard", "h0"),
+            ("h2", "hard", "h1"),
+            ("late", "sym", "sub/x"),
+            ("h3", "hard", "h2"),
+            ("h4", "hard", "h3"),
+        ],
+    )
+
+    def outcome(dest: Path, streaming: bool) -> dict[str, tuple[str, str]]:
+        with archivey.open_archive(archive, streaming=streaming) as reader:
+            report = reader.extract_all(dest, policy="standard", on_error="continue")
+        kinds = {}
+        for r in report.results:
+            path = dest / r.member.name
+            kind = (
+                f"symlink -> {os.readlink(path)}"
+                if path.is_symlink()
+                else "file"
+                if path.is_file()
+                else "absent"
+            )
+            kinds[r.member.name] = (r.status.name, kind)
+        return kinds
+
+    reference = outcome(tmp_path / "ref", streaming=False)
+    monkeypatch.setattr(
+        tar_reader.TarReader, "_HARDLINK_FORWARD_FALLBACK", forward_fallback
+    )
+    assert outcome(tmp_path / "out", streaming) == reference
+    assert reference["late"] == ("EXTRACTED", "symlink -> sub/x")
 
 
 @posix_links
