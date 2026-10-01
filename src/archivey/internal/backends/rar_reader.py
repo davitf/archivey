@@ -46,6 +46,7 @@ from typing import BinaryIO, Literal
 from archivey.config import ArchiveyConfig, RarDecompressor, SpoolLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
+    ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
     EncryptedVerificationContext,
@@ -1822,6 +1823,40 @@ class RarReader(BaseArchiveReader):
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.RAR,
             )
+        self._emit_end_block_missing()
+
+    def _emit_end_block_missing(self) -> None:
+        """Report RAR5 volumes that end without their end-of-archive block.
+
+        RAR5 writers always close a volume with that block, so a walk that reaches
+        end of file without it most likely stopped at a cut on a header boundary: the
+        bytes list as a shorter, complete-looking archive. Emitted once, after the
+        members, the way TAR reports a missing trailer, so the listing still
+        completes and a ``RAISE`` disposition refuses it after delivery.
+        """
+        missing = self._archive.end_block_missing_volumes
+        if not missing:
+            return
+        if self._archive.is_volume or self._volume_count > 1:
+            where = "volume(s) " + ", ".join(str(index + 1) for index in missing)
+        else:
+            where = "the archive"
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
+            message=(
+                f"RAR archive may be truncated: {where} ended without the "
+                f"end-of-archive block RAR5 writers always write."
+            ),
+            context=ArchiveEofContext(
+                archive_name=self._archive_name,
+                format="rar",
+                expected_marker="end_of_archive_block",
+                expected_bytes=0,
+                observed_bytes=0,
+                observed_kind="absent",
+            ),
+            logger=logger,
+        )
 
     def _check_comment_budget(self) -> None:
         """Refuse comments whose sizes, together, exceed the metadata budget.

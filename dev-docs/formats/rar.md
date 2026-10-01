@@ -139,8 +139,18 @@ first, seeks back to after MAIN, and skips matching FILE headers on the walk (§
 A walk whose last skip lands past the end of the file lists what it found and then
 reports `TruncatedError` as `members_report().error` (`members()` raises it), as TAR
 does for a member whose data runs past the end. A cut exactly at a header boundary
-still lists as complete: a RAR5 archive without `ENDARC` is not reported yet, and RAR3
-had no mandatory end block to miss.
+lists the members before the cut, then warns: RAR5 writers always close a volume with
+`ENDARC`, so a RAR5 walk that reaches end of file without one emits
+`ARCHIVE_EOF_MARKER_MISSING` (`expected_marker="end_of_archive_block"`, `format="rar"`,
+`observed_kind="absent"`) once per archive after the members, naming the volumes that
+lacked it. That is TAR's missing-trailer rule: the listing completes, and
+`DiagnosticPolicy.strict()` refuses it after delivery. A volume in a set needs the block
+too — its flags are what say another volume follows — so a set whose volumes all end
+in `ENDARC` emits nothing. RAR 1.5-4 is left alone: old writers may omit the end block,
+so its absence there is not evidence of a cut. In a header-encrypted RAR5 archive the
+walk also ends without an error when the file stops after a header's IV and before its
+first full 16-byte cipher block (`_HeaderDecryptStream` reads a short block as end of
+file); that cut gets the same warning.
 
 ### 1.1 Quick Open (QO)
 

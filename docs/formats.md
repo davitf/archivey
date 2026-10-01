@@ -259,6 +259,13 @@ writer that marks itself Unix while storing a birth time (libarchive on Windows)
   it is implemented natively on stdlib `hashlib`. RAR5 members with the HASHMAC flag
   verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a password is available;
   tweaked values are not exposed as plain `member.hashes`.
+- **A RAR5 archive cut exactly between two blocks is warned about, not raised.** RAR5
+  always ends each volume with an end-of-archive block, so archivey lists the members
+  before the cut and then emits `ARCHIVE_EOF_MARKER_MISSING`
+  (`expected_marker="end_of_archive_block"`), which `DiagnosticPolicy.strict()` raises.
+  A cut inside a member's data is `TruncatedError` on the listing. RAR 1.5-4 archives
+  may legitimately lack the end block, so a cut between their blocks still lists as
+  complete.
 - **Password lists on encrypted data:** RAR5 records a password check per member, so a
   list is tried in order and the matching password is used. RAR3/4 records none: `unrar`
   is given the first candidate, so put the right password first for those.

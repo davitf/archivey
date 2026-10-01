@@ -430,6 +430,14 @@ class RarArchive:
     #: for a member whose data runs past the end. The walk cannot tell it at open, so
     #: raising here would lose the prefix a caller can still read.
     data_past_end: str | None = None
+    #: 0-based indices of the RAR5 volumes whose block walk reached end of file
+    #: without an end-of-archive block. RAR5 writers always close a volume with one,
+    #: so its absence means the file was cut at a header boundary — bytes that would
+    #: otherwise list as a complete archive. The reader reports it as
+    #: ``ARCHIVE_EOF_MARKER_MISSING`` after the members. Not set when
+    #: ``data_past_end`` already reports the cut, nor for RAR 1.5-4, whose writers
+    #: may omit the block.
+    end_block_missing_volumes: list[int] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +567,7 @@ def parse_rar_volumes(
                 part.damaged_service_headers_omitted
             )
             merged.data_past_end = merged.data_past_end or part.data_past_end
+            merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
             for member in part.members:
                 if member.split_before and merged.members:
                     _merge_split_member(merged.members[-1], member)
@@ -2317,6 +2326,7 @@ def _parse_rar5(
     damaged_service_headers: list[DamagedServiceHeader] = []
     damaged_service_headers_omitted = 0
     data_past_end: str | None = None
+    end_block_seen = False
 
     while True:
         header_fd: _Readable = source
@@ -2451,6 +2461,7 @@ def _parse_rar5(
         if block_type == _RAR5_ENDARC:
             endarc_flags, _ = load_vint(hdata, pos)
             needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
+            end_block_seen = True
             break
 
         if block_type in (_RAR5_FILE, _RAR5_SERVICE):
@@ -2506,6 +2517,9 @@ def _parse_rar5(
         damaged_service_headers=damaged_service_headers,
         damaged_service_headers_omitted=damaged_service_headers_omitted,
         data_past_end=data_past_end,
+        end_block_missing_volumes=(
+            [volume_index] if not end_block_seen and data_past_end is None else []
+        ),
     )
 
 
