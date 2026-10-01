@@ -29,17 +29,28 @@ wrong password with exit 0 and no output, so :class:`UnarOutputStream` can map a
 pipe to ``EncryptionError`` when the caller says the entry is encrypted. Measured on
 1.10.1: a password that is not ASCII does not decrypt (RAR5), whatever the locale, so
 :func:`unar_password_supported` rejects one before ``unar`` runs.
+
+A ``unar`` that identifies itself is also checked once for what it does: it must decode
+a 118-byte RAR5 archive (:data:`_RAR5_PROBE_ARCHIVE`) whose one member the Debian and
+Ubuntu ``unar`` packages that carry ``CSInputBuffer-bit-string-reading.patch`` write
+as nothing, with exit 0. Those builds lose about one compressed RAR5 member in 25, and
+no version string tells them apart from a good build, so one that fails the check is
+not used (:func:`unar_rar5_probe_failure`). ``dev-docs/known-issues.md`` has the
+measurements.
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, EncryptionError
+from archivey.internal.external import cli
 from archivey.internal.external.cli import (
     Banner,
     CliToolFinder,
@@ -64,7 +75,8 @@ _UNAR_BANNER_RE = re.compile(
 
 UNAR_INSTALL_HINT = (
     "Install unar 1.10 or later (Homebrew: brew install unar; Debian and Ubuntu: "
-    "apt install unar)."
+    "apt install unar, though packages before 1.10.8+ds1-10 fail archivey's RAR5 "
+    "check and are not used)."
 )
 
 
@@ -77,6 +89,71 @@ def parse_unar_banner(text: str) -> Banner:
     return Banner(identified=True, version=parts)
 
 
+# ``tests/fixtures/rar/unar_drop__.rar`` (``scripts/gen_rar_fixtures.py``
+# ``_build_unar_drop``): RAR 7.00 ``-m3``, one 47-byte member ``f.txt`` whose last packed
+# byte uses 6-8 of its bits. A ``unar`` build with Debian's bit-reader patch writes
+# nothing for it and exits 0; upstream 1.10.1, 1.10.7, 1.10.8 and master write it
+# exactly.
+_RAR5_PROBE_ARCHIVE = bytes.fromhex(
+    "526172211a0701003392b5e50a01050600050101808000bc1fde622302030baf"
+    "0004af00a4830270062c1480030105662e7478740a03132b44be6a4888d312c7"
+    "b12c243334fa33be614f357e7c252e04a26ff641e448409655d676512915a6ac"
+    "c2c2200a247e75843cd0db87377c1d77565103050400"
+)
+_RAR5_PROBE_MEMBER = b"ellaltagma\nlpa \n  gaa deta del beta ama \n bealp"
+
+_DROPS_MEMBERS = (
+    "drops some compressed RAR5 members: it wrote {got}, not {want}, for a test "
+    "archive. Debian and Ubuntu unar packages before 1.10.8+ds1-10 (Ubuntu 22.04 to "
+    "26.04 among them) carry a patch, CSInputBuffer-bit-string-reading.patch, that "
+    "does this, so archivey does not use this unar. Install RARLAB unrar, or a unar "
+    "built without that patch (1.10.8 from Homebrew or from source)."
+)
+
+
+def unar_rar5_probe_failure(unar: str) -> str | None:
+    """Run ``unar`` once on the embedded RAR5 test archive: ``None`` when it decodes it.
+
+    Otherwise, why this ``unar`` is not used, as text that follows its path. A run that
+    cannot start, runs out of time (``PROBE_TIMEOUT_SECONDS``) or writes the wrong bytes
+    is a failure. Only creating the private directory may raise ``OSError``.
+
+    The archive is written as ``archive.rar`` in a directory of its own, because
+    ``unar`` picks a volume set by file name (``RarReader._unar_archive_path``).
+    """
+    temp_dir = Path(tempfile.mkdtemp(prefix="archivey-unar-probe-"))
+    try:
+        archive = temp_dir / "archive.rar"
+        archive.write_bytes(_RAR5_PROBE_ARCHIVE)
+        timeout = cli.PROBE_TIMEOUT_SECONDS
+        try:
+            completed = subprocess.run(
+                unar_argv(unar, archive, None),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return (
+                f"did not decode a 118-byte test archive within {timeout:g} seconds. "
+                "archivey does not try an unchanged binary again in this process. "
+                f"{UNAR_INSTALL_HINT}"
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"could not be run on a test archive ({exc}). {UNAR_INSTALL_HINT}"
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    out = completed.stdout
+    if out == _RAR5_PROBE_MEMBER:
+        return None
+    size = len(out)
+    wrong = size == len(_RAR5_PROBE_MEMBER)
+    got = f"{size} bytes that are not the member's" if wrong else f"{size} bytes"
+    return _DROPS_MEMBERS.format(got=got, want=len(_RAR5_PROBE_MEMBER))
+
+
 _finder = CliToolFinder(
     display_name="unar",
     names=("unar",),
@@ -84,11 +161,17 @@ _finder = CliToolFinder(
     parse_banner=parse_unar_banner,
     version_floor=UNAR_VERSION_FLOOR,
     install_hint=UNAR_INSTALL_HINT,
+    # Looked up at call time, so a test can replace the module function.
+    verify=lambda path: unar_rar5_probe_failure(path),
 )
 
 
 def find_unar(*, purpose: str) -> str:
-    """Absolute path of ``unar`` 1.10+ on ``PATH``, or ``PackageNotInstalledError``."""
+    """Absolute path of a usable ``unar`` 1.10+ on ``PATH``, or ``PackageNotInstalledError``.
+
+    Usable: it identifies itself, and it decodes the RAR5 test archive
+    (:func:`unar_rar5_probe_failure`). Each binary pays for both once per process.
+    """
     return _finder.find(purpose=purpose)
 
 

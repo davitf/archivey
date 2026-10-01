@@ -760,8 +760,14 @@ def test_replaced_binary_is_probed_again(
     monkeypatch.setenv("PATH", str(tmp_path))
     with pytest.raises(PackageNotInstalledError):
         unar.find_unar(purpose="for a test")
+    # Past the banner, ``find_unar`` checks that the program decodes a RAR5 member
+    # (``tests/test_unar_probe.py``); this one prints that member for any other argv.
     binary = _stand_in(
-        tmp_path, 'echo "unar v1.10.8, a tool for extracting the contents of"\n'
+        tmp_path,
+        'if [ "$1" = "-h" ]; then\n'
+        '  echo "unar v1.10.8, a tool for extracting the contents of"; exit 0\n'
+        "fi\n"
+        "printf 'ellaltagma\\nlpa \\n  gaa deta del beta ama \\n bealp'\n",
     )
     assert unar.find_unar(purpose="for a test") == os.path.abspath(binary)
 

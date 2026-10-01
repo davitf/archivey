@@ -58,6 +58,9 @@ class _Probe:
     banner: Banner
     identity: tuple[int, int, int, int]
     timed_out: bool
+    # Why a binary that identified and met the floor failed the finder's ``verify``
+    # check, or ``None``.
+    rejected: str | None = None
 
 
 def stat_identity(path: str) -> tuple[int, int, int, int]:
@@ -83,6 +86,11 @@ class CliToolFinder:
       again.
     - A ``which`` miss and a probe that could not *start* the binary (``OSError``) are
       not stored, so a program installed later is found without a restart.
+
+    ``verify``, when given, runs once on a binary that identified and met the floor,
+    and returns why the binary must not be used, or ``None``. Its answer is stored
+    with the banner, under the same rules; an ``OSError`` it raises is treated like
+    one from the banner probe and not stored.
     """
 
     def __init__(
@@ -94,6 +102,7 @@ class CliToolFinder:
         parse_banner: Callable[[str], Banner],
         version_floor: tuple[int, ...],
         install_hint: str,
+        verify: Callable[[str], str | None] | None = None,
     ) -> None:
         self._display_name = display_name
         self._names = tuple(names)
@@ -101,6 +110,7 @@ class CliToolFinder:
         self._parse_banner = parse_banner
         self._version_floor = version_floor
         self._install_hint = install_hint
+        self._verify = verify
         self._cache: dict[str, _Probe] = {}
         self._lock = threading.Lock()
 
@@ -142,6 +152,7 @@ class CliToolFinder:
         path_env = os.environ.get("PATH", "")
         too_old: list[tuple[str, tuple[int, ...] | None]] = []
         timed_out: list[str] = []
+        rejected: list[tuple[str, str]] = []
         cause: BaseException | None = None
         for name in self._names:
             candidate = shutil.which(name, path=path_env)
@@ -166,9 +177,19 @@ class CliToolFinder:
                 except (OSError, subprocess.SubprocessError) as exc:
                     cause = exc
                     continue
-                cached = _Probe(banner, identity, probe_timed_out)
+                rejection = None
+                if self._verify is not None and self._meets_floor(banner):
+                    try:
+                        rejection = self._verify(candidate)
+                    except OSError as exc:
+                        cause = exc
+                        continue
+                cached = _Probe(banner, identity, probe_timed_out, rejection)
                 with self._lock:
                     self._cache[candidate] = cached
+            if cached.rejected is not None:
+                rejected.append((candidate, cached.rejected))
+                continue
             if self._meets_floor(cached.banner):
                 return candidate
             if cached.banner.identified:
@@ -176,7 +197,7 @@ class CliToolFinder:
             elif cached.timed_out:
                 timed_out.append(candidate)
         raise PackageNotInstalledError(
-            self._refusal(purpose, too_old, timed_out)
+            self._refusal(purpose, too_old, timed_out, rejected)
         ) from cause
 
     def _refusal(
@@ -184,8 +205,16 @@ class CliToolFinder:
         purpose: str,
         too_old: list[tuple[str, tuple[int, ...] | None]],
         timed_out: list[str],
+        rejected: list[tuple[str, str]],
     ) -> str:
         name = self._display_name
+        if rejected:
+            # The reason carries its own advice: a generic install hint could name the
+            # very package that was just rejected.
+            found = "; ".join(
+                f"{display_path(path)} {reason}" for path, reason in rejected
+            )
+            return f"{name} is required {purpose}, but {found}"
         if too_old:
             found = "; ".join(
                 f"{display_path(path)} reports version "
