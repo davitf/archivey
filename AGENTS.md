@@ -265,6 +265,13 @@ Non-obvious gotchas:
   ZIP fixtures by shelling out to it (`tests/test_password.py`, the encrypted corpus
   entries in `tests/test_corpus_sweep.py`); they skip cleanly when it is absent.
   The setup script installs `p7zip-full` automatically.
+- **`unar`** backs `tests/test_rar_unar.py`. The setup script installs Ubuntu's package,
+  but archivey refuses it: Debian and Ubuntu builds before 1.10.8+ds1-10 drop some RAR5
+  members, and `find_unar` checks for that once per binary
+  ([`known-issues.md`](dev-docs/known-issues.md)). Those tests then skip, and the
+  verification block prints `REFUSED unar`. To run them, build 1.10.8 with
+  `scripts/install-unar-from-source.sh --dest ~/.local/bin` (about 20 s; build deps are
+  in the script header). CI does the same on Linux.
 - Both of the above skip **quietly**, which is the trap: a container without them runs
   about a hundred fewer tests, with the suite still green. `--update-baselines` in that state would also rewrite
   `structural.json` without the `rar_*` cases (it now refuses instead). If you are
