@@ -8,6 +8,7 @@ the symlink-redirection cases that only a real filesystem answers (threat model 
 
 from __future__ import annotations
 
+import gzip
 import io
 import logging
 import os
@@ -15,6 +16,7 @@ import re
 import tarfile
 import tempfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -590,7 +592,9 @@ def _files(*names: str) -> list[tuple[str, str, object]]:
         # ...so the one root a real run moves is the other one.
         (_files("good/f", f"{_TOO_LONG}/f"), None, "would move to good/\n"),
         # Blocked only once it exists: the escape recheck removes the link and leaves
-        # the directory made for it.
+        # the directory made for it. Not skipped on Windows on purpose: without the
+        # symlink privilege the link fails to be created instead, which leaves the same
+        # directory, and the dry run still has to agree with the real one.
         ([("root/a", "sym", "a")], None, "would move to root/\n"),
     ],
     ids=[
@@ -637,6 +641,51 @@ def test_cli_dry_run_names_where_a_single_root_lands(
     expected_left = ["bundle.tar"] + ([existing] if existing else [])
     assert sorted(p.name for p in (tmp_path / "dry").iterdir()) == expected_left
     assert list((tmp_path / "tmp").iterdir()) == []
+
+
+def _zip(names: list[str]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in names:
+            zf.writestr(name, b"x")
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("archive", "make", "extra"),
+    [
+        ("bundle.zip", lambda: _zip(["src/a", "src/b"]), []),
+        ("bundle.zip", lambda: _zip(["only.txt"]), []),
+        ("data.txt.gz", lambda: gzip.compress(b"x"), []),
+        ("bundle.zip", lambda: _zip(["a", "b"]), ["-d", "."]),
+    ],
+    ids=["single-root-dir", "single-file", "raw-stream", "two-tops-into-cwd"],
+)
+def test_cli_dry_run_summary_names_what_extracts_into_the_cwd(
+    archive: str,
+    make: Callable[[], bytes],
+    extra: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Nothing is hoisted here: the content goes straight into the cwd, and the summary
+    # names the single entry it lands as.
+    blob = make()
+    runs = {}
+    for dry_run in (False, True):
+        cwd = tmp_path / ("dry" if dry_run else "real")
+        cwd.mkdir()
+        (cwd / archive).write_bytes(blob)
+        monkeypatch.chdir(cwd)
+        argv = ["x", archive, "--hide-progress", *extra]
+        runs[dry_run] = _cli([*argv, "--dry-run"] if dry_run else argv)
+    (real_code, real_err), (dry_code, dry_err) = runs[False], runs[True]
+    assert dry_code == real_code
+    assert (
+        real_err.splitlines()[-1].split(" → ")[1]
+        == (dry_err.splitlines()[-1].split(" → ")[1])
+    )
+    assert [p.name for p in (tmp_path / "dry").iterdir()] == [archive]
 
 
 def test_cli_dry_run_with_dest(tmp_path: Path) -> None:

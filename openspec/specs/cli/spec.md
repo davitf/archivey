@@ -367,7 +367,10 @@ also a debugging tool for the library and IO measurement is not public API. What
 needs beyond `archivey.__all__` SHALL otherwise come from a public module, such as
 `archivey.terminal` for terminal-safe display. The CLI is the example other
 front ends copy, and an internal import would let an internal refactor break it
-without touching any public name.
+without touching any public name. `extract --dry-run` also reads one private field,
+`ExtractionReport._dry_run_top_level`: the entries the dry run left at the top of its
+scratch copy of the destination. A dry run writes nothing the CLI could look at
+instead, and renaming the field breaks the dry run's hoist line and summary.
 
 #### Scenario: CLI import boundary
 

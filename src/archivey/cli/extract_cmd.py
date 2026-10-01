@@ -332,8 +332,8 @@ def predict_hoist(
     name exists already, the hoist would merge into it, and the collisions that merge
     could meet are not checked.
     """
-    tops = report._dry_run_top_level  # noqa: SLF001 - the library's own CLI
-    if tops is None or len(tops) != 1:
+    tops = _dry_run_top_level(report)
+    if len(tops) != 1:
         return _HoistResult(wrapper)
     ((name, is_dir),) = tops
     dest = wrapper.parent / name
@@ -351,14 +351,20 @@ def predict_hoist(
     return _HoistResult(dest, dest_label=label)
 
 
-def _summary_dest_label(target: Path, report: ExtractionReport) -> str:
+def _summary_dest_label(
+    target: Path, report: ExtractionReport, *, dry_run: bool = False
+) -> str:
     """Closing summary destination; prefer the single extracted top when dest is cwd.
 
     Returned terminal-safe. The single top is a member's own name, and the target is
     either the operator's ``-d`` or a wrapper named after the archive file — any of
-    which can carry control bytes, and this is the last line the operator reads."""
+    which can carry control bytes, and this is the last line the operator reads.
+
+    A dry run wrote nothing to look at, so it answers from what its scratch tree held:
+    the target is a directory the run would create, and the single top's kind is the
+    one the scratch tree gave it."""
     if target != Path("."):
-        if target.is_dir():
+        if dry_run or target.is_dir():
             return f"{escape_path(target)}/"
         return escape_path(target)
     tops: set[str] = set()
@@ -370,11 +376,22 @@ def _summary_dest_label(target: Path, report: ExtractionReport) -> str:
             tops.add(name.split("/", 1)[0])
     if len(tops) == 1:
         only = next(iter(tops))
-        on_disk = Path(only)
-        if on_disk.is_dir() and not on_disk.is_symlink():
-            return f"{escape_member_name(only)}/"
-        return escape_member_name(only)
+        if dry_run:
+            is_dir = dict(_dry_run_top_level(report)).get(only, False)
+        else:
+            on_disk = Path(only)
+            is_dir = on_disk.is_dir() and not on_disk.is_symlink()
+        return f"{escape_member_name(only)}/" if is_dir else escape_member_name(only)
     return "."
+
+
+def _dry_run_top_level(report: ExtractionReport) -> tuple[tuple[str, bool], ...]:
+    """A dry run's top-level entries, from the report's private field.
+
+    The one place the CLI reads a private library name; the ``cli`` spec's public-API
+    requirement records it as an exception. A dry run writes nothing, so nothing else
+    can say what a real run would leave at the top of ``dest``."""
+    return report._dry_run_top_level or ()
 
 
 def _report_extraction(
@@ -514,11 +531,7 @@ def _report_extraction(
             file=err,
         )
     if dest_label is None:
-        dest_label = (
-            f"{escape_path(target)}/"
-            if dry_run
-            else _summary_dest_label(target, report)
-        )
+        dest_label = _summary_dest_label(target, report, dry_run=dry_run)
     print(
         f"{'dry run, nothing written: ' if dry_run else ''}"
         f"{extracted} extracted, {renamed} renamed, {skipped} skipped"
