@@ -39,6 +39,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     DiagnosticRaisedError,
+    TruncatedError,
 )
 from tests.conftest import requires, requires_binary
 from tests.sample_archives import CORPUS, corpus_archive_path
@@ -222,6 +223,101 @@ def test_rar5_volume_set_endarc(tmp_path: Path) -> None:
         diagnostics = _eof_marker_diagnostics(reader.diagnostics)
     assert len(diagnostics) == 1
     assert "volume(s) 1 " in diagnostics[0].message
+
+
+# With header encryption (``rar a -hp``) every header is a salt (RAR3, 8 bytes) or IV
+# (RAR5, 16 bytes) and then whole 16-byte AES blocks. The last block of both
+# fixtures is the end-of-archive header: RAR5 16 + 16 bytes, RAR3 8 + 16 bytes.
+# Cutting 1-16 bytes left a partial AES block that the walk took as a clean end.
+_HP_PASSWORD = "header_password"
+
+
+def _hp_fixture(name: str) -> bytes:
+    return (_RAR_FIXTURES / name).read_bytes()
+
+
+def _assert_truncated_listing(data: bytes, members: int, streaming: bool) -> None:
+    with open_archive(
+        io.BytesIO(data), password=_HP_PASSWORD, streaming=streaming
+    ) as reader:
+        report = reader.members_report()
+        assert len(report.members) == members
+        assert isinstance(report.error, TruncatedError)
+        assert "encrypted header" in str(report.error)
+        assert not _eof_marker_diagnostics(reader.diagnostics)
+    with open_archive(io.BytesIO(data), password=_HP_PASSWORD) as reader:
+        with pytest.raises(TruncatedError):
+            reader.members()
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize(
+    "cut",
+    # 1-16: inside the end block's ciphertext; 17-31: inside its IV.
+    [1, 2, 8, 15, 16, 17, 24, 31],
+)
+def test_rar5_header_encrypted_cut_in_last_header_is_truncated(
+    cut: int, streaming: bool
+) -> None:
+    data = _hp_fixture("encrypted_header__.rar")
+    _assert_truncated_listing(data[:-cut], members=6, streaming=streaming)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("cut", [33, 40, 48, 63])
+def test_rar5_header_encrypted_cut_inside_a_verified_member_header_is_truncated(
+    cut: int,
+) -> None:
+    """Past the end block, the cut lands in the last directory's 64-byte header. The
+    fixture's password check value proves the key, so a header that runs out of
+    bytes part-way is a cut, not a wrong password."""
+    data = _hp_fixture("encrypted_header__.rar")
+    _assert_truncated_listing(data[:-cut], members=5, streaming=False)
+
+
+@requires("cryptography")
+def test_rar5_header_encrypted_cut_at_a_header_boundary_warns() -> None:
+    """Without any of the end block's 32 bytes, the walk ends at a header boundary:
+    the same warning as a plain RAR5 without its end block."""
+    data = _hp_fixture("encrypted_header__.rar")
+    with open_archive(io.BytesIO(data[:-32]), password=_HP_PASSWORD) as reader:
+        report = reader.members_report()
+        assert report.error is None
+        assert len(report.members) == 6
+        assert len(_eof_marker_diagnostics(reader.diagnostics)) == 1
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    "cut",
+    # 1-16: inside the end block's ciphertext; 17-23: inside its salt.
+    [1, 8, 16, 17, 23],
+)
+def test_rar4_header_encrypted_cut_in_last_header_is_truncated(cut: int) -> None:
+    data = _hp_fixture("encrypted_header__rar4.rar")
+    _assert_truncated_listing(data[:-cut], members=6, streaming=False)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize(
+    "name", ["encrypted_header__.rar", "encrypted_header__rar4.rar"]
+)
+def test_header_encrypted_cut_inside_packed_data_is_truncated(name: str) -> None:
+    """A cut inside the first member's packed data leaves the walk past the end of
+    the file where the next header's salt or IV should be: the truncated listing
+    a plain RAR gives, not an error at open."""
+    data = _hp_fixture(name)
+    with open_archive(io.BytesIO(data), password=_HP_PASSWORD) as reader:
+        first = reader.members()[0]
+    # The fixtures' first member, file1.txt, has 32 bytes of packed data; keep 10.
+    assert first.name == "file1.txt"
+    offset = {"encrypted_header__.rar": 190, "encrypted_header__rar4.rar": 92}[name]
+    with open_archive(io.BytesIO(data[: offset + 10]), password=_HP_PASSWORD) as reader:
+        report = reader.members_report()
+        assert [m.name for m in report.members] == ["file1.txt"]
+        assert isinstance(report.error, TruncatedError)
+        assert "packed data" in str(report.error)
 
 
 # ---------------------------------------------------------------------------

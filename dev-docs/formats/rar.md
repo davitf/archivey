@@ -147,10 +147,23 @@ lacked it. That is TAR's missing-trailer rule: the listing completes, and
 `DiagnosticPolicy.strict()` refuses it after delivery. A volume in a set needs the block
 too — its flags are what say another volume follows — so a set whose volumes all end
 in `ENDARC` emits nothing. RAR 1.5-4 is left alone: old writers may omit the end block,
-so its absence there is not evidence of a cut. In a header-encrypted RAR5 archive the
-walk also ends without an error when the file stops after a header's IV and before its
-first full 16-byte cipher block (`_HeaderDecryptStream` reads a short block as end of
-file); that cut gets the same warning.
+so its absence there is not evidence of a cut. **With header encryption (`-hp`) a cut
+inside a header is a truncated listing too.** Each header there is a salt (RAR3, 8 bytes)
+or IV (RAR5, 16 bytes) and then whole 16-byte cipher blocks, and a writer never stops
+part-way through one, so a file that ends after the first byte of a salt or IV and
+before the header's last cipher block lists the members before it and then reports
+`TruncatedError`, in RAR3 and RAR5 alike. Before, `_HeaderDecryptStream.read` returned
+nothing for a short last block, which the walk took as a clean end of file: cutting
+1-16 bytes off an `-hp` archive lost its end block and nothing more, and listed as
+complete (RAR3) or with only the warning above (RAR5); cutting into the salt or IV was
+`CorruptionError` at open, with no listing. A RAR5 header that decrypts its first block
+and then runs out is a cut only when the archive's password check value proved the key;
+without one, a wrong key decrypts a garbage size that also reads to the end of the file,
+so that stays `EncryptionError("…wrong password?")` — and RAR3, which has no check value,
+always takes that branch. The boundary cases keep their plain-walk meaning: an `-hp`
+RAR5 that ends exactly where the next IV would start gets the RAR5 warning above, and a
+skip past the end of the file is the packed-data `TruncatedError`. An `-hp` RAR3 that
+ends exactly where the next salt would start is still `CorruptionError` at open.
 
 ### 1.1 Quick Open (QO)
 

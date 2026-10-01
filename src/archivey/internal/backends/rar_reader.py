@@ -1815,11 +1815,11 @@ class RarReader(BaseArchiveReader):
 
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
-        if self._archive.data_past_end is not None:
+        if self._archive.truncated is not None:
             # Terminal damage after the prefix, so the listing keeps what the file
             # holds and reports the rest as missing (``members_report().error``).
             raise TruncatedError(
-                self._archive.data_past_end,
+                self._archive.truncated,
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.RAR,
             )

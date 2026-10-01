@@ -424,18 +424,19 @@ class RarArchive:
     #: How many damaged SERVICE headers the cap above kept out of that list. The
     #: reader reports the count, so hitting the cap is itself never silent.
     damaged_service_headers_omitted: int = 0
-    #: Set when the walk ended because a block's packed data ran past the end of the
-    #: file: the members listed are a prefix, and the last one's data is cut short.
-    #: The reader lists them and then reports this as ``TruncatedError``, as TAR does
-    #: for a member whose data runs past the end. The walk cannot tell it at open, so
-    #: raising here would lose the prefix a caller can still read.
-    data_past_end: str | None = None
+    #: Set when the walk ended because the file was cut: a block's packed data ran
+    #: past the end of the file, or the file ends part-way into an encrypted header
+    #: (its salt or IV, or its ciphertext). The members listed are a prefix. The
+    #: reader lists them and then reports this as ``TruncatedError``, as TAR does
+    #: for a member whose data runs past the end. The walk cannot tell it at open,
+    #: so raising here would lose the prefix a caller can still read.
+    truncated: str | None = None
     #: 0-based indices of the RAR5 volumes whose block walk reached end of file
     #: without an end-of-archive block. RAR5 writers always close a volume with one,
     #: so its absence means the file was cut at a header boundary — bytes that would
     #: otherwise list as a complete archive. The reader reports it as
     #: ``ARCHIVE_EOF_MARKER_MISSING`` after the members. Not set when
-    #: ``data_past_end`` already reports the cut, nor for RAR 1.5-4, whose writers
+    #: ``truncated`` already reports the cut, nor for RAR 1.5-4, whose writers
     #: may omit the block.
     end_block_missing_volumes: list[int] = field(default_factory=list)
 
@@ -566,7 +567,7 @@ def parse_rar_volumes(
             merged.damaged_service_headers_omitted += (
                 part.damaged_service_headers_omitted
             )
-            merged.data_past_end = merged.data_past_end or part.data_past_end
+            merged.truncated = merged.truncated or part.truncated
             merged.end_block_missing_volumes.extend(part.end_block_missing_volumes)
             for member in part.members:
                 if member.split_before and merged.members:
@@ -814,6 +815,19 @@ def _data_past_end(source: BinaryIO) -> str | None:
     return (
         f"RAR archive is truncated: the last block's packed data ends at byte {pos}, "
         f"past the end of the file ({end} bytes)"
+    )
+
+
+def _encrypted_header_cut(start: int) -> str:
+    """Why the walk stopped at an encrypted header that the file holds only part of.
+
+    Each encrypted header is a salt (RAR3) or IV (RAR5) and then whole 16-byte
+    ciphertext blocks, so a file that ends anywhere after its first byte and before
+    its last cannot be a clean end: the writer never stops part-way.
+    """
+    return (
+        f"RAR archive is truncated: the file ends inside the encrypted header "
+        f"that starts at byte {start}"
     )
 
 
@@ -1089,6 +1103,9 @@ class _HeaderDecryptStream:
         self._source = source
         self._stage = open_aes_decrypt_stage(AesParams(key=key, iv=iv))
         self._buf = bytearray()
+        #: Set once a read found fewer than 16 ciphertext bytes left: the file ends
+        #: inside this header (a salt or IV is only written in front of a header).
+        self.hit_eof = False
 
     def tell(self) -> int:
         # Ciphertext position, not plaintext-consumed. Leftover ``_buf`` is the
@@ -1115,6 +1132,7 @@ class _HeaderDecryptStream:
             # IV and every later header looks corrupt.
             enc = read_exact(self._source, 16)
             if len(enc) < 16:
+                self.hit_eof = True
                 break
             dec = self._stage.update(enc)
             if need >= len(dec):
@@ -1529,7 +1547,7 @@ def _parse_rar3(
     comment: str | _Rar3Comment | None = None
     members: list[RarMemberInfo] = []
     needs_next_volume = False
-    data_past_end: str | None = None
+    truncated: str | None = None
 
     while True:
         header_fd: _Readable = source
@@ -1538,6 +1556,7 @@ def _parse_rar3(
         # corruption. When this block is encrypted, surface such failures as
         # EncryptionError so password candidates keep iterating (see _read_rar5_block).
         block_encrypted = has_header_encryption
+        header_start = source.tell()
         if has_header_encryption:
             if password is None:
                 raise EncryptionError(
@@ -1545,15 +1564,34 @@ def _parse_rar3(
                 )
             # Nothing here depends on the password being right: the salt read and the
             # key derivation fail the same way for every candidate, so their errors
-            # (a short salt, a spent derivation budget) propagate as they are. A wrong
-            # password shows up later, when the decrypted header does not parse.
-            header_fd = _rar3_decrypt_header(source, password, kdf_cache)
+            # (a spent derivation budget) propagate as they are. A wrong password
+            # shows up later, when the decrypted header does not parse. A salt the
+            # file holds only part of is a cut, reported after the members listed.
+            salt = read_exact(source, 8)
+            if len(salt) < 8:
+                truncated = (
+                    _encrypted_header_cut(header_start)
+                    if salt
+                    else _data_past_end(source)
+                )
+                if truncated is None:
+                    raise CorruptionError(
+                        "Unexpected EOF while reading RAR3 header salt"
+                    )
+                break
+            header_fd = _rar3_decrypt_header(source, salt, password, kdf_cache)
 
         try:
             header_offset = header_fd.tell()
             buf = read_exact(header_fd, _S_BLK_HDR.size)
             if not buf:
-                data_past_end = _data_past_end(source)
+                # Behind a salt, no ciphertext block at all means the file was cut
+                # inside this header; that needs no password to tell.
+                truncated = (
+                    _encrypted_header_cut(header_start)
+                    if block_encrypted
+                    else _data_past_end(source)
+                )
                 break
             if len(buf) < _S_BLK_HDR.size:
                 raise CorruptionError("Unexpected EOF while reading RAR3 block header")
@@ -1709,14 +1747,13 @@ def _parse_rar3(
         is_volume=is_volume,
         needs_next_volume=needs_next_volume,
         old_volume_naming=old_volume_naming,
-        data_past_end=data_past_end,
+        truncated=truncated,
     )
 
 
 def _rar3_decrypt_header(
-    source: BinaryIO, password: str | bytes, kdf_cache: RarKdfCache
+    source: BinaryIO, salt: bytes, password: str | bytes, kdf_cache: RarKdfCache
 ) -> _HeaderDecryptStream:
-    salt = _require_exact(source, 8, "RAR3 header salt")
     key, iv = kdf_cache.rar3(password, salt)
     return _HeaderDecryptStream(source, key, iv)
 
@@ -2325,11 +2362,12 @@ def _parse_rar5(
     qo_by_off: dict[int, RarMemberInfo] = {}
     damaged_service_headers: list[DamagedServiceHeader] = []
     damaged_service_headers_omitted = 0
-    data_past_end: str | None = None
+    truncated: str | None = None
     end_block_seen = False
 
     while True:
         header_fd: _Readable = source
+        header_start = source.tell()
         if hdr_enc is not None:
             has_header_encryption = True
             if password is None:
@@ -2337,8 +2375,17 @@ def _parse_rar5(
                     "RAR archive has encrypted headers but no password was provided"
                 )
             # See the RAR3 walk: the IV read and key derivation do not depend on the
-            # password, so their errors are not a wrong password.
-            header_fd = _rar5_decrypt_header(source, hdr_enc, password, kdf_cache)
+            # password, so their errors are not a wrong password. No IV at all is the
+            # walk's end, as for a plain header; part of one is a cut.
+            iv = read_exact(source, 16)
+            if len(iv) < 16:
+                truncated = (
+                    _encrypted_header_cut(header_start)
+                    if iv
+                    else _data_past_end(source)
+                )
+                break
+            header_fd = _rar5_decrypt_header(source, iv, hdr_enc, password, kdf_cache)
 
         skipped = _emit_and_skip_qo_run(
             source,
@@ -2356,17 +2403,29 @@ def _parse_rar5(
         # (or advertises an absurd size). Without a check value to prove the key, that is
         # indistinguishable from corruption, so surface it as EncryptionError so password
         # candidates keep iterating. A verified key means a failure here is real corruption.
-        if hdr_enc is not None and not password_verified:
-            try:
-                parsed = _read_rar5_block(header_fd)
-            except CorruptionError as exc:
-                raise wrong_password_error(
-                    "Failed to decrypt RAR5 headers (wrong password?)"
-                ) from exc
-        else:
+        # A file that ends inside an encrypted header is a cut, not a clean end: behind
+        # an IV, no ciphertext at all needs no password to tell, and with a verified
+        # key a header that runs out of bytes part-way is one too. Unverified, a
+        # garbage size reads to the end of the file as well, so that stays a wrong
+        # password.
+        try:
             parsed = _read_rar5_block(header_fd)
+        except CorruptionError as exc:
+            if isinstance(header_fd, _HeaderDecryptStream):
+                if password_verified and header_fd.hit_eof:
+                    truncated = _encrypted_header_cut(header_start)
+                    break
+                if not password_verified:
+                    raise wrong_password_error(
+                        "Failed to decrypt RAR5 headers (wrong password?)"
+                    ) from exc
+            raise
         if parsed is None:
-            data_past_end = _data_past_end(source)
+            truncated = (
+                _encrypted_header_cut(header_start)
+                if isinstance(header_fd, _HeaderDecryptStream)
+                else _data_past_end(source)
+            )
             break
         (
             block_type,
@@ -2516,9 +2575,9 @@ def _parse_rar5(
         needs_next_volume=needs_next_volume,
         damaged_service_headers=damaged_service_headers,
         damaged_service_headers_omitted=damaged_service_headers_omitted,
-        data_past_end=data_past_end,
+        truncated=truncated,
         end_block_missing_volumes=(
-            [volume_index] if not end_block_seen and data_past_end is None else []
+            [volume_index] if not end_block_seen and truncated is None else []
         ),
     )
 
@@ -2596,6 +2655,7 @@ def _read_rar5_block(
 
 def _rar5_decrypt_header(
     source: BinaryIO,
+    iv: bytes,
     hdr_enc: _Rar5HdrEnc,
     password: str | bytes,
     kdf_cache: RarKdfCache,
@@ -2603,7 +2663,6 @@ def _rar5_decrypt_header(
     if hdr_enc.kdf_count > _RAR_MAX_KDF_SHIFT:
         raise CorruptionError(f"RAR5 kdf_count too large: {hdr_enc.kdf_count}")
     key = kdf_cache.rar5(password, hdr_enc.salt, 1 << hdr_enc.kdf_count)
-    iv = _require_exact(source, 16, "RAR5 header IV")
     return _HeaderDecryptStream(source, key, iv)
 
 

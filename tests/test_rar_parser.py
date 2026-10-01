@@ -97,23 +97,37 @@ def test_rar3_wrong_header_password_is_encryption_error() -> None:
 
 @requires("cryptography")
 @pytest.mark.parametrize(
-    ("name", "cut", "what"),
+    ("name", "cut", "start"),
     [
-        # Cut inside the first header's 16-byte IV (RAR5) / 8-byte salt (RAR3).
-        ("encrypted_header__.rar", 46, "RAR5 header IV"),
-        ("encrypted_header__rar4.rar", 20, "RAR3 header salt"),
+        # Cut inside the first encrypted header's 16-byte IV (RAR5) / 8-byte salt
+        # (RAR3), which start at bytes 46 and 20.
+        ("encrypted_header__.rar", 50, 46),
+        ("encrypted_header__rar4.rar", 24, 20),
     ],
 )
-def test_short_header_salt_or_iv_is_corruption_not_a_wrong_password(
-    name: str, cut: int, what: str
+def test_short_header_salt_or_iv_is_a_cut_not_a_wrong_password(
+    name: str, cut: int, start: int
 ) -> None:
     """The salt/IV read does not depend on the password, so running out of bytes there
     is damage. It used to be re-wrapped as ``EncryptionError``, which sent the reader
     through every password candidate and reported a truncated archive as a wrong
-    password, even with the right one.
+    password, even with the right one. A salt or IV the file holds only part of ends
+    the walk as a cut, which the reader reports as ``TruncatedError`` after the
+    members listed.
     """
     data = _fixture(name).read_bytes()[:cut]
-    with raises_corruption_not_truncation(match=what) as info:
+    archive = parse_rar_archive(io.BytesIO(data), password="header_password")
+    assert archive.members == []
+    assert archive.truncated is not None
+    assert f"encrypted header that starts at byte {start}" in archive.truncated
+
+
+@requires("cryptography")
+def test_rar3_file_ending_where_a_header_salt_starts_is_corruption() -> None:
+    """RAR3 with encrypted headers ending exactly where the next salt would start
+    has no end block. That stays an error at open, not a wrong password."""
+    data = _fixture("encrypted_header__rar4.rar").read_bytes()[:20]
+    with raises_corruption_not_truncation(match="RAR3 header salt") as info:
         parse_rar_archive(io.BytesIO(data), password="header_password")
     assert not isinstance(info.value, EncryptionError)
 
