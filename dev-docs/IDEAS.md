@@ -887,6 +887,13 @@
   0.2.0** when deciding debt-ledger Q2 (2026-07-20): bands are aspirational;
   measured ratios are good enough for everyday use. Same story for 7z and RAR
   listing against their ~1.25× band.
+  **It is also the memory lever** (davitf, 2026-10-01, parked): a 7z member costs
+  about 1.0 KB at open and 1.2 KB after `members()` (tracemalloc, 100 000 entries) —
+  `ArchiveMember` 280 B, the retained `SevenZipFileRecord` 150 B, the by-name index
+  125 B, two near-always-empty dicts (`extra`, `hashes`) 130 B, `_MemberRaw` 100 B,
+  the rest names, a datetime and boxed ints. Sharing the empty dicts, a by-name list
+  only on repeats and dropping the duplicate record gets to ~600 B; only lazy members
+  would change what `max_members` costs (858 MB for a 315-byte million-entry 7z).
 
 ## Strategy & adoption (2026-07 review backlog)
 
