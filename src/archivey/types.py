@@ -440,6 +440,13 @@ EXTRA_IS_REPARSE_POINT: Final = "is_reparse_point"
 # as the idea is not RAR's alone.
 EXTRA_IS_FILE_COPY: Final = "is_file_copy"
 
+# Key in ArchiveMember.extra holding the other stored spelling of a member's name, as
+# bytes, when the archive stores the name twice and ``raw_name`` is the spelling
+# ``name`` was decoded from. ZIP sets it when an Info-ZIP Unicode Path extra field
+# (0x7075) names the member: the field's UTF-8 bytes are ``raw_name`` and the header's
+# legacy bytes are here. Not namespaced, as other formats store a name twice too.
+EXTRA_ALTERNATE_RAW_NAME: Final = "alternate_raw_name"
+
 # RAR3 FILE-header ``UNP_VER`` byte as stored (unvalidated); RAR5 reports 50
 # because RAR5 records no per-file unpack version. Lives here, not on
 # CompressionMethod.level, which carries the method-byte offset instead.
@@ -470,6 +477,10 @@ class MemberExtra(dict[str, object]):
     * ``is_file_copy`` (``bool``) — RAR. A ``FILE`` member whose bytes the archive
       stores once under an earlier member (a RAR5 file reference, ``rar -oi``).
       ``link_target`` names that source and ``link_target_member`` is it.
+    * ``alternate_raw_name`` (``bytes``) — ZIP. The other stored spelling of the
+      name, when the archive stores two and ``raw_name`` is the one ``name`` was
+      decoded from: for a ZIP name taken from its Info-ZIP Unicode Path extra
+      field (0x7075), the header's legacy bytes.
     * ``rar.extract_version`` (``int``)
     * ``rar.file_version`` (``int``)
     * ``rar.tweaked_crc32`` (``int``)
@@ -506,6 +517,8 @@ class MemberExtra(dict[str, object]):
     def __getitem__(self, key: Literal["is_reparse_point"], /) -> bool: ...
     @overload
     def __getitem__(self, key: Literal["is_file_copy"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["alternate_raw_name"], /) -> bytes: ...
     @overload
     def __getitem__(self, key: Literal["rar.extract_version"], /) -> int: ...
     @overload
@@ -587,7 +600,14 @@ class ArchiveMember:
 
     raw_name: bytes | None = None
     """The member name exactly as stored in the archive, undecoded, or ``None`` when
-    the format stores no name or the bytes cannot be recovered from the decoded one."""
+    the format stores no name or the bytes cannot be recovered from the decoded one.
+
+    ``name`` is ``raw_name`` decoded and normalized. Where the archive stores the
+    name twice, ``raw_name`` is the spelling the name was decoded from: a ZIP name
+    taken from its Info-ZIP Unicode Path extra field (0x7075) has that field's UTF-8
+    bytes here, and the header's bytes in ``extra["alternate_raw_name"]``. One
+    exception remains: an ISO Rock Ridge name that is not UTF-8 and takes its Joliet
+    name keeps the Rock Ridge bytes here."""
 
     size: int | None = None
     """Uncompressed size in bytes, or ``None`` if unknown (e.g. a streaming entry)."""

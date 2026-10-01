@@ -322,6 +322,7 @@ not valid UTF-8.
 | --- | --- |
 | ZIP, a name with the UTF-8 flag set | Ignored; the name is UTF-8 |
 | ZIP, a name without the flag | Decodes the name, and turns off the UTF-8 guess |
+| ZIP, a name without the flag that has a matching Unicode Path extra field | Ignored; the name is the field's UTF-8 copy |
 | TAR, the name in the header block | Decodes every name |
 | TAR, a PAX `path` or `linkpath` record | Used only when the bytes are not valid UTF-8 |
 | ISO, a Rock Ridge or plain ISO 9660 name, or a Rock Ridge link target | Used only when the bytes are not valid UTF-8; without it, see below |
@@ -330,7 +331,11 @@ not valid UTF-8.
 | RAR 1.5-4, a name with the Unicode flag and no UTF-16 copy | Used only when the bytes are not valid UTF-8 |
 | RAR5, or a RAR 1.5-4 name with a UTF-16 copy | Ignored; the name is UTF-8 or UTF-16 |
 
-The UTF-8 flag and PAX records declare UTF-8, so for them UTF-8 wins. An ISO image never says which
+The UTF-8 flag and PAX records declare UTF-8, so for them UTF-8 wins. So does a ZIP
+Unicode Path extra field, which Info-ZIP's `zip` writes: a second copy of the name in
+UTF-8, with a checksum of the stored bytes that shows it still describes them. Its UTF-8
+bytes are then `member.raw_name`, and the stored bytes are in
+`member.extra["alternate_raw_name"]`. An ISO image never says which
 encoding its Rock Ridge names are in. Most tools write UTF-8, and older ones write
 whatever encoding the author's system used. Trying UTF-8 first means a legacy
 `encoding=` fixes the old names without turning the UTF-8 names in the same image, or

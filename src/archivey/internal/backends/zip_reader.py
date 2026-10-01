@@ -147,6 +147,7 @@ from archivey.internal.timestamps import (
 from archivey.internal.windows_reparse import FILE_ATTRIBUTE_REPARSE_POINT
 from archivey.terminal import quoted
 from archivey.types import (
+    EXTRA_ALTERNATE_RAW_NAME,
     EXTRA_IS_REPARSE_POINT,
     ArchiveFormat,
     ArchiveInfo,
@@ -193,6 +194,9 @@ _ZIP_MASK_COMPRESSED_PATCHED_DATA = 0x20
 # member; archivey does not implement the algorithm.
 _ZIP_MASK_STRONG_ENCRYPTION = 0x40
 _ZIP_EXTRA_STRONG_ENCRYPTION = 0x0017
+# Info-ZIP Unicode Path extra field: the name as UTF-8, tied to the header's name bytes
+# by their CRC-32 (`_unicode_path_name`).
+_ZIP_EXTRA_UNICODE_PATH = 0x7075
 # Archive extra data record: written in front of a central directory that PKWARE
 # Strong Encryption has encrypted (APPNOTE §4.3.11, §7.3).
 _ZIP_ARCHIVE_EXTRA_DATA_SIG = b"PK\x06\x08"
@@ -958,17 +962,34 @@ class ZipReader(BaseArchiveReader):
         raw_name = self._reencode_name(
             decoded, "utf-8" if is_utf8_flagged else (self._encoding or "cp437")
         )
-        # Many tools write UTF-8 names without setting the UTF-8 flag (APPNOTE says cp437),
-        # so cp437 would yield mojibake. With no authoritative signal (flag clear AND no
-        # explicit encoding=), prefer UTF-8 when the stored bytes are valid UTF-8, else a
-        # configurable legacy fallback. A set flag or explicit encoding= is honored as-is.
-        # ASCII bytes decode identically under UTF-8 and cp437 — skip the sniff.
         name_source = decoded
+        # An unflagged name with an Info-ZIP Unicode Path extra field (0x7075) whose CRC
+        # matches the stored bytes is named by the field, ahead of the sniff and of an
+        # explicit encoding=, as 7-Zip, Info-ZIP unzip and stdlib zipfile 3.12+ do. The
+        # field's UTF-8 bytes become raw_name, so name stays raw_name decoded, and the
+        # header's bytes are kept in extra. Only the central directory's field is read:
+        # the listing comes from there, and the local header's name is only checked
+        # against the central one.
+        alternate_raw_name: bytes | None = None
+        unicode_name: bytes | None = None
+        if not is_utf8_flagged and raw_name is not None and info.extra:
+            unicode_name = _unicode_path_name(info.extra, raw_name)
+            if unicode_name is not None:
+                name_source = unicode_name.decode("utf-8")
+                if unicode_name != raw_name:
+                    alternate_raw_name, raw_name = raw_name, unicode_name
+        # Many tools write UTF-8 names without setting the UTF-8 flag (APPNOTE says cp437),
+        # so cp437 would yield mojibake. With no authoritative signal (flag clear, no
+        # Unicode Path field and no explicit encoding=), prefer UTF-8 when the stored bytes
+        # are valid UTF-8, else a configurable legacy fallback. A set flag or explicit
+        # encoding= is honored as-is. ASCII bytes decode identically under UTF-8 and
+        # cp437 — skip the sniff.
         inferred_encoding: str | None = None
         # raw_name is None only under an explicit encoding=, which skips the sniff.
         if (
             not is_utf8_flagged
             and self._encoding is None
+            and unicode_name is None
             and raw_name is not None
             and not raw_name.isascii()
         ):
@@ -1006,6 +1027,8 @@ class ZipReader(BaseArchiveReader):
             if aes_info is None or not aes_info.is_ae2:
                 hashes = {HashAlgorithm.CRC32: crc32_digest(info.CRC)}
         extra = MemberExtra({"zip.compress_type": info.compress_type})
+        if alternate_raw_name is not None:
+            extra[EXTRA_ALTERNATE_RAW_NAME] = alternate_raw_name
         if is_reparse_point:
             # From the attribute bit alone, so it is known while listing and stays true
             # even when the data turns out not to be a link buffer and the member is
@@ -1067,7 +1090,10 @@ class ZipReader(BaseArchiveReader):
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,
-            presented_name=decoded,
+            # The decoded name before normalization, from whichever source named it;
+            # the cp437 text a sniff or the Unicode Path field replaced is not a
+            # normalization.
+            presented_name=name_source,
             archive_name=self._archive_name,
             member_id=index,
             # A directory reparse point is stored with the directory convention's
@@ -2261,6 +2287,35 @@ def _classic_eocd_declares_split(fp: IO[bytes]) -> bool:
         return False
     this_disk, cd_start_disk = struct.unpack_from("<HH", tail, idx + 4)
     return _disk_field_is_split(this_disk) or _disk_field_is_split(cd_start_disk)
+
+
+def _unicode_path_name(extra: bytes, stored_name: bytes) -> bytes | None:
+    """The UTF-8 name an Info-ZIP Unicode Path extra field (0x7075) gives, or ``None``.
+
+    The field is version 1, a CRC-32 of the header's name bytes, then the name as UTF-8.
+    The CRC ties it to ``stored_name``, so a tool that renamed the entry without
+    updating the field leaves a stale field that does not match. Only the first such
+    field counts, as in 7-Zip, and it counts only when it matches, holds valid UTF-8
+    and is not empty; any other field is ignored.
+    """
+    pos = 0
+    while pos + 4 <= len(extra):
+        tag, length = struct.unpack_from("<HH", extra, pos)
+        field = extra[pos + 4 : pos + 4 + length]
+        pos += 4 + length
+        if tag != _ZIP_EXTRA_UNICODE_PATH:
+            continue
+        if len(field) != length or length < 6 or field[0] != 1:
+            return None
+        if struct.unpack_from("<I", field, 1)[0] != zlib.crc32(stored_name):
+            return None
+        name = field[5:]
+        try:
+            name.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        return name
+    return None
 
 
 def _uses_strong_encryption(info: zipfile.ZipInfo) -> bool:
