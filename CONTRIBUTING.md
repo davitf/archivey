@@ -337,6 +337,15 @@ security fixes one line each, other bug fixes summarized in one line).
   helpers any front end needs), or do without: the library's enum-spelling helpers are
   internal, so the CLI derives its option choices from the enums and maps a parsed
   choice back to its member itself (`src/archivey/cli/choices.py`).
+- **Report from what the run left behind, not a re-derivation of it.** When code has
+  to report what an operation did or would do (a dry run, a preview, a summary line),
+  read the answer from what the operation left behind, such as the tree it wrote,
+  rather than re-deriving it from its per-item results. A re-derivation is a second
+  implementation, and it drifts: the CLI's dry-run line naming where a single
+  top-level folder would land was re-derived from per-member results and broke in a
+  new way in four review rounds running, until it read the dry run's scratch tree
+  instead. Where nothing usable is left behind, the re-derivation needs the comparison
+  test in "A parity promise gets its comparison test first" below.
 - **Cost signals stay honest, and nothing silently re-decompresses.** `ListingCost` and
   `AccessCost` are promises a caller plans against, so a change that makes a path more
   expensive updates them. Reading two members out of one solid block must not decode the
@@ -358,13 +367,6 @@ security fixes one line each, other bug fixes summarized in one line).
   - Genuine `OSError` / `KeyboardInterrupt` / `MemoryError` propagate unchanged, except
     where a spec says otherwise (e.g. safe-extraction catches a per-member filesystem
     `OSError` under `OnError.CONTINUE` — see `openspec/specs/safe-extraction/spec.md`).
-- **Predict from the run's own state, not a model of it.** When code has to say what an
-  operation would do (a dry run, a preview, a summary line), read the answer from the
-  state the operation actually produced where you can, rather than reconstructing it
-  from its outcomes. A reconstruction is a second implementation, and it drifts: the
-  CLI's dry-run line naming where a single top-level folder would land was inferred
-  from per-member results and broke in a new way in four review rounds running, until
-  it read the dry run's scratch tree instead.
 
 ## Testing standards
 
@@ -412,12 +414,14 @@ security fixes one line each, other bug fixes summarized in one line).
   `uv run python scripts/review_prep.py red-on-base <test ids>` runs it against the
   merge base's `src/` and prints a table for the PR body.
 - **A parity promise gets its comparison test first.** When a feature promises to
-  behave like something real (a dry run like a real extraction, one backend like
-  another), write the test that runs both and compares them before the feature is
-  done, and run it over every surface the promise covers: each entry point, the CLI as
+  behave like another archivey path (a dry run like a real extraction), write the test
+  that runs both and compares them first, before the feature itself. This generalises
+  the oracle cross-validation above from third-party libraries to archivey's own
+  paths. Run it over every surface the promise covers: each entry point, the CLI as
   well as the library, and each spelling of the inputs (a relative path, one through a
-  symlink, one with `..`). Reviewers find divergences by running that comparison, so
-  every surface you leave out is a review round.
+  symlink, one with `..`). Where the promise has stated exceptions, the test asserts
+  each one explicitly rather than skipping the case. A surface you don't compare is
+  where a divergence ships, and in practice where review finds it.
 
 ### Coverage-guided fuzz (Atheris)
 
