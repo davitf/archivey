@@ -323,7 +323,13 @@ archive declares.
   listing from reading these targets at all.
 
 **Residual.** Format-local parser ceilings allocate up to their limit during
-`open_archive` (7z: `max_members` or header size, whichever is tighter). ZIP builds the
+`open_archive` (7z: `max_members` or header size, whichever is tighter). The header-size
+bound is measured on the *decoded* header, and header compression shrinks a uniform member
+table to almost nothing: a 315-byte 7z declaring 1 000 000 directory entries costs about
+858 MB and 16 s at open under the default `max_members` (about 860 bytes and 16 µs per
+member, the fixed cost of a member object, so names add little and `max_metadata_bytes`
+does not see it). That is accepted: it is linear in the count the caller allowed, and a
+caller opening untrusted 7z, RAR or ISO should lower `max_members`. ZIP builds the
 whole central directory at open through stdlib `zipfile` (ADR
 [0006](decisions/0006-stdlib-zipfile.md)), so its memory at open is linear in the
 central directory and `max_members` binds at `members()`. `max_metadata_bytes` counts

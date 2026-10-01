@@ -626,6 +626,12 @@
   256 MiB and `2**24`; only the name is left. (The LZMA dictionary cap landed on the same field
   rather than a new one, and 256 MiB also covers it: xz `-9` and 7-Zip's presets declare
   64 MiB at most.) Adding a class attribute later is purely additive.
+  **It may also lower `ListingLimits.max_members`** (davitf, 2026-10-01): a 315-byte 7z
+  declaring a million entries costs about 858 MB at open under the 1 048 576 default.
+  262 144 would cost about 220 MB and still covers a Linux kernel tree (~90 000 files)
+  about three times; Android source trees and dataset archives can exceed it.
+  `max_metadata_bytes` cannot stand in: it counts text, and the cost is a fixed
+  per-member object; charging that cost against 64 MiB would cap at about 78 000 members.
   **The name is open**, and davitf said so explicitly. `UNTRUSTED` is the suggestion on
   the table: `STRICT` is taken in spirit by `DiagnosticPolicy.strict()` and by
   archivey's use of "strict" for how harshly corruption is treated, while `UNTRUSTED`

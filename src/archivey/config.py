@@ -301,7 +301,13 @@ class ListingLimits:
     """
 
     max_members: int | None = 1_048_576
-    """Most members a listing may hold."""
+    """Most members a listing may hold.
+
+    Each listed member costs roughly 1 KB of memory whatever its name, so the default
+    allows about 1 GB at open on 7z, RAR and ISO, where a tiny compressed header can
+    declare that many members. A current Linux kernel source tree has about 90 000 files;
+    lower this when opening untrusted archives.
+    """
 
     max_metadata_bytes: int | None = 64 * 2**20
     """Most bytes of text a listing may retain across its members. 64 MiB.
