@@ -888,10 +888,45 @@ def test_stream_volume_set_reads_with_unar(names: tuple[str, ...]) -> None:
         (101, True, "a.r99"),
         (102, True, "a.s00"),
         (901, True, "a.z99"),
-        (902, True, "a.part902.rar"),
+        (902, True, "a.{00"),
+        (1001, True, "a.{99"),
+        (1002, True, "a.|00"),
     ],
 )
 def test_stream_volume_names_follow_the_set_scheme(
     index: int, old_style: bool, expected: str
 ) -> None:
     assert rar_reader._stream_volume_name("a", index, old_style=old_style) == expected
+
+
+@pytest.mark.parametrize("old_style", [False, True])
+def test_stream_volume_names_are_the_names_unrar_walks(old_style: bool) -> None:
+    """Every staged name is the one unrar looks for after the one before it, so a
+    staged set of any length reads to its end (unrar stopped at 901 old-style
+    volumes when the 902nd was named ``partN``)."""
+    for index in range(1, 1500):
+        current = rar_reader._stream_volume_name("a", index, old_style=old_style)
+        assert rar_reader._unrar_next_volume_name(
+            current, old_numbering=old_style
+        ) == rar_reader._stream_volume_name("a", index + 1, old_style=old_style)
+
+
+@requires_binary("unar")
+@pytest.mark.parametrize("streamed", [False, True])
+def test_unar_is_refused_past_its_old_style_volume_limit(
+    monkeypatch: pytest.MonkeyPatch, streamed: bool
+) -> None:
+    """unar stops after ``.z99`` (901 volumes) and calls the member damaged, so a
+    longer old-style set is refused before unar runs. The limit is lowered to one
+    so the two-volume fixture stands in for a 902-volume set."""
+    monkeypatch.setattr(rar_reader, "_UNAR_MAX_OLD_STYLE_VOLUMES", 1)
+    names = ("tinyvol_rnn.rar", "tinyvol_rnn.r00")
+    source: object = (
+        [io.BytesIO((_RAR / name).read_bytes()) for name in names]
+        if streamed
+        else _RAR / names[0]
+    )
+    with open_archive(source, config=_UNAR) as archive:  # type: ignore[arg-type]
+        member = next(m for m in archive.members() if m.is_file)
+        with pytest.raises(UnsupportedFeatureError, match="old-style"):
+            archive.read(member)

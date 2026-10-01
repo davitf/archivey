@@ -336,7 +336,13 @@ naming flag, not the names on disk: an old-scheme set renamed `x.part1.rar`, `x.
 is continued from `x.part1.r00`, a file archivey never parsed. Otherwise, on the first read
 that needs `unrar`, the files are symlinked — hard-linked where a symlink is
 refused — into a temp directory under the set's own names, and copied within
-`SpoolLimits` only where neither link works. `unar` always gets such a directory. Stream
+`SpoolLimits` only where neither link works. `unar` always gets such a directory. An old-scheme
+set is staged as `.rar`, `.r00` … `.z99` and then on past `z` (`.{00`, `.|00` …), because
+unrar's next-volume rule adds one to the letter's character code and never switches to
+`partN` for an old-scheme set: measured, unrar 7.00 reads 1 500 volumes named that way,
+and stopped at 901 when the 902nd was staged as `partN`. `unar` 1.10 reads 901 old-scheme
+volumes whatever their names and calls the member damaged, so a longer set is refused
+for it (`UnsupportedFeatureError` naming unrar). Stream
 volumes are copied into a temp directory named `…partN.rar` so `unrar` can walk the set
 later (P11 again) — and the **names** are the point, not just the seekability: `unrar`
 discovers later volumes by filename on disk, so neither a `memfd` nor a byte-concatenation
