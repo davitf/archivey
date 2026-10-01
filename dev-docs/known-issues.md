@@ -64,9 +64,10 @@ source (2026-10-01): upstream 1.10.1, 1.10.7, 1.10.8 (Homebrew's version) and ma
 decode all 300 generated RAR5 archives and the `unar_drop*` / `unar_stale*` fixtures
 correctly; the Debian package build reproduces the drops, and the same build without that
 patch does not. The RAR 1.5 refusal (`rar15-comment.rar` missing `FILE1.TXT`) has the same
-cause. Debian and Ubuntu's 1.10.8+ds1 packages (Ubuntu 26.04, Debian unstable) do not carry
-the patch. Banners: the Debian 1.10.1 build prints `unar v1.10.1` with no build date;
-upstream 1.10.8 and master still print `v1.10.7`.
+cause. Debian kept the patch on 1.10.8+ds1 until 1.10.8+ds1-10 (Debian unstable, June
+2026), so Ubuntu 22.04, 24.04 and 26.04 all carry it, read from their source packages'
+patch series. Banners cannot tell: Debian's 1.10.8 packages print `v1.10.8` with or without
+the patch, and upstream 1.10.8 and master still print `v1.10.7`.
 
 **Upstream.** Nothing to file with XADMaster; the patch is Debian's.
 
