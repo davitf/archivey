@@ -382,19 +382,28 @@ class ArchiveStream(ReadOnlyIOStream):
         ``CorruptionError`` or ``TruncatedError``, or an error raised from one (a
         ZipCrypto member's password-or-damage ``EncryptionError``). Until a seek, every
         later read raises it again. A seek restarts the decode, so the prefix reads
-        again, and the read that reaches the end raises the verdict again although the
-        seek forfeited the digest check: a caller who catches it and seeks back cannot
-        re-read the damaged member as complete, clean data.
+        again, and the read that reaches the end raises the verdict again, whether or
+        not the seek forfeited the digest check: a caller who catches it and seeks back
+        cannot re-read the damaged member as complete, clean data. A content error that
+        a rewound read raises is that same verdict found again (a seek to 0 re-arms the
+        verifier), so the stream raises the error object it raised first.
         """
         try:
             self._raise_translated(e)
         except ArchiveyError as raised:
-            if _is_content_verdict(raised):
-                if self._verdict is None:
-                    self._verdict = raised
-                    self._verdict_tb = raised.__traceback__
-                self._verdict_rewound = False
-            raise
+            if not _is_content_verdict(raised):
+                raise
+            repeat = self._verdict is not None and self._verdict_rewound
+            if self._verdict is None:
+                self._verdict = raised
+                self._verdict_tb = raised.__traceback__
+            self._verdict_rewound = False
+            if not repeat:
+                raise
+        # A rewind re-arms the verifier, so a rewound read finds the damage again and
+        # raises a new error for it: raise the one this stream already raised.
+        assert self._verdict is not None
+        raise self._verdict.with_traceback(self._verdict_tb)
 
     def _reached_end(self, n: int, data: bytes) -> bool:
         """Whether a rewound read reached the end, where the damage was found.
@@ -482,7 +491,8 @@ class ArchiveStream(ReadOnlyIOStream):
             self._fail(e)
         if verdict is not None and n != 0 and self._reached_end(n, data):
             # A rewound stream reached its end: the damage is still there, and the
-            # seek gave up the check that found it. Withhold the bytes, as the
+            # seek may have given up the check that found it (only a seek to 0
+            # re-arms it). Withhold the bytes, as the
             # verifier does with the chunk that fails.
             self._verdict_rewound = False
             self._raise_verdict()
