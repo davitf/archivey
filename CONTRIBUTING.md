@@ -358,6 +358,13 @@ security fixes one line each, other bug fixes summarized in one line).
   - Genuine `OSError` / `KeyboardInterrupt` / `MemoryError` propagate unchanged, except
     where a spec says otherwise (e.g. safe-extraction catches a per-member filesystem
     `OSError` under `OnError.CONTINUE` — see `openspec/specs/safe-extraction/spec.md`).
+- **Predict from the run's own state, not a model of it.** When code has to say what an
+  operation would do (a dry run, a preview, a summary line), read the answer from the
+  state the operation actually produced where you can, rather than reconstructing it
+  from its outcomes. A reconstruction is a second implementation, and it drifts: the
+  CLI's dry-run line naming where a single top-level folder would land was inferred
+  from per-member results and broke in a new way in four review rounds running, until
+  it read the dry run's scratch tree instead.
 
 ## Testing standards
 
@@ -404,6 +411,13 @@ security fixes one line each, other bug fixes summarized in one line).
   reach the path it named. For a test the PR says fails on `main`,
   `uv run python scripts/review_prep.py red-on-base <test ids>` runs it against the
   merge base's `src/` and prints a table for the PR body.
+- **A parity promise gets its comparison test first.** When a feature promises to
+  behave like something real (a dry run like a real extraction, one backend like
+  another), write the test that runs both and compares them before the feature is
+  done, and run it over every surface the promise covers: each entry point, the CLI as
+  well as the library, and each spelling of the inputs (a relative path, one through a
+  symlink, one with `..`). Reviewers find divergences by running that comparison, so
+  every surface you leave out is a review round.
 
 ### Coverage-guided fuzz (Atheris)
 
