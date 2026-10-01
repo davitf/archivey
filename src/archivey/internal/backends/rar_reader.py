@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -223,21 +224,77 @@ def _stream_volume_name(stem: str, index: int, *, old_style: bool) -> str:
     return f"{stem}.{chr(ord('r') + number // 100)}{number % 100:02d}"
 
 
-def _unrar_finds_exactly(paths: list[Path]) -> bool:
+_UNRAR_PART_NAME_RE = re.compile(
+    r"(?P<head>.*\.part)(?P<num>[0-9]+)(?P<ext>\.rar)", re.I
+)
+_UNRAR_OLD_EXT_RE = re.compile(r"\.(?P<letter>[^.0-9])(?P<num>[0-9]{2})")
+
+
+def _unrar_next_volume_name(name: str, *, old_numbering: bool) -> str | None:
+    """The name unrar tries for the volume after ``name``, or ``None`` if unsure.
+
+    A subset of unrar's ``NextVolumeName``: an ``.exe`` or ``.sfx`` extension
+    counts as ``.rar``; the old scheme goes ``.rar`` -> ``.r00`` -> ``.r01`` ...
+    ``.r99`` -> ``.s00``, and the new one increments ``N`` in ``name.partN.rar``.
+    Any other shape is ``None``, and the caller then stages the set rather than
+    predict unrar's walk. unrar also retries an old-scheme name when a new-scheme
+    one is missing; that retry is not modelled, so such a set is staged too.
+    """
+    stem, dot, ext = name.rpartition(".")
+    if not dot:
+        name = f"{name}.rar"
+    elif ext.lower() in ("", "exe", "sfx"):
+        name = f"{stem}.rar"
+    if not old_numbering:
+        match = _UNRAR_PART_NAME_RE.fullmatch(name)
+        if match is None:
+            return None
+        digits = match["num"]
+        number = str(int(digits) + 1).zfill(len(digits))
+        return f"{match['head']}{number}{match['ext']}"
+    stem, _, ext = name.rpartition(".")
+    if ext.lower() == "rar":
+        return f"{stem}.{ext[0]}00"
+    match = _UNRAR_OLD_EXT_RE.fullmatch(f".{ext}")
+    if match is None:
+        return None
+    letter, number = match["letter"], int(match["num"]) + 1
+    if number == 100:
+        letter, number = chr(ord(letter) + 1), 0
+    return f"{stem}.{letter}{number:02d}"
+
+
+def _unrar_finds_exactly(
+    paths: list[Path], *, is_volume: bool, old_numbering: bool
+) -> bool:
     """Whether unrar, given ``paths[0]``, walks exactly ``paths`` by name.
 
-    unrar looks for each next volume by name beside the one before, which is the
-    lookup :func:`discover_volume_siblings` reproduces.
+    unrar looks for each next volume by name beside the one before, under the
+    scheme volume 1's MAIN header names (``old_numbering``), not under the names
+    the files carry: an old-scheme set renamed ``x.part1.rar``, ``x.part2.rar`` is
+    continued from ``x.part1.r00``. So each next name is predicted from that flag,
+    and must be the next given file; past the last one, no file may answer to the
+    next name, or unrar could read it as a further volume. A name the prediction
+    does not cover counts as not found, and the set is staged.
     """
-    siblings = discover_volume_siblings(paths[0])
-    if siblings is None or len(siblings) != len(paths):
+    if not is_volume:
+        # unrar never looks for another file beside a non-volume archive.
         return len(paths) == 1
     try:
-        return all(
-            os.path.samefile(found, given) for found, given in zip(siblings, paths)
-        )
+        current = paths[0]
+        for index in range(1, len(paths) + 1):
+            name = _unrar_next_volume_name(current.name, old_numbering=old_numbering)
+            if name is None:
+                return False
+            candidate = current.parent / name
+            if index == len(paths):
+                return not os.path.lexists(candidate)
+            if not os.path.samefile(candidate, paths[index]):
+                return False
+            current = candidate
     except OSError:
         return False
+    return True
 
 
 def _link_file(src: Path, dest: Path) -> None:
@@ -966,8 +1023,9 @@ class RarReader(BaseArchiveReader):
         self._volume_paths: list[Path] = []
         # Stream volumes, kept unmaterialized until unrar actually needs files.
         self._stream_volume_items: list[Path | BinaryIO] = []
-        # An explicit list of volume files that unrar would not find by name from
-        # the first one, linked into a temp directory on the first read that needs it.
+        # Volume files (explicit or discovered) that unrar would not find by name from
+        # the first one (_choose_unrar_volume_paths), linked into a temp directory on
+        # the first read that needs it.
         self._stage_volume_paths = False
         self._volume0_parse_origin = 0  # set after sibling discovery when origin > 0
         # The data program, with ``AUTO`` resolved once for the life of this reader.
@@ -1010,6 +1068,7 @@ class RarReader(BaseArchiveReader):
         ):
             self._cost_notes = (AUTO_CHOSE_UNAR_NOTE, *self._cost_notes)
         self._archive, self._unrar_password = self._parse_archive()
+        self._choose_unrar_volume_paths()
         # unrar only consults the password when something is actually encrypted, so
         # a spawn for a plain archive is not given one: nothing is decrypted with it,
         # and handing a secret to a subprocess that ignores it buys nothing. This is
@@ -1093,16 +1152,11 @@ class RarReader(BaseArchiveReader):
             paths = source.volume_paths
             if paths:
                 # An explicit list of volume files is used as given, in the order
-                # given. unrar finds later volumes by name beside the first, so it
-                # is pointed at the files in place only when that finds exactly
-                # this list; otherwise they are staged under the set's own names
-                # (_stage_explicit_volumes) on the first read that needs unrar.
+                # given. Whether unrar may read them in place is decided after the
+                # parse (_choose_unrar_volume_paths).
                 self._volume_paths = paths
                 self._volume_count = len(paths)
-                if _unrar_finds_exactly(paths):
-                    self._archive_path = paths[0]
-                else:
-                    self._stage_volume_paths = True
+                self._archive_path = paths[0]
                 return SharedSource(source, wrap_handle=wrap)
             # Stream volumes: parse from the originals; copy for unrar only when
             # a member actually needs one (_ensure_archive_path).
@@ -1113,6 +1167,28 @@ class RarReader(BaseArchiveReader):
 
         # Single non-path stream — materialize later when unrar is needed.
         return SharedSource(source, wrap_handle=wrap)
+
+    def _choose_unrar_volume_paths(self) -> None:
+        """Stage the volume files unless unrar, handed the first, reads exactly them.
+
+        unrar finds later volumes by name beside the first, under the naming scheme
+        the MAIN header names, which can differ from the one the files carry or
+        the one sibling discovery matched. Unless that walk finds exactly the files
+        parsed here, unrar is pointed at links to them under the set's own names
+        instead (:meth:`_stage_explicit_volumes`, on the first read that needs
+        unrar), so it cannot read a file this reader never parsed, or miss one it
+        did.
+        """
+        if self._archive_path is None or self._stage_volume_paths:
+            return
+        if _unrar_finds_exactly(
+            self._volume_paths,
+            is_volume=self._archive.is_volume,
+            old_numbering=self._archive.old_volume_naming,
+        ):
+            return
+        self._archive_path = None
+        self._stage_volume_paths = True
 
     def _volume_set_size(self) -> int:
         """Volumes in this set, whether or not they are files yet."""
@@ -1180,11 +1256,11 @@ class RarReader(BaseArchiveReader):
         self._archive_path = paths[0]
 
     def _stage_explicit_volumes(self) -> None:
-        """Link an explicit volume list into a temp dir under the set's own names.
+        """Link the parsed volume files into a temp dir under the set's own names.
 
-        The caller's files may sit in different directories, or carry names that
-        do not continue one another, and unrar (and unar) find each later volume by
-        name beside the one before. Each file is symlinked, or hard-linked where a
+        The files may sit in different directories, or carry names that unrar's
+        rule for this set (:func:`_unrar_finds_exactly`) does not continue, and
+        unrar finds each later volume by name beside the one before. Each file is symlinked, or hard-linked where a
         symlink is not allowed (Windows without the privilege), so nothing is
         copied. Where neither works the set is copied, bounded by
         ``SpoolLimits`` like any other copy this reader makes. Called under

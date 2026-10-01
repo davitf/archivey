@@ -319,11 +319,14 @@ one logical member. `ArchiveInfo.is_multivolume` is `True` and
 `TruncatedError` ("expects another volume"); a lone later volume is
 `UnsupportedFeatureError` ("Need first volume") rather than a partial listing. An
 explicit sequence of volume *paths* is used as given, with no discovery: headers are read
-from those files in that order. `unrar` is pointed at the first one in place only when
-the discovery above, run from it, finds exactly that list; otherwise, on the first read
-that needs `unrar` (or `unar`), the files are symlinked — hard-linked where a symlink is
+from those files in that order. For a discovered set and an explicit one alike, `unrar` is
+pointed at the first file in place only when its own next-volume rule, run from it, finds
+exactly the files parsed and nothing past the last. That rule follows the MAIN header's
+naming flag, not the names on disk: an old-scheme set renamed `x.part1.rar`, `x.part2.rar`
+is continued from `x.part1.r00`, a file archivey never parsed. Otherwise, on the first read
+that needs `unrar`, the files are symlinked — hard-linked where a symlink is
 refused — into a temp directory under the set's own names, and copied within
-`SpoolLimits` only where neither link works. Stream
+`SpoolLimits` only where neither link works. `unar` always gets such a directory. Stream
 volumes are copied into a temp directory named `…partN.rar` so `unrar` can walk the set
 later (P11 again) — and the **names** are the point, not just the seekability: `unrar`
 discovers later volumes by filename on disk, so neither a `memfd` nor a byte-concatenation

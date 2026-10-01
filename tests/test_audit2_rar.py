@@ -276,23 +276,15 @@ def _force_crc32(data: bytes, pos: int, target: int) -> bytes:
 
 
 @requires_binary("unrar")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R21: for an old-numbering RAR4 set named x.part1.rar/x.part2.rar, archivey "
-        "lists from x.part2.rar but hands unrar x.part1.rar, and unrar reads "
-        "x.part1.r00; a decoy there is returned as the member's data"
-    ),
-)
 def test_unrar_reads_the_volumes_archivey_parsed(tmp_path: Path) -> None:
     """``tinyvol_rnn`` is a RAR 2.0 set whose MAIN header says old-style naming.
 
     Renamed ``x.part1.rar`` / ``x.part2.rar``, archivey's sibling discovery finds
-    ``x.part2.rar`` and ``_unrar_finds_exactly`` concludes unrar will too, so the
-    path is handed over as is. ``unrar`` follows the header flag and opens
-    ``x.part1.r00`` instead. With no such file the read fails as truncated; with
-    one, its bytes come back. The decoy's stored data is chosen so the whole-file
-    CRC32 archivey checks still matches.
+    ``x.part2.rar``. ``unrar`` follows the header flag and looks for
+    ``x.part1.r00`` instead: with no such file the read failed as truncated; with
+    one, its bytes came back. The decoy's stored data is chosen so the whole-file
+    CRC32 archivey checks still matches. Fixed: the set is staged under the
+    names unrar expects, so unrar reads exactly the files archivey parsed.
     """
     first = _rar3_parse(_fixture("tinyvol_rnn.rar").read_bytes())
     second = _rar3_parse(_fixture("tinyvol_rnn.r00").read_bytes())
@@ -317,6 +309,19 @@ def test_unrar_reads_the_volumes_archivey_parsed(tmp_path: Path) -> None:
             return  # refusing is acceptable; the decoy's bytes are not
     assert b"DECOY" not in data
     assert data == original
+
+
+@requires_binary("unrar")
+def test_renamed_old_numbering_set_reads_without_a_decoy(tmp_path: Path) -> None:
+    """The same renamed set with no ``x.part1.r00``: it reads, not truncated."""
+    first = _rar3_parse(_fixture("tinyvol_rnn.rar").read_bytes())
+    second = _rar3_parse(_fixture("tinyvol_rnn.r00").read_bytes())
+    original = first[1]["data"] + second[1]["data"]
+    (tmp_path / "x.part1.rar").write_bytes(_fixture("tinyvol_rnn.rar").read_bytes())
+    (tmp_path / "x.part2.rar").write_bytes(_fixture("tinyvol_rnn.r00").read_bytes())
+
+    with open_archive(tmp_path / "x.part1.rar", config=_UNRAR_ONLY) as archive:
+        assert archive.read(archive.members()[0]) == original
 
 
 # --- R22: an unrar/unar killed from outside is reported as a truncated archive --
