@@ -425,11 +425,12 @@ class RarArchive:
     #: reader reports the count, so hitting the cap is itself never silent.
     damaged_service_headers_omitted: int = 0
     #: Set when the walk ended because the file was cut: a block's packed data ran
-    #: past the end of the file, or the file ends part-way into an encrypted header
-    #: (its salt or IV, or its ciphertext). The members listed are a prefix. The
-    #: reader lists them and then reports this as ``TruncatedError``, as TAR does
-    #: for a member whose data runs past the end. The walk cannot tell it at open,
-    #: so raising here would lose the prefix a caller can still read.
+    #: past the end of the file, or the file ends part-way into a header: a plain
+    #: one, or an encrypted one (its salt or IV, or its ciphertext). A file that
+    #: ends exactly at a header boundary is not cut. The members listed are a
+    #: prefix. The reader lists them and then reports this as ``TruncatedError``, as
+    #: TAR does for a member whose data runs past the end. The walk cannot tell it
+    #: at open, so raising here would lose the prefix a caller can still read.
     truncated: str | None = None
     #: 0-based indices of the RAR5 volumes whose block walk reached end of file
     #: without an end-of-archive block. RAR5 writers always close a volume with one,
@@ -828,6 +829,19 @@ def _encrypted_header_cut(start: int) -> str:
     return (
         f"RAR archive is truncated: the file ends inside the encrypted header "
         f"that starts at byte {start}"
+    )
+
+
+def _plain_header_cut(start: int) -> str:
+    """Why the walk stopped at a plain header that the file holds only part of.
+
+    The header readers raise :class:`TruncatedError` only when the file ends before
+    the bytes the header declares; a declared size that is invalid stays a
+    :class:`CorruptionError`. The first byte was present, so this is not a clean end.
+    """
+    return (
+        f"RAR archive is truncated: the file ends inside the header that starts at "
+        f"byte {start}"
     )
 
 
@@ -1592,7 +1606,7 @@ def _parse_rar3(
                 )
                 break
             if len(buf) < _S_BLK_HDR.size:
-                raise CorruptionError("Unexpected EOF while reading RAR3 block header")
+                raise TruncatedError("Unexpected EOF while reading RAR3 block header")
 
             header_crc, block_type, flags, header_size = _S_BLK_HDR.unpack_from(buf)
             if header_size < _S_BLK_HDR.size:
@@ -1600,7 +1614,7 @@ def _parse_rar3(
             if header_size > _S_BLK_HDR.size:
                 rest = read_exact(header_fd, header_size - _S_BLK_HDR.size)
                 if len(rest) != header_size - _S_BLK_HDR.size:
-                    raise CorruptionError(
+                    raise TruncatedError(
                         "Unexpected EOF while reading RAR3 header body"
                     )
                 hdata = buf + rest
@@ -1611,6 +1625,11 @@ def _parse_rar3(
                 raise wrong_password_error(
                     "Failed to decrypt RAR3 headers (wrong password?)"
                 ) from exc
+            if isinstance(exc, TruncatedError):
+                # A plain header the file holds only part of: unrar lists the
+                # members before it and reports an unexpected end of archive.
+                truncated = _plain_header_cut(header_start)
+                break
             raise
         # HeaderDecryptStream.tell() reports the underlying ciphertext position
         # (including AES block padding), which is the correct data_offset.
@@ -2417,6 +2436,12 @@ def _parse_rar5(
                     raise wrong_password_error(
                         "Failed to decrypt RAR5 headers (wrong password?)"
                     ) from exc
+            elif isinstance(exc, TruncatedError):
+                # A plain header the file holds only part of, its CRC and size
+                # vint included: unrar lists the members before it and reports an
+                # unexpected end of archive.
+                truncated = _plain_header_cut(header_start)
+                break
             raise
         if parsed is None:
             truncated = (
@@ -2600,7 +2625,7 @@ def _read_rar5_block(
     if not head:
         return None
     if len(head) < preload:
-        raise CorruptionError("Unexpected EOF while reading RAR5 header")
+        raise TruncatedError("Unexpected EOF while reading RAR5 header")
     # The header-size vint starts at byte 4 (after the 4-byte CRC). A vint is at most
     # 10 bytes; cap the continuation so a crafted run of 0x80 bytes cannot drive an
     # unbounded, O(n^2) byte-at-a-time read of the source before ``load_vint``'s own
@@ -2612,7 +2637,7 @@ def _read_rar5_block(
             )
         b = fd.read(1)
         if not b:
-            raise CorruptionError("Unexpected EOF while reading RAR5 header size")
+            raise TruncatedError("Unexpected EOF while reading RAR5 header size")
         head += b
     start_bytes = bytes(head)
     header_crc, pos = _load_le32(start_bytes, 0)
@@ -2622,7 +2647,7 @@ def _read_rar5_block(
     header_size = pos + hdrlen
     hdata = start_bytes + read_exact(fd, header_size - len(start_bytes))
     if len(hdata) != header_size:
-        raise CorruptionError("Unexpected EOF while reading RAR5 header body")
+        raise TruncatedError("Unexpected EOF while reading RAR5 header body")
     # Ciphertext cursor, including AES block padding. Same invariant as the
     # RAR3 walk: this is where packed data (or the next header's IV) starts.
     data_offset = fd.tell()

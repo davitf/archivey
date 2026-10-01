@@ -405,3 +405,60 @@ def test_header_encrypted_volume_set_reads_back() -> None:
 
     with open_archive(_fixture(_TINYVOL_HP[0]), password="header_password") as archive:
         assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+# A plain RAR cut part-way through a header lists the members before it and sets
+# ``truncated``. The first FILE header starts at byte 20 in the RAR4 fixture and at
+# byte 23 in the RAR5 one; the RAR5 header-size vint follows its 4-byte CRC.
+_PLAIN_RAR4 = "basic_nonsolid__rar4.rar"
+_PLAIN_RAR5 = "basic_nonsolid__.rar"
+
+
+@pytest.mark.parametrize(
+    ("name", "cut", "start"),
+    [
+        (_PLAIN_RAR4, 21, 20),  # inside the 7-byte block header
+        (_PLAIN_RAR4, 40, 20),  # inside the header body
+        (_PLAIN_RAR5, 25, 23),  # inside the CRC
+        (_PLAIN_RAR5, 40, 23),  # inside the header body
+    ],
+)
+def test_plain_header_cut_is_truncated(name: str, cut: int, start: int) -> None:
+    data = _fixture(name).read_bytes()[:cut]
+    archive = parse_rar_archive(io.BytesIO(data), password=None)
+    assert archive.members == []
+    assert archive.truncated is not None
+    assert f"inside the header that starts at byte {start}" in archive.truncated
+    assert archive.end_block_missing_volumes == []
+
+
+def test_rar5_cut_inside_a_multibyte_header_size_is_truncated() -> None:
+    """The fixture's size vints are one byte, so this writes the first byte of a
+    two-byte one and ends the file there."""
+    data = _fixture(_PLAIN_RAR5).read_bytes()[:27] + b"\xa7"
+    archive = parse_rar_archive(io.BytesIO(data), password=None)
+    assert archive.truncated is not None
+    assert "header that starts at byte 23" in archive.truncated
+
+
+@pytest.mark.parametrize(
+    ("name", "at", "length", "replacement", "match"),
+    [
+        # RAR3 header size (bytes 25-26) below the 7-byte block header.
+        (_PLAIN_RAR4, 25, 2, b"\x05\x00", "Invalid RAR3 header size"),
+        # RAR5 header-size vint (byte 27) over the 2 MiB cap: 0x400000.
+        (_PLAIN_RAR5, 27, 1, b"\x80\x80\x80\x02", "RAR5 header too large"),
+        # RAR5 header-size vint longer than 10 bytes.
+        (_PLAIN_RAR5, 27, 1, b"\x80" * 12, "variable-length integer too long"),
+    ],
+    ids=["rar4-size-too-small", "rar5-size-too-large", "rar5-vint-too-long"],
+)
+def test_plain_header_with_an_invalid_size_is_corruption_not_a_cut(
+    name: str, at: int, length: int, replacement: bytes, match: str
+) -> None:
+    """Only a file that ends before a header's declared bytes is a cut. A declared
+    size that is invalid while the bytes are present stays ``CorruptionError``."""
+    data = _fixture(name).read_bytes()
+    data = data[:at] + replacement + data[at + length :]
+    with raises_corruption_not_truncation(match=match):
+        parse_rar_archive(io.BytesIO(data), password=None)

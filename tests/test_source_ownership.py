@@ -246,7 +246,9 @@ def test_a_failed_open_does_not_close_the_caller_s_stream(
 
     The three keys are the ones whose first 64 bytes actually reach a backend and fail
     there, measured on this HEAD: ``zip`` raises from ``zip_reader.__init__``, ``7z``
-    from ``sevenzip_reader.__init__``, ``rar`` from ``rar_reader.__init__``. The other
+    from ``sevenzip_reader.__init__``, ``rar`` from ``rar_reader.__init__``. A RAR cut
+    inside a header now opens and lists the members before the cut, so the ``rar`` key
+    also damages the main header's CRC: that is still refused at open. The other
     formats do not exercise this path and are deliberately absent: a truncated ``tar``
     or ``iso`` is refused by detection, before any backend is constructed, and a
     truncated ``tar.gz`` *opens* — the gzip member header is intact and the truncation
@@ -255,6 +257,9 @@ def test_a_failed_open_does_not_close_the_caller_s_stream(
     """
     skip_unless_runnable(_BASIC, key)
     truncated = corpus_archive_path(_BASIC, key, tmp_path).read_bytes()[:64]
+    if key == "rar":
+        # The RAR5 main header's CRC starts at byte 8, after the signature.
+        truncated = truncated[:8] + bytes([truncated[8] ^ 0xFF]) + truncated[9:]
     stream = _CallerBytesIO(truncated)
     # Around the open alone: a failure three members into a read would exercise a
     # different release path, and this test names the one in ``__init__``.
