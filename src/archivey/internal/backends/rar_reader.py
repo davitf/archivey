@@ -1480,6 +1480,12 @@ class RarReader(BaseArchiveReader):
         with self._materialize_lock:
             return self._spool_budget(None).try_reserve(size)
 
+    def _release_spool(self, size: int) -> None:
+        """Give back what :meth:`_try_spool` charged, once the kept file is deleted."""
+        with self._materialize_lock:
+            assert self._spool is not None
+            self._spool.release(size)
+
     def _unar_copy_size(self) -> int | None:
         """Bytes :meth:`_unar_archive_path` copies from where the RAR starts, if known."""
         size = self._shared.size
@@ -2281,7 +2287,7 @@ class RarReader(BaseArchiveReader):
         )
         if not ids:
             return None
-        return FileCopySources(ids, self._try_spool)
+        return FileCopySources(ids, self._try_spool, self._release_spool)
 
     def _pass_file_copy_stream(
         self,

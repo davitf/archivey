@@ -223,8 +223,10 @@ reader are refused the same way. `None` (`SpoolLimits.UNLIMITED`) removes the li
 directory; where that is memory-backed (`tmpfs`), the limit bounds memory rather than
 disk. The same limit holds what a solid pass keeps for RAR5 file copies (`rar -oi`):
 the pass keeps each copy's source as it decodes it, so the copy does not decode the
-solid stream again, and a source the limit has no room for is decoded again instead of
-being refused.
+solid stream again. Up to 8 MiB per pass stays in memory; the rest goes to a temporary
+file that counts against the limit from the source's first decoded byte until the pass
+ends, after any copy of the archive the pass needs. A source the limit has no room for
+is decoded again instead of being refused.
 
 ## Streaming mode is one pass
 

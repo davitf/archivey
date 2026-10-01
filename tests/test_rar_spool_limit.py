@@ -233,6 +233,24 @@ def test_budget_try_reserve_charges_or_declines_without_refusing() -> None:
     assert not budget.try_reserve(1)
 
 
+def test_budget_release_gives_a_reservation_back() -> None:
+    """A kept file deleted at the end of a pass no longer counts: the next copy has
+    the whole allowance again. A refusal already made stays."""
+    budget = _budget(100)
+    assert budget.try_reserve(60)
+    budget.release(60)
+    budget.check_total(100)
+    assert budget.try_reserve(100)
+    with pytest.raises(ValueError, match="only 100 are charged"):
+        budget.release(101)
+    budget.release(100)
+    with pytest.raises(ResourceLimitError):
+        budget.check_total(101)
+    budget.release(0)
+    with pytest.raises(ResourceLimitError):
+        budget.check_total(1)
+
+
 def test_budget_made_by_a_reservation_takes_the_first_copys_name() -> None:
     budget = SpoolBudget(
         SpoolLimits(max_bytes=10),

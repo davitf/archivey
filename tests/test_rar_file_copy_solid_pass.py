@@ -296,3 +296,67 @@ def test_a_copy_read_checks_its_source_dictionary(
                     stream.read()
                 break
     assert spawns == []
+
+
+def test_each_pass_keeps_its_source_within_the_same_spool_limit(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pass gives back the spool allowance its kept file held when it ends, so a
+    second pass on the same reader can keep the source again."""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    archive, payload = _solid_with_copies(tmp_path)
+    # Room for the source once, not twice.
+    config = _config(
+        "unrar", spool_limits=SpoolLimits(max_bytes=len(payload) + len(payload) // 2)
+    )
+    with open_archive(archive, config=config) as reader:
+        for _ in range(2):
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                data = stream.read()
+                if member.name in _COPY_NAMES:
+                    assert data == payload, member.name
+    assert spawns == ["unrar", "unrar"]
+
+
+def test_a_kept_source_does_not_take_the_stream_copys_allowance(
+    tmp_path: Path, spawns: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """From a stream source, ``unrar`` needs the archive copied to a temporary file.
+    That copy is not optional; keeping a source is, so the source is kept only with
+    what the copy left, and here it is declined and its copies decode it again."""
+    monkeypatch.setattr(rar_copy_sources, "_MEMORY_LIMIT", 0)
+    _config("unrar")  # skips without rar and unrar
+    src = tmp_path / "src"
+    src.mkdir()
+    payload = _text(5, 200_000)
+    copies = ["c_copy0.txt", "c_copy1.txt"]
+    (src / "a_source.txt").write_bytes(payload)
+    (src / "b_other.txt").write_bytes(b"other")
+    for name in copies:
+        (src / name).write_bytes(payload)
+    archive = tmp_path / "first.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-ma5", "-s", "-oi:1000", str(archive)]
+        + ["a_source.txt", "b_other.txt", *copies],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    data = archive.read_bytes()
+    # Either one fits on its own; the two together do not.
+    limit = max(len(data), len(payload))
+    config = _config("unrar", spool_limits=SpoolLimits(max_bytes=limit))
+    seen: dict[str, bytes] = {}
+    with open_archive(io.BytesIO(data), config=config) as reader:
+        assert reader.members()[0].name == "a_source.txt"
+        assert all(reader.get(name).extra.get("is_file_copy") for name in copies)
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            seen[member.name] = stream.read()
+    assert seen == {
+        "a_source.txt": payload,
+        "b_other.txt": b"other",
+        **dict.fromkeys(copies, payload),
+    }
+    assert spawns == ["unrar"] * (1 + len(copies))

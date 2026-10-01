@@ -546,7 +546,7 @@ DecoderLimits.UNLIMITED = DecoderLimits(
 
 @dataclass(frozen=True)
 class SpoolLimits:
-    """Caps on copying the archive source to temporary storage.
+    """Caps on what a reader writes to temporary storage, mostly copies of its source.
 
     Some reads need the archive as a file on disk even when the caller passed a stream.
     Today that is RAR: ``unrar`` and ``unar``, the programs that decode member data, take
@@ -567,9 +567,10 @@ class SpoolLimits:
     """
 
     max_bytes: int | None = 2**30
-    """Most bytes one reader may write to temporary storage as a copy of its source. 1 GiB.
+    """Most bytes one reader may hold in temporary storage. 1 GiB.
 
-    A volume set counts as one copy: the limit applies to the total across its
+    That is the copy of its source, and what a solid RAR pass keeps for file copies
+    (the last paragraph). A volume set counts as one copy: the limit applies to the total across its
     volumes. When the size is known before the copy starts, an archive over the limit
     raises :class:`~archivey.exceptions.ResourceLimitError` before anything is written.
     Otherwise the copy stops before it passes the limit. Either way the partial copy is
@@ -585,9 +586,10 @@ class SpoolLimits:
     The same allowance holds the sources of RAR5 file copies (``rar -oi``) in a solid
     pass (``stream_members``, extraction): the pass keeps each source as it decodes
     it, up to 8 MiB in memory and the rest in a temporary file within this limit, so
-    a copy does not decode the solid stream again. A source the limit has no room
-    for is not kept, and its copies decode it again from the archive; that is never
-    refused.
+    a copy does not decode the solid stream again. That file counts only from the
+    source's first decoded byte, after any copy of the archive the pass needs, until
+    the pass ends. A source the limit has no room for is not kept, and its copies
+    decode it again from the archive; that is never refused.
     """
 
     UNLIMITED: ClassVar[SpoolLimits]
@@ -682,7 +684,7 @@ class ArchiveyConfig:
     """
 
     spool_limits: SpoolLimits = SpoolLimits()
-    """Caps on copying a stream source to temporary storage. See :class:`SpoolLimits`."""
+    """Caps on what a reader writes to temporary storage. See :class:`SpoolLimits`."""
 
     detection_budget: DetectionBudget = BALANCED_BUDGET
     """Upper bounds on what format detection may read and decode.

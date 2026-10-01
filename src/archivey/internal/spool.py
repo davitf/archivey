@@ -40,8 +40,9 @@ class SpoolBudget:
     default fits a stream source, which a path would avoid copying.
 
     A write that has a fallback, and so must never refuse, asks :meth:`try_reserve`
-    instead. A budget first made for such a write has no ``what`` yet; the first copy
-    that can refuse names itself with :meth:`describe`.
+    instead, and gives the charge back with :meth:`release` when it deletes what it
+    wrote. A budget first made for such a write has no ``what`` yet; the first copy
+    that can refuse names itself with :meth:`describe`, which must come before it.
     """
 
     def __init__(
@@ -87,9 +88,11 @@ class SpoolBudget:
     def try_reserve(self, size: int) -> bool:
         """Charge ``size`` bytes about to be written, or return ``False`` if they do not fit.
 
-        For a write that has a fallback: ``False`` refuses nothing and charges nothing,
-        so the budget stays open for the copies that have none. The caller writes at
-        most ``size`` bytes on the strength of a ``True``.
+        For a write that has a fallback: ``False`` refuses nothing and charges nothing.
+        A ``True`` charge does count against later copies, including ones with no
+        fallback, so the caller reserves only when it is about to write, and calls
+        :meth:`release` with the same ``size`` once the bytes are deleted. The caller
+        writes at most ``size`` bytes on the strength of a ``True``.
         """
         if self._refused is not None:
             return False
@@ -97,6 +100,18 @@ class SpoolBudget:
             return False
         self._written += size
         return True
+
+    def release(self, size: int) -> None:
+        """Give back ``size`` bytes that :meth:`try_reserve` charged, now deleted.
+
+        A refusal already recorded stays: release does not reopen a budget that
+        refused.
+        """
+        if not 0 <= size <= self._written:
+            raise ValueError(
+                f"release of {size} bytes, but only {self._written} are charged"
+            )
+        self._written -= size
 
     def copy(self, src: BinaryIO, out: BinaryIO) -> None:
         """Copy ``src`` to ``out`` until EOF, within what the limit has left."""
@@ -133,8 +148,11 @@ class SpoolBudget:
         return self._error(size)
 
     def _error(self, size: str) -> ResourceLimitError:
+        # Only check_total and copy refuse, and every caller of those names its copy
+        # with describe first; try_reserve never refuses.
+        assert self._what is not None, "describe() must come before a refusing call"
         return ResourceLimitError(
-            f"Spool limit reached: {self._what or 'a copy was needed'}, and the copy would be {size}, over "
+            f"Spool limit reached: {self._what}, and the copy would be {size}, over "
             f"SpoolLimits.max_bytes={self._limit} (ArchiveyConfig.spool_limits). "
             f"{self._remedy}",
             archive_name=self._archive_name,
