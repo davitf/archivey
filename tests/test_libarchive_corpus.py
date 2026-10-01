@@ -14,10 +14,6 @@ fuzz/crash fixtures, and formats Archivey does not implement.
 Triage (2026-07, vs libarchive ``libarchive/test``) — known failures marked
 ``xfail``:
 
-**7z**
-* **GAP** ``*_arm64`` (method ``0x0a``) — newer ARM64 BCJ filter not in our
-  method table; correctly raises ``UnsupportedFeatureError`` today.
-
 **Compress / filter**
 * **GAP** ``.tlz`` with raw LZMA Alone payloads — extension maps to TAR+lzip;
   Archivey has no TAR+LZMA-Alone stream format.
@@ -126,15 +122,6 @@ _PART_RE = re.compile(
 
 # Triaged divergences. Values are (strict, reason).
 _XFAIL: dict[str, tuple[bool, str]] = {
-    # --- 7z ---
-    "test_read_format_7zip_deflate_arm64.7z": (
-        True,
-        "GAP: ARM64 BCJ method 0x0a not in method table",
-    ),
-    "test_read_format_7zip_lzma2_arm64.7z": (
-        True,
-        "GAP: ARM64 BCJ method 0x0a not in method table",
-    ),
     # --- compress / filter ---
     "test_compat_lzma_1.tlz": (
         True,

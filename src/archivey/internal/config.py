@@ -115,13 +115,27 @@ def exceeds_decoder_memory(declared: int, limits: DecoderLimits) -> bool:
     return cap is not None and declared > cap
 
 
-def check_decoder_memory(declared: int, *, limits: DecoderLimits, what: str) -> None:
+def check_decoder_memory(
+    declared: int,
+    *,
+    limits: DecoderLimits,
+    what: str,
+    counted_from: str | None = None,
+) -> None:
     """Refuse an archive-declared decoder allocation above ``max_decoder_memory``.
 
-    ``declared`` is the number the *archive* asked for, read out of a header field —
-    not a measurement of anything, and not bounded by the file's own size. ``what``
-    names the field for the message, so a caller who raised the cap on purpose can
-    tell which archive is asking and for how much.
+    ``declared`` is the number the *archive* asked for: read out of a header field,
+    not a measurement of anything, and not bounded by the file's own size. Or, when
+    ``counted_from`` is given, a count the caller derived from header fields. ``what``
+    names the field or count for the message, so a caller who raised the cap on
+    purpose can tell which archive is asking and for how much.
+
+    ``counted_from`` names the header values a derived count comes from, as a phrase
+    ("the 4294967296-byte dictionary member 'a' declares"). RAR is the caller: it
+    counts a dictionary only up to the unpacked bytes the read decodes, and the
+    dictionary can be another member's. The message then says the count is
+    counted, and from what, so it does not present the count as the number a header
+    holds.
 
     Callers run this before the decoder object is constructed, because the
     allocation it guards is made inside a C extension, and what a refused native
@@ -136,12 +150,18 @@ def check_decoder_memory(declared: int, *, limits: DecoderLimits, what: str) -> 
     Lives here rather than in ``codecs.py`` so the xz and lzip decoders, which
     ``codecs.py`` imports, can call it without an import cycle.
     """
-    if exceeds_decoder_memory(declared, limits):
-        raise ResourceLimitError(
-            f"Decoder limit reached: max_decoder_memory={limits.max_decoder_memory} "
-            f"({what} declares {declared} bytes). The archive chose this number; "
-            f"raise DecoderLimits.max_decoder_memory if the archive is trusted."
-        )
+    if not exceeds_decoder_memory(declared, limits):
+        return
+    if counted_from is None:
+        detail, numbers = f"{what} declares {declared} bytes", "this number"
+    else:
+        detail = f"{what} is {declared} bytes, counted from {counted_from}"
+        numbers = "these numbers"
+    raise ResourceLimitError(
+        f"Decoder limit reached: max_decoder_memory={limits.max_decoder_memory} "
+        f"({detail}). The archive chose {numbers}; "
+        "raise DecoderLimits.max_decoder_memory if the archive is trusted."
+    )
 
 
 class KeyDerivationBudget:

@@ -11,6 +11,9 @@ from the native parse before any process starts:
   unpacked bytes in archive order. That differs from ``unrar p``: every file-version
   history row is included (``unrar`` needs ``-ver``), a RAR3/4 symlink emits its stored
   target, and a directory or a RAR5 redirect emits nothing.
+- **Dictionary cost.** What ``unar`` allocates for a member's dictionary, checked
+  against ``DecoderLimits.max_decoder_memory`` before it runs
+  (:func:`unar_dictionary_costs`).
 - **Refusals.** The reads ``unar`` 1.10 is known to get wrong. Each is refused with
   ``UnsupportedFeatureError`` before ``unar`` runs, because ``unar`` reports several of
   them with exit 0. RAR5 encryption is read, with the password on ``unar``'s command
@@ -80,18 +83,32 @@ def unar_entry_index(archive: RarArchive) -> dict[int, int]:
     return {id(info): index for index, info in enumerate(archive.members)}
 
 
+def _carries_no_data(info: RarMemberInfo) -> bool:
+    """A directory or a RAR5 redirect: the entry has a header and no data to decode.
+
+    A RAR3 symlink is not one of these: its target is stored as compressed data.
+    """
+    return info.is_directory or info.file_redir is not None or info.is_hardlink_or_copy
+
+
 def _carries_no_solid_data(info: RarMemberInfo) -> bool:
-    return (
-        info.is_directory
-        or info.file_redir is not None
-        or info.is_hardlink_or_copy
-        or info.file_size == 0
-    )
+    return _carries_no_data(info) or info.file_size == 0
+
+
+def uses_no_dictionary(info: RarMemberInfo) -> bool:
+    """Whether decoding this entry leaves the dictionary untouched, for both programs.
+
+    An entry with no data decodes nothing, and a stored member is copied. The
+    ``file_size`` a hardlink, copy or redirect declares is not decoded, so it must
+    not count. An empty compressed member still counts: its declared dictionary may
+    start a stream.
+    """
+    return _carries_no_data(info) or info.compress_type == _METHOD_STORED
 
 
 def unar_emitted_size(info: RarMemberInfo) -> int:
     """Bytes ``unar -o -`` writes for this entry in an all-entries run."""
-    if info.is_directory or info.file_redir is not None or info.is_hardlink_or_copy:
+    if _carries_no_data(info):
         return 0
     return info.file_size
 
@@ -104,6 +121,45 @@ def unar_pipe_offsets(archive: RarArchive) -> dict[int, int]:
         offsets[id(info)] = position
         position += unar_emitted_size(info)
     return offsets
+
+
+def unar_dictionary_costs(archive: RarArchive) -> list[tuple[int, int]]:
+    """The dictionary bytes ``unar`` allocates to decode each member, in archive order.
+
+    Measured with ``unar`` 1.10.1: it maps the declared dictionary when it starts a
+    stream and writes to every page of it, whatever the member's size. A 64 KiB
+    member declaring 1 GiB peaks at about 1 GiB resident, and a solid pair of 64 KiB
+    members declaring 4 GiB at about 4 GiB. The count is the declared size. It is not
+    capped at the data, which is where the ``unrar`` rule differs.
+
+    In a solid archive ``unar`` keeps one dictionary for a solid stream, which starts
+    at a compressed member without the solid flag. The count for a member is the
+    largest dictionary declared in its stream up to and including it. Measured, only
+    the first member's declaration is allocated, so the largest is an upper bound. A
+    member that starts a new stream does not pay for the one before it: reading it
+    alone stayed near 20 MiB after a 1 GiB stream ahead of it. A stored member, a
+    directory and a redirect use no dictionary (:func:`uses_no_dictionary`), so they
+    count 0 and neither start nor end a stream. For a stored member of a solid
+    archive that is measured too: ``unar -i`` read a stored 64 KiB member behind a
+    300 MB member declaring 1 GiB at 41 MiB resident, where reading the 300 MB
+    member took 1044 MiB. ``unar`` does not decode the stream ahead of it.
+
+    Each entry is ``(count, declarer)``: the bytes, and the archive index of the
+    member whose header declared that dictionary, or -1 for a count of 0.
+    """
+    costs: list[tuple[int, int]] = []
+    stream = 0
+    declarer = -1
+    for index, info in enumerate(archive.members):
+        if uses_no_dictionary(info):
+            costs.append((0, -1))
+            continue
+        if not info.file_solid:
+            stream, declarer = 0, -1
+        if info.dictionary_size > stream or declarer < 0:
+            stream, declarer = info.dictionary_size, index
+        costs.append((stream, declarer))
+    return costs
 
 
 def _rar5_solid_after_empty(archive: RarArchive) -> set[int]:
