@@ -27,8 +27,10 @@ from archivey import (
     ExtractionPolicy,
     open_archive,
 )
-from archivey.diagnostics import DiagnosticCode
-from archivey.exceptions import ArchiveyError, CorruptionError
+from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
+from archivey.exceptions import ArchiveyError, CorruptionError, DiagnosticRaisedError
+from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams.xz import XzDecompressorStream
 from tests.conftest import requires
 from tests.test_audit_tar_streams import _TRAILER, _gnu_sparse, _member
 
@@ -65,7 +67,7 @@ def _read_single(
 
 
 # ---------------------------------------------------------------------------
-# T14: xz with a check type liblzma does not implement is read unverified, silently
+# T14: xz with a check type liblzma does not implement reads with DIGEST_UNVERIFIABLE
 # ---------------------------------------------------------------------------
 
 
@@ -95,11 +97,9 @@ def _flip_in_stored_body(compressed: bytes, raw: bytes) -> bytes:
     return bytes(damaged)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="T14: xz with an unimplemented check ID is decoded unverified, with no "
-    "error and no DIGEST_UNVERIFIABLE",
-)
+_STRICT = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("check_id", [2, 3])
 def test_xz_unsupported_check_type_is_not_silent(
@@ -109,30 +109,60 @@ def test_xz_unsupported_check_type_is_not_silent(
     declares a check; liblzma cannot compute it and skips it without telling
     CPython (which never asks for LZMA_TELL_UNSUPPORTED_CHECK), so a flipped byte in
     the body reads as good data. ``xz -t`` says "Unsupported type of integrity
-    check; not verifying file integrity" and exits 2. ``lzma_error_to_archivey``
-    already maps "Unsupported integrity check" to UnsupportedFeatureError, but that
-    error is never raised."""
+    check; not verifying file integrity" and exits 2. The maintainer's ruling is to
+    warn and keep reading: ``DIGEST_UNVERIFIABLE``, which ``strict()`` refuses."""
     raw = random.Random(1).randbytes(5000)
     damaged = _flip_in_stored_body(_xz_with_check_id(raw, check_id), raw)
-    try:
-        out, diagnostics = _read_single(damaged, ArchiveFormat.XZ, streaming=streaming)
-    except ArchiveyError:
-        return
+    out, diagnostics = _read_single(damaged, ArchiveFormat.XZ, streaming=streaming)
     assert out != raw, "fixture premise: the flipped byte reaches the output"
     assert DiagnosticCode.DIGEST_UNVERIFIABLE in diagnostics, (
         "damaged xz content returned with no error and no diagnostic"
     )
+    with pytest.raises(DiagnosticRaisedError):
+        _read_single(damaged, ArchiveFormat.XZ, config=_STRICT, streaming=streaming)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="T14: a .tar.xz with an unimplemented check ID serves damaged member "
-    "data silently",
-)
+@pytest.mark.parametrize("streaming", [False, True])
+def test_xz_without_a_check_is_not_unverifiable(streaming: bool) -> None:
+    """Check ID 0 declares no check, so there is nothing that failed to run."""
+    raw = random.Random(3).randbytes(5000)
+    data = lzma.compress(raw, format=lzma.FORMAT_XZ, check=lzma.CHECK_NONE)
+    out, diagnostics = _read_single(
+        data, ArchiveFormat.XZ, config=_STRICT, streaming=streaming
+    )
+    assert out == raw
+    assert DiagnosticCode.DIGEST_UNVERIFIABLE not in diagnostics
+
+
+def test_xz_unsupported_check_in_a_later_stream_is_reported() -> None:
+    """A multi-stream file whose second stream alone names an unsupported check."""
+    first = lzma.compress(b"a" * 100, format=lzma.FORMAT_XZ)
+    second = _xz_with_check_id(b"b" * 100, 3)
+    out, diagnostics = _read_single(first + second, ArchiveFormat.XZ)
+    assert out == b"a" * 100 + b"b" * 100
+    assert DiagnosticCode.DIGEST_UNVERIFIABLE in diagnostics
+
+
+def test_xz_unsupported_check_reached_by_a_block_resume_is_reported_once() -> None:
+    """A cold seek into the second stream resumes from its block and never reads that
+    stream's header; the check comes from the index. Decoding it again from the start
+    does not report it a second time."""
+    first = lzma.compress(b"a" * 1000, format=lzma.FORMAT_XZ)
+    second = _xz_with_check_id(b"b" * 1000, 2)
+    collector = DiagnosticCollector()
+    stream = XzDecompressorStream(io.BytesIO(first + second), collector=collector)
+    stream.seek(-10, os.SEEK_END)
+    assert stream.read() == b"b" * 10
+    assert collector.snapshot().counts[DiagnosticCode.DIGEST_UNVERIFIABLE] == 1
+    stream.seek(0)
+    stream.read()
+    assert collector.snapshot().counts[DiagnosticCode.DIGEST_UNVERIFIABLE] == 1
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 def test_tar_xz_unsupported_check_type_is_not_silent(streaming: bool) -> None:
-    """The same gap through the TAR reader: the member reads back damaged, and
-    neither the member read nor the end scan says anything."""
+    """The same gap through the TAR reader: the member reads back damaged, and the
+    archive's diagnostics say the xz check did not run."""
     payload = random.Random(2).randbytes(200_000)
     tar = io.BytesIO()
     with tarfile.open(fileobj=tar, mode="w") as t:
@@ -141,16 +171,23 @@ def test_tar_xz_unsupported_check_type_is_not_silent(streaming: bool) -> None:
         t.addfile(info, io.BytesIO(payload))
     raw_tar = tar.getvalue()
     damaged = _flip_in_stored_body(_xz_with_check_id(raw_tar, 2), payload)
-    try:
-        with open_archive(
-            io.BytesIO(damaged), format=ArchiveFormat.TAR_XZ, streaming=streaming
-        ) as ar:
-            read = [s.read() for _m, s in ar.stream_members() if s is not None]
-            diagnostics = dict(ar.diagnostics.counts)
-    except ArchiveyError:
-        return
+    with open_archive(
+        io.BytesIO(damaged), format=ArchiveFormat.TAR_XZ, streaming=streaming
+    ) as ar:
+        read = [s.read() for _m, s in ar.stream_members() if s is not None]
+        diagnostics = dict(ar.diagnostics.counts)
     assert read != [payload], "fixture premise: the flipped byte reaches the member"
     assert DiagnosticCode.DIGEST_UNVERIFIABLE in diagnostics
+    with pytest.raises(DiagnosticRaisedError):  # noqa: PT012
+        with open_archive(
+            io.BytesIO(damaged),
+            format=ArchiveFormat.TAR_XZ,
+            streaming=streaming,
+            config=_STRICT,
+        ) as ar:
+            for _m, s in ar.stream_members():
+                if s is not None:
+                    s.read()
 
 
 # ---------------------------------------------------------------------------

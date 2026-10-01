@@ -30,7 +30,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import BinaryIO, Callable
 
-from archivey.diagnostics import DiagnosticCode, SeekIndexContext
+from archivey.diagnostics import DiagnosticCode, DigestContext, SeekIndexContext
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -493,6 +493,34 @@ def lzma_error_to_archivey(exc: lzma.LZMAError, context: str) -> ArchiveyError:
     return CorruptionError(f"{context}: {exc}")
 
 
+def _report_unverifiable_check(
+    check: int, reported: set[int], collector: DiagnosticCollector | None
+) -> None:
+    """Emit ``DIGEST_UNVERIFIABLE`` for a stream whose check liblzma cannot compute.
+
+    liblzma decodes such a stream without verifying it, and CPython never asks for
+    ``LZMA_TELL_UNSUPPORTED_CHECK``, so nothing else would say so. Check 0 (none) is
+    supported: the stream offers no check to run. ``reported`` holds the check IDs
+    already reported for this file, so a seek that decodes a stream again, or a second
+    stream with the same check, does not report it twice.
+    """
+    if lzma.is_check_supported(check) or check in reported:
+        return
+    reported.add(check)
+    resolve_collector(collector).emit(
+        code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+        message=(
+            f"XZ stream declares integrity check ID {check}, which liblzma cannot "
+            "compute; its data is decoded without that check."
+        ),
+        context=DigestContext(
+            algorithm=f"xz check {check}",
+            reason="unknown_algorithm_or_backend",
+        ),
+        logger=logger,
+    )
+
+
 def _lzma_failure(
     exc: lzma.LZMAError, context: str, limits: DecoderLimits
 ) -> ArchiveyError:
@@ -519,10 +547,18 @@ class _XzState:
     _NEED_HEADER = 0
     _IN_STREAM = 1
 
-    def __init__(self, limits: DecoderLimits, *, after_stream: bool = False) -> None:
+    def __init__(
+        self,
+        limits: DecoderLimits,
+        on_check: Callable[[int], None],
+        *,
+        after_stream: bool = False,
+    ) -> None:
         """``after_stream``: start just past a stream decoded elsewhere, where padding,
-        more streams or the end of the data may follow, as after any stream here."""
+        more streams or the end of the data may follow, as after any stream here.
+        ``on_check`` is given each stream's check ID once its header has decoded."""
         self._limits = limits
+        self._on_check = on_check
         self._state = self._NEED_HEADER
         self._buf = bytearray()
         self._dec: lzma.LZMADecompressor | None = None
@@ -645,6 +681,8 @@ class _XzState:
                     raise _lzma_failure(
                         e, "XZ stream header error", self._limits
                     ) from e
+                # liblzma accepted the header, so its CRC holds and byte 6 is zero.
+                self._on_check(header[7] & 0x0F)
                 self._bytes_fed = _STREAM_HEADER_SIZE
                 self._stream_decomp_bytes = len(plain)
                 output.extend(plain)
@@ -705,7 +743,11 @@ class _XzBlockResume:
     """
 
     def __init__(
-        self, start: _XzBlockBounds, inner: BinaryIO, limits: DecoderLimits
+        self,
+        start: _XzBlockBounds,
+        inner: BinaryIO,
+        limits: DecoderLimits,
+        on_check: Callable[[int], None],
     ) -> None:
         self._limits = limits
         self._to_feed = start.blocks_end - start.compressed_start
@@ -723,6 +765,8 @@ class _XzBlockResume:
             self._dec.decompress(synthetic_header)
         except lzma.LZMAError as e:
             raise CorruptionError(f"XZ synthetic header error: {e}") from e
+        # The stream's real header may never be read on this path.
+        on_check(start.check)
 
     def feed(
         self, data: bytes, max_length: int = -1
@@ -786,9 +830,11 @@ class XzDecoder(BaseDecoder):
         collector: DiagnosticCollector | None,
         index_built: Callable[[], bool],
         limits: DecoderLimits,
+        reported_checks: set[int],
         handoff: SeekPoint | None = None,
     ) -> None:
         self._engine = engine
+        self._reported_checks = reported_checks
         self._limits = limits
         self._handoff = handoff
         self._inner = inner
@@ -808,13 +854,20 @@ class XzDecoder(BaseDecoder):
         collector: DiagnosticCollector | None,
         index_built: Callable[[], bool],
         limits: DecoderLimits,
+        reported_checks: set[int],
     ) -> XzDecoder:
+        """``reported_checks`` is shared by every decoder of one file (see
+        :func:`_report_unverifiable_check`)."""
+
+        def on_check(check: int) -> None:
+            _report_unverifiable_check(check, reported_checks, collector)
+
         handoff: SeekPoint | None = None
         if point.state is None:
-            engine: _XzState | _XzBlockResume = _XzState(limits)
+            engine: _XzState | _XzBlockResume = _XzState(limits, on_check)
         else:
             start: _XzBlockBounds = point.state
-            engine = _XzBlockResume(start, inner, limits)
+            engine = _XzBlockResume(start, inner, limits, on_check)
             handoff = SeekPoint(
                 start.stream_decompressed_end, start.stream_compressed_end
             )
@@ -827,6 +880,7 @@ class XzDecoder(BaseDecoder):
             collector=collector,
             index_built=index_built,
             limits=limits,
+            reported_checks=reported_checks,
             handoff=handoff,
         )
 
@@ -838,6 +892,7 @@ class XzDecoder(BaseDecoder):
             collector=self._collector,
             index_built=self._index_built,
             limits=self._limits,
+            reported_checks=self._reported_checks,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -871,7 +926,13 @@ class XzDecoder(BaseDecoder):
         point = self._handoff
         self._handoff = None
         self._inner.seek(point.compressed_offset)
-        self._engine = _XzState(self._limits, after_stream=True)
+        self._engine = _XzState(
+            self._limits,
+            lambda check: _report_unverifiable_check(
+                check, self._reported_checks, self._collector
+            ),
+            after_stream=True,
+        )
         self._comp_cursor = point.compressed_offset
         self._decomp_cursor = point.decompressed_offset
 
@@ -1029,6 +1090,7 @@ def XzDecompressorStream(
     private-attr cell.
     """
     stream_cell: list[DecompressorStream | None] = [None]
+    reported_checks: set[int] = set()
 
     def make_decoder(point: SeekPoint, inner: BinaryIO) -> XzDecoder:
         def index_built() -> bool:
@@ -1043,6 +1105,7 @@ def XzDecompressorStream(
             collector=collector,
             index_built=index_built,
             limits=decoder_limits,
+            reported_checks=reported_checks,
         )
 
     stream = DecompressorStream(

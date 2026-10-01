@@ -838,7 +838,7 @@ def test_xz_flush_drain_does_not_swallow_a_memlimit_refusal(
     """
     from archivey.internal.streams import xz
 
-    state = xz._XzState(DecoderLimits(max_decoder_memory=2**16))
+    state = xz._XzState(DecoderLimits(max_decoder_memory=2**16), lambda _check: None)
     state._state = xz._XzState._IN_STREAM
     monkeypatch.setattr(state, "_dec", _DrainFailingDecompressor(message))
     monkeypatch.setattr(state, "_process", lambda max_length=-1: (b"", []))

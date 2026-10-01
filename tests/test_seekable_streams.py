@@ -1010,7 +1010,7 @@ def test_xz_block_resume_refuses_blocks_that_disagree_with_the_index() -> None:
             start, stream_decompressed_end=start.stream_decompressed_end + delta
         )
         source = io.BytesIO(compressed)
-        resume = _XzBlockResume(lying, source, DecoderLimits())
+        resume = _XzBlockResume(lying, source, DecoderLimits(), lambda _check: None)
         with raises_corruption_not_truncation(match=match):
             resume.feed(source.read())
 
@@ -1024,7 +1024,7 @@ def test_xz_block_resume_cut_inside_the_blocks_is_truncated() -> None:
     blocks = _read_xz_index_backwards(io.BytesIO(compressed), len(compressed))
     cut = compressed[: blocks[2].compressed_start + 100]
     source = io.BytesIO(cut)
-    resume = _XzBlockResume(blocks[1], source, DecoderLimits())
+    resume = _XzBlockResume(blocks[1], source, DecoderLimits(), lambda _check: None)
     out, _ = resume.feed(source.read())
     assert data[blocks[1].decompressed_start :].startswith(out)
     resume.flush()

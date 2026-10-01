@@ -18,10 +18,10 @@ this page states the behaviour and links the row.
 | Backends | The standard library's `lzma`, always available. `streams/xz.py` and `streams/lzip.py` are archivey's own framing parsers over it |
 | Seeking | xz: from the nearest block or stream. lzip: from the nearest member. LZMA Alone: a backward seek decodes again from the start |
 | Size | xz: from the index. lzip: from the member trailers. LZMA Alone: from the header, unless it holds the "unknown" marker. xz and lzip need a seekable source |
-| Digests | lzip only: the CRC-32 of the whole content, combined from each member's trailer. xz checks (CRC-32, CRC-64, SHA-256) are verified on read, not listed |
+| Digests | lzip only: the CRC-32 of the whole content, combined from each member's trailer. xz checks (CRC-32, CRC-64, SHA-256) are verified on read, not listed. A check ID liblzma cannot compute (2, 3, 5 to 9, 11 to 15) reads unverified with `DIGEST_UNVERIFIABLE` |
 | Metadata | None beyond the shared fields |
 | Truncation | Always raised, as `TruncatedError` |
-| Refuses | A declared dictionary over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`); an xz filter or check liblzma cannot decode (`UnsupportedFeatureError`) |
+| Refuses | A declared dictionary over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`); an xz filter liblzma cannot decode (`UnsupportedFeatureError`) |
 
 **Four things a reader might expect and will not find.** Seeking in a file from default
 `xz` or `lzip` re-decodes from the start: each writes one block or one member, so the index
@@ -188,6 +188,17 @@ unsupported options" and "Unsupported integrity check" to `UnsupportedFeatureErr
 valid block naming a filter this liblzma lacks is therefore unsupported, not damaged; in a
 `.tar.xz` it ends the listing there. Canary tests pin the liblzma wording.
 
+**A check liblzma cannot compute is a warning, not an error.** liblzma decodes a stream
+whose header names such a check ID without verifying it, and reports that only through
+`LZMA_TELL_UNSUPPORTED_CHECK`, which CPython never sets; its "Unsupported integrity
+check" error is therefore never raised. `streams/xz.py` reads the check ID from each
+stream header (or, for a block resume after a seek, from the footer the seek point was read from)
+and emits `DIGEST_UNVERIFIABLE` (`reason="unknown_algorithm_or_backend"`, `algorithm="xz
+check N"`) when `lzma.is_check_supported` says no, then keeps reading, as `xz -d` does (it
+warns, decompresses, and exits 2). Once per check ID per decompressor stream, so re-decoding after a seek does not
+repeat it; a single-file archive reports it at open too, from the one-byte probe. Check
+ID 0 declares no check and is not reported.
+
 ### 2.4 Extract
 
 Nothing here is specific to these formats ([`single-file.md`](single-file.md) §2.4).
@@ -298,6 +309,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | lzip trailing data is allowed | `::test_lzip_short_trailing_data_after_a_member_is_allowed` |
 | The index through bytes after the end, and its bound | `tests/test_stream_trailing_data.py::test_xz_keeps_its_size_and_index_through_appended_bytes`, `::test_lzip_keeps_its_size_and_crc_through_appended_bytes`, `::test_the_index_search_reaches_its_bound_and_no_further` |
 | Dictionary caps | `tests/test_decoder_limits.py::test_xz_block_declaring_four_gib_is_refused`, `::test_xz_block_resume_after_a_seek_is_capped_too`, `::test_lzip_member_dictionary_is_capped`, `::test_lzma_alone_declaring_four_gib_is_refused`, `::test_lzma_alone_non_seekable_source_is_checked_and_replayed` |
+| A check liblzma cannot compute warns | `tests/test_audit2_tar_streams.py::test_xz_unsupported_check_type_is_not_silent`, `::test_xz_without_a_check_is_not_unverifiable`, `::test_xz_unsupported_check_in_a_later_stream_is_reported`, `::test_xz_unsupported_check_reached_by_a_block_resume_is_reported_once`, `::test_tar_xz_unsupported_check_type_is_not_silent` |
 | liblzma errors by cause | `tests/test_lzma_error_causes.py::test_xz_with_an_unknown_filter_is_unsupported_not_corrupt`, `::test_an_unknown_filter_mid_tar_xz_aborts_the_listing`, `::test_corrupt_xz_data_is_still_corruption` |
 | The Alone probe | `tests/test_detection.py::test_lzma_alone_detected_by_content_probe`, `::test_lzma_alone_declaring_zero_output_is_not_claimed`, `::test_lzma_alone_with_zero_dictionary_size_is_detected`, `::test_lzma_alone_probe_does_not_claim_lzip`, `::test_tlz_alone_content_wins_with_extension_conflict` |
 | Alone size from the header; `format_unconfirmed` on a probe-only failure | `tests/test_single_file.py::test_lzma_alone_size_from_header_when_known`, `::test_lzma_alone_size_none_when_unknown_marker`, `tests/test_probe_provenance_unconfirmed.py::test_lzma_alone_probable_failure_sets_format_unconfirmed`, `::test_lzma_alone_probable_limit_refusal_sets_format_unconfirmed` |

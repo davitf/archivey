@@ -355,7 +355,9 @@ stream.
 When an expected digest cannot be computed because the algorithm is genuinely unknown
 or a backend is missing, the system SHALL emit `DIGEST_UNVERIFIABLE` with algorithm,
 non-secret reason, and member identity when available. Diagnostic policy controls
-collection, logging/callback delivery, member attachment, and escalation.
+collection, logging/callback delivery, member attachment, and escalation. An xz stream
+whose header names a check liblzma cannot compute SHALL likewise emit
+`DIGEST_UNVERIFIABLE` and keep decoding; a stream declaring no check (ID 0) SHALL NOT.
 
 #### Scenario: digest matrix
 
@@ -366,6 +368,7 @@ collection, logging/callback delivery, member attachment, and escalation.
 | Full member read reaches EOF with computable digest mismatch | `CorruptionError` naming the algorithm |
 | Chunked read reaches EOF with mismatch | All valid chunks delivered; following terminal read raises |
 | Caller abandons stream before clean EOF | No digest verdict or mismatch exception |
+| xz stream header names check ID 2 (liblzma cannot compute it) | `DIGEST_UNVERIFIABLE`; bytes still returned unverified |
 | Unverifiable digest resolves to `RAISE` | `DiagnosticRaisedError` halts open/read |
 
 ### Requirement: Public ArchiveStream exposes bounded operation diagnostics
