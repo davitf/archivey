@@ -746,6 +746,14 @@ def test_test_summary_helper() -> None:
         _test_summary(ok=0, failed=1, members_total=4) == "0 OK, 1 failed, 3 not tested"
     )
     assert _test_summary(ok=0, failed=1, members_total=None) == "0 OK, 1 failed"
+    assert (
+        _test_summary(ok=1, failed=0, members_total=1, not_verified=1)
+        == "1 OK, 0 failed, 1 not verified"
+    )
+    assert (
+        _test_summary(ok=0, failed=1, members_total=3, not_verified=2)
+        == "0 OK, 1 failed, 2 not tested, 2 not verified"
+    )
 
 
 def test_archive_stem_uses_format_extension() -> None:
