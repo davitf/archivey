@@ -18,6 +18,7 @@ from markokr/rarfile's ``test/files`` (ISC).
 from __future__ import annotations
 
 import argparse
+import binascii
 import hashlib
 import os
 import shutil
@@ -452,6 +453,128 @@ def _build_wildcard_ver(rar_bin: Path, out: Path) -> None:
     print(f"wrote {out.relative_to(REPO_ROOT)}")
 
 
+# unar 1.10.1 writes nothing for a compressed RAR5 member whose last packed byte uses
+# 6-8 bits, and exits 0. ``f.txt`` is a 47-byte member that does that with RAR 7.00
+# ``-m3``. In one run over the five-member solid archive, unar drops ``c.txt``, writes
+# stale window bytes of ``d.txt``'s length and drops ``e.txt``: read by offset, the
+# stale bytes fill ``c.txt``'s place. Another ``rar`` build may compress
+# them differently; check ``unar -o - <archive>`` still shows the fault after a
+# regeneration.
+_UNAR_DROP_MEMBER = _File(
+    "f.txt", b"ellaltagma\nlpa \n  gaa deta del beta ama \n bealp"
+)
+_UNAR_STALE: tuple[_File, ...] = (
+    _File("a.txt", b"alpha alpha delta tag alpha tag"),
+    _File(
+        "b.txt",
+        b"lea tag da beta ma da alpha lea gamma delta gamma gamma ma beta da lea "
+        b"beta da da delta",
+    ),
+    _File("c.txt", b"lea delta delta tag ma el ma"),
+    _File("d.txt", b"delta el alpha lea delta gamma ma ma beta da"),
+    _File(
+        "e.txt", b"ma da ma lea delta delta delta alpha el el beta el alpha alpha ma"
+    ),
+)
+
+
+def _vint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        out.append(byte | (0x80 if value else 0))
+        if not value:
+            return bytes(out)
+
+
+def _read_vint(data: bytes | bytearray, pos: int) -> tuple[int, int]:
+    value = shift = 0
+    while True:
+        byte = data[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            return value, pos
+
+
+def _strip_file_crc32(archive: Path, member: str) -> None:
+    """Drop ``member``'s CRC32 from its RAR5 FILE header, leaving it no digest.
+
+    RAR5 makes the CRC32 optional (file flag ``0x0004``); ``rar`` always writes one.
+    The header is rewritten without it and its header CRC recomputed.
+    """
+    data = bytearray(archive.read_bytes())
+    pos = 8  # the RAR5 signature
+    while pos < len(data):
+        size, body_at = _read_vint(data, pos + 4)
+        end = body_at + size
+        block_type, q = _read_vint(data, body_at)
+        flags, q = _read_vint(data, q)
+        if flags & 0x0001:  # extra area
+            _, q = _read_vint(data, q)
+        data_size = 0
+        if flags & 0x0002:  # data area
+            data_size, q = _read_vint(data, q)
+        if block_type == 2:
+            flags_at = q
+            file_flags, q = _read_vint(data, q)
+            flags_end = q
+            _, q = _read_vint(data, q)  # unpacked size
+            _, q = _read_vint(data, q)  # attributes
+            if file_flags & 0x0002:  # mtime
+                q += 4
+            crc_at = q
+            if file_flags & 0x0004:
+                q += 4
+            _, q = _read_vint(data, q)  # compression info
+            _, q = _read_vint(data, q)  # host OS
+            name_len, q = _read_vint(data, q)
+            if file_flags & 0x0004 and data[q : q + name_len] == member.encode():
+                body = (
+                    data[body_at:flags_at]
+                    + _vint(file_flags & ~0x0004)
+                    + data[flags_end:crc_at]
+                    + data[crc_at + 4 : end]
+                )
+                head = _vint(len(body)) + body
+                crc = binascii.crc32(head) & 0xFFFFFFFF
+                data[pos:end] = crc.to_bytes(4, "little") + head
+                archive.write_bytes(bytes(data))
+                return
+        if block_type == 5:  # end of archive
+            break
+        pos = end + data_size
+    raise ValueError(f"no RAR5 FILE header with a CRC32 for {member!r} in {archive}")
+
+
+def _build_unar_drop(rar5_bin: Path, out_dir: Path) -> None:
+    """Members unar 1.10.1 drops; in a solid run, other bytes then sit in their place."""
+    builds: list[tuple[str, tuple[_File, ...], tuple[str, ...], str | None]] = [
+        ("unar_drop__.rar", (_UNAR_DROP_MEMBER,), ("-m3",), None),
+        (
+            "unar_drop_solid__.rar",
+            (_File("a.txt", b"hello"), _UNAR_DROP_MEMBER),
+            ("-s", "-m3"),
+            None,
+        ),
+        ("unar_stale_solid__.rar", _UNAR_STALE, ("-s", "-m3"), None),
+        # The dropped member with no digest: only its size is left to check, and the
+        # stale bytes that follow it in the run are long enough to pass that.
+        ("unar_stale_nocrc_solid__.rar", _UNAR_STALE, ("-s", "-m3"), "c.txt"),
+    ]
+    for out_name, files, extra, strip in builds:
+        out = out_dir / out_name
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            names = _write_tree(root, files)
+            _rar_a(rar5_bin, out, names, cwd=root, extra=extra)
+        if strip is not None:
+            _strip_file_crc32(out, strip)
+        print(f"wrote {out.relative_to(REPO_ROOT)}")
+
+
 def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -582,6 +705,7 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         # the checksum alone (``test_rar_header_record_leniency``).
         extra=("-m0", "-ppassword"),
     )
+    _build_unar_drop(rar5_bin, out_dir)
     _build_file_version(
         rar5_bin,
         out_dir / "file_version__.rar",

@@ -103,6 +103,17 @@ stores mtime only; these two are the ones that carry `accessed` / `created`.
 | `xtime__.rar` | RAR5 `-m0 -tsmca`; one `file.txt`; mtime 2020-01-15 12:00:00 UTC, atime 2021-06-20 18:30:00 UTC. ctime is the build machine's inode-change time and is deliberately not pinned; tests assert presence, not value |
 | `xtime__rar4.rar` | RAR4 `-ma4 -m0 -tsmca`; same member and pinned mtime/atime; ctime likewise unpinned |
 
+Members MacPaw `unar` 1.10.1 drops (exit 0, no output): a compressed RAR5 member whose
+last packed byte uses 6–8 bits. Built by `_build_unar_drop` with RAR 7.00; another `rar`
+build may compress them so `unar` reads them, so check `unar -o -` after regenerating.
+
+| Files | Notes |
+| --- | --- |
+| `unar_drop__.rar` | RAR5 `-m3`; the 47-byte `f.txt` |
+| `unar_drop_solid__.rar` | RAR5 `-s -m3`; `a.txt` (`hello`), then `f.txt` |
+| `unar_stale_solid__.rar` | RAR5 `-s -m3`; `a.txt` … `e.txt`. One `unar` run drops `c.txt`, writes stale bytes of `d.txt`'s length and drops `e.txt` |
+| `unar_stale_nocrc_solid__.rar` | Same, with `c.txt`'s CRC32 removed from its FILE header (header CRC recomputed), so it has no digest |
+
 ## Legacy (not regenerated)
 
 | File | Provenance |

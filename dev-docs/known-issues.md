@@ -37,6 +37,31 @@ is the net.
 **Evidence.** [`alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md)
 §2026-09-26 measurements. Handbook: [`formats/rar.md`](formats/rar.md) §3.
 
+## MacPaw `unar` 1.10.1: some compressed RAR5 members come out empty (open)
+
+**Symptom.** `unar` 1.10.1 (Debian and Ubuntu's package) writes nothing for a compressed
+RAR5 member whose last compressed byte uses 6–8 of its bits, solid or not, and exits 0;
+under `-o -` stderr is empty too. About 1–6% of `-m3` members measured do this. In a
+solid run over several entries, later members are lost as well, or come out as stale
+window bytes, so the bytes found where the dropped member should be belong to something
+else.
+
+**What archivey does.** RARLAB `unrar` is the default under `"auto"` whenever it is
+installed. With `unar`, every member is checked against its declared size and its stored
+CRC32 or BLAKE2sp: a dropped member is reported as truncated, and misplaced bytes in a
+solid run fail the digest. The solid pass reads a member that has no digest through a
+`unar` run of its own, which writes it exactly or not at all. Pinned by
+`tests/test_rar_unar.py` on the `unar_drop*` and `unar_stale*` fixtures.
+
+**What remains.** An affected member cannot be read with `unar` at all: it raises
+`TruncatedError` or `CorruptionError`, and RARLAB `unrar` reads it. The 1.10.8 lineage (Homebrew) was
+not measured for this.
+
+**Upstream.** Not filed with XADMaster.
+
+**Evidence.** [`alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md)
+§Compressed RAR5 member dropped. Handbook: [`formats/rar.md`](formats/rar.md) §3.
+
 ## stdlib `tarfile` treats a corrupt non-first header as clean end-of-archive (open)
 
 **Symptom.** `tarfile.TarFile.next()` re-raises `InvalidHeaderError` only at offset 0. A
