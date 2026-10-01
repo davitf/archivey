@@ -14,6 +14,7 @@ from archivey.internal.backends.rar_parser import (
     _HeaderDecryptStream,
     _rar3_s2k,
     _Rar3Sha1,
+    _rar5_dictionary_size,
     parse_rar_archive,
     parse_rar_volumes,
 )
@@ -462,3 +463,40 @@ def test_plain_header_with_an_invalid_size_is_corruption_not_a_cut(
     data = data[:at] + replacement + data[at + length :]
     with raises_corruption_not_truncation(match=match):
         parse_rar_archive(io.BytesIO(data), password=None)
+
+
+# --- declared dictionary size ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("compress_info", "expected"),
+    [
+        (0, 128 * 1024),  # RAR 5.0, exponent 0
+        (13 << 10, 2**30),  # RAR 5.0, exponent 13
+        (15 << 10, 4 * 2**30),  # RAR 5.0's largest
+        (16 << 10, 128 * 1024),  # RAR 5.0 reads 4 bits: bit 14 is not part of it
+        (1 | 16 << 10, 8 * 2**30),  # RAR 7.0 reads 5 bits
+        (1 | 16 << 10 | 16 << 15, 12 * 2**30),  # plus 16/32 of the power of two
+        (1 | 31 << 10 | 31 << 15, (2**17 << 31) * 63 // 32),
+    ],
+)
+def test_rar5_dictionary_size_follows_unrar(compress_info: int, expected: int) -> None:
+    assert _rar5_dictionary_size(compress_info) == expected
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["seek_respawn_solid__.rar", "basic_solid__rar4.rar", "basic_nonsolid__rar4.rar"],
+)
+def test_parsed_dictionary_size_is_set_and_zero_for_directories(name: str) -> None:
+    with _fixture(name).open("rb") as f:
+        archive = parse_rar_archive(f)
+    for info in archive.members:
+        if info.is_directory:
+            assert info.dictionary_size == 0
+        elif archive.version == 5:
+            assert info.dictionary_size >= 128 * 1024
+        else:
+            # RAR3/4: 64 KiB << a 3-bit exponent, at most 4 MiB.
+            assert 64 * 1024 <= info.dictionary_size <= 4 * 2**20
+    assert any(not info.is_directory for info in archive.members)

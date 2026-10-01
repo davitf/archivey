@@ -199,6 +199,9 @@ jobs:
           # Fail loudly if the package ever stops providing the ``7z`` name: a silent
           # skip is exactly the unpinned-coverage failure this step exists to remove.
           7z i | head -n 3
+          # The ARM64 oracle tests (tests/test_sevenzip_arm64.py) skip on a 7z that
+          # cannot write the filter (p7zip 16.02); 7-Zip 23+ lists it. Pin that here.
+          7z i | grep -qw ARM64
 
       # ---- core-only: install the package with NO extras and NO dev group, then prove
       # the zero-dep core works and that no third-party runtime package is present.
