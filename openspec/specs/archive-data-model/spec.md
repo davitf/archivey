@@ -33,7 +33,9 @@ and `StreamFormat` names the outer single-stream codec (`gz`, `xz`, ... or
 exist for `GZ`, `BZ2`, `XZ`, `ZST`, `LZ4`, `LZIP`, `LZMA_ALONE`, `ZLIB`,
 `BROTLI`, and `Z`. Uncommon container-codec pairs such as `tar.lz` and
 `tar.lzma` SHALL be constructed on demand as `ArchiveFormat(container, stream)`
-rather than receiving named constants. `file_extension()` SHALL derive from the
+rather than receiving named constants; their `display_name` SHALL be derived as
+`CONTAINER_STREAM` from the two enum member names (for example `TAR_LZIP`), so
+messages never print the constructor form. `file_extension()` SHALL derive from the
 stream for raw streams and from `container.codec` for containers.
 
 Constructing `ArchiveFormat` SHALL convert string fields to the enum members,

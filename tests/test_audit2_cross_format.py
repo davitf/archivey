@@ -490,17 +490,9 @@ def test_cli_test_fails_when_the_stream_digest_went_unchecked(tmp_path: Path) ->
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "C5: tar.lz, tar.zz and tar.br are detected and read but have no named "
-        "ArchiveFormat, so display_name, repr and every error's format= field print "
-        "'ArchiveFormat(<ContainerFormat.TAR: ...>, ...)'"
-    ),
-)
 @pytest.mark.parametrize("stream", ["LZIP", "ZLIB", "BROTLI"])
 def test_every_readable_tar_combination_has_a_display_name(stream: str) -> None:
     from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 
     fmt = ArchiveFormat(ContainerFormat.TAR, StreamFormat[stream])
-    assert not fmt.display_name.startswith("ArchiveFormat(")
+    assert fmt.display_name == f"TAR_{stream}"

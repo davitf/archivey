@@ -185,13 +185,17 @@ class ArchiveFormat:
     def display_name(self) -> str:
         """Human-readable name for this format, e.g. ``"ZIP"``, ``"TAR_GZ"``.
 
-        Uses the predefined named-instance attribute name (``ZIP``, ``TAR_GZ``, …);
-        falls back to ``repr()`` for an ad-hoc combination not in the named set.
-        ``_FORMAT_NAMES`` is populated just after the class definition — safe at
-        runtime because this property is never called before the module is fully loaded.
+        Uses the predefined named-instance attribute name (``ZIP``, ``TAR_GZ``, …).
+        A pair with no named constant, such as ``tar.lz``, gets
+        ``CONTAINER_STREAM`` from the two enum member names (``"TAR_LZIP"``); its
+        ``repr()`` stays the explicit constructor form. ``_FORMAT_NAMES`` is
+        populated just after the class definition — safe at runtime because this
+        property is never called before the module is fully loaded.
         """
         name = _FORMAT_NAMES.get(self)
-        return name if name is not None else repr(self)
+        if name is not None:
+            return name
+        return f"{self.container.name}_{self.stream.name}"
 
     def __repr__(self) -> str:
         name = _FORMAT_NAMES.get(self)
