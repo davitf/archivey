@@ -3171,6 +3171,14 @@ class RarReader(BaseArchiveReader):
         (:class:`UnarRarPolicy`), decided from the parse before anything is spooled or
         spawned.
         """
+        return self._open_spawned_member(
+            member, self._unar_member_spawner(member, raw, policy)
+        )
+
+    def _unar_member_spawner(
+        self, member: ArchiveMember, raw: RarMemberInfo, policy: UnarRarPolicy
+    ) -> Callable[[], BinaryIO]:
+        """Check what ``unar -i <index>`` needs for this member; return its spawner."""
         refusal = policy.member_refusal(raw)
         if refusal is not None:
             raise self._unar_refused(member, refusal)
@@ -3200,7 +3208,7 @@ class RarReader(BaseArchiveReader):
             with _close_on_error(owned):
                 return self._track_decompressed(owned)
 
-        return self._open_spawned_member(member, _spawn)
+        return _spawn
 
     def _iter_solid_with_unar(
         self, policy: UnarRarPolicy
@@ -3213,6 +3221,14 @@ class RarReader(BaseArchiveReader):
         set of entries than ``unrar p`` (history rows always, RAR3/4 symlink targets
         too), or only the entries the policy names. A refused member raises on its first
         read, so a pass that only lists, or skips it, is not refused.
+
+        A member with no digest to check is not served from this run: it gets its own
+        ``unar -i <index>`` run, as :meth:`_open_member_with_unar` would give it. When
+        ``unar`` 1.10.1 drops a member from this run (exit 0), the bytes at that
+        member's offset are the next members' or stale window bytes, often enough of
+        them to pass the size check; only a digest tells them from the member's. A run
+        of one entry writes that entry exactly or not at all, which the size check
+        catches.
         """
         solid: SolidBlockReader | None = None
 
@@ -3228,10 +3244,13 @@ class RarReader(BaseArchiveReader):
                     password=password,
                 )
                 # Every member read from this pipe is checked against its declared
-                # size, and against its stored CRC32 or BLAKE2sp when it has one.
-                # unar's failures are short or missing output, which the size check
-                # catches, so its exit status adds nothing. A wrong password gives no
-                # output at all, reported as such when a password was needed.
+                # size and its stored CRC32 or BLAKE2sp; a member without one is read
+                # by its own run instead (``_open``). unar 1.10.1 drops a compressed
+                # RAR5 member whose last packed byte uses 6-8 bits, exit 0; the bytes
+                # then read in its place are later members' or stale window bytes,
+                # which the digest catches and the size check often does not. The
+                # exit status adds nothing. A wrong password gives no output at all,
+                # reported as such when a password was needed.
                 owned = UnarOutputStream(
                     stdout,
                     proc,
@@ -3259,15 +3278,20 @@ class RarReader(BaseArchiveReader):
                 return None
             size = _member_stream_size(member)
             refusal = policy.solid_pass_refusal(raw)
+            hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
             open_fn: Callable[[], BinaryIO]
             if refusal is not None:
                 open_fn = lambda: _refuse(member, refusal)  # noqa: E731
+            elif not hashes:
+                # No digest would catch misplaced bytes from the shared run (above).
+                open_fn = lambda: self._watch_unverified(  # noqa: E731
+                    self._unar_member_spawner(member, raw, policy)(), member
+                )
             else:
                 offset = policy.solid_pass_offset(raw)
                 open_fn = lambda: self._watch_unverified(  # noqa: E731
                     _pipe().open_member(offset, size, lazy=True), member
                 )
-            hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
             # Registered for the live-stream gate, as in the ``unrar`` pass.
             return self._register_public_stream(
                 self._wrap_member_stream(
