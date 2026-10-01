@@ -275,7 +275,7 @@ def test_glob_named_member_needs_no_escape_hatch() -> None:
         assert archive.read("a*.txt")
 
 
-@requires_binary("unar")
+@requires_binary("unar", "unrar")
 def test_member_before_the_first_empty_entry_still_streams() -> None:
     """The solid pass names only readable members, so unar never reaches the crash.
 
