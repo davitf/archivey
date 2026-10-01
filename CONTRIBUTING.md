@@ -344,8 +344,8 @@ security fixes one line each, other bug fixes summarized in one line).
   implementation, and it drifts: the CLI's dry-run line naming where a single
   top-level folder would land was re-derived from per-member results and broke in a
   new way in four review rounds running, until it read the dry run's scratch tree
-  instead. Where nothing usable is left behind, the re-derivation needs the comparison
-  test in "A parity promise gets its comparison test first" below.
+  instead (#531). Where nothing usable is left behind, the re-derivation needs the
+  comparison test in "A parity promise gets its comparison test first" below.
 - **Cost signals stay honest, and nothing silently re-decompresses.** `ListingCost` and
   `AccessCost` are promises a caller plans against, so a change that makes a path more
   expensive updates them. Reading two members out of one solid block must not decode the
