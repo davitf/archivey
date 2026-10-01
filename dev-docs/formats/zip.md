@@ -340,11 +340,15 @@ body raises `CorruptionError` and a cut-short one raises `TruncatedError` throug
 code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
 since `use_rapidgzip` covers raw deflate.
 
-A bzip2 member ends at its first end-of-stream marker, as 7-Zip, Info-ZIP and `zipfile` read
-it, and as a DEFLATE, LZMA or PPMd member ends at its own; bytes after it are not a
-concatenated stream. rapidgzip's bzip2 decoder reads on into a further stream, so `AUTO`
-leaves it off for ZIP members. Under `use_indexed_bzip2=ON` it is used, and a second stream
-inside the member is still read as content.
+On the standard library path a bzip2 member ends at its first end-of-stream marker, as
+7-Zip, Info-ZIP and `zipfile` read it, and as a DEFLATE, LZMA or PPMd member ends at its own.
+The accelerators read on into a second stream, and they stay on for ZIP members: the declared
+size and CRC give the verdict (`compressed-streams`, *An accelerator preserves the error
+contract*), so output that matches both is the member's data and output that breaks either
+raises. A second stream inside a member's compressed bytes is only there if someone put it
+there, so the two paths differ only on crafted members (§5). A raw DEFLATE member under
+rapidgzip finishes on zlib, from the position already delivered, when a read would pass the
+declared size or rapidgzip fails on bytes after the stream, so those cases read as on zlib.
 
 Encrypted members take the same route with a decrypt stage between the slice and the codec
 layer, so they decode every method an unencrypted member does, and their CRC runs through
@@ -559,7 +563,7 @@ ZIP-specific only. General extraction and name hazards are §2.4.
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Unless the writer added a Unicode Path field (§2.2), which Info-ZIP `zip` does and many writers do not, every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
 | A wrong ZipCrypto password can be accepted, and a damaged ZipCrypto member reads as a password error | **format** | One-byte verifier. With several candidates, confirmation narrows it; nothing eliminates it. Data that then fails its CRC or decompressor raises `EncryptionError` naming both causes, because a damaged member read with the right password fails the same way |
 | After a seek, no CRC checks a ZipCrypto member, and a wrong password that passed the check byte goes unnoticed on a STORED member | **format** / **archivey** | The CRC is the only content check ZipCrypto has, and it covers the plaintext in order, so a seek gives it up (ADR 0014). Keeping it for a read that returns over bytes already hashed, as the AES HMAC does, is tracked internally. A compressed member's decoder usually still objects to a wrong key on the bytes a forward seek decodes; a STORED member has no decoder, so a seek then a read returns whatever the key produced. `ENCRYPTED_MEMBER_UNVERIFIED` (`reason="seek"`) says so on close when only the check byte vouched for the password (§2.3). WinZip AES keeps its HMAC across seeks |
-| Under `rapidgzip`, a DEFLATE member holding two streams whose size and CRC cover both reads clean; without it, the member is truncated | **library** / **archivey** | zlib stops at the first stream's final block, `rapidgzip` reads on into the next. When its output passes the declared size, or it fails on bytes after the stream, the member finishes on zlib from the position already delivered, so those cases agree. When both streams fit the declared size and CRC, only a second decode would tell; that is an open question |
+| Under an accelerator, a DEFLATE or bzip2 member holding two streams whose size and CRC cover both reads clean; without it, the member is truncated. A bzip2 member whose size and CRC cover only the first stream reads under the standard library and raises under the accelerator | **library** / **archivey** | zlib and `bz2` stop at the first stream's end; `rapidgzip` and its bzip2 decoder read on, and the declared size and CRC decide (§2.3). Only a crafted member does this. A DEFLATE member whose accelerated output passes the declared size finishes on zlib instead, so that case agrees |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
 
 ## 6. Decisions

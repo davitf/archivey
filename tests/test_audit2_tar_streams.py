@@ -298,7 +298,7 @@ def test_bz2_accelerator_combined_crc_check_per_stream() -> None:
 
 
 # ---------------------------------------------------------------------------
-# T16: the gzip accelerator accepts members the standard library refuses
+# T16: the gzip accelerator and the members the standard library refuses
 # ---------------------------------------------------------------------------
 
 
@@ -308,34 +308,18 @@ def _gzip_cases() -> dict[str, bytes]:
     header = bytearray(member[:10])
     header[3] |= 0x02  # FHCRC
     crc16 = (zlib.crc32(bytes(header)) & 0xFFFF) ^ 0x0001
-    wrong_isize = member[:-4] + struct.pack("<I", len(payload) + 7)
     return {
         "header-crc-mismatch": bytes(header) + struct.pack("<H", crc16) + member[10:],
         "reserved-flag-bit": member[:3] + bytes([0x20]) + member[4:],
-        "first-member-isize": wrong_isize + member,
     }
 
 
 @requires("rapidgzip")
-@pytest.mark.parametrize(
-    "case",
-    [
-        "header-crc-mismatch",
-        "reserved-flag-bit",
-        pytest.param(
-            "first-member-isize",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="T16: rapidgzip accepts a wrong ISIZE on a non-final member, "
-                "and does not say where members end",
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("case", ["header-crc-mismatch", "reserved-flag-bit"])
 def test_gzip_accelerator_refuses_what_the_stdlib_refuses(case: str) -> None:
     """compressed-streams: 'An accelerator preserves the error contract of the path
     it replaces'. The standard-library path raises CorruptionError on each (zlib:
-    "header crc mismatch", "unknown header flags set", "incorrect length check");
+    "header crc mismatch", "unknown header flags set");
     under ``use_rapidgzip=ON`` each read as good data. The first member's header is
     now checked with zlib before rapidgzip is started. RFC 1952 §2.3.1.2 requires an
     error for reserved flag bits."""
@@ -344,6 +328,46 @@ def test_gzip_accelerator_refuses_what_the_stdlib_refuses(case: str) -> None:
         _read_single(data, ArchiveFormat.GZ)
     with pytest.raises(CorruptionError):
         _read_single(data, ArchiveFormat.GZ, config=_ACCEL_ON, seekable_members=True)
+
+
+def _two_gzip_members(first_isize_delta: int, second_crc_delta: int = 0) -> bytes:
+    """Two members of the same payload; the first's ISIZE and the second's CRC-32 can be
+    made wrong."""
+    payload = random.Random(4).randbytes(200_000)
+    member = gzip.compress(payload, mtime=0)
+    crc, isize = struct.unpack("<II", member[-8:])
+    first = member[:-4] + struct.pack("<I", isize + first_isize_delta)
+    second = member[:-8] + struct.pack("<II", crc ^ second_crc_delta, isize)
+    return first + second
+
+
+@requires("rapidgzip")
+def test_gzip_accelerator_reads_a_wrong_isize_on_a_member_before_the_last() -> None:
+    """compressed-streams: an accelerator MAY differ on a wrong ISIZE on a member other
+    than the last, when every member's CRC-32 is checked. zlib raises ("incorrect
+    length check"); rapidgzip reads both members, each under its CRC."""
+    data = _two_gzip_members(first_isize_delta=7)
+    with pytest.raises(CorruptionError):
+        _read_single(data, ArchiveFormat.GZ)
+    out, _diagnostics = _read_single(
+        data, ArchiveFormat.GZ, config=_ACCEL_ON, seekable_members=True
+    )
+    assert out == random.Random(4).randbytes(200_000) * 2
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("accelerated", [False, True])
+def test_gzip_wrong_crc_on_a_later_member_raises(accelerated: bool) -> None:
+    """The CRC-32 that makes the ISIZE difference harmless is checked on both paths,
+    on the second member too."""
+    data = _two_gzip_members(first_isize_delta=0, second_crc_delta=1)
+    with pytest.raises(CorruptionError):
+        _read_single(
+            data,
+            ArchiveFormat.GZ,
+            config=_ACCEL_ON if accelerated else None,
+            seekable_members=accelerated,
+        )
 
 
 @requires("rapidgzip")

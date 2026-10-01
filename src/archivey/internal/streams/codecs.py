@@ -482,7 +482,8 @@ class CodecParams:
       drains; when omitted, PPMd recovery stays conservative (single capped NUL only).
     - ``single_stream`` — the coder's data is one bzip2 stream (a ZIP member), so the
       standard-library decoder ends at its end-of-stream marker rather than reading a
-      further stream as a concatenated file. The accelerator does not honour it.
+      further stream as a concatenated file. The accelerator does not honour it; the
+      container's size and CRC check gives the verdict on what it reads.
     """
 
     filters: list[dict] | None = None

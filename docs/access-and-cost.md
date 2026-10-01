@@ -166,6 +166,13 @@ raises `PackageNotInstalledError` naming `[seekable]` — even without
 without raising. The stream is still seekable, but a backward seek may re-decode from
 the start. `use_indexed_bzip2` behaves the same way for bzip2.
 
+An accelerator raises on the same corrupt input as the stdlib decoder, with one kind of
+exception: crafted stream boundaries that the data's own checksums cannot see. Inside a
+ZIP member, a second compressed stream or bytes after the first stream's end end the
+member on the stdlib path, while the accelerator reads on; the member's declared size and
+CRC then decide. In a multi-member `.gz`, rapidgzip does not check the length field
+(ISIZE) of a member before the last, but it does check every member's CRC.
+
 Declare seek only when you need it (e.g. parquet-in-zip random reads).
 
 ## Concurrent member streams

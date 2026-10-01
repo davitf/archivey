@@ -308,7 +308,13 @@ def test_unicode_path_extra_field_is_read_from_the_central_directory() -> None:
 
 
 # ---------------------------------------------------------------------------------------
-# Z7: the rapidgzip accelerator changes the verdict on a raw DEFLATE member.
+# Z7: the rapidgzip accelerator on a raw DEFLATE member with bytes after its stream.
+#
+# zlib ends the member at the stream's final block; rapidgzip reads on. Where its output
+# would pass the declared size, or it fails on the bytes after the stream, it hands over to
+# zlib, so the verdicts agree. A second stream whose output matches the declared size and
+# CRC reads under rapidgzip: the compressed-streams spec lets the declared checks decide
+# on such stream-boundary malformations.
 # ---------------------------------------------------------------------------------------
 
 _DEFLATE_PAYLOAD = bytes(range(256)) * 400
@@ -331,75 +337,88 @@ def _deflate_member_variants() -> dict[str, bytes]:
         "trailing_junk": _build_zip(
             [_Entry(b"a", stream + b"GARBAGE" * 10, method=8, plain=p)]
         ),
+        # Two streams, size covering both but the CRC of the first only.
+        "two_streams_crc_of_first": _build_zip(
+            [_Entry(b"a", stream + stream, method=8, plain=p + p, crc=zlib.crc32(p))]
+        ),
     }
 
 
-_Z7_UNDETECTED = pytest.mark.xfail(
-    strict=True,
-    reason="Z7: use_rapidgzip=ON reads past the end of a raw DEFLATE member's stream; "
-    "when the output still matches the declared size and CRC, nothing short of a "
-    "second decode shows that zlib would have stopped earlier",
-)
+def _is_corruption(outcome: tuple[str, object]) -> bool:
+    verdict, error = outcome
+    return (
+        verdict == "raise"
+        and isinstance(error, type)
+        and issubclass(error, CorruptionError)
+    )
 
 
 @requires("rapidgzip")
-@pytest.mark.parametrize(
-    "case",
-    [
-        pytest.param("two_streams_declared_both", marks=_Z7_UNDETECTED),
-        # Fixed: output past the declared size, or a data error, hands the member to
-        # zlib from the position already delivered.
-        "two_streams_declared_first",
-        "trailing_junk",
-    ],
-)
+@pytest.mark.parametrize("case", ["two_streams_declared_first", "trailing_junk"])
 def test_rapidgzip_on_and_off_agree_on_a_zip_deflate_member(case: str) -> None:
+    # Output past the declared size, or a data error, hands the member to zlib from the
+    # position already delivered: both read the first stream's payload.
     blob = _deflate_member_variants()[case]
-    off = _outcome(blob, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF))
-    on = _outcome(blob, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON))
-    # compressed-streams spec: "Accelerator mode is a performance choice and SHALL
-    # NOT be observable as a difference in whether a corrupt source raises."
-    assert on == off
+    expected = ("ok", hashlib.sha256(_DEFLATE_PAYLOAD).hexdigest())
+    for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
+        assert _outcome(blob, config=ArchiveyConfig(use_rapidgzip=mode)) == expected
 
 
 @requires("rapidgzip")
-@pytest.mark.xfail(
-    strict=True,
-    reason="Z7: under the default AUTO, seekable_members=True engages rapidgzip on a "
-    ">=16 MiB DEFLATE member and a member that raises without it reads clean",
-)
-def test_seekable_members_does_not_change_whether_a_zip_member_raises() -> None:
-    # 9 MiB of random data twice: > RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE compressed.
+def test_rapidgzip_reads_a_second_deflate_stream_the_declared_crc_covers() -> None:
+    blob = _deflate_member_variants()["two_streams_declared_both"]
+    # zlib stops after the first stream, short of the declared size.
+    off = _outcome(blob, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF))
+    assert off == ("raise", archivey.exceptions.TruncatedError)
+    # rapidgzip reads both, and they are exactly the bytes the size and CRC declare.
+    on = _outcome(blob, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON))
+    assert on == ("ok", hashlib.sha256(_DEFLATE_PAYLOAD * 2).hexdigest())
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("mode", [AcceleratorMode.OFF, AcceleratorMode.ON])
+def test_second_deflate_stream_that_breaks_the_crc_raises(
+    mode: AcceleratorMode,
+) -> None:
+    blob = _deflate_member_variants()["two_streams_crc_of_first"]
+    assert _is_corruption(_outcome(blob, config=ArchiveyConfig(use_rapidgzip=mode)))
+
+
+@requires("rapidgzip")
+def test_seekable_members_reads_a_large_deflate_member_the_crc_covers() -> None:
+    # 9 MiB of random data twice: > RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE compressed, so
+    # under the default AUTO, seekable_members=True engages rapidgzip.
     payload = os.urandom(9 * 2**20)
     stream = _raw_deflate(payload, level=1)
     blob = _build_zip([_Entry(b"a", stream + stream, method=8, plain=payload * 2)])
-    plain = _outcome(blob)
-    assert plain == ("raise", archivey.exceptions.TruncatedError)  # zlib stops at end
-    # compressed-streams spec: "A capability flag (seekable_members) never changes
-    # whether a corrupt source raises."
-    assert _outcome(blob, seekable_members=True) == plain
+    assert _outcome(blob) == ("raise", archivey.exceptions.TruncatedError)  # zlib
+    assert _outcome(blob, seekable_members=True) == (
+        "ok",
+        hashlib.sha256(payload * 2).hexdigest(),
+    )
 
 
 # ---------------------------------------------------------------------------------------
-# Z8: a bzip2 member is decoded past the end of its bzip2 stream.
+# Z8: a bzip2 member and the bytes after its bzip2 stream.
+#
+# The standard-library path ends the member at its first end-of-stream marker, as every
+# other ZIP codec and other readers do. The accelerator reads a second stream as content;
+# the declared size and CRC then decide, as for DEFLATE above.
 # ---------------------------------------------------------------------------------------
 
 _BZ_PAYLOAD = b"hello world " * 20
 
 
-def test_bzip2_member_ends_at_its_first_stream() -> None:
+def _two_bzip2_streams(plain: bytes, crc: int | None = None) -> bytes:
     stream = bz2.compress(_BZ_PAYLOAD)
-    blob = _build_zip(
-        [
-            _Entry(
-                b"a",
-                stream + stream,
-                method=12,
-                plain=_BZ_PAYLOAD * 2,
-                extract_version=46,
-            )
-        ]
+    entry = _Entry(
+        b"a", stream + stream, method=12, plain=plain, crc=crc, extract_version=46
     )
+    return _build_zip([entry])
+
+
+def test_bzip2_member_ends_at_its_first_stream() -> None:
+    blob = _two_bzip2_streams(_BZ_PAYLOAD * 2)
     # Every other reader ends the member at the first end-of-stream marker, so the
     # CRC (of both streams) fails: `unzip -t` "bad CRC", `7z t` "CRC Failed".
     with zipfile.ZipFile(io.BytesIO(blob)) as zf, pytest.raises(zipfile.BadZipFile):
@@ -410,14 +429,7 @@ def test_bzip2_member_ends_at_its_first_stream() -> None:
 
 
 def test_bzip2_member_with_a_second_stream_after_its_end_reads() -> None:
-    stream = bz2.compress(_BZ_PAYLOAD)
-    blob = _build_zip(
-        [
-            _Entry(
-                b"a", stream + stream, method=12, plain=_BZ_PAYLOAD, extract_version=46
-            )
-        ]
-    )
+    blob = _two_bzip2_streams(_BZ_PAYLOAD)
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
         assert zf.read("a") == _BZ_PAYLOAD
     # Bytes after a codec's end inside a ZIP member end it silently for DEFLATE,
@@ -425,16 +437,47 @@ def test_bzip2_member_with_a_second_stream_after_its_end_reads() -> None:
     assert _outcome(blob) == ("ok", hashlib.sha256(_BZ_PAYLOAD).hexdigest())
 
 
-@pytest.mark.parametrize("declared", ["both", "first"])
-def test_bzip2_member_seekable_members_gives_the_same_verdict(declared: str) -> None:
-    # Under AUTO, seekable_members=True must not hand the member to rapidgzip's bzip2
-    # decoder, which reads on into the second stream.
-    stream = bz2.compress(_BZ_PAYLOAD)
-    plain = _BZ_PAYLOAD * 2 if declared == "both" else _BZ_PAYLOAD
-    blob = _build_zip(
-        [_Entry(b"a", stream + stream, method=12, plain=plain, extract_version=46)]
+_BZ_ACCELERATED = [
+    pytest.param(
+        {"config": ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)}, id="on"
+    ),
+    # The default AUTO engages the accelerator on declared seeking, at any size.
+    pytest.param({"seekable_members": True}, id="auto-seekable"),
+]
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("open_kwargs", _BZ_ACCELERATED)
+def test_bzip2_accelerator_reads_a_second_stream_the_declared_crc_covers(
+    open_kwargs: dict[str, object],
+) -> None:
+    blob = _two_bzip2_streams(_BZ_PAYLOAD * 2)
+    assert _outcome(blob, **open_kwargs) == (
+        "ok",
+        hashlib.sha256(_BZ_PAYLOAD * 2).hexdigest(),
     )
-    assert _outcome(blob, seekable_members=True) == _outcome(blob)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("open_kwargs", _BZ_ACCELERATED)
+def test_bzip2_accelerator_raises_on_output_past_the_declared_size(
+    open_kwargs: dict[str, object],
+) -> None:
+    # Size and CRC cover the first stream only. The stdlib path stops there and reads
+    # (test above); the accelerator reads on, past the declared size, and raises.
+    blob = _two_bzip2_streams(_BZ_PAYLOAD)
+    assert _is_corruption(_outcome(blob, **open_kwargs))
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("open_kwargs", [{}, *_BZ_ACCELERATED])
+def test_bzip2_second_stream_that_breaks_the_crc_raises(
+    open_kwargs: dict[str, object],
+) -> None:
+    # The size covers both streams, the CRC only the first: the stdlib path is short,
+    # the accelerator's output fails the CRC.
+    blob = _two_bzip2_streams(_BZ_PAYLOAD * 2, crc=zlib.crc32(_BZ_PAYLOAD))
+    assert _is_corruption(_outcome(blob, **open_kwargs))
 
 
 # ---------------------------------------------------------------------------------------

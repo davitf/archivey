@@ -103,6 +103,10 @@ default:
 | `ON` | `rapidgzip.IndexedBzip2File`, or `PackageNotInstalledError` without `rapidgzip`, or `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`) |
 | `AUTO` | The accelerator when seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), the source is seekable and `rapidgzip` is installed. Otherwise the standard library, silently |
 
+The same rules hold for a bzip2 ZIP member. There the standard library stops at the first
+stream's end and the accelerator reads a second stream as content; the member's declared
+size and CRC decide, so the two differ only on a crafted member ([`zip.md`](zip.md) §2.3).
+
 There is no size threshold and no child process, unlike the DEFLATE family
 ([`gzip.md`](gzip.md) §2.3). The in-process decoder has not been seen to abort on a cut or
 corrupt stream: 40 runs of the truncation sweep and the corpus mutation harness produced
