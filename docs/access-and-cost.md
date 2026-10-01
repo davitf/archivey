@@ -221,7 +221,10 @@ reader are refused the same way. `None` (`SpoolLimits.UNLIMITED`) removes the li
 `0` refuses every copy, which leaves only the members archivey reads without `unrar`
 (stored members of a non-solid archive). The copy goes to the platform temporary
 directory; where that is memory-backed (`tmpfs`), the limit bounds memory rather than
-disk.
+disk. The same limit holds what a solid pass keeps for RAR5 file copies (`rar -oi`):
+the pass keeps each copy's source as it decodes it, so the copy does not decode the
+solid stream again, and a source the limit has no room for is decoded again instead of
+being refused.
 
 ## Streaming mode is one pass
 

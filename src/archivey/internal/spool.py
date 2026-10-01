@@ -38,13 +38,17 @@ class SpoolBudget:
 
     ``remedy`` is the refusal's last sentence: what the caller can do instead. The
     default fits a stream source, which a path would avoid copying.
+
+    A write that has a fallback, and so must never refuse, asks :meth:`try_reserve`
+    instead. A budget first made for such a write has no ``what`` yet; the first copy
+    that can refuse names itself with :meth:`describe`.
     """
 
     def __init__(
         self,
         limits: SpoolLimits,
         *,
-        what: str,
+        what: str | None,
         archive_name: str | None,
         source_format: ArchiveFormat,
         remedy: str = (
@@ -74,6 +78,25 @@ class SpoolBudget:
             and self._written + total > self._limit
         ):
             raise self._refuse(f"{total} bytes")
+
+    def describe(self, what: str) -> None:
+        """Name the copy that refusals describe, unless an earlier copy named it."""
+        if self._what is None:
+            self._what = what
+
+    def try_reserve(self, size: int) -> bool:
+        """Charge ``size`` bytes about to be written, or return ``False`` if they do not fit.
+
+        For a write that has a fallback: ``False`` refuses nothing and charges nothing,
+        so the budget stays open for the copies that have none. The caller writes at
+        most ``size`` bytes on the strength of a ``True``.
+        """
+        if self._refused is not None:
+            return False
+        if self._limit is not None and self._written + size > self._limit:
+            return False
+        self._written += size
+        return True
 
     def copy(self, src: BinaryIO, out: BinaryIO) -> None:
         """Copy ``src`` to ``out`` until EOF, within what the limit has left."""
@@ -111,7 +134,7 @@ class SpoolBudget:
 
     def _error(self, size: str) -> ResourceLimitError:
         return ResourceLimitError(
-            f"Spool limit reached: {self._what}, and the copy would be {size}, over "
+            f"Spool limit reached: {self._what or 'a copy was needed'}, and the copy would be {size}, over "
             f"SpoolLimits.max_bytes={self._limit} (ArchiveyConfig.spool_limits). "
             f"{self._remedy}",
             archive_name=self._archive_name,

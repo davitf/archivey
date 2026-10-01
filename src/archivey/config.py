@@ -577,6 +577,13 @@ class SpoolLimits:
     read without ``unrar``, such as stored members of a non-solid RAR. The copy goes
     to the platform temporary directory (``tempfile.gettempdir()``); where that is
     memory-backed, such as ``tmpfs``, this limit is a memory limit.
+
+    The same allowance holds the sources of RAR5 file copies (``rar -oi``) in a solid
+    pass (``stream_members``, extraction): the pass keeps each source as it decodes
+    it, up to 8 MiB in memory and the rest in a temporary file within this limit, so
+    a copy does not decode the solid stream again. A source the limit has no room
+    for is not kept, and its copies decode it again from the archive; that is never
+    refused.
     """
 
     UNLIMITED: ClassVar[SpoolLimits]
