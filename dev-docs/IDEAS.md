@@ -230,7 +230,8 @@
   stream.verify()` would spin. Pair the level with the most it could ever reach. The
   ceiling is not static, which is why it is worth exposing rather than deriving: it drops
   when no digest exists, when a decode error abandons verification, and — per ADR 0014 —
-  when a seek off the frontier forfeits the checksum while keeping the length check.
+  when a seek off the frontier forfeits the checksum while keeping the length check
+  (until a seek to 0 re-arms it).
   `CostReceipt`-reports-capability / diagnostics-report-events is the existing shape to
   copy.
 
@@ -526,6 +527,19 @@
   exploration — the safe default lands first.
 
 ## Performance & robustness
+
+- **Keep the member checksum running through seeks that decode the bytes anyway** —
+  today any seek other than one to position 0 turns the digest off until the next seek
+  to 0 (`MemberVerifier.note_seek`; a rewind to 0 re-arms it, decided 2026-10-01, audit
+  finding C4). In davitf's words: forward seeks in most formats consume the bytes in
+  between, and backward seeks restart the decode from 0, so the CRC could keep being
+  computed through those seeks. Verification is only really lost on formats with true
+  random access (index-based seeks, e.g. xz blocks, lzip members, seekable zstd, 7z/ZIP
+  direct slices) or under an accelerator's index. Investigate when the digest does not
+  actually need to be disabled: the verifier would need to see the bytes a forward seek
+  skips (or the inner to report that its seek decoded them), and a backward seek that
+  restarts from 0 is a rewind to 0 followed by a forward seek. Raised by davitf,
+  2026-10-01.
 
 - **bzip2 accelerator and the standard library disagree past the end of a stream** —
   two cases, found 2026-09-29 while fixing the empty-trailing-stream report.

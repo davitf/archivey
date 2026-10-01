@@ -536,6 +536,18 @@ def test_a_seek_forfeits_the_digest_when_the_inner_drops_it() -> None:
     assert calls.reasons == ["seek"]
 
 
+def test_a_rewind_to_start_rearms_the_digest() -> None:
+    # A seek to 0 re-arms the fused verifier's checksum, so a read from there to the
+    # end reaches the digest again, whatever seeks came before.
+    watch, calls = _watch(b"0123456789")
+    watch.read(1)
+    watch.seek(5)
+    watch.seek(0)
+    assert watch.read() == b"0123456789"
+    watch.close()
+    assert calls.count == 0
+
+
 def test_a_seek_keeps_a_digest_that_survives_seeks() -> None:
     # A WinZip AES HMAC is completed by the read that reaches the end, wherever the
     # reads started, so a skip then a read to the end is verified...

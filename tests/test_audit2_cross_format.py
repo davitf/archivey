@@ -2,7 +2,8 @@
 ``list`` / ``info`` / ``test`` CLI verbs.
 
 Each test asserts the promised behaviour and is marked ``xfail(strict=True)`` with the
-defect it pins, so a fix turns it into an XPASS failure and the marker has to go.
+defect it pins, so a fix turns it into an XPASS failure and the marker has to go. A
+fixed finding's test (C4) stays unmarked as a regression test.
 Fixtures are built in the test from bytes, from the declarative corpus, or from the
 committed RAR fixtures; nothing new is committed.
 """
@@ -248,7 +249,7 @@ def test_diagnostic_policy_string_spelling_is_refused_or_honoured(
 
 
 # ---------------------------------------------------------------------------
-# C4: a seek back to the start never re-arms the CRC
+# C4: a seek back to the start re-arms the CRC
 # ---------------------------------------------------------------------------
 
 
@@ -287,15 +288,6 @@ def test_stdlib_zipfile_rechecks_crc_after_rewind_control(tmp_path: Path) -> Non
             _partial_then_start(stream)  # type: ignore[arg-type]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "C4: after any seek the digest is off for the stream's life, even when the "
-        "caller rewinds to 0 and reads every byte; damaged data returns clean, "
-        "unlike zipfile and against errors-and-diagnostics.md ('damage it reaches "
-        "still raises')"
-    ),
-)
 @pytest.mark.parametrize(
     "ops",
     [
@@ -312,6 +304,53 @@ def test_full_read_after_rewind_to_start_is_verified(
         with reader.open("m.txt") as stream:
             with pytest.raises(CorruptionError):
                 ops(stream)  # type: ignore[arg-type]
+
+
+def _bad_crc_deflated_zip(path: Path, payload: bytes) -> None:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("m.txt", payload)
+    data = bytearray(path.read_bytes())
+    bad = struct.pack("<I", zlib.crc32(payload) ^ 1)
+    data[14:18] = bad  # local header CRC
+    central = data.find(b"PK\x01\x02")
+    data[central + 16 : central + 20] = bad
+    path.write_bytes(bytes(data))
+
+
+def _damaged_copy_7z(path: Path, payload: bytes) -> None:
+    import py7zr
+
+    with py7zr.SevenZipFile(path, "w", filters=[{"id": py7zr.FILTER_COPY}]) as zf:
+        zf.writestr(payload, "m.txt")
+    data = bytearray(path.read_bytes())
+    data[data.find(payload[:200]) + 5000] ^= 0x20
+    path.write_bytes(bytes(data))
+
+
+@pytest.mark.parametrize(
+    ("build", "name"),
+    [
+        pytest.param(_bad_crc_deflated_zip, "damaged.zip", id="zip-deflated"),
+        pytest.param(
+            _damaged_copy_7z, "damaged.7z", id="7z-copy", marks=requires("py7zr")
+        ),
+    ],
+)
+def test_rewind_after_a_mid_member_seek_rearms_the_check(
+    build: Callable[[Path, bytes], None], name: str, tmp_path: Path
+) -> None:
+    """Sibling of C4: a seek into the member, then back to 0, then a chunked read."""
+    payload = b"LINE-abcde\n" * 3000
+    path = tmp_path / name
+    build(path, payload)
+    with open_archive(path, seekable_members=True) as reader:
+        with reader.open("m.txt") as stream:
+            stream.seek(5000)
+            stream.read(10)
+            stream.seek(0)
+            with pytest.raises(CorruptionError):
+                while stream.read(4096):
+                    pass
 
 
 # ---------------------------------------------------------------------------

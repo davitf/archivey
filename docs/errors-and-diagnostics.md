@@ -271,8 +271,10 @@ when listing ends in terminal damage.
 
 **Read a member from its start to its end, with no seek, and Archivey checks it.**
 Where the archive stores a checksum or an authentication tag, that read verifies it and
-raises if it does not match. Stop early and nothing is checked. Errors always come from `read()`, never from
-`close()` — so a `finally` block can't mask one.
+raises if it does not match. A seek back to the start counts as a fresh start: whatever
+seeks came before, a read from position 0 to the end is checked in full. Stop early and
+nothing is checked. Errors always come from `read()`, never from `close()` — so a
+`finally` block can't mask one.
 
 "To its end" means `read(-1)`, reading until `read()` returns `b""`, or — for a member
 with a declared size — reading that many bytes.
@@ -291,12 +293,15 @@ What that does and does not promise:
   can't tell you which part, or how much. Treat the prefix as unverified: not
   known-good, not known-bad.
 - **A full-length return from a read with no seek means the checksum matched.** Trust
-  it as far as you trust that digest.
-- **After a seek, checking is best effort.** Whatever is decoded is still checked, and
-  damage it reaches still raises. But a seek into a `.xz` or `.lz` file jumps by the
-  file's own index, and a crafted index can send it to the wrong bytes with no error.
-  Checking that would mean decoding everything before the target, which is the cost a
-  seek exists to avoid. When the bytes must be right, read from the start.
+  it as far as you trust that digest. A seek to position 0 does not count against
+  this: it starts the check again.
+- **After a seek elsewhere, checking is best effort.** The member's stored checksum is
+  no longer checked (a WinZip AES HMAC still is), but the length is, and damage that
+  the codec's own checks reach still raises. A seek into a `.xz` or `.lz` file jumps
+  by the file's own index, and a crafted index can send it to the wrong bytes with no
+  error. Checking that would mean decoding everything before the target, which is the
+  cost a seek exists to avoid. When the bytes must be right, seek back to 0 and read to the
+  end.
 - **Once a stream has raised, it keeps raising.** Every later `read()` raises the same
   error. A seek back works and the bytes before the damage read again, but the read
   that reaches the end raises the error again, so seeking back cannot hand you the
