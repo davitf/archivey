@@ -92,7 +92,7 @@ Its other limitations:
 - **Listing limits on the pass.** On a streaming reader, `stream_members()`,
   `for member in reader` and `extract_all()` are deliberately outside `ListingLimits`.
   `scan_members()` and `members_report()` enforce the limits as `members()` does, and
-  7z and RAR check `max_members` when the archive is opened. See
+  7z, RAR and ISO check `max_members` when the archive is opened. See
   [Limits](extracting.md#limits).
 - **A weaker TAR end check.** A corrupt header in the last block of a TAR is reported
   as a missing end-of-archive marker, not as corruption

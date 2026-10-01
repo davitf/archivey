@@ -87,13 +87,6 @@ def test_iso_long_form_tf_date_at_year_one_does_not_break_modified_utc() -> None
 
 
 @requires("pycdlib")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "I2: ISO parses the whole tree inside open_archive() with no ListingLimits "
-        "check; max_members=10 still costs 15-20x the image size in Python objects"
-    ),
-)
 def test_iso_listing_limits_bound_the_memory_spent_at_open() -> None:
     count = 3000
 
@@ -170,13 +163,6 @@ def _shared_continuation_image(count: int) -> bytes:
 
 
 @requires("pycdlib")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "I3: records sharing one Rock Ridge CE area each re-parse it inside "
-        "open_archive(); a 174 KB image of 1000 records peaks at ~10 MB (about 60x)"
-    ),
-)
 def test_iso_shared_continuation_area_does_not_multiply_memory_at_open() -> None:
     data = _shared_continuation_image(1000)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
@@ -196,6 +182,69 @@ def test_iso_shared_continuation_area_does_not_multiply_memory_at_open() -> None
     # members; what open_archive() spends should not scale with the number of
     # records pointing at that sector.
     assert peak < 4 * len(data), (peak, len(data))
+
+
+def _count_record_parses(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count pycdlib ``DirectoryRecord.parse`` calls (archivey's hook included)."""
+    from pycdlib import dr
+
+    calls: list[int] = []
+    hooked = dr.DirectoryRecord.parse
+
+    def counting(self: Any, *args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return hooked(self, *args, **kwargs)
+
+    monkeypatch.setattr(dr.DirectoryRecord, "parse", counting)
+    return calls
+
+
+@requires("pycdlib")
+def test_iso_max_members_refuses_before_pycdlib_parses_the_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def populate(iso: Any) -> None:
+        iso.add_directory("/D")
+        for index in range(3000):
+            iso.add_fp(io.BytesIO(b""), 0, f"/D/F{index}.;1")
+
+    data = _build_iso(populate)
+    calls = _count_record_parses(monkeypatch)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
+    with pytest.raises(ResourceLimitError, match="max_members=10"):
+        open_archive(io.BytesIO(data), config=config)
+    # The root, the four dot records and eleven members; nowhere near 3000.
+    assert len(calls) < 20, len(calls)
+
+
+@requires("pycdlib")
+def test_iso_max_metadata_bytes_counts_a_shared_continuation_each_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _shared_continuation_image(1000)
+    calls = _count_record_parses(monkeypatch)
+    # 64 KiB: under the image's own size, so only the repeated 2 KiB area can cross it.
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=65536))
+    assert len(data) > 65536
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=65536"):
+        open_archive(io.BytesIO(data), config=config)
+    assert len(calls) < 40, len(calls)
+
+
+@requires("pycdlib")
+def test_iso_parse_budget_leaves_unlimited_and_default_opens_alone() -> None:
+    def populate(iso: Any) -> None:
+        iso.add_directory("/D")
+        for index in range(3000):
+            iso.add_fp(io.BytesIO(b""), 0, f"/D/F{index}.;1")
+
+    data = _build_iso(populate)
+    for limits in (ListingLimits.UNLIMITED, ListingLimits()):
+        config = ArchiveyConfig(listing_limits=limits)
+        with open_archive(io.BytesIO(data), config=config) as archive:
+            assert len(archive.members()) == 3001
+    with open_archive(io.BytesIO(_shared_continuation_image(1000))) as archive:
+        assert len(archive.members()) == 1001
 
 
 # ---------------------------------------------------------------------------------

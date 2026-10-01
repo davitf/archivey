@@ -27,8 +27,10 @@ confined to pycdlib and transparent on well-formed images, but a program that al
 pycdlib directly in the same process will see archivey's guarded ``deque`` there too. This
 is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever; see
 ``dev-docs/formats/iso.md`` §4. The same import wraps ``pycdlib.rockridge.RockRidge.parse``
-(:func:`_install_pycdlib_system_use_filter`), but the wrapper acts only inside this
-module's own ``open_fp`` call, so other users of pycdlib see no change.
+(:func:`_install_pycdlib_system_use_filter`) and ``pycdlib.dr.DirectoryRecord.parse``
+(:func:`_install_pycdlib_record_counter`, which weighs what pycdlib parses against
+``ListingLimits``), but both wrappers act only inside this module's own ``open_fp``
+call, so other users of pycdlib see no change.
 """
 
 from __future__ import annotations
@@ -62,7 +64,7 @@ if TYPE_CHECKING:
     from pycdlib.pycdlibio import PyCdlibIO
     from pycdlib.rockridge import RockRidge
 
-from archivey.config import ArchiveyConfig
+from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import (
     AccessCost,
     CostReceipt,
@@ -80,6 +82,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     PackageNotInstalledError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -89,6 +92,7 @@ from archivey.internal.base_reader import (
     reject_start_offset,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.listing_limits import check_metadata_budget
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
@@ -379,6 +383,12 @@ def _install_pycdlib_system_use_filter() -> None:
         continuation: bool,
         dr_name: bytes,
     ) -> None:
+        budget = _PARSE_BUDGET.get()
+        if budget is not None and continuation:
+            # The area inside the record was weighed with the record; a continuation
+            # area is weighed each time it is parsed, as pycdlib parses a shared one
+            # again for every record that names it.
+            budget.add_continuation(len(record))
         notes = _SYSTEM_USE_NOTES.get()
         if notes is not None:
             record = notes.filter(self, record, bytes_to_skip)
@@ -396,6 +406,106 @@ def _install_pycdlib_system_use_filter() -> None:
 
 
 _install_pycdlib_system_use_filter()
+
+
+class _ParseBudget:
+    """What pycdlib has parsed inside one ``open_fp``, weighed against ``ListingLimits``.
+
+    pycdlib builds every directory tree of the image inside ``open_fp``, hundreds of
+    bytes of Python objects per record, before archivey lists anything. The hooks
+    below count as it parses, so an over-limit image is refused early instead of
+    after the whole tree is built.
+
+    Counts are per volume descriptor, because a listing shows one tree (Rock Ridge or
+    plain ISO 9660 from the PVD, or Joliet from its SVD), and an image with both has
+    each file twice. Within a tree the counts are a superset of the listing: every
+    record but ``.`` and ``..`` counts as a member, including the extra records of a
+    multi-extent file and the ``rr_moved`` scaffolding the listing hides. The bytes are
+    the directory records as stored, System Use areas included, plus each Rock Ridge
+    continuation area every time pycdlib parses it, which is more than the text a
+    listing keeps.
+    """
+
+    def __init__(self, limits: ListingLimits) -> None:
+        self._limits = limits
+        # Keyed by ``id`` of the volume descriptor; pycdlib keeps every descriptor it
+        # walks for the life of the ``PyCdlib`` object, so an id is not reused here.
+        self._members: dict[int, int] = {}
+        self._bytes: dict[int, int] = {}
+        # The tree of the record parsed last: pycdlib parses a record's continuation
+        # area right after the record, and ``RockRidge.parse`` is not told the tree.
+        self._tree = 0
+
+    def add_record(self, vd: object, nbytes: int) -> None:
+        self._tree = id(vd)
+        self._add_bytes(nbytes)
+
+    def add_member(self) -> None:
+        count = self._members.get(self._tree, 0) + 1
+        self._members[self._tree] = count
+        max_members = self._limits.max_members
+        if max_members is not None and count > max_members:
+            raise ResourceLimitError(
+                f"Listing limit reached: max_members={max_members} "
+                f"(ISO directory tree holds more than {max_members} records)"
+            )
+
+    def add_continuation(self, nbytes: int) -> None:
+        self._add_bytes(nbytes)
+
+    def _add_bytes(self, nbytes: int) -> None:
+        total = self._bytes.get(self._tree, 0) + nbytes
+        self._bytes[self._tree] = total
+        check_metadata_budget(
+            self._limits,
+            total,
+            detail=f"ISO directory tree has {total} bytes of directory records",
+        )
+
+
+# Set only while this module's ``open_fp`` runs, like ``_SYSTEM_USE_NOTES``; ``None``
+# elsewhere, and under ``ListingLimits.UNLIMITED``.
+_PARSE_BUDGET: ContextVar[_ParseBudget | None] = ContextVar(
+    "archivey_iso_parse_budget", default=None
+)
+_PYCDLIB_RECORD_COUNTER_INSTALLED = False
+
+
+def _install_pycdlib_record_counter() -> None:
+    """Weigh each ``DirectoryRecord.parse`` against ``_PARSE_BUDGET`` during our opens.
+
+    Installed once, on pycdlib's class, like the System Use filter, and transparent
+    unless ``_PARSE_BUDGET`` is set, which only ``IsoReader`` does, around its own
+    ``open_fp`` call. The record's bytes are weighed before pycdlib parses them; the
+    member count after, once pycdlib has said whether the record is ``.`` or ``..``.
+    """
+    global _PYCDLIB_RECORD_COUNTER_INSTALLED
+    if pycdlib is None or _PYCDLIB_RECORD_COUNTER_INSTALLED:
+        return
+    from pycdlib import dr as dr_mod
+
+    original = dr_mod.DirectoryRecord.parse
+
+    def parse(
+        self: DirectoryRecord,
+        vd: object,
+        record: bytes,
+        parent: DirectoryRecord | None,
+        xa: bool = False,
+    ) -> str:
+        budget = _PARSE_BUDGET.get()
+        if budget is not None:
+            budget.add_record(vd, len(record))
+        result = original(self, vd, record, parent, xa)
+        if budget is not None and not (self.is_dot() or self.is_dotdot()):
+            budget.add_member()
+        return result
+
+    setattr(dr_mod.DirectoryRecord, "parse", parse)
+    _PYCDLIB_RECORD_COUNTER_INSTALLED = True
+
+
+_install_pycdlib_record_counter()
 
 # Exceptions that mean "this ISO structure is bad", translated to CorruptionError. A
 # genuine OSError from the underlying handle (file not found, permission, physical media
@@ -941,10 +1051,19 @@ class IsoReader(BaseArchiveReader):
                     # Kept for ``_data_inode``, which reads extents pycdlib has no
                     # inode for through the same handle pycdlib reads from.
                     self._iso_fp = self._track_source_seeks(source)
+                    limits = config.listing_limits
+                    budget = (
+                        None
+                        if limits.max_members is None
+                        and limits.max_metadata_bytes is None
+                        else _ParseBudget(limits)
+                    )
                     token = _SYSTEM_USE_NOTES.set(self._system_use)
+                    budget_token = _PARSE_BUDGET.set(budget)
                     try:
                         self._iso.open_fp(self._iso_fp)
                     finally:
+                        _PARSE_BUDGET.reset(budget_token)
                         _SYSTEM_USE_NOTES.reset(token)
                     self._iso_opened = True
                     # pycdlib measured the image the same way inside ``open_fp``.

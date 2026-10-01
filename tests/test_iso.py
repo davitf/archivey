@@ -24,8 +24,10 @@ from archivey import (
     format_availability,
     open_archive,
 )
+from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.exceptions import (
+    ResourceLimitError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
 )
@@ -671,6 +673,58 @@ def test_a_failing_iso_close_still_releases_the_handle(
             reader.close()
         assert opened, "the reader did not open the path itself"
         assert [fp for fp in opened if not fp.closed] == []
+
+
+def test_listing_limits_count_records_as_pycdlib_parses_them(
+    rock_ridge_iso: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``max_members`` is checked inside ``open_fp``, per tree, as the listing counts.
+
+    The image lists five members (two files, a directory, a nested file, a symlink)
+    and its Joliet tree holds four of them again. A budget of five opens it unchanged;
+    four is refused as ``ResourceLimitError`` from inside pycdlib's walk, not
+    re-wrapped as ``CorruptionError`` by the pycdlib error boundary, and the handle the
+    reader opened is released like on any other failed open.
+    """
+    with open_archive(rock_ridge_iso) as reader:
+        expected = [m.name for m in reader.members()]
+    assert len(expected) == 5
+    exact = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
+    with open_archive(rock_ridge_iso, config=exact) as reader:
+        assert [m.name for m in reader.members()] == expected
+
+    below = ArchiveyConfig(listing_limits=ListingLimits(max_members=4))
+    with _recording_opens(rock_ridge_iso, monkeypatch) as opened:
+        with pytest.raises(ResourceLimitError, match="max_members=4") as excinfo:
+            open_archive(rock_ridge_iso, config=below)
+        assert excinfo.value.__cause__ is None
+        assert excinfo.value.__traceback__ is not None
+        assert opened, "the source did not open the path"
+        assert [fp for fp in opened if not fp.closed] == []
+
+
+def test_listing_limits_count_directory_record_bytes_at_open(
+    rock_ridge_iso: Path,
+) -> None:
+    """``max_metadata_bytes`` weighs the directory records pycdlib parses at open."""
+    tight = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=200))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=200"):
+        open_archive(rock_ridge_iso, config=tight)
+
+
+def test_the_record_counter_is_inert_outside_archivey_opens() -> None:
+    """The ``DirectoryRecord.parse`` hook counts nothing when pycdlib is used directly."""
+    import pycdlib
+
+    from archivey.internal.backends import iso_reader
+
+    assert iso_reader._PARSE_BUDGET.get() is None
+    iso = pycdlib.PyCdlib()
+    iso.open_fp(io.BytesIO(_build_iso(rock_ridge=True, joliet=True)))
+    try:
+        assert iso.get_record(rr_path="/subdir/n.txt").get_data_length() == 7
+    finally:
+        iso.close()
 
 
 def test_a_clean_image_is_unaffected(rock_ridge_iso: Path) -> None:

@@ -262,7 +262,7 @@ archive declares.
   materialized list (`members()`, `scan_members()`, extract preparation). Crossing a cap
   raises `ResourceLimitError`. `None` (`ListingLimits.UNLIMITED`) disables it.
   `stream_members()` and `streaming=True` are unguarded, as the O(1) escape hatch,
-  except on 7z and RAR, which check `max_members` while parsing. Unguarded bounds memory,
+  except on 7z, RAR and ISO, which check the caps while parsing. Unguarded bounds memory,
   not work: a forward-only TAR walk reads through every member it skips, for the bytes
   present rather than the size a header declares (a member declaring more than the
   archive holds raises `TruncatedError` at the first short read).
@@ -289,6 +289,18 @@ archive declares.
   spawn each). RAR5 quick-open records that are not FILE never become members; their
   bound is `_RAR5_QO_PAYLOAD_MAX` (16 MiB, `internal/backends/rar_parser.py`) and their
   parse is linear.
+- ISO checks both caps while `pycdlib` parses, inside `open_fp` at `open_archive`.
+  `pycdlib` builds every directory tree of the image there, hundreds of bytes of Python
+  objects per record, so the post-open tracker came too late: 3000 records under
+  `max_members=10` peaked at about 18 times the image. archivey does not parse ISO
+  itself; `internal/backends/iso_reader.py` hooks `pycdlib`'s `DirectoryRecord.parse`
+  and the existing `RockRidge.parse` filter (both act only inside `IsoReader`'s own
+  `open_fp`, through a `ContextVar`) and counts, per volume descriptor tree, every
+  record but `.` and `..` against `max_members`, and the bytes of each directory record
+  plus each Rock Ridge continuation area against `max_metadata_bytes`. A continuation
+  area is weighed every time it is parsed: `pycdlib` accepts any number of records whose
+  `CE` names one area and parses it again for each, which made a 174 KB image peak at
+  about 10.7 MB before.
 - TAR has no member table, so the caps bind the header walk: `tar_reader.py` pulls
   headers in batches that stop one header past what either cap has left, PAX keywords
   and values included. `tarfile` reads a PAX extended or global header, or a GNU long
@@ -316,6 +328,13 @@ whole central directory at open through stdlib `zipfile` (ADR
 [0006](decisions/0006-stdlib-zipfile.md)), so its memory at open is linear in the
 central directory and `max_members` binds at `members()`. `max_metadata_bytes` counts
 retained metadata, not a transient decode buffer discarded before any member exists.
+ISO's counts are a superset of the listing's: the extra records of a multi-extent file
+and the Rock Ridge `rr_moved` scaffolding count as members, and the bytes are records as
+stored, System Use areas included, not only the text kept. An image right at a cap can
+therefore be refused at open. Below the caps `pycdlib` still builds the whole tree, so
+memory at open stays linear in the records the budget allows: about 0.8 KB per plain
+record measured, so roughly 1 GiB at the default `max_members`. The UDF descriptors `pycdlib` also walks are not counted; archivey lists
+no UDF namespace.
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,
@@ -327,7 +346,12 @@ retained metadata, not a transient decode buffer discarded before any member exi
 `::test_encoded_header_huge_unpack_size_is_typed_corruption`;
 `tests/test_rar_reader.py::test_rar_parser_max_members_at_parse`,
 `::test_rar3_compressed_comments_over_metadata_budget_refused_before_decode`,
-`::test_rar5_qo_non_file_records_parse_in_linear_time`; `tests/test_link_target_cap.py`.
+`::test_rar5_qo_non_file_records_parse_in_linear_time`; `tests/test_link_target_cap.py`;
+`tests/test_iso.py::test_listing_limits_count_records_as_pycdlib_parses_them`,
+`::test_listing_limits_count_directory_record_bytes_at_open`;
+`tests/test_audit2_iso_dir_detect.py::test_iso_listing_limits_bound_the_memory_spent_at_open`,
+`::test_iso_shared_continuation_area_does_not_multiply_memory_at_open`,
+`::test_iso_max_metadata_bytes_counts_a_shared_continuation_each_time`.
 
 #### Allocations sized by a header field
 
@@ -347,7 +371,8 @@ An fsspec `size` attribute is a hint, not a fact, and is stepped. A short read t
 fails in the library and is translated to `CorruptionError`. The ISO reader passes every
 source to `open_fp` as an `ArchiveSource`, a path included, so there is always something
 of archivey's under pycdlib; `open_archive` closes the source if the reader never
-finishes constructing.
+finishes constructing. This bounds one read; how many records and continuation areas
+`pycdlib` builds from those reads is the listing budget's ([Listing](#listing)).
 
 A flat metadata cap would be wrong here: member data goes through the same wrapper, so a
 40 MiB member arrives as one 40 MiB request.

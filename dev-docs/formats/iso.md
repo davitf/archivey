@@ -111,7 +111,15 @@ than `CD001`, and High Sierra has `CDROM` at 32 777, so neither is detected.
 `pycdlib` sizes from a header field lands on archivey's bounded read (threat-model O16).
 `open_fp` then reads every volume descriptor, checks that the little- and big-endian path
 tables agree, and walks every tree the image has: the PVD tree, the Joliet tree, and UDF
-descriptors when present. That is where the cost is. After it, listing touches only
+descriptors when present. That is where the cost is, so `ListingLimits` are checked
+there, as `pycdlib` parses, rather than only when members are registered: a hook on
+`DirectoryRecord.parse` counts each record but `.` and `..` against `max_members`, per
+volume descriptor tree, and weighs the bytes of each record, plus each Rock Ridge
+continuation area every time `pycdlib` parses it, against `max_metadata_bytes`. Crossing
+either raises `ResourceLimitError` from `open_archive`, before any member is listed or streamed. The counts
+are a superset of the listing's (a multi-extent file's extra records and `rr_moved`
+count), so an image right at a cap can be refused at open; `ListingLimits.UNLIMITED`
+turns the hook off. UDF descriptors are not counted. After it, listing touches only
 records already in memory (`test_listing_reads_nothing_from_the_image`), which is what
 lets the member walk run without the handle lock. Two exceptions read a directory's
 extent once more, under the handle lock (§2.3): a directory holding a repeated
@@ -341,7 +349,14 @@ ISO-specific only. General extraction and name hazards are §2.4.
   replaces `pycdlib.rockridge.RockRidge.parse` with the System Use filter (§2.2), but that
   wrapper acts only inside `IsoReader`'s own `open_fp` call, where a `ContextVar` is set,
   so other callers are untouched (`test_pycdlib_used_directly_is_not_filtered`). The
+  `ListingLimits` hook on `pycdlib.dr.DirectoryRecord.parse` (§2.2) is gated the same
+  way (`test_the_record_counter_is_inert_outside_archivey_opens`). The
   mutation-harness finding is in [`threat-model.md`](../threat-model.md).
+- **Records multiply what `pycdlib` builds at open.** Every record costs `pycdlib` about
+  0.8 KB of Python objects, 15 to 20 times its size on disc, and records whose Rock Ridge
+  `CE` entries name one shared continuation area each parse it again (1000 records over
+  one 2 KiB area peaked at about 60 times the image). Bounded by the `ListingLimits`
+  hook (§2.2), so an over-limit image costs about the budget, not the image.
 - **A directory's length sizes `pycdlib`'s read.** `pycdlib` clamps a file's length to the
   image but not a directory's, so a root record declaring 4 GiB asked for 4 GiB inside
   `open_archive()`. Closed by routing every read through the source's bound (O16).
