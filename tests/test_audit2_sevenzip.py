@@ -269,7 +269,7 @@ def test_lzma1_lc8_archive_is_not_reported_as_corruption(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# S13: the ARM64 branch filter, 7-Zip 23's default for ARM64 executables, is refused
+# S13: the ARM64 branch filter, 7-Zip 23's default for ARM64 executables (fixed)
 # ---------------------------------------------------------------------------
 
 
@@ -282,10 +282,6 @@ def _arm64_elf(size: int) -> bytes:
 
 
 @requires_binary("7z")
-@pytest.mark.xfail(
-    strict=True,
-    reason="S13: the 7z ARM64 filter (method 0x0a) is unsupported",
-)
 @pytest.mark.parametrize("explicit", [True, False], ids=["mf-arm64", "default"])
 def test_arm64_filtered_archive_reads(tmp_path: Path, explicit: bool) -> None:
     # 7-Zip 23.01 picks ARM64 by itself for an AArch64 ELF with the execute bit
