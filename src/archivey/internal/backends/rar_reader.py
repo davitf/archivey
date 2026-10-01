@@ -41,7 +41,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import BinaryIO, Literal
+from typing import BinaryIO, Literal, NamedTuple
 
 from archivey.config import ArchiveyConfig, RarDecompressor, SpoolLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -88,6 +88,8 @@ from archivey.internal.backends.rar_unar import (
     REFUSE_NON_ASCII_PASSWORD,
     UNAR_PURPOSE,
     UnarRarPolicy,
+    unar_dictionary_costs,
+    uses_no_dictionary,
 )
 from archivey.internal.backends.rar_unrar import (
     _unrar_glob_demux_ok,
@@ -108,7 +110,7 @@ from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
 )
-from archivey.internal.config import KeyDerivationBudget
+from archivey.internal.config import KeyDerivationBudget, check_decoder_memory
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.external.cli import ProcessOutputStream, signal_exit_error
 from archivey.internal.external.unar import (
@@ -450,6 +452,87 @@ _COMPRESSION_BY_METHOD: dict[int, tuple[CompressionMethod, ...]] = {
         for method in range(_RAR_METHOD_STORED + 1, _RAR_METHOD_MAX + 1)
     },
 }
+
+
+class _DictionaryCost(NamedTuple):
+    """What one read costs in dictionary memory, and which header the cost came from.
+
+    ``count`` is compared against ``DecoderLimits.max_decoder_memory``. ``declared``
+    is the dictionary behind ``count``, and ``declarer`` the archive index of the
+    member whose header declared it. ``declarer`` is -1, and ``declared`` 0, when no
+    header is behind the count: a member that uses no dictionary outside a solid
+    ``unrar`` walk, or one ahead of every member that does. A count of 0 does not
+    imply -1 (an empty compressed member is its own declarer). Both are for the
+    refusal message: under ``unrar`` the count can be smaller than ``declared``, and
+    in a solid archive, a shared mask or a pass the declarer can be another member.
+    Compare two costs with :func:`_larger_cost`, not ``max``.
+    """
+
+    count: int
+    declared: int
+    declarer: int
+
+
+_NO_DICTIONARY = _DictionaryCost(0, 0, -1)
+
+
+def _larger_cost(a: _DictionaryCost, b: _DictionaryCost) -> _DictionaryCost:
+    """The larger count, with the declaration behind that count."""
+    return b if b.count > a.count else a
+
+
+def _unrar_dictionary_costs(archive: RarArchive) -> list[_DictionaryCost]:
+    """The dictionary bytes RARLAB ``unrar`` can touch to decode each member, in order.
+
+    Measured with ``unrar`` 7.00 (``dev-docs/formats/rar.md`` §7). ``unrar`` sizes a
+    nonsolid member's window to the smaller of its declared dictionary and its
+    unpacked size, and the pages fill only as output is written. A 64 KiB member
+    that declares 4 GiB stays near 8 MiB resident. In a solid archive the window
+    only grows: ``unrar`` keeps the largest dictionary declared by any member it
+    has decoded. It decodes every earlier member, across solid streams too. A
+    member that starts a new stream still paid about 300 MiB for the 1 GiB window
+    and 300 MB of data ahead of it. So the count for a solid member is the smaller
+    of the largest dictionary declared up to and including it and the unpacked
+    bytes of those members.
+
+    The unpacked size is a header value, as the dictionary is. When it is too
+    small, the reader's own size check stops reading at that size, and ``unrar``
+    then blocks on the full pipe. So the bytes written, and so the pages touched,
+    stay near the declared size. A stored member, a directory and a redirect use
+    no dictionary (:func:`uses_no_dictionary`) and add nothing to the window or
+    to the decoded bytes. In a nonsolid archive they count 0. In a solid one they
+    count the window built ahead of them, because ``unrar`` decodes every earlier
+    member to reach them: measured, a stored 64 KiB member behind a 300 MB member
+    declaring 1 GiB took 314 MiB resident. The walk keys on the archive's MAIN
+    solid flag, as ``unrar`` does: with it set and the member's own solid flag
+    clear, the read still took 314 MiB; with it clear and the member's flag set,
+    ``unrar`` decoded nothing ahead (47 MiB, the parent's own). ``rar -s`` writes
+    both flags on every member after the first, and the reader slices a stored
+    member only when its own flag is clear, so such a member does reach ``unrar``.
+    A RAR3 symlink does count: its target is compressed data. That is why this walk
+    does not use ``is_payload_file()`` as :meth:`RarReader._solid_prefix` does.
+    """
+    costs: list[_DictionaryCost] = []
+    window = decoded = 0
+    declarer = -1
+    for index, info in enumerate(archive.members):
+        if not archive.is_solid:
+            costs.append(
+                _NO_DICTIONARY
+                if uses_no_dictionary(info)
+                else _DictionaryCost(
+                    min(info.dictionary_size, info.file_size),
+                    info.dictionary_size,
+                    index,
+                )
+            )
+            continue
+        if not uses_no_dictionary(info):
+            if info.dictionary_size > window or declarer < 0:
+                window, declarer = info.dictionary_size, index
+            decoded += info.file_size
+        costs.append(_DictionaryCost(min(window, decoded), window, declarer))
+    return costs
 
 
 def _member_stream_size(member: ArchiveMember) -> int:
@@ -1139,6 +1222,21 @@ class RarReader(BaseArchiveReader):
             for index, info in enumerate(self._archive.members)
         ]
         self._resolve_file_copies()
+        # The dictionary memory each member's read costs under the program that will
+        # run it, keyed by ``id(member)``, checked against
+        # ``DecoderLimits.max_decoder_memory`` before that program starts. The two
+        # programs allocate differently, so each has a rule.
+        costs = (
+            [
+                _DictionaryCost(count, count, declarer)
+                for count, declarer in unar_dictionary_costs(self._archive)
+            ]
+            if self._unar_policy is not None
+            else _unrar_dictionary_costs(self._archive)
+        )
+        self._dictionary_costs = {
+            id(member): cost for member, cost in zip(self._members, costs, strict=True)
+        }
         # SERVICE headers (``CMT``, ``QO``) are not members, so the walk above never
         # reaches them, and a damaged one would otherwise report nothing under any
         # policy.
@@ -2190,12 +2288,18 @@ class RarReader(BaseArchiveReader):
         member: ArchiveMember,
         sources: FileCopySources | None,
         advance_past: Callable[[int], object],
+        pass_costs: dict[int, _DictionaryCost],
     ) -> ArchiveStream:
         """A solid pass's lazy stream for a file copy, served from its kept source."""
 
         def kept(source: ArchiveMember) -> BinaryIO | None:
             if sources is None:
                 return None
+            # Reaching the source may start the pass's process or decode through
+            # it, so the source's dictionary is checked as its own read would be.
+            cost = pass_costs.get(id(source))
+            if cost is not None:
+                self._check_dictionary_memory(source, cost)
             return sources.open(id(source), advance_past)
 
         return self._register_public_stream(
@@ -2242,6 +2346,7 @@ class RarReader(BaseArchiveReader):
         )
         solid: SolidBlockReader | None = None
         copies = self._file_copy_sources()
+        pass_costs = self._pass_dictionary_costs()
 
         def _pipe() -> SolidBlockReader:
             """Spawn ``unrar p`` on the first read into the pass, not at pass start.
@@ -2291,7 +2396,10 @@ class RarReader(BaseArchiveReader):
                 # Not in the pipe; served from its source's bytes, kept as the pipe
                 # passed them, so the solid stream is not decoded again for it.
                 return self._pass_file_copy_stream(
-                    member, copies, lambda end: _pipe().open_member(end, 0)
+                    member,
+                    copies,
+                    lambda end: _pipe().open_member(end, 0),
+                    pass_costs,
                 )
             if not raw.is_payload_file() or not member.is_file:
                 return None
@@ -2305,6 +2413,15 @@ class RarReader(BaseArchiveReader):
             pipe_offset += size
             if copies is not None and copies.is_source(id(member)):
                 copies.register(id(member), member_offset, size)
+            cost = pass_costs[id(member)]
+
+            def open_fn() -> BinaryIO:
+                # Checked on the first read, as the spawn is: a pass that skips this
+                # member is not refused for it.
+                self._check_dictionary_memory(member, cost)
+                return self._watch_unverified(
+                    _pipe().open_member(member_offset, size, lazy=True), member
+                )
 
             hashes, vsize, transforms, verify_member = self._payload_verify_args(member)
             # Registered like the base class's lazy pass streams, so the pass takes
@@ -2313,9 +2430,7 @@ class RarReader(BaseArchiveReader):
                 self._wrap_member_stream(
                     None,
                     member.name,
-                    open_fn=lambda: self._watch_unverified(
-                        _pipe().open_member(member_offset, size, lazy=True), member
-                    ),
+                    open_fn=open_fn,
                     size=member.size,
                     track_output=False,
                     seekable=False,
@@ -2824,8 +2939,8 @@ class RarReader(BaseArchiveReader):
 
     def _unrar_selection(
         self, target: ArchiveMember, mask_view: str, *, version_control: bool
-    ) -> tuple[int, bool]:
-        """Where ``target``'s bytes start in the ``unrar -n`` pipe, and whether it ends there.
+    ) -> tuple[int, bool, _DictionaryCost]:
+        """Where ``target``'s bytes start in the ``unrar -n`` pipe, and what the run needs.
 
         ``unrar p`` emits every payload member the mask selects, concatenated in
         archive order with no headers: a glob, a duplicate name, two names ``unrar``
@@ -2834,6 +2949,13 @@ class RarReader(BaseArchiveReader):
         the target; the second is True when any other member is selected, so the read
         must stop at the target's size. History rows are left out unless
         ``version_control`` is set, as ``unrar`` leaves them out without ``-ver``.
+
+        The third value is the largest :attr:`_dictionary_costs` entry among the
+        target and the selected members before it. ``unrar`` decodes each of those
+        in full, so in a nonsolid archive each earlier match sizes its own window.
+        In a solid archive the target's own count already covers them. A match after
+        the target does not count: the read stops at the target's end, and that
+        member's window fills only as ``unrar`` writes to the pipe.
 
         Raises ``UnsupportedFeatureError`` when the answer is not known: the mask
         does not select the target itself, or an earlier member's name cannot be
@@ -2853,6 +2975,7 @@ class RarReader(BaseArchiveReader):
         prefix = 0
         others = False
         selects_target = False
+        cost = self._dictionary_costs[id(target)]
         for position in candidates:
             view = names.views[position]
             if view is None:
@@ -2868,7 +2991,9 @@ class RarReader(BaseArchiveReader):
                 continue
             others = True
             if position < target_position:
-                prefix += _member_stream_size(self._members[position])
+                earlier = self._members[position]
+                prefix += _member_stream_size(earlier)
+                cost = _larger_cost(cost, self._dictionary_costs[id(earlier)])
         if not selects_target:
             raise self._unrar_name_refused(
                 target,
@@ -2887,7 +3012,7 @@ class RarReader(BaseArchiveReader):
                     "cannot be sized",
                 )
             others = True
-        return prefix, others
+        return prefix, others, cost
 
     def _unrar_name_refused(
         self, member: ArchiveMember, reason: str
@@ -2931,6 +3056,69 @@ class RarReader(BaseArchiveReader):
         raise AssertionError(
             "solid prefix target missing from the payload walk; uses member identity"
         )
+
+    def _check_dictionary_memory(
+        self, member: ArchiveMember, cost: _DictionaryCost
+    ) -> None:
+        """Refuse a read whose decompressor would allocate over ``max_decoder_memory``.
+
+        ``cost`` comes from :attr:`_dictionary_costs`, from :meth:`_unrar_selection`
+        for a named ``unrar`` read, or from :meth:`_pass_dictionary_costs` for a
+        solid pass. Runs before the program is spawned and before a stream source is
+        copied to disk for it.
+
+        The message names the member whose header declared the dictionary, only when
+        the member read does not declare that size itself, and says when the count is
+        capped below it, so a caller can find both numbers. A declarer that shares the
+        read member's name is named by its archive index instead.
+        """
+        program = "unar" if self._unar_policy is not None else "unrar"
+        counted_from = None
+        if cost.declarer >= 0:
+            source = self._members[cost.declarer]
+            raw = member._raw
+            # The member read declaring the same size is named in place of the
+            # member that happened to declare it first.
+            own = source is member or (
+                isinstance(raw, RarMemberInfo) and raw.dictionary_size == cost.declared
+            )
+            if own:
+                owner = "its own header"
+            elif source.name == member.name:
+                owner = (
+                    "the header of an earlier entry with the same name "
+                    f"(archive index {cost.declarer}, counting from 0)"
+                )
+            else:
+                owner = f"the header of member {quoted(source.name)}"
+            if cost.count < cost.declared:
+                counted_from = (
+                    f"the {cost.declared}-byte dictionary {owner} declares, capped at "
+                    "the unpacked bytes the read decodes"
+                )
+            elif not own:
+                counted_from = f"the dictionary {owner} declares"
+        check_decoder_memory(
+            cost.count,
+            limits=self._config.decoder_limits,
+            what=f"the RAR dictionary {program} needs for member {quoted(member.name)}",
+            counted_from=counted_from,
+        )
+
+    def _pass_dictionary_costs(self) -> dict[int, _DictionaryCost]:
+        """:attr:`_dictionary_costs` for one process that decodes the archive in order.
+
+        A solid pass runs one process over every member, so a member's read also
+        pays for the largest window an earlier member needed. ``unar`` starts a new
+        dictionary for each solid stream, but the process's peak is still the
+        largest one so far.
+        """
+        costs: dict[int, _DictionaryCost] = {}
+        peak = _NO_DICTIONARY
+        for member in self._members:
+            peak = _larger_cost(peak, self._dictionary_costs[id(member)])
+            costs[id(member)] = peak
+        return costs
 
     def _open_member(self, member: ArchiveMember) -> ArchiveStream:
         raw = member._raw
@@ -3026,7 +3214,7 @@ class RarReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
-        glob_prefix, shares_mask = self._unrar_selection(
+        glob_prefix, shares_mask, dictionary_cost = self._unrar_selection(
             member, mask_view, version_control=version_control
         )
         if (
@@ -3095,6 +3283,9 @@ class RarReader(BaseArchiveReader):
                 source_format=ArchiveFormat.RAR,
             )
 
+        # Counts the other members the mask selects too (a duplicate name is enough),
+        # because unrar decodes each of them before the target.
+        self._check_dictionary_memory(member, dictionary_cost)
         # Picked before the copy below: a password no candidate satisfies fails here
         # without spooling a stream source to disk.
         data_password = self._member_data_password(member)
@@ -3270,6 +3461,7 @@ class RarReader(BaseArchiveReader):
         refusal = policy.member_refusal(raw)
         if refusal is not None:
             raise self._unar_refused(member, refusal)
+        self._check_dictionary_memory(member, self._dictionary_costs[id(member)])
         # Picked the way the ``unrar`` path picks it, before anything is copied: a
         # RAR5 PswCheck rejects a wrong candidate here, without spawning ``unar``.
         data_password = self._unar_password(member, self._member_data_password(member))
@@ -3320,6 +3512,7 @@ class RarReader(BaseArchiveReader):
         """
         solid: SolidBlockReader | None = None
         copies = self._file_copy_sources()
+        pass_costs = self._pass_dictionary_costs()
 
         def _pipe() -> SolidBlockReader:
             nonlocal solid
@@ -3359,13 +3552,25 @@ class RarReader(BaseArchiveReader):
         def _refuse(member: ArchiveMember, reason: str) -> BinaryIO:
             raise self._unar_refused(member, reason)
 
+        def _read(
+            member: ArchiveMember, offset: int, size: int, cost: _DictionaryCost
+        ) -> BinaryIO:
+            # Checked on the first read, as the spawn is.
+            self._check_dictionary_memory(member, cost)
+            return self._watch_unverified(
+                _pipe().open_member(offset, size, lazy=True), member
+            )
+
         def _open(member: ArchiveMember) -> ArchiveStream | None:
             raw = member._raw
             assert isinstance(raw, RarMemberInfo)
             if raw.is_file_copy():
                 # As in the ``unrar`` pass: not in the pipe, read from its kept source.
                 return self._pass_file_copy_stream(
-                    member, copies, lambda end: _pipe().open_member(end, 0)
+                    member,
+                    copies,
+                    lambda end: _pipe().open_member(end, 0),
+                    pass_costs,
                 )
             if not raw.is_payload_file() or not member.is_file:
                 return None
@@ -3384,9 +3589,8 @@ class RarReader(BaseArchiveReader):
                 offset = policy.solid_pass_offset(raw)
                 if copies is not None and copies.is_source(id(member)):
                     copies.register(id(member), offset, size)
-                open_fn = lambda: self._watch_unverified(  # noqa: E731
-                    _pipe().open_member(offset, size, lazy=True), member
-                )
+                cost = pass_costs[id(member)]
+                open_fn = lambda: _read(member, offset, size, cost)  # noqa: E731
             # Registered for the live-stream gate, as in the ``unrar`` pass.
             return self._register_public_stream(
                 self._wrap_member_stream(

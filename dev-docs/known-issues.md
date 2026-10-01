@@ -37,7 +37,7 @@ is the net.
 **Evidence.** [`alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md)
 §2026-09-26 measurements. Handbook: [`formats/rar.md`](formats/rar.md) §3.
 
-## MacPaw `unar` 1.10.1: some compressed RAR5 members come out empty (open)
+## Debian/Ubuntu `unar` 1.10.1: some compressed RAR5 members come out empty (open)
 
 **Symptom.** `unar` 1.10.1 (Debian and Ubuntu's package) writes nothing for a compressed
 RAR5 member whose last compressed byte uses 6–8 of its bits, solid or not, and exits 0;
@@ -54,10 +54,22 @@ solid run fail the digest. The solid pass reads a member that has no digest thro
 `tests/test_rar_unar.py` on the `unar_drop*` and `unar_stale*` fixtures.
 
 **What remains.** An affected member cannot be read with `unar` at all: it raises
-`TruncatedError` or `CorruptionError`, and RARLAB `unrar` reads it. The 1.10.8 lineage (Homebrew) was
-not measured for this.
+`TruncatedError` or `CorruptionError`, and RARLAB `unrar` reads it.
 
-**Upstream.** Not filed with XADMaster.
+**Cause.** Not upstream: it comes from `CSInputBuffer-bit-string-reading.patch`, which
+only Debian and Ubuntu apply to their 1.10.1 package. With it, the bit reader raises end of
+file when fewer bits remain than a Huffman lookup *peeks*, even when the code it uses is
+shorter; the error is swallowed and the member comes out empty. Measured on builds from
+source (2026-10-01): upstream 1.10.1, 1.10.7, 1.10.8 (Homebrew's version) and master
+decode all 300 generated RAR5 archives and the `unar_drop*` / `unar_stale*` fixtures
+correctly; the Debian package build reproduces the drops, and the same build without that
+patch does not. The RAR 1.5 refusal (`rar15-comment.rar` missing `FILE1.TXT`) has the same
+cause. Debian kept the patch on 1.10.8+ds1 until 1.10.8+ds1-10 (Debian unstable, June
+2026), so Ubuntu 22.04, 24.04 and 26.04 all carry it, read from their source packages'
+patch series. Banners cannot tell: Debian's 1.10.8 packages print `v1.10.8` with or without
+the patch, and upstream 1.10.8 and master still print `v1.10.7`.
+
+**Upstream.** Nothing to file with XADMaster; the patch is Debian's.
 
 **Evidence.** [`alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md)
 §Compressed RAR5 member dropped. Handbook: [`formats/rar.md`](formats/rar.md) §3.
@@ -127,6 +139,10 @@ caller's own stream that fails or is closed mid-read:
   `_AcceleratorStream` re-raises it after the call, marked as the caller's, so an
   `EOFError` from a dropped network stream stays an `EOFError`
   ([`topics/exception-handlers.md`](topics/exception-handlers.md) §C-boundary trap).
+  The decoder took the fault for the end of its input, so the stream is then given up
+  for good: every later `read`, `readinto`, `seek` and `tell()` raises `ReadError`,
+  even after the caller's source recovers. The rapidgzip child does the same
+  (`compressed-streams`, the accelerated-decoder paragraph).
 
 Pinned by `tests/test_accelerator_bug3_trap.py`. The stdlib codec fallbacks raise an
 ordinary `ValueError`.

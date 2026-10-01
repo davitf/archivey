@@ -17,7 +17,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
 | Core dependencies | None to list an unencrypted archive. Member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1), or, by default, `unar` 1.10+ when no RARLAB binary is found (§3) |
 | Optional | `[recommended]` (`cryptography`): header decryption, RAR3/RAR4 and RAR5 alike. BLAKE2sp needs nothing — stdlib `hashlib` |
-| Refuses | Non-seekable sources · a non-RARLAB `unrar`/`rar` (no fallback to `7z` / `bsdtar` / `unrar-free`; `unar` when no RARLAB binary is found, unless `rar_decompressor="unrar"`) · with `unar`: encrypted RAR 2.x-4.x data, a non-ASCII password, a header-encrypted RAR5 volume set, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · a glob-named member whose mask also matches **earlier** members, unless `rar_allow_glob_member_concatenation=True` · writing |
+| Refuses | Non-seekable sources · a non-RARLAB `unrar`/`rar` (no fallback to `7z` / `bsdtar` / `unrar-free`; `unar` when no RARLAB binary is found, unless `rar_decompressor="unrar"`) · with `unar`: encrypted RAR 2.x-4.x data, a non-ASCII password, a header-encrypted RAR5 volume set, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · a glob-named member whose mask also matches **earlier** members, unless `rar_allow_glob_member_concatenation=True` · a member whose dictionary, as the chosen program allocates it, is over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`, §7) · writing |
 
 **Two things a reader might expect and will not find.** Nothing amortizes repeated
 random reads of a solid archive: there is no `unrar x` anywhere in `src/`, so every
@@ -1084,34 +1084,118 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   - To build more cases: `tests/test_audit_rar_iso_dir.py` has RAR5/RAR3 header
     rewriters with CRC fix-up (`_rar5_parse`, `_rar5_build`, `_rar3_parse`,
     `_rar3_build`), since `rar` 7.00 cannot write RAR4.
-- **Open: should a RAR dictionary size count against `DecoderLimits`?** Every
+- **Settled (2026-09-30): a RAR dictionary size counts against `DecoderLimits`.** Every
   in-process codec checks the dictionary or window its header declares against
-  `max_decoder_memory`; RAR does not, because `unrar` or `unar` decodes it in another
-  process. A RAR5 member patched to declare a 4 GiB dictionary reads under the 2 GiB
-  default, and `unrar` stayed near 33 MB resident on it
-  (`tests/test_audit_cross_format.py::test_rar_declared_dictionary_is_checked_against_decoder_memory`,
-  xfail). `unrar` is believed to shrink the window to the unpacked size of a nonsolid
-  member, so the unmeasured case is a huge dictionary together with a huge declared
-  unpacked size, or a solid archive. Maintainer decision (2026-09-28): measure `unrar`'s
-  and `unar`'s peak memory on that shape first, then either check the size before
-  spawning (as 7z and xz do) or keep RAR out of the cap. `docs/extracting.md` §Limits
-  and the `DecoderLimits` docstring say RAR is not covered today.
+  `max_decoder_memory`, and RAR now does too, although `unrar` or `unar` decodes it in
+  another process. The reader checks it before it spawns the program, on a named
+  `open()` and on the first read of each member of a solid pass, with
+  `check_decoder_memory` and its message. The number counted is what the program that
+  will run allocates, so under `rar_decompressor="auto"` it is the rule of the program
+  `auto` picked. Maintainer decision (2026-09-30): check it, per program.
 
-  *For whoever takes this on.*
-  - **Where the size is.** In a RAR5 FILE header it is in the compression-information
-    vint, which `rar_parser.py` already reads (`compress_info`, near the
-    `_RAR5_COMPR_SOLID` check). Bits 10–14 are the exponent `N` of `128 KiB << N`, and
-    RAR 7 adds a fraction in bits 15–19, as the audit test patches it. Check both
-    against RARLAB's technote before relying on them. RAR3/4 keeps the size in the file
-    flags (`0x00E0`, where all three bits set means a directory, `_RAR3_FILE_DIRECTORY`).
-  - **The case to measure.** A nonsolid member declaring a 4 GiB dictionary *and* a
-    multi-GiB unpacked size, plus a solid archive whose first member declares the large
-    dictionary. Measure both with `unrar` and `unar`. Peak RSS is enough:
-    `/usr/bin/time -v unrar p -inul archive.rar >/dev/null`, or run the read under
-    `prlimit --as=` to see whether it fails or degrades.
-  - **If the answer is to check it,** put the check where the member is spawned, so both
-    tools are covered, with the same error and message shape as `check_decoder_memory`.
-    Remove the xfail from the audit test.
+  Measured on Linux with `rar`/`unrar` 7.00 and `unar` 1.10.1, peak RSS of the child
+  (the Python parent stayed at 41–43 MiB in every case). *small*: a 64 KiB member;
+  *crafted*: the same member with its header patched to declare D.
+
+  | D | unrar small | unrar crafted | unar small | unar crafted |
+  | --- | --- | --- | --- | --- |
+  | 1 MiB | 9 MiB | 9 MiB | 21 MiB | 22 MiB |
+  | 256 MiB | 8 MiB | 8 MiB | 20 MiB | 276 MiB |
+  | 1 GiB | 8 MiB | 9 MiB | 21 MiB | 1045 MiB |
+  | 4 GiB | 9 MiB | 8 MiB | 21 MiB | 1045 MiB |
+
+  | Shape | unrar | unar |
+  | --- | --- | --- |
+  | Solid, 2 × 64 KiB, first header declares 4 GiB | 9 MiB | 4116 MiB |
+  | Solid, 64 KiB + 512 MiB, honest 128 KiB dictionary | 9 MiB | 21 MiB |
+  | The same, first header declares 1 GiB | 521 MiB | 1044 MiB |
+  | Solid `-s2`: 64 KiB + 300 MB in one stream, then a member that starts a second stream; the first header declares 1 GiB; the second-stream member is read | 308 MiB ¹ | — |
+  | Solid `-s2 -md128k`: 2 × 64 KiB in one stream, then 300 MB in a second; the first header declares 1 GiB; the 300 MB member is read | — ¹ | 19 MiB |
+
+  ¹ `unrar` exited 3 (a CRC error) on both patched `-s2` archives. On the first it had
+  already decoded the 300 MB; on the second the figure (8 MiB) says nothing, so it is
+  left out. The last two rows were measured on 2026-09-30 with `posix_spawn` and
+  `wait4`; the rest come from the investigation behind this decision.
+
+  - **`unar` allocates up front and touches every page.** One mapping of the declared
+    size, resident even for 64 KiB of output. So the count is the declared size. In a
+    solid archive `unar` keeps one dictionary per solid stream (a new stream starts at
+    a compressed member without the solid flag), and the count is the largest one
+    declared in the stream up to and including the member. Only the stream's first
+    declaration was allocated when later ones were patched, so this is an upper bound.
+    A member in a later stream does not pay for an earlier one (last row).
+  - **`unrar` is lazy and bounded by its output.** For a nonsolid member it reserves
+    min(declared, unpacked size), and pages fill only as output is written, so a
+    declaration alone costs nothing. The count is min(declared, unpacked size). In a
+    solid archive it keeps the largest window it has seen, and it decodes every earlier
+    member, across solid streams too (second-to-last row: reading the member of the
+    second stream paid for the first). The count is min(largest dictionary declared up to and
+    including the member, total unpacked size of those members). That is wider than
+    "the member's own stream", on purpose.
+  - **A shared `unrar` mask.** A named `unrar` read decodes every member its mask
+    selects, in archive order: a glob with `rar_allow_glob_member_concatenation=True`,
+    or a duplicate name, which needs no opt-in. The count is the largest among the
+    target and the selected members before it (`RarReader._unrar_selection` returns
+    it). In a nonsolid archive each earlier match sizes its own window; in a solid one
+    the target's count already covers them. A match after the target is not counted:
+    the read stops at the target's end, and that member's window fills only as
+    `unrar` writes to the pipe.
+  - **Not counted.** A stored member, a directory, and a RAR5 redirect (hardlink, file
+    copy, symlink), which carry no data to decode (`uses_no_dictionary` in
+    `rar_unar.py`; stored headers from `rar -m0` declare 0 anyway). They add nothing to
+    the window or the decoded bytes. A RAR3 symlink does count: its target is compressed
+    data. A RAR 1.5/2.x comment, which `unrar` or `unar` decodes at open: RAR3/4
+    dictionaries top out at 4 MiB (the 3-bit field over a 64 KiB base), and `rar -ma4`
+    is gone from rar 7.00.
+  - **A stored member of a solid archive.** `rar -s` sets the member's own solid flag
+    on it (`file_solid`), and the reader slices a stored member directly only when that
+    flag is clear, so the member goes to the program. Measured 2026-09-30 with a
+    300 MB member declaring 1 GiB (patched) ahead of a stored 64 KiB member: `unrar p`
+    of the stored member peaked at 314 MiB, the same as reading the 300 MB member
+    (309 MiB), so `unrar` decodes the prefix and the stored member counts the window
+    ahead of it. `unar -i` of the stored member stayed at 41 MiB, against 1044 MiB for
+    the 300 MB member, so under `unar` it counts 0. (Peaks include the 41–47 MiB
+    Python parent; `unrar` exited 3 on the patched archives, as in the table.)
+  - **Which solid flag.** `unrar` decides from the MAIN header's solid flag
+    (`RarArchive.is_solid`), not the member's. With the MAIN flag set and the stored
+    member's own flag cleared, `unrar p` still peaked at 314 MiB; with the MAIN flag
+    cleared and the member's flag set, it stayed at 47 MiB (the parent). So the
+    `unrar` solid walk keys on `is_solid`. `unar` stayed at 47 MiB in all four
+    combinations for the stored member.
+  - **The refusal message** gives the count and, when the count is capped below it, the
+    declared dictionary. When the dictionary was declared by another member (solid, a
+    shared mask, a pass) and the member read does not declare that size itself, the
+    message names that member, so a caller knows which header to look at. A declarer
+    with the same name as the member read (a duplicate) is named by its archive
+    index.
+  - **Not signalled at open.** Every count is known from the parse, so `ar.cost.notes`
+    could say at `open_archive` that a read will be refused, as it does for a
+    `SpoolLimits` refusal. Left out: the refusal is per member, and `ar.cost.notes` is
+    one open-time caveat for the archive, not a per-member list. A note would have to
+    say "some members" or name them, which does not scale.
+  - **What honest archives declare.** rar 7.00 declares the data size rounded up to a
+    power of two (10 MB → 16 MiB, 300 MB → 512 MiB), so a real archive over-declares by
+    at most 2×, and small members declare 128 KiB whatever `-md` says. Under the 2 GiB
+    default the check refuses only a member that asks for 4 GiB, which is what `rar`
+    writes for `-md4g` on data over 2 GiB, and under `unrar` only when that much data is
+    actually decoded.
+  - **Above 4 GiB.** RAR 7.0 (algorithm 1) declares up to 64 GiB. `rar -md64g` needs
+    more input than the dictionary, and no real 8 GiB+ archive was built; patched
+    headers above 4 GiB did not decode (`unrar` exited 1–3, `unar` stayed near 21 MiB).
+    The parser sizes them as `unrar` 7.00 does (5 exponent bits plus 1/32 steps), so
+    they are refused under the default. Unmeasured beyond that.
+  - **Not adopted: `unrar -mdx<n>`.** It makes `unrar` refuse a member whose effective
+    window exceeds `n` (a power of two). It would be a second net for `unrar` only;
+    `unar`, the tool that touches the whole dictionary, has no equivalent, and its
+    refusal (exit 2, "No files to extract") would need mapping to
+    `ResourceLimitError`.
+
+  Pins: `tests/test_audit_rar_iso_dir.py` (the tests after "the RAR dictionary counts
+  against DecoderLimits.max_decoder_memory"), which replace the xfail
+  `test_audit_cross_format.py::test_rar_declared_dictionary_is_checked_against_decoder_memory`,
+  and `tests/test_rar_parser.py::test_rar5_dictionary_size_follows_unrar`. Code:
+  `RarMemberInfo.dictionary_size` (parser), `unar_dictionary_costs` (`rar_unar.py`),
+  `_unrar_dictionary_costs` and `RarReader._check_dictionary_memory` (`rar_reader.py`).
 
 - **Does the glob-concatenation refusal earn its keep?** It ships and is decided (§6):
   a member whose stored name is an include mask matching earlier members is refused by

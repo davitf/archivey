@@ -23,6 +23,7 @@ import pytest
 
 from archivey import (
     ArchiveyConfig,
+    DecoderLimits,
     ExtractionLimits,
     SpoolLimits,
     extract,
@@ -276,3 +277,22 @@ def test_two_skipped_sources_in_the_spool_keep_their_own_bytes(
                 seen[member.name] = stream.read()
     assert seen == {"d_copy_a.txt": second, "d_copy_b.txt": first}
     assert spawns == ["unrar"]
+
+
+@pytest.mark.parametrize("decompressor", _DECOMPRESSORS)
+def test_a_copy_read_checks_its_source_dictionary(
+    tmp_path: Path, decompressor: str, spawns: list[str]
+) -> None:
+    """Serving a copy decodes through its source, so the source's dictionary is
+    checked against ``max_decoder_memory`` before the pass's process starts, as the
+    source's own read would be."""
+    config = _config(decompressor, decoder_limits=DecoderLimits(max_decoder_memory=1))
+    archive, _ = _solid_with_copies(tmp_path)
+    with open_archive(archive, config=config) as reader:
+        for member, stream in reader.stream_members():
+            if member.name == _COPY_NAMES[0]:
+                assert stream is not None
+                with pytest.raises(ResourceLimitError):
+                    stream.read()
+                break
+    assert spawns == []
