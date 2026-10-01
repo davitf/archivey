@@ -6,9 +6,11 @@ import errno
 import io
 import os
 import shutil
+import struct
 import tarfile
 import time
 import zipfile
+import zlib
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,7 @@ from typing import Any
 import pytest
 
 from archivey import detect_format, extract, open_archive
+from archivey.config import ArchiveyConfig, RarDecompressor
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
@@ -33,6 +36,7 @@ from archivey.internal.volumes import (
     discover_volume_siblings,
     first_volume_for_stub,
     join_volumes,
+    next_old_rar_volume_name,
 )
 from archivey.types import ArchiveFormat
 from tests.conftest import requires_binary
@@ -286,6 +290,148 @@ def test_old_scheme_sfx_exe_opens_rnn_set(tmp_path: Path) -> None:
             assert [m.name for m in archive.members()] == ["payload.bin"]
             if _have_rarlab_unrar():
                 assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+def _old_scheme_names(first: str, count: int) -> list[str]:
+    names = [first]
+    while len(names) < count:
+        following = next_old_rar_volume_name(names[-1])
+        assert following is not None
+        names.append(following)
+    return names
+
+
+def test_old_scheme_volume_names_run_past_r99_and_z99() -> None:
+    names = _old_scheme_names("a.rar", 1003)
+    assert names[:3] == ["a.rar", "a.r00", "a.r01"]
+    assert names[100:103] == ["a.r99", "a.s00", "a.s01"]
+    assert names[900:903] == ["a.z99", "a.{00", "a.{01"]
+    assert next_old_rar_volume_name("a.exe") == "a.r00"
+    assert next_old_rar_volume_name("a.sfx") == "a.r00"
+    assert next_old_rar_volume_name("A.RAR") == "A.R00"
+    assert next_old_rar_volume_name("a.part1.rar.bak") is None
+
+
+@pytest.mark.parametrize("first", ["archive.rar", "archive.exe"])
+def test_discover_old_scheme_volumes_past_r99_and_z99(
+    tmp_path: Path, first: str
+) -> None:
+    """The old scheme continues ``.r99`` -> ``.s00`` and ``.z99`` -> ``.{00``; a
+    two-digit ``.rNN`` pattern used to stop discovery at volume 101."""
+    names = _old_scheme_names(first, 905)
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    for anchor in (first, "archive.r00", "archive.s00", "archive.z99", "archive.{03"):
+        siblings = discover_volume_siblings(tmp_path / anchor)
+        assert siblings is not None
+        assert [p.name for p in siblings] == names
+
+
+def test_discover_old_scheme_matches_continuations_case_insensitively(
+    tmp_path: Path,
+) -> None:
+    names = ["archive.rar", "archive.R00", "archive.r01"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    for anchor in names:
+        siblings = discover_volume_siblings(tmp_path / anchor)
+        assert siblings is not None
+        assert [p.name for p in siblings] == names
+
+
+def test_discover_old_scheme_stops_at_the_first_missing_name(tmp_path: Path) -> None:
+    """Volumes are walked from volume 1 by name, as unrar does: a file past a gap is
+    not in the set, and opening it on its own is a lone later volume. Neither is an
+    unrelated ``archive.a01`` that merely has the shape of a continuation."""
+    for name in ("archive.rar", "archive.r00", "archive.r02", "archive.a01"):
+        (tmp_path / name).write_bytes(b"")
+    siblings = discover_volume_siblings(tmp_path / "archive.rar")
+    assert siblings is not None
+    assert [p.name for p in siblings] == ["archive.rar", "archive.r00"]
+    assert discover_volume_siblings(tmp_path / "archive.r02") is None
+    assert discover_volume_siblings(tmp_path / "archive.a01") is None
+
+
+def _rar4_block(block_type: int, flags: int, body: bytes) -> bytes:
+    head = struct.pack("<BHH", block_type, flags, 7 + len(body)) + body
+    return struct.pack("<H", zlib.crc32(head) & 0xFFFF) + head
+
+
+def _write_old_scheme_rar4_set(
+    directory: Path, stem: str, payload: bytes, count: int
+) -> list[Path]:
+    """A real RAR 2.9-format volume set with old (``.rNN``) naming.
+
+    RAR 7 writes neither the old format nor old names, so the set is built by hand:
+    one stored member split across ``count`` volumes, each a MAIN header with only
+    ``MHD_VOLUME`` set (no ``MHD_NEWNUMBERING``), a FILE header carrying the split
+    flags, its slice of the data and an ENDARC. A split-after part's CRC is that
+    part's data, the last part's is the whole file's. ``unrar t`` accepts it.
+    """
+    member = b"payload.bin"
+    chunk = -(-len(payload) // count)
+    name = f"{stem}.rar"
+    paths: list[Path] = []
+    for index in range(count):
+        part = payload[index * chunk : (index + 1) * chunk]
+        last = index == count - 1
+        # LONG_BLOCK, SPLIT_BEFORE, SPLIT_AFTER.
+        flags = 0x8000 | (0x01 if index else 0) | (0 if last else 0x02)
+        fields = struct.pack(
+            "<LLBLLBBHL",
+            len(part),
+            len(payload),
+            3,  # Unix
+            zlib.crc32(payload if last else part),
+            0x58210000,  # 2024-01-01 00:00 DOS time
+            20,
+            0x30,  # stored
+            len(member),
+            0o100644,
+        )
+        volume = (
+            _RAR_MAGIC
+            + _rar4_block(0x73, 0x0001, b"\x00" * 6)
+            + _rar4_block(0x74, flags, fields + member)
+            + part
+            + _rar4_block(0x7B, 0 if last else 0x0001, b"")
+        )
+        (directory / name).write_bytes(volume)
+        paths.append(directory / name)
+        following = next_old_rar_volume_name(name)
+        assert following is not None
+        name = following
+    return paths
+
+
+_OLD_SCHEME_PAYLOAD = b"".join(b"%06d" % i for i in range(1000))
+
+
+@pytest.mark.parametrize(
+    "decompressor",
+    [
+        pytest.param(RarDecompressor.UNRAR, marks=requires_binary("unrar")),
+        pytest.param(RarDecompressor.UNAR, marks=requires_binary("unar")),
+    ],
+)
+def test_old_scheme_set_past_r99_opens_from_any_volume(
+    tmp_path: Path, decompressor: RarDecompressor
+) -> None:
+    """150 old-scheme volumes, ``big.rar`` through ``big.s48``. Discovery used to
+    stop at ``big.r99``, and the open then failed as a truncated set."""
+    paths = _write_old_scheme_rar4_set(tmp_path, "big", _OLD_SCHEME_PAYLOAD, 150)
+    assert [paths[100].name, paths[101].name, paths[-1].name] == [
+        "big.r99",
+        "big.s00",
+        "big.s48",
+    ]
+    config = ArchiveyConfig(rar_decompressor=decompressor)
+    for anchor in (paths[0], paths[1], paths[105]):
+        with open_archive(anchor, config=config) as archive:
+            assert archive.info.is_multivolume is True
+            assert archive.info.extra["rar.volume_count"] == 150
+            assert [m.name for m in archive.members()] == ["payload.bin"]
+            assert archive.read("payload.bin") == _OLD_SCHEME_PAYLOAD
 
 
 @pytest.mark.parametrize(

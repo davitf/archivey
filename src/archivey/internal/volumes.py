@@ -88,6 +88,40 @@ _RAR_PART_RE = re.compile(
     r"^(?P<base>.+)\.part0*(?P<part>\d{1,6})\.(?:rar|sfx|exe)$", re.IGNORECASE
 )
 _RAR_RNN_RE = re.compile(r"^(?P<base>.+)\.r(?P<part>\d{2})$", re.IGNORECASE)
+# Any old-scheme continuation name. WinRAR and unrar go ``.rar``, ``.r00`` … ``.r99``,
+# then ``.s00`` … ``.z99`` and on past ``z`` (``.{00``, ``.|00`` …): the next name adds
+# one to the letter's character code (:func:`next_old_rar_volume_name`). This shape
+# only makes a name a candidate; discovery walks those names from volume 1 and keeps
+# the opened file only if the walk reaches it, so ``notes.a01`` beside ``notes.rar``
+# is not taken for a volume. ``_RAR_RNN_RE`` stays the ``.rNN`` subset that names are
+# classified by elsewhere.
+_OLD_RAR_CONTINUATION_RE = re.compile(r"^(?P<base>.+)\.[^.0-9][0-9]{2}$")
+_OLD_RAR_EXT_RE = re.compile(r"(?P<letter>[^.0-9])(?P<num>[0-9]{2})")
+
+
+def next_old_rar_volume_name(name: str) -> str | None:
+    """The old-scheme name unrar looks for after ``name``, or ``None``.
+
+    ``.rar`` (or an SFX ``.exe`` / ``.sfx``) is followed by ``.r00``; ``.r99`` by
+    ``.s00``; ``.z99`` by ``.{00``. The ``r`` of a ``.RAR`` keeps its case, as in
+    unrar's ``NextVolumeName``. Shared with the RAR backend, which predicts the names
+    unrar will walk.
+    """
+    stem, dot, ext = name.rpartition(".")
+    if not dot:
+        return None
+    lower = ext.lower()
+    if lower == "rar":
+        return f"{stem}.{ext[0]}00"
+    if lower in ("exe", "sfx"):
+        return f"{stem}.r00"
+    match = _OLD_RAR_EXT_RE.fullmatch(ext)
+    if match is None:
+        return None
+    letter, number = match["letter"], int(match["num"]) + 1
+    if number == 100:
+        letter, number = chr(ord(letter) + 1), 0
+    return f"{stem}.{letter}{number:02d}"
 
 
 # Each ordering key reads the part number back out of the pattern that classified the
@@ -118,11 +152,6 @@ def _pick_rar_part(candidates: list[Path], named_part: int, named_lower: str) ->
     return candidates[0]
 
 
-def _rnn_part_number(name: str) -> int:
-    match = _RAR_RNN_RE.match(name)
-    return int(match.group("part")) if match is not None else 0
-
-
 def _is_old_scheme_first_volume_name(name: str) -> bool:
     """``<base>.rar`` / ``.exe`` / ``.sfx`` as old-scheme volume 1, not a partN/NNN name."""
     if (
@@ -143,23 +172,39 @@ def _old_rar_rnn_first_volume(parent: Path, base: str) -> Path | None:
     return None
 
 
-def _collect_old_rar_rnn_volumes(parent: Path, base: str) -> list[Path] | None:
+def _collect_old_rar_volumes(parent: Path, base: str) -> list[Path] | None:
+    """Volume 1, then each name unrar would look for next, until one is missing.
+
+    Names are matched case-insensitively, from one directory listing, as the other
+    schemes group siblings; the name the walk predicts wins when two differ only in
+    case. The walk is bounded by ``_MAX_VOLUME_PART``, and by the listing: each step
+    needs a file in it.
+    """
     first = _old_rar_rnn_first_volume(parent, base)
     if first is None:
         return None
-    continuations = sorted(
-        (
-            candidate
-            for candidate in parent.iterdir()
-            if candidate.is_file()
-            and (rnn_match := _RAR_RNN_RE.match(candidate.name)) is not None
-            and rnn_match.group("base").lower() == base.lower()
-        ),
-        key=lambda candidate: _rnn_part_number(candidate.name),
-    )
-    if not continuations:
-        return None
-    return [first, *continuations]
+    by_name: dict[str, list[Path]] = {}
+    for candidate in parent.iterdir():
+        by_name.setdefault(candidate.name.lower(), []).append(candidate)
+    volumes = [first]
+    current = first.name
+    while len(volumes) < _MAX_VOLUME_PART:
+        predicted = next_old_rar_volume_name(current)
+        if predicted is None:
+            break
+        candidates = sorted(
+            (
+                candidate
+                for candidate in by_name.get(predicted.lower(), ())
+                if candidate.is_file()
+            ),
+            key=lambda candidate: (candidate.name != predicted, candidate.name),
+        )
+        if not candidates:
+            break
+        volumes.append(candidates[0])
+        current = candidates[0].name
+    return volumes if len(volumes) > 1 else None
 
 
 def discover_volume_siblings(path: Path) -> list[Path] | None:
@@ -175,7 +220,7 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
     maybe_volume = (
         _NUMBERED_VOLUME_RE.match(name) is not None
         or _RAR_PART_RE.match(name) is not None
-        or _RAR_RNN_RE.match(name) is not None
+        or _OLD_RAR_CONTINUATION_RE.match(name) is not None
         or lower.endswith(".rar")
     )
     if (
@@ -225,17 +270,23 @@ def discover_volume_siblings(path: Path) -> list[Path] | None:
             for part in sorted(grouped)
         ]
 
-    rnn_base: str | None = None
-    rnn_match = _RAR_RNN_RE.match(name)
-    if rnn_match is not None:
-        rnn_base = rnn_match.group("base")
-    elif _is_old_scheme_first_volume_name(name):
-        rnn_base = name[: name.rfind(".")]
-    if rnn_base is not None:
+    if _is_old_scheme_first_volume_name(name):
         # Volume 1 is `<base>.rar`, or an SFX `<base>.exe` / `<base>.sfx` when no
-        # `.rar` is beside the `.rNN` files. A bare `.rNN` with none of those is
-        # a lone file — siblings[0] must be volume 1.
-        return _collect_old_rar_rnn_volumes(parent, rnn_base)
+        # `.rar` is beside the continuations.
+        return _collect_old_rar_volumes(parent, name[: name.rfind(".")])
+    continuation = _OLD_RAR_CONTINUATION_RE.match(name)
+    if continuation is not None:
+        # A continuation with no volume 1 beside it is a lone file — siblings[0]
+        # must be volume 1. So is one the walk from volume 1 does not reach, behind
+        # a gap or not an old-scheme name at all (`notes.a01` beside `notes.rar`).
+        volumes = _collect_old_rar_volumes(parent, continuation.group("base"))
+        if volumes is None:
+            return None
+        for index, volume in enumerate(volumes):
+            if volume.name.lower() == lower:
+                volumes[index] = path
+                return volumes
+        return None
 
     return None
 

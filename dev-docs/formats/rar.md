@@ -322,8 +322,9 @@ from that table. FILE headers QO omitted are parsed. §1.1.
 first volume `name.part1.sfx` / `name.part1.exe` beside later `.partN.rar` parts, and
 `name.rar` (or an old-scheme SFX `name.exe` / `name.sfx`) + `name.r00`, `name.r01`, …
 (older RAR4) are all discovered from any member of
-the set — the old scheme through a two-digit pattern, so a set that runs past `.r99` (WinRAR
-continues `.s00`, `.s01`, …) is not discovered at all — and headers are read across the volumes in order with split members stitched into
+the set — the old scheme by walking names from volume 1 under unrar's rule (one added
+to the letter's character code, so `.r99` → `.s00` and `.z99` → `.{00`) until a name is
+missing, so a later volume past a gap is a lone file — and headers are read across the volumes in order with split members stitched into
 one logical member. `ArchiveInfo.is_multivolume` is `True` and
 `ArchiveInfo.extra["rar.volume_count"]` carries the count. A lone volume 1 is
 `TruncatedError` ("expects another volume"); a lone later volume is

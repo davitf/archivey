@@ -144,7 +144,11 @@ from archivey.internal.streams.streamtools import (
     skip_forward,
 )
 from archivey.internal.streams.verify import build_member_verifier
-from archivey.internal.volumes import ConcatenatedFile, discover_volume_siblings
+from archivey.internal.volumes import (
+    ConcatenatedFile,
+    discover_volume_siblings,
+    next_old_rar_volume_name,
+)
 from archivey.terminal import quoted
 from archivey.types import (
     EXTRA_IS_FILE_COPY,
@@ -241,7 +245,6 @@ _UNAR_MAX_OLD_STYLE_VOLUMES = 901
 _UNRAR_PART_NAME_RE = re.compile(
     r"(?P<head>.*\.part)(?P<num>[0-9]+)(?P<ext>\.rar)", re.I
 )
-_UNRAR_OLD_EXT_RE = re.compile(r"\.(?P<letter>[^.0-9])(?P<num>[0-9]{2})")
 
 
 def _unrar_next_volume_name(name: str, *, old_numbering: bool) -> str | None:
@@ -266,16 +269,7 @@ def _unrar_next_volume_name(name: str, *, old_numbering: bool) -> str | None:
         digits = match["num"]
         number = str(int(digits) + 1).zfill(len(digits))
         return f"{match['head']}{number}{match['ext']}"
-    stem, _, ext = name.rpartition(".")
-    if ext.lower() == "rar":
-        return f"{stem}.{ext[0]}00"
-    match = _UNRAR_OLD_EXT_RE.fullmatch(f".{ext}")
-    if match is None:
-        return None
-    letter, number = match["letter"], int(match["num"]) + 1
-    if number == 100:
-        letter, number = chr(ord(letter) + 1), 0
-    return f"{stem}.{letter}{number:02d}"
+    return next_old_rar_volume_name(name)
 
 
 def _unrar_finds_exactly(
