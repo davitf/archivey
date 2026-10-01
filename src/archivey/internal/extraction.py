@@ -466,6 +466,8 @@ class ExtractionCoordinator:
         self._shown_targets: dict[str, str] = {}
         # Dry run only: where FILE bodies go instead of the file (``os.devnull``).
         self._sink: BinaryIO | None = None
+        # Set by a dry run, from its scratch tree; see ExtractionReport.
+        self.dry_run_top_level: tuple[tuple[str, bool], ...] | None = None
 
     # --- entry point ---------------------------------------------------------------
 
@@ -483,7 +485,8 @@ class ExtractionCoordinator:
         run shows what extracting into an empty ``dest`` would do; ``dest`` itself is
         checked the way a real run checks it and is never created. Paths in the results
         and in errors are reported under ``dest``, and the scratch directory is removed
-        before this returns or raises.
+        before this returns or raises. What a completed pass left directly under the
+        scratch copy of ``dest`` is kept in ``dry_run_top_level``.
 
         Where the scratch tree cannot stand in for ``dest``, the run says less than a
         real one would. A link target that leaves ``dest`` is resolved outside the
@@ -535,6 +538,14 @@ class ExtractionCoordinator:
                 except OSError as exc:
                     self._rebase_os_error(exc)
                     raise
+            with contextlib.suppress(OSError):
+                with os.scandir(work) as entries:
+                    self.dry_run_top_level = tuple(
+                        sorted(
+                            (entry.name, entry.is_dir(follow_symlinks=False))
+                            for entry in entries
+                        )
+                    )
             return [self._rebase_result(result) for result in results]
         finally:
             self._sink = None

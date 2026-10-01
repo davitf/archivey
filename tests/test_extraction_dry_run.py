@@ -567,20 +567,31 @@ def test_cli_dry_run_writes_nothing(
 _TOO_LONG = "x" * 300  # longer than any filesystem's name limit: fails at write time
 
 
+def _files(*names: str) -> list[tuple[str, str, object]]:
+    return [(name, "file", b"x") for name in names]
+
+
 @pytest.mark.parametrize(
-    ("members", "existing", "expected"),
+    ("entries", "existing", "expected"),
     [
-        (["src/a", "src/b"], None, "would move to src/\n"),
-        (["bundle/a", "bundle/b"], None, "would remove wrapper; content at bundle/\n"),
-        (["src/a", "src/b"], "src", "would move to src/, which exists already"),
+        (_files("src/a", "src/b"), None, "would move to src/\n"),
+        (
+            _files("bundle/a", "bundle/b"),
+            None,
+            "would remove wrapper; content at bundle/\n",
+        ),
+        (_files("src/a", "src/b"), "src", "would move to src/, which exists already"),
         # The root exists only because a member under it was given a directory.
-        ([f"src/{_TOO_LONG}"], None, "would move to src/\n"),
+        (_files(f"src/{_TOO_LONG}"), None, "would move to src/\n"),
         # The failed member's directory would be the file an earlier member wrote.
-        (["a", "a/f"], None, "would move to a\n"),
+        (_files("a", "a/f"), None, "would move to a\n"),
         # The failure is creating the root itself: nothing is left to move.
-        ([f"{_TOO_LONG}/f"], None, None),
+        (_files(f"{_TOO_LONG}/f"), None, None),
         # ...so the one root a real run moves is the other one.
-        (["good/f", f"{_TOO_LONG}/f"], None, "would move to good/\n"),
+        (_files("good/f", f"{_TOO_LONG}/f"), None, "would move to good/\n"),
+        # Blocked only once it exists: the escape recheck removes the link and leaves
+        # the directory made for it.
+        ([("root/a", "sym", "a")], None, "would move to root/\n"),
     ],
     ids=[
         "moved",
@@ -590,16 +601,17 @@ _TOO_LONG = "x" * 300  # longer than any filesystem's name limit: fails at write
         "failed-under-a-file",
         "failed-creating-the-root",
         "beside-a-root-that-failed",
+        "blocked-after-its-directory",
     ],
 )
 def test_cli_dry_run_names_where_a_single_root_lands(
-    members: list[str],
+    entries: list[tuple[str, str, object]],
     existing: str | None,
     expected: str | None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    blob = _tar([(name, "file", b"x") for name in members])
+    blob = _tar(entries)
     runs = {}
     for dry_run in (False, True):
         cwd = tmp_path / ("dry" if dry_run else "real")

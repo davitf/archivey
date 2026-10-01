@@ -932,7 +932,4 @@ def extract(
         )
         # extract_all's report.diagnostics is extraction-only. This reader was opened
         # fresh for this call, so reader.diagnostics already spans detect+open+extract.
-        return ExtractionReport(
-            results=report.results,
-            diagnostics=reader.diagnostics,
-        )
+        return replace(report, diagnostics=reader.diagnostics)

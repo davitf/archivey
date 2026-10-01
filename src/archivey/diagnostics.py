@@ -706,6 +706,12 @@ class ExtractionReport:
 
     results: tuple[ExtractionResult, ...]
     diagnostics: DiagnosticSummary
+    # A dry run's top-level entries, as (name, is a directory), read from its scratch
+    # tree before removing it: what a real run would leave directly under ``dest``.
+    # Private, for the CLI's hoist prediction; ``None`` after a real run.
+    _dry_run_top_level: tuple[tuple[str, bool], ...] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __iter__(self) -> Iterator[ExtractionResult]:
         return iter(self.results)

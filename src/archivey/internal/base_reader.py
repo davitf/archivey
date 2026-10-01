@@ -2752,6 +2752,7 @@ class BaseArchiveReader(ArchiveReader):
         return ExtractionReport(
             results=tuple(results),
             diagnostics=collector.snapshot(since=wm),
+            _dry_run_top_level=coordinator.dry_run_top_level,
         )
 
     def close(self) -> None:

@@ -39,7 +39,6 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
     ContainerFormat,
-    MemberType,
 )
 
 
@@ -326,52 +325,17 @@ def predict_hoist(
 ) -> _HoistResult:
     """What :func:`maybe_hoist_single_root` would do after a real run, for a dry run.
 
-    A dry run writes nothing, so there is no wrapper to look into. The report says what
-    a real run would have put there: the top-level entries of the members it extracted,
-    and the top-level directory above a member that failed, which a real run creates
-    before the failure and leaves in place. Two failures leave nothing there: a member
-    whose top-level entry is a file another member wrote keeps that file, and a failure
-    to create the top-level directory itself (its file name is that directory) leaves
-    no directory. A single entry is lifted to the wrapper's parent under its own name,
-    as the hoist lifts it. Where that name exists already, the hoist would merge into
-    it, and the collisions that merge could meet are not checked.
+    A dry run writes nothing, so there is no wrapper to look into. Its scratch tree is
+    the next best thing: the run created the same directories, links and (empty) files
+    there, and the report carries the entries it left at the top. A single entry is
+    lifted to the wrapper's parent under its own name, as the hoist lifts it. Where that
+    name exists already, the hoist would merge into it, and the collisions that merge
+    could meet are not checked.
     """
-    tops: dict[str, bool] = {}  # name -> whether it is a directory
-    made_for_failures: set[str] = set()
-    for result in report:
-        if result.status is ExtractionStatus.EXTRACTED:
-            path = result.path
-        elif result.status is ExtractionStatus.FAILED:
-            path = result.requested_path
-        else:
-            continue
-        if path is None:
-            continue
-        try:
-            parts = path.relative_to(wrapper).parts
-        except ValueError:
-            continue
-        if not parts:
-            continue
-        if result.status is ExtractionStatus.FAILED:
-            # Its own file is not left behind; a directory above it is, unless that
-            # directory is what could not be created.
-            error = result.error
-            failed_on = getattr(error, "filename", None)
-            top = os.path.abspath(wrapper / parts[0])
-            if len(parts) > 1 and not (
-                isinstance(failed_on, str) and os.path.abspath(failed_on) == top
-            ):
-                made_for_failures.add(parts[0])
-            continue
-        is_dir = len(parts) > 1 or result.member.type is MemberType.DIRECTORY
-        tops[parts[0]] = tops.get(parts[0], False) or is_dir
-    for name in made_for_failures:
-        # An entry an extracted member wrote stays as that member left it.
-        tops.setdefault(name, True)
-    if len(tops) != 1:
+    tops = report._dry_run_top_level  # noqa: SLF001 - the library's own CLI
+    if tops is None or len(tops) != 1:
         return _HoistResult(wrapper)
-    ((name, is_dir),) = tops.items()
+    ((name, is_dir),) = tops
     dest = wrapper.parent / name
     label = f"{escape_path(dest)}{'/' if is_dir else ''}"
     if dest == wrapper:
