@@ -7,9 +7,11 @@ kept deliberately naive so it shares no code with the decoder under test.
 
 from __future__ import annotations
 
+import functools
 import io
 import os
 import random
+import re
 import struct
 import subprocess
 from pathlib import Path
@@ -222,7 +224,26 @@ def test_misaligned_arm64_start_offset_is_refused_at_plan_time() -> None:
 # --- 7-Zip as the oracle ----------------------------------------------------------------
 
 
+@functools.cache
+def _7z_has_arm64() -> bool:
+    # p7zip 16.02 (Homebrew's ``7z`` on macOS) predates the filter and exits 2 on
+    # ``-m0=ARM64``; 7-Zip 23+ lists it among its codecs.
+    try:
+        listing = subprocess.run(
+            ["7z", "i"], capture_output=True, text=True, check=False
+        ).stdout
+    except OSError:
+        return False
+    return re.search(r"\bARM64\b", listing) is not None
+
+
+def _require_7z_arm64() -> None:
+    if not _7z_has_arm64():
+        pytest.skip("this 7z cannot write the ARM64 filter (7-Zip 23 or later can)")
+
+
 def _write_7z(tmp_path: Path, methods: list[str], payload: bytes) -> Path:
+    _require_7z_arm64()
     (tmp_path / "code.bin").write_bytes(payload)
     subprocess.run(
         ["7z", "a", "-mhc=off", *methods, "a.7z", "code.bin"],
@@ -291,6 +312,7 @@ def test_7zip_picks_arm64_for_an_aarch64_executable(
     exe = tmp_path / "armexe"
     exe.write_bytes(payload)
     exe.chmod(0o755)
+    _require_7z_arm64()
     subprocess.run(
         ["7z", "a", *(["-mf=ARM64"] if explicit else []), "a.7z", "armexe"],
         cwd=tmp_path,
