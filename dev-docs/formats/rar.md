@@ -163,7 +163,19 @@ so that stays `EncryptionError("…wrong password?")` — and RAR3, which has no
 always takes that branch. The boundary cases keep their plain-walk meaning: an `-hp`
 RAR5 that ends exactly where the next IV would start gets the RAR5 warning above, and a
 skip past the end of the file is the packed-data `TruncatedError`. An `-hp` RAR3 that
-ends exactly where the next salt would start is still `CorruptionError` at open.
+ends exactly where the next salt would start is a clean end, as in a plain RAR3 walk.
+
+**Why a cut exactly between RAR 1.5-4 headers is not reported** (measured 2026-10-01,
+unrar 7.00, on `basic_nonsolid__rar4.rar` and `encrypted_header__rar4.rar` cut at every
+length). At each header boundary, plain and `-hp` alike, `unrar l` and `unrar t` list
+the members before the cut and exit 0; every other cut length fails. Reading does not
+catch it either: each member listed is whole, so its read succeeds, and the members
+after the cut are never asked for. Since these writers may omit `ENDARC`, no reader can
+tell "cut here" from "ended here". archivey follows unrar. Until this was settled the
+`-hp` RAR3 case raised `CorruptionError` at open, which refused a file whose members
+were all intact when only its 24-byte end block was gone, while the same cut on a plain
+RAR3 file listed silently. RAR5 differs only because its writers always close with
+`ENDARC`, which is what makes the warning above possible there.
 
 ### 1.1 Quick Open (QO)
 

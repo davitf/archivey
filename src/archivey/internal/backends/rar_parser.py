@@ -1567,6 +1567,8 @@ def _parse_rar3(
             # (a spent derivation budget) propagate as they are. A wrong password
             # shows up later, when the decrypted header does not parse. A salt the
             # file holds only part of is a cut, reported after the members listed.
+            # No salt at all is a clean end, as in a plain walk: RAR 1.5-4 writers may
+            # omit ENDARC, and unrar lists such a file and exits 0 (rar.md §1).
             salt = read_exact(source, 8)
             if len(salt) < 8:
                 truncated = (
@@ -1574,10 +1576,6 @@ def _parse_rar3(
                     if salt
                     else _data_past_end(source)
                 )
-                if truncated is None:
-                    raise CorruptionError(
-                        "Unexpected EOF while reading RAR3 header salt"
-                    )
                 break
             header_fd = _rar3_decrypt_header(source, salt, password, kdf_cache)
 

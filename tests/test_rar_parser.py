@@ -123,13 +123,19 @@ def test_short_header_salt_or_iv_is_a_cut_not_a_wrong_password(
 
 
 @requires("cryptography")
-def test_rar3_file_ending_where_a_header_salt_starts_is_corruption() -> None:
+@pytest.mark.parametrize("cut", [436, 492, 564])
+def test_rar3_file_ending_where_a_header_salt_starts_is_a_clean_end(cut: int) -> None:
     """RAR3 with encrypted headers ending exactly where the next salt would start
-    has no end block. That stays an error at open, not a wrong password."""
-    data = _fixture("encrypted_header__rar4.rar").read_bytes()[:20]
-    with raises_corruption_not_truncation(match="RAR3 header salt") as info:
-        parse_rar_archive(io.BytesIO(data), password="header_password")
-    assert not isinstance(info.value, EncryptionError)
+    lists the members before it, as a plain RAR3 walk does and as unrar does (exit 0
+    for ``l`` and ``t``). RAR 1.5-4 writers may omit the end block, so nothing tells
+    this from an archive that ended there. 564 drops only the 24-byte end block."""
+    full = _fixture("encrypted_header__rar4.rar").read_bytes()
+    complete = parse_rar_archive(io.BytesIO(full), password="header_password")
+    archive = parse_rar_archive(io.BytesIO(full[:cut]), password="header_password")
+    assert archive.truncated is None
+    names = [m.filename for m in archive.members]
+    assert names == [m.filename for m in complete.members][: len(names)]
+    assert names
 
 
 @requires("cryptography")
