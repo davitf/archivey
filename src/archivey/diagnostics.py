@@ -221,10 +221,15 @@ class ScanRaceContext(_JsonSafeContext):
 class ArchiveEofContext(_JsonSafeContext):
     """The end of the archive did not look the way the format says it should.
 
-    Three checks share this shape, told apart by ``expected_marker``:
+    Four checks share this shape, told apart by ``expected_marker``:
 
     - ``"two_zero_blocks"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the TAR trailer itself is
       missing, short, or a non-null block.
+    - ``"end_of_archive_block"`` (``ARCHIVE_EOF_MARKER_MISSING``) — a RAR5 archive, or
+      a volume of a RAR5 set, ends without the end-of-archive block its writers always
+      put last, so the file was most likely cut at a header boundary. ``format`` is
+      ``"rar"``, ``observed_kind`` is ``"absent"`` and both byte counts are 0: the
+      block has no fixed size.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — the trailer was complete but a
       non-zero byte follows it within the first MiB past it, so the file carries
       something the listing did not account for. ``observed_bytes`` is that byte's
@@ -526,7 +531,7 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
             ),
             DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: (
                 "expected_marker",
-                frozenset({"two_zero_blocks"}),
+                frozenset({"two_zero_blocks", "end_of_archive_block"}),
             ),
             DiagnosticCode.ARCHIVE_TRAILING_DATA: (
                 "expected_marker",

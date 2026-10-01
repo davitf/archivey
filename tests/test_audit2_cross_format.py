@@ -3,7 +3,7 @@
 
 Each test asserts the promised behaviour and is marked ``xfail(strict=True)`` with the
 defect it pins, so a fix turns it into an XPASS failure and the marker has to go. A
-fixed finding's test (C4) stays unmarked as a regression test.
+fixed finding's test stays unmarked as a regression test.
 Fixtures are built in the test from bytes, from the declarative corpus, or from the
 committed RAR fixtures; nothing new is committed.
 """
@@ -27,7 +27,14 @@ import pytest
 from archivey import ArchiveyConfig, open_archive
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.main import main
-from archivey.diagnostics import DiagnosticCode, DiagnosticDisposition, DiagnosticPolicy
+from archivey.diagnostics import (
+    ArchiveEofContext,
+    Diagnostic,
+    DiagnosticCode,
+    DiagnosticDisposition,
+    DiagnosticPolicy,
+    DiagnosticSummary,
+)
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
@@ -136,13 +143,6 @@ def test_tar_cut_at_header_boundary_is_reported_control() -> None:
     assert counts.get(DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING, 0) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "C1: a RAR5 cut at a header boundary (no ENDARC, which RAR5 always writes) "
-        "lists as complete with no error and no ARCHIVE_EOF_MARKER_MISSING"
-    ),
-)
 def test_rar5_cut_at_header_boundary_is_not_silent() -> None:
     data = (_RAR_FIXTURES / "basic_nonsolid__.rar").read_bytes()
     files = [b for b in _rar5_blocks(data) if b[1] == 2]
@@ -155,6 +155,73 @@ def test_rar5_cut_at_header_boundary_is_not_silent() -> None:
         report.error is not None
         or counts.get(DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING, 0) >= 1
     )
+
+
+def _eof_marker_diagnostics(summary: DiagnosticSummary) -> list[Diagnostic]:
+    return [
+        d
+        for d in summary.retained
+        if d.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+    ]
+
+
+def _rar5_without_endarc(data: bytes) -> bytes:
+    blocks = _rar5_blocks(data)
+    assert blocks[-1][1] == 5  # precondition: the writer put ENDARC last
+    return data[: blocks[-1][0]]
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_rar5_without_endarc_warns_once_and_lists(streaming: bool) -> None:
+    data = (_RAR_FIXTURES / "basic_nonsolid__.rar").read_bytes()
+    with open_archive(io.BytesIO(data)) as reader:
+        full = [m.name for m in reader.members()]
+    cut = _rar5_without_endarc(data)
+    with open_archive(io.BytesIO(cut), streaming=streaming) as reader:
+        names = [m.name for m, _ in reader.stream_members()]
+        diagnostics = _eof_marker_diagnostics(reader.diagnostics)
+    assert names == full
+    assert len(diagnostics) == 1
+    context = diagnostics[0].context
+    assert isinstance(context, ArchiveEofContext)
+    assert context.format == "rar"
+    assert context.expected_marker == "end_of_archive_block"
+    assert context.observed_kind == "absent"
+
+
+def test_rar5_complete_archive_emits_no_eof_warning() -> None:
+    with open_archive(_RAR_FIXTURES / "basic_nonsolid__.rar") as reader:
+        reader.members_report()
+        counts = reader.diagnostics.counts
+    assert counts.get(DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING, 0) == 0
+
+
+def test_rar5_cut_at_header_boundary_refused_under_strict() -> None:
+    data = (_RAR_FIXTURES / "basic_nonsolid__.rar").read_bytes()
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.strict())
+    with open_archive(io.BytesIO(_rar5_without_endarc(data)), config=config) as reader:
+        with pytest.raises(DiagnosticRaisedError):
+            reader.members()
+
+
+def test_rar5_volume_set_endarc(tmp_path: Path) -> None:
+    parts = [(_RAR_FIXTURES / f"tinyvol.part{n}.rar").read_bytes() for n in (1, 2)]
+    for n, part in enumerate(parts, 1):
+        (tmp_path / f"tinyvol.part{n}.rar").write_bytes(part)
+    with open_archive(tmp_path / "tinyvol.part1.rar") as reader:
+        full = [m.name for m in reader.members()]
+        assert (
+            reader.diagnostics.counts.get(DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING, 0)
+            == 0
+        )
+    # Volume 1 cut before its ENDARC: the split member still continues into
+    # volume 2, so the set lists in full, and the missing block is reported.
+    (tmp_path / "tinyvol.part1.rar").write_bytes(_rar5_without_endarc(parts[0]))
+    with open_archive(tmp_path / "tinyvol.part1.rar") as reader:
+        assert [m.name for m in reader.members()] == full
+        diagnostics = _eof_marker_diagnostics(reader.diagnostics)
+    assert len(diagnostics) == 1
+    assert "volume(s) 1 " in diagnostics[0].message
 
 
 # ---------------------------------------------------------------------------
