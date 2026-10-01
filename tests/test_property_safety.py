@@ -49,8 +49,8 @@ from archivey.internal.volumes import (
     _RAR_RNN_RE,
     _numbered_part_number,
     _rar_part_number,
-    _rnn_part_number,
     discover_volume_siblings,
+    next_old_rar_volume_name,
 )
 from archivey.types import ArchiveMember, MemberType
 from tests.streams_util import NonSeekableBytesIO
@@ -528,9 +528,10 @@ def test_volume_part_helpers_total(name: str) -> None:
     for number in (
         _numbered_part_number(name),
         _rar_part_number(name),
-        _rnn_part_number(name),
     ):
         assert isinstance(number, int) and number >= 0
+    following = next_old_rar_volume_name(name)
+    assert following is None or isinstance(following, str)
     # Regex matchers themselves must not raise.
     _NUMBERED_VOLUME_RE.match(name)
     _RAR_PART_RE.match(name)
