@@ -6,9 +6,11 @@ import errno
 import io
 import os
 import shutil
+import struct
 import tarfile
 import time
 import zipfile
+import zlib
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,7 @@ from typing import Any
 import pytest
 
 from archivey import detect_format, extract, open_archive
+from archivey.config import ArchiveyConfig, RarDecompressor
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
@@ -33,6 +36,7 @@ from archivey.internal.volumes import (
     discover_volume_siblings,
     first_volume_for_stub,
     join_volumes,
+    next_old_rar_volume_name,
 )
 from archivey.types import ArchiveFormat
 from tests.conftest import requires_binary
@@ -286,6 +290,207 @@ def test_old_scheme_sfx_exe_opens_rnn_set(tmp_path: Path) -> None:
             assert [m.name for m in archive.members()] == ["payload.bin"]
             if _have_rarlab_unrar():
                 assert archive.read("payload.bin") == b"ABCDEFGH" * 200
+
+
+def _old_scheme_names(first: str, count: int) -> list[str]:
+    names = [first]
+    while len(names) < count:
+        following = next_old_rar_volume_name(names[-1])
+        assert following is not None
+        names.append(following)
+    return names
+
+
+def test_old_scheme_volume_names_run_past_r99_and_z99() -> None:
+    names = _old_scheme_names("a.rar", 1003)
+    assert names[:3] == ["a.rar", "a.r00", "a.r01"]
+    assert names[100:103] == ["a.r99", "a.s00", "a.s01"]
+    assert names[900:903] == ["a.z99", "a.{00", "a.{01"]
+    assert next_old_rar_volume_name("a.exe") == "a.r00"
+    assert next_old_rar_volume_name("a.sfx") == "a.r00"
+    assert next_old_rar_volume_name("A.RAR") == "A.R00"
+    assert next_old_rar_volume_name("a.part1.rar.bak") is None
+
+
+@pytest.mark.parametrize("first", ["archive.rar", "archive.exe"])
+def test_discover_old_scheme_volumes_past_r99_and_z99(
+    tmp_path: Path, first: str
+) -> None:
+    """The old scheme continues ``.r99`` -> ``.s00`` and ``.z99`` -> ``.{00``; a
+    two-digit ``.rNN`` pattern used to stop discovery at volume 101."""
+    names = _old_scheme_names(first, 905)
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    for anchor in (first, "archive.r00", "archive.s00", "archive.z99", "archive.{03"):
+        siblings = discover_volume_siblings(tmp_path / anchor)
+        assert siblings is not None
+        assert [p.name for p in siblings] == names
+
+
+def test_discover_old_scheme_matches_continuations_case_insensitively(
+    tmp_path: Path,
+) -> None:
+    names = ["archive.rar", "archive.R00", "archive.r01"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    for anchor in names:
+        siblings = discover_volume_siblings(tmp_path / anchor)
+        assert siblings is not None
+        assert [p.name for p in siblings] == names
+
+
+def test_discover_old_scheme_set_named_in_upper_case(tmp_path: Path) -> None:
+    """Volume 1 is found case-insensitively too, not only the continuations.
+
+    Upper-case names are the usual shape of an old-scheme set copied off DOS or
+    Windows media. Looking volume 1 up by an exact ``<base>.rar`` found nothing on a
+    case-sensitive filesystem, so the set was discovered from none of its members.
+    """
+    names = ["ARCHIVE.RAR", "ARCHIVE.R00", "ARCHIVE.R01"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    for anchor in names:
+        siblings = discover_volume_siblings(tmp_path / anchor)
+        assert siblings is not None
+        assert [p.name for p in siblings] == names
+
+
+def test_discover_old_scheme_upper_case_sfx_first_volume(tmp_path: Path) -> None:
+    names = ["ARCHIVE.EXE", "ARCHIVE.R00", "ARCHIVE.R01"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    for anchor in names:
+        siblings = discover_volume_siblings(tmp_path / anchor)
+        assert siblings is not None
+        assert [p.name for p in siblings] == names
+
+
+def test_discover_old_scheme_first_volume_prefers_the_opened_case(
+    tmp_path: Path,
+) -> None:
+    """Files that differ only in case: the one spelling the opened name's base wins.
+
+    Neither ``archive.RAR`` nor ``archive.r00`` is the exact name the walk predicts
+    from the other, and both sort after their upper-case twins, so only the
+    base-spelling preference picks them. Only a case-sensitive filesystem can hold
+    both spellings.
+    """
+    names = ["ARCHIVE.RAR", "archive.RAR", "ARCHIVE.R00", "archive.r00"]
+    for name in names:
+        (tmp_path / name).write_bytes(name.encode())
+    if len({p.name for p in tmp_path.iterdir()}) < len(names):
+        pytest.skip("case-insensitive filesystem")
+    upper = discover_volume_siblings(tmp_path / "ARCHIVE.R00")
+    lower = discover_volume_siblings(tmp_path / "archive.r00")
+    assert upper is not None and lower is not None
+    assert [p.name for p in upper] == ["ARCHIVE.RAR", "ARCHIVE.R00"]
+    assert [p.name for p in lower] == ["archive.RAR", "archive.r00"]
+
+
+def test_discover_old_scheme_stops_at_the_first_missing_name(tmp_path: Path) -> None:
+    """Volumes are walked from volume 1 by name, as unrar does: a file past a gap is
+    not in the set, and opening it on its own is a lone later volume. Neither is an
+    unrelated ``archive.a01`` that merely has the shape of a continuation."""
+    for name in ("archive.rar", "archive.r00", "archive.r02", "archive.a01"):
+        (tmp_path / name).write_bytes(b"")
+    siblings = discover_volume_siblings(tmp_path / "archive.rar")
+    assert siblings is not None
+    assert [p.name for p in siblings] == ["archive.rar", "archive.r00"]
+    assert discover_volume_siblings(tmp_path / "archive.r02") is None
+    assert discover_volume_siblings(tmp_path / "archive.a01") is None
+
+
+def _rar4_block(block_type: int, flags: int, body: bytes) -> bytes:
+    head = struct.pack("<BHH", block_type, flags, 7 + len(body)) + body
+    return struct.pack("<H", zlib.crc32(head) & 0xFFFF) + head
+
+
+def _write_old_scheme_rar4_set(
+    directory: Path, stem: str, payload: bytes, count: int
+) -> list[Path]:
+    """A real RAR 2.9-format volume set with old (``.rNN``) naming.
+
+    RAR 7 writes neither the old format nor old names, so the set is built by hand:
+    one stored member split across ``count`` volumes, each a MAIN header with only
+    ``MHD_VOLUME`` set (no ``MHD_NEWNUMBERING``), a FILE header carrying the split
+    flags, its slice of the data and an ENDARC. A split-after part's CRC is that
+    part's data, the last part's is the whole file's. ``unrar t`` accepts it.
+    """
+    member = b"payload.bin"
+    chunk = -(-len(payload) // count)
+    name = f"{stem}.rar"
+    paths: list[Path] = []
+    for index in range(count):
+        part = payload[index * chunk : (index + 1) * chunk]
+        last = index == count - 1
+        # LONG_BLOCK, SPLIT_BEFORE, SPLIT_AFTER.
+        flags = 0x8000 | (0x01 if index else 0) | (0 if last else 0x02)
+        fields = struct.pack(
+            "<LLBLLBBHL",
+            len(part),
+            len(payload),
+            3,  # Unix
+            zlib.crc32(payload if last else part),
+            0x58210000,  # 2024-01-01 00:00 DOS time
+            20,
+            0x30,  # stored
+            len(member),
+            0o100644,
+        )
+        volume = (
+            _RAR_MAGIC
+            + _rar4_block(0x73, 0x0001, b"\x00" * 6)
+            + _rar4_block(0x74, flags, fields + member)
+            + part
+            + _rar4_block(0x7B, 0 if last else 0x0001, b"")
+        )
+        (directory / name).write_bytes(volume)
+        paths.append(directory / name)
+        following = next_old_rar_volume_name(name)
+        assert following is not None
+        name = following
+    return paths
+
+
+_OLD_SCHEME_PAYLOAD = b"".join(b"%06d" % i for i in range(1000))
+
+
+@pytest.mark.parametrize(
+    "decompressor",
+    [
+        pytest.param(RarDecompressor.UNRAR, marks=requires_binary("unrar")),
+        pytest.param(RarDecompressor.UNAR, marks=requires_binary("unar")),
+    ],
+)
+def test_old_scheme_set_past_r99_opens_from_any_volume(
+    tmp_path: Path, decompressor: RarDecompressor
+) -> None:
+    """150 old-scheme volumes, ``big.rar`` through ``big.s48``. Discovery used to
+    stop at ``big.r99``, and the open then failed as a truncated set."""
+    paths = _write_old_scheme_rar4_set(tmp_path, "big", _OLD_SCHEME_PAYLOAD, 150)
+    assert [paths[100].name, paths[101].name, paths[-1].name] == [
+        "big.r99",
+        "big.s00",
+        "big.s48",
+    ]
+    config = ArchiveyConfig(rar_decompressor=decompressor)
+    for anchor in (paths[0], paths[1], paths[105]):
+        with open_archive(anchor, config=config) as archive:
+            assert archive.info.is_multivolume is True
+            assert archive.info.extra["rar.volume_count"] == 150
+            assert [m.name for m in archive.members()] == ["payload.bin"]
+            assert archive.read("payload.bin") == _OLD_SCHEME_PAYLOAD
+
+
+def test_old_scheme_set_with_a_gap_is_a_truncated_set(tmp_path: Path) -> None:
+    """Discovery stops at the first missing name, and the open then reports the set
+    as truncated: the volume before the gap says another one follows. A gapped set
+    is not joined across the gap."""
+    paths = _write_old_scheme_rar4_set(tmp_path, "big", _OLD_SCHEME_PAYLOAD, 4)
+    paths[2].unlink()
+    with pytest.raises(TruncatedError, match="expects another volume"):
+        with open_archive(paths[0]) as archive:
+            list(archive.members())
 
 
 @pytest.mark.parametrize(
@@ -1495,6 +1700,82 @@ def test_old_scheme_rar_volumes_from_two_sets_are_refused(tmp_path: Path) -> Non
         join_volumes([tmp_path / "alpha.rar", tmp_path / "beta.r00"])
 
     assert "different sets" in str(excinfo.value)
+
+
+def test_old_scheme_volumes_past_r99_from_two_sets_are_refused(
+    tmp_path: Path,
+) -> None:
+    """The old scheme runs on past ``.r99`` (``.s00`` …), and so does the check.
+
+    Classifying only ``.rNN`` names let ``beta.s00`` through as a stray after 101
+    volumes of ``alpha``, where ``beta.r01`` in the same place is refused.
+    """
+    names = [*_old_scheme_names("alpha.rar", 101), "beta.s00"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"A")
+
+    with pytest.raises(ArchiveyUsageError, match="different sets"):
+        join_volumes([tmp_path / name for name in names])
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("alpha.rar", "alpha.r00", "readme.p12"),
+        ("Show.part1.rar", "Show.part2.rar", "Show.part1.e01"),
+        ("disk1.d64", "disk2.d64"),
+    ],
+)
+def test_stray_of_the_old_scheme_shape_is_refused_as_a_part(
+    tmp_path: Path, names: tuple[str, ...]
+) -> None:
+    """A letter-plus-two-digits stray counts as an old-scheme part: the recorded cost.
+
+    The check classifies old-scheme parts with discovery's own pattern, and the name
+    alone cannot tell ``readme.p12`` from ``beta.s00``, so such a stray is not passed
+    over the way ``readme.bak`` is.
+    """
+    for name in names:
+        (tmp_path / name).write_bytes(b"A")
+
+    with pytest.raises(ArchiveyUsageError, match="different sets"):
+        join_volumes([tmp_path / name for name in names])
+
+
+def test_stray_of_the_old_scheme_shape_is_named_by_shape(tmp_path: Path) -> None:
+    """The message describes the shape ``notes.e01`` matched; it does not say ``.r00``."""
+    names = ("alpha.zip.001", "alpha.zip.002", "notes.e01")
+    for name in names:
+        (tmp_path / name).write_bytes(b"A")
+
+    with pytest.raises(ArchiveyUsageError) as excinfo:
+        join_volumes([tmp_path / name for name in names])
+
+    message = str(excinfo.value)
+    assert "notes is named name.xNN (the old RAR scheme's shape" in message
+    assert "name.r00" not in message
+
+
+def test_stray_of_another_shape_is_passed_over(tmp_path: Path) -> None:
+    """``readme.bak`` matches no scheme, so it joins where ``readme.p12`` is refused."""
+    names = ("alpha.rar", "alpha.r00", "readme.bak")
+    for name in names:
+        (tmp_path / name).write_bytes(b"A")
+
+    assert join_volumes([tmp_path / name for name in names]).read() == b"AAA"
+
+
+def test_old_scheme_volumes_past_r99_of_one_set_still_join(tmp_path: Path) -> None:
+    """The widened check must not refuse a set discovery accepts."""
+    names = _old_scheme_names("alpha.rar", 103)
+    assert names[-2:] == ["alpha.s00", "alpha.s01"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"A")
+
+    discovered = discover_volume_siblings(tmp_path / "alpha.s01")
+    assert discovered is not None
+    assert [path.name for path in discovered] == names
+    assert join_volumes(discovered).read() == b"A" * len(names)
 
 
 @pytest.mark.parametrize(

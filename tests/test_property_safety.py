@@ -45,12 +45,12 @@ from archivey.internal.naming import (
 from archivey.internal.source import ArchiveSource
 from archivey.internal.volumes import (
     _NUMBERED_VOLUME_RE,
+    _OLD_RAR_CONTINUATION_RE,
     _RAR_PART_RE,
-    _RAR_RNN_RE,
     _numbered_part_number,
     _rar_part_number,
-    _rnn_part_number,
     discover_volume_siblings,
+    next_old_rar_volume_name,
 )
 from archivey.types import ArchiveMember, MemberType
 from tests.streams_util import NonSeekableBytesIO
@@ -523,18 +523,21 @@ _volume_style_names = st.one_of(
 @example(name="x.zip." + "1" * 5000)
 @example(name="x.part" + "1" * 5000 + ".rar")
 @example(name="x.part" + "1" * 5000 + ".exe")
+# The old-scheme letter past ``U+10FFFF`` has no successor, and ``chr()`` raised.
+@example(name="a.\U0010ffff99")
 @given(name=_volume_style_names)
 def test_volume_part_helpers_total(name: str) -> None:
     for number in (
         _numbered_part_number(name),
         _rar_part_number(name),
-        _rnn_part_number(name),
     ):
         assert isinstance(number, int) and number >= 0
+    following = next_old_rar_volume_name(name)
+    assert following is None or isinstance(following, str)
     # Regex matchers themselves must not raise.
     _NUMBERED_VOLUME_RE.match(name)
     _RAR_PART_RE.match(name)
-    _RAR_RNN_RE.match(name)
+    _OLD_RAR_CONTINUATION_RE.match(name)
 
 
 @given(
