@@ -181,6 +181,7 @@ class ForwardArchiveReader(ABC):
         abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         limits: ExtractionLimits | None = None,
+        dry_run: bool = False,
     ) -> ExtractionReport:
         """Extract members to ``dest`` (safe-by-default; see ``safe-extraction``).
 
@@ -195,6 +196,12 @@ class ForwardArchiveReader(ABC):
         ``abort_on`` names events that end the whole call the first time they occur —
         raising instead of returning a report. It is independent of ``on_error``: see
         :class:`~archivey.AbortOn`.
+
+        ``dry_run=True`` runs the same extraction into a private scratch directory and
+        removes it afterwards. Every check runs and every member body is read and
+        verified, but files are created empty and nothing is written under ``dest``.
+        The report reads as it would for an extraction into an empty ``dest``, with
+        paths under ``dest``.
         """
         ...
 
